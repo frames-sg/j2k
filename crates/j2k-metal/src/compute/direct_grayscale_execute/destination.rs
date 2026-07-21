@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    allocate_direct_execution_metadata, new_command_buffer, new_compute_command_encoder, Arc,
-    Error, MetalRuntime, PixelFormat, PreparedDirectGrayscalePlan,
+    allocate_direct_execution_metadata, direct_ht_job_count, new_command_buffer,
+    new_compute_command_encoder, Arc, Error, MetalRuntime, PixelFormat,
+    PreparedDirectGrayscalePlan,
 };
 use j2k_metal_support::MetalImageDestination;
 
@@ -53,7 +54,10 @@ pub(crate) fn submit_prepared_direct_grayscale_plan_batch_into_group(
     )?;
     let mut metadata = allocate_direct_execution_metadata(
         step_count,
-        0,
+        direct_ht_job_count(
+            plans.iter().map(Arc::as_ref),
+            "J2K Metal submitted grayscale destination HT jobs",
+        )?,
         crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal submitted direct grayscale destination batch execution resources",
         ),

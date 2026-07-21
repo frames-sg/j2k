@@ -68,7 +68,7 @@ fn completed_surface_metal_buffer(surface: &Surface) -> Option<(&metal::Buffer, 
 fn completed_resident_batch_bytes(group: &j2k_metal::MetalBatchGroup) -> Vec<u8> {
     let resident = group
         .resident_batch()
-        .expect("codec-owned decode must expose its dense resident allocation");
+        .expect("completed group has resident Metal storage");
     // SAFETY: the group is returned only after codec completion and this test
     // performs a readback without submitting a writer or retaining the handle.
     unsafe {
@@ -429,6 +429,8 @@ mod auto_tile_batch;
 mod batch_sessions;
 #[path = "device/color_batch.rs"]
 mod color_batch;
+#[path = "device/color_mct_group.rs"]
+mod color_mct_group;
 #[path = "device/decode.rs"]
 mod decode;
 #[path = "device/direct_gray_requests.rs"]

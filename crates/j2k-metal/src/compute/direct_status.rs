@@ -5,17 +5,17 @@ use metal::Buffer;
 use crate::{buffer_pool::PooledBuffer, Error, MetalDirectFallbackReason};
 
 use super::abi::{
-    J2kClassicStatus, J2kHtStatus, J2kIdwtStatus, J2kMctStatus, J2K_CLASSIC_STATUS_FAIL,
-    J2K_CLASSIC_STATUS_OK, J2K_CLASSIC_STATUS_UNSUPPORTED, J2K_HT_STATUS_FAIL, J2K_HT_STATUS_OK,
-    J2K_HT_STATUS_UNSUPPORTED, J2K_IDWT_STATUS_FAIL, J2K_IDWT_STATUS_OK, J2K_MCT_STATUS_FAIL,
-    J2K_MCT_STATUS_OK,
+    J2kClassicStatus, J2kHtStatus, J2kMctStatus, J2K_CLASSIC_STATUS_FAIL, J2K_CLASSIC_STATUS_OK,
+    J2K_CLASSIC_STATUS_UNSUPPORTED, J2K_HT_STATUS_FAIL, J2K_HT_STATUS_OK,
+    J2K_HT_STATUS_UNSUPPORTED, J2K_MCT_STATUS_FAIL,
 };
-use super::direct_buffers::{checked_buffer_read, checked_buffer_slice};
+use super::direct_buffers::checked_buffer_slice;
 
 pub(super) enum DirectStatusCheck {
     Classic {
         buffer: Buffer,
         len: usize,
+        source_indices: Option<Vec<usize>>,
     },
     Ht {
         buffer: Buffer,
@@ -23,8 +23,6 @@ pub(super) enum DirectStatusCheck {
         source_indices: Option<Vec<usize>>,
         recyclable_status: Option<PooledBuffer>,
     },
-    Idwt(Buffer),
-    Mct(Buffer),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,52 +32,44 @@ pub(super) enum DirectStatusRetirementMode {
 }
 
 impl DirectStatusCheck {
-    pub(super) fn remap_ht_source(&mut self, source_index: usize) -> Result<(), Error> {
-        let Self::Ht {
-            len,
-            source_indices,
-            ..
-        } = self
-        else {
-            return Ok(());
+    fn attributed_sources_mut(&mut self, state: &'static str) -> Result<&mut Vec<usize>, Error> {
+        let (len, source_indices) = match self {
+            Self::Classic {
+                len,
+                source_indices,
+                ..
+            }
+            | Self::Ht {
+                len,
+                source_indices,
+                ..
+            } => (*len, source_indices),
         };
         let indices = source_indices.as_mut().ok_or(Error::MetalStateInvariant {
-            state: "HTJ2K Metal batch status attribution",
-            reason: "chunked HT status check has no source identity table",
+            state,
+            reason: "codec status check has no source identity table",
         })?;
-        if indices.len() != *len {
+        if indices.len() != len {
             return Err(Error::MetalStateInvariant {
-                state: "HTJ2K Metal batch status attribution",
-                reason: "HT source identity count does not match status count",
+                state,
+                reason: "source identity count does not match status count",
             });
         }
+        Ok(indices)
+    }
+
+    pub(super) fn remap_source(&mut self, source_index: usize) -> Result<(), Error> {
+        let indices = self.attributed_sources_mut("J2K Metal batch status attribution")?;
         indices.fill(source_index);
         Ok(())
     }
 
-    pub(super) fn remap_ht_sources(&mut self, sources: &[usize]) -> Result<(), Error> {
-        let Self::Ht {
-            len,
-            source_indices,
-            ..
-        } = self
-        else {
-            return Ok(());
-        };
-        let indices = source_indices.as_mut().ok_or(Error::MetalStateInvariant {
-            state: "HTJ2K Metal stacked batch status attribution",
-            reason: "chunked HT status check has no source identity table",
-        })?;
-        if indices.len() != *len {
-            return Err(Error::MetalStateInvariant {
-                state: "HTJ2K Metal stacked batch status attribution",
-                reason: "HT source identity count does not match status count",
-            });
-        }
+    pub(super) fn remap_sources(&mut self, sources: &[usize]) -> Result<(), Error> {
+        let indices = self.attributed_sources_mut("J2K Metal stacked batch status attribution")?;
         for source in indices {
             *source = *sources.get(*source).ok_or(Error::MetalStateInvariant {
-                state: "HTJ2K Metal stacked batch status attribution",
-                reason: "local HT source identity exceeds prepared group",
+                state: "J2K Metal stacked batch status attribution",
+                reason: "local codec-status source identity exceeds prepared group",
             })?;
         }
         Ok(())
@@ -133,15 +123,24 @@ pub(super) fn retire_direct_status_checks(
 
 fn validate_direct_status_contents(status_check: &DirectStatusCheck) -> Result<(), Error> {
     match status_check {
-        DirectStatusCheck::Classic { buffer, len } => {
+        DirectStatusCheck::Classic {
+            buffer,
+            len,
+            source_indices,
+        } => {
             let statuses =
                 checked_buffer_slice::<J2kClassicStatus>(buffer, *len, "classic direct status")?;
-            if let Some(status) = statuses
+            if let Some((status_index, status)) = statuses
                 .iter()
                 .copied()
-                .find(|status| status.code != J2K_CLASSIC_STATUS_OK)
+                .enumerate()
+                .find(|(_, status)| status.code != J2K_CLASSIC_STATUS_OK)
             {
-                return Err(decode_classic_status_error(status));
+                let source_index = source_indices
+                    .as_ref()
+                    .and_then(|indices| indices.get(status_index))
+                    .copied();
+                return Err(decode_classic_status_error_for_source(status, source_index));
             }
         }
         DirectStatusCheck::Ht {
@@ -164,28 +163,24 @@ fn validate_direct_status_contents(status_check: &DirectStatusCheck) -> Result<(
                 return Err(decode_ht_status_error_for_source(status, source_index));
             }
         }
-        DirectStatusCheck::Idwt(buffer) => {
-            let status = checked_buffer_read::<J2kIdwtStatus>(buffer, "IDWT direct status")?;
-            if status.code != J2K_IDWT_STATUS_OK {
-                return Err(decode_idwt_status_error(status));
-            }
-        }
-        DirectStatusCheck::Mct(buffer) => {
-            let status = checked_buffer_read::<J2kMctStatus>(buffer, "MCT direct status")?;
-            if status.code != J2K_MCT_STATUS_OK {
-                return Err(decode_mct_status_error(status));
-            }
-        }
     }
 
     Ok(())
 }
 
 pub(super) fn decode_classic_status_error(status: J2kClassicStatus) -> Error {
+    decode_classic_status_error_for_source(status, None)
+}
+
+fn decode_classic_status_error_for_source(
+    status: J2kClassicStatus,
+    source_index: Option<usize>,
+) -> Error {
+    let source = source_index.map_or_else(String::new, |index| format!(" for source {index}"));
     if status.code == J2K_CLASSIC_STATUS_UNSUPPORTED {
         return Error::MetalDirectFallback {
             message: format!(
-                "classic J2K Metal kernel unsupported classic kernel input (detail={})",
+                "classic J2K Metal kernel unsupported classic kernel input{source} (detail={})",
                 status.detail
             ),
             reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
@@ -196,28 +191,21 @@ pub(super) fn decode_classic_status_error(status: J2kClassicStatus) -> Error {
         _ => "unexpected classic kernel status",
     };
     Error::MetalKernel {
-        message: format!("classic J2K Metal kernel {kind} (detail={})", status.detail),
-    }
-}
-
-pub(super) fn decode_idwt_status_error(status: J2kIdwtStatus) -> Error {
-    let kind = match status.code {
-        J2K_IDWT_STATUS_FAIL => "decode failure",
-        _ => "unexpected IDWT kernel status",
-    };
-    Error::MetalKernel {
-        message: format!("J2K Metal IDWT kernel {kind} (detail={})", status.detail),
+        message: format!(
+            "classic J2K Metal kernel {kind}{source} (detail={})",
+            status.detail
+        ),
     }
 }
 
 pub(super) fn decode_mct_status_error(status: J2kMctStatus) -> Error {
     let kind = match status.code {
         J2K_MCT_STATUS_FAIL => "decode failure",
-        _ => "unexpected inverse MCT kernel status",
+        _ => "unexpected status",
     };
     Error::MetalKernel {
         message: format!(
-            "J2K Metal inverse MCT kernel {kind} (detail={})",
+            "J2K Metal color transform kernel {kind} (detail={})",
             status.detail
         ),
     }
@@ -270,6 +258,37 @@ mod ht_source_tests {
             Error::MetalKernel { message }
                 if message.contains("source 9") && message.contains("detail=17")
         ));
+    }
+}
+
+#[cfg(test)]
+mod mct_status_tests {
+    use super::{decode_mct_status_error, J2kMctStatus, J2K_MCT_STATUS_FAIL};
+
+    #[test]
+    fn shared_mct_status_error_does_not_mislabel_forward_transforms_as_inverse() {
+        let message = decode_mct_status_error(J2kMctStatus {
+            code: J2K_MCT_STATUS_FAIL,
+            detail: 7,
+            ..J2kMctStatus::default()
+        })
+        .to_string();
+
+        assert!(message.contains("color transform kernel decode failure"));
+        assert!(!message.contains("inverse MCT"));
+    }
+
+    #[test]
+    fn unexpected_shared_mct_status_is_transform_neutral() {
+        let message = decode_mct_status_error(J2kMctStatus {
+            code: u32::MAX,
+            detail: 11,
+            ..J2kMctStatus::default()
+        })
+        .to_string();
+
+        assert!(message.contains("color transform kernel unexpected status"));
+        assert!(!message.contains("inverse MCT"));
     }
 }
 

@@ -56,7 +56,6 @@ pub(crate) mod public_typed_helper_error_policy;
 pub(crate) mod release_policy;
 pub(crate) mod rust_function_policy;
 pub(crate) mod shader_policy;
-pub(crate) mod source_policy;
 pub(crate) mod suppression_policy;
 pub(crate) mod tilecodec_error_policy;
 pub(crate) mod transcode_api_policy;

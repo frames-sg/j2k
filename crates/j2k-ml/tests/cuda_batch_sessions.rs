@@ -34,9 +34,16 @@ fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
 }
 
 #[test]
+fn cuda_burn_decoder_construction_is_infallible_and_lazy() {
+    let constructor: fn(CudaDevice, BatchDecodeOptions) -> CudaBurnDecoder = CudaBurnDecoder::new;
+    let decoder = constructor(CudaDevice::new(0), BatchDecodeOptions::default());
+
+    assert_eq!(decoder.codec().session().submissions(), 0);
+}
+
+#[test]
 fn empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializing_work() {
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default())
-        .expect("retain the Burn CUDA primary context");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
 
     let prepared = decoder
         .prepare(Vec::<EncodedImage>::new())
@@ -66,8 +73,7 @@ fn cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_withou
     )
     .expect("prepare lenient CUDA Burn input");
     let image = prepared.groups()[0].images()[0].clone();
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default())
-        .expect("create lazy CUDA Burn decoder");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
 
     let regrouped = decoder
         .prepare_prepared_images(vec![image.clone()])
@@ -96,8 +102,7 @@ fn dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable() 
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-        .expect("create persistent CUDA Burn decoder");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
 
     let submitted = decoder
         .submit(vec![EncodedImage::full(Arc::clone(&encoded))])
@@ -125,8 +130,7 @@ fn burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches()
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-        .expect("create persistent CUDA Burn decoder");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![EncodedImage::full(encoded)])
         .expect("prepare reusable CUDA Burn batch");
@@ -201,8 +205,7 @@ fn cuda_burn_batch_continues_after_one_group_submit_failure() {
         return;
     }
     let valid_gray = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-        .expect("create persistent CUDA Burn decoder");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![
             EncodedImage::full(unsupported_classic_roi_rgb()),

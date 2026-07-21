@@ -2,19 +2,24 @@
 
 use j2k_core::{plan_ht_gpu_job_chunks, HtGpuJobChunkLimits, HtGpuJobPassBucket};
 use j2k_cuda_runtime::{
-    CudaHtj2kCleanupTarget, CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup,
-    CudaQueuedHtj2kCleanupGroup,
+    CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup, CudaQueuedHtj2kCleanupGroup,
+};
+
+mod kernel;
+mod materialize;
+mod targets;
+
+use self::{
+    kernel::enqueue_chunk_kernel,
+    materialize::{materialize_chunk_payload, select_chunk_jobs},
+    targets::build_chunk_targets,
 };
 
 use super::super::super::{
     cuda_error, CudaBufferPool, CudaComponentDecodeWork, CudaContext,
     CudaHtj2kDecodeTableResources, Error, CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
 };
-use super::super::pooled_cuda_buffer;
-use super::planning::{
-    chunk_requests, flatten_job_locations, job_at, pending_at,
-    sort_selected_jobs_for_coalesced_targets, Htj2kJobLocation, SelectedHtj2kChunkJob,
-};
+use super::planning::{chunk_requests, flatten_job_locations, Htj2kJobLocation};
 use super::{ChunkedHtj2kCleanup, Htj2kChunkJobIdentity};
 use crate::allocation::HostPhaseBudget;
 
@@ -144,10 +149,6 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
     clippy::too_many_arguments,
     reason = "one chunk materializes an explicitly bounded arena against its retained output owners"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one chunk keeps stable job identity, coalesced destination ownership, arena materialization, and queued completion atomic"
-)]
 fn enqueue_one_chunk(
     context: &CudaContext,
     tables: &CudaHtj2kDecodeTableResources,
@@ -166,59 +167,14 @@ fn enqueue_one_chunk(
         "CUDA bounded HTJ2K chunk materialization",
         live_host_bytes,
     )?;
-    let mut selected = budget.try_vec_with_capacity(entries.len())?;
-    for entry in entries {
-        let location =
-            *locations
-                .get(entry.original_job_index())
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
-        if location.source != entry.source_index() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            });
-        }
-        selected.push(SelectedHtj2kChunkJob {
-            location,
-            original_job_index: entry.original_job_index(),
-            source_index: entry.source_index(),
-        });
-    }
-    sort_selected_jobs_for_coalesced_targets(&mut selected);
-
-    let mut payload = budget.try_vec_with_capacity(payload_bytes)?;
-    let mut jobs = budget.try_vec_with_capacity(entries.len())?;
-    let mut identities = budget.try_vec_with_capacity(entries.len())?;
-    for selected in &selected {
-        let location = selected.location;
-        let mut job = *job_at(component_work, location)?;
-        let start =
-            usize::try_from(job.payload_offset).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        let end =
-            start
-                .checked_add(job.payload_len as usize)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
-        let bytes = shared_payload
-            .get(start..end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        job.payload_offset =
-            u64::try_from(payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        payload.extend_from_slice(bytes);
-        jobs.push(job);
-        identities.push(Htj2kChunkJobIdentity::new(
-            selected.original_job_index,
-            selected.source_index,
-        ));
-    }
+    let selected = select_chunk_jobs(entries, locations, &mut budget)?;
+    let (payload, jobs, identities) = materialize_chunk_payload(
+        shared_payload,
+        component_work,
+        &selected,
+        payload_bytes,
+        &mut budget,
+    )?;
     if payload.len() != payload_bytes {
         return Err(Error::UnsupportedCudaRequest {
             reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
@@ -227,59 +183,17 @@ fn enqueue_one_chunk(
     let resources = context
         .upload_htj2k_decode_resources_with_tables_and_pool(&payload, tables, pool)
         .map_err(cuda_error)?;
-    let mut targets = budget.try_vec_with_capacity(entries.len())?;
-    let mut start = 0usize;
-    while start < selected.len() {
-        let location = selected[start].location;
-        let mut end = start + 1;
-        while end < selected.len()
-            && selected[end].location.work == location.work
-            && selected[end].location.pending == location.pending
-        {
-            end += 1;
-        }
-        let pending = pending_at(component_work, location)?;
-        targets.push(CudaHtj2kCleanupTarget {
-            coefficients: pooled_cuda_buffer(
-                &component_work[location.work].bands[pending.band_index].buffer,
-            )?,
-            jobs: &jobs[start..end],
-            output_words: pending.output_words,
-        });
-        start = end;
-    }
-    // SAFETY: the returned guard retains uploaded descriptor owners; the
-    // group owns the shared status allocation, `SubmittedHtj2kChunk` retains
-    // payload/tables, and component_work owns every disjoint destination.
-    let cleanup = unsafe {
-        match bucket {
-            HtGpuJobPassBucket::CleanupOnly => context
-                .decode_htj2k_codeblocks_cleanup_dequantize_multi_enqueue_into_status_group(
-                    &resources,
-                    &targets,
-                    pool,
-                    budget.live_bytes(),
-                    status_group,
-                    status_offset,
-                ),
-            HtGpuJobPassBucket::SigProp | HtGpuJobPassBucket::MagRef => context
-                .decode_htj2k_codeblocks_cleanup_multi_enqueue_into_status_group(
-                    &resources,
-                    &targets,
-                    pool,
-                    budget.live_bytes(),
-                    status_group,
-                    status_offset,
-                ),
-        }
-    }
-    .map_err(cuda_error)?;
-    if bucket != HtGpuJobPassBucket::CleanupOnly {
-        // SAFETY: the cleanup guard retains its device descriptors, and the
-        // same default stream orders this dequantization before later IDWT.
-        unsafe { context.j2k_dequantize_queued_htj2k_cleanup_enqueue(&cleanup) }
-            .map_err(cuda_error)?;
-    }
+    let targets = build_chunk_targets(component_work, &selected, &jobs, &mut budget)?;
+    let cleanup = enqueue_chunk_kernel(
+        context,
+        &resources,
+        &targets,
+        bucket,
+        pool,
+        budget.live_bytes(),
+        status_group,
+        status_offset,
+    )?;
     Ok(SubmittedHtj2kChunk {
         cleanup,
         resources,

@@ -13,6 +13,11 @@ use super::{
 mod distinct_allocation;
 #[cfg(target_os = "macos")]
 mod distinct_batch;
+#[cfg(target_os = "macos")]
+mod status_sources;
+
+#[cfg(target_os = "macos")]
+use self::status_sources::{classic_status_sources, repeated_classic_status_sources};
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) use self::distinct_batch::{
@@ -217,17 +222,20 @@ pub(in crate::compute) struct ClassicRepeatedStoreDispatch<'a> {
 pub(in crate::compute) fn dispatch_classic_cleanup_batched_in_encoder(
     encoder: &ComputeCommandEncoderRef,
     dispatch: ClassicCleanupBatchDispatch<'_>,
+    source_indices: Option<Vec<usize>>,
 ) -> Result<(DirectStatusCheck, Option<Buffer>), Error> {
     let status_buffer = zeroed_shared_buffer(
         &dispatch.runtime.device,
         dispatch.job_count.max(1) * size_of::<J2kClassicStatus>(),
     )?;
     dispatch_classic_cleanup_batched_in_encoder_with_status(encoder, dispatch, &status_buffer);
+    let source_indices = classic_status_sources(dispatch.job_count, source_indices)?;
 
     Ok((
         DirectStatusCheck::Classic {
             buffer: status_buffer,
             len: dispatch.job_count,
+            source_indices: Some(source_indices),
         },
         None,
     ))
@@ -340,6 +348,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_repeated_batched_in_command_b
         total_job_count.max(1) * size_of::<J2kClassicStatus>(),
     )?;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
+    let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(pipeline);
@@ -390,6 +399,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_repeated_batched_in_command_b
     Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
         len: total_job_count,
+        source_indices: Some(source_indices),
     })
 }
 
@@ -415,6 +425,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in
         total_job_count.max(1) * size_of::<J2kClassicStatus>(),
     )?;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
+    let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.classic_cleanup_plain_dev_repeated_batched);
@@ -451,6 +462,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in
     Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
         len: total_job_count,
+        source_indices: Some(source_indices),
     })
 }
 

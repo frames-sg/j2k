@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use burn_core::tensor::backend::Backend;
 use j2k::{DecodeRequest, Downscale, PreparedBatch, Rect};
+use j2k_ml::BurnBatchDecode;
 
 pub(crate) fn requests(
     dimensions: (u32, u32),
@@ -52,6 +54,25 @@ pub(crate) fn require_prepared_success(prepared: &PreparedBatch) {
         1,
         "benchmark workload must prepare exactly one homogeneous group"
     );
+}
+
+pub(crate) fn require_burn_success<B: Backend>(decoded: BurnBatchDecode<B>) -> BurnBatchDecode<B> {
+    assert!(
+        decoded.errors.is_empty(),
+        "benchmark adapter returned indexed errors: {:?}",
+        decoded.errors
+    );
+    assert!(
+        decoded.group_errors.is_empty(),
+        "benchmark adapter returned group errors: {:?}",
+        decoded.group_errors
+    );
+    assert_eq!(
+        decoded.groups.len(),
+        1,
+        "benchmark workload must materialize exactly one Burn tensor group"
+    );
+    decoded
 }
 
 fn centered_roi((width, height): (u32, u32)) -> Rect {

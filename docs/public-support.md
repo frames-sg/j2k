@@ -28,6 +28,24 @@ documented non-Part-1/non-Part-15 `Out of scope` status.
 | external-speed-comparisons | Done | `j2k-compare`, `xtask adoption-benchmark`, `xtask adoption-report` | Existing fixture, batch, ROI, and encode comparator binaries | `cargo xtask bench-build`; adoption benchmark smoke rows | Speed reports must include codec, container, profile, operation, corpus, tool version, thread policy, batch size, skipped rows, and publication eligibility | OpenJPH and Kakadu remain optional context rows and must be labeled separately from default OpenJPEG/Grok/J2K rows. |
 | jpx_part2_deferred | Out of scope | N/A | N/A | N/A | N/A | JPX/Part 2 is explicitly Out of scope for the Part 1 plus Part 15 support claim unless required for standard JP2/JPH still-image correctness. |
 
+## Owned batch codec boundary
+
+The additive owned-batch codec accepts full, region, reduced, and
+region-plus-reduced requests and groups representable Gray, RGB, or RGBA output
+without padding. Its dense output types are exact `U8`, `U16`, or `I16` samples
+in NCHW or NHWC layout. Broader component counts, mixed component metadata,
+subsampled planes, and precision above 16 bits remain on the component-plane
+APIs. Explicit GPU routes fail with structured errors when an input is outside
+their retained-plan boundary; they do not stage decoded pixels through CPU as a
+fallback. Preparation failures remain indexed per input. Device codec-status
+errors that identify a job can name its original source, while
+command-buffer failures remain group-level and discard the affected dense group.
+
+The framework-specific contract and focused accelerator validation boundary are
+maintained in [`docs/j2k-ml.md`](j2k-ml.md). Dated hardware and throughput
+evidence is maintained separately in
+[`docs/benchmark-evidence.md`](benchmark-evidence.md).
+
 ## Required Local Gates
 
 Run the narrow gates while moving individual rows:

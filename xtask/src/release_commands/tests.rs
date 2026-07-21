@@ -15,6 +15,8 @@ mod file_boundaries;
 mod integrity;
 #[cfg(unix)]
 mod orchestration;
+#[cfg(unix)]
+mod path_patches;
 mod validation;
 
 #[cfg(unix)]

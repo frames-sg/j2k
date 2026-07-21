@@ -105,9 +105,7 @@ impl SubmittedDirectDestination {
             .iter()
             .map(|status| match status {
                 DirectStatusCheck::Classic { buffer, .. }
-                | DirectStatusCheck::Ht { buffer, .. }
-                | DirectStatusCheck::Idwt(buffer)
-                | DirectStatusCheck::Mct(buffer) => buffer.as_ptr() as usize,
+                | DirectStatusCheck::Ht { buffer, .. } => buffer.as_ptr() as usize,
             })
             .collect();
         let scratch = metadata

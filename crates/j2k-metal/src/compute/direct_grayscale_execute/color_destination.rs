@@ -5,18 +5,17 @@ use std::{mem::size_of, sync::Arc};
 use j2k::BatchLayout;
 use j2k_metal_support::{dispatch_3d_pipeline, MetalImageDestination};
 
-use crate::compute::abi::J2kNativeColorBatchStoreParams;
-
 use super::{
-    allocation::{allocate_direct_execution_metadata, DirectExecutionMetadata},
+    allocation::{
+        allocate_direct_execution_metadata, direct_ht_job_count, DirectExecutionMetadata,
+    },
     destination::{commit_direct_destination, DirectDestinationConsumerOrdering},
     encode_prepared_direct_component_plane_in_encoder, encode_stacked_direct_component_plane_batch,
     new_command_buffer, new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
     supports_stacked_direct_component_plane_batch, Buffer, DirectColorBatchCommandBuffers,
-    DirectComponentPlaneRequest, DirectHybridStageTimings, DirectTier1Mode, Error,
-    J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectColorPlan,
-    PreparedDirectGrayscalePlan, StackedDirectComponentPlaneBatchRequest,
-    SubmittedDirectDestination,
+    DirectComponentPlaneRequest, DirectHybridStageTimings, DirectTier1Mode, Error, MetalRuntime,
+    PixelFormat, PreparedDirectColorPlan, PreparedDirectGrayscalePlan,
+    StackedDirectComponentPlaneBatchRequest, SubmittedDirectDestination,
 };
 
 mod encoder;
@@ -59,7 +58,10 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
     )?;
     let mut metadata = allocate_direct_execution_metadata(
         step_count,
-        0,
+        direct_ht_job_count(
+            plans.iter().flat_map(|plan| plan.component_plans.iter()),
+            "J2K Metal exact RGB destination HT jobs",
+        )?,
         crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal exact RGB destination batch execution resources",
         ),

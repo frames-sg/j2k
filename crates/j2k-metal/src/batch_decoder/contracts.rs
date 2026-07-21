@@ -264,7 +264,7 @@ impl MetalBatchGroup {
         Some(self.resident_batch)
     }
 
-    /// Consume this group into metadata, indices, rectangles, warnings, and surfaces.
+    /// Consume this group into metadata, indices, rectangles, warnings, and views.
     pub fn into_parts(self) -> MetalBatchGroupParts {
         (
             self.info,
@@ -276,7 +276,7 @@ impl MetalBatchGroup {
     }
 }
 
-/// Successful resident groups plus indexed input preparation failures.
+/// Successful groups, indexed preparation failures, and homogeneous execution failures.
 #[derive(Debug)]
 pub struct MetalBatchDecodeResult {
     pub(super) groups: Vec<MetalBatchGroup>,

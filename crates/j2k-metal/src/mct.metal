@@ -35,14 +35,12 @@ struct J2kForwardIctParams {
 constant uint J2K_MCT_TRANSFORM_REVERSIBLE53 = 0;
 constant uint J2K_MCT_TRANSFORM_IRREVERSIBLE97 = 1;
 constant uint J2K_MCT_STATUS_OK = 0;
-constant uint J2K_MCT_STATUS_FAIL = 1;
 
 kernel void j2k_inverse_mct(
     device float *plane0 [[buffer(0)]],
     device float *plane1 [[buffer(1)]],
     device float *plane2 [[buffer(2)]],
     constant J2kInverseMctParams &params [[buffer(3)]],
-    device J2kMctStatus *status [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= params.len) {
@@ -68,10 +66,6 @@ kernel void j2k_inverse_mct(
         return;
     }
 
-    if (gid == 0) {
-        status->code = J2K_MCT_STATUS_FAIL;
-        status->detail = params.transform;
-    }
 }
 
 kernel void j2k_forward_rct(

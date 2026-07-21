@@ -126,10 +126,10 @@ not treated as NVIDIA performance evidence.
 The additive owned-batch API accepts `EncodedImage` values containing an
 `Arc<[u8]>` and one of `Full`, `Region`, `Reduced`, or `RegionReduced`. It
 prepares inputs concurrently, keeps unlike output shapes in separate groups
-without padding, and returns source indices and indexed failures. Representable
-Gray, RGB, and RGBA groups use exact native `U8`, `U16`, or `I16` storage in
-NCHW or NHWC order; float conversion and normalization are deliberately not
-codec operations.
+without padding, and returns source indices, indexed preparation failures, and
+homogeneous group execution failures. Representable Gray, RGB, and RGBA groups
+use exact native `U8`, `U16`, or `I16` storage in NCHW or NHWC order; float
+conversion and normalization are deliberately not codec operations.
 
 Preparation can retain either a `PreparedHtj2kPlan` or a
 `PreparedClassicPlan` with per-tile packet, code-block, and destination
@@ -142,25 +142,17 @@ supports them.
 `j2k-cuda` and `j2k-metal` own persistent accelerator sessions, resident
 output, and validated caller-owned destinations. Their direct final stores
 produce the requested native dtype and layout in the destination allocation,
-so decoded pixels do not make a GPU-to-CPU-to-GPU round trip. The validated
-Metal fast-batch path covers the single-tile classic JPEG 2000 and HTJ2K
-Gray/RGB/RGBA `U8`/`U16`/`I16` matrix for all four requests and both layouts.
-Metal hardware tests additionally cover exact multi-tile HT Gray12 and RGB8
-for all four requests, plus classic RGB8 full decode. CUDA has
-RTX 4070 hardware validation for the classic and HT Gray/RGB/RGBA
-`U8`/`U16`/`I16` fast-batch matrix, all four requests, both layouts, and
-codec-resident, external-destination, and Burn-direct output. The release lane
-also covers classic and HT multi-tile regressions, asynchronous drop and
-session reuse, and long-running reuse soaks. Reversible output is bit-exact;
-irreversible 9/7 output agrees with the CPU oracle within one integer LSB.
-Codestream RGN/maxshift reconstruction still fails closed on both GPU prepared
-routes; it never triggers CPU staging.
+so decoded pixels do not make a GPU-to-CPU-to-GPU round trip. The codec-wide
+support boundary is maintained in
+[docs/public-support.md](docs/public-support.md); the exact experimental Burn
+adapter boundary is maintained in [docs/j2k-ml.md](docs/j2k-ml.md). Dated
+hardware validation and performance results live only in
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
 `j2k-ml` is only the thin Burn allocation and synchronization adapter over
 these codec sessions. Readers such as `wsi-rs` remain responsible for finding
-and supplying encoded image bytes. The new HT-dominant publication throughput
-matrix has not yet been run, so these API and correctness guarantees are not a
-published speedup claim.
+and supplying encoded image bytes. Codec support and correctness do not by
+themselves constitute a speedup claim.
 
 ## Which crate should I use?
 
@@ -186,21 +178,14 @@ Use lower-level crates only when you need a specific integration point:
 
 The names `statumen` and `wsi-dicom` are not current package names.
 
-## Support Matrix
+## Support and evidence
 
-| Area | Current support | Notes |
-| --- | --- | --- |
-| JPEG 2000 Part 1 inspect | Raw J2K/J2C codestreams and JP2 still-image files | Unsupported or malformed input fails explicitly. |
-| JPEG 2000 Part 1 decode | Full-frame, ROI, scaled, row, tile-batch, and component-plane API surfaces | CPU is the portable correctness baseline. |
-| JPEG 2000 Part 1 encode | Native Rust encode APIs for codestream and JP2 output, including component-plane metadata | Stable public API is centered on `j2k`; adapter SPI remains experimental. |
-| HTJ2K Part 15 inspect/decode/encode | Raw HT codestreams and JPH still-image files, including cleanup and refinement paths | HT requests beyond the Part 15 coded-bitplane limit reject explicitly. |
-| Owned batch decode | Prepared or one-shot Gray/RGB/RGBA groups in NCHW/NHWC with exact `U8`, `U16`, or `I16` samples | Full, ROI, reduced, and ROI-plus-reduced requests are supported. CPU consumes retained single- and multi-tile plans. Metal has hardware validation for the single-tile matrix and selected exact multi-tile paths. CUDA has RTX 4070 validation for the full fast-batch dtype/request/layout matrix, resident and external destinations, Burn-direct output, and multi-tile regressions. GPU RGN/maxshift inputs fail closed. |
-| JP2/JPH metadata | IHDR/COLR/BPCC/PCLR/CMAP/CDEF/ICC still-image metadata paths covered by repo-local tests | Broader external JP2/JPH metadata parity remains publication evidence. |
-| Recode | J2K-to-HTJ2K coefficient recode where valid, pixel-preserving fallback otherwise | Palette/component-mapped fallbacks intentionally drop mapping metadata after resolving pixels. |
-| JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
-| JPEG-to-HTJ2K coefficient-domain transcode | CPU transcode primitives plus CUDA/Metal stage adapters | The public workflow requires HT block coding. |
-| CUDA acceleration | J2K-owned CUDA kernels with CUDA Oxide as the target device-kernel backend | Requires self-hosted CUDA validation before performance claims. |
-| Metal acceleration | macOS Metal adapters for selected decode, encode-stage, and transcode stages | Auto routing stays conservative and benchmark-gated. |
+The living codec support matrix is
+[docs/public-support.md](docs/public-support.md). The experimental Burn batch
+adapter has a narrower, explicit boundary in
+[docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
+qualifications are recorded separately in
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
 ## Fast Path For LLM-Assisted Use
 

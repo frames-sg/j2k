@@ -12,8 +12,8 @@ use crate::compute::direct_stacked_batch::validation::{
     checked_f32_instance_offset, CheckedF32BatchSpan,
 };
 use crate::compute::{
-    take_f32_scratch_buffer, Error, PreparedClassicSubBand, PreparedClassicSubBandGroup,
-    PreparedHtSubBand, PreparedHtSubBandGroup,
+    direct_grayscale_execute::extend_preallocated_retained_buffers, take_f32_scratch_buffer, Error,
+    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 
 use super::{DirectBandSlice, DirectScratchBuffer, RepeatedGrayscaleExecution};
@@ -38,7 +38,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 &output.buffer,
                 self.scratch_buffers,
             )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         for (instance_idx, bands) in self.band_sets.iter_mut().enumerate() {
             for member in &group.members {
@@ -74,7 +74,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 self.count,
                 &output.buffer,
             )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         for (instance_idx, bands) in self.band_sets.iter_mut().enumerate() {
             for member in &group.members {
@@ -138,7 +138,7 @@ impl RepeatedGrayscaleExecution<'_> {
             &output.buffer,
             self.scratch_buffers,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.retain_sub_band(
             output,
@@ -164,7 +164,7 @@ impl RepeatedGrayscaleExecution<'_> {
             self.count,
             &output.buffer,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.retain_sub_band(
             output,

@@ -55,22 +55,12 @@ struct J2kRepeatedIdwtSingleDecompositionParams {
     uint batch_count;
 };
 
-struct J2kIdwtStatus {
-    uint code;
-    uint detail;
-    uint reserved0;
-    uint reserved1;
-};
-
 struct J2kIdwt97StepParams {
     float coefficient;
     uint parity;
     uint reserved0;
     uint reserved1;
 };
-
-constant uint J2K_IDWT_STATUS_OK = 0;
-constant uint J2K_IDWT_STATUS_FAIL = 1;
 
 inline uint ceil_div2_u32(uint value) {
     return (value + 1u) >> 1u;

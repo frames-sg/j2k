@@ -370,7 +370,7 @@ fn dropped_pending_prepared_ht_rgb_group_reuses_session_and_prepared_plan() {
     .expect("completed RGB samples");
     assert_eq!(actual.as_slice(), expected.as_slice());
     assert_eq!(
-        decoder.submissions().expect("RGB submission count"),
+        decoder.submissions().expect("Metal batch submissions"),
         2,
         "a dropped pending group must retire exactly once and leave the session reusable"
     );

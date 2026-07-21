@@ -27,11 +27,20 @@ fn record_direct_tier1_input_buffer_prepare(runtime: &MetalRuntime) {
 #[cfg(not(test))]
 fn record_direct_tier1_input_buffer_prepare(_runtime: &MetalRuntime) {}
 
+#[cfg(test)]
+fn record_direct_tier1_input_buffer_runtime(runtime: &MetalRuntime) {
+    super::test_counters::record_direct_tier1_input_buffer_runtime(runtime);
+}
+
+#[cfg(not(test))]
+fn record_direct_tier1_input_buffer_runtime(_runtime: &MetalRuntime) {}
+
 pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
     mode: DirectTier1Mode,
 ) -> Result<Buffer, Error> {
+    record_direct_tier1_input_buffer_runtime(runtime);
     match mode {
         DirectTier1Mode::Metal => {
             record_direct_tier1_input_buffer_prepare(runtime);

@@ -83,3 +83,19 @@ fn metal_compute_tests_are_split_by_behavior() {
         "Metal compute test shell must remain a module inventory"
     );
 }
+
+#[test]
+fn referenced_plan_regression_has_focused_owner() {
+    let root = repo_root();
+    let shell = fs::read_to_string(root.join("crates/j2k-metal/src/compute/tests.rs"))
+        .expect("read Metal compute test shell");
+    let child =
+        fs::read_to_string(root.join("crates/j2k-metal/src/compute/tests/referenced_plan.rs"))
+            .expect("read Metal referenced-plan tests");
+    let symbol = "fn referenced_htj2k_payload_ranges_reconstruct_owned_direct_plan_bytes";
+    assert!(shell.contains("mod referenced_plan;"));
+    assert!(!shell.contains(symbol));
+    assert!(child.contains(symbol));
+    assert!(child.lines().count() < 100);
+    assert!(!child.lines().any(|line| line.trim() == "use super::*;"));
+}

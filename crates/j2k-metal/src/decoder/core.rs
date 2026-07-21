@@ -37,10 +37,14 @@ pub struct J2kDecoder<'a> {
     pub(super) native_prepared_direct_gray_plan:
         Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
+    pub(super) native_prepared_direct_gray_device_registry_id: Option<u64>,
+    #[cfg(target_os = "macos")]
     pub(super) native_direct_color_plan: Option<Arc<J2kDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_plan:
         Option<Arc<crate::compute::PreparedDirectColorPlan>>,
+    #[cfg(target_os = "macos")]
+    pub(super) native_prepared_direct_color_device_registry_id: Option<u64>,
 }
 
 impl<'a> J2kDecoder<'a> {
@@ -60,9 +64,13 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
+            native_prepared_direct_gray_device_registry_id: None,
+            #[cfg(target_os = "macos")]
             native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
+            #[cfg(target_os = "macos")]
+            native_prepared_direct_color_device_registry_id: None,
         })
     }
 
@@ -84,9 +92,13 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
+            native_prepared_direct_gray_device_registry_id: None,
+            #[cfg(target_os = "macos")]
             native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
+            #[cfg(target_os = "macos")]
+            native_prepared_direct_color_device_registry_id: None,
         })
     }
 

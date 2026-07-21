@@ -2,12 +2,18 @@
 
 //! HT/classic payload traversal and checked flattened-plan sizing.
 
-use super::{
-    size_of, BatchInfrastructureError, CpuFlattenedPayloadJob, CpuImagePayloadSpan,
-    CpuPayloadBucket, J2kCodestreamRange, J2kDirectCodeBlockIndex, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, PreparedBatchGroup,
-    PreparedImage, Vec, DEFAULT_MAX_HOST_ALLOCATION_BYTES, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+use alloc::vec::Vec;
+use core::mem::size_of;
+
+use j2k_core::{BatchInfrastructureError, DEFAULT_MAX_HOST_ALLOCATION_BYTES};
+use j2k_native::{
+    J2kCodestreamRange, J2kDirectCodeBlockIndex, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
 };
+
+use super::super::{PreparedBatchGroup, PreparedImage};
+use super::{CpuFlattenedPayloadJob, CpuImagePayloadSpan, CpuPayloadBucket};
+use crate::batch::allocation::J2K_BATCH_METADATA_ALLOWANCE_BYTES;
 
 pub(super) fn ht_group_requirements(
     group: &PreparedBatchGroup,

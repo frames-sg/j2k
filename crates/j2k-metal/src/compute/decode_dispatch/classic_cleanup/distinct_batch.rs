@@ -47,6 +47,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_bands_to_buffer_in_encoder
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
+                source_indices: Some(Vec::new()),
             },
         ));
     };
@@ -103,6 +104,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_band_groups_to_buffer_in_e
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
+                source_indices: Some(Vec::new()),
             },
         ));
     };
@@ -138,6 +140,7 @@ struct DistinctClassicBatch<'a> {
 
 fn append_distinct_classic_batch(
     metadata: &mut DistinctClassicMetadata,
+    source_index: usize,
     batch: DistinctClassicBatch<'_>,
 ) -> Result<(), Error> {
     let coded_base = u32::try_from(metadata.coded_data.len()).map_err(|_| Error::MetalKernel {
@@ -186,6 +189,7 @@ fn append_distinct_classic_batch(
                         .to_string(),
                 })?;
         metadata.jobs.push(adjusted);
+        metadata.source_indices.push(source_index);
     }
     Ok(())
 }
@@ -230,13 +234,14 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
         ),
     )?;
 
-    for batch in batches {
-        append_distinct_classic_batch(&mut metadata, batch)?;
+    for (source_index, batch) in batches.enumerate() {
+        append_distinct_classic_batch(&mut metadata, source_index, batch)?;
     }
     let DistinctClassicMetadata {
         coded_data,
         jobs,
         segments,
+        source_indices,
     } = metadata;
 
     dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, zero_fill_word_count)?;
@@ -248,6 +253,7 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
+                source_indices: Some(Vec::new()),
             },
         ));
     }
@@ -276,6 +282,7 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
             decoded: output,
             coefficients_scratch: &coefficients_scratch.buffer,
         },
+        Some(source_indices),
     )?;
     let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
     scratch_buffers.push(coefficients_scratch);

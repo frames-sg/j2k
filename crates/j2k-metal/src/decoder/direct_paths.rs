@@ -33,6 +33,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         prepare_fresh: $prepare_fresh:ident,
         plan_field: $plan_field:ident,
         prepared_field: $prepared_field:ident,
+        prepared_device_field: $prepared_device_field:ident,
         prepared_ty: $prepared_ty:path,
         cache_key: $cache_key:ident,
         cached: $cached:ident,
@@ -46,25 +47,41 @@ macro_rules! define_ensure_prepared_direct_plan {
             fmt: PixelFormat,
             session: &MetalBackendSession,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
+            let device_registry_id = session.device().registry_id();
+            if self.$prepared_field.is_some()
+                && self.$prepared_device_field != Some(device_registry_id)
+            {
+                self.$prepared_field = None;
+                self.$prepared_device_field = None;
+            }
             if self.$prepared_field.is_none() {
                 let cache_key = $cache_key(self.bytes, fmt);
                 if let Some((plan, prepared)) = $cached(session, cache_key)? {
                     self.$plan_field = Some(plan);
                     self.$prepared_field = Some(prepared);
+                    self.$prepared_device_field = Some(device_registry_id);
                 }
             }
-            self.$prepare_fresh(Some((session, fmt)))
+            self.$prepare_fresh(Some((session, fmt)), device_registry_id)
         }
 
         #[cfg(target_os = "macos")]
         fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
-            self.$prepare_fresh(None)
+            let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+            if self.$prepared_field.is_some()
+                && self.$prepared_device_field != Some(device_registry_id)
+            {
+                self.$prepared_field = None;
+                self.$prepared_device_field = None;
+            }
+            self.$prepare_fresh(None, device_registry_id)
         }
 
         #[cfg(target_os = "macos")]
         fn $prepare_fresh(
             &mut self,
             session_cache: Option<(&MetalBackendSession, PixelFormat)>,
+            device_registry_id: u64,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
             if self.$prepared_field.is_none() {
                 self.ensure_native_image()?;
@@ -95,6 +112,7 @@ macro_rules! define_ensure_prepared_direct_plan {
                 }
                 self.$plan_field = Some(plan);
                 self.$prepared_field = Some(prepared);
+                self.$prepared_device_field = Some(device_registry_id);
             }
             Ok(self.$prepared_field.clone())
         }
@@ -124,6 +142,7 @@ impl J2kDecoder<'_> {
         prepare_fresh: prepare_fresh_direct_gray_plan,
         plan_field: native_direct_gray_plan,
         prepared_field: native_prepared_direct_gray_plan,
+        prepared_device_field: native_prepared_direct_gray_device_registry_id,
         prepared_ty: crate::compute::PreparedDirectGrayscalePlan,
         cache_key: direct_gray_plan_cache_key,
         cached: cached_session_direct_gray_plan,
@@ -138,6 +157,7 @@ impl J2kDecoder<'_> {
         prepare_fresh: prepare_fresh_direct_color_plan,
         plan_field: native_direct_color_plan,
         prepared_field: native_prepared_direct_color_plan,
+        prepared_device_field: native_prepared_direct_color_device_registry_id,
         prepared_ty: crate::compute::PreparedDirectColorPlan,
         cache_key: direct_plan_cache_key,
         cached: cached_session_direct_color_plan,
@@ -396,7 +416,14 @@ impl J2kDecoder<'_> {
         {
             return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
         }
-        if self.native_direct_gray_plan.is_none() {
+        let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+        if self.native_prepared_direct_gray_plan.is_some()
+            && self.native_prepared_direct_gray_device_registry_id != Some(device_registry_id)
+        {
+            self.native_prepared_direct_gray_plan = None;
+            self.native_prepared_direct_gray_device_registry_id = None;
+        }
+        if self.native_prepared_direct_gray_plan.is_none() {
             self.ensure_native_image()?;
             let (Some(image), native_context) =
                 (self.native_image.as_ref(), &mut self.native_context)
@@ -414,6 +441,7 @@ impl J2kDecoder<'_> {
             )?);
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
+            self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
         }
         let Some(plan) = self.native_direct_gray_plan.as_ref() else {
             return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);

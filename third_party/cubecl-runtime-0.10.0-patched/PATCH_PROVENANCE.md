@@ -1,7 +1,15 @@
 # Patch provenance
 
-Source: `cubecl-runtime` 0.10.0 from crates.io, checksum
-`b68491bf5b3e997ae36bdc4e63b4ccd6d2f0e86b3b596a5d7a48d2b9e92622a0`.
+Source: `cubecl-runtime` 0.10.0 from crates.io.
+
+Pinned SHA-256 digests:
+
+- crates.io archive: `b68491bf5b3e997ae36bdc4e63b4ccd6d2f0e86b3b596a5d7a48d2b9e92622a0`
+- upstream `src/client.rs`: `dd25c67906e3db68d05d916d45234e4bdf20cd5b65ac1ad2b00a2ddcb520e85a`
+- patched local `src/client.rs`: `2ba96df7c895b975d9e171f3c2452fc61e887091af565384061bbd816d471e1b`
+- upstream `src/server/base.rs`: `c6292c16d5a73d7a1570776ffd25ec10afc339b942dbc5a693d8c791feb8ef5b`
+- patched local `src/server/base.rs`: `93ad450ed4aba9c39478be65afd428110118f6014dd080f79ced701612baafe2`
+- patched tree inventory, excluding this provenance file: `e7d20369aff883f81057356bce8b48eb1c33fb35195759d9e0fbd8e836021a35`
 
 Local change: add one hidden `ExternalWriteServer` hook and one unsafe
 `ComputeClient::external_write_stream` method. The hook resolves the normal
@@ -11,3 +19,10 @@ it is never part of a public J2K or Burn adapter API.
 
 Remove this patch when CubeCL exposes an equivalent external-write/event
 ordering contract.
+
+## Release approval
+
+- Status: pending maintainer review
+
+Publication remains blocked until a human reviewer adds their identity and a
+calendar-valid approval date.

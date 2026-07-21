@@ -11,9 +11,17 @@ mod workload;
 
 use std::{collections::HashSet, sync::Arc};
 
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+use burn_flex::{Flex as CpuBackend, FlexDevice as CpuDevice};
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+use burn_ndarray::NdArrayDevice::Cpu as CpuDevice;
 use input_selection::InputMode;
 use j2k::{BatchDecodeOptions, CpuBatchDecoder, DecodeRequest, Downscale};
+use j2k_ml::CpuBurnDecoder;
 use workload::{materialize_workload, WorkloadSpec, GENERATED_BATCH_SIZE};
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+type CpuBackend = burn_ndarray::NdArray<f32, i64, i8>;
 
 fn tiny_gray12() -> WorkloadSpec {
     WorkloadSpec::new("tiny_gray12", 16, 16, 1, 12, false)
@@ -84,6 +92,18 @@ fn benchmark_request_matrix_covers_all_owned_batch_requests() {
         }
     ));
     assert_eq!(decode_case::decoded_pixels_per_batch(16, 8), 128);
+}
+
+#[test]
+fn shared_burn_result_validation_accepts_a_complete_group() {
+    let workload = materialize_workload(tiny_gray12(), InputMode::Repeated);
+    let mut session = CpuBurnDecoder::<CpuBackend>::new(CpuDevice, BatchDecodeOptions::default());
+    let completed = session
+        .decode(workload.inputs(DecodeRequest::Full, 1))
+        .expect("decode benchmark input through CPU Burn adapter");
+
+    let completed = decode_case::require_burn_success(completed);
+    assert_eq!(completed.groups.len(), 1);
 }
 
 #[test]

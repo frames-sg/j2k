@@ -4,6 +4,8 @@ use std::mem::size_of;
 
 use metal::Buffer;
 
+use crate::compute::direct_grayscale_execute::extend_preallocated_retained_buffers;
+
 use super::super::direct_roi::BandRequiredRegion;
 use super::super::{DirectScratchBuffer, DirectStatusCheck, Error, J2kDirectBandId};
 
@@ -81,12 +83,12 @@ pub(super) fn retain_metal_tier1_output(
     retained_buffers: &mut Vec<Buffer>,
     status_checks: &mut Vec<DirectStatusCheck>,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
-) -> Buffer {
-    retained_buffers.extend(buffers);
+) -> Result<Buffer, Error> {
+    extend_preallocated_retained_buffers(retained_buffers, buffers)?;
     status_checks.push(status_check);
     let buffer = output.buffer.clone();
     scratch_buffers.push(output);
-    buffer
+    Ok(buffer)
 }
 
 pub(in super::super) fn lookup_direct_band_slice_entry(

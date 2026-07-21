@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use core::{mem::size_of, num::NonZeroUsize};
+use core::mem::size_of;
+use core::num::NonZeroUsize;
 use std::sync::Arc;
 
 use j2k_core::HtGpuJobChunkLimits;
 
-use super::{
-    prepared_metal_ht_execution, prepared_metal_ht_execution_fits_empty_cache,
-    prepared_metal_ht_input_key_host_bytes, Error, HtBatchInput, HtPayloadSource,
-    J2kHtCleanupBatchJob, MetalRuntime, PreparedHtExecutionOwner, PreparedMetalHtExecutionCache,
-    PreparedMetalHtInputKey, PreparedMetalHtPayloadKey, PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES,
-    PREPARED_PLAN_CACHE_MAX_HOST_BYTES,
-};
+use super::super::super::{HtBatchInput, HtPayloadSource, J2kHtCleanupBatchJob};
+use super::entry::{fits_empty_cache, input_key_host_bytes, PreparedMetalHtInputKey};
+use super::{prepared_metal_ht_execution, PreparedMetalHtExecutionCache};
 use crate::compute::test_counters::{
     ht_immutable_job_uploads_for_test, ht_immutable_payload_uploads_for_test,
     reset_ht_immutable_job_uploads_for_test, reset_ht_immutable_payload_uploads_for_test,
 };
+use crate::compute::{Error, MetalRuntime, PreparedHtExecutionOwner};
+use crate::session::{PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES, PREPARED_PLAN_CACHE_MAX_HOST_BYTES};
 
 fn cleanup_job(output_offset: u32) -> J2kHtCleanupBatchJob {
     J2kHtCleanupBatchJob {
@@ -73,12 +72,12 @@ fn host_pressure_evicts_the_oldest_prepared_execution_instead_of_bypassing_cache
 
     let metadata_bytes = cache
         .retained_host_bytes
-        .checked_sub(cache.entries[0].host_bytes)
+        .checked_sub(cache.entries[0].host_bytes())
         .expect("cache metadata accounting");
     let pressured_entry_bytes = PREPARED_PLAN_CACHE_MAX_HOST_BYTES
         .checked_sub(metadata_bytes)
         .expect("cache metadata fits host limit");
-    cache.entries[0].host_bytes = pressured_entry_bytes;
+    cache.entries[0].set_host_bytes_for_test(pressured_entry_bytes);
     cache.retained_host_bytes = PREPARED_PLAN_CACHE_MAX_HOST_BYTES;
 
     cache
@@ -96,24 +95,12 @@ fn host_pressure_evicts_the_oldest_prepared_execution_instead_of_bypassing_cache
 
 #[test]
 fn prepared_execution_key_weight_uses_allocated_capacity() {
-    let owner = Arc::new(PreparedHtExecutionOwner);
-    let mut inputs = Vec::with_capacity(8);
-    inputs.push(PreparedMetalHtInputKey {
-        owner,
-        payload: PreparedMetalHtPayloadKey::Contiguous {
-            data_ptr: 1,
-            data_len: 2,
-        },
-        jobs_ptr: 3,
-        jobs_len: 4,
-        source_index: 5,
-        output_base: 6,
-    });
+    let capacity = 8;
+    let len = 1;
 
     assert_eq!(
-        prepared_metal_ht_input_key_host_bytes(inputs.capacity(), inputs.len())
-            .expect("key weight"),
-        inputs.capacity() * size_of::<PreparedMetalHtInputKey>() + 2 * size_of::<usize>()
+        input_key_host_bytes(capacity, len).expect("key weight"),
+        capacity * size_of::<PreparedMetalHtInputKey>() + 2 * size_of::<usize>()
     );
 }
 
@@ -194,17 +181,13 @@ fn poisoned_prepared_execution_cache_reports_poisoned_state() {
 
 #[test]
 fn oversized_prepared_execution_is_not_cacheable() {
-    assert!(prepared_metal_ht_execution_fits_empty_cache(
+    assert!(fits_empty_cache(
         1,
         PREPARED_PLAN_CACHE_MAX_HOST_BYTES - 1,
         PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES,
     ));
-    assert!(!prepared_metal_ht_execution_fits_empty_cache(
-        1,
-        PREPARED_PLAN_CACHE_MAX_HOST_BYTES,
-        0,
-    ));
-    assert!(!prepared_metal_ht_execution_fits_empty_cache(
+    assert!(!fits_empty_cache(1, PREPARED_PLAN_CACHE_MAX_HOST_BYTES, 0,));
+    assert!(!fits_empty_cache(
         0,
         0,
         PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES + 1,

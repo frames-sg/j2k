@@ -68,3 +68,32 @@ fn native_direct_plan_storage_is_split_by_component_and_sub_band_ownership() {
         "native direct-plan sub-band payload construction must stay below its focused 425-line ratchet"
     );
 }
+
+#[test]
+fn referenced_direct_plan_tests_keep_focused_owners() {
+    let root = repo_root();
+    let direct_plan = fs::read_to_string(root.join("crates/j2k-native/src/direct_plan.rs"))
+        .expect("read j2k-native direct plan");
+    let referenced =
+        fs::read_to_string(root.join("crates/j2k-native/src/direct_plan/referenced_ht.rs"))
+            .expect("read referenced HT direct plan");
+    assert!(direct_plan.contains("mod referenced_ht;"));
+    assert!(direct_plan.contains("pub use referenced_ht::"));
+    assert!(!direct_plan.contains("pub enum J2kReferencedHtj2kPlan"));
+    assert!(referenced.contains("pub enum J2kReferencedHtj2kPlan"));
+    assert!(!referenced
+        .lines()
+        .any(|line| line.trim() == "use super::*;"));
+    assert!(direct_plan.lines().count() < 250);
+
+    let tests = fs::read_to_string(root.join("crates/j2k-native/src/tests.rs"))
+        .expect("read native tests shell");
+    let workspace = fs::read_to_string(root.join("crates/j2k-native/src/tests/workspace_reuse.rs"))
+        .expect("read native workspace-reuse tests");
+    let symbol = "fn decoder_workspace_reuses_component_owners_across_distinct_input_lifetimes";
+    assert!(tests.contains("mod workspace_reuse;"));
+    assert!(!tests.contains(symbol));
+    assert!(workspace.contains(symbol));
+    assert!(workspace.lines().count() < 300);
+    assert!(!workspace.lines().any(|line| line.trim() == "use super::*;"));
+}

@@ -5,24 +5,24 @@ use burn_wgpu::{Wgpu, WgpuDevice};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage, PreparedBatch};
 use j2k_metal::{MetalBatchDecodeResult, MetalBatchDecoder};
-use j2k_ml::{BurnBatchDecode, CpuBurnDecoder, MetalBurnDecoder};
+use j2k_ml::{CpuBurnDecoder, MetalBurnDecoder};
 
 #[path = "batch_decode_metal/instrumentation.rs"]
 mod instrumentation;
 mod metal_telemetry;
+#[path = "batch_decode_metal/profile.rs"]
+mod profile;
 mod support;
 
 use instrumentation::ensure_criterion_instrumentation_disabled;
-use metal_telemetry::{
-    capture_burn_telemetry, capture_codec_telemetry, capture_staged_telemetry,
-    print_metal_telemetry, MetalTelemetryCase, MetalTelemetryRow,
-};
 use support::{
-    decode_case::{decoded_pixels_per_batch, requests, require_prepared_success},
+    decode_case::{
+        decoded_pixels_per_batch, requests, require_burn_success, require_prepared_success,
+    },
     input_selection::InputMode,
     process_policy::ProcessMode,
     workload::{materialize_workload, Workload, WorkloadSpec},
-    workload_catalog::{workload_specs, BATCH_SIZES, LOW_BATCH_SIZES},
+    workload_catalog::{workload_specs, BATCH_SIZES},
 };
 
 fn main() {
@@ -37,11 +37,7 @@ fn main() {
             bench_burn_direct(&mut criterion, &workload_specs, input_mode);
             criterion.final_summary();
         }
-        ProcessMode::Profile => {
-            let mut telemetry = profile_codec_resident(&workload_specs, input_mode);
-            telemetry.extend(profile_burn_direct(&workload_specs, input_mode));
-            print_metal_telemetry(&telemetry);
-        }
+        ProcessMode::Profile => profile::run(&workload_specs, input_mode),
     }
 }
 
@@ -82,11 +78,11 @@ fn bench_codec_resident(
                     &inputs,
                     |bencher, inputs| {
                         bencher.iter(|| {
-                            std::hint::black_box(
-                                one_shot
-                                    .prepare(std::hint::black_box(inputs.clone()))
-                                    .expect("prepare Metal codec batch"),
-                            )
+                            let prepared = one_shot
+                                .prepare(std::hint::black_box(inputs.clone()))
+                                .expect("prepare Metal codec batch");
+                            require_prepared_success(&prepared);
+                            std::hint::black_box(prepared)
                         });
                     },
                 );
@@ -234,148 +230,6 @@ fn bench_burn_direct(
     group.finish();
 }
 
-fn profile_codec_resident(
-    workload_specs: &[WorkloadSpec],
-    input_mode: InputMode,
-) -> Vec<MetalTelemetryRow> {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
-    };
-    let mut telemetry = Vec::new();
-
-    for &spec in workload_specs {
-        let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = MetalBatchDecoder::system_default_with_options(options)
-            .expect("create Metal codec profile session");
-        let mut prepared_decoder = MetalBatchDecoder::system_default_with_options(options)
-            .expect("create prepared Metal codec profile session");
-        for (request_name, request, output_pixels) in requests(workload.dimensions, true) {
-            for &batch_size in LOW_BATCH_SIZES {
-                let inputs = workload.inputs(request, batch_size);
-                capture_codec_telemetry(
-                    &mut telemetry,
-                    MetalTelemetryCase::new(
-                        "codec_resident",
-                        "one_shot",
-                        &workload,
-                        request_name,
-                        batch_size,
-                        output_pixels,
-                        0,
-                    ),
-                    &mut one_shot,
-                    |decoder| {
-                        decoder
-                            .decode_batch(inputs.clone())
-                            .map(require_codec_success)
-                    },
-                );
-                let prepared = prepared_decoder
-                    .prepare(inputs.clone())
-                    .expect("prepare Metal codec profile batch");
-                require_prepared_success(&prepared);
-                capture_codec_telemetry(
-                    &mut telemetry,
-                    MetalTelemetryCase::new(
-                        "codec_resident",
-                        "prepared",
-                        &workload,
-                        request_name,
-                        batch_size,
-                        output_pixels,
-                        0,
-                    ),
-                    &mut prepared_decoder,
-                    |decoder| {
-                        decoder
-                            .decode_prepared(&prepared)
-                            .map(require_codec_success)
-                    },
-                );
-            }
-        }
-    }
-    telemetry
-}
-
-fn profile_burn_direct(
-    workload_specs: &[WorkloadSpec],
-    input_mode: InputMode,
-) -> Vec<MetalTelemetryRow> {
-    let options = BatchDecodeOptions::default();
-    let mut telemetry = Vec::new();
-
-    for &spec in workload_specs {
-        let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = MetalBurnDecoder::system_default(options)
-            .expect("create paired Metal Burn profile session");
-        let mut prepared_decoder = MetalBurnDecoder::system_default(options)
-            .expect("create prepared paired Metal Burn profile session");
-        let device = one_shot.device().clone();
-        let mut staged = CpuBurnDecoder::<Wgpu>::new(device.clone(), options);
-        for (request_name, request, output_pixels) in requests(workload.dimensions, true) {
-            for &batch_size in LOW_BATCH_SIZES {
-                let inputs = workload.inputs(request, batch_size);
-                capture_staged_telemetry(
-                    &mut telemetry,
-                    MetalTelemetryCase::new(
-                        "burn_staged",
-                        "cpu_upload",
-                        &workload,
-                        request_name,
-                        batch_size,
-                        output_pixels,
-                        1,
-                    ),
-                    || {
-                        let decoded = staged
-                            .decode(inputs.clone())
-                            .expect("staged Metal telemetry decode");
-                        let decoded = require_burn_success(decoded);
-                        <Wgpu as Backend>::sync(&device)
-                            .expect("synchronize staged Metal telemetry completion");
-                        decoded
-                    },
-                );
-                capture_burn_telemetry(
-                    &mut telemetry,
-                    MetalTelemetryCase::new(
-                        "burn_direct",
-                        "one_shot",
-                        &workload,
-                        request_name,
-                        batch_size,
-                        output_pixels,
-                        0,
-                    ),
-                    &mut one_shot,
-                    |decoder| decoder.decode(inputs.clone()).map(require_burn_success),
-                );
-                let prepared = prepared_decoder
-                    .prepare(inputs.clone())
-                    .expect("prepare Metal Burn profile batch");
-                require_prepared_success(&prepared);
-                capture_burn_telemetry(
-                    &mut telemetry,
-                    MetalTelemetryCase::new(
-                        "burn_direct",
-                        "prepared",
-                        &workload,
-                        request_name,
-                        batch_size,
-                        output_pixels,
-                        0,
-                    ),
-                    &mut prepared_decoder,
-                    |decoder| decoder.decode_prepared(&prepared).map(require_burn_success),
-                );
-            }
-        }
-    }
-    telemetry
-}
-
 fn bench_staged_burn(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     workload: &Workload,
@@ -472,25 +326,6 @@ fn require_codec_success(decoded: MetalBatchDecodeResult) -> MetalBatchDecodeRes
         decoded.groups().len(),
         1,
         "benchmark workload must decode to exactly one homogeneous group"
-    );
-    decoded
-}
-
-fn require_burn_success(decoded: BurnBatchDecode<Wgpu>) -> BurnBatchDecode<Wgpu> {
-    assert!(
-        decoded.errors.is_empty(),
-        "benchmark adapter returned indexed errors: {:?}",
-        decoded.errors
-    );
-    assert!(
-        decoded.group_errors.is_empty(),
-        "benchmark adapter returned group errors: {:?}",
-        decoded.group_errors
-    );
-    assert_eq!(
-        decoded.groups.len(),
-        1,
-        "benchmark workload must materialize exactly one Burn tensor group"
     );
     decoded
 }

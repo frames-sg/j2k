@@ -8,6 +8,8 @@ use std::{
 
 use super::{repo_root, sha256_hex};
 
+mod path_patches;
+
 #[test]
 fn patched_block_dependency_has_pinned_provenance_and_documented_abi_delta() {
     const ARCHIVE_SHA256: &str = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a";

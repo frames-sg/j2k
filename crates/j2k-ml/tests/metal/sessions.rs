@@ -50,7 +50,13 @@ fn persistent_metal_burn_decoder_writes_independent_ht_directly() {
             expected.iter().chain(expected).copied().collect::<Vec<_>>()
         );
     }
-    assert!(decoder.codec().submissions().expect("submission count") >= 2);
+    assert!(
+        decoder
+            .codec()
+            .submissions()
+            .expect("Metal batch submissions")
+            >= 2
+    );
 }
 
 #[test]

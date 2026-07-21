@@ -78,7 +78,7 @@ impl GrayscaleGroupEncoder<'_> {
         )?;
         if let Some(sources) = self.source_indices {
             for status in &mut self.metadata.status_checks[status_start..] {
-                status.remap_ht_sources(sources)?;
+                status.remap_sources(sources)?;
             }
         }
         Ok(())
@@ -103,7 +103,7 @@ impl GrayscaleGroupEncoder<'_> {
             )?;
             let source_index = self.source_indices.map_or(index, |indices| indices[index]);
             for status in &mut self.metadata.status_checks[status_start..] {
-                status.remap_ht_source(source_index)?;
+                status.remap_source(source_index)?;
             }
         }
         Ok(())
@@ -164,7 +164,7 @@ fn encode_stacked_grayscale_destination(
             message: "J2K Metal stacked grayscale batch count exceeds u32".to_string(),
         })?,
         max_value,
-        u8_scale: scale.u8_scale,
+        u8_scale: 1.0,
         u16_scale: scale.u16_scale,
     };
     let pipeline = match fmt {

@@ -103,16 +103,17 @@ no transfer or allocation. Those internal codec resources remain allowed.
 ## Current exact accelerator boundary
 
 The accelerator adapters are deliberately narrower than the portable codec
-contract. For every supported row below, `all requests` means `Full`, `Region`,
-`Reduced`, and `RegionReduced`, and both NCHW and NHWC Burn tensors are
-supported. Unsupported inputs return a structured group error; they never fall
-back through CPU pixels.
+contract. The table describes the supported adapter contract: `all requests`
+means `Full`, `Region`, `Reduced`, and `RegionReduced`, and both NCHW and NHWC
+Burn tensors are supported. It is not a claim that every Cartesian cell has a
+separate batch-greater-than-one hardware test. Unsupported inputs return a
+structured group error; they never fall back through CPU pixels.
 
 | Output | CPU | CUDA | Metal |
 | --- | --- | --- | --- |
-| Gray `U8`/`U16`/`I16` | Classic and HT, all requests | Hardware-validated classic/HT, all requests | Hardware-validated single-tile classic/HT, all requests; exact multi-tile subset below |
-| RGB `U8`/`U16`/`I16` | Classic and HT, all requests | Hardware-validated classic/HT, all requests | Hardware-validated single-tile classic/HT, all requests; exact multi-tile subset below |
-| RGBA `U8`/`U16`/`I16` | Classic and HT, all requests | Hardware-validated classic/HT, all requests | Hardware-validated single-tile classic/HT, all requests |
+| Gray `U8`/`U16`/`I16` | Classic and HT, all requests | Release-validated classic/HT, all requests | Supported single-tile classic/HT, all requests; focused hardware cases and exact multi-tile subset below |
+| RGB `U8`/`U16`/`I16` | Classic and HT, all requests | Release-validated classic/HT, all requests | Supported single-tile classic/HT, all requests; focused hardware cases and exact multi-tile subset below |
+| RGBA `U8`/`U16`/`I16` | Classic and HT, all requests | Release-validated classic/HT, all requests | Supported single-tile classic/HT, all requests; focused hardware cases |
 
 The canonical `cargo xtask release-cuda` lane passes on the RTX 4070 runner.
 Its codec targets validate classic and HT Gray/RGB/RGBA `U8`/`U16`/`I16`, all
@@ -126,11 +127,13 @@ support boundary, not a throughput advantage. An explicit CUDA request still
 fails rather than staging through CPU if runtime validation, device identity,
 or retained-plan validation does not succeed.
 
-Metal hardware tests are bit-exact for independent multi-tile HT Gray12 and
-RGB8 external output across full, region, reduced, and region-plus-reduced
-requests, and for generated multi-tile classic RGB8 full external output. This
-supplements the hardware-validated single-tile matrix; it does not imply that
-every multi-tile dtype/request/layout combination has been run.
+Focused Metal hardware cases collectively exercise classic and HT inputs,
+`U8`/`U16`/`I16`, Gray/RGB/RGBA, all four requests, both layouts, resident
+output, and external destinations. This is not a Cartesian
+batch-greater-than-one validation of every dtype, request, and layout
+combination. Independent multi-tile HT Gray12 and RGB8 external output is
+bit-exact across full, region, reduced, and region-plus-reduced requests;
+generated multi-tile classic RGB8 is covered for full external output.
 
 CUDA and Metal external destinations support both NCHW and NHWC. A resident
 image-surface view is exposed only for NHWC because `Surface` denotes
@@ -141,11 +144,13 @@ maxshift declared by a codestream RGN marker remains unsupported on both GPU
 prepared routes.
 
 The GPU sessions retain successful homogeneous groups when a different group
-fails. Device HT jobs keep their original source identity through pass
-bucketing and chunk splitting, so a status record that identifies a failing job
-can name its source. When a lower-level failure cannot identify one image, the
-entire dense group is discarded and its group error preserves every affected
-source index. Partially written tensors are never returned.
+fails. Device classic and HT codec jobs retain their original source identity
+through batch flattening; HT jobs additionally retain it through pass bucketing
+and chunk splitting. A codec-status record that identifies a failed job can
+name that original source. A Metal command-buffer completion failure cannot be
+safely assigned to one image, so it remains a group-level failure: the dense
+group is discarded and its group error preserves every affected source index.
+Partially written tensors are never returned.
 
 Aggregate HT descriptor and compressed arenas are split into bounded,
 pass-homogeneous chunks without changing the public output grouping. A single
@@ -172,8 +177,10 @@ the selected runner requires ([issue
 fix under review ([pull request
 #43](https://github.com/sarah-quinones/gemm/pull/43)). This substitution is
 test-only; the generic `j2k-ml` library API and its release dependencies do not
-select either CPU backend. Criterion group names include `flex` or
-`ndarray_arm_linux`; results from those groups are not cross-backend
+select either CPU backend. The CPU benchmark group IDs are
+`j2k_owned_batch_codec_cpu/input_{distinct|repeated}` and
+`j2k_owned_batch_burn_cpu/input_{distinct|repeated}`. Record the selected host
+backend separately in benchmark provenance; results are not cross-backend
 comparisons.
 
 Run `cargo bench -p j2k-ml --bench batch_decode --features cpu` for the
@@ -186,9 +193,10 @@ and native-output matrix. Each accelerator harness also retains a
 `staged_cpu_upload_pixels` row so direct device decode can be compared with the
 supported persistent CPU-decode-and-upload path on the same Burn backend.
 Run the hardware matrices with `cargo xtask j2k-ml-bench-cuda` and
-`cargo xtask j2k-ml-bench-metal`. Criterion reports decoded pixels per second;
+`cargo xtask j2k-ml-bench-metal`. Decode rows report decoded spatial pixels per second;
 divide by the decoded pixels per image for images per second or by 1,000,000
-for megapixels per second. The default `J2K_ML_BATCH_INPUT_MODE=distinct`
+for megapixels per second. `prepare_images` rows report images per second. The
+default `J2K_ML_BATCH_INPUT_MODE=distinct`
 generates 64 deterministic, content-distinct codestreams per workload outside
 the measured region and retains only one materialized workload at a time.
 `J2K_ML_BATCH_INPUT_MODE=repeated` is an explicitly labeled broadcast/reuse
@@ -206,10 +214,10 @@ Synchronous Metal Burn-direct decode has already completed and validated the
 codec work before returning, so it does not add a redundant `Wgpu::sync()`;
 the staged CPU-upload row retains that synchronization.
 
-No publication throughput run has yet been recorded for the new batch
-architecture. A July 19, 2026 local M4 Pro diagnostic run exercised the full
-Metal matrix and is recorded in `docs/benchmark-evidence.md`; it does not
-replace a pinned external adoption run. The CUDA harness emits codec-runtime H2D/D2H, kernel,
+Publication status, dated machines, and local results are maintained in
+[`docs/benchmark-evidence.md`](benchmark-evidence.md); generated local fixtures
+do not replace a pinned external adoption run. The CUDA harness emits
+codec-runtime H2D/D2H, kernel,
 runtime-owned allocation, live/high-water memory, pool, event, and host-wait
 counters in `cuda_telemetry_v2` rows for one completed probe per resident or
 Burn-direct case. Probe throughput and counter deltas describe the same
@@ -222,10 +230,12 @@ and retained-pool counters plus input mode. Its decoded-transfer,
 final-destination, group-wait, and consumer-synchronization columns are
 prefixed `asserted_`: they disclose route contracts checked by focused tests,
 not sampled hardware counters. The codec submission delta is prefixed
-`measured_` and comes from session diagnostics. Neither profile
-harness performs an unrecorded warmup: the first one-shot decode is cold, and
-the first prepared decode includes its immutable-arena upload. Both backends must record
-device-specific direct-versus-staged results before either route is described
-as faster than the portable or staged path. Metal remains explicit pending a
-corrected content-distinct run; the historical July 19 batch-greater-than-one
-rows are qualified in `docs/benchmark-evidence.md`.
+`measured_` and comes from session diagnostics.
+
+The pre-timing Metal telemetry snapshot performs runtime and pipeline
+initialization before the timed interval. No decode is used as an unrecorded
+warmup. The first one-shot decode remains cold for prepared-plan and
+execution-arena caches, and the first prepared decode includes its
+immutable-arena upload. Both backends must record device-specific
+direct-versus-staged results before either route is described as faster than
+the portable or staged path.

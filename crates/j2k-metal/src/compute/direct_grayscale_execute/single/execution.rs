@@ -13,12 +13,12 @@ use super::super::{
     encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
     encode_prepared_classic_sub_band_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
-    encode_prepared_ht_sub_band_to_buffer_in_encoder, idwt_input_windows_from_slices,
-    j2k_scalar_pack_params, lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    prepared_idwt_output_len, prepared_idwt_params, take_f32_scratch_buffer, BandRequiredRegion,
-    Buffer, DirectBandSlice, DirectScratchBuffer, DirectStatusCheck, Error,
-    GrayStoreDestinationRequest, IdwtSubBandBuffers, J2kGrayStoreParams, J2kStoreParams,
-    J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscaleStep,
+    encode_prepared_ht_sub_band_to_buffer_in_encoder, extend_preallocated_retained_buffers,
+    idwt_input_windows_from_slices, j2k_scalar_pack_params, lookup_direct_band_slice,
+    lookup_direct_band_slice_entry, prepared_idwt_output_len, prepared_idwt_params,
+    take_f32_scratch_buffer, BandRequiredRegion, Buffer, DirectBandSlice, DirectScratchBuffer,
+    DirectStatusCheck, Error, GrayStoreDestinationRequest, IdwtSubBandBuffers, J2kGrayStoreParams,
+    J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscaleStep,
     SingleIdwtDispatch, Surface,
 };
 use crate::compute::{
@@ -60,7 +60,7 @@ impl SingleGrayscaleExecution<'_> {
             &output.buffer,
             self.scratch_buffers,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
@@ -95,7 +95,7 @@ impl SingleGrayscaleExecution<'_> {
             group,
             &output.buffer,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
@@ -131,7 +131,7 @@ impl SingleGrayscaleExecution<'_> {
             &output.buffer,
             self.scratch_buffers,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
@@ -158,7 +158,7 @@ impl SingleGrayscaleExecution<'_> {
             sub_band,
             &output.buffer,
         )?;
-        self.retained_buffers.extend(buffers);
+        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
@@ -203,11 +203,9 @@ impl SingleGrayscaleExecution<'_> {
                 );
             }
             J2kWaveletTransform::Irreversible97 => {
-                self.status_checks.push(
-                    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
-                        self.encoder,
-                        dispatch,
-                    )?,
+                dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
+                    self.encoder,
+                    dispatch,
                 );
             }
         }
@@ -252,7 +250,11 @@ impl SingleGrayscaleExecution<'_> {
                 output_y: store.output_y,
                 addend: store.addend,
                 max_value,
-                u8_scale: scale.u8_scale,
+                u8_scale: if self.destination.is_some() {
+                    1.0
+                } else {
+                    scale.u8_scale
+                },
                 u16_scale: scale.u16_scale,
             };
             if let Some(destination) = self.destination {

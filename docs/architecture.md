@@ -2,7 +2,7 @@
 
 This document records current workspace boundaries. It is not a roadmap.
 
-The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. Native decode settings retain a lenient default for compatibility, but `DecodeSettings::strict()` is the fail-closed constructor and public `j2k` decode outcomes surface `J2kDecodeWarning::LenientDecodeMode` when lenient tolerance is enabled. The workspace README records the public support and codec API policy.
+The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. Native decode settings retain a lenient default for compatibility, but `DecodeSettings::strict()` is the fail-closed constructor and public `j2k` decode outcomes surface `J2kDecodeWarning::LenientDecodeMode` when lenient tolerance is enabled. The living support boundary is maintained in [`docs/public-support.md`](public-support.md).
 
 The codec support boundary is JPEG 2000 Part 1 codestreams, JP2 still-image
 files, HTJ2K Part 15 codestreams, and JPH still-image files. JPX / JPEG 2000
@@ -97,12 +97,13 @@ consumption without a normal-path context synchronization.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
 pipeline loading, checked buffer access, and route-label helpers. It is the
-sole raw Objective-C resource-construction boundary: nil is checked before any
-foreign handle is formed, and autoreleased command resources are retained into
-owned Rust handles before return. Codec-specific kernels stay in codec adapter
-crates. The Burn bridge pairs wgpu and codec sessions on the same underlying
-Metal device and lends the retained Burn-owned `MTLBuffer` suballocation to the
-codec's validated final destination.
+codec-side raw Objective-C resource-construction boundary: nil is checked
+before any codec resource handle is formed, and autoreleased command resources
+are retained into owned Rust handles before return. Codec-specific kernels stay
+in codec adapter crates. The `j2k-ml` Metal bridge is the separate audited raw-handle adoption boundary
+for retained wgpu HAL device, queue, and buffer pointers. It pairs wgpu and
+codec sessions on the same underlying Metal device and lends the retained
+Burn-owned `MTLBuffer` suballocation to the codec's validated final destination.
 
 HTJ2K is the optimized batch priority; classic JPEG 2000 shares the public
 grouping, destination, and completion contracts and remains regression-covered.
@@ -122,18 +123,9 @@ assembly copy. `CudaBatchDecoder` and `MetalBatchDecoder` likewise retain their
 device context, streams or queues, modules or pipelines, lookup tables, events,
 staging owners, and scratch pools across submissions.
 
-The hardware-validated direct Metal batch matrix is single-tile classic JPEG
-2000 and HTJ2K Gray/RGB/RGBA output in native `U8`, `U16`, or `I16`, for
-`Full`, `Region`, `Reduced`, and `RegionReduced` requests in NCHW or NHWC
-destinations. Additional Metal tests validate exact multi-tile HT Gray12/RGB8
-for all four requests and classic RGB8 full output. CUDA
-has RTX 4070 hardware validation for the classic and HT Gray/RGB/RGBA
-`U8`/`U16`/`I16` fast-batch matrix, all four requests, both layouts, and
-codec-resident, external-destination, and Burn-direct output. Its release lane
-also covers classic and HT multi-tile regressions, asynchronous drop and
-session reuse, and repeated-batch soaks. Reversible output is bit-exact;
-irreversible 9/7 output agrees with the CPU oracle within one integer LSB.
-These are correctness/support statements, not benchmark evidence.
+The exact experimental framework-adapter boundary and its focused correctness
+evidence are maintained in [`docs/j2k-ml.md`](j2k-ml.md). Architecture does not
+duplicate the hardware validation matrix.
 
 HT entropy work is flattened across images, bucketed by cleanup-only,
 SigProp, and MagRef work, and split into bounded pass-homogeneous chunks. Chunk
@@ -147,14 +139,7 @@ GPU prepared decode remains fail-closed for nonzero ROI maxshift from codestream
 RGN markers and for shapes outside a backend's retained-plan boundary.
 Subsampled components, mixed precision or signedness, arbitrary component
 counts, and precision above 16 bits remain on the CPU component-plane APIs or
-return a structured fast-batch representability error. No HT-dominant
-publication throughput run has yet been recorded for this new batch
-architecture. A July 19, 2026 local M4 Pro diagnostic run covers the complete
-HT-dominant Gray/RGB/RGBA matrix. Burn-direct prepared Metal decode was faster
-than CPU decode plus upload for 52 of 64 batch-32 cases and all 64 batch-64
-cases, while many batch-1 and batch-8 cases remained slower. That historical
-harness used identical encoded content for every batch greater than one;
-Metal RGB/RGBA additionally used decode-once broadcast. Those batch-32/64
-counts are therefore not a content-distinct acceptance baseline. Backend
-selection stays explicit; the local run is implementation evidence, not an
-adoption-facing publication claim.
+return a structured fast-batch representability error. Backend selection stays
+explicit until the requested shape has appropriate evidence. Dated machines,
+measurements, and publication qualifications are owned by
+[`docs/benchmark-evidence.md`](benchmark-evidence.md).

@@ -77,11 +77,13 @@ impl ColorGroupEncoder<'_> {
             self.compute_encoder,
             &planes,
             &self.plans[0],
-            self.fmt,
-            self.layout,
-            self.plans.len(),
-            broadcast,
-            0,
+            super::store::NativeColorStoreConfig {
+                format: self.fmt,
+                layout: self.layout,
+                image_count: self.plans.len(),
+                broadcast_planes: broadcast,
+                destination_image_index: 0,
+            },
             self.destination,
         )?;
         self.remap_coalesced_status(status_start, broadcast)
@@ -144,11 +146,11 @@ impl ColorGroupEncoder<'_> {
         if broadcast {
             let source = self.source_indices.map_or(0, |indices| indices[0]);
             for status in &mut self.metadata.status_checks[start..] {
-                status.remap_ht_source(source)?;
+                status.remap_source(source)?;
             }
         } else if let Some(sources) = self.source_indices {
             for status in &mut self.metadata.status_checks[start..] {
-                status.remap_ht_sources(sources)?;
+                status.remap_sources(sources)?;
             }
         }
         Ok(())
@@ -184,18 +186,20 @@ impl ColorGroupEncoder<'_> {
                 self.compute_encoder,
                 &planes,
                 plan,
-                self.fmt,
-                self.layout,
-                1,
-                false,
-                image_index,
+                super::store::NativeColorStoreConfig {
+                    format: self.fmt,
+                    layout: self.layout,
+                    image_count: 1,
+                    broadcast_planes: false,
+                    destination_image_index: image_index,
+                },
                 self.destination,
             )?;
             let source = self
                 .source_indices
                 .map_or(image_index, |indices| indices[image_index]);
             for status in &mut self.metadata.status_checks[status_start..] {
-                status.remap_ht_source(source)?;
+                status.remap_source(source)?;
             }
         }
         Ok(())

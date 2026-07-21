@@ -16,11 +16,11 @@ use super::{
     encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
     encode_repeated_mct_rgb8_to_surfaces_in_command_buffer, flattened_hybrid_cpu_tier1_enabled,
     metal_profile_stages_enabled, record_hybrid_stacked_component_batch,
-    record_stacked_component_batch, repeated_shared_direct_color_plan_count,
-    should_flatten_hybrid_cpu_tier1_color_batch, DirectColorBatchCommandBuffers,
-    DirectHybridStageTimings, DirectScratchBuffer, DirectStatusCheck, DirectTier1Mode, Error,
-    FlattenedCpuTier1Cache, MetalRuntime, NativeColorSpace, PixelFormat, PlaneStage,
-    PreparedDirectColorPlan, PreparedDirectGrayscalePlan, Surface,
+    record_stacked_component_batch, should_flatten_hybrid_cpu_tier1_color_batch,
+    DirectColorBatchCommandBuffers, DirectHybridStageTimings, DirectScratchBuffer,
+    DirectStatusCheck, DirectTier1Mode, Error, FlattenedCpuTier1Cache, MetalRuntime,
+    NativeColorSpace, PixelFormat, PlaneStage, PreparedDirectColorPlan,
+    PreparedDirectGrayscalePlan, Surface,
 };
 
 mod command_submission;
@@ -37,8 +37,11 @@ pub(super) use self::resources::{
     lookup_direct_band_slice, lookup_direct_band_slice_entry,
     lookup_repeated_direct_band_layout_entry, DirectBandSlice,
 };
-use self::validation::plan_stacked_component_batch;
 pub(super) use self::validation::supports_stacked_direct_component_plane_batch;
+use self::validation::{
+    plan_stacked_component_batch, preflight_stacked_mct_rgb8_color_batch,
+    StackedColorBatchPreflight,
+};
 
 #[cfg(target_os = "macos")]
 pub(super) fn signed_sample_bias(bit_depth: u8) -> f32 {
@@ -121,7 +124,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
             "J2K MetalDirect color MCT plane span overflow",
         )?;
         let encode_started = metal_profile_stages_enabled().then(Instant::now);
-        status_checks.push(dispatch_inverse_mct_buffers_in_command_buffer(
+        dispatch_inverse_mct_buffers_in_command_buffer(
             runtime,
             command_buffer,
             [&planes[0], &planes[1], &planes[2]],
@@ -132,7 +135,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
                 signed_sample_bias(plan.bit_depths[1]),
                 signed_sample_bias(plan.bit_depths[2]),
             ],
-        )?);
+        )?;
         if let Some(started) = encode_started {
             stage_timings.metal_mct_pack_encode += elapsed_us(started);
         }
@@ -186,10 +189,6 @@ pub(super) struct StackedDirectColorBatchRequest<'a> {
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "stacked batch validation, submission, and fallback form one atomic route"
-)]
 pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
     request: StackedDirectColorBatchRequest<'_>,
 ) -> Result<Option<Vec<Surface>>, Error> {
@@ -204,37 +203,21 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
         status_checks,
         scratch_buffers,
     } = request;
-    let Some(first) = plans.first() else {
+    if plans.is_empty() {
         return Ok(Some(Vec::new()));
-    };
-    let repeated_count = repeated_shared_direct_color_plan_count(plans);
-    if plans.len() <= 1
-        || !first.mct
-        || first.component_plans.len() != 3
-        || !plans.iter().all(|plan| {
-            plan.mct
-                && plan.dimensions == first.dimensions
-                && plan.bit_depths == first.bit_depths
-                && plan.transform == first.transform
-                && plan.component_plans.len() == 3
-        })
-    {
-        return Ok(None);
     }
-    let execution_plans = if repeated_count.is_some() {
-        &plans[..1]
-    } else {
-        plans
+    let Some(preflight) = preflight_stacked_mct_rgb8_color_batch(plans)? else {
+        return Ok(None);
     };
 
     let flattened_cpu_tier1_cache = if tier1_mode == DirectTier1Mode::CpuUpload
         && (force_flattened_cpu_tier1
             || flattened_hybrid_cpu_tier1_enabled()
-            || should_flatten_hybrid_cpu_tier1_color_batch(execution_plans))
+            || should_flatten_hybrid_cpu_tier1_color_batch(preflight.execution_plans))
     {
         Some(build_flattened_cpu_tier1_cache(
             runtime,
-            execution_plans,
+            preflight.execution_plans,
             stage_timings,
             retained_buffers,
         )?)
@@ -243,28 +226,13 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
     };
 
     let mut stacked_planes = Vec::with_capacity(3);
-    for component_idx in 0..3 {
-        let mut reference_budget = crate::batch_allocation::BatchMetadataBudget::new(
-            "J2K Metal stacked component plan references",
-        );
-        let mut component_plan_refs = reference_budget.try_vec(
-            execution_plans.len(),
-            "J2K Metal stacked component plan reference slots",
-        )?;
-        component_plan_refs.extend(
-            execution_plans
-                .iter()
-                .map(|plan| &plan.component_plans[component_idx]),
-        );
-        if !supports_stacked_direct_component_plane_batch(&component_plan_refs) {
-            return Ok(None);
-        }
-        stacked_planes.push(encode_stacked_direct_component_plane_batch(
-            StackedDirectComponentPlaneBatchRequest {
+    for (component_idx, component_plan_refs) in preflight.component_plan_refs.iter().enumerate() {
+        let plane =
+            encode_stacked_direct_component_plane_batch(StackedDirectComponentPlaneBatchRequest {
                 runtime,
                 command_buffers,
                 compute_encoder: None,
-                plans: &component_plan_refs,
+                plans: component_plan_refs,
                 component_idx,
                 flattened_cpu_tier1_cache: flattened_cpu_tier1_cache.as_ref(),
                 tier1_mode,
@@ -272,48 +240,68 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
                 retained_buffers,
                 status_checks,
                 scratch_buffers,
-            },
-        )?);
+            })?;
+        if plane.dimensions != preflight.first.dimensions
+            || plane.count != preflight.execution_plans.len()
+        {
+            return Err(Error::MetalStateInvariant {
+                state: "J2K Metal stacked color execution",
+                reason: "encoded component plane diverged from the completed preflight",
+            });
+        }
+        stacked_planes.push(plane);
     }
 
-    if !stacked_planes
-        .iter()
-        .all(|plane| plane.dimensions == first.dimensions && plane.count == execution_plans.len())
-    {
-        return Ok(None);
-    }
+    encode_stacked_mct_rgb8_surfaces(
+        runtime,
+        command_buffers,
+        &preflight,
+        &stacked_planes,
+        stage_timings,
+    )
+    .map(Some)
+}
 
+fn encode_stacked_mct_rgb8_surfaces(
+    runtime: &MetalRuntime,
+    command_buffers: DirectColorBatchCommandBuffers<'_>,
+    preflight: &StackedColorBatchPreflight<'_>,
+    stacked_planes: &[StackedDirectComponentPlane],
+    stage_timings: &mut DirectHybridStageTimings,
+) -> Result<Vec<Surface>, Error> {
+    let [plane0, plane1, plane2] = stacked_planes else {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K Metal stacked color execution",
+            reason: "completed preflight did not produce exactly three component planes",
+        });
+    };
     let encode_started = metal_profile_stages_enabled().then(Instant::now);
-    let mct_plane_buffers = [
-        &stacked_planes[0].buffer,
-        &stacked_planes[1].buffer,
-        &stacked_planes[2].buffer,
-    ];
-    let surfaces = if let Some(count) = repeated_count {
+    let mct_plane_buffers = [&plane0.buffer, &plane1.buffer, &plane2.buffer];
+    let surfaces = if let Some(count) = preflight.repeated_count {
         encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
             runtime,
             command_buffers.mct_pack,
             mct_plane_buffers,
-            first.dimensions,
+            preflight.first.dimensions,
             count,
-            first.bit_depths,
-            first.transform,
+            preflight.first.bit_depths,
+            preflight.first.transform,
         )?
     } else {
         encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
             runtime,
             command_buffers.mct_pack,
             mct_plane_buffers,
-            first.dimensions,
-            execution_plans.len(),
-            first.bit_depths,
-            first.transform,
+            preflight.first.dimensions,
+            preflight.execution_plans.len(),
+            preflight.first.bit_depths,
+            preflight.first.transform,
         )?
     };
     if let Some(started) = encode_started {
         stage_timings.metal_mct_pack_encode += elapsed_us(started);
     }
-    Ok(Some(surfaces))
+    Ok(surfaces)
 }
 
 #[cfg(target_os = "macos")]

@@ -120,9 +120,8 @@ mod direct_status;
 use self::direct_status::validate_direct_status;
 #[cfg(target_os = "macos")]
 use self::direct_status::{
-    decode_classic_status_error, decode_ht_status_error, decode_idwt_status_error,
-    decode_mct_status_error, retire_direct_status_checks, DirectStatusCheck,
-    DirectStatusRetirementMode,
+    decode_classic_status_error, decode_ht_status_error, decode_mct_status_error,
+    retire_direct_status_checks, DirectStatusCheck, DirectStatusRetirementMode,
 };
 #[cfg(target_os = "macos")]
 mod direct_tier1;
@@ -231,7 +230,8 @@ use self::runtime::{
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::runtime::{
-    runtime_initialization_error, with_runtime_for_session, MetalRuntime,
+    current_runtime_device_registry_id, runtime_initialization_error, with_runtime_for_session,
+    MetalRuntime,
 };
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use j2k_metal_support::MetalSupportError;

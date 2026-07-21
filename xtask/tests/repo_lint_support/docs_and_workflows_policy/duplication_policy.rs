@@ -247,11 +247,20 @@ fn metal_direct_sub_band_group_scan_uses_shared_helper() {
     let direct_prepare =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
             .expect("read Metal direct prepare facade");
-    let classic =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/classic.rs"))
-            .expect("read Metal classic direct preparation");
-    let ht = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/ht.rs"))
-        .expect("read Metal HT direct preparation");
+    let classic = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/compute/direct_prepare/classic.rs",
+            "crates/j2k-metal/src/compute/direct_prepare/classic/grouped.rs",
+        ],
+    );
+    let ht = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/compute/direct_prepare/ht.rs",
+            "crates/j2k-metal/src/compute/direct_prepare/ht/grouped.rs",
+        ],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("Metal compute prepare module", &compute)
@@ -282,8 +291,13 @@ fn metal_direct_sub_band_group_scan_uses_shared_helper() {
 #[test]
 fn metal_hybrid_region_scaled_cache_uses_shared_scope() {
     let root = repo_root();
-    let hybrid =
-        fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs")).expect("read hybrid");
+    let hybrid = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/hybrid/cache.rs",
+            "crates/j2k-metal/src/hybrid/planning.rs",
+        ],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("Metal hybrid region-scaled cache scope", &hybrid)

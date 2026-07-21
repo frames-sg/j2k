@@ -48,6 +48,11 @@ fn missing_release_contract_files_fail_with_path_context() {
         std::fs::create_dir_all(&release_root).expect("create release boundary root");
         if case == "provenance" {
             std::fs::write(
+                release_root.join("Cargo.toml"),
+                "[patch.crates-io]\nmissing = { path = \"third_party/missing-patched\" }\n",
+            )
+            .expect("write path-patch manifest fixture");
+            std::fs::write(
                 release_root.join("CHANGELOG.md"),
                 "# Changelog\n\n## [0.7.0] - 2026-07-12\n",
             )

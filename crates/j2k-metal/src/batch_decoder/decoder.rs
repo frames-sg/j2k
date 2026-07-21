@@ -231,7 +231,7 @@ impl MetalBatchDecoder {
         self.submit_prepared(&prepared)
     }
 
-    /// Decode one homogeneous shared codec group using strict session defaults.
+    /// Decode one homogeneous shared codec group using the preparation policy captured by the group.
     pub fn decode_prepared_group(
         &mut self,
         group: &PreparedBatchGroup,

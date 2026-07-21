@@ -24,8 +24,8 @@ pub(super) fn validate_consumer_registry_ids(
 }
 
 impl MetalBatchDecoder {
-    /// Decode one prepared homogeneous Gray or unsigned RGB group directly
-    /// into one caller-owned Metal allocation.
+    /// Decode one prepared homogeneous Gray, RGB, or RGBA group with native U8, U16, or I16 samples
+    /// directly into one caller-owned Metal allocation.
     ///
     /// The group allocation is bound once at its validated base. Per-image
     /// offsets are applied by the final-store kernel, so tightly packed Gray8

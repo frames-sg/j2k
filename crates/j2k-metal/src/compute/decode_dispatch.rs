@@ -12,15 +12,13 @@ use crate::profile_env::{
 use super::abi::{
     J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus,
     J2kGrayStoreParams, J2kHtCleanupBatchJob, J2kHtRepeatedBatchParams, J2kHtStatus,
-    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kIdwtStatus, J2kInverseMctParams,
-    J2kMctStatus, J2kRepeatedGrayStoreParams, J2kRepeatedIdwtSingleDecompositionParams,
-    J2kRepeatedStoreParams, J2kStoreParams, J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH,
-    J2K_CLASSIC_STATUS_OK, J2K_IDWT_STATUS_OK, J2K_MCT_STATUS_OK,
+    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kInverseMctParams,
+    J2kRepeatedGrayStoreParams, J2kRepeatedIdwtSingleDecompositionParams, J2kRepeatedStoreParams,
+    J2kStoreParams, J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
 };
 use super::{
-    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_classic_status_error, decode_idwt_status_error, decode_mct_status_error, j2k_u32_param,
-    new_command_buffer, new_compute_command_encoder, new_shared_buffer,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, decode_classic_status_error,
+    j2k_u32_param, new_command_buffer, new_compute_command_encoder, new_shared_buffer,
     take_classic_coefficients_scratch_buffer, take_classic_states_scratch_buffer, with_runtime,
     zeroed_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
     DirectIdwtCommandBuffers, DirectScratchBuffer, DirectStatusCheck, Error, HtCodeBlockDecodeJob,

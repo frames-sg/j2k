@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::repo_root;
+use crate::repo_lint_support::repo_root;
 
 #[test]
 fn cuda_batch_decoder_api_tests_use_focused_real_modules() {

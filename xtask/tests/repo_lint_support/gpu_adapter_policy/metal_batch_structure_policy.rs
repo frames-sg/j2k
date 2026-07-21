@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::*;
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
 
 #[test]
 fn metal_batch_heuristics_live_in_focused_module() {
@@ -158,7 +158,7 @@ fn metal_batch_routes_share_session_aware_implementations() {
     let direct_paths =
         fs::read_to_string(root.join("crates/j2k-metal/src/decoder/direct_paths.rs"))
             .expect("read j2k-metal direct paths");
-    let hybrid = fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs"))
+    let hybrid = fs::read_to_string(root.join("crates/j2k-metal/src/hybrid/batch.rs"))
         .expect("read j2k-metal hybrid routes");
     let routes = fs::read_to_string(root.join("crates/j2k-metal/src/batch/routes.rs"))
         .expect("read j2k-metal batch routes");
@@ -206,4 +206,70 @@ fn metal_batch_routes_share_session_aware_implementations() {
         1,
         "region-scaled grayscale validation must live in one session-aware route"
     );
+}
+
+#[test]
+fn metal_multitile_tests_are_split_by_pixel_contract() {
+    let root = repo_root();
+    let test_root = root.join("crates/j2k-metal/tests/device/multitile_color");
+    let shell = fs::read_to_string(root.join("crates/j2k-metal/tests/device/multitile_color.rs"))
+        .expect("read Metal multi-tile test shell");
+    for module in ["batch_inputs", "classic", "gray12", "rgb", "signed"] {
+        assert!(shell.contains(&format!("mod {module};")));
+        assert!(test_root.join(format!("{module}.rs")).exists());
+    }
+    assert!(shell.lines().count() < 25);
+    for symbol in [
+        "fn independent_openjph_multitile_gray12_decodes_exactly_on_metal(",
+        "fn independent_openjph_multitile_rgb_decodes_exactly_on_metal(",
+        "fn classic_multitile_rgb8_decodes_exactly_on_metal(",
+    ] {
+        assert!(!shell.contains(symbol));
+    }
+    assert!(fs::read_to_string(test_root.join("gray12.rs"))
+        .expect("read Gray12 multi-tile tests")
+        .contains("fn independent_openjph_multitile_gray12_decodes_exactly_on_metal("));
+    assert!(fs::read_to_string(test_root.join("rgb.rs"))
+        .expect("read RGB multi-tile tests")
+        .contains("fn independent_openjph_multitile_rgb_decodes_exactly_on_metal("));
+}
+
+#[test]
+fn hybrid_tests_have_a_focused_external_owner() {
+    let root = repo_root();
+    let facade = fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs"))
+        .expect("read Metal hybrid facade");
+    let tests = fs::read_to_string(root.join("crates/j2k-metal/src/hybrid/tests.rs"))
+        .expect("read Metal hybrid tests");
+    assert!(facade.contains("#[cfg(test)]\nmod tests;"));
+    assert!(!facade.contains("mod tests {"));
+    assert!(!facade.contains("fn explicit_session_region_scaled_plan_builds_use_session_runtime"));
+    for symbol in [
+        "fn explicit_session_gray_region_scaled_plans_use_session_runtime",
+        "fn explicit_session_color_region_scaled_plans_use_session_runtime",
+        "fn explicit_session_repeated_color_plan_uses_session_runtime",
+    ] {
+        assert!(tests.contains(symbol), "hybrid tests must own {symbol}");
+    }
+    assert!(facade.lines().count() < 725);
+    assert!(tests.lines().count() < 350);
+    assert!(!tests.lines().any(|line| line.trim() == "use super::*;"));
+}
+
+#[test]
+fn metal_queue_ordering_tests_are_split_by_contract() {
+    let root = repo_root();
+    let test_root = root.join("crates/j2k-metal/src/batch_decoder/queue_ordering_tests");
+    let shell =
+        fs::read_to_string(root.join("crates/j2k-metal/src/batch_decoder/queue_ordering_tests.rs"))
+            .expect("read Metal queue-ordering test shell");
+
+    assert!(shell.lines().count() < 25);
+    for module in ["fixtures", "exact_queue", "cross_queue", "lifecycle"] {
+        assert!(shell.contains(&format!("mod {module};")));
+        let source = fs::read_to_string(test_root.join(format!("{module}.rs")))
+            .unwrap_or_else(|error| panic!("read Metal queue-ordering {module}: {error}"));
+        assert!(source.lines().count() < 250);
+        assert!(!source.lines().any(|line| line.trim() == "use super::*;"));
+    }
 }

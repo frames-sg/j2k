@@ -63,7 +63,7 @@ fn metal_snapshot(decoder: &MetalBatchDecoder) -> MetalTelemetrySnapshot {
     MetalTelemetrySnapshot {
         submissions: decoder
             .submissions()
-            .expect("Metal telemetry submission count"),
+            .expect("Metal batch submission counter"),
         pools: decoder
             .backend_session()
             .buffer_pool_diagnostics()

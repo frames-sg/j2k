@@ -20,7 +20,7 @@ pub(super) fn assert_contract(sources: &CudaDecoderSources, finish: &str) {
         ]),
         PatternCheck::new(
             "CUDA color store aggregate host ownership",
-            &sources.color_batch_execution,
+            &sources.color_batch_execution_completion_batch_store,
         )
         .required(&[
             "j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(",
@@ -29,7 +29,7 @@ pub(super) fn assert_contract(sources: &CudaDecoderSources, finish: &str) {
     ]);
     assert_eq!(
         sources
-            .color_batch_execution
+            .color_batch_execution_completion
             .matches("CudaQueuedIdwtBatch::resolve_optional_after_completed_work(")
             .count()
             + finish

@@ -214,6 +214,53 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn decoder_local_prepared_binding_is_revalidated_for_session_device() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let pixels = j2k_test_support::gradient_u8(32, 32, 1);
+    let bytes = j2k_native::encode(
+        &pixels,
+        32,
+        32,
+        1,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode classic grayscale device-identity fixture");
+    let session = MetalBackendSession::new(device);
+    let expected_device = session.device().registry_id();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let first = decoder
+        .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
+        .expect("first prepared plan")
+        .expect("supported first prepared plan");
+
+    decoder.native_prepared_direct_gray_device_registry_id = Some(u64::MAX);
+    let second = decoder
+        .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
+        .expect("device-scoped prepared plan")
+        .expect("supported device-scoped prepared plan");
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(
+        decoder.native_prepared_direct_gray_device_registry_id,
+        Some(expected_device)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn repeated_session_hits_share_native_and_prepared_plan_owners() {
     if !should_run_metal_runtime() {
         return;

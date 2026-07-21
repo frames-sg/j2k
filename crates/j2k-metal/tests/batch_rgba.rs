@@ -48,22 +48,6 @@ fn assert_native_samples(actual: &[u8], expected: &CpuBatchSamples) {
     }
 }
 
-fn completed_resident_batch_bytes(group: &j2k_metal::MetalBatchGroup) -> Vec<u8> {
-    let resident = group
-        .resident_batch()
-        .expect("codec-owned decode must expose its dense resident allocation");
-    // SAFETY: the group is visible only after codec completion and this test
-    // performs one readback without submitting a writer or retaining the handle.
-    unsafe {
-        j2k_metal_support::checked_buffer_read_vec::<u8>(
-            resident.metal_buffer(),
-            resident.byte_offset(),
-            resident.byte_len(),
-        )
-        .expect("read completed dense resident RGBA batch")
-    }
-}
-
 fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
     wrap_rgba_container(
         codestream,
@@ -361,23 +345,36 @@ fn prepared_htj2k_rgba_nchw_resident_group_is_exact_without_surface_mislabeling(
     let result = decoder
         .decode_prepared(&prepared)
         .expect("decode NCHW resident RGBA group");
-    assert!(result.errors().is_empty());
-    assert!(result.group_errors().is_empty());
-    assert_eq!(result.groups().len(), 1);
-    let group = &result.groups()[0];
-    assert_eq!(group.info().color, BatchColor::Rgba);
-    assert_eq!(group.info().layout, BatchLayout::Nchw);
-    assert!(
-        group.surfaces().is_empty(),
-        "planar RGBA bytes must not be mislabeled as interleaved Surface values"
-    );
+    let (mut groups, errors, group_errors) = result.into_parts();
+    assert!(errors.is_empty());
+    assert!(group_errors.is_empty());
+    assert_eq!(groups.len(), 1);
+    let group = groups.pop().expect("one NCHW RGBA group");
     let resident = group
         .resident_batch()
-        .expect("NCHW RGBA group must retain its dense allocation");
+        .expect("completed RGBA group has resident Metal storage")
+        .clone();
+    let (info, source_indices, decoded_rects, warnings, surfaces) = group.into_parts();
+    assert_eq!(info.color, BatchColor::Rgba);
+    assert_eq!(info.layout, BatchLayout::Nchw);
+    assert_eq!(source_indices, [0, 1]);
+    assert_eq!(decoded_rects.len(), 2);
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        surfaces.is_empty(),
+        "planar RGBA bytes must not be mislabeled as interleaved Surface values"
+    );
     assert_eq!(resident.image_count(), 2);
     assert_eq!(resident.image_stride_bytes(), resident.byte_len() / 2);
-    assert_native_samples(
-        &completed_resident_batch_bytes(group),
-        expected.groups()[0].samples(),
-    );
+    // SAFETY: the group is visible only after codec completion, and this test
+    // performs one readback without submitting a writer or retaining the handle.
+    let actual = unsafe {
+        j2k_metal_support::checked_buffer_read_vec::<u8>(
+            resident.metal_buffer(),
+            resident.byte_offset(),
+            resident.byte_len(),
+        )
+        .expect("read consumed dense resident RGBA batch")
+    };
+    assert_native_samples(&actual, expected.groups()[0].samples());
 }

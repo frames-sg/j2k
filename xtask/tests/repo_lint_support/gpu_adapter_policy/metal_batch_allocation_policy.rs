@@ -251,6 +251,7 @@ fn j2k_direct_batch_metadata_preflights_nested_live_sets() {
             "crates/j2k-metal/src/compute/direct_stacked_batch/command_submission/ht_tier1.rs",
             "crates/j2k-metal/src/compute/direct_stacked_batch/repeated_grayscale/execution.rs",
             "crates/j2k-metal/src/compute/direct_stacked_batch/resources.rs",
+            "crates/j2k-metal/src/compute/direct_stacked_batch/validation.rs",
             "crates/j2k-metal/src/compute/lossless_prepare/batch_item.rs",
             "crates/j2k-metal/src/compute/lossless_prepare/single.rs",
             "crates/j2k-metal/src/compute/resident_tier1/counter_validation/validate.rs",

@@ -14,6 +14,8 @@ This register keeps two evidence sets separate:
 - **Current candidate:** the untagged `0.7.4` remediation worktree. Candidate
   results apply only to the exact locally reviewed source-freeze revision and
   do not retroactively change the `0.7.3` baseline or authorize publication.
+  The worktree has changed since the prior evidence run, so every candidate
+  gate remains pending until the final frozen-source matrix is recorded.
 
 Any unqualified “candidate” below means `0.7.4`; any unqualified “baseline”
 means the published `v0.7.3` tag.
@@ -59,6 +61,7 @@ or testability.
 
 | Priority | Owner | Current issue | Completion evidence |
 |---|---|---|---|
+| P1 | Final qualification | Complete-diff review, final gates, and performance measurements must wait for the source freeze | One source-aware final matrix; only invalidated gates rerun after narrow fixes |
 | P1 | Hardware | Linux NVIDIA compile/runtime and `wsi-rs` resident-surface validation are unavailable on the current macOS host | Fail-closed `cargo xtask release-cuda` and patched `wsi-rs` run on a Linux NVIDIA runner |
 
 No item authorizes a public API break, a dependency expansion, a relaxed
@@ -145,28 +148,28 @@ pass.
 
 | Gate | Published `v0.7.3` baseline evidence | Current `0.7.4` candidate evidence |
 |---|---|---|
-| `cargo xtask fmt` | pass | pass |
-| `cargo xtask clippy` | pass | pass |
-| `cargo xtask clippy-strict` | pass | pass |
-| `cargo xtask test` including macOS Metal tests | pass | pass |
-| `cargo xtask doc` | covered by baseline test doctests; standalone pending | pass |
-| `cargo xtask repo-lint --strict` | pass, 423 checks | pass, 428 checks |
-| `cargo xtask unsafe-audit` | pass | pass |
-| `cargo xtask clone-audit` | pass, 1.96% | pass, 1.96% at 2.01% ceiling |
-| test/support clone audit | not yet implemented | pass, 4.09% at 4.14% ceiling |
-| `cargo xtask panic-surface` | pass | pass |
-| `cargo xtask typos` | pass | pass |
-| `cargo xtask machete` | pass | pass |
-| `cargo xtask deny` | pass with reviewed warnings | pass with reviewed warnings |
-| `cargo xtask codec-math-codegen` | pass | pass |
-| `cargo xtask stable-api` | pass | pass; no API drift |
-| `cargo xtask semver` | pass | pass |
-| changed-line coverage | not rerun for baseline | pass, 81.19% (246/303); critical paths 100% (4/4) |
-| `cargo xtask release-metal` | baseline behavior covered by normal Metal tests only | pass, fail-closed release lane |
-| `cargo xtask release-cuda` | unavailable on macOS | required on Linux NVIDIA |
-| patched-source `wsi-rs` CPU/Metal | clean 0.5.0 validation passed before patching | pass; all 14 J2K packages resolved to local v0.7.3, full validation and real Metal tests passed |
-| patched-source `wsi-rs` CUDA | unavailable on macOS | required on Linux NVIDIA |
-| public corpus parity | corpus availability unknown | pass; J2K/reference, DICOM/OpenSlide, and five real-WSI behavior tests |
+| `cargo xtask fmt` | pass | pending — final frozen-source run |
+| `cargo xtask clippy` | pass | pending — final frozen-source run |
+| `cargo xtask clippy-strict` | pass | pending — final frozen-source run |
+| `cargo xtask test` including macOS Metal tests | pass | pending — final frozen-source run |
+| `cargo xtask doc` | covered by baseline test doctests; standalone pending | pending — final frozen-source run |
+| `cargo xtask repo-lint --strict` | pass, 423 checks | pending — final frozen-source run |
+| `cargo xtask unsafe-audit` | pass | pending — final frozen-source run |
+| `cargo xtask clone-audit` | pass, 1.96% | pending — final frozen-source run |
+| test/support clone audit | not yet implemented | pending — final frozen-source run |
+| `cargo xtask panic-surface` | pass | pending — final frozen-source run |
+| `cargo xtask typos` | pass | pending — final frozen-source run |
+| `cargo xtask machete` | pass | pending — final frozen-source run |
+| `cargo xtask deny` | pass with reviewed warnings | pending — final frozen-source run |
+| `cargo xtask codec-math-codegen` | pass | pending — final frozen-source run |
+| `cargo xtask stable-api` | pass | pending — generated inventory is stale until final API freeze |
+| `cargo xtask semver` | pass | pending — final API freeze review |
+| changed-line coverage | not rerun for baseline | pending — final frozen-source run |
+| `cargo xtask release-metal` | baseline behavior covered by normal Metal tests only | pending — final frozen-source Metal run |
+| `cargo xtask release-cuda` | unavailable on macOS | pending — required on Linux NVIDIA after frozen-tree sync |
+| patched-source `wsi-rs` CPU/Metal | clean 0.5.0 validation passed before patching | pending — final frozen-source scratch validation |
+| patched-source `wsi-rs` CUDA | unavailable on macOS | pending — required on Linux NVIDIA |
+| public corpus parity | corpus availability unknown | pending — final pinned-corpus validation |
 
 ## Living-document rule
 

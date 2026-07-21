@@ -13,9 +13,10 @@ use super::{
 /// Pending direct decode of one prepared group into caller-owned Metal storage.
 ///
 /// This guard retains the exclusive destination and all codec scratch owners
-/// until completion. [`Self::wait`] reports command or codec-status failures.
-/// Dropping it safely retires the committed work before releasing the
-/// destination, so the decoder session remains reusable.
+/// until completion. [`Self::wait`] reports codec-status failures that can name
+/// their original source. Command-buffer failures remain group-level at the batch boundary.
+/// Dropping the guard safely retires committed work before releasing the destination,
+/// so the decoder session remains reusable.
 #[cfg(target_os = "macos")]
 pub struct SubmittedMetalGroupDecodeInto {
     pub(super) submission: crate::compute::SubmittedDirectDestination,

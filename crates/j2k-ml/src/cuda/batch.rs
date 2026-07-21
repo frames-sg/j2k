@@ -113,11 +113,12 @@ pub struct CudaBurnDecoder {
 impl CudaBurnDecoder {
     /// Create a decoder for one Burn CUDA device. The retained primary context
     /// is initialized lazily when the first nonempty valid group is submitted.
-    pub fn new(device: CudaDevice, options: BatchDecodeOptions) -> Result<Self, BurnDecodeError> {
-        Ok(Self {
+    #[must_use]
+    pub fn new(device: CudaDevice, options: BatchDecodeOptions) -> Self {
+        Self {
             codec: CodecDecoder::with_options(options),
             device,
-        })
+        }
     }
 
     /// Borrow the retained codec session.

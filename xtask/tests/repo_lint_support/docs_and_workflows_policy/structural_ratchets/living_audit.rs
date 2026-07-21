@@ -40,3 +40,29 @@ fn living_audit_stays_current_and_bounded() {
         );
     }
 }
+
+#[test]
+fn current_candidate_matrix_does_not_claim_invalidated_green_evidence() {
+    let source = fs::read_to_string(repo_root().join(LIVING_AUDIT))
+        .unwrap_or_else(|error| panic!("read {LIVING_AUDIT}: {error}"));
+    let matrix = source
+        .split("## Verification matrix")
+        .nth(1)
+        .and_then(|tail| tail.split("## Living-document rule").next())
+        .expect("verification matrix section");
+
+    for row in matrix.lines().filter(|line| line.starts_with("| `")) {
+        let columns = row.split('|').map(str::trim).collect::<Vec<_>>();
+        let candidate = columns
+            .get(3)
+            .unwrap_or_else(|| panic!("candidate evidence column in {row:?}"));
+        assert!(
+            !candidate.contains("pass"),
+            "current candidate evidence was invalidated by later source edits: {row}"
+        );
+        assert!(
+            candidate.contains("pending") || candidate.contains("required"),
+            "current candidate row must state its pending or required final validation: {row}"
+        );
+    }
+}

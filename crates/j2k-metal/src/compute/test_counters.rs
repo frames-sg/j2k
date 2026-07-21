@@ -181,8 +181,11 @@ pub(crate) fn direct_tier1_input_buffer_runtime_for_test() -> usize {
     DIRECT_TIER1_INPUT_BUFFER_RUNTIME.with(Cell::get)
 }
 
-pub(crate) fn record_direct_tier1_input_buffer_prepare(runtime: &super::MetalRuntime) {
+pub(crate) fn record_direct_tier1_input_buffer_prepare(_runtime: &super::MetalRuntime) {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get() + 1));
+}
+
+pub(crate) fn record_direct_tier1_input_buffer_runtime(runtime: &super::MetalRuntime) {
     DIRECT_TIER1_INPUT_BUFFER_RUNTIME.with(|identity| {
         identity.set(std::ptr::from_ref(runtime).addr());
     });

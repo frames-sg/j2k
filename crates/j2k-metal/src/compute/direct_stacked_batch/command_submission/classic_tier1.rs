@@ -92,7 +92,7 @@ impl SubmissionContext<'_, '_, '_> {
                     self.retained_buffers,
                     self.status_checks,
                     self.scratch_buffers,
-                )
+                )?
             }
             DirectTier1Mode::CpuUpload => self.prepare_classic_group_cpu_buffer(
                 first,
@@ -252,7 +252,7 @@ impl SubmissionContext<'_, '_, '_> {
                     self.retained_buffers,
                     self.status_checks,
                     self.scratch_buffers,
-                )
+                )?
             }
             DirectTier1Mode::CpuUpload => self.prepare_classic_sub_band_cpu_buffer(
                 first,

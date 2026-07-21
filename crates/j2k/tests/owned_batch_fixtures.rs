@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use j2k::{
@@ -8,17 +7,10 @@ use j2k::{
     BatchLayout, BatchWaveletTransform, CompressedPayloadKind, CompressedTransferSyntax,
     CpuBatchDecoder, CpuBatchGroup, CpuBatchSamples, DecodeRequest, Downscale, EncodedImage,
     J2kDecoder, J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool,
-    NativeSampleType, PixelFormat, Rect,
+    PixelFormat, Rect,
 };
-use j2k_native::{
-    encode, encode_htj2k, EncodeOptions, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-};
-use j2k_test_support::{
-    openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
-    openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, openhtj2k_sigprop_fixture,
-    openhtj2k_sigprop_overlap_fixture, openhtj2k_sigprop_overlap_pixels,
-    openhtj2k_sigprop_pixels_le, openjph_batch_fixtures, OpenJphBatchFixture,
-};
+use j2k_native::{encode, encode_htj2k, EncodeOptions};
+use j2k_test_support::{openjph_batch_fixtures, OpenJphBatchFixture};
 
 #[derive(Clone, Copy, Debug)]
 enum CodingRoute {

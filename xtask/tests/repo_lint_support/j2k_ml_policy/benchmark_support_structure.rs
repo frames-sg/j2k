@@ -243,6 +243,56 @@ fn j2k_ml_benchmark_support_has_focused_ownership() {
     );
 }
 
+#[test]
+fn benchmark_burn_success_validation_has_one_backend_generic_owner() {
+    let decode_case = parse("crates/j2k-ml/benches/support/decode_case.rs");
+    assert!(
+        declared_functions(&decode_case).contains("require_burn_success"),
+        "shared decode-case support must own backend-generic Burn result validation"
+    );
+
+    for relative in [
+        "crates/j2k-ml/benches/batch_decode.rs",
+        "crates/j2k-ml/benches/batch_decode_cuda.rs",
+        "crates/j2k-ml/benches/batch_decode_metal.rs",
+    ] {
+        assert!(
+            !declared_functions(&parse(relative)).contains("require_burn_success"),
+            "{relative} must reuse the shared backend-generic Burn result validator"
+        );
+    }
+}
+
+#[test]
+fn accelerator_profile_processes_have_backend_local_owners() {
+    for backend in ["cuda", "metal"] {
+        let entry_path = format!("crates/j2k-ml/benches/batch_decode_{backend}.rs");
+        let profile_path = format!("crates/j2k-ml/benches/batch_decode_{backend}/profile.rs");
+        let entry = parse(&entry_path);
+        let profile = parse(&profile_path);
+        let entry_functions = declared_functions(&entry);
+        let profile_functions = declared_functions(&profile);
+
+        assert!(
+            external_modules(&entry).contains("profile"),
+            "{entry_path} must own its backend-local profile module"
+        );
+        for function in ["profile_codec_resident", "profile_burn_direct"] {
+            assert!(
+                !entry_functions.contains(function),
+                "{entry_path} must keep profile-only {function} out of the Criterion entrypoint"
+            );
+            assert!(
+                profile_functions.contains(function),
+                "{profile_path} must own {function}"
+            );
+        }
+        assert!(profile_functions.contains("run"));
+        assert_no_dead_code_suppressions(&entry_path, &entry);
+        assert_no_dead_code_suppressions(&profile_path, &profile);
+    }
+}
+
 struct MaterializationFinder {
     first_line: Option<usize>,
 }

@@ -81,8 +81,7 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
         EncodedImage::new(Arc::clone(encoded), request),
         EncodedImage::new(Arc::clone(encoded), request),
     ];
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options)
-        .unwrap_or_else(|error| panic!("create {codec} RGBA CUDA adapter: {error}"));
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
     let prepared = decoder
         .prepare(inputs.clone())
         .unwrap_or_else(|error| panic!("prepare {codec} RGBA Burn batch: {error}"));

@@ -49,13 +49,19 @@ fn mirrored_twin_unification_record_is_current() {
         .expect("read mirrored-twin unification record");
     let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
         .expect("read Metal compute root");
-    let direct_prepare_classic =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/classic.rs"))
-            .expect("read Metal classic direct preparation");
+    let direct_prepare_classic = fs::read_to_string(
+        root.join("crates/j2k-metal/src/compute/direct_prepare/classic/grouped.rs"),
+    )
+    .expect("read Metal classic grouped direct preparation");
     let direct_roi = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_roi.rs"))
         .expect("read Metal direct ROI");
-    let hybrid =
-        fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs")).expect("read hybrid");
+    let hybrid = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/hybrid/cache.rs",
+            "crates/j2k-metal/src/hybrid/planning.rs",
+        ],
+    );
     let decoder = read_source_files(
         root,
         &[

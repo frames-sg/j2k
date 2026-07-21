@@ -3,9 +3,12 @@
 //! Grayscale status identity mapping and pending output ownership.
 
 use super::{
-    cuda_error, Arc, CudaDeviceBufferRange, CudaHtj2kProfileReport, CudaQueuedJ2kStoreBatch, Error,
-    HostPhaseBudget, PendingCleanup, PendingDecodeCompletion, Surface,
+    cuda_error, Arc, CudaDecodedComponent, CudaDeviceBufferRange, CudaHtj2kProfileReport,
+    CudaQueuedIdwtBatch, CudaQueuedJ2kStoreBatch, Error, HostPhaseBudget, PendingCleanup,
+    PendingDecodeCompletion, Surface,
 };
+use crate::decoder::pending_completion::{finish_decode_statuses, retire_decode_after_error};
+use j2k_cuda_runtime::CudaHtj2kDecodeResources;
 
 pub(crate) struct GrayscaleOwnedBatch {
     pub(crate) surfaces: Vec<Surface>,
@@ -24,6 +27,70 @@ pub(super) struct StoredGrayscaleBatch {
 }
 
 pub(super) type GrayscalePendingCompletion = PendingDecodeCompletion<GrayscaleHtj2kCleanup>;
+
+pub(super) fn finish_submitted_grayscale_batch(
+    completion_result: Result<(StoredGrayscaleBatch, Vec<CudaDecodedComponent>), Error>,
+    pending_idwt: Option<CudaQueuedIdwtBatch>,
+    pending_cleanup: Option<GrayscaleHtj2kCleanup>,
+    pending_classic: Option<super::super::resident::QueuedComponentClassicDecode>,
+    decode_resources: CudaHtj2kDecodeResources,
+) -> Result<(GrayscaleBatchOutput, GrayscalePendingCompletion), Error> {
+    let (stored, decoded) = match completion_result {
+        Ok(output) => output,
+        Err(error) => {
+            return Err(retire_decode_after_error(
+                error,
+                pending_idwt,
+                pending_cleanup,
+                pending_classic,
+            ));
+        }
+    };
+    let store = stored.queued.ok_or(Error::UnsupportedCudaRequest {
+        reason: "CUDA external batch store did not return a completion guard",
+    })?;
+    Ok((
+        stored.output,
+        GrayscalePendingCompletion::new(
+            Some(store),
+            pending_idwt,
+            pending_cleanup,
+            pending_classic,
+            decoded,
+            Some(decode_resources),
+        ),
+    ))
+}
+
+pub(super) fn finish_synchronous_grayscale_batch(
+    completion_result: Result<(StoredGrayscaleBatch, Vec<CudaDecodedComponent>), Error>,
+    pending_idwt: Option<CudaQueuedIdwtBatch>,
+    pending_cleanup: Option<GrayscaleHtj2kCleanup>,
+    pending_classic: Option<super::super::resident::QueuedComponentClassicDecode>,
+) -> Result<GrayscaleBatchOutput, Error> {
+    let completion_result = completion_result.and_then(|(stored, decoded)| {
+        if stored.queued.is_some() {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "synchronous CUDA grayscale store unexpectedly returned pending work",
+            });
+        }
+        Ok(((stored.output, decoded), true))
+    });
+    let resolved =
+        CudaQueuedIdwtBatch::resolve_optional_after_completed_work(pending_idwt, completion_result);
+    match resolved {
+        Ok((output, _decoded_owners)) => {
+            finish_decode_statuses(pending_cleanup, pending_classic)?;
+            Ok(output)
+        }
+        Err(error) => Err(retire_decode_after_error(
+            error,
+            None,
+            pending_cleanup,
+            pending_classic,
+        )),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct GrayscaleJobIdentity {

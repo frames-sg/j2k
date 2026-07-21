@@ -140,12 +140,10 @@ impl RepeatedGrayscaleExecution<'_> {
                     )?;
                 }
                 J2kWaveletTransform::Irreversible97 => {
-                    self.status_checks.push(
-                        dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
-                            self.command_buffer,
-                            dispatch,
-                        )?,
-                    );
+                    dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
+                        self.command_buffer,
+                        dispatch,
+                    )?;
                 }
             }
             bands.push(DirectBandSlice {

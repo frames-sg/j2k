@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    allocate_direct_execution_metadata, commit_and_wait_metal,
+    allocate_direct_execution_metadata, commit_and_wait_metal, direct_ht_job_count,
     encode_prepared_direct_grayscale_plan_in_command_buffer,
     encode_repeated_direct_grayscale_plan_in_command_buffer,
     encode_repeated_gray_plane_to_surfaces_in_command_buffer,
@@ -24,7 +24,7 @@ pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
             mut scratch_buffers,
         } = allocate_direct_execution_metadata(
             plan.steps.len(),
-            0,
+            direct_ht_job_count([plan], "J2K Metal repeated direct execution HT jobs")?,
             crate::batch_allocation::BatchMetadataBudget::new(
                 "J2K Metal repeated direct execution resources",
             ),
@@ -78,7 +78,10 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
             mut scratch_buffers,
         } = allocate_direct_execution_metadata(
             step_count,
-            0,
+            direct_ht_job_count(
+                plans.iter().map(Arc::as_ref),
+                "J2K Metal direct grayscale batch HT jobs",
+            )?,
             crate::batch_allocation::BatchMetadataBudget::new(
                 "J2K Metal direct grayscale batch execution resources",
             ),

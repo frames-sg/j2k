@@ -26,6 +26,7 @@ use crate::compute::{
         decode_prepared_ht_sub_band_group_on_cpu_profile,
         decode_prepared_ht_sub_band_on_cpu_profile,
     },
+    direct_grayscale_execute::extend_preallocated_retained_buffers,
     direct_plan_types::{
         PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectGrayscaleStep,
         PreparedDirectIdwt, PreparedHtSubBand, PreparedHtSubBandGroup,
@@ -104,7 +105,7 @@ impl ComponentPlaneExecution<'_> {
                         &output.buffer,
                         self.scratch_buffers,
                     )?;
-                self.retained_buffers.extend(buffers);
+                extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
                 self.status_checks.push(status_check);
                 self.encoder
                     .memory_barrier_with_resources(&[&output.buffer]);
@@ -149,7 +150,7 @@ impl ComponentPlaneExecution<'_> {
                         group,
                         &output.buffer,
                     )?;
-                self.retained_buffers.extend(buffers);
+                extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
                 self.status_checks.push(status_check);
                 self.encoder
                     .memory_barrier_with_resources(&[&output.buffer]);
@@ -195,7 +196,7 @@ impl ComponentPlaneExecution<'_> {
                         &output.buffer,
                         self.scratch_buffers,
                     )?;
-                self.retained_buffers.extend(buffers);
+                extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
                 self.status_checks.push(status_check);
                 self.encoder
                     .memory_barrier_with_resources(&[&output.buffer]);
@@ -231,7 +232,7 @@ impl ComponentPlaneExecution<'_> {
                     sub_band,
                     &output.buffer,
                 )?;
-                self.retained_buffers.extend(buffers);
+                extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
                 self.status_checks.push(status_check);
                 self.encoder
                     .memory_barrier_with_resources(&[&output.buffer]);
@@ -284,11 +285,9 @@ impl ComponentPlaneExecution<'_> {
                 );
             }
             J2kWaveletTransform::Irreversible97 => {
-                self.status_checks.push(
-                    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
-                        self.encoder,
-                        dispatch,
-                    )?,
+                dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
+                    self.encoder,
+                    dispatch,
                 );
             }
         }

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::mem::size_of;
+use std::sync::Arc;
 
 use super::super::{
     classic_group_shapes_match, classic_sub_band_shapes_match, ht_group_shapes_match,
-    ht_sub_band_shapes_match, idwt_shapes_match, store_shapes_match, DirectTier1Mode, Error,
+    ht_sub_band_shapes_match, idwt_shapes_match, repeated_shared_direct_color_plan_count,
+    store_shapes_match, DirectTier1Mode, Error, PreparedDirectColorPlan,
     PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
 };
 
@@ -12,6 +14,13 @@ pub(super) struct StackedComponentBatchPlan<'p> {
     pub(super) first: &'p PreparedDirectGrayscalePlan,
     pub(super) count: usize,
     pub(super) broadcast_tier1_inputs: bool,
+}
+
+pub(super) struct StackedColorBatchPreflight<'p> {
+    pub(super) first: &'p PreparedDirectColorPlan,
+    pub(super) execution_plans: &'p [Arc<PreparedDirectColorPlan>],
+    pub(super) repeated_count: Option<usize>,
+    pub(super) component_plan_refs: [Vec<&'p PreparedDirectGrayscalePlan>; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +222,69 @@ pub(in super::super) fn supports_stacked_direct_component_plane_batch(
     }
 
     true
+}
+
+pub(super) fn preflight_stacked_mct_rgb8_color_batch(
+    plans: &[Arc<PreparedDirectColorPlan>],
+) -> Result<Option<StackedColorBatchPreflight<'_>>, Error> {
+    let Some(first) = plans.first().map(AsRef::as_ref) else {
+        return Ok(None);
+    };
+    let repeated_count = repeated_shared_direct_color_plan_count(plans);
+    if plans.len() <= 1
+        || !first.mct
+        || first.component_plans.len() != 3
+        || !plans.iter().all(|plan| {
+            plan.mct
+                && plan.dimensions == first.dimensions
+                && plan.bit_depths == first.bit_depths
+                && plan.transform == first.transform
+                && plan.component_plans.len() == 3
+        })
+    {
+        return Ok(None);
+    }
+    let execution_plans = if repeated_count.is_some() {
+        &plans[..1]
+    } else {
+        plans
+    };
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal stacked component plan references",
+    );
+    let mut component_plan_refs = [
+        budget.try_vec(
+            execution_plans.len(),
+            "J2K Metal stacked component 0 plan reference slots",
+        )?,
+        budget.try_vec(
+            execution_plans.len(),
+            "J2K Metal stacked component 1 plan reference slots",
+        )?,
+        budget.try_vec(
+            execution_plans.len(),
+            "J2K Metal stacked component 2 plan reference slots",
+        )?,
+    ];
+    for plan in execution_plans {
+        for (component_idx, references) in component_plan_refs.iter_mut().enumerate() {
+            references.push(&plan.component_plans[component_idx]);
+        }
+    }
+    if component_plan_refs.iter().any(|references| {
+        !supports_stacked_direct_component_plane_batch(references)
+            || references
+                .first()
+                .is_none_or(|component| component.dimensions != first.dimensions)
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(StackedColorBatchPreflight {
+        first,
+        execution_plans,
+        repeated_count,
+        component_plan_refs,
+    }))
 }
 
 #[cfg(test)]

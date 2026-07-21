@@ -396,6 +396,10 @@ pub(super) fn with_runtime<R>(
     })
 }
 
+pub(crate) fn current_runtime_device_registry_id() -> Result<u64, Error> {
+    with_runtime(|runtime| Ok(runtime.device.registry_id()))
+}
+
 pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
     metal_runtime_support_error(error)
 }

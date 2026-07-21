@@ -7,12 +7,14 @@ use burn_flex::{Flex as CpuBackend, FlexDevice as CpuDevice};
 use burn_ndarray::NdArrayDevice::Cpu as CpuDevice;
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{BatchDecodeOptions, CpuBatchDecodeResult, CpuBatchDecoder};
-use j2k_ml::{BurnBatchDecode, CpuBurnDecoder};
+use j2k_ml::CpuBurnDecoder;
 
 mod support;
 
 use support::{
-    decode_case::{decoded_pixels_per_batch, requests, require_prepared_success},
+    decode_case::{
+        decoded_pixels_per_batch, requests, require_burn_success, require_prepared_success,
+    },
     input_selection::InputMode,
     process_policy::ProcessMode,
     workload::{materialize_workload, WorkloadSpec},
@@ -187,25 +189,6 @@ fn require_codec_success(decoded: CpuBatchDecodeResult) -> CpuBatchDecodeResult 
         decoded.groups().len(),
         1,
         "benchmark workload must decode to exactly one homogeneous group"
-    );
-    decoded
-}
-
-fn require_burn_success<B: Backend>(decoded: BurnBatchDecode<B>) -> BurnBatchDecode<B> {
-    assert!(
-        decoded.errors.is_empty(),
-        "benchmark adapter returned indexed errors: {:?}",
-        decoded.errors
-    );
-    assert!(
-        decoded.group_errors.is_empty(),
-        "benchmark adapter returned group errors: {:?}",
-        decoded.group_errors
-    );
-    assert_eq!(
-        decoded.groups.len(),
-        1,
-        "benchmark workload must materialize exactly one Burn tensor group"
     );
     decoded
 }

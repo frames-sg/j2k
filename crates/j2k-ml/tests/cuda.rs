@@ -22,8 +22,7 @@ fn direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-        .expect("create persistent CUDA adapter");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![
             EncodedImage::full(Arc::clone(&encoded)),
@@ -74,8 +73,7 @@ fn direct_cuda_preserves_native_u16_and_i16_samples() {
     ];
     for (encoded, dtype, expected) in cases {
         let mut decoder =
-            CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-                .expect("create CUDA adapter");
+            CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
         let burn_batch = decoder
             .decode(vec![EncodedImage::full(Arc::from(encoded))])
             .expect("decode native CUDA type");
@@ -119,8 +117,7 @@ fn direct_cuda_supports_roi_and_reduction_without_host_staging() {
         w: 32,
         h: 24,
     };
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
-        .expect("create CUDA adapter");
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let burn_batch = decoder
         .decode(vec![EncodedImage::new(
             encoded,
@@ -161,8 +158,7 @@ fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
             layout,
             ..BatchDecodeOptions::default()
         };
-        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options)
-            .expect("create exact RGB CUDA adapter");
+        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);
         for (encoded, expected_dtype) in &cases {
             let prepared = decoder
@@ -259,8 +255,7 @@ fn direct_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
             layout,
             ..BatchDecodeOptions::default()
         };
-        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options)
-            .expect("create signed RGB CUDA adapter");
+        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);
         for fixture in &fixtures {
             let encoded = Arc::<[u8]>::from(fixture.encoded);

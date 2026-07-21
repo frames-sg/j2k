@@ -4,6 +4,10 @@ This document records published benchmark commands, measurements, and
 environment details. JSON and CSV artifacts remain the source of truth when
 they are produced by a benchmark harness.
 
+This is the sole narrative owner for dated benchmark hosts, commands, results,
+and historical performance qualifications. The workspace README, architecture,
+and integration guides link here instead of copying mutable measurements.
+
 ## Publication Status
 
 The codec support boundary is tracked separately in
@@ -347,7 +351,8 @@ identical-content reuse. The numbers remain preserved as historical diagnostic
 evidence, but none of those rows is an acceptance baseline or a claim about
 content-distinct batches. The corrected harness defaults to 64 deterministic,
 content-distinct codestreams per workload and labels repeated-owner runs
-separately.
+separately. A corrected content-distinct acceptance matrix has not yet been
+recorded in this evidence log.
 
 ## CUDA Status
 

@@ -88,6 +88,10 @@ required-features = ["cuda"]
 name = "cuda_batch_sessions"
 required-features = ["cuda"]
 
+[[test]]
+name = "benchmark_inputs"
+required-features = ["cpu"]
+
 [[bench]]
 name = "batch_decode"
 harness = false

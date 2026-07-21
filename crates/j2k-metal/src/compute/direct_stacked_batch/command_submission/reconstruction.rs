@@ -129,17 +129,16 @@ impl SubmissionContext<'_, '_, '_> {
                     "J2K MetalDirect stacked irreversible IDWT",
                 )?,
             };
-            let status = if let Some(encoder) = self.compute_encoder {
+            if let Some(encoder) = self.compute_encoder {
                 dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
                     encoder, dispatch,
-                )?
+                );
             } else {
                 dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
                     self.command_buffers.idwt.interleave,
                     dispatch,
-                )?
-            };
-            self.status_checks.push(status);
+                )?;
+            }
         }
         Ok(())
     }

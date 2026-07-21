@@ -22,7 +22,9 @@ use crate::compute::{PreparedHtExecutionOwner, PreparedHtPayloadSource};
 pub(in crate::compute) use execution::{
     encode_metal_ht_batches_in_encoder, encode_repeated_metal_ht_batch_in_command_buffer,
 };
-pub(in crate::compute) use prepared::{prepared_metal_ht_execution, PreparedMetalHtExecutionCache};
+pub(in crate::compute) use prepared::cache::{
+    prepared_metal_ht_execution, PreparedMetalHtExecutionCache,
+};
 
 const MAX_METAL_HT_JOBS_PER_CHUNK: usize = 16_384;
 const MAX_METAL_HT_PAYLOAD_BYTES_PER_CHUNK: usize = 64 * 1024 * 1024;

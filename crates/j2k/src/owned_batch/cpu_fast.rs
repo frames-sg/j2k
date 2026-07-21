@@ -3,23 +3,20 @@
 //! Retained cross-image compressed arenas for the CPU prepared fast path.
 
 use alloc::vec::Vec;
-use core::mem::size_of;
 
 use j2k_core::{BatchInfrastructureError, DEFAULT_MAX_HOST_ALLOCATION_BYTES};
 use j2k_native::{
     HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange,
-    J2kDirectCodeBlockIndex, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
+    J2kDirectCodeBlockIndex,
 };
 
 use super::{BatchCodecRoute, PreparedBatchGroup, PreparedImage};
 use crate::batch::allocation::J2K_BATCH_METADATA_ALLOWANCE_BYTES;
 
+mod classic;
+mod ht;
 mod plan;
-use self::plan::{
-    append_input_range, checked_metadata_bytes, classic_group_requirements, empty_range, ht_bucket,
-    ht_bucket_index, ht_group_requirements, reserve_reused, visit_classic_jobs, visit_ht_jobs,
-};
+use self::plan::{checked_metadata_bytes, reserve_reused};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CpuPayloadBucket {
@@ -176,217 +173,6 @@ impl CpuGroupFastWorkspace {
             retained_compressed_arena_bytes: self.compressed_arena.capacity(),
             ..self.stats
         }
-    }
-
-    fn prepare_htj2k(
-        &mut self,
-        group: &PreparedBatchGroup,
-    ) -> Result<(), BatchInfrastructureError> {
-        let (payload_count, payload_bytes) = ht_group_requirements(group)?;
-        self.prepare_storage::<HtCodeBlockPayloadRanges>(
-            group.images.len(),
-            payload_count,
-            payload_bytes,
-        )?;
-        reserve_reused(
-            &mut self.ht_payloads,
-            payload_count,
-            "J2K CPU flattened HT payload ranges",
-        )?;
-        self.ht_payloads.resize(
-            payload_count,
-            HtCodeBlockPayloadRanges {
-                cleanup: empty_range(),
-                refinement: None,
-            },
-        );
-        self.assign_image_spans(group, |image| {
-            image
-                .htj2k_plan()
-                .map_or(0, super::PreparedHtj2kPlan::payload_count)
-        })?;
-
-        for bucket in [
-            CpuPayloadBucket::Cleanup,
-            CpuPayloadBucket::SigProp,
-            CpuPayloadBucket::MagRef,
-        ] {
-            for (image_slot, image) in group.images.iter().enumerate() {
-                let plan = image
-                    .htj2k_plan()
-                    .ok_or(BatchInfrastructureError::MissingResult { index: image_slot })?;
-                let span = self.image_spans[image_slot];
-                let mut bucket_ordinals = [0_usize; 3];
-                visit_ht_jobs(
-                    plan.native_plan(),
-                    |payload_index, block_index, coding_passes| {
-                        if ht_bucket(coding_passes) == bucket {
-                            let bucket_index = ht_bucket_index(bucket);
-                            let bucket_ordinal = bucket_ordinals[bucket_index];
-                            bucket_ordinals[bucket_index] = bucket_ordinal.saturating_add(1);
-                            self.jobs.push(CpuFlattenedPayloadJob {
-                                source_index: group.source_indices[image_slot],
-                                image_slot,
-                                payload_index,
-                                destination_index: span.start + payload_index,
-                                block_index,
-                                bucket,
-                                bucket_ordinal,
-                            });
-                        }
-                    },
-                );
-            }
-        }
-        self.jobs.sort_unstable_by_key(|job| {
-            (
-                ht_bucket_index(job.bucket),
-                job.bucket_ordinal,
-                job.image_slot,
-            )
-        });
-        if self.jobs.len() != payload_count {
-            return Err(BatchInfrastructureError::MissingResult {
-                index: self.jobs.len(),
-            });
-        }
-        for job in &self.jobs {
-            if group.source_indices.get(job.image_slot).copied() != Some(job.source_index) {
-                return Err(BatchInfrastructureError::ResultIndexOutOfBounds {
-                    index: job.source_index,
-                    job_count: group.images.len(),
-                });
-            }
-            let image = &group.images[job.image_slot];
-            let payload = image
-                .htj2k_plan()
-                .and_then(|plan| plan.native_plan().payloads().get(job.payload_index))
-                .copied()
-                .ok_or(BatchInfrastructureError::MissingResult {
-                    index: job.source_index,
-                })?;
-            let cleanup = append_input_range(
-                &mut self.compressed_arena,
-                image,
-                payload.cleanup,
-                job.source_index,
-            )?;
-            let refinement = payload
-                .refinement
-                .map(|range| {
-                    append_input_range(&mut self.compressed_arena, image, range, job.source_index)
-                })
-                .transpose()?;
-            self.ht_payloads[job.destination_index] = HtCodeBlockPayloadRanges {
-                cleanup,
-                refinement,
-            };
-        }
-        self.finish_group(BatchCodecRoute::Htj2k, payload_bytes)
-    }
-
-    fn prepare_classic(
-        &mut self,
-        group: &PreparedBatchGroup,
-    ) -> Result<(), BatchInfrastructureError> {
-        let (payload_count, payload_bytes) = classic_group_requirements(group)?;
-        self.prepare_storage::<(J2kClassicCodeBlockPayload, J2kCodestreamRange)>(
-            group.images.len(),
-            payload_count,
-            payload_bytes,
-        )?;
-        reserve_reused(
-            &mut self.classic_payloads,
-            payload_count,
-            "J2K CPU flattened classic payloads",
-        )?;
-        reserve_reused(
-            &mut self.classic_ranges,
-            payload_count,
-            "J2K CPU flattened classic ranges",
-        )?;
-        self.classic_payloads.resize(
-            payload_count,
-            J2kClassicCodeBlockPayload {
-                first_range: 0,
-                range_count: 0,
-                combined_length: 0,
-            },
-        );
-        self.classic_ranges.resize(payload_count, empty_range());
-        self.assign_image_spans(group, |image| {
-            image
-                .classic_plan()
-                .map_or(0, super::PreparedClassicPlan::payload_count)
-        })?;
-
-        for (image_slot, image) in group.images.iter().enumerate() {
-            let plan = image
-                .classic_plan()
-                .ok_or(BatchInfrastructureError::MissingResult { index: image_slot })?;
-            let span = self.image_spans[image_slot];
-            visit_classic_jobs(plan.native_plan(), |payload_index, block_index| {
-                self.jobs.push(CpuFlattenedPayloadJob {
-                    source_index: group.source_indices[image_slot],
-                    image_slot,
-                    payload_index,
-                    destination_index: span.start + payload_index,
-                    block_index,
-                    bucket: CpuPayloadBucket::Classic,
-                    bucket_ordinal: payload_index,
-                });
-            });
-        }
-        self.jobs
-            .sort_unstable_by_key(|job| (job.bucket_ordinal, job.image_slot));
-        for job in &self.jobs {
-            let image = &group.images[job.image_slot];
-            let plan = image
-                .classic_plan()
-                .ok_or(BatchInfrastructureError::MissingResult {
-                    index: job.source_index,
-                })?;
-            let payload = plan.native_plan().payloads().get(job.payload_index).ok_or(
-                BatchInfrastructureError::MissingResult {
-                    index: job.source_index,
-                },
-            )?;
-            let end_range =
-                payload
-                    .end_range()
-                    .ok_or(BatchInfrastructureError::ResultIndexOutOfBounds {
-                        index: payload.first_range,
-                        job_count: plan.native_plan().ranges().len(),
-                    })?;
-            let fragments = plan
-                .native_plan()
-                .ranges()
-                .get(payload.first_range..end_range)
-                .ok_or(BatchInfrastructureError::ResultIndexOutOfBounds {
-                    index: end_range,
-                    job_count: plan.native_plan().ranges().len(),
-                })?;
-            let start = self.compressed_arena.len();
-            for range in fragments {
-                append_input_range(&mut self.compressed_arena, image, *range, job.source_index)?;
-            }
-            let length = self.compressed_arena.len() - start;
-            if length != payload.combined_length {
-                return Err(BatchInfrastructureError::MissingResult {
-                    index: job.source_index,
-                });
-            }
-            self.classic_ranges[job.destination_index] = J2kCodestreamRange {
-                offset: start,
-                length,
-            };
-            self.classic_payloads[job.destination_index] = J2kClassicCodeBlockPayload {
-                first_range: job.payload_index,
-                range_count: 1,
-                combined_length: length,
-            };
-        }
-        self.finish_group(BatchCodecRoute::Classic, payload_bytes)
     }
 
     fn prepare_storage<T>(

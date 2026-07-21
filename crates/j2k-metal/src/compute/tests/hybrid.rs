@@ -5,11 +5,14 @@ use super::super::{
     execute_hybrid_cpu_tier1_direct_color_plan_batch, flattened_hybrid_cpu_decode_batches_for_test,
     hybrid_cpu_decode_inputs_for_test, hybrid_cpu_decode_worker_count,
     hybrid_cpu_decode_worker_inits_for_test, hybrid_stacked_component_batches_for_test,
-    prepare_direct_color_plan, reset_flattened_hybrid_cpu_decode_batches_for_test,
-    reset_hybrid_cpu_decode_inputs_for_test, reset_hybrid_cpu_decode_worker_inits_for_test,
-    reset_hybrid_stacked_component_batches_for_test,
-    reset_thread_hybrid_cpu_decode_inputs_for_test, should_flatten_hybrid_cpu_tier1_color_batch,
-    thread_hybrid_cpu_decode_inputs_for_test, PreparedDirectColorPlan,
+    new_command_buffer, prepare_direct_color_plan,
+    reset_flattened_hybrid_cpu_decode_batches_for_test, reset_hybrid_cpu_decode_inputs_for_test,
+    reset_hybrid_cpu_decode_worker_inits_for_test, reset_hybrid_stacked_component_batches_for_test,
+    reset_stacked_component_batches_for_test, reset_thread_hybrid_cpu_decode_inputs_for_test,
+    should_flatten_hybrid_cpu_tier1_color_batch, stacked_component_batches_for_test,
+    thread_hybrid_cpu_decode_inputs_for_test, try_encode_stacked_mct_rgb8_direct_color_batch,
+    with_runtime, DirectColorBatchCommandBuffers, DirectHybridStageTimings, DirectTier1Mode,
+    PreparedDirectColorPlan, StackedDirectColorBatchRequest,
 };
 use super::{
     hybrid_support::{prepared_direct_color_tier1_input_count, HYBRID_COUNTER_TEST_LOCK},
@@ -172,6 +175,68 @@ fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
         thread_hybrid_cpu_decode_inputs_for_test(),
         expected_inputs,
         "distinct RGB hybrid batches should decode each tile's own Tier-1 inputs"
+    );
+}
+
+#[test]
+fn incompatible_later_color_component_does_not_encode_partial_stacked_work() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let pixels = j2k_test_support::gradient_u8(32, 32, 3);
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&pixels, 32, 32, 3, 8, false, &options).expect("encode rgb8");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+    let plan = image
+        .build_direct_color_plan_with_context(&mut context)
+        .expect("direct color plan");
+    let first = Arc::new(prepare_direct_color_plan(&plan).expect("first prepared color plan"));
+    let mut incompatible =
+        prepare_direct_color_plan(&plan).expect("incompatible prepared color plan");
+    incompatible.component_plans[1].dimensions = (31, 32);
+    let plans = [first, Arc::new(incompatible)];
+    let _guard = HYBRID_COUNTER_TEST_LOCK
+        .lock()
+        .expect("hybrid counter lock");
+    reset_stacked_component_batches_for_test();
+
+    with_runtime(|runtime| {
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let mut stage_timings = DirectHybridStageTimings::default();
+        let mut retained_buffers = Vec::with_capacity(128);
+        let mut status_checks = Vec::with_capacity(32);
+        let mut scratch_buffers = Vec::with_capacity(64);
+        let result =
+            try_encode_stacked_mct_rgb8_direct_color_batch(StackedDirectColorBatchRequest {
+                runtime,
+                command_buffers: DirectColorBatchCommandBuffers::single(&command_buffer),
+                plans: &plans,
+                tier1_mode: DirectTier1Mode::Metal,
+                force_flattened_cpu_tier1: false,
+                stage_timings: &mut stage_timings,
+                retained_buffers: &mut retained_buffers,
+                status_checks: &mut status_checks,
+                scratch_buffers: &mut scratch_buffers,
+            })?;
+        assert!(result.is_none(), "incompatible component must use fallback");
+        assert!(
+            retained_buffers.is_empty() && status_checks.is_empty() && scratch_buffers.is_empty(),
+            "preflight rejection must not retain partial stacked execution resources"
+        );
+        Ok(())
+    })
+    .expect("probe stacked color preflight");
+
+    assert_eq!(
+        stacked_component_batches_for_test(),
+        0,
+        "fallback must be selected before any stacked component commands are encoded"
     );
 }
 

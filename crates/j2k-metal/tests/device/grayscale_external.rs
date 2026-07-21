@@ -3,6 +3,91 @@
 use super::*;
 
 #[test]
+fn submitted_prepared_sub8_ht_grayscale_preserves_native_samples_for_single_and_stacked_groups() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let first_pixels = (0_u8..16).collect::<Vec<_>>();
+    let second_pixels = (0_u8..16).rev().collect::<Vec<_>>();
+    let encode_fixture = |pixels: &[u8]| {
+        encode_htj2k(
+            pixels,
+            4,
+            4,
+            1,
+            4,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 1,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode reversible HT Gray4 fixture")
+    };
+    let encoded = [
+        Arc::<[u8]>::from(encode_fixture(&first_pixels)),
+        Arc::<[u8]>::from(encode_fixture(&second_pixels)),
+    ];
+    let options = BatchDecodeOptions::default();
+    let mut cpu = CpuBatchDecoder::new(options);
+    let mut metal =
+        MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
+    let mut expected_groups = Vec::new();
+    let mut actual_groups = Vec::new();
+
+    for batch_len in [1_usize, 2] {
+        let inputs = encoded
+            .iter()
+            .take(batch_len)
+            .cloned()
+            .map(EncodedImage::full)
+            .collect::<Vec<_>>();
+        let expected = cpu.decode(inputs.clone()).expect("CPU Gray4 oracle");
+        assert!(expected.errors().is_empty());
+        assert_eq!(expected.groups().len(), 1);
+        let expected_group = &expected.groups()[0];
+        assert_eq!(expected_group.info().precision, 4);
+        let CpuBatchSamples::U8(expected_samples) = expected_group.samples() else {
+            panic!("Gray4 must use native U8 batch storage")
+        };
+        expected_groups.push(expected_samples.clone());
+
+        let prepared = metal.prepare(inputs).expect("prepare Metal Gray4 group");
+        assert!(prepared.errors().is_empty());
+        assert_eq!(prepared.groups().len(), 1);
+        assert_eq!(prepared.groups()[0].info().precision, 4);
+        let output_len = 16 * batch_len;
+        let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+            metal.backend_session().device(),
+            output_len,
+        )
+        .expect("Gray4 destination buffer");
+        let layout = MetalImageLayout::new_batch(0, (4, 4), 4, PixelFormat::Gray8, batch_len, 16)
+            .expect("Gray4 destination layout");
+        // SAFETY: the pending submission exclusively retains this fresh range.
+        let destination = unsafe {
+            MetalImageDestination::from_exclusive_buffer(buffer.clone(), layout)
+                .expect("Gray4 destination")
+        };
+        metal
+            .submit_prepared_group_into(&prepared.groups()[0], destination)
+            .expect("submit prepared Gray4 group")
+            .wait()
+            .expect("complete prepared Gray4 group");
+
+        // SAFETY: codec completion released exclusive destination access.
+        actual_groups.push(
+            unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 0, output_len) }
+                .expect("Gray4 output samples"),
+        );
+    }
+
+    assert_eq!(actual_groups, expected_groups);
+}
+
+#[test]
 fn submitted_prepared_ht_grayscale_roi_and_reduction_match_cpu_oracle() {
     if !should_run_metal_runtime() {
         return;

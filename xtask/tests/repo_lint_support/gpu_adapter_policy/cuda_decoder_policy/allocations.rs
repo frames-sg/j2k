@@ -42,10 +42,28 @@ fn decoder_host_collections_remain_fallible() {
         ])
         .forbidden(&forbidden),
         PatternCheck::new(
-            "CUDA color batch host allocations",
-            &sources.color_batch_execution,
+            "CUDA color batch preparation host allocations",
+            &sources.color_batch_execution_preparation,
+        )
+        .required(&["try_vec_with_capacity("])
+        .forbidden(&forbidden),
+        PatternCheck::new(
+            "CUDA color batch execution host allocations",
+            &sources.color_batch_execution_execution,
+        )
+        .required(&["try_vec_with_capacity("])
+        .forbidden(&forbidden),
+        PatternCheck::new(
+            "CUDA color batch store host allocations",
+            &sources.color_batch_execution_completion_batch_store,
         )
         .required(&["try_vec_with_capacity(", "try_collect_results_exact("])
+        .forbidden(&forbidden),
+        PatternCheck::new(
+            "CUDA color batch fallback host allocations",
+            &sources.color_batch_execution_completion_fallback,
+        )
+        .required(&["try_vec_with_capacity("])
         .forbidden(&forbidden),
         PatternCheck::new(
             "CUDA single-color host allocations",
@@ -60,8 +78,8 @@ fn decoder_host_collections_remain_fallible() {
         .required(&["try_vec_with_capacity("])
         .forbidden(&forbidden),
         PatternCheck::new(
-            "CUDA native-color execution host allocations",
-            &sources.color_batch_native_execution,
+            "CUDA native-color lifecycle host allocations",
+            &sources.color_batch_native_lifecycle,
         )
         .required(&["try_vec_with_capacity("])
         .forbidden(&forbidden),

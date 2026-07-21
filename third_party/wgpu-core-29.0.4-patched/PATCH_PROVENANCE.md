@@ -1,7 +1,13 @@
 # Patch provenance
 
-Source: `wgpu-core` 29.0.4 from crates.io, checksum
-`2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7`.
+Source: `wgpu-core` 29.0.4 from crates.io.
+
+Pinned SHA-256 digests:
+
+- crates.io archive: `2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7`
+- upstream `src/device/global.rs`: `8d8554b2400b46b595af68b0d2fab472da06b8c11fa1823299728b5bc2cf2caa`
+- patched local `src/device/global.rs`: `ceab63ff6129a22e1bea8e9e1e691edb745080541d9c65b3ec043981d0a21978`
+- patched tree inventory, excluding this provenance file: `e494cac012a4503763ffb461980967eedf23b5ac00b8cde28020a558dcef04a5`
 
 Local change: add the hidden core half of the audited external-write handoff.
 It validates that the requested byte range belongs to a live buffer and drains
@@ -13,3 +19,10 @@ This patch exists only to prevent wgpu from clearing a uniquely owned Burn
 allocation after J2K's Metal producer has initialized it. It must be removed
 when the targeted wgpu/Burn/CubeCL versions provide an upstream safe
 external-write initialization and dependency-registration mechanism.
+
+## Release approval
+
+- Status: pending maintainer review
+
+Publication remains blocked until a human reviewer adds their identity and a
+calendar-valid approval date.

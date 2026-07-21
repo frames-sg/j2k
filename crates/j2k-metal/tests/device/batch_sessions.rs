@@ -13,14 +13,14 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
     let mut decoder = MetalBatchDecoder::system_default().expect("persistent Metal decoder");
     let registry_id = decoder.backend_session().device().registry_id();
 
-    let before = decoder.submissions().expect("initial submissions");
+    let before = decoder.submissions().expect("Metal batch submissions");
     let distinct = decoder
         .decode_batch(vec![
             EncodedImage::full(first.clone()),
             EncodedImage::full(second),
         ])
         .expect("distinct HT batch");
-    let after_distinct = decoder.submissions().expect("distinct submissions");
+    let after_distinct = decoder.submissions().expect("Metal batch submissions");
 
     assert!(distinct.errors().is_empty());
     assert!(distinct.group_errors().is_empty());
@@ -42,7 +42,7 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
             EncodedImage::full(first),
         ])
         .expect("repeated HT batch");
-    let after_repeated = decoder.submissions().expect("repeated submissions");
+    let after_repeated = decoder.submissions().expect("Metal batch submissions");
 
     assert!(repeated.errors().is_empty());
     assert!(repeated.group_errors().is_empty());
@@ -88,7 +88,7 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
         &first
     ));
 
-    let before = decoder.submissions().expect("initial submissions");
+    let before = decoder.submissions().expect("Metal batch submissions");
     for expected_after in [before + 1, before + 2] {
         let result = decoder
             .decode_prepared(&prepared)
@@ -101,7 +101,7 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
         assert_eq!(group.surfaces().len(), 2);
         let resident = group
             .resident_batch()
-            .expect("NCHW Gray group must retain its dense allocation");
+            .expect("completed group has resident Metal storage");
         assert_eq!(resident.image_count(), 2);
         let dense = completed_resident_batch_bytes(group);
         assert_eq!(resident.image_stride_bytes(), dense.len() / 2);
@@ -120,7 +120,7 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
             .iter()
             .all(|surface| surface.residency() == SurfaceResidency::MetalResidentDecode));
         assert_eq!(
-            decoder.submissions().expect("completed submissions"),
+            decoder.submissions().expect("Metal batch submissions"),
             expected_after
         );
     }
@@ -307,7 +307,7 @@ fn prepared_ht_rgb_nchw_resident_group_is_exact_without_interleaved_surface_view
     );
     let resident = group
         .resident_batch()
-        .expect("NCHW RGB group must retain its dense allocation");
+        .expect("completed group has resident Metal storage");
     assert_eq!(resident.image_count(), 2);
     assert_eq!(resident.image_stride_bytes(), expected.len() / 2);
     assert_eq!(completed_resident_batch_bytes(group), expected.as_slice());

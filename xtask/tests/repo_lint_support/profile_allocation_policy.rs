@@ -219,7 +219,7 @@ fn metal_profile_callers_do_not_preformat_owned_values() {
         "pub(super) fn emit_direct_hybrid_stage_timings(",
         "fn stage_processor",
     );
-    let hybrid = read("crates/j2k-metal/src/hybrid.rs");
+    let hybrid = read("crates/j2k-metal/src/hybrid/profile.rs");
     let hybrid = source_section(
         &hybrid,
         "fn emit_region_scaled_color_plan_build_timings(",

@@ -48,6 +48,7 @@ const TRANSCODE_PARITY_TESTS: &[&str] = &[
 const ML_CUDA_TESTS: &[&str] = &[
     "burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches",
     "cuda_burn_batch_continues_after_one_group_submit_failure",
+    "cuda_burn_decoder_construction_is_infallible_and_lazy",
     "cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_without_cuda",
     "direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session",
     "direct_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts",

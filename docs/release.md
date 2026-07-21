@@ -80,11 +80,14 @@ maintainer create an annotated `v<workspace-version>` tag that peels to
 `RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
 release tag, or treat a GitHub Pages deployment as release evidence.
 
-Before final candidate freeze, complete both structured fields in the patched
-`block`
+Before final candidate freeze, complete both structured fields in every
+`[patch.crates-io]` path override's `PATCH_PROVENANCE.md` record with the
+actual reviewer identity and review date. The publish-integrity command
+discovers these records from the workspace manifest and fails if any one is
+missing or unapproved. The date must be a calendar-valid `YYYY-MM-DD`; never
+infer either value from commit metadata. The patched `block`
 [release approval record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
-with the actual reviewer identity and review date. The date must be a
-calendar-valid `YYYY-MM-DD`; never infer either value from commit metadata.
+remains the example for the required format.
 Also have a repository administrator enable GitHub private vulnerability
 reporting under **Security** settings before exact-SHA candidate verification.
 The authenticated candidate verifier reads that repository setting and fails

@@ -3,6 +3,8 @@
 use super::super::super::{assert_pattern_checks, PatternCheck};
 use super::CudaDecoderSources;
 
+mod grayscale_batch;
+
 #[test]
 fn runtime_paths_live_in_focused_modules() {
     let sources = CudaDecoderSources::read();
