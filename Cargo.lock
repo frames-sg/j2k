@@ -2683,6 +2683,7 @@ dependencies = [
  "libc",
  "metal",
  "rayon",
+ "syn",
  "thiserror 2.0.18",
 ]
 

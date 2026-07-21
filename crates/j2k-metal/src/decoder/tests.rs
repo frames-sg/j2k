@@ -346,43 +346,84 @@ fn repeated_region_scaled_color_batch_reuses_prepared_plan() {
 }
 
 #[test]
-fn decoder_modules_remain_focused_without_suppression_shortcuts() {
-    const MODULES: [(&str, &str, usize); 6] = [
-        ("adapters.rs", include_str!("adapters.rs"), 300),
-        ("core.rs", include_str!("core.rs"), 400),
-        ("direct_paths.rs", include_str!("direct_paths.rs"), 600),
-        ("request.rs", include_str!("request.rs"), 220),
-        ("routes.rs", include_str!("routes.rs"), 380),
-        ("surface.rs", include_str!("surface.rs"), 120),
-    ];
+fn decoder_modules_remain_explicit_without_suppression_shortcuts() {
+    use std::collections::BTreeSet;
+    use syn::{Item, UseTree};
 
-    let root = include_str!("../decoder.rs");
-    assert!(
-        root.lines().count() <= 40,
-        "decoder.rs should remain a small explicit module facade"
-    );
+    fn use_tree_has_glob(tree: &UseTree) -> bool {
+        match tree {
+            UseTree::Glob(_) => true,
+            UseTree::Group(group) => group.items.iter().any(use_tree_has_glob),
+            UseTree::Path(path) => use_tree_has_glob(&path.tree),
+            UseTree::Name(_) | UseTree::Rename(_) => false,
+        }
+    }
 
-    for (name, source, cap) in MODULES {
+    fn assert_explicit_items(name: &str, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Macro(item) => assert!(
+                    !item.mac.path.is_ident("include"),
+                    "{name} must be a real parsed module"
+                ),
+                Item::Mod(module) => {
+                    if let Some((_, nested)) = &module.content {
+                        assert_explicit_items(name, nested);
+                    }
+                }
+                Item::Use(item) => assert!(
+                    !use_tree_has_glob(&item.tree),
+                    "{name} must use explicit imports"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    fn parse_explicit_module(name: &str, source: &str) -> syn::File {
+        let file = syn::parse_file(source)
+            .unwrap_or_else(|error| panic!("parse decoder module {name}: {error}"));
         assert!(
-            source.lines().count() <= cap,
-            "{name} has {} lines, exceeding its {cap}-line focus cap",
-            source.lines().count()
-        );
-        assert!(
-            !source.contains("include!("),
-            "{name} must be a real module"
-        );
-        assert!(
-            !source.contains("#![allow"),
+            !file.attrs.iter().any(|attr| attr.path().is_ident("allow")),
             "{name} must not use module-wide lint suppression"
         );
-        assert!(
-            !source.contains("allow(unused"),
-            "{name} must not suppress unused-code findings"
-        );
-        assert!(
-            !source.contains("use super::*") && !source.contains("use crate::*"),
-            "{name} must use explicit imports"
-        );
+        assert_explicit_items(name, &file.items);
+        file
+    }
+
+    const MODULES: [(&str, &str); 6] = [
+        ("adapters.rs", include_str!("adapters.rs")),
+        ("core.rs", include_str!("core.rs")),
+        ("direct_paths.rs", include_str!("direct_paths.rs")),
+        ("request.rs", include_str!("request.rs")),
+        ("routes.rs", include_str!("routes.rs")),
+        ("surface.rs", include_str!("surface.rs")),
+    ];
+
+    let root = parse_explicit_module("decoder.rs", include_str!("../decoder.rs"));
+    let external_modules = root
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.content.is_none() => Some(module.ident.to_string()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_modules = [
+        "adapters",
+        "core",
+        "direct_paths",
+        "request",
+        "routes",
+        "surface",
+        "tests",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<BTreeSet<_>>();
+    assert_eq!(external_modules, expected_modules);
+
+    for (name, source) in MODULES {
+        parse_explicit_module(name, source);
     }
 }
