@@ -6,6 +6,10 @@ use std::path::Path;
 
 use syn::{Attribute, Item};
 
+use self::evidence_modules::collect_evidence_symbols_from_file;
+
+mod evidence_modules;
+
 const CUDA_SIMT_EVIDENCE: &[EvidenceTest] = &[
     supplemental_evidence(
         "crates/j2k-cuda-runtime/src/tests.rs",
@@ -281,13 +285,7 @@ pub(super) fn validate_exclusion_policy(root: &Path) -> Result<(), String> {
         }
         require_primary_evidence(exclusion)?;
         for evidence in exclusion.evidence {
-            let source = fs::read_to_string(root.join(evidence.path)).map_err(|err| {
-                format!(
-                    "coverage exclusion `{}` evidence {} is unavailable: {err}",
-                    exclusion.id, evidence.path
-                )
-            })?;
-            validate_evidence_test_source(evidence.path, evidence.name, evidence.class, &source)
+            validate_evidence_test_path(root, evidence.path, evidence.name, evidence.class)
                 .map_err(|error| {
                     format!(
                         "coverage exclusion `{}` has invalid evidence test `{}::{}`: {error}",
@@ -322,6 +320,18 @@ struct EvidenceSymbolMatches {
     conditional: bool,
 }
 
+fn validate_evidence_test_path(
+    root: &Path,
+    path: &str,
+    name: &str,
+    expected_class: EvidenceClass,
+) -> Result<(), String> {
+    let mut matches = EvidenceSymbolMatches::default();
+    collect_evidence_symbols_from_file(root, Path::new(path), name, false, &mut matches)?;
+    validate_evidence_symbol_matches(&matches, expected_class)
+}
+
+#[cfg(test)]
 fn validate_evidence_test_source(
     path: &str,
     name: &str,
@@ -337,6 +347,13 @@ fn validate_evidence_test_source(
         enclosing_cfg_is_conditional(&file.attrs),
         &mut matches,
     );
+    validate_evidence_symbol_matches(&matches, expected_class)
+}
+
+fn validate_evidence_symbol_matches(
+    matches: &EvidenceSymbolMatches,
+    expected_class: EvidenceClass,
+) -> Result<(), String> {
     match matches.count {
         0 => return Err("no matching Rust function symbol exists".to_string()),
         1 => {}

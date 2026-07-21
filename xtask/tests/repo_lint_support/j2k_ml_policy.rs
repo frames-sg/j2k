@@ -301,8 +301,7 @@ fn j2k_ml_accelerator_zero_copy_contracts_are_source_enforced() {
     ]);
 }
 
-#[test]
-fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
+fn assert_workload_catalog_evidence() {
     let catalog = rust_evidence(&["crates/j2k-ml/benches/support/workload_catalog.rs"]);
     assert_string_literal_evidence(
         "native benchmark workload catalog",
@@ -339,7 +338,9 @@ fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
         &fixture,
         &["wrap_benchmark_rgba_jph", "J2kChannelType", "Opacity"],
     );
+}
 
+fn assert_cpu_benchmark_evidence() {
     let cpu = rust_evidence(&["crates/j2k-ml/benches/batch_decode.rs"]);
     assert_identifier_evidence(
         "CPU batch benchmark",
@@ -352,7 +353,9 @@ fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
         ],
     );
     assert_string_literal_evidence("CPU preparation benchmark", &cpu, &["prepare_images"]);
+}
 
+fn assert_cuda_benchmark_evidence() {
     let cuda = rust_evidence(&[
         "crates/j2k-ml/benches/batch_decode_cuda.rs",
         "crates/j2k-ml/benches/cuda_telemetry.rs",
@@ -384,7 +387,9 @@ fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
             "burn_direct",
         ],
     );
+}
 
+fn assert_metal_benchmark_evidence() {
     let metal = rust_evidence(&[
         "crates/j2k-ml/benches/batch_decode_metal.rs",
         "crates/j2k-ml/benches/metal_telemetry.rs",
@@ -415,6 +420,14 @@ fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
             "session_pool_peak_cached_bytes_after",
         ],
     );
+}
+
+#[test]
+fn j2k_ml_batch_benchmarks_cover_native_medical_outputs_and_all_requests() {
+    assert_workload_catalog_evidence();
+    assert_cpu_benchmark_evidence();
+    assert_cuda_benchmark_evidence();
+    assert_metal_benchmark_evidence();
 
     let benchmark_docs = read("docs/j2k-ml.md");
     assert!(benchmark_docs.contains("session-cumulative"));

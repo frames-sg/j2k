@@ -49,24 +49,24 @@ fn ht_decode_statistics_are_owned_separately_from_allocation_state() {
     assert!(modules.contains("state"));
     assert!(modules.contains("stats"));
 
-    let state = top_level_type_names(
+    let allocation_types = top_level_type_names(
         "HT allocation state",
         &read("crates/j2k-native/src/j2c/ht_block_decode/state.rs"),
     );
-    assert!(state.contains("HtBlockDecodeContext"));
-    assert!(state.contains("HtBlockDecodeScratch"));
-    assert!(state.is_disjoint(&BTreeSet::from([
+    assert!(allocation_types.contains("HtBlockDecodeContext"));
+    assert!(allocation_types.contains("HtBlockDecodeScratch"));
+    assert!(allocation_types.is_disjoint(&BTreeSet::from([
         "HtBlockDecodeStats".to_owned(),
         "HtDecodeObserver".to_owned(),
         "NoHtDecodeStats".to_owned(),
         "RecordingHtDecodeStats".to_owned(),
     ])));
 
-    let stats = top_level_type_names(
+    let statistic_types = top_level_type_names(
         "HT decode statistics",
         &read("crates/j2k-native/src/j2c/ht_block_decode/stats.rs"),
     );
-    assert!(stats.is_superset(&BTreeSet::from([
+    assert!(statistic_types.is_superset(&BTreeSet::from([
         "HtBlockDecodeStats".to_owned(),
         "HtDecodeObserver".to_owned(),
         "NoHtDecodeStats".to_owned(),

@@ -303,7 +303,7 @@ impl<'ast> Visit<'ast> for SessionScopeVisitor<'_> {
             .flatten()
             .next()
             .copied();
-        if !materialization_line.is_some_and(|line| line < call_line) {
+        if materialization_line.is_none_or(|line| line >= call_line) {
             self.violations.push(format!(
                 "{constructor} at line {call_line} is not after workload materialization in its loop"
             ));
