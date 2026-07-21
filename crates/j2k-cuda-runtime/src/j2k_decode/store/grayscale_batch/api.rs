@@ -41,10 +41,7 @@ fn retire_failed_zero_fill(
     if !zero_fill_enqueued {
         return error;
     }
-    match context.synchronize_then_error::<()>(error) {
-        Err(error) => error,
-        Ok(()) => unreachable!("synchronize_then_error always returns the primary error"),
-    }
+    context.error_after_synchronize(error)
 }
 
 fn finish_owned_store(

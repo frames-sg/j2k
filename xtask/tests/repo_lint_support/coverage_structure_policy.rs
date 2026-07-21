@@ -629,7 +629,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "pub(super) fn module_reachability(",
         ]),
         PatternCheck::new("coverage module path boundary", &module_resolver).required(&[
-            "pub(super) fn resolve_external_module(",
+            "pub(in crate::coverage) fn resolve_external_module(",
             "fs::canonicalize(root)",
             "resolves outside repository root",
             "more than one path attribute",

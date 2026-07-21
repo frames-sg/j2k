@@ -250,22 +250,27 @@ impl CudaContext {
         }
     }
 
-    /// Synchronize before returning `error`; if synchronization itself fails,
-    /// return that completion failure instead.
-    pub(crate) fn synchronize_then_error<T>(&self, error: CudaError) -> Result<T, CudaError> {
+    /// Synchronize before selecting `error`; if synchronization itself fails,
+    /// select that completion failure instead.
+    pub(crate) fn error_after_synchronize(&self, error: CudaError) -> CudaError {
         if self.inner.resource_lifetimes_poisoned() {
             // A synchronous operation may already have surfaced the driver
             // error that poisoned this context. Do not replace that primary
             // diagnostic with the generic follow-up poison sentinel.
-            return Err(select_uncertain_completion_error(error, None));
+            return select_uncertain_completion_error(error, None);
         }
         match self.synchronize() {
-            Ok(()) => Err(error),
-            Err(completion_error) => Err(select_uncertain_completion_error(
-                error,
-                Some(completion_error),
-            )),
+            Ok(()) => error,
+            Err(completion_error) => {
+                select_uncertain_completion_error(error, Some(completion_error))
+            }
         }
+    }
+
+    /// Synchronize before returning `error`; if synchronization itself fails,
+    /// return that completion failure instead.
+    pub(crate) fn synchronize_then_error<T>(&self, error: CudaError) -> Result<T, CudaError> {
+        Err(self.error_after_synchronize(error))
     }
 
     /// Preload a bundled CUDA kernel module and return its metadata handle.
