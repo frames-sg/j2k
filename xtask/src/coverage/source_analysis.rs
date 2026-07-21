@@ -22,6 +22,10 @@ use ast::analyze_source;
 pub(crate) use audit::{analyze_test_only_syntax, SourceAuditSyntax, SourceAuditTestSpan};
 use cfg_eval::CoverageCfgContext;
 use graph::{module_reachability, ReachKind};
+pub(in crate::coverage) use module_resolver::{
+    existing_repository_source, has_module_path_attribute, resolve_external_module,
+    source_module_dir, source_parent_dir,
+};
 use workspace::{
     classify_unreached_source, discover_source_roots, read_source, CoverageCfgContexts, SourceRoot,
 };

@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use syn::ext::IdentExt;
 use syn::{Attribute, Expr, Lit, Meta};
 
-pub(super) fn source_module_dir(current: &str, crate_root: bool) -> Result<PathBuf, String> {
+pub(in crate::coverage) fn source_module_dir(
+    current: &str,
+    crate_root: bool,
+) -> Result<PathBuf, String> {
     let current = Path::new(current);
     let parent = current.parent().unwrap_or_else(|| Path::new("."));
     if crate_root {
@@ -23,14 +26,14 @@ pub(super) fn source_module_dir(current: &str, crate_root: bool) -> Result<PathB
     })
 }
 
-pub(super) fn source_parent_dir(current: &str) -> PathBuf {
+pub(in crate::coverage) fn source_parent_dir(current: &str) -> PathBuf {
     Path::new(current)
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf()
 }
 
-pub(super) fn resolve_external_module(
+pub(in crate::coverage) fn resolve_external_module(
     root: &Path,
     current: &str,
     module_dir: &Path,
@@ -70,7 +73,7 @@ pub(super) fn resolve_external_module(
     }
 }
 
-pub(super) fn has_module_path_attribute(attrs: &[Attribute]) -> Result<bool, String> {
+pub(in crate::coverage) fn has_module_path_attribute(attrs: &[Attribute]) -> Result<bool, String> {
     module_path_attribute(attrs).map(|path| path.is_some())
 }
 
@@ -97,7 +100,10 @@ fn module_path_attribute(attrs: &[Attribute]) -> Result<Option<PathBuf>, String>
     Ok(path)
 }
 
-fn existing_repository_source(root: &Path, relative: &Path) -> Result<String, String> {
+pub(in crate::coverage) fn existing_repository_source(
+    root: &Path,
+    relative: &Path,
+) -> Result<String, String> {
     let canonical_root = fs::canonicalize(root)
         .map_err(|error| format!("failed to canonicalize repository root: {error}"))?;
     let candidate = fs::canonicalize(root.join(relative)).map_err(|error| {
