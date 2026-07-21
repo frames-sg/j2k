@@ -10,6 +10,8 @@ readme.workspace = true
 repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-cuda"
 version.workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["paste", "pretty_assertions", "test-log"]
 
 [lints]
 workspace = true

@@ -2,11 +2,12 @@
 
 //! Codec-owned resident Metal group submission.
 
+#[cfg(target_os = "macos")]
 use super::{
     allocate_codec_owned_group_destination, validate_codec_owned_resident_group, BatchColor,
-    BatchDecodeOptions, Error, MetalBatchDecoder, MetalBatchGroup, MetalResidentGroupMetadata,
-    PreparedBatchGroup, SubmittedMetalResidentGroup,
+    MetalResidentGroupMetadata, SubmittedMetalResidentGroup,
 };
+use super::{BatchDecodeOptions, Error, MetalBatchDecoder, MetalBatchGroup, PreparedBatchGroup};
 
 impl MetalBatchDecoder {
     pub(super) fn decode_prepared_group_with_options(

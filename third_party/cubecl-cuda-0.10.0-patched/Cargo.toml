@@ -31,6 +31,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-cuda"
 resolver = "2"
 
+[package.metadata.cargo-machete]
+ignored = ["paste", "pretty_assertions", "test-log"]
+
 [features]
 default = [
     "std",

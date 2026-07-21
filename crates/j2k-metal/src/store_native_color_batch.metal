@@ -211,4 +211,3 @@ kernel void j2k_store_native_rgba_batch_i16(
             float((1u << (params.bit_depths[3] - 1u)) - 1u)
         );
 }
-

@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(all(test, target_os = "macos"))]
 use std::sync::Arc;
 
+#[cfg(any(test, target_os = "macos"))]
+use j2k::BatchLayout;
 use j2k::{
-    BatchColor, BatchDecodeOptions, BatchGroupInfo, BatchLayout, DecodeRequest, EncodedImage,
-    IndexedBatchError, J2kDecodeWarning, PreparedBatch, PreparedBatchGroup, PreparedImage,
+    BatchDecodeOptions, BatchGroupInfo, EncodedImage, IndexedBatchError, J2kDecodeWarning,
+    PreparedBatch, PreparedBatchGroup, PreparedImage,
 };
-use j2k_core::{DeviceSubmission, PixelFormat, Rect};
+#[cfg(any(test, target_os = "macos"))]
+use j2k_core::PixelFormat;
+use j2k_core::Rect;
 
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalImageDestination, MetalImageLayout, ResidentMetalImage};
@@ -26,7 +31,6 @@ mod external;
 mod plan_cache;
 #[cfg(all(test, target_os = "macos"))]
 mod queue_ordering_tests;
-#[cfg(target_os = "macos")]
 mod resident;
 #[cfg(target_os = "macos")]
 mod submission;
@@ -57,6 +61,7 @@ pub use self::decoder::MetalBatchDecoder;
 #[cfg(target_os = "macos")]
 pub use self::submission::{SubmittedMetalGroupDecodeInto, SubmittedMetalPreparedBatch};
 
+#[cfg(any(test, target_os = "macos"))]
 use self::contracts::validate_group_contract;
 #[cfg(target_os = "macos")]
 use self::plan_cache::{PreparedColorPlanCache, PreparedGrayPlanCache};

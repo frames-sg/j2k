@@ -2,11 +2,15 @@
 
 //! Shared Metal batch result and metadata contracts.
 
+#[cfg(target_os = "macos")]
+use super::{BatchDecodeOptions, Buffer, ResidentMetalImage};
 use super::{
-    BatchDecodeOptions, BatchGroupInfo, BatchLayout, Buffer, Error, IndexedBatchError,
-    J2kDecodeWarning, PixelFormat, PreparedBatchGroup, Rect, ResidentMetalImage, Surface,
+    BatchGroupInfo, Error, IndexedBatchError, J2kDecodeWarning, PreparedBatchGroup, Rect, Surface,
 };
+#[cfg(any(test, target_os = "macos"))]
+use super::{BatchLayout, PixelFormat};
 
+#[cfg(any(test, target_os = "macos"))]
 pub(super) fn validate_group_contract(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
     if !matches!(info.layout, BatchLayout::Nchw | BatchLayout::Nhwc) {
         return Err(Error::UnsupportedMetalRequest {
@@ -28,6 +32,7 @@ pub struct MetalBatchGroupCompletion {
 }
 
 impl MetalBatchGroupCompletion {
+    #[cfg(target_os = "macos")]
     pub(super) fn from_prepared(group: &PreparedBatchGroup, options: BatchDecodeOptions) -> Self {
         let decoded_rects = group
             .images()

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
-use j2k_core::{BackendRequest, PixelFormat};
+use j2k_core::BackendRequest;
+#[cfg(target_os = "macos")]
+use j2k_core::PixelFormat;
 
 use crate::{Error, J2kDecoder, MetalBackendSession, MetalDecodeRequest, Surface};
 
@@ -11,7 +14,9 @@ use super::heuristics::{
     is_region_scaled_direct_batch_candidate, is_repeated_full_color_candidate,
     is_repeated_full_grayscale_candidate, should_auto_use_metal_for_region_scaled_direct_batch,
 };
-use super::request::{batch_scheduler_invariant, BatchOp, QueuedRequest};
+#[cfg(target_os = "macos")]
+use super::request::batch_scheduler_invariant;
+use super::request::{BatchOp, QueuedRequest};
 
 pub(super) fn decode_repeated_full_grayscale(
     request: &QueuedRequest,

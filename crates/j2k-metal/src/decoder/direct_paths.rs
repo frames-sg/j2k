@@ -9,6 +9,7 @@ use j2k_core::{BackendRequest, PixelFormat};
 use j2k_native::{
     DecodeSettings as NativeDecodeSettings, Image as NativeImage, J2kDirectGrayscalePlan,
 };
+#[cfg(target_os = "macos")]
 use metal::Device;
 
 #[cfg(target_os = "macos")]

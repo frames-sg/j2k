@@ -10,6 +10,16 @@ readme.workspace = true
 repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-runtime"
 version.workspace = true
 
+[package.metadata.cargo-machete]
+ignored = [
+    "cfg-if",
+    "cfg_aliases",
+    "enumset",
+    "rand",
+    "serde_json",
+    "serial_test",
+    "toml",
+]
 
 [lints]
 workspace = true

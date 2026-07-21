@@ -47,7 +47,7 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases"]
+ignored = ["cfg_aliases", "windows-result"]
 
 [features]
 device_lost_panic = []

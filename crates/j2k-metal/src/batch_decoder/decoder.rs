@@ -4,8 +4,11 @@
 
 use super::{
     BatchDecodeOptions, EncodedImage, Error, MetalBackendSession, MetalBatchDecodeResult,
-    MetalBatchGroup, MetalBatchGroupError, MetalImageDestination, PixelFormat, PreparedBatch,
-    PreparedBatchGroup, PreparedColorPlanCache, PreparedGrayPlanCache, PreparedImage,
+    MetalBatchGroup, MetalBatchGroupError, PreparedBatch, PreparedBatchGroup, PreparedImage,
+};
+#[cfg(target_os = "macos")]
+use super::{
+    MetalImageDestination, PixelFormat, PreparedColorPlanCache, PreparedGrayPlanCache,
     SubmittedMetalPreparedBatch,
 };
 
@@ -103,6 +106,7 @@ impl MetalBatchDecoder {
         Ok(self.submission_count)
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) fn record_submission(&mut self) {
         self.submission_count = self.submission_count.saturating_add(1);
     }

@@ -10,6 +10,9 @@ publish = false
 readme = "README.md"
 autobenches = false
 
+[package.metadata.cargo-machete]
+ignored = ["criterion"]
+
 [features]
 default = []
 cpu = []

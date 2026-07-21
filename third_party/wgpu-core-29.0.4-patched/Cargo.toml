@@ -42,7 +42,13 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases"]
+ignored = [
+    "cfg_aliases",
+    "wgpu-core-deps-apple",
+    "wgpu-core-deps-emscripten",
+    "wgpu-core-deps-wasm",
+    "wgpu-core-deps-windows-linux-android",
+]
 
 [features]
 angle = ["wgpu-core-deps-apple/angle"]

@@ -117,4 +117,3 @@ page still applies to this API, with the exception of API tracing/replay
 functionality, which is only available in `wgpu-core`.
 
 [wiki-debug]: https://github.com/gfx-rs/wgpu/wiki/Debugging-wgpu-Applications
-
