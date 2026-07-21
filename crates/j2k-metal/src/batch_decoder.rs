@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
