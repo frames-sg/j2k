@@ -4,6 +4,7 @@ use std::fs;
 
 use super::*;
 
+mod cuda_batch_api_structure_policy;
 mod cuda_decoder_policy;
 mod cuda_encode_structure_policy;
 mod cuda_encode_test_structure_policy;
@@ -21,6 +22,7 @@ mod jpeg_metal_surface_access_policy;
 mod jpeg_metal_viewport_structure_policy;
 mod jpeg_plan_cache_policy;
 mod metal_batch_allocation_policy;
+mod metal_batch_structure_policy;
 mod metal_plan_cache_policy;
 mod metal_surface_access_policy;
 mod metal_transcode_allocation_policy;
@@ -1170,17 +1172,24 @@ fn metal_sessions_and_direct_plan_caches_live_in_focused_module() {
         .expect("read j2k-metal lib module");
     let session = fs::read_to_string(root.join("crates/j2k-metal/src/session.rs"))
         .expect("read j2k-metal session module");
+    let direct_plan_cache =
+        fs::read_to_string(root.join("crates/j2k-metal/src/session/direct_plan_cache.rs"))
+            .expect("read j2k-metal direct-plan cache module");
+    let direct_plan_cache_tests =
+        fs::read_to_string(root.join("crates/j2k-metal/src/session/direct_plan_cache/tests.rs"))
+            .expect("read j2k-metal direct-plan cache tests");
 
     let session_items = [
         "pub struct MetalBackendSession",
         "pub struct MetalSession",
+        "pub(crate) fn record_submit",
+    ];
+    let direct_plan_cache_items = [
+        "pub(super) struct DirectPlanCaches",
         "struct DirectGrayPlanCacheEntry",
         "struct DirectColorPlanCacheEntry",
         "const DIRECT_PLAN_CACHE_CAP",
         "fn evict_one_direct_plan_if_needed",
-        "pub(crate) fn record_submit",
-    ];
-    let session_helpers = [
         "pub(crate) fn direct_plan_cache_key",
         "pub(crate) fn direct_gray_plan_cache_key",
         "pub(crate) fn cached_session_direct_gray_plan",
@@ -1195,9 +1204,28 @@ fn metal_sessions_and_direct_plan_caches_live_in_focused_module() {
                 "pub use self::session::{MetalBackendSession, MetalSession};",
             ])
             .forbidden(&session_items),
-        PatternCheck::new("j2k-metal session item ownership", &session).required(&session_items),
-        PatternCheck::new("j2k-metal direct-plan cache helper ownership", &session)
-            .required(&session_helpers),
+        PatternCheck::new("j2k-metal session lifecycle ownership", &session)
+            .required(&[
+                "mod direct_plan_cache;",
+                "direct_plan_caches: direct_plan_cache::DirectPlanCaches",
+            ])
+            .required(&session_items)
+            .forbidden(&direct_plan_cache_items),
+        PatternCheck::new("j2k-metal direct-plan cache ownership", &direct_plan_cache)
+            .required(&direct_plan_cache_items)
+            .required(&["mod tests;"])
+            .forbidden(&[
+                "fn prepared_plan_cache_allocation_keeps_its_source_and_classification",
+                "fn prepared_plan_cache_invariant_keeps_static_reason_without_source",
+            ]),
+        PatternCheck::new(
+            "j2k-metal direct-plan cache test ownership",
+            &direct_plan_cache_tests,
+        )
+        .required(&[
+            "fn prepared_plan_cache_allocation_keeps_its_source_and_classification",
+            "fn prepared_plan_cache_invariant_keeps_static_reason_without_source",
+        ]),
     ]);
 }
 
@@ -1295,108 +1323,6 @@ fn metal_decoder_api_lives_in_focused_module() {
         PatternCheck::new("j2k-metal decoder surface ownership", &surface)
             .required(&["fn upload_surface("]),
     ]);
-}
-
-#[test]
-fn metal_batch_heuristics_live_in_focused_module() {
-    let root = repo_root();
-    let batch = fs::read_to_string(root.join("crates/j2k-metal/src/batch.rs"))
-        .expect("read j2k-metal batch module");
-    let heuristics = fs::read_to_string(root.join("crates/j2k-metal/src/batch/heuristics.rs"))
-        .expect("read j2k-metal batch heuristics module");
-
-    let heuristic_items = [
-        "pub(super) enum BatchRoute",
-        "pub(super) struct GroupedRequests",
-        "pub(super) fn group_metal_requests",
-        "pub(super) fn profile_route_label",
-        "pub(super) fn is_region_scaled_direct_batch_candidate",
-        "pub(super) fn should_auto_use_metal_for_region_scaled_direct_batch",
-        "pub(super) fn can_decode_requests_as_repeated_region_scaled_batch",
-    ];
-    let heuristic_required = [
-        "pub(super) enum BatchRoute",
-        "pub(super) struct GroupedRequests",
-        "pub(super) fn group_metal_requests",
-        "pub(super) fn profile_route_label",
-        "pub(super) fn is_region_scaled_direct_batch_candidate",
-        "pub(super) fn should_auto_use_metal_for_region_scaled_direct_batch",
-        "pub(super) fn can_decode_requests_as_repeated_region_scaled_batch",
-        "AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM",
-        "REGION_SCALED_DIRECT_FORMATS",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("j2k-metal batch heuristic module shell", &batch)
-            .required(&[
-                "mod heuristics;",
-                "use self::heuristics::{",
-                "group_metal_requests",
-            ])
-            .forbidden(&heuristic_items),
-        PatternCheck::new("j2k-metal batch heuristic ownership", &heuristics)
-            .required(&heuristic_required),
-    ]);
-}
-
-#[test]
-fn metal_batch_cpu_fallback_lives_in_focused_module() {
-    let root = repo_root();
-    let batch = fs::read_to_string(root.join("crates/j2k-metal/src/batch.rs"))
-        .expect("read j2k-metal batch module");
-    let cpu = fs::read_to_string(root.join("crates/j2k-metal/src/batch/cpu.rs"))
-        .expect("read j2k-metal batch CPU module");
-
-    let cpu_items = [
-        "pub(super) fn decode_cpu_host_batch",
-        "fn decode_cpu_full_batch",
-        "fn decode_cpu_region_scaled_batch",
-        "fn checked_cpu_batch_surface",
-        "fn cpu_batch_error",
-        "fn host_surface",
-        "decode_tiles_into",
-        "decode_tiles_region_scaled_into",
-        "BatchDecodeError::Tile(error)",
-        "BatchDecodeError::Infrastructure(error)",
-        "BufferError::AllocationTooLarge",
-        "BufferError::HostAllocationFailed",
-        "Error::BatchInfrastructure(other)",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("j2k-metal batch CPU fallback module shell", &batch)
-            .required(&["mod cpu;", "use self::cpu::decode_cpu_host_batch;"])
-            .forbidden(&cpu_items),
-        PatternCheck::new("j2k-metal batch CPU fallback ownership", &cpu).required(&cpu_items),
-    ]);
-}
-
-#[test]
-fn metal_batch_execute_lives_in_focused_module() {
-    let root = repo_root();
-    let batch = fs::read_to_string(root.join("crates/j2k-metal/src/batch.rs"))
-        .expect("read j2k-metal batch module");
-    let execute = fs::read_to_string(root.join("crates/j2k-metal/src/batch/execute.rs"))
-        .expect("read j2k-metal batch execute module");
-
-    let execute_items = [
-        "pub(super) fn process_batch",
-        "fn process_batch_inner",
-        "fn complete_cpu_host_fallback",
-        "fn complete_batch_surfaces",
-        "fn profile_completed_outcome",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("j2k-metal batch execute module shell", &batch)
-            .required(&["mod execute;", "use self::execute::process_batch;"])
-            .forbidden(&execute_items),
-        PatternCheck::new("j2k-metal batch execute ownership", &execute).required(&execute_items),
-    ]);
-    assert_eq!(
-        execute
-            .matches("session.completed[request.output_slot] = Some(Ok(surface));")
-            .count(),
-        1,
-        "batch execution must use one shared successful-completion block"
-    );
 }
 
 #[test]

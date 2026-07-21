@@ -42,7 +42,7 @@ pub fn decode_ht_code_block_scalar_until_phase(
 }
 
 /// Adapter reusable scalar HTJ2K decode workspace for backend experimentation.
-#[derive(Default)]
+#[derive(Debug, Default)]
 #[doc(hidden)]
 pub struct HtCodeBlockDecodeWorkspace {
     coefficients: Vec<u32>,
@@ -50,6 +50,13 @@ pub struct HtCodeBlockDecodeWorkspace {
 }
 
 impl HtCodeBlockDecodeWorkspace {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            coefficients: Vec::new(),
+            scratch: j2c::ht_block_decode::HtBlockDecodeScratch::empty(),
+        }
+    }
+
     /// Current coefficient buffer capacity retained by this workspace.
     #[must_use]
     pub fn coefficient_capacity(&self) -> usize {

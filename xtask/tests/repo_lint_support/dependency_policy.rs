@@ -50,7 +50,15 @@ fn block_patch_scope_and_metal_migration_debt_stay_explicit() {
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
     assert!(workspace.contains("[patch.crates-io]"));
     assert!(workspace.contains("block = { path = \"third_party/block-0.1.6-patched\" }"));
-    assert!(workspace.contains("exclude = [\"third_party/block-0.1.6-patched\"]"));
+    let manifest = toml::from_str::<toml::Value>(&workspace).expect("parse workspace manifest");
+    let excluded = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .expect("workspace.exclude array");
+    assert!(excluded
+        .iter()
+        .any(|path| { path.as_str() == Some("third_party/block-0.1.6-patched") }));
 
     for manifest in workspace_member_manifests(root) {
         let source = fs::read_to_string(&manifest)

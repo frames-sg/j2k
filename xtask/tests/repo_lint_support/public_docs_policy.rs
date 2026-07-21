@@ -129,6 +129,34 @@ fn public_docs_describe_public_crate_auto_and_cuda_runtime_surface_scope() {
 }
 
 #[test]
+fn historical_metal_batch_claims_are_qualified_at_the_point_of_use() {
+    let root = repo_root();
+    let architecture =
+        fs::read_to_string(root.join("docs/architecture.md")).expect("read architecture docs");
+    let claim_anchor = architecture
+        .find("A July 19, 2026 local M4 Pro diagnostic run")
+        .expect("architecture historical Metal batch claim");
+    let claim_start = architecture[..claim_anchor]
+        .rfind("\n\n")
+        .map_or(0, |offset| offset + 2);
+    let claim_end = architecture[claim_anchor..]
+        .find("\n\n")
+        .map_or(architecture.len(), |offset| claim_anchor + offset);
+    let claim = &architecture[claim_start..claim_end];
+
+    for qualification in [
+        "identical encoded content",
+        "decode-once broadcast",
+        "not a content-distinct acceptance baseline",
+    ] {
+        assert!(
+            claim.contains(qualification),
+            "historical Metal batch claim must include {qualification:?} at the point of use"
+        );
+    }
+}
+
+#[test]
 fn public_docs_route_users_to_current_crates() {
     let root = repo_root();
     let readme = fs::read_to_string(root.join("README.md")).expect("read README");

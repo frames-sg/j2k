@@ -3,25 +3,29 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use metal::{Buffer, CommandBufferRef};
+use metal::{Buffer, CommandBufferRef, ComputeCommandEncoderRef};
 
+use super::decode_dispatch::mct::dispatch_inverse_mct_buffers_in_command_buffer;
+use super::direct_grayscale_execute::{
+    checked_coefficient_len, encode_prepared_direct_component_plane_in_command_buffer,
+    DirectComponentPlaneRequest,
+};
 use super::{
-    build_flattened_cpu_tier1_cache, dispatch_inverse_mct_buffers_in_command_buffer, elapsed_us,
+    build_flattened_cpu_tier1_cache, elapsed_us,
     encode_batched_mct_rgb8_to_surfaces_in_command_buffer,
     encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
-    encode_prepared_direct_component_plane_in_command_buffer,
     encode_repeated_mct_rgb8_to_surfaces_in_command_buffer, flattened_hybrid_cpu_tier1_enabled,
-    metal_profile_stages_enabled, repeated_shared_direct_color_plan_count,
+    metal_profile_stages_enabled, record_hybrid_stacked_component_batch,
+    record_stacked_component_batch, repeated_shared_direct_color_plan_count,
     should_flatten_hybrid_cpu_tier1_color_batch, DirectColorBatchCommandBuffers,
-    DirectComponentPlaneRequest, DirectHybridStageTimings, DirectScratchBuffer, DirectStatusCheck,
-    DirectTier1Mode, Error, FlattenedCpuTier1Cache, MetalRuntime, NativeColorSpace, PixelFormat,
-    PlaneStage, PreparedDirectColorPlan, PreparedDirectGrayscalePlan, Surface,
+    DirectHybridStageTimings, DirectScratchBuffer, DirectStatusCheck, DirectTier1Mode, Error,
+    FlattenedCpuTier1Cache, MetalRuntime, NativeColorSpace, PixelFormat, PlaneStage,
+    PreparedDirectColorPlan, PreparedDirectGrayscalePlan, Surface,
 };
 
 mod command_submission;
 mod repeated_grayscale;
 mod resources;
-mod result;
 mod validation;
 
 use self::command_submission::submit_stacked_component_commands;
@@ -33,7 +37,6 @@ pub(super) use self::resources::{
     lookup_direct_band_slice, lookup_direct_band_slice_entry,
     lookup_repeated_direct_band_layout_entry, DirectBandSlice,
 };
-use self::result::assemble_stacked_component_result;
 use self::validation::plan_stacked_component_batch;
 pub(super) use self::validation::supports_stacked_direct_component_plane_batch;
 
@@ -112,7 +115,11 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
     }
 
     if plan.mct {
-        let len = plan.dimensions.0 as usize * plan.dimensions.1 as usize;
+        let len = checked_coefficient_len(
+            plan.dimensions.0,
+            plan.dimensions.1,
+            "J2K MetalDirect color MCT plane span overflow",
+        )?;
         let encode_started = metal_profile_stages_enabled().then(Instant::now);
         status_checks.push(dispatch_inverse_mct_buffers_in_command_buffer(
             runtime,
@@ -256,6 +263,7 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
             StackedDirectComponentPlaneBatchRequest {
                 runtime,
                 command_buffers,
+                compute_encoder: None,
                 plans: &component_plan_refs,
                 component_idx,
                 flattened_cpu_tier1_cache: flattened_cpu_tier1_cache.as_ref(),
@@ -312,6 +320,7 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
 pub(super) struct StackedDirectComponentPlaneBatchRequest<'a, 'p> {
     pub(super) runtime: &'a MetalRuntime,
     pub(super) command_buffers: DirectColorBatchCommandBuffers<'a>,
+    pub(super) compute_encoder: Option<&'a ComputeCommandEncoderRef>,
     pub(super) plans: &'a [&'p PreparedDirectGrayscalePlan],
     pub(super) component_idx: usize,
     pub(super) flattened_cpu_tier1_cache: Option<&'a FlattenedCpuTier1Cache>,
@@ -330,5 +339,14 @@ pub(super) fn encode_stacked_direct_component_plane_batch(
     let plan = plan_stacked_component_batch(request.plans, tier1_mode)?;
     let mut resources = prepare_stacked_component_resources(plan.count, plan.first.steps.len())?;
     submit_stacked_component_commands(request, &plan, &mut resources)?;
-    assemble_stacked_component_result(resources, &plan, tier1_mode)
+    let final_plane = resources.final_plane.ok_or_else(|| Error::MetalKernel {
+        message: "J2K MetalDirect color component batch did not produce a final plane".to_string(),
+    })?;
+    record_stacked_component_batch();
+    record_hybrid_stacked_component_batch(tier1_mode);
+    Ok(StackedDirectComponentPlane {
+        buffer: final_plane.buffer,
+        dimensions: plan.first.dimensions,
+        count: plan.count,
+    })
 }

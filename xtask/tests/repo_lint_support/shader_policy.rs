@@ -5,6 +5,56 @@ use std::fs;
 use super::*;
 
 #[test]
+fn metal_native_color_store_uses_one_batch_capable_kernel_family() {
+    let root = repo_root();
+    let source_root = root.join("crates/j2k-metal/src");
+    let shader_source = fs::read_to_string(source_root.join("compute/shader_source.rs"))
+        .expect("read j2k-metal shader source");
+    let store = fs::read_to_string(source_root.join("store.metal"))
+        .expect("read j2k-metal shared store shader");
+
+    let store_include_idx = shader_source
+        .find("include_str!(\"../store.metal\")")
+        .expect("j2k-metal shader source includes store.metal");
+    let batch_include = "include_str!(\"../store_native_color_batch.metal\")";
+    let batch_include_idx = shader_source
+        .find(batch_include)
+        .expect("j2k-metal shader source includes the batch-capable native color store");
+    assert!(batch_include_idx > store_include_idx);
+    assert!(!shader_source.contains("include_str!(\"../store_native_color.metal\")"));
+    assert!(!source_root.join("store_native_color.metal").exists());
+
+    let batch = fs::read_to_string(source_root.join("store_native_color_batch.metal"))
+        .expect("read batch-capable native color store");
+    assert!(batch.lines().count() < 250);
+    assert_pattern_checks(&[
+        PatternCheck::new("batch-capable native color store", &batch)
+            .required(&[
+                "kernel void j2k_store_native_rgb_batch_u8",
+                "kernel void j2k_store_native_rgba_batch_i16",
+                "gid.z >= params.batch_count",
+            ])
+            .forbidden(&["inline float3 j2k_native_color_samples("]),
+    ]);
+
+    assert!(
+        store.lines().count() < 450,
+        "store.metal must retain only shared and grayscale store behavior"
+    );
+    assert_pattern_checks(&[
+        PatternCheck::new("shared native color store helpers", &store)
+            .required(&[
+                "inline float3 j2k_native_color_samples(",
+                "inline uint j2k_native_color_output_index(",
+            ])
+            .forbidden(&[
+                "kernel void j2k_store_native_rgb_u8",
+                "kernel void j2k_store_native_rgb_batch_u8",
+            ]),
+    ]);
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the J2K Metal shader subsystem split is one fail-closed source policy"

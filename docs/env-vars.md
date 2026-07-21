@@ -68,6 +68,8 @@ override it.
 
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
+| `J2K_ML_BATCH_INPUT_MODE` | Selects content-distinct generated inputs (`distinct`) or one repeated `Arc` owner (`repeated`) for the `j2k-ml` batch benchmarks. One process uses one mode. | `distinct` | Benchmark |
+| `J2K_ML_BATCH_PROCESS_MODE` | Selects uninstrumented Criterion measurement (`criterion`) or the separate low-batch telemetry/profile process (`profile`) for CUDA and Metal batch benchmarks. | `criterion` | Benchmark |
 | `J2K_REQUIRE_OPENJPEG` | Makes OpenJPEG parity tests and benchmark comparator runs fail instead of skip when OpenJPEG tools are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_GROK` | Makes Grok parity tests and benchmark comparator runs fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |

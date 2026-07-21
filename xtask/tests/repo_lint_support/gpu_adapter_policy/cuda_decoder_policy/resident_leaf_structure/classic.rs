@@ -14,6 +14,16 @@ fn classic_and_ht_component_leaves_stay_focused() {
             100,
         ),
         (
+            "queued classic cleanup submission",
+            "crates/j2k-cuda/src/decoder/resident/cleanup_dequant/classic/queued.rs",
+            175,
+        ),
+        (
+            "queued classic cleanup regression tests",
+            "crates/j2k-cuda/src/decoder/resident/cleanup_dequant/classic/queued/tests.rs",
+            50,
+        ),
+        (
             "classic component planning",
             "crates/j2k-cuda/src/decoder/resident/component/classic.rs",
             175,

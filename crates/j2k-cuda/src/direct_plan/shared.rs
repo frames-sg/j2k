@@ -7,7 +7,7 @@ use j2k_native::{
 use super::{
     CudaClassicCodeBlock, CudaClassicSegment, CudaClassicSubband, CudaHtj2kCodeBlock,
     CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kRect, CudaHtj2kStoreStep, CudaHtj2kSubband,
-    CudaHtj2kTransform, Error, EMPTY_CUDA_PLAN, MIXED_TRANSFORMS_UNSUPPORTED,
+    CudaHtj2kTransform, Error, EMPTY_CUDA_COEFFICIENT_PLAN, MIXED_TRANSFORMS_UNSUPPORTED,
     PLAN_OUTPUT_RECT_MISMATCH, PLAN_PAYLOAD_TOO_LARGE,
 };
 use crate::allocation::HostPhaseBudget;
@@ -38,7 +38,23 @@ pub(super) struct CudaPlanOwners {
 
 impl CudaPlanOwners {
     pub(super) fn from_plan(plan: &J2kDirectGrayscalePlan) -> Result<(Self, usize), Error> {
-        let hint = cuda_plan_capacity_hint(plan)?;
+        Self::from_plan_with_payload_capacity(plan, None)
+    }
+
+    pub(super) fn from_referenced_plan(
+        plan: &J2kDirectGrayscalePlan,
+    ) -> Result<(Self, usize), Error> {
+        Self::from_plan_with_payload_capacity(plan, Some(0))
+    }
+
+    fn from_plan_with_payload_capacity(
+        plan: &J2kDirectGrayscalePlan,
+        payload_capacity: Option<usize>,
+    ) -> Result<(Self, usize), Error> {
+        let mut hint = cuda_plan_capacity_hint(plan)?;
+        if let Some(payload_capacity) = payload_capacity {
+            hint.payload_bytes = payload_capacity;
+        }
         let mut budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
         let owners = Self {
             payload: budget.try_vec_with_capacity(hint.payload_bytes)?,
@@ -76,9 +92,12 @@ impl CudaPlanOwners {
         output_origin: (u32, u32),
         dimensions: (u32, u32),
     ) -> Result<CudaHtj2kDecodePlan, Error> {
-        if self.code_blocks.is_empty() && self.classic_code_blocks.is_empty() {
+        // An omitted packet is a valid all-zero coefficient band. Keep that
+        // executable graph so the zero-filled band can flow through IDWT and
+        // final color reconstruction even when it has no entropy jobs.
+        if self.subbands.is_empty() && self.classic_subbands.is_empty() {
             return Err(Error::UnsupportedCudaRequest {
-                reason: EMPTY_CUDA_PLAN,
+                reason: EMPTY_CUDA_COEFFICIENT_PLAN,
             });
         }
         Ok(CudaHtj2kDecodePlan {
@@ -159,6 +178,18 @@ pub(super) fn convert_store_step(
     output_origin: (u32, u32),
     output_dimensions: (u32, u32),
 ) -> Result<CudaHtj2kStoreStep, Error> {
+    let already_dense = (step.output_width, step.output_height) == output_dimensions
+        && step
+            .output_x
+            .checked_add(step.copy_width)
+            .is_some_and(|end| end <= output_dimensions.0)
+        && step
+            .output_y
+            .checked_add(step.copy_height)
+            .is_some_and(|end| end <= output_dimensions.1);
+    if already_dense {
+        return convert_referenced_tile_store_step(step, output_dimensions);
+    }
     if output_dimensions.0 == 0 || output_dimensions.1 == 0 {
         return output_rect_error();
     }
@@ -186,6 +217,33 @@ pub(super) fn convert_store_step(
         output_height: output_dimensions.1,
         output_x: 0,
         output_y: 0,
+        addend: step.addend,
+    })
+}
+
+pub(super) fn convert_referenced_tile_store_step(
+    step: J2kDirectStoreStep,
+    output_dimensions: (u32, u32),
+) -> Result<CudaHtj2kStoreStep, Error> {
+    if output_dimensions.0 == 0
+        || output_dimensions.1 == 0
+        || (step.output_width, step.output_height) != output_dimensions
+        || checked_end(step.output_x, step.copy_width)? > output_dimensions.0
+        || checked_end(step.output_y, step.copy_height)? > output_dimensions.1
+    {
+        return output_rect_error();
+    }
+    Ok(CudaHtj2kStoreStep {
+        input_band_id: step.input_band_id,
+        input_rect: convert_rect(step.input_rect),
+        source_x: step.source_x,
+        source_y: step.source_y,
+        copy_width: step.copy_width,
+        copy_height: step.copy_height,
+        output_width: step.output_width,
+        output_height: step.output_height,
+        output_x: step.output_x,
+        output_y: step.output_y,
         addend: step.addend,
     })
 }

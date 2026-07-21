@@ -11,11 +11,11 @@ use j2k_core::{BatchResultSlot, DecodeOutcome, PixelFormat, Rect, TileBatchDecod
 use crate::{J2kCodec, J2kContext, J2kDecodeWarning, J2kError, J2kScratchPool};
 
 mod admission;
-mod allocation;
+pub(crate) mod allocation;
 mod direct;
 mod planning;
-mod scheduler;
-mod worker;
+pub(crate) mod scheduler;
+pub(crate) mod worker;
 
 use admission::BatchAllocationBudget;
 use direct::build_repeated_direct_color_region_plan;

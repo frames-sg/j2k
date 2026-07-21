@@ -14,17 +14,17 @@ still-image correctness. Keep row-level status synchronized with
 
 | Crate | Class | Role |
 | --- | --- | --- |
-| `j2k` | public codec | Primary user-facing JPEG 2000 / HTJ2K API. |
+| `j2k` | public codec | Primary user-facing JPEG 2000 / HTJ2K API, including owned preparation and CPU batch decode. |
 | `j2k-core` | core | Shared traits, errors, geometry, pixel formats, backend requests, and device-surface contracts. |
 | `j2k-types` | core | Shared encode-stage contracts and semver-visible value types used by the facade, native engine, and adapters. |
 | `j2k-codec-math` | support | No-std shared constants and pure math tables for CPU, CUDA-Oxide, and Metal parity. |
 | `j2k-jpeg`, `j2k-tilecodec` | codec | CPU/native codec implementations and stable codec APIs. |
 | `j2k-native` | engine | Native JPEG 2000 / HTJ2K engine used by J2K APIs and adapter validation. |
 | `j2k-profile`, `j2k-metal-support` | support | Runtime/profile helpers used by adapters and codec crates. |
-| `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, and CUDA memory helpers shared by CUDA adapters. |
-| `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, route policy, and CUDA device memory integration for supported paths. |
-| `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration for supported paths. |
-| `j2k-ml` | experimental integration | Independent Burn tensor decode integration; unpublished during the 0.7 cycle. |
+| `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, CUDA memory helpers, and guarded external-allocation validation shared by CUDA adapters. |
+| `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
+| `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration, persistent batch sessions, resident output, and validated caller-owned destinations for supported paths. |
+| `j2k-ml` | experimental integration | Thin Burn allocation and codec-interop adapter for owned integer batch output; unpublished during the 0.7 cycle. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |
@@ -34,6 +34,11 @@ still-image correctness. Keep row-level status synchronized with
 ## Dependency rules
 
 - The public `j2k` crate owns the JPEG 2000 / HTJ2K API surface.
+- `j2k`, `j2k-native`, `j2k-cuda`, and `j2k-metal` own codec parsing,
+  preparation, grouping, decoding, scratch reuse, and device execution.
+- `j2k-ml` may allocate or materialize Burn tensors and establish safe
+  framework/codec ordering. It must not duplicate entropy decode, transforms,
+  grouping policy, normalization, or training behavior.
 - Codec crates may depend on `j2k-core` and support crates.
 - Adapter crates may depend inward on codec/core/support crates.
 - Support crates must not depend on adapters.
@@ -68,19 +73,88 @@ xtask -> j2k, j2k-codec-math, j2k-compare, j2k-native, j2k-profile, j2k-test-sup
 
 ## Backend policy
 
-CPU is the correctness baseline. Device adapters can add resident outputs and
-stage acceleration, but they must preserve explicit unsupported errors for
-unsupported requests.
+CPU is the correctness baseline. The owned fast-batch surface returns
+homogeneous Gray/RGB/RGBA groups as native `U8`, `U16`, or `I16` samples in
+NCHW or NHWC order and preserves source indices. Straight and premultiplied
+alpha are distinct grouping keys. Preparation retains the caller-owned
+codestream bytes and reusable decode plans without duplicating the codestream.
+Broader component layouts remain on the component-plane APIs.
+
+Device adapters can add resident outputs and validated caller-owned
+destinations, but explicit requests must return unsupported errors instead of
+falling back to CPU staging. A direct external destination is the final output
+allocation: decoded pixels must not cross a GPU-to-CPU-to-GPU path or a second
+device output merely for framework integration.
 
 CUDA adapters use `j2k-cuda-runtime`, which owns the shared CUDA Driver API
 runtime, CUDA Oxide module loading, and host launch orchestration for supported
 CUDA codec stages. Product CUDA codec kernels are generated from CUDA Oxide
 projects while Rust host code retains Driver API orchestration. `cuda-runtime`
 support is an implementation dependency, not proof of NVIDIA performance.
+The Burn bridge uses a uniquely borrowed CubeCL allocation and CUDA event
+dependencies to order framework allocation, codec writes, and later tensor
+consumption without a normal-path context synchronization.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
 pipeline loading, checked buffer access, and route-label helpers. It is the
 sole raw Objective-C resource-construction boundary: nil is checked before any
 foreign handle is formed, and autoreleased command resources are retained into
 owned Rust handles before return. Codec-specific kernels stay in codec adapter
-crates.
+crates. The Burn bridge pairs wgpu and codec sessions on the same underlying
+Metal device and lends the retained Burn-owned `MTLBuffer` suballocation to the
+codec's validated final destination.
+
+HTJ2K is the optimized batch priority; classic JPEG 2000 shares the public
+grouping, destination, and completion contracts and remains regression-covered.
+Supported fast-batch inputs prepare one of two immutable, facade-owned plan
+views. `PreparedHtj2kPlan` retains per-tile HT cleanup/refinement geometry and
+byte ranges; `PreparedClassicPlan` retains per-tile classic packet/code-block
+geometry plus ordered fragment ranges. Both reference compressed payloads by
+offset from the original `Arc<[u8]>` and are reusable across sessions without
+reparsing or duplicating the codestream. Inputs outside those retained-plan
+boundaries keep metadata only and use the general CPU decoder when that broader
+codec path supports them.
+
+`CpuBatchDecoder` uses a bounded scheduler with retained worker workspaces. It
+allocates one typed buffer per homogeneous group and lets workers decode into
+disjoint image regions, avoiding per-image output owners and a final batch
+assembly copy. `CudaBatchDecoder` and `MetalBatchDecoder` likewise retain their
+device context, streams or queues, modules or pipelines, lookup tables, events,
+staging owners, and scratch pools across submissions.
+
+The hardware-validated direct Metal batch matrix is single-tile classic JPEG
+2000 and HTJ2K Gray/RGB/RGBA output in native `U8`, `U16`, or `I16`, for
+`Full`, `Region`, `Reduced`, and `RegionReduced` requests in NCHW or NHWC
+destinations. Additional Metal tests validate exact multi-tile HT Gray12/RGB8
+for all four requests and classic RGB8 full output. CUDA
+has RTX 4070 hardware validation for the classic and HT Gray/RGB/RGBA
+`U8`/`U16`/`I16` fast-batch matrix, all four requests, both layouts, and
+codec-resident, external-destination, and Burn-direct output. Its release lane
+also covers classic and HT multi-tile regressions, asynchronous drop and
+session reuse, and repeated-batch soaks. Reversible output is bit-exact;
+irreversible 9/7 output agrees with the CPU oracle within one integer LSB.
+These are correctness/support statements, not benchmark evidence.
+
+HT entropy work is flattened across images, bucketed by cleanup-only,
+SigProp, and MagRef work, and split into bounded pass-homogeneous chunks. Chunk
+status retains the original source identity where the device reports a failing
+job, while the final native store still writes one dense destination per
+homogeneous group. Resident and external-destination routes share the codec
+pipeline; an external destination receives the final samples without a decoded
+host transfer or an intermediate final device allocation.
+
+GPU prepared decode remains fail-closed for nonzero ROI maxshift from codestream
+RGN markers and for shapes outside a backend's retained-plan boundary.
+Subsampled components, mixed precision or signedness, arbitrary component
+counts, and precision above 16 bits remain on the CPU component-plane APIs or
+return a structured fast-batch representability error. No HT-dominant
+publication throughput run has yet been recorded for this new batch
+architecture. A July 19, 2026 local M4 Pro diagnostic run covers the complete
+HT-dominant Gray/RGB/RGBA matrix. Burn-direct prepared Metal decode was faster
+than CPU decode plus upload for 52 of 64 batch-32 cases and all 64 batch-64
+cases, while many batch-1 and batch-8 cases remained slower. That historical
+harness used identical encoded content for every batch greater than one;
+Metal RGB/RGBA additionally used decode-once broadcast. Those batch-32/64
+counts are therefore not a content-distinct acceptance baseline. Backend
+selection stays explicit; the local run is implementation evidence, not an
+adoption-facing publication claim.

@@ -1,5 +1,9 @@
 use j2k_core::PixelFormat;
-use j2k_native::{J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kWaveletTransform};
+use j2k_native::{
+    HtCodeBlockPayloadRanges, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kWaveletTransform,
+};
+#[cfg(feature = "cuda-runtime")]
+use j2k_native::{J2kClassicCodeBlockPayload, J2kCodestreamRange};
 
 use crate::{allocation::HostPhaseBudget, Error};
 
@@ -11,18 +15,29 @@ mod shared;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "cuda-runtime")]
+use self::classic::referenced::{
+    append_referenced_classic_subband, referenced_classic_payload_bytes,
+};
 use self::{
     classic::append_classic_subband,
-    ht::append_ht_subband,
+    ht::{append_ht_subband, append_referenced_ht_subband, referenced_payload_bytes},
     required_regions::required_regions_for_direct_plan,
     shared::{convert_store_step, CudaPlanOwners},
 };
 
-const EMPTY_CUDA_PLAN: &str = "strict CUDA plan contains no entropy code blocks";
+const EMPTY_CUDA_COEFFICIENT_PLAN: &str = "strict CUDA plan contains no coefficient bands";
 const MIXED_TRANSFORMS_UNSUPPORTED: &str = "strict CUDA HTJ2K plan contains mixed DWT transforms";
 const PLAN_PAYLOAD_TOO_LARGE: &str = "strict CUDA HTJ2K plan payload is too large";
 const PLAN_OUTPUT_RECT_MISMATCH: &str =
     "strict CUDA HTJ2K plan store does not fit the requested output rectangle";
+const REFERENCED_PLAN_CLASSIC_UNSUPPORTED: &str =
+    "prepared CUDA HTJ2K plan unexpectedly contains classic code blocks";
+#[cfg(feature = "cuda-runtime")]
+const REFERENCED_CLASSIC_PLAN_HT_UNSUPPORTED: &str =
+    "prepared CUDA classic plan unexpectedly contains HT code blocks";
+const REFERENCED_PLAN_PAYLOAD_MISMATCH: &str =
+    "prepared CUDA HTJ2K geometry does not match referenced payload ranges";
 
 /// CUDA-side DWT transform selector for a flat HTJ2K plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +321,121 @@ pub(crate) struct CudaHtj2kDecodePlan {
 }
 
 impl CudaHtj2kDecodePlan {
+    #[cfg(feature = "cuda-runtime")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit retained classic tile inputs"
+    )]
+    pub(crate) fn from_referenced_classic_tile_grayscale_plan_into_shared(
+        plan: &J2kDirectGrayscalePlan,
+        payloads: &[J2kClassicCodeBlockPayload],
+        ranges: &[J2kCodestreamRange],
+        encoded: &[u8],
+        output_format: PixelFormat,
+        output_origin: (u32, u32),
+        output_dimensions: (u32, u32),
+        shared_payload: &mut Vec<u8>,
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        let payload_bytes = referenced_classic_payload_bytes(encoded, payloads, ranges)?;
+        if payload_bytes != 0 {
+            host_budget.try_vec_reserve(shared_payload, payload_bytes)?;
+        }
+        let (mut owners, _) = CudaPlanOwners::from_referenced_plan(plan)?;
+        let mut payloads = payloads.iter();
+        for step in &plan.steps {
+            match step {
+                J2kDirectGrayscaleStep::HtSubBand(_) => {
+                    return Err(Error::UnsupportedCudaRequest {
+                        reason: REFERENCED_CLASSIC_PLAN_HT_UNSUPPORTED,
+                    });
+                }
+                J2kDirectGrayscaleStep::ClassicSubBand(subband) => {
+                    append_referenced_classic_subband(
+                        &mut owners,
+                        subband,
+                        None,
+                        &mut payloads,
+                        ranges,
+                        encoded,
+                        shared_payload,
+                    )?;
+                }
+                J2kDirectGrayscaleStep::Idwt(step) => owners.append_idwt(*step)?,
+                J2kDirectGrayscaleStep::Store(step) => {
+                    owners
+                        .store_steps
+                        .push(shared::convert_referenced_tile_store_step(
+                            *step,
+                            output_dimensions,
+                        )?);
+                }
+            }
+        }
+        if payloads.next().is_some() {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: REFERENCED_PLAN_PAYLOAD_MISMATCH,
+            });
+        }
+        owners.finish(plan, output_format, output_origin, output_dimensions)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the tile adapter explicitly carries source bytes, output geometry, shared arena, and allocation budget"
+    )]
+    pub(crate) fn from_referenced_tile_grayscale_plan_into_shared(
+        plan: &J2kDirectGrayscalePlan,
+        payloads: &[HtCodeBlockPayloadRanges],
+        encoded: &[u8],
+        output_format: PixelFormat,
+        output_origin: (u32, u32),
+        output_dimensions: (u32, u32),
+        shared_payload: &mut Vec<u8>,
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        let payload_bytes = referenced_payload_bytes(encoded, payloads)?;
+        if payload_bytes != 0 {
+            host_budget.try_vec_reserve(shared_payload, payload_bytes)?;
+        }
+        let (mut owners, _) = CudaPlanOwners::from_referenced_plan(plan)?;
+        let mut payloads = payloads.iter();
+        for step in &plan.steps {
+            match step {
+                J2kDirectGrayscaleStep::HtSubBand(subband) => {
+                    append_referenced_ht_subband(
+                        &mut owners,
+                        subband,
+                        None,
+                        &mut payloads,
+                        encoded,
+                        shared_payload,
+                    )?;
+                }
+                J2kDirectGrayscaleStep::ClassicSubBand(_) => {
+                    return Err(Error::UnsupportedCudaRequest {
+                        reason: REFERENCED_PLAN_CLASSIC_UNSUPPORTED,
+                    });
+                }
+                J2kDirectGrayscaleStep::Idwt(step) => owners.append_idwt(*step)?,
+                J2kDirectGrayscaleStep::Store(step) => {
+                    owners
+                        .store_steps
+                        .push(shared::convert_referenced_tile_store_step(
+                            *step,
+                            output_dimensions,
+                        )?);
+                }
+            }
+        }
+        if payloads.next().is_some() {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: REFERENCED_PLAN_PAYLOAD_MISMATCH,
+            });
+        }
+        owners.finish(plan, output_format, output_origin, output_dimensions)
+    }
+
     pub(crate) fn from_grayscale_direct_plan(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,

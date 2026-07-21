@@ -49,6 +49,7 @@ impl CudaContext {
                 })?;
                 crate::context::validate_device_allocation(ptr, bytes.len())
             })?;
+            self.record_device_allocation(bytes.len());
 
             CudaDeviceBuffer {
                 context: self.clone(),
@@ -69,6 +70,7 @@ impl CudaContext {
                     )
                 })
             })?;
+            self.record_host_to_device_copy(bytes.len());
         }
 
         Ok(buffer)
@@ -91,6 +93,7 @@ impl CudaContext {
                 })?;
                 crate::context::validate_device_allocation(ptr, len)
             })?;
+            self.record_device_allocation(len);
         } else {
             self.inner.set_current()?;
         }
@@ -423,7 +426,9 @@ impl CudaDeviceBuffer {
                     self.len,
                 )
             })
-        })
+        })?;
+        self.context.record_device_to_host_copy(self.len);
+        Ok(())
     }
 
     /// Copy a byte range from this device buffer into caller-owned host output.
@@ -478,7 +483,9 @@ impl CudaDeviceBuffer {
                     byte_len,
                 )
             })
-        })
+        })?;
+        self.context.record_device_to_host_copy(byte_len);
+        Ok(())
     }
 }
 
@@ -491,7 +498,9 @@ impl Drop for CudaDeviceBuffer {
                 let status = unsafe { (self.context.inner.driver.cu_mem_free)(self.ptr) };
                 self.context.inner.driver.check("cuMemFree_v2", status)
             });
-            if free_result.is_err() {
+            if free_result.is_ok() {
+                self.context.record_device_free(self.len);
+            } else {
                 // Retain the context so neither this allocation nor any
                 // potentially in-flight work is torn down after completion
                 // became uncertain.

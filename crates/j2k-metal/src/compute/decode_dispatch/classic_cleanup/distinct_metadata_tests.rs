@@ -5,9 +5,33 @@ use core::mem::size_of;
 use j2k_core::BatchInfrastructureError;
 
 use super::{
-    allocate_distinct_classic_metadata, Error, J2kClassicCleanupBatchJob, J2kClassicSegment,
+    allocate_distinct_classic_metadata, encode_distinct_classic_batches_to_buffer_in_encoder,
+    DistinctClassicBatch, Error, J2kClassicCleanupBatchJob, J2kClassicSegment,
 };
 use crate::batch_allocation::BatchMetadataBudget;
+use crate::compute::{
+    checked_buffer_slice, commit_and_wait_metal, new_command_buffer, new_compute_command_encoder,
+    new_shared_buffer_with_slice, validate_direct_status, with_runtime,
+};
+
+#[test]
+fn distinct_classic_zero_fill_is_barriered_before_cleanup_dispatch() {
+    let source = include_str!("distinct_batch.rs");
+    let body = source
+        .split_once("fn encode_distinct_classic_batches_to_buffer_in_encoder")
+        .expect("distinct classic batch encoder")
+        .1;
+    let zero_fill = body
+        .find("dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output")
+        .expect("distinct classic zero-fill dispatch");
+    let barrier = body
+        .find("encoder.memory_barrier_with_resources(&[output]);")
+        .expect("distinct classic zero-fill resource barrier");
+    let cleanup = body
+        .find("dispatch_classic_cleanup_batched_in_encoder(")
+        .expect("distinct classic cleanup dispatch");
+    assert!(zero_fill < barrier && barrier < cleanup);
+}
 
 #[test]
 fn distinct_classic_metadata_honors_exact_cap_and_one_byte_over() {
@@ -49,4 +73,101 @@ fn distinct_classic_metadata_honors_exact_cap_and_one_byte_over() {
             }
         )) if requested == exact_cap && cap == exact_cap - 1
     ));
+}
+
+#[test]
+fn distinct_classic_batches_honor_empty_and_zero_fill_output_semantics() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+
+    with_runtime(|runtime| {
+        let output = new_shared_buffer_with_slice(&runtime.device, &[7.0_f32; 8])?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        let batches = [
+            DistinctClassicBatch {
+                coded_data: &[],
+                jobs: &[],
+                segments: &[],
+                output_base: 0,
+                output_len: 4,
+                zero_fill: false,
+            },
+            DistinctClassicBatch {
+                coded_data: &[],
+                jobs: &[],
+                segments: &[],
+                output_base: 4,
+                output_len: 4,
+                zero_fill: false,
+            },
+        ];
+        let mut scratch_buffers = Vec::new();
+        let (retained, status) = encode_distinct_classic_batches_to_buffer_in_encoder(
+            runtime,
+            &encoder,
+            batches.into_iter(),
+            &output,
+            &mut scratch_buffers,
+        )?;
+        encoder.end_encoding();
+        commit_and_wait_metal(&command_buffer)?;
+        validate_direct_status(runtime, status)?;
+        assert_eq!(
+            checked_buffer_slice::<f32>(&output, 8, "distinct classic empty batch output")?,
+            vec![0.0; 8]
+        );
+        drop(retained);
+        drop(scratch_buffers);
+
+        let zero_pass_job = J2kClassicCleanupBatchJob {
+            coded_offset: 0,
+            coded_len: 0,
+            segment_offset: 0,
+            segment_count: 0,
+            width: 4,
+            height: 1,
+            output_stride: 4,
+            output_offset: 0,
+            missing_msbs: 0,
+            total_bitplanes: 1,
+            roi_shift: 0,
+            number_of_coding_passes: 0,
+            sub_band_type: 0,
+            style_flags: 1,
+            strict: 1,
+            dequantization_step: 1.0,
+        };
+        let output = new_shared_buffer_with_slice(&runtime.device, &[11.0_f32; 4])?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        let batches = [DistinctClassicBatch {
+            coded_data: &[],
+            jobs: core::slice::from_ref(&zero_pass_job),
+            segments: &[],
+            output_base: 0,
+            output_len: 4,
+            zero_fill: true,
+        }];
+        let mut scratch_buffers = Vec::new();
+        let (retained, status) = encode_distinct_classic_batches_to_buffer_in_encoder(
+            runtime,
+            &encoder,
+            batches.into_iter(),
+            &output,
+            &mut scratch_buffers,
+        )?;
+        encoder.end_encoding();
+        commit_and_wait_metal(&command_buffer)?;
+        validate_direct_status(runtime, status)?;
+        assert_eq!(
+            checked_buffer_slice::<f32>(&output, 4, "distinct classic zero-fill output")?,
+            vec![0.0; 4]
+        );
+        drop(retained);
+        drop(scratch_buffers);
+        Ok(())
+    })
+    .expect("distinct empty classic batches");
 }

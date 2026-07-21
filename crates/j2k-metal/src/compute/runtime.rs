@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex},
+};
 
 use j2k_metal_support::{
     checked_command_queue, checked_shared_buffer, checked_shared_buffer_with_slice,
@@ -33,7 +36,7 @@ thread_local! {
 
 pub(crate) struct MetalRuntime {
     pub(super) device: Device,
-    pub(super) queue: CommandQueue,
+    pub(crate) queue: CommandQueue,
     pub(super) zero_u32_buffer: ComputePipelineState,
     pub(super) validate_bytes_equal: ComputePipelineState,
     pub(super) copy_interleaved_padded: ComputePipelineState,
@@ -82,13 +85,26 @@ pub(crate) struct MetalRuntime {
     pub(super) store_component_repeated: ComputePipelineState,
     pub(super) store_component_repeated_gray_u8: ComputePipelineState,
     pub(super) store_component_repeated_gray_u16: ComputePipelineState,
+    pub(super) store_component_repeated_gray_i16: ComputePipelineState,
     pub(super) store_component_repeated_gray_u8_contiguous: ComputePipelineState,
     pub(super) store_component_repeated_gray_u16_contiguous: ComputePipelineState,
     pub(super) store_component_gray_u8: ComputePipelineState,
     pub(super) store_component_gray_u16: ComputePipelineState,
+    pub(super) store_component_gray_i16: ComputePipelineState,
+    pub(super) store_native_rgb_batch_u8: ComputePipelineState,
+    pub(super) store_native_rgb_batch_u16: ComputePipelineState,
+    pub(super) store_native_rgb_batch_i16: ComputePipelineState,
+    pub(super) store_native_rgba_batch_u8: ComputePipelineState,
+    pub(super) store_native_rgba_batch_u16: ComputePipelineState,
+    pub(super) store_native_rgba_batch_i16: ComputePipelineState,
     pub(super) ht_cleanup: ComputePipelineState,
     pub(super) ht_cleanup_batched: ComputePipelineState,
-    pub(super) ht_cleanup_repeated_batched: ComputePipelineState,
+    pub(super) ht_cleanup_batched_cleanup_only: ComputePipelineState,
+    pub(super) ht_cleanup_batched_sigprop: ComputePipelineState,
+    pub(super) ht_cleanup_batched_magref: ComputePipelineState,
+    pub(super) ht_cleanup_repeated_batched_cleanup_only: ComputePipelineState,
+    pub(super) ht_cleanup_repeated_batched_sigprop: ComputePipelineState,
+    pub(super) ht_cleanup_repeated_batched_magref: ComputePipelineState,
     pub(super) classic_encode_code_block: ComputePipelineState,
     pub(super) classic_encode_code_blocks: ComputePipelineState,
     pub(super) classic_encode_code_blocks_32: ComputePipelineState,
@@ -125,6 +141,8 @@ pub(crate) struct MetalRuntime {
     pub(super) ht_uvlc_encode_table: Buffer,
     pub(super) tier1_dummy_buffer: Buffer,
     pub(super) buffer_pools: MetalBufferPools,
+    pub(in crate::compute) prepared_ht_execution_cache:
+        Mutex<super::decode_dispatch::PreparedMetalHtExecutionCache>,
 }
 
 impl MetalRuntime {
@@ -134,15 +152,22 @@ impl MetalRuntime {
         Self::new_with_device(&device)
     }
 
+    pub(crate) fn new_with_device(device: &Device) -> Result<Self, MetalSupportError> {
+        let queue = checked_command_queue(device)?;
+        Self::new_with_device_and_queue(device, queue)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pipeline inventory construction mirrors the fixed Metal runtime ABI"
     )]
-    pub(crate) fn new_with_device(device: &Device) -> Result<Self, MetalSupportError> {
+    pub(crate) fn new_with_device_and_queue(
+        device: &Device,
+        queue: CommandQueue,
+    ) -> Result<Self, MetalSupportError> {
         let shader_source = shader_source();
         let loader = MetalPipelineLoader::new(device, &shader_source)?;
         let pipeline = |name: &str| loader.pipeline(name);
-        let queue = checked_command_queue(device)?;
         let ht_uvlc_encode_rows = (*ht_uvlc_encode_table()).map(J2kHtUvlcEncodeTableEntry::from);
         Ok(Self {
             device: device.clone(),
@@ -211,6 +236,7 @@ impl MetalRuntime {
             store_component_repeated: pipeline("j2k_store_component_repeated")?,
             store_component_repeated_gray_u8: pipeline("j2k_store_component_repeated_gray_u8")?,
             store_component_repeated_gray_u16: pipeline("j2k_store_component_repeated_gray_u16")?,
+            store_component_repeated_gray_i16: pipeline("j2k_store_component_repeated_gray_i16")?,
             store_component_repeated_gray_u8_contiguous: pipeline(
                 "j2k_store_component_repeated_gray_u8_contiguous",
             )?,
@@ -219,9 +245,29 @@ impl MetalRuntime {
             )?,
             store_component_gray_u8: pipeline("j2k_store_component_gray_u8")?,
             store_component_gray_u16: pipeline("j2k_store_component_gray_u16")?,
+            store_component_gray_i16: pipeline("j2k_store_component_gray_i16")?,
+            store_native_rgb_batch_u8: pipeline("j2k_store_native_rgb_batch_u8")?,
+            store_native_rgb_batch_u16: pipeline("j2k_store_native_rgb_batch_u16")?,
+            store_native_rgb_batch_i16: pipeline("j2k_store_native_rgb_batch_i16")?,
+            store_native_rgba_batch_u8: pipeline("j2k_store_native_rgba_batch_u8")?,
+            store_native_rgba_batch_u16: pipeline("j2k_store_native_rgba_batch_u16")?,
+            store_native_rgba_batch_i16: pipeline("j2k_store_native_rgba_batch_i16")?,
             ht_cleanup: pipeline("j2k_decode_ht_cleanup")?,
             ht_cleanup_batched: pipeline("j2k_decode_ht_cleanup_batched")?,
-            ht_cleanup_repeated_batched: pipeline("j2k_decode_ht_cleanup_repeated_batched")?,
+            ht_cleanup_batched_cleanup_only: pipeline(
+                "j2k_decode_ht_cleanup_batched_cleanup_only",
+            )?,
+            ht_cleanup_batched_sigprop: pipeline("j2k_decode_ht_cleanup_batched_sigprop")?,
+            ht_cleanup_batched_magref: pipeline("j2k_decode_ht_cleanup_batched_magref")?,
+            ht_cleanup_repeated_batched_cleanup_only: pipeline(
+                "j2k_decode_ht_cleanup_repeated_batched_cleanup_only",
+            )?,
+            ht_cleanup_repeated_batched_sigprop: pipeline(
+                "j2k_decode_ht_cleanup_repeated_batched_sigprop",
+            )?,
+            ht_cleanup_repeated_batched_magref: pipeline(
+                "j2k_decode_ht_cleanup_repeated_batched_magref",
+            )?,
             classic_encode_code_block: pipeline("j2k_encode_classic_code_block")?,
             classic_encode_code_blocks: pipeline("j2k_encode_classic_code_blocks")?,
             classic_encode_code_blocks_32: pipeline("j2k_encode_classic_code_blocks_32")?,
@@ -290,6 +336,9 @@ impl MetalRuntime {
             ht_uvlc_encode_table: checked_shared_buffer_with_slice(device, &ht_uvlc_encode_rows)?,
             tier1_dummy_buffer: checked_shared_buffer(device, 1)?,
             buffer_pools: MetalBufferPools::new(device),
+            prepared_ht_execution_cache: Mutex::new(
+                super::decode_dispatch::PreparedMetalHtExecutionCache::new(),
+            ),
         })
     }
 

@@ -362,9 +362,12 @@ fn forward_reader_fill(reader: &mut ForwardBitReader) {
         } else {
             reader.pad
         };
+        let valid_bits = 8 - reader.unstuff as u32;
+        let next_unstuff = byte == 0xff;
+        let byte = if reader.unstuff { byte & 0x7f } else { byte };
         reader.tmp |= (byte as u64) << reader.bits;
-        reader.bits += 8 - reader.unstuff as u32;
-        reader.unstuff = byte == 0xff;
+        reader.bits += valid_bits;
+        reader.unstuff = next_unstuff;
     }
 }
 
@@ -419,10 +422,13 @@ fn reverse_reader_fill(reader: &mut ReverseBitReader) {
         } else {
             0
         };
-        let d_bits = 8 - (reader.unstuff && (byte & 0x7f) == 0x7f) as u32;
+        let stuffed = reader.unstuff && (byte & 0x7f) == 0x7f;
+        let d_bits = 8 - stuffed as u32;
+        let next_unstuff = byte > 0x8f;
+        let byte = if stuffed { byte & 0x7f } else { byte };
         reader.tmp |= (byte as u64) << reader.bits;
         reader.bits += d_bits;
-        reader.unstuff = byte > 0x8f;
+        reader.unstuff = next_unstuff;
     }
 }
 
@@ -966,9 +972,8 @@ fn apply_significance_propagation(
                 forward_reader_advance(&mut sigprop, cnt);
             }
 
-            let combined_sig = new_sig | cs;
+            let combined_sig = new_sig | (cs & 0xffff);
             prev_row_sig[idx as usize] = combined_sig as u16;
-            prev_row_sig[idx as usize + 1] = (combined_sig >> 16) as u16;
 
             let combined = combined_sig;
             let mut next_prev = combined_sig;

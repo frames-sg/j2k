@@ -1,56 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{
-    build_resident_batch_packet_plan, checked_buffer_read, checked_buffer_slice,
-    classic_cod_block_style_from_flags, classic_encode_code_blocks_pipeline,
-    classic_encode_output_capacity_for_mode, classic_encode_segment_capacity,
-    classic_encode_sub_band_code, classic_packet_output_capacity,
-    classic_resident_style_flags_from_env, classic_tier1_gpu_token_pack_requested,
-    classic_tier1_gpu_token_pack_supported, classic_tier1_split_gpu_token_pack_requested,
+use std::{
+    mem::size_of,
+    time::{Duration, Instant},
+};
+
+use j2k_metal_support::{dispatch_1d_pipeline, dispatch_single_thread};
+
+use crate::profile_env::{
+    classic_tier1_gpu_token_pack_requested, classic_tier1_split_gpu_token_pack_requested,
     classic_tier1_split_mq_byte_gpu_token_pack_disabled,
-    classic_tier1_split_mq_byte_gpu_token_pack_requested, codestream_progression_order_code,
-    commit_and_wait_metal, copied_recyclable_shared_slice_buffer, copied_slice_buffer,
-    decode_ht_status_error, dispatch_1d_pipeline, dispatch_batched_packet_payload_copy,
-    dispatch_classic_tier1_arithmetic_pack_profile, dispatch_classic_tier1_density_profile,
-    dispatch_classic_tier1_pass_plan_profile, dispatch_classic_tier1_raw_pack_profile,
-    dispatch_classic_tier1_split_token_emit_for_gpu_pack,
-    dispatch_classic_tier1_split_token_emit_profile,
-    dispatch_classic_tier1_split_token_pack_from_gpu_tokens,
-    dispatch_classic_tier1_symbol_plan_profile, dispatch_classic_tier1_token_emit_for_gpu_pack,
-    dispatch_classic_tier1_token_emit_profile, dispatch_classic_tier1_token_pack_from_gpu_tokens,
-    dispatch_single_thread, dispatch_zero_u32_buffer_in_encoder, encode_status_error,
-    finish_resident_encode_split_command_buffer, finish_resident_encode_split_command_buffer_timed,
-    ht_batch_output_word_count, ht_encode_output_capacity, ht_output_word_count,
-    ht_packet_output_capacity_for_mode, hybrid_stage_signpost, label_command_buffer,
-    label_compute_encoder, lossless_codestream_assembly_capacity,
+    classic_tier1_split_mq_byte_gpu_token_pack_requested, hybrid_stage_signpost,
+    label_command_buffer, label_compute_encoder,
     metal_profile_classic_tier1_arithmetic_pack_enabled,
     metal_profile_classic_tier1_density_enabled, metal_profile_classic_tier1_pass_plan_enabled,
     metal_profile_classic_tier1_raw_pack_enabled,
     metal_profile_classic_tier1_split_token_emit_enabled,
     metal_profile_classic_tier1_symbol_plan_enabled,
     metal_profile_classic_tier1_token_emit_enabled, metal_profile_stages_enabled,
-    new_blit_command_encoder, new_command_buffer, new_compute_command_encoder, new_private_buffer,
-    new_resident_encode_command_buffer, new_shared_buffer, packet_tree_node_count,
-    prepared_lossless_batch_tiles, schedule_classic_tier1_gpu_token_pack_readback,
-    schedule_resident_tier1_status_readback, size_of, take_recyclable_private_buffer,
-    wait_resident_lossless_codestream, with_runtime, with_runtime_for_session,
-    zeroed_recyclable_shared_buffer, zeroed_shared_buffer, Buffer, CommandBufferRef,
-    ComputeCommandEncoderRef, DirectStatusCheck, Duration, Error, ForeignType, Instant,
-    J2kBatchedPacketPayloadCopyDispatch, J2kClassicEncodeBatchJob,
-    J2kClassicEncodeOutputCapacityMode, J2kClassicEncodeStatus, J2kClassicSegment,
-    J2kCodestreamAssemblyStatus, J2kHtCleanupBatchJob, J2kHtCleanupParams, J2kHtEncodeBatchJob,
-    J2kHtEncodeStatus, J2kHtPacketOutputCapacityMode, J2kHtRepeatedBatchParams, J2kHtStatus,
-    J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamAssemblyParams,
-    J2kLosslessCodestreamBlockCodingMode, J2kPacketBlock, J2kPacketDescriptor,
-    J2kPacketEncodeParams, J2kPacketEncodeStatus, J2kPacketPayloadCopyJob, J2kPacketResolution,
-    J2kPacketStateBlock, J2kPacketSubband, J2kPacketizationBlockCodingMode,
-    J2kPacketizationEncodeJob, J2kPendingResidentLosslessCodestream,
-    J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
-    J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentLosslessCodestream, J2kResidentPacketBlock, J2kResidentPacketBlockParams,
-    J2kResidentPacketizationEncodeJob, MTLSize, MetalRuntime, ResidentBatchPacketPlan,
-    ResidentBatchPacketPlanParams, ResidentLosslessTier1Metal, ResidentTier1StatusReadbackRequest,
-    J2K_ENCODE_STATUS_OK, J2K_HT_STATUS_OK, PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP, SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN,
@@ -65,6 +32,56 @@ use super::{
     SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE, SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP,
 };
 
+use super::abi::{
+    J2kClassicEncodeBatchJob, J2kClassicEncodeStatus, J2kClassicSegment,
+    J2kCodestreamAssemblyStatus, J2kHtCleanupBatchJob, J2kHtCleanupParams, J2kHtEncodeBatchJob,
+    J2kHtEncodeStatus, J2kHtRepeatedBatchParams, J2kHtStatus, J2kLosslessCodestreamAssemblyParams,
+    J2kPacketBlock, J2kPacketDescriptor, J2kPacketEncodeParams, J2kPacketEncodeStatus,
+    J2kPacketPayloadCopyJob, J2kPacketResolution, J2kPacketStateBlock, J2kPacketSubband,
+    J2kResidentPacketBlock, J2kResidentPacketBlockParams, J2K_ENCODE_STATUS_OK, J2K_HT_STATUS_OK,
+    PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+};
+use super::decode_dispatch::{
+    dispatch_zero_u32_buffer_in_encoder, ht_batch_output_word_count, ht_output_word_count,
+};
+use super::lossless_prepare::dispatch_batched_packet_payload_copy;
+use super::resident_tier1::{
+    dispatch_classic_tier1_arithmetic_pack_profile, dispatch_classic_tier1_density_profile,
+    dispatch_classic_tier1_pass_plan_profile, dispatch_classic_tier1_raw_pack_profile,
+    dispatch_classic_tier1_split_token_emit_for_gpu_pack,
+    dispatch_classic_tier1_split_token_emit_profile,
+    dispatch_classic_tier1_split_token_pack_from_gpu_tokens,
+    dispatch_classic_tier1_symbol_plan_profile, dispatch_classic_tier1_token_emit_for_gpu_pack,
+    dispatch_classic_tier1_token_emit_profile, dispatch_classic_tier1_token_pack_from_gpu_tokens,
+    schedule_classic_tier1_gpu_token_pack_readback, schedule_resident_tier1_status_readback,
+    wait_resident_lossless_codestream, J2kBatchedPacketPayloadCopyDispatch,
+    ResidentLosslessTier1Metal, ResidentTier1StatusReadbackRequest,
+};
+use super::tier1_encode::{classic_encode_sub_band_code, encode_status_error};
+use super::{
+    build_resident_batch_packet_plan, checked_buffer_read, checked_buffer_slice,
+    classic_cod_block_style_from_flags, classic_encode_code_blocks_pipeline,
+    classic_encode_output_capacity_for_mode, classic_encode_segment_capacity,
+    classic_packet_output_capacity, classic_resident_style_flags_from_env,
+    classic_tier1_gpu_token_pack_supported, codestream_progression_order_code,
+    commit_and_wait_metal, copied_recyclable_shared_slice_buffer, copied_slice_buffer,
+    decode_ht_status_error, finish_resident_encode_split_command_buffer,
+    finish_resident_encode_split_command_buffer_timed, ht_encode_output_capacity,
+    ht_packet_output_capacity_for_mode, lossless_codestream_assembly_capacity,
+    new_blit_command_encoder, new_command_buffer, new_compute_command_encoder, new_private_buffer,
+    new_resident_encode_command_buffer, new_shared_buffer, packet_tree_node_count,
+    prepared_lossless_batch_tiles, take_recyclable_private_buffer, with_runtime,
+    with_runtime_for_session, zeroed_recyclable_shared_buffer, zeroed_shared_buffer, Buffer,
+    ComputeCommandEncoderRef, Error, ForeignType, J2kClassicEncodeOutputCapacityMode,
+    J2kHtPacketOutputCapacityMode, J2kLosslessCodestreamAssemblyJob,
+    J2kLosslessCodestreamBlockCodingMode, J2kPacketizationBlockCodingMode,
+    J2kPacketizationEncodeJob, J2kPendingResidentLosslessCodestream,
+    J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
+    J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
+    J2kResidentLosslessCodestream, J2kResidentPacketizationEncodeJob, MTLSize, MetalRuntime,
+    ResidentBatchPacketPlan, ResidentBatchPacketPlanParams,
+};
+
 mod batch_reporting;
 mod classic_labels;
 mod ht_cleanup;
@@ -77,8 +94,9 @@ use self::classic_labels::{
 };
 pub(super) use self::ht_cleanup::{
     dispatch_ht_cleanup, dispatch_ht_cleanup_batched,
-    dispatch_ht_cleanup_batched_in_command_buffer, dispatch_ht_cleanup_batched_in_encoder,
-    dispatch_ht_cleanup_repeated_batched_in_command_buffer, HtRepeatedCleanupDispatch,
+    dispatch_ht_cleanup_batched_in_encoder_with_status_offset,
+    dispatch_ht_cleanup_repeated_batched_in_encoder_with_status_offset, HtCleanupBatchDispatch,
+    HtCleanupRepeatedBatchDispatch,
 };
 
 mod classic_packet;

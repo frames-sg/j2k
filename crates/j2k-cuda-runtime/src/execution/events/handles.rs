@@ -1,42 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(test)]
-use crate::driver::CuStream;
+use crate::{build_flags::CUDA_ERROR_NOT_READY, driver::CuStream};
 use crate::{context::CudaContext, driver::CuEvent, error::CudaError};
 
-/// CUDA stream RAII handle.
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct CudaStream {
-    pub(crate) context: CudaContext,
-    pub(crate) stream: CuStream,
-}
-
+mod stream;
 #[cfg(test)]
-impl Drop for CudaStream {
-    fn drop(&mut self) {
-        if !self.stream.is_null() {
-            let destroy_result = self.context.inner.with_current_stateful_operation(|| {
-                // SAFETY: stream was created by this context and the context
-                // lifecycle gate is held during destruction.
-                self.context
-                    .inner
-                    .driver
-                    .check("cuStreamDestroy_v2", unsafe {
-                        (self.context.inner.driver.cu_stream_destroy)(self.stream)
-                    })
-            });
-            if destroy_result.is_err() {
-                std::mem::forget(self.context.clone());
-            }
-        }
-    }
-}
-
-// SAFETY: CUDA stream handles are driver-owned resources. The Rust handle owns
-// destruction and does not expose mutable aliasing of Rust memory.
-#[cfg(test)]
-unsafe impl Send for CudaStream {}
+pub(crate) use stream::CudaStream;
 
 /// CUDA event RAII handle for timing and synchronization.
 #[derive(Debug)]
@@ -73,6 +43,33 @@ impl CudaEvent {
         })
     }
 
+    pub(crate) fn record_raw_stream(&self, stream: CuStream) -> Result<(), CudaError> {
+        self.context.inner.with_current_resource_operation(|| {
+            // SAFETY: the caller's guarded stream handle has been bound to
+            // this retained primary context for the duration of interop.
+            self.context.inner.driver.check("cuEventRecord", unsafe {
+                (self.context.inner.driver.cu_event_record)(self.event, stream)
+            })
+        })
+    }
+
+    pub(crate) fn wait_on_default_stream(&self) -> Result<(), CudaError> {
+        self.wait_on_raw_stream(std::ptr::null_mut())
+    }
+
+    pub(crate) fn wait_on_raw_stream(&self, stream: CuStream) -> Result<(), CudaError> {
+        self.context.inner.with_current_resource_operation(|| {
+            // SAFETY: the event belongs to the current retained primary
+            // context; CUDA validates the guarded stream handle.
+            self.context
+                .inner
+                .driver
+                .check("cuStreamWaitEvent", unsafe {
+                    (self.context.inner.driver.cu_stream_wait_event)(stream, self.event, 0)
+                })
+        })
+    }
+
     /// Wait for this event to complete.
     pub(crate) fn synchronize(&self) -> Result<(), CudaError> {
         self.context.inner.with_current_resource_operation(|| {
@@ -84,6 +81,25 @@ impl CudaEvent {
                 .check("cuEventSynchronize", unsafe {
                     (self.context.inner.driver.cu_event_synchronize)(self.event)
                 })
+        })?;
+        self.context.record_event_host_synchronization();
+        Ok(())
+    }
+
+    /// Query whether this event has completed without waiting on the host.
+    pub(crate) fn is_complete(&self) -> Result<bool, CudaError> {
+        self.context.inner.with_current_resource_operation(|| {
+            // SAFETY: event is a live CUDA event owned by this context, and
+            // the context lifecycle gate is held for the query.
+            let status = unsafe { (self.context.inner.driver.cu_event_query)(self.event) };
+            if status == CUDA_ERROR_NOT_READY {
+                return Ok(false);
+            }
+            self.context
+                .inner
+                .driver
+                .check("cuEventQuery", status)
+                .map(|()| true)
         })
     }
 
@@ -114,6 +130,21 @@ impl CudaEvent {
 impl Drop for CudaEvent {
     fn drop(&mut self) {
         if !self.event.is_null() {
+            // CUDA stream waits capture the event's most recently recorded
+            // generation when cuStreamWaitEvent is called. Re-recording this
+            // handle later does not alter an already-enqueued wait, so the
+            // handle can return to this context's cache without a host wait.
+            let recycle_result = self
+                .context
+                .inner
+                .event_pool
+                .lock()
+                .map_err(|_| ())
+                .and_then(|mut events| events.recycle(self.event));
+            if recycle_result.is_ok() {
+                self.event = std::ptr::null_mut();
+                return;
+            }
             let destroy_result = self.context.inner.with_current_stateful_operation(|| {
                 // SAFETY: event was created by this context and the context
                 // lifecycle gate is held during destruction.

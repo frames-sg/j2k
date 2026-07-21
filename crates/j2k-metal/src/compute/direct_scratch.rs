@@ -25,10 +25,15 @@ pub(super) fn recycle_scratch_buffers(
     runtime: &MetalRuntime,
     scratch_buffers: Vec<DirectScratchBuffer>,
 ) -> Result<(), Error> {
+    let mut first_error = None;
     for scratch in scratch_buffers {
-        runtime.recycle_private_buffer(scratch.buffer)?;
+        if let Err(error) = runtime.recycle_private_buffer(scratch.buffer) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 pub(super) fn take_recyclable_private_buffer(

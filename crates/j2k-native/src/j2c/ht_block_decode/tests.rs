@@ -8,6 +8,7 @@ use super::cleanup::{
 use super::facade::coefficient_to_i32;
 use super::magnitude::decode_magnitude_sign_phase;
 use super::pipeline::{decode_impl, prepare_scratch, PHASE_LIMIT_MAGREF};
+use super::readers::{ForwardBitReader, ReverseBitReader};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::segments::{CombinedCodeBlockData, HtCodeBlockSegments};
 use super::significance::{
@@ -27,6 +28,20 @@ use super::{
 };
 use crate::error::{DecodeError, DecodingError};
 use crate::j2c::ht_block_encode::encode_code_block;
+
+#[test]
+fn sigprop_reader_discards_stuffed_msb_even_when_overlap_sets_it() {
+    let mut reader = ForwardBitReader::<0>::new(&[0xFF, 0x80, 0x00, 0x00, 0x00]);
+
+    assert_eq!(reader.fetch(), 0x0000_00FF);
+}
+
+#[test]
+fn magref_reader_discards_stuffed_msb_in_shared_refinement_byte() {
+    let mut reader = ReverseBitReader::new_mrp(&[0x00, 0x00, 0x00, 0x00, 0xFF]);
+
+    assert_eq!(reader.fetch(), 0x0000_007F);
+}
 
 #[test]
 fn test_coefficient_to_i32_shifted_alignment() {

@@ -5,20 +5,21 @@ use std::{sync::Arc, time::Instant};
 use j2k_native::HtCodeBlockDecodeWorkspace;
 use metal::Buffer;
 
+use crate::profile_env::{hybrid_stage_signpost, SIGNPOST_DECODE_HYBRID_CPU_TIER1};
 use crate::Error;
 
+use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
+use super::direct_grayscale_execute::{checked_coefficient_len, upload_cpu_decoded_coefficients};
 use super::{
-    checked_coefficient_len, decode_prepared_classic_jobs_on_cpu_with_scratch,
+    decode_prepared_classic_jobs_on_cpu_with_scratch,
     decode_prepared_classic_jobs_on_cpu_with_scratch_profiled,
     decode_prepared_ht_jobs_on_cpu_with_workspace,
-    decode_prepared_ht_jobs_on_cpu_with_workspace_profiled, elapsed_us, hybrid_stage_signpost,
+    decode_prepared_ht_jobs_on_cpu_with_workspace_profiled, elapsed_us,
     metal_profile_stages_enabled, record_flattened_hybrid_cpu_decode_batch,
-    record_hybrid_cpu_decode_inputs, record_hybrid_cpu_decode_worker_init,
-    upload_cpu_decoded_coefficients, ClassicCpuDecodeScratch, CpuTier1DecodeSubstageCounters,
-    DirectHybridStageTimings, J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob,
-    MetalRuntime, PreparedDirectColorPlan, PreparedDirectGrayscalePlan,
-    PreparedDirectGrayscaleStep, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
-    SIGNPOST_DECODE_HYBRID_CPU_TIER1,
+    record_hybrid_cpu_decode_inputs, record_hybrid_cpu_decode_worker_init, ClassicCpuDecodeScratch,
+    CpuTier1DecodeSubstageCounters, DirectHybridStageTimings, MetalRuntime,
+    PreparedDirectColorPlan, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    PreparedHtPayloadSource, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
 };
 
 #[cfg(target_os = "macos")]
@@ -37,7 +38,7 @@ enum FlattenedCpuTier1Source<'a> {
         jobs: &'a [J2kClassicCleanupBatchJob],
     },
     Ht {
-        coded_data: &'a [u8],
+        payload_source: &'a PreparedHtPayloadSource,
         jobs: &'a [J2kHtCleanupBatchJob],
     },
 }
@@ -276,7 +277,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                                     .to_string(),
                             })?;
                     inputs.push(FlattenedCpuTier1Source::Ht {
-                        coded_data: &group.coded_arena.data,
+                        payload_source: &group.payload_source,
                         jobs: &group.jobs,
                     });
                 }
@@ -354,7 +355,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                         match &plan.steps[step_idx] {
                             PreparedDirectGrayscaleStep::HtSubBand(other) => {
                                 inputs.push(FlattenedCpuTier1Source::Ht {
-                                    coded_data: &other.coded_data,
+                                    payload_source: &other.payload_source,
                                     jobs: &other.jobs,
                                 });
                             }
@@ -561,10 +562,14 @@ fn decode_flattened_cpu_tier1_work_item(
                 )
             }
         }
-        FlattenedCpuTier1Source::Ht { coded_data, jobs } => {
+        FlattenedCpuTier1Source::Ht {
+            payload_source,
+            jobs,
+        } => {
+            let coded_data = payload_source.materialize_for_cpu()?;
             if let Some(counters) = profile_counters {
                 decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
-                    coded_data,
+                    coded_data.as_ref(),
                     jobs,
                     output,
                     &mut scratch.ht,
@@ -572,7 +577,7 @@ fn decode_flattened_cpu_tier1_work_item(
                 )
             } else {
                 decode_prepared_ht_jobs_on_cpu_with_workspace(
-                    coded_data,
+                    coded_data.as_ref(),
                     jobs,
                     output,
                     &mut scratch.ht,

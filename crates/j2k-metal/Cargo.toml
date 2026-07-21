@@ -39,7 +39,7 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 rayon = { workspace = true }
-j2k-test-support = { path = "../j2k-test-support" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
 
 [build-dependencies]
 cc = { workspace = true }

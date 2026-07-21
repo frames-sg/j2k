@@ -255,7 +255,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "log",
  "num-traits",
- "parking_lot",
  "portable-atomic",
  "spin",
 ]
@@ -1038,8 +1037,6 @@ dependencies = [
 [[package]]
 name = "cubecl-cuda"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6b0a69ff45688d322ad8e92c8bf645167b9ca490fa8fa087fc6adac8c5e46be"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -1156,8 +1153,6 @@ dependencies = [
 [[package]]
 name = "cubecl-runtime"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b68491bf5b3e997ae36bdc4e63b4ccd6d2f0e86b3b596a5d7a48d2b9e92622a0"
 dependencies = [
  "ahash",
  "async-channel",
@@ -2705,7 +2700,6 @@ dependencies = [
 name = "j2k-ml"
 version = "0.7.4"
 dependencies = [
- "burn-autodiff",
  "burn-core",
  "burn-cubecl",
  "burn-cuda",
@@ -2716,11 +2710,15 @@ dependencies = [
  "burn-wgpu",
  "criterion",
  "j2k",
+ "j2k-core",
  "j2k-cuda",
  "j2k-cuda-runtime",
  "j2k-metal",
+ "j2k-native",
  "j2k-test-support",
+ "metal",
  "thiserror 2.0.18",
+ "wgpu-hal",
 ]
 
 [[package]]
@@ -5150,8 +5148,6 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 dependencies = [
  "arrayvec",
  "bitflags",
@@ -5180,8 +5176,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7"
 dependencies = [
  "arrayvec",
  "bit-set 0.9.1",
@@ -5240,8 +5234,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97ace1c17727311c22a46e4e3faf56ea6de81af99dcc839bdfb54857b94d448d"
 dependencies = [
  "android_system_properties",
  "arrayvec",

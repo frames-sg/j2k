@@ -16,13 +16,21 @@ use super::{
 };
 use crate::{CpuDecodeParallelism, J2kContext, J2kError, J2kScratchPool};
 
+mod owned;
+
 /// One stack-owned worker. Dynamic native/direct ownership is covered by the
 /// authoritative per-worker claim in `allocation`; these exact owners are also
 /// counted structurally in the batch metadata plan.
-pub(super) struct BatchWorker {
+pub(crate) struct BatchWorker {
     ctx: J2kContext,
     pool: J2kScratchPool,
     direct: DirectWorkerState,
+    native_workspace: j2k_native::DecoderWorkspace,
+    prepared_plan_scratch: j2k_native::J2kDirectCpuScratch,
+    prepared_entropy_workspace: j2k_native::J2kDirectCpuEntropyWorkspace,
+    preparation_calls: u64,
+    preparation_worker_reuses: u64,
+    prepared_plan_decode_calls: u64,
     allocation_budget: Option<Arc<BatchAllocationBudget>>,
 }
 
@@ -37,6 +45,12 @@ impl BatchWorker {
             ctx,
             pool: J2kScratchPool::new(),
             direct: DirectWorkerState::default(),
+            native_workspace: j2k_native::DecoderWorkspace::default(),
+            prepared_plan_scratch: j2k_native::J2kDirectCpuScratch::new(),
+            prepared_entropy_workspace: j2k_native::J2kDirectCpuEntropyWorkspace::default(),
+            preparation_calls: 0,
+            preparation_worker_reuses: 0,
+            prepared_plan_decode_calls: 0,
             allocation_budget,
         }
     }

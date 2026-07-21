@@ -5,7 +5,6 @@ use crate::J2kError;
 use alloc::vec::Vec;
 use core::fmt;
 use j2k_core::{validate_strided_output_buffer, DecodeOutcome, PixelFormat, Rect, Unsupported};
-use j2k_native::DecodeSettings;
 
 mod component_handoff;
 pub use component_handoff::{
@@ -13,9 +12,11 @@ pub use component_handoff::{
     J2kNativeComponentPlane,
 };
 mod output;
+mod settings;
 use output::{
     can_decode_u8_directly, write_components_u8_output, write_u16_output, write_u8_output,
 };
+pub use settings::DecodeSettings;
 
 /// Non-fatal JPEG 2000 decode warning surfaced through decode outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,8 +161,8 @@ pub(crate) fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kErro
 
 #[cfg(test)]
 mod tests {
+    use super::DecodeSettings;
     use super::{decode_warnings_for_settings, J2kDecodeWarning};
-    use j2k_native::DecodeSettings;
 
     #[test]
     fn decode_warnings_report_lenient_decode_mode() {

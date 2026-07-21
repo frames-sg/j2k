@@ -301,6 +301,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
             output,
             job.width as usize * job.height as usize,
         )?;
+        encoder.memory_barrier_with_resources(&[output]);
     }
     let (status_check, states_scratch) = dispatch_classic_cleanup_batched_in_encoder(
         encoder,
@@ -354,6 +355,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, group.jobs.len())?;
     if group.zero_fill {
         dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, group.total_coefficients)?;
+        encoder.memory_barrier_with_resources(&[output]);
     }
     let (status_check, states_scratch) = dispatch_classic_cleanup_batched_in_encoder(
         encoder,
@@ -375,3 +377,6 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
     }
     Ok((retained_buffers, status_check))
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests;

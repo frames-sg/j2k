@@ -14,6 +14,18 @@ pub enum PixelLayout {
     Gray,
 }
 
+impl PixelLayout {
+    /// Return the number of channels in this layout.
+    #[must_use]
+    pub const fn channels(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Rgba => 4,
+            Self::Gray => 1,
+        }
+    }
+}
+
 /// Concrete interleaved pixel format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -30,6 +42,12 @@ pub enum PixelFormat {
     Rgba16,
     /// 16-bit grayscale.
     Gray16,
+    /// Interleaved signed 16-bit RGB.
+    RgbI16,
+    /// Interleaved signed 16-bit RGBA.
+    RgbaI16,
+    /// Signed 16-bit grayscale.
+    GrayI16,
 }
 
 impl PixelFormat {
@@ -37,9 +55,9 @@ impl PixelFormat {
     #[must_use]
     pub const fn layout(self) -> PixelLayout {
         match self {
-            Self::Rgb8 | Self::Rgb16 => PixelLayout::Rgb,
-            Self::Rgba8 | Self::Rgba16 => PixelLayout::Rgba,
-            Self::Gray8 | Self::Gray16 => PixelLayout::Gray,
+            Self::Rgb8 | Self::Rgb16 | Self::RgbI16 => PixelLayout::Rgb,
+            Self::Rgba8 | Self::Rgba16 | Self::RgbaI16 => PixelLayout::Rgba,
+            Self::Gray8 | Self::Gray16 | Self::GrayI16 => PixelLayout::Gray,
         }
     }
 
@@ -49,17 +67,14 @@ impl PixelFormat {
         match self {
             Self::Rgb8 | Self::Rgba8 | Self::Gray8 => SampleType::U8,
             Self::Rgb16 | Self::Rgba16 | Self::Gray16 => SampleType::U16,
+            Self::RgbI16 | Self::RgbaI16 | Self::GrayI16 => SampleType::I16,
         }
     }
 
     /// Return the number of channels per pixel.
     #[must_use]
     pub const fn channels(self) -> usize {
-        match self.layout() {
-            PixelLayout::Rgb => 3,
-            PixelLayout::Rgba => 4,
-            PixelLayout::Gray => 1,
-        }
+        self.layout().channels()
     }
 
     /// Return the number of bytes in one channel sample.
@@ -67,7 +82,7 @@ impl PixelFormat {
     pub const fn bytes_per_sample(self) -> usize {
         match self.sample() {
             SampleType::U8 => 1,
-            SampleType::U16 => 2,
+            SampleType::U16 | SampleType::I16 => 2,
         }
     }
 
@@ -75,5 +90,26 @@ impl PixelFormat {
     #[must_use]
     pub const fn bytes_per_pixel(self) -> usize {
         self.channels() * self.bytes_per_sample()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PixelFormat, PixelLayout};
+    use crate::SampleType;
+
+    #[test]
+    fn signed_sixteen_bit_formats_preserve_layout_and_size() {
+        for (format, layout, channels) in [
+            (PixelFormat::RgbI16, PixelLayout::Rgb, 3),
+            (PixelFormat::RgbaI16, PixelLayout::Rgba, 4),
+            (PixelFormat::GrayI16, PixelLayout::Gray, 1),
+        ] {
+            assert_eq!(format.layout(), layout);
+            assert_eq!(format.sample(), SampleType::I16);
+            assert_eq!(format.channels(), channels);
+            assert_eq!(format.bytes_per_sample(), 2);
+            assert_eq!(format.bytes_per_pixel(), channels * 2);
+        }
     }
 }

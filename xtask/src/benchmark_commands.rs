@@ -118,10 +118,54 @@ fn bench_build_accelerators() -> Result<(), String> {
         "-p",
         "j2k-ml",
         "--bench",
-        "tensor_decode",
+        "batch_decode",
         "--features",
         "cpu",
         "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_metal",
+        "--features",
+        "cpu,metal",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_cuda",
+        "--features",
+        "cpu,cuda",
+        "--no-run",
+    ])
+}
+
+pub(super) fn j2k_ml_batch_bench_metal() -> Result<(), String> {
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_metal",
+        "--features",
+        "cpu,metal",
+    ])
+}
+
+pub(super) fn j2k_ml_batch_bench_cuda() -> Result<(), String> {
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_cuda",
+        "--features",
+        "cpu,cuda",
     ])
 }
 

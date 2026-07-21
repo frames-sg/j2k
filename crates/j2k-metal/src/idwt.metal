@@ -145,10 +145,11 @@ kernel void j2k_idwt_interleave(
 
     const uint global_x = params.x0 + params.output_x + gid.x;
     const uint global_y = params.y0 + params.output_y + gid.y;
-    const uint low_x_parity = params.x0 & 1u;
-    const uint low_y_parity = params.y0 & 1u;
-    const bool low_x = (global_x & 1u) == low_x_parity;
-    const bool low_y = (global_y & 1u) == low_y_parity;
+    // JPEG 2000 assigns low-pass samples to even reference-grid
+    // coordinates.  The decomposition origin only determines which band is
+    // encountered first in this tile; it must not redefine that parity.
+    const bool low_x = (global_x & 1u) == 0u;
+    const bool low_y = (global_y & 1u) == 0u;
     const uint full_band_x = low_x ? low_index(global_x, params.x0) : high_index(global_x, params.x0);
     const uint full_band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
     const uint out_idx = gid.y * params.width + gid.x;
@@ -195,10 +196,10 @@ kernel void j2k_idwt_interleave_batched(
 
     const uint global_x = params.x0 + params.output_x + gid.x;
     const uint global_y = params.y0 + params.output_y + gid.y;
-    const uint low_x_parity = params.x0 & 1u;
-    const uint low_y_parity = params.y0 & 1u;
-    const bool low_x = (global_x & 1u) == low_x_parity;
-    const bool low_y = (global_y & 1u) == low_y_parity;
+    // Low/high assignment is defined in the reference grid.  For an odd
+    // tile origin, the first sample is therefore high-pass.
+    const bool low_x = (global_x & 1u) == 0u;
+    const bool low_y = (global_y & 1u) == 0u;
     const uint full_band_x = low_x ? low_index(global_x, params.x0) : high_index(global_x, params.x0);
     const uint full_band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
     const uint out_plane_len = params.width * params.height;

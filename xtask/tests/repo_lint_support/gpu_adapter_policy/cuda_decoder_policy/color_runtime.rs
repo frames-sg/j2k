@@ -2,13 +2,23 @@
 
 use super::{assert_pattern_checks, CudaDecoderSources, PatternCheck};
 
+mod async_cleanup;
+mod owner_completion;
+
 #[test]
 fn color_runtime_owns_store_and_queued_idwt_completion() {
     let sources = CudaDecoderSources::read();
-    let finish = std::fs::read_to_string(
-        super::super::repo_root().join("crates/j2k-cuda/src/decoder/color_batch/finish.rs"),
-    )
-    .expect("read CUDA color finish leaf");
+    let finish = &sources.color_batch_finish;
+    assert_color_decode_ownership(&sources, finish);
+    assert_color_completion_ownership(&sources);
+    assert!(
+        finish.lines().count() < 125,
+        "CUDA color completion orchestrator must stay focused"
+    );
+    owner_completion::assert_contract(&sources, finish);
+}
+
+fn assert_color_decode_ownership(sources: &CudaDecoderSources, finish: &str) {
     assert_pattern_checks(&[
         PatternCheck::new(
             "CUDA color surface orchestration ownership",
@@ -16,13 +26,15 @@ fn color_runtime_owns_store_and_queued_idwt_completion() {
         )
         .required(&[
             "mod store;",
-            "fn run_pending_color_idwt(",
-            "fn finish_color_components(",
-            "fn finalize_color_surface(",
             "mod finish;",
+            "mod batch_execution;",
+            "mod single;",
         ])
         .forbidden(&[
             "pub(super) mod store;",
+            "fn run_pending_color_idwt(",
+            "fn finish_color_components(",
+            "fn finalize_color_surface(",
             "struct ColorStorePlan",
             "struct CudaPreparedRgb8MctBatchStore",
             "fn prepare_rgb8_mct_batch_store(",
@@ -31,9 +43,29 @@ fn color_runtime_owns_store_and_queued_idwt_completion() {
             "fn run_color_mct(",
             "fn dispatch_color_store(",
         ]),
-        PatternCheck::new("CUDA color finish ownership", &finish).required(&[
+        PatternCheck::new("CUDA color completion orchestration", finish).required(&[
+            "mod component;",
+            "mod surface;",
             "fn finish_color_cuda_resident_surface_with_component_work(",
             "CudaQueuedIdwtBatch::resolve_optional_after_completed_work(",
+        ]),
+        PatternCheck::new(
+            "CUDA color component-completion ownership",
+            &sources.color_batch_finish_component,
+        )
+        .required(&[
+            "fn run_pending_color_idwt(",
+            "fn finish_color_components(",
+            "struct PreparedColorComponents",
+        ]),
+        PatternCheck::new(
+            "CUDA color surface-finalization ownership",
+            &sources.color_batch_finish_surface,
+        )
+        .required(&[
+            "fn finalize_color_surface(",
+            "struct FinalizeColorSurfaceRequest",
+            "SurfaceResidency::CudaResidentDecode",
         ]),
         PatternCheck::new(
             "CUDA color transform and store ownership",
@@ -70,6 +102,11 @@ fn color_runtime_owns_store_and_queued_idwt_completion() {
             "store_plan.rgb8_job(",
         ])
         .forbidden(&["include!(", "#[path", "CudaJ2kStoreRgb8Job {"]),
+    ]);
+}
+
+fn assert_color_completion_ownership(sources: &CudaDecoderSources) {
+    assert_pattern_checks(&[
         PatternCheck::new("CUDA queued IDWT ownership guard", &sources.decoder).required(&[
             "context: CudaContext",
             "fn resources_pending(&self) -> bool",
@@ -97,47 +134,8 @@ fn color_runtime_owns_store_and_queued_idwt_completion() {
             "decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed_and_live_host_bytes(",
             "decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool_and_live_host_bytes(",
             "j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_and_live_host_bytes(",
+            "if !collect_stage_timings {",
+            "normal CUDA HTJ2K refinement requires retained queued cleanup metadata",
         ]),
     ]);
-    assert!(
-        finish.lines().count() < 125,
-        "CUDA color finish leaf must stay focused"
-    );
-    assert_owner_completion_contract(&sources, &finish);
-}
-
-fn assert_owner_completion_contract(sources: &CudaDecoderSources, finish: &str) {
-    assert_pattern_checks(&[
-        PatternCheck::new(
-            "CUDA color batch host owner graph",
-            &sources.color_batch_host_owners,
-        )
-        .required(&[
-            "fn account_colors(",
-            "fn color_batch_budget(",
-            "fn color_work_budget(",
-            "fn account_component_work(",
-            "fn append_color_payload_to_shared(",
-            "host_budget.try_vec_reserve(",
-        ]),
-        PatternCheck::new(
-            "CUDA color store aggregate host ownership",
-            &sources.color_batch,
-        )
-        .required(&[
-            "j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(",
-            "host_budget.live_bytes()",
-        ]),
-    ]);
-    assert_eq!(
-        sources
-            .color_batch
-            .matches("CudaQueuedIdwtBatch::resolve_optional_after_completed_work(")
-            .count()
-            + finish
-                .matches("CudaQueuedIdwtBatch::resolve_optional_after_completed_work(")
-                .count(),
-        2,
-        "single and batch color decode must both resolve queued IDWT ownership"
-    );
 }

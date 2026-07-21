@@ -13,6 +13,8 @@ use super::super::{
     planning::htj2k_dequantize_kernel_jobs_with_live_host_bytes, types::CudaHtj2kDequantizeTarget,
 };
 
+mod queued;
+
 impl CudaContext {
     pub(super) fn submit_htj2k_dequantize_htj2k_codeblocks(
         &self,
@@ -49,7 +51,12 @@ impl CudaContext {
     }
 
     /// Dequantize HTJ2K code-block outputs that live in multiple device buffers
-    /// with one CUDA dispatch, reusing caller-owned transient storage.
+    /// with one completed CUDA dispatch, reusing caller-owned transient storage.
+    ///
+    /// The completion boundary keeps the locally uploaded job descriptor alive.
+    /// Asynchronous decode pipelines must use
+    /// [`Self::j2k_dequantize_queued_htj2k_cleanup_enqueue`], whose typed cleanup
+    /// guard retains the descriptor through the later group completion.
     #[doc(hidden)]
     pub fn j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(
         &self,
@@ -72,7 +79,6 @@ impl CudaContext {
         self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_impl(
             targets,
             pool,
-            true,
             live_host_bytes,
         )
     }
@@ -81,7 +87,6 @@ impl CudaContext {
         &self,
         targets: &[CudaHtj2kDequantizeTarget<'_>],
         pool: &CudaBufferPool,
-        synchronize_each_launch: bool,
         live_host_bytes: usize,
     ) -> Result<CudaExecutionStats, CudaError> {
         validate_dequantize_context(self, targets, pool)?;
@@ -95,7 +100,7 @@ impl CudaContext {
         self.launch_j2k_dequantize_htj2k_codeblocks_multi(
             pooled_device_buffer(&jobs_buffer)?,
             kernel_jobs.len(),
-            CudaLaunchMode::from_synchronize(synchronize_each_launch),
+            CudaLaunchMode::Sync,
         )?;
         Ok(CudaExecutionStats {
             kernel_dispatches: 1,

@@ -5,6 +5,8 @@ use std::{os::raw::c_uint, sync::OnceLock};
 
 pub(crate) const CUDA_SUCCESS: CuResult = 0;
 
+pub(crate) const CUDA_ERROR_NOT_READY: CuResult = 600;
+
 pub(crate) const PINNED_POOLED_I16_UPLOAD_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) const DWT97_ROW_LIFT_MAX_WIDTH: i32 = 1024;

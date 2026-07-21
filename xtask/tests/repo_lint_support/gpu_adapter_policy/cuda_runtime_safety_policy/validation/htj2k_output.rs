@@ -76,8 +76,7 @@ fn htj2k_shared_outputs_require_disjoint_validated_regions() {
             "output_regions::ValidatedHtj2kOutputLayout",
             "pub use self::queued::CudaQueuedHtj2kCleanup;",
             "if output_layout.needs_zero_fill {",
-            "self.memset_d32(coefficient_buffer, 0, output_words)?;",
-            "self.synchronize()?;",
+            "self.memset_d32_async(coefficient_buffer, 0, output_words)?;",
         ]),
         PatternCheck::new("CUDA empty HTJ2K output completion", &sources.context).required(&[
             "if htj2k_decode_needs_zero_fill(jobs, output_words)? {",

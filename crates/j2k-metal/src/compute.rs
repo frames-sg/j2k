@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(target_os = "macos")]
-use std::{
-    mem::{size_of, size_of_val},
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-#[cfg(target_os = "macos")]
-use j2k_core::checked_surface_len;
 use j2k_core::{PixelFormat, Rect};
-#[cfg(target_os = "macos")]
-use j2k_metal_support::{
-    checked_blit_command_encoder, checked_command_buffer, checked_compute_command_encoder,
-    dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline, dispatch_single_thread,
-};
 #[cfg(target_os = "macos")]
 use j2k_native::{
     idwt_required_input_windows, idwt_required_output_margin,
@@ -31,72 +17,13 @@ use j2k_native::{
 };
 #[cfg(target_os = "macos")]
 use metal::{
-    foreign_types::ForeignType, BlitCommandEncoder, Buffer, CommandBuffer, CommandBufferRef,
-    CommandQueueRef, ComputeCommandEncoder, ComputeCommandEncoderRef, ComputePipelineState, Device,
-    MTLSize,
+    foreign_types::ForeignType, Buffer, CommandBuffer, CommandBufferRef, ComputeCommandEncoderRef,
+    ComputePipelineState, Device, MTLSize,
 };
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;
 
-#[cfg(target_os = "macos")]
-use crate::profile_env::{
-    classic_tier1_gpu_token_pack_requested, classic_tier1_split_gpu_token_pack_requested,
-    classic_tier1_split_mq_byte_gpu_token_pack_disabled,
-    classic_tier1_split_mq_byte_gpu_token_pack_requested, hybrid_stage_signpost,
-    label_command_buffer, label_compute_encoder,
-    metal_profile_classic_tier1_arithmetic_pack_enabled,
-    metal_profile_classic_tier1_density_enabled, metal_profile_classic_tier1_pass_plan_enabled,
-    metal_profile_classic_tier1_raw_pack_enabled,
-    metal_profile_classic_tier1_split_token_emit_enabled,
-    metal_profile_classic_tier1_symbol_plan_enabled,
-    metal_profile_classic_tier1_token_emit_enabled, metal_profile_classic_tier1_token_pack_enabled,
-    metal_profile_coefficient_prep_split_commands_enabled,
-    metal_profile_decode_split_commands_enabled, HybridSignpostName,
-    SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD, SIGNPOST_DECODE_HYBRID_COMMAND_WAIT,
-    SIGNPOST_DECODE_HYBRID_CPU_TIER1, SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
-    SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP, SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_PAYLOAD_COPY_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_SETUP, SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT,
-    SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_HT_PACKET_BUFFER_SETUP, SIGNPOST_ENCODE_HYBRID_HT_PACKET_PLAN,
-    SIGNPOST_ENCODE_HYBRID_HT_PAYLOAD_COPY_COMMAND_ENCODE,
-    SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE, SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP,
-    SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST,
-};
-use crate::{error::metal_kernel_support_error, Error, Surface};
-
-#[cfg(target_os = "macos")]
-pub(in crate::compute) fn new_command_buffer(
-    queue: &CommandQueueRef,
-) -> Result<CommandBuffer, Error> {
-    checked_command_buffer(queue).map_err(|source| {
-        metal_kernel_support_error("J2K Metal command buffer creation failed", source)
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(in crate::compute) fn new_compute_command_encoder(
-    command_buffer: &CommandBufferRef,
-) -> Result<ComputeCommandEncoder, Error> {
-    checked_compute_command_encoder(command_buffer).map_err(|source| {
-        metal_kernel_support_error("J2K Metal compute encoder creation failed", source)
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(in crate::compute) fn new_blit_command_encoder(
-    command_buffer: &CommandBufferRef,
-) -> Result<BlitCommandEncoder, Error> {
-    checked_blit_command_encoder(command_buffer).map_err(|source| {
-        metal_kernel_support_error("J2K Metal blit encoder creation failed", source)
-    })
-}
+use crate::{Error, Surface};
 
 mod abi;
 #[cfg(target_os = "macos")]
@@ -142,22 +69,23 @@ use self::direct_buffers::{
 mod direct_commands;
 #[cfg(target_os = "macos")]
 use self::direct_commands::{
+    new_blit_command_encoder, new_command_buffer, new_compute_command_encoder,
     DecodeHybridSplitCommandBuffers, DirectColorBatchCommandBuffers, DirectIdwtCommandBuffers,
 };
 #[cfg(target_os = "macos")]
 mod direct_cpu;
-#[cfg(all(target_os = "macos", test))]
-use self::direct_cpu::decode_prepared_classic_sub_band_on_cpu;
 #[cfg(target_os = "macos")]
 use self::direct_cpu::{
     decode_classic_inputs_on_cpu_with_plan_cache, decode_ht_inputs_on_cpu_with_plan_cache,
     decode_prepared_classic_jobs_on_cpu_with_scratch,
     decode_prepared_classic_jobs_on_cpu_with_scratch_profiled,
-    decode_prepared_classic_sub_band_group_on_cpu_profile,
-    decode_prepared_classic_sub_band_on_cpu_profile, decode_prepared_ht_jobs_on_cpu_with_workspace,
-    decode_prepared_ht_jobs_on_cpu_with_workspace_profiled,
-    decode_prepared_ht_sub_band_group_on_cpu_profile, decode_prepared_ht_sub_band_on_cpu_profile,
-    ClassicCpuDecodeInput, ClassicCpuDecodeScratch, HtCpuDecodeInput,
+    decode_prepared_ht_jobs_on_cpu_with_workspace,
+    decode_prepared_ht_jobs_on_cpu_with_workspace_profiled, ClassicCpuDecodeInput,
+    ClassicCpuDecodeScratch, HtCpuDecodeInput,
+};
+#[cfg(all(target_os = "macos", test))]
+use self::direct_cpu::{
+    decode_prepared_classic_sub_band_on_cpu, decode_prepared_ht_sub_band_group_on_cpu_profile,
 };
 #[cfg(target_os = "macos")]
 mod direct_flattened;
@@ -175,10 +103,8 @@ use self::direct_profile::{
     elapsed_us, emit_direct_hybrid_stage_timings, CpuTier1DecodeSubstageCounters,
     DirectHybridStageTimings,
 };
-mod direct_plan_support;
-#[cfg(test)]
-use self::direct_plan_support::prepared_direct_color_tier1_input_count;
-use self::direct_plan_support::{
+mod direct_plan_validation;
+use self::direct_plan_validation::{
     classic_group_shapes_match, classic_sub_band_shapes_match, direct_preflight_invariant,
     ht_group_shapes_match, ht_sub_band_shapes_match, idwt_shapes_match,
     prepared_direct_color_plan_supports_runtime, store_shapes_match,
@@ -190,10 +116,13 @@ use self::direct_scratch::{
 };
 #[cfg(target_os = "macos")]
 mod direct_status;
+#[cfg(all(target_os = "macos", test))]
+use self::direct_status::validate_direct_status;
 #[cfg(target_os = "macos")]
 use self::direct_status::{
     decode_classic_status_error, decode_ht_status_error, decode_idwt_status_error,
-    decode_mct_status_error, validate_direct_status, DirectStatusCheck,
+    decode_mct_status_error, retire_direct_status_checks, DirectStatusCheck,
+    DirectStatusRetirementMode,
 };
 #[cfg(target_os = "macos")]
 mod direct_tier1;
@@ -202,8 +131,9 @@ use self::direct_tier1::{
     flattened_hybrid_cpu_tier1_enabled, prepare_direct_tier1_input_buffer,
     record_flattened_hybrid_cpu_decode_batch, record_hybrid_cpu_decode_inputs,
     record_hybrid_cpu_decode_worker_init, record_hybrid_repeated_output_blit,
-    record_hybrid_stacked_component_batch, should_flatten_hybrid_cpu_tier1_color_batch,
-    DirectTier1Mode, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
+    record_hybrid_stacked_component_batch, record_stacked_component_batch,
+    should_flatten_hybrid_cpu_tier1_color_batch, DirectTier1Mode,
+    HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
 };
 mod pack_params;
 use self::pack_params::{j2k_pack_scale_arrays, j2k_scalar_pack_params, j2k_u32_param};
@@ -253,22 +183,27 @@ mod test_counters;
 pub(crate) use self::test_counters::{
     classic_gpu_token_pack_dispatches_for_test,
     classic_split_mq_byte_gpu_token_pack_dispatches_for_test,
-    direct_tier1_input_buffer_prepares_for_test, flattened_hybrid_cpu_decode_batches_for_test,
-    ht_batch_coefficient_copy_blits_for_test, hybrid_cpu_decode_inputs_for_test,
-    hybrid_cpu_decode_worker_inits_for_test, hybrid_repeated_output_blits_for_test,
-    hybrid_stacked_component_batches_for_test, lossless_deinterleave_rct_fused_dispatches_for_test,
-    reset_classic_gpu_token_pack_dispatches_for_test,
+    direct_destination_event_bridge_for_test, direct_tier1_input_buffer_prepares_for_test,
+    direct_tier1_input_buffer_runtime_for_test,
+    flattened_hybrid_cpu_decode_batches_for_test, ht_batch_coefficient_copy_blits_for_test,
+    hybrid_cpu_decode_inputs_for_test, hybrid_cpu_decode_worker_inits_for_test,
+    hybrid_repeated_output_blits_for_test, hybrid_stacked_component_batches_for_test,
+    lossless_deinterleave_rct_fused_dispatches_for_test, metal_command_buffers_for_test,
+    metal_compute_encoders_for_test, reset_classic_gpu_token_pack_dispatches_for_test,
     reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test,
+    reset_direct_destination_event_bridge_for_test,
     reset_direct_tier1_input_buffer_prepares_for_test,
     reset_flattened_hybrid_cpu_decode_batches_for_test,
     reset_ht_batch_coefficient_copy_blits_for_test, reset_hybrid_cpu_decode_inputs_for_test,
     reset_hybrid_cpu_decode_worker_inits_for_test, reset_hybrid_repeated_output_blits_for_test,
     reset_hybrid_stacked_component_batches_for_test,
     reset_lossless_deinterleave_rct_fused_dispatches_for_test,
+    reset_metal_command_buffers_for_test, reset_metal_compute_encoders_for_test,
     reset_resident_codestream_command_buffer_waits_for_test,
-    reset_resident_gpu_timestamp_queries_for_test, reset_thread_hybrid_cpu_decode_inputs_for_test,
+    reset_resident_gpu_timestamp_queries_for_test, reset_stacked_component_batches_for_test,
+    reset_thread_hybrid_cpu_decode_inputs_for_test,
     resident_codestream_command_buffer_waits_for_test, resident_gpu_timestamp_queries_for_test,
-    thread_hybrid_cpu_decode_inputs_for_test,
+    stacked_component_batches_for_test, thread_hybrid_cpu_decode_inputs_for_test,
 };
 
 #[cfg(target_os = "macos")]
@@ -302,25 +237,17 @@ pub(crate) use self::runtime::{
 pub(crate) use j2k_metal_support::MetalSupportError;
 
 #[cfg(target_os = "macos")]
-fn checked_metal_surface_len(
-    dims: (u32, u32),
-    bytes_per_pixel: usize,
-    context: &'static str,
-) -> Result<(usize, usize), Error> {
-    checked_surface_len(dims, bytes_per_pixel, usize::MAX, context).map_err(|error| {
-        Error::MetalKernel {
-            message: format!("{context}: {error}"),
-        }
-    })
-}
-
-#[cfg(target_os = "macos")]
 mod direct_plan_types;
+#[cfg(all(target_os = "macos", test))]
+mod ht_forward_reader_tests;
+#[cfg(all(target_os = "macos", test))]
+mod ht_sigprop_context_tests;
 #[cfg(target_os = "macos")]
 use self::direct_plan_types::{
-    HtCodedArena, PreparedClassicSubBand, PreparedClassicSubBandGroup,
-    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
-    PreparedHtSubBand, PreparedHtSubBandGroup, PreparedHtSubBandGroupMember,
+    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember,
+    PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtExecutionOwner,
+    PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
+    PreparedHtSubBandGroupMember,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_plan_types::{PreparedDirectColorPlan, PreparedDirectGrayscalePlan};
@@ -336,9 +263,30 @@ use self::direct_plane_pack::{
 #[cfg(target_os = "macos")]
 mod direct_grayscale_execute;
 #[cfg(target_os = "macos")]
+pub(crate) use self::direct_grayscale_execute::{
+    execute_hybrid_cpu_tier1_direct_color_plan, execute_hybrid_cpu_tier1_direct_color_plan_batch,
+    execute_hybrid_cpu_tier1_direct_color_plan_with_device, execute_prepared_direct_color_plan,
+    execute_prepared_direct_color_plan_batch, execute_prepared_direct_color_plan_with_device,
+    execute_prepared_direct_grayscale_plan, execute_prepared_direct_grayscale_plan_batch,
+    execute_prepared_direct_grayscale_plan_with_device,
+    execute_repeated_prepared_direct_grayscale_plan,
+    submit_prepared_direct_color_plan_batch_into_group,
+    submit_prepared_direct_grayscale_plan_batch_into_group, DirectDestinationConsumerOrdering,
+    SubmittedDirectDestination,
+};
+#[cfg(target_os = "macos")]
 mod direct_prepare;
 #[cfg(target_os = "macos")]
+pub(crate) use self::direct_prepare::{
+    prepare_direct_grayscale_plan, prepare_referenced_classic_color_plan,
+    prepare_referenced_classic_grayscale_plan, prepare_referenced_classic_rgba_plan,
+    prepare_referenced_htj2k_color_plan, prepare_referenced_htj2k_grayscale_plan,
+    prepare_referenced_htj2k_rgba_plan,
+};
+#[cfg(target_os = "macos")]
 mod direct_roi;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_roi::crop_prepared_direct_grayscale_plan_to_output_region;
 #[cfg(target_os = "macos")]
 mod direct_stacked_batch;
 #[cfg(target_os = "macos")]
@@ -353,6 +301,8 @@ use self::direct_stacked_batch::{
 };
 #[cfg(target_os = "macos")]
 mod direct_surface_pack;
+#[cfg(all(target_os = "macos", test))]
+use self::direct_surface_pack::checked_metal_surface_len;
 #[cfg(all(target_os = "macos", test))]
 use self::direct_surface_pack::j2k_pack_kernel_name_for;
 #[cfg(target_os = "macos")]
@@ -376,20 +326,71 @@ use self::direct_execute::{
 #[cfg(target_os = "macos")]
 mod decode_cleanup;
 #[cfg(target_os = "macos")]
+pub(crate) use self::decode_cleanup::{
+    decode_classic_cleanup_code_block, decode_classic_cleanup_sub_band,
+    decode_ht_cleanup_code_block, decode_ht_cleanup_sub_band,
+};
+#[cfg(target_os = "macos")]
 mod decode_dispatch;
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use self::decode_dispatch::idwt::decode_irreversible97_staged_single_decomposition_idwt;
+#[cfg(target_os = "macos")]
+pub(crate) use self::decode_dispatch::idwt::{
+    decode_irreversible97_single_decomposition_idwt, decode_reversible53_single_decomposition_idwt,
+};
+#[cfg(target_os = "macos")]
+pub(crate) use self::decode_dispatch::mct::decode_inverse_mct;
+#[cfg(target_os = "macos")]
+pub(crate) use self::decode_dispatch::store::decode_store_component_and_capture;
 #[cfg(target_os = "macos")]
 mod forward_transform;
 #[cfg(target_os = "macos")]
+pub(crate) use self::forward_transform::{
+    encode_deinterleave_to_f32, encode_forward_dwt53, encode_forward_dwt97,
+};
+#[cfg(target_os = "macos")]
 mod lossless_prepare;
+#[cfg(target_os = "macos")]
+pub(crate) use self::lossless_prepare::{
+    encode_forward_ict, encode_forward_rct, encode_quantize_subband,
+    prepare_lossless_device_code_blocks, prepare_lossless_device_code_blocks_batch,
+};
 #[cfg(target_os = "macos")]
 mod resident_codestream;
 #[cfg(target_os = "macos")]
+pub(crate) use self::resident_codestream::{
+    encode_lossless_codestream_buffer_from_resident_tier1, encode_tier2_packetization,
+    submit_lossless_codestream_buffers_from_prepared_classic_batch,
+    submit_lossless_codestream_buffers_from_prepared_ht_batch,
+};
+#[cfg(target_os = "macos")]
 mod resident_tier1;
-#[path = "compute/symbol_inventory.rs"]
-mod symbol_inventory;
+#[cfg(target_os = "macos")]
+pub(crate) use self::resident_tier1::{
+    wait_resident_lossless_codestream_batch, J2kLosslessCodestreamAssemblyJob,
+    J2kLosslessCodestreamBlockCodingMode, J2kLosslessDeviceBatchPrepareItem,
+    J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
+    J2kPendingResidentLosslessCodestreamBatch, J2kPreparedLosslessDeviceCodeBlocks,
+    J2kResidentPacketizationEncodeJob, J2kResidentPacketizationResolution,
+    J2kResidentPacketizationSubband,
+};
 #[cfg(target_os = "macos")]
 mod tier1_encode;
-symbol_inventory::wire_compute_symbols!();
+#[cfg(target_os = "macos")]
+pub(crate) use self::tier1_encode::{
+    encode_classic_tier1_code_block, encode_classic_tier1_code_blocks,
+    encode_classic_tier1_prepared_device_code_blocks_resident, encode_ht_cleanup_code_block,
+    encode_ht_cleanup_code_blocks, encode_ht_prepared_device_code_blocks_resident,
+    read_resident_ht_tier1_code_blocks_for_cpu_packetization,
+};
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use self::tier1_encode::{
+    encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test,
+    encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_test,
+    encode_classic_tier1_code_blocks_via_split_mq_byte_raw_tokens_gpu_pack_for_test,
+    encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_for_test,
+    encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test,
+};
 
 #[cfg(target_os = "macos")]
 fn required_classic_output_len(job: J2kCodeBlockDecodeJob<'_>) -> Result<usize, Error> {
@@ -409,19 +410,19 @@ fn required_classic_output_len(job: J2kCodeBlockDecodeJob<'_>) -> Result<usize, 
 fn classic_style_flags(style: j2k_native::J2kCodeBlockStyle) -> u32 {
     let mut flags = 0u32;
     if style.reset_context_probabilities {
-        flags |= J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES;
+        flags |= abi::J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES;
     }
     if style.termination_on_each_pass {
-        flags |= J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS;
+        flags |= abi::J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS;
     }
     if style.vertically_causal_context {
-        flags |= J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT;
+        flags |= abi::J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT;
     }
     if style.segmentation_symbols {
-        flags |= J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS;
+        flags |= abi::J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS;
     }
     if style.selective_arithmetic_coding_bypass {
-        flags |= J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS;
+        flags |= abi::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS;
     }
     flags
 }

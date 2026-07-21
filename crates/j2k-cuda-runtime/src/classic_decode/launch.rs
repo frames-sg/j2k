@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use super::abi::{
-    CudaClassicDecodeStageTimings, CudaClassicDecodeTarget, CudaClassicStatus,
+    CudaClassicDecodeStageTimings, CudaClassicDecodeTableResourceInner,
+    CudaClassicDecodeTableResources, CudaClassicDecodeTarget, CudaClassicStatus,
     CLASSIC_KERNEL_TABLES,
 };
 use super::prepare::{
     checked_bytes, invalid, prepare_classic_decode, validate_classic_launch_owners,
 };
+use super::queued::CudaQueuedClassicDecode;
 use crate::{
     allocation::HostPhaseBudget,
     bytes::{
         classic_jobs_as_bytes, classic_segments_as_bytes, classic_statuses_as_bytes_mut,
-        classic_tables_as_bytes,
+        classic_statuses_byte_len, classic_tables_as_bytes,
     },
     context::CudaContext,
     error::{select_resource_release_error, CudaError},
@@ -26,6 +28,19 @@ use crate::{
 const CLASSIC_KERNEL_NAME: &str = "j2k_decode_classic_codeblocks_multi";
 
 impl CudaContext {
+    /// Upload static classic Tier-1 lookup tables once for session reuse.
+    #[doc(hidden)]
+    pub fn upload_classic_decode_table_resources(
+        &self,
+    ) -> Result<CudaClassicDecodeTableResources, CudaError> {
+        self.inner.set_current()?;
+        Ok(CudaClassicDecodeTableResources {
+            inner: Arc::new(CudaClassicDecodeTableResourceInner {
+                tables: self.upload(classic_tables_as_bytes(&CLASSIC_KERNEL_TABLES))?,
+            }),
+        })
+    }
+
     /// Allocate and clear one classic Tier-1 coefficient plane.
     #[doc(hidden)]
     pub fn allocate_classic_coefficients_with_pool(
@@ -40,8 +55,7 @@ impl CudaContext {
         }
         let bytes = checked_bytes::<f32>(output_words)?;
         let output = pool.take(bytes)?;
-        self.memset_d32(pooled_device_buffer(&output)?, 0, output_words)?;
-        self.synchronize()?;
+        self.memset_d32_async(pooled_device_buffer(&output)?, 0, output_words)?;
         Ok(output)
     }
 
@@ -62,6 +76,105 @@ impl CudaContext {
             false,
         )
         .map(|(statuses, _)| statuses)
+    }
+
+    /// Enqueue classic Tier-1 decoding and defer its single status transfer.
+    ///
+    /// # Safety
+    ///
+    /// Payload, table, coefficient, and pool owners must remain live and
+    /// unmodified until the returned guard is finished or dropped. Targets
+    /// must remain pairwise disjoint and confined to this context's default
+    /// stream until completion.
+    #[doc(hidden)]
+    pub unsafe fn decode_classic_codeblocks_multi_enqueue_with_resources_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        tables: &CudaClassicDecodeTableResources,
+        targets: &[CudaClassicDecodeTarget<'_>],
+        pool: &CudaBufferPool,
+        live_host_bytes: usize,
+    ) -> Result<CudaQueuedClassicDecode, CudaError> {
+        validate_classic_launch_owners(self, resources, targets, pool)?;
+        if !tables.is_owned_by(self) {
+            return Err(CudaError::InvalidArgument {
+                message: "classic Tier-1 tables must belong to the decode context".to_string(),
+            });
+        }
+        let mut host_budget =
+            HostPhaseBudget::with_live_bytes("CUDA queued classic Tier-1 owners", live_host_bytes)?;
+        let prepared = prepare_classic_decode(resources.payload_len, targets, &mut host_budget)?;
+        if prepared.jobs.is_empty() {
+            return Ok(CudaQueuedClassicDecode {
+                context: self.clone(),
+                resources: Vec::new(),
+                status_buffer: None,
+                status_count: 0,
+                execution: crate::execution::CudaExecutionStats::default(),
+                timings: CudaClassicDecodeStageTimings::default(),
+                pool_reuse_guard: None,
+                finish_host_live_bytes: 0,
+            });
+        }
+        let payload = resources.payload.buffer()?;
+        let jobs = pool.upload_pinned(classic_jobs_as_bytes(&prepared.jobs))?;
+        let segments = pool.upload_pinned(classic_segments_as_bytes(&prepared.segments))?;
+        let statuses = pool.take(classic_statuses_byte_len(prepared.jobs.len())?)?;
+        let scratch = pool.take(checked_bytes::<u32>(prepared.scratch_words)?)?;
+        let mut queued_resources = host_budget.try_vec_with_capacity(3)?;
+        queued_resources.push(jobs);
+        queued_resources.push(segments);
+        queued_resources.push(scratch);
+        let mut finish_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA queued classic Tier-1 retained metadata",
+            live_host_bytes,
+        )?;
+        finish_budget.account_vec(&queued_resources)?;
+
+        let mut payload_ptr = payload.device_ptr();
+        let mut jobs_ptr = pooled_device_buffer(&queued_resources[0])?.device_ptr();
+        let mut segments_ptr = pooled_device_buffer(&queued_resources[1])?.device_ptr();
+        let mut tables_ptr = tables.inner.tables.device_ptr();
+        let mut statuses_ptr = pooled_device_buffer(&statuses)?.device_ptr();
+        let mut scratch_ptr = pooled_device_buffer(&queued_resources[2])?.device_ptr();
+        let mut params = cuda_kernel_params!(
+            payload_ptr,
+            jobs_ptr,
+            segments_ptr,
+            tables_ptr,
+            statuses_ptr,
+            scratch_ptr
+        );
+        let geometry = j2k_classic_codeblock_launch_geometry(prepared.jobs.len()).ok_or(
+            CudaError::LengthTooLarge {
+                len: prepared.jobs.len(),
+            },
+        )?;
+        let function = self.inner.cuda_oxide_j2k_classic_decode_kernel_function(
+            CudaKernel::J2kClassicDecodeCodeblocksMulti,
+        )?;
+        let pool_reuse_guard = pool.defer_reuse()?;
+        let launch_result = self.with_nvtx_range("j2k.classic.decode.tier1.batch", || {
+            self.launch_kernel_async(function, geometry, &mut params)
+        });
+        if let Err(error) = launch_result {
+            return pool_reuse_guard.synchronize_then_error(error);
+        }
+        Ok(CudaQueuedClassicDecode {
+            context: self.clone(),
+            resources: queued_resources,
+            status_buffer: Some(statuses),
+            status_count: prepared.jobs.len(),
+            execution: crate::execution::CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+            timings: CudaClassicDecodeStageTimings::default(),
+            pool_reuse_guard: Some(pool_reuse_guard),
+            finish_host_live_bytes: finish_budget.live_bytes(),
+        })
     }
 
     /// Decode classic Tier-1 code-blocks and return optional stage timings.

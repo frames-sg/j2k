@@ -8,6 +8,222 @@ use super::{
 };
 
 #[test]
+fn batch_work_keeps_referenced_plans_and_boundary_tests_in_focused_modules() {
+    let root = repo_root();
+    let direct_plan = fs::read_to_string(root.join("crates/j2k-native/src/direct_plan.rs"))
+        .expect("read j2k-native direct plan");
+    assert_file_pattern_checks(
+        root,
+        &[
+            FilePatternCheck::new("crates/j2k-native/src/direct_plan.rs")
+                .required(&["mod referenced_ht;", "pub use referenced_ht::"])
+                .forbidden(&["pub enum J2kReferencedHtj2kPlan"]),
+            FilePatternCheck::new("crates/j2k-native/src/direct_plan/referenced_ht.rs")
+                .required(&["pub enum J2kReferencedHtj2kPlan"])
+                .forbidden(&["use super::*;"]),
+        ],
+    );
+    assert!(
+        direct_plan.lines().count() < 250,
+        "direct_plan.rs must remain a focused public geometry owner"
+    );
+
+    for (owner, module_decl, child, symbol, max_lines) in [
+        (
+            "crates/j2k-native/src/tests.rs",
+            "mod workspace_reuse;",
+            "crates/j2k-native/src/tests/workspace_reuse.rs",
+            "fn decoder_workspace_reuses_component_owners_across_distinct_input_lifetimes",
+            300usize,
+        ),
+        (
+            "crates/j2k-cuda-runtime/src/tests.rs",
+            "mod context_diagnostics;",
+            "crates/j2k-cuda-runtime/src/tests/context_diagnostics.rs",
+            "fn runtime_diagnostics_count_device_to_host_transfers_when_required",
+            100usize,
+        ),
+        (
+            "crates/j2k-cuda-runtime/src/tests/pipeline.rs",
+            "mod native_store;",
+            "crates/j2k-cuda-runtime/src/tests/pipeline/native_store.rs",
+            "fn j2k_native_grayscale_batch_store_preserves_unsigned_and_signed_samples_when_runtime_required",
+            220usize,
+        ),
+        (
+            "crates/j2k-metal/src/compute/tests.rs",
+            "mod referenced_plan;",
+            "crates/j2k-metal/src/compute/tests/referenced_plan.rs",
+            "fn referenced_htj2k_payload_ranges_reconstruct_owned_direct_plan_bytes",
+            100usize,
+        ),
+        (
+            "crates/j2k-cuda/src/session.rs",
+            "mod tests;",
+            "crates/j2k-cuda/src/session/tests.rs",
+            "fn uninitialized_decode_pool_diagnostics_are_empty",
+            120usize,
+        ),
+    ] {
+        let owner_source = fs::read_to_string(root.join(owner))
+            .unwrap_or_else(|error| panic!("read {owner}: {error}"));
+        let child_source = fs::read_to_string(root.join(child))
+            .unwrap_or_else(|error| panic!("read {child}: {error}"));
+        assert!(owner_source.contains(module_decl), "{owner} must declare {child}");
+        assert!(!owner_source.contains(symbol), "{owner} must not retain {symbol}");
+        assert!(child_source.contains(symbol), "{child} must own {symbol}");
+        assert!(
+            child_source.lines().count() < max_lines,
+            "{child} exceeded its focused {max_lines}-line limit"
+        );
+        assert!(!child_source.lines().any(|line| line.trim() == "use super::*;"));
+    }
+}
+
+#[test]
+fn metal_batch_policy_checks_live_in_their_focused_child_module() {
+    let root = repo_root();
+    let owner_path = root.join("xtask/tests/repo_lint_support/gpu_adapter_policy.rs");
+    let child_path = root
+        .join("xtask/tests/repo_lint_support/gpu_adapter_policy/metal_batch_structure_policy.rs");
+    let owner = fs::read_to_string(&owner_path).expect("read GPU adapter policy root");
+    let child = fs::read_to_string(&child_path).expect("read Metal batch structure policy");
+
+    assert!(owner.contains("mod metal_batch_structure_policy;"));
+    assert!(!owner.contains("fn metal_batch_heuristics_live_in_focused_module("));
+    assert!(!owner.contains("fn metal_batch_routes_share_session_aware_implementations("));
+    assert!(child.contains("fn metal_batch_heuristics_live_in_focused_module("));
+    assert!(child.contains("fn metal_batch_routes_share_session_aware_implementations("));
+    assert!(
+        owner.lines().count() < 1_550,
+        "GPU adapter policy root must not absorb focused Metal batch checks"
+    );
+    assert!(child.lines().count() < 300);
+}
+
+#[test]
+fn metal_batch_execution_policy_checks_live_in_their_focused_child_module() {
+    let root = repo_root();
+    let owner_path = root.join("xtask/tests/repo_lint_support/metal_compute_structure_policy.rs");
+    let child_path = root
+        .join("xtask/tests/repo_lint_support/metal_compute_structure_policy/batch_execution.rs");
+    let owner = fs::read_to_string(&owner_path).expect("read Metal compute policy root");
+    let child = fs::read_to_string(&child_path).expect("read Metal batch execution policy");
+
+    assert!(owner.contains("mod batch_execution;"));
+    assert!(
+        !owner.contains("fn metal_ht_chunk_tests_are_split_by_planning_cache_and_status_behavior(")
+    );
+    assert!(
+        !owner.contains("fn metal_direct_destination_is_split_by_submission_and_group_encoding(")
+    );
+    assert!(!owner
+        .contains("fn metal_distinct_classic_batch_execution_is_split_from_cleanup_dispatch("));
+    assert!(
+        child.contains("fn metal_ht_chunk_tests_are_split_by_planning_cache_and_status_behavior(")
+    );
+    assert!(
+        child.contains("fn metal_direct_destination_is_split_by_submission_and_group_encoding(")
+    );
+    assert!(
+        child.contains("fn metal_distinct_classic_batch_execution_is_split_from_cleanup_dispatch(")
+    );
+    assert!(
+        owner.lines().count() < 550,
+        "Metal compute policy root must not absorb batch execution structure checks"
+    );
+    assert!(child.lines().count() < 250);
+}
+
+#[test]
+fn metal_multitile_device_tests_are_split_by_pixel_contract() {
+    let root = repo_root();
+    let test_root = root.join("crates/j2k-metal/tests/device/multitile_color");
+    let shell = fs::read_to_string(root.join("crates/j2k-metal/tests/device/multitile_color.rs"))
+        .expect("read Metal multi-tile test shell");
+
+    for module in ["batch_inputs", "classic", "gray12", "rgb", "signed"] {
+        assert!(shell.contains(&format!("mod {module};")));
+        assert!(test_root.join(format!("{module}.rs")).exists());
+    }
+    assert!(shell.lines().count() < 25);
+    assert!(!shell.contains("fn independent_openjph_multitile_gray12_decodes_exactly_on_metal("));
+    assert!(!shell.contains("fn independent_openjph_multitile_rgb_decodes_exactly_on_metal("));
+    assert!(!shell.contains("fn classic_multitile_rgb8_decodes_exactly_on_metal("));
+    assert!(fs::read_to_string(test_root.join("gray12.rs"))
+        .expect("read Gray12 multi-tile tests")
+        .contains("fn independent_openjph_multitile_gray12_decodes_exactly_on_metal("));
+    assert!(fs::read_to_string(test_root.join("rgb.rs"))
+        .expect("read RGB multi-tile tests")
+        .contains("fn independent_openjph_multitile_rgb_decodes_exactly_on_metal("));
+}
+
+#[test]
+fn owned_batch_test_support_is_split_by_responsibility() {
+    let root = repo_root();
+    let test_root = root.join("crates/j2k/tests/owned_batch");
+    let shell = fs::read_to_string(root.join("crates/j2k/tests/owned_batch.rs"))
+        .expect("read owned-batch integration-test shell");
+
+    for (module, owned_symbol, max_lines) in [
+        ("fixtures", "fn htj2k_gray8_fixture(", 260usize),
+        ("oracles", "fn native_request_oracle(", 140usize),
+        (
+            "payload_plan",
+            "fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(",
+            180usize,
+        ),
+        (
+            "native_types_and_requests",
+            "fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly(",
+            150usize,
+        ),
+    ] {
+        assert!(shell.contains(&format!("mod {module};")));
+        let module_path = test_root.join(format!("{module}.rs"));
+        let source = fs::read_to_string(&module_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", module_path.display()));
+        assert!(source.contains(owned_symbol));
+        assert!(
+            source.lines().count() < max_lines,
+            "{} exceeded its focused {max_lines}-line limit",
+            module_path
+                .strip_prefix(root)
+                .unwrap_or(&module_path)
+                .display()
+        );
+    }
+    assert!(
+        shell.lines().count() < 40,
+        "owned_batch.rs must remain a focused integration-test module shell"
+    );
+    assert!(!shell.contains("fn htj2k_gray8_fixture("));
+    assert!(!shell.contains("fn native_request_oracle("));
+    assert!(!shell.contains("fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes("));
+
+    let rgba_path = test_root.join("rgba.rs");
+    let rgba = fs::read_to_string(&rgba_path).expect("read focused owned-batch RGBA tests");
+    assert!(
+        rgba.lines().count() < 400,
+        "{} must remain focused on RGBA behavior",
+        rgba_path.strip_prefix(root).unwrap_or(&rgba_path).display()
+    );
+    assert!(
+        !rgba.contains("fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly(")
+    );
+
+    for path in rust_sources(&test_root) {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            !source.lines().any(|line| line.trim() == "use super::*;"),
+            "{} must import only the owned-batch contracts it uses",
+            path.strip_prefix(root).unwrap_or(&path).display()
+        );
+    }
+}
+
+#[test]
 fn adapter_crates_do_not_import_codec_private_modules() {
     assert_rust_source_scan_checks(
         repo_root(),

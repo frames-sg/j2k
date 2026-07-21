@@ -4,6 +4,7 @@ use std::fs;
 
 use super::super::{assert_pattern_checks, repo_root, PatternCheck};
 
+mod allocations;
 mod architecture;
 mod color_runtime;
 mod direct_plan;
@@ -13,6 +14,9 @@ struct CudaDecoderSources {
     decoder: String,
     api: String,
     plan: String,
+    plan_grayscale: String,
+    plan_color: String,
+    plan_color_decoder: String,
     plan_color_owners: String,
     resident: String,
     resident_buffer_access: String,
@@ -24,6 +28,15 @@ struct CudaDecoderSources {
     resident_routing: String,
     resident_surface: String,
     color_batch: String,
+    color_batch_execution: String,
+    color_batch_single: String,
+    color_batch_finish: String,
+    color_batch_finish_component: String,
+    color_batch_finish_surface: String,
+    color_batch_native: String,
+    color_batch_native_completion: String,
+    color_batch_native_execution: String,
+    color_batch_native_prepare: String,
     color_batch_host_owners: String,
     color_store: String,
     color_store_batch: String,
@@ -42,6 +55,9 @@ impl CudaDecoderSources {
             decoder: read("crates/j2k-cuda/src/decoder.rs"),
             api: read("crates/j2k-cuda/src/decoder/api.rs"),
             plan: read("crates/j2k-cuda/src/decoder/plan.rs"),
+            plan_grayscale: read("crates/j2k-cuda/src/decoder/plan/grayscale.rs"),
+            plan_color: read("crates/j2k-cuda/src/decoder/plan/color.rs"),
+            plan_color_decoder: read("crates/j2k-cuda/src/decoder/plan/color_decoder.rs"),
             plan_color_owners: read("crates/j2k-cuda/src/decoder/plan/color_owners.rs"),
             resident: read("crates/j2k-cuda/src/decoder/resident.rs"),
             resident_buffer_access: read("crates/j2k-cuda/src/decoder/resident/buffer_access.rs"),
@@ -57,6 +73,27 @@ impl CudaDecoderSources {
             resident_routing: read("crates/j2k-cuda/src/decoder/resident/routing.rs"),
             resident_surface: read("crates/j2k-cuda/src/decoder/resident/surface.rs"),
             color_batch: read("crates/j2k-cuda/src/decoder/color_batch.rs"),
+            color_batch_execution: read(
+                "crates/j2k-cuda/src/decoder/color_batch/batch_execution.rs",
+            ),
+            color_batch_single: read("crates/j2k-cuda/src/decoder/color_batch/single.rs"),
+            color_batch_finish: read("crates/j2k-cuda/src/decoder/color_batch/finish.rs"),
+            color_batch_finish_component: read(
+                "crates/j2k-cuda/src/decoder/color_batch/finish/component.rs",
+            ),
+            color_batch_finish_surface: read(
+                "crates/j2k-cuda/src/decoder/color_batch/finish/surface.rs",
+            ),
+            color_batch_native: read("crates/j2k-cuda/src/decoder/color_batch/native_batch.rs"),
+            color_batch_native_completion: read(
+                "crates/j2k-cuda/src/decoder/color_batch/native_batch/completion.rs",
+            ),
+            color_batch_native_execution: read(
+                "crates/j2k-cuda/src/decoder/color_batch/native_batch/execution.rs",
+            ),
+            color_batch_native_prepare: read(
+                "crates/j2k-cuda/src/decoder/color_batch/native_batch/prepare.rs",
+            ),
             color_batch_host_owners: read("crates/j2k-cuda/src/decoder/color_batch/host_owners.rs"),
             color_store: read("crates/j2k-cuda/src/decoder/color_batch/store.rs"),
             color_store_batch: read("crates/j2k-cuda/src/decoder/color_batch/store/batch.rs"),
@@ -71,17 +108,26 @@ impl CudaDecoderSources {
 #[test]
 fn focused_modules_stay_below_line_ratchets() {
     let sources = CudaDecoderSources::read();
+    assert_facade_and_plan_line_ratchets(&sources);
+    assert_resident_line_ratchets(&sources);
+    assert_color_line_ratchets(&sources);
+}
+
+fn assert_facade_and_plan_line_ratchets(sources: &CudaDecoderSources) {
     assert!(
         sources.decoder.lines().count() < 1_500,
         "j2k-cuda/src/decoder.rs must stay below the post-runtime-split line-count ratchet"
     );
-    for (module_name, source) in [
-        ("api.rs", &sources.api),
-        ("plan.rs", &sources.plan),
-        ("profile.rs", &sources.profile),
+    for (module_name, source, maximum_lines) in [
+        ("api.rs", &sources.api, 1_800),
+        ("plan.rs", &sources.plan, 75),
+        ("plan/grayscale.rs", &sources.plan_grayscale, 475),
+        ("plan/color.rs", &sources.plan_color, 200),
+        ("plan/color_decoder.rs", &sources.plan_color_decoder, 275),
+        ("profile.rs", &sources.profile, 1_800),
     ] {
         assert!(
-            source.lines().count() < 1_800,
+            source.lines().count() < maximum_lines,
             "j2k-cuda/src/decoder/{module_name} must stay below the focused-module line-count ratchet"
         );
     }
@@ -89,6 +135,9 @@ fn focused_modules_stay_below_line_ratchets() {
         sources.plan_color_owners.lines().count() < 100,
         "j2k-cuda/src/decoder/plan/color_owners.rs must remain a focused owner-accounting leaf"
     );
+}
+
+fn assert_resident_line_ratchets(sources: &CudaDecoderSources) {
     for (module_name, source, maximum_lines) in [
         ("resident.rs", &sources.resident, 50),
         (
@@ -117,10 +166,57 @@ fn focused_modules_stay_below_line_ratchets() {
             "j2k-cuda/src/decoder/{module_name} must stay below its semantic-module line-count ratchet"
         );
     }
+}
+
+fn assert_color_line_ratchets(sources: &CudaDecoderSources) {
     assert!(
-        sources.color_batch.lines().count() < 800,
-        "j2k-cuda decoder/color_batch.rs must stay below its post-batch-store-split line-count ratchet"
+        sources.color_batch.lines().count() < 100,
+        "j2k-cuda decoder/color_batch.rs must remain a facade"
     );
+    for (module_name, source, maximum_lines) in [
+        (
+            "color_batch/batch_execution.rs",
+            &sources.color_batch_execution,
+            400,
+        ),
+        ("color_batch/single.rs", &sources.color_batch_single, 200),
+        ("color_batch/finish.rs", &sources.color_batch_finish, 125),
+        (
+            "color_batch/finish/component.rs",
+            &sources.color_batch_finish_component,
+            100,
+        ),
+        (
+            "color_batch/finish/surface.rs",
+            &sources.color_batch_finish_surface,
+            75,
+        ),
+        (
+            "color_batch/native_batch.rs",
+            &sources.color_batch_native,
+            325,
+        ),
+        (
+            "color_batch/native_batch/completion.rs",
+            &sources.color_batch_native_completion,
+            125,
+        ),
+        (
+            "color_batch/native_batch/execution.rs",
+            &sources.color_batch_native_execution,
+            275,
+        ),
+        (
+            "color_batch/native_batch/prepare.rs",
+            &sources.color_batch_native_prepare,
+            150,
+        ),
+    ] {
+        assert!(
+            source.lines().count() < maximum_lines,
+            "j2k-cuda/src/decoder/{module_name} must stay below its focused-module line-count ratchet"
+        );
+    }
     assert!(
         sources.color_batch_host_owners.lines().count() < 125,
         "j2k-cuda decoder/color_batch/host_owners.rs must remain a focused owner-accounting leaf"
@@ -137,59 +233,4 @@ fn focused_modules_stay_below_line_ratchets() {
         sources.color_store_validation.lines().count() < 100,
         "j2k-cuda decoder/color_batch/store/validation.rs must remain a focused validation leaf"
     );
-}
-
-#[test]
-fn decoder_host_collections_remain_fallible() {
-    let sources = CudaDecoderSources::read();
-    let forbidden = [
-        "Vec::with_capacity",
-        ".collect::<Vec",
-        ".collect::<Result<Vec",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("CUDA decoder plan host allocations", &sources.plan)
-            .required(&["mod color_owners;"])
-            .forbidden(&forbidden),
-        PatternCheck::new(
-            "CUDA decoder color-plan host allocations",
-            &sources.plan_color_owners,
-        )
-        .required(&["try_vec_with_capacity(", "color_owner_graph_budget("])
-        .forbidden(&forbidden),
-        PatternCheck::new(
-            "CUDA resident component host allocations",
-            &sources.resident_component,
-        )
-        .required(&["try_vec_with_capacity(", "try_collect_results_exact("])
-        .forbidden(&forbidden),
-        PatternCheck::new(
-            "CUDA resident cleanup host allocations",
-            &sources.resident_cleanup_dequant,
-        )
-        .required(&["try_vec_with_capacity("])
-        .forbidden(&forbidden),
-        PatternCheck::new(
-            "CUDA resident IDWT host allocations",
-            &sources.resident_idwt,
-        )
-        .required(&[
-            "try_cuda_vec_with_capacity(",
-            "try_collect_cuda_results_exact(",
-        ])
-        .forbidden(&forbidden),
-        PatternCheck::new("CUDA color batch host allocations", &sources.color_batch)
-            .required(&["try_vec_with_capacity(", "try_collect_results_exact("])
-            .forbidden(&forbidden),
-        PatternCheck::new(
-            "CUDA color owner-graph host allocations",
-            &sources.color_batch_host_owners,
-        )
-        .required(&[
-            "HostPhaseBudget::new(",
-            "host_budget.try_vec_with_capacity(",
-            "host_budget.try_vec_reserve(",
-        ])
-        .forbidden(&forbidden),
-    ]);
 }

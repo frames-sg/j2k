@@ -56,11 +56,20 @@ impl CudaKernel {
             self,
             Self::J2kInverseMct
                 | Self::J2kStoreGray16
+                | Self::J2kStoreGray16Batch
+                | Self::J2kStoreGrayI16Batch
                 | Self::J2kStoreGray8
+                | Self::J2kStoreGray8Batch
                 | Self::J2kStoreRgb16
+                | Self::J2kStoreRgb16NativeBatch
+                | Self::J2kStoreRgbI16NativeBatch
                 | Self::J2kStoreRgb16Mct
                 | Self::J2kStoreRgb8
                 | Self::J2kStoreRgb8MctBatch
+                | Self::J2kStoreRgb8NativeBatch
+                | Self::J2kStoreRgba8NativeBatch
+                | Self::J2kStoreRgba16NativeBatch
+                | Self::J2kStoreRgbaI16NativeBatch
         )
     }
 

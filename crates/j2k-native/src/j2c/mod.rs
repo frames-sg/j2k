@@ -33,6 +33,7 @@ use alloc::vec::Vec;
 use super::jp2::colr::{ColorSpace, ColorSpecificationBox, EnumeratedColorspace};
 use super::jp2::ImageBoxes;
 use crate::error::{bail, FormatError, MarkerError, Result};
+use crate::image::ImageSource;
 use crate::j2c::codestream::markers;
 use crate::reader::BitReader;
 use crate::{resolve_alpha_and_color_space, DecodeSettings, Image};
@@ -41,8 +42,13 @@ use crate::math::{SimdBuffer, SIMD_WIDTH};
 pub(crate) use codestream::Header;
 #[cfg(test)]
 pub(crate) use decode::should_decode_classic_sub_band_in_parallel;
-pub(crate) use decode::{build_direct_color_plan, build_direct_grayscale_plan, decode};
-pub use decode::{CpuDecodeParallelism, DecoderContext};
+pub(crate) use decode::{
+    build_direct_color_plan, build_direct_grayscale_plan, build_referenced_classic_color_plan,
+    build_referenced_classic_grayscale_plan, build_referenced_classic_rgba_plan,
+    build_referenced_htj2k_color_plan, build_referenced_htj2k_grayscale_plan,
+    build_referenced_htj2k_rgba_plan, decode_with_capacity_retry as decode,
+};
+pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;
 pub(crate) use segment::MAX_BITPLANE_COUNT;
 
@@ -103,7 +109,7 @@ pub(crate) fn parse_with_retained_baseline<'a>(
     )?;
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
-            parsed_codestream.data,
+            ImageSource::new(stream, parsed_codestream.data),
             parsed_codestream.header,
             boxes,
             *settings,
@@ -112,7 +118,7 @@ pub(crate) fn parse_with_retained_baseline<'a>(
         )
     } else {
         Image::from_parsed_parts_with_retained_baseline(
-            parsed_codestream.data,
+            ImageSource::new(stream, parsed_codestream.data),
             parsed_codestream.header,
             boxes,
             *settings,

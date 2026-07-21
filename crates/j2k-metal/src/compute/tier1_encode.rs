@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::mem::size_of;
+
+use j2k_metal_support::{dispatch_1d_pipeline, dispatch_single_thread};
+
+use crate::profile_env::{label_command_buffer, label_compute_encoder};
+
+use super::abi::{
+    J2kClassicEncodeBatchJob, J2kClassicEncodeParams, J2kClassicEncodeStatus, J2kClassicSegment,
+    J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kPacketEncodeStatus,
+    J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
+};
+use super::resident_tier1::{J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks};
 use super::{
     checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at,
     classic_encode_code_blocks_pipeline, classic_encode_output_capacity,
     classic_encode_segment_capacity, classic_style_flags, commit_and_wait_metal,
-    copied_slice_buffer, dispatch_1d_pipeline, dispatch_single_thread, ht_encode_output_capacity,
-    label_command_buffer, label_compute_encoder, new_blit_command_encoder, new_command_buffer,
-    new_compute_command_encoder, new_private_buffer, new_shared_buffer, size_of, with_runtime,
+    copied_slice_buffer, ht_encode_output_capacity, new_blit_command_encoder, new_command_buffer,
+    new_compute_command_encoder, new_private_buffer, new_shared_buffer, with_runtime,
     with_runtime_for_session, zeroed_shared_buffer, Buffer, EncodedHtJ2kCodeBlock,
-    EncodedJ2kCodeBlock, Error, J2kClassicEncodeBatchJob, J2kClassicEncodeParams,
-    J2kClassicEncodeStatus, J2kClassicSegment, J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob,
-    J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kLosslessDeviceCodeBlock,
-    J2kPacketEncodeStatus, J2kPreparedLosslessDeviceCodeBlocks, J2kResidentLosslessHtCodeBlocks,
-    J2kResidentLosslessTier1CodeBlocks, J2kTier1CodeBlockEncodeJob, MetalRuntime,
-    J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
+    EncodedJ2kCodeBlock, Error, J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob,
+    J2kLosslessDeviceCodeBlock, J2kPreparedLosslessDeviceCodeBlocks, J2kTier1CodeBlockEncodeJob,
+    MetalRuntime,
 };
 
 fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<usize, Error> {

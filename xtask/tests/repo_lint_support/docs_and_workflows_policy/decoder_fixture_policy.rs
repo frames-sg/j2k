@@ -4,6 +4,8 @@ use std::fs;
 
 use crate::repo_lint_support::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
+mod shared_codec;
+
 #[test]
 fn jpeg_decoder_upsample_sample_width_twins_use_generic_helpers() {
     let root = repo_root();
@@ -47,9 +49,9 @@ fn mirrored_twin_unification_record_is_current() {
         .expect("read mirrored-twin unification record");
     let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
         .expect("read Metal compute root");
-    let direct_prepare =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
-            .expect("read Metal direct prepare");
+    let direct_prepare_classic =
+        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/classic.rs"))
+            .expect("read Metal classic direct preparation");
     let direct_roi = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_roi.rs"))
         .expect("read Metal direct ROI");
     let hybrid =
@@ -94,7 +96,7 @@ fn mirrored_twin_unification_record_is_current() {
             .required(&["fn retain_jobs_for_required_region<J: RequiredRegionJob>"]),
         PatternCheck::new(
             "Metal direct sub-band grouping unification",
-            &direct_prepare,
+            &direct_prepare_classic,
         )
         .required(&["fn prepare_sub_band_groups<'a, SubBand: 'a, Group>"]),
         PatternCheck::new("Metal hybrid region-scaled planning unification", &hybrid)

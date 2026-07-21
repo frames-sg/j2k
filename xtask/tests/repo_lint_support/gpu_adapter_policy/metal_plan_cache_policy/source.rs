@@ -42,6 +42,7 @@ pub(super) fn owner_graph_sources() -> Vec<(String, String)> {
         "crates/j2k-metal/src/decoder/direct_paths.rs",
         "crates/j2k-metal/src/decoder/tests.rs",
         "crates/j2k-metal/src/session.rs",
+        "crates/j2k-metal/src/session/direct_plan_cache.rs",
         "crates/j2k-metal/src/hybrid.rs",
     ]
     .into_iter()

@@ -421,12 +421,31 @@ pub(crate) struct J2kGrayStoreParams {
     pub(crate) copy_width: u32,
     pub(crate) copy_height: u32,
     pub(crate) output_width: u32,
+    pub(crate) output_stride: u32,
+    pub(crate) output_item_offset: u32,
     pub(crate) output_x: u32,
     pub(crate) output_y: u32,
     pub(crate) addend: f32,
     pub(crate) max_value: f32,
     pub(crate) u8_scale: f32,
     pub(crate) u16_scale: f32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kNativeColorBatchStoreParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) plane_stride: u32,
+    pub(crate) output_row_stride: u32,
+    pub(crate) output_item_stride: u32,
+    pub(crate) batch_count: u32,
+    pub(crate) layout: u32,
+    pub(crate) mct: u32,
+    pub(crate) transform: u32,
+    pub(crate) signed: u32,
+    pub(crate) bit_depths: [u32; 4],
 }
 
 pub(crate) const J2K_HT_STATUS_OK: u32 = 0;
@@ -1010,6 +1029,7 @@ impl_gpu_readback_abi!(
     J2kRepeatedStoreParams,
     J2kRepeatedGrayStoreParams,
     J2kGrayStoreParams,
+    J2kNativeColorBatchStoreParams,
     J2kHtCleanupParams,
     J2kHtCleanupBatchJob,
     J2kHtRepeatedBatchParams,

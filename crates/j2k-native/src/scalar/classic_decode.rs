@@ -23,7 +23,21 @@ pub struct J2kCodeBlockDecodeWorkspace {
     bit_plane_decode_context: j2c::bitplane::BitPlaneDecodeContext,
 }
 
+impl core::fmt::Debug for J2kCodeBlockDecodeWorkspace {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("J2kCodeBlockDecodeWorkspace")
+            .field("allocated_bytes", &self.allocated_bytes().ok())
+            .finish_non_exhaustive()
+    }
+}
+
 impl J2kCodeBlockDecodeWorkspace {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            bit_plane_decode_context: j2c::bitplane::BitPlaneDecodeContext::empty(),
+        }
+    }
+
     pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
         self.bit_plane_decode_context.prepare(width, height)
     }

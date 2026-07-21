@@ -11,7 +11,13 @@ use crate::allocation::HostPhaseBudget;
 #[cfg(feature = "cuda-runtime")]
 mod classic;
 #[cfg(feature = "cuda-runtime")]
-use classic::run_component_classic_batches;
+pub(in crate::decoder) use classic::{
+    enqueue_component_classic_batches, run_component_classic_batches, QueuedComponentClassicDecode,
+};
+#[cfg(feature = "cuda-runtime")]
+mod enqueue;
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::decoder) use enqueue::enqueue_component_cleanup_dequant_batches;
 
 #[cfg(test)]
 pub(in crate::decoder) fn split_htj2k_subband_decode_dispatches(
@@ -234,6 +240,12 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
                 || context.j2k_dequantize_queued_htj2k_cleanup_with_pool(queued),
             )
         } else {
+            if !collect_stage_timings {
+                return Err(Error::UnsupportedCudaRequest {
+                    reason:
+                        "normal CUDA HTJ2K refinement requires retained queued cleanup metadata",
+                });
+            }
             let mut dequant_budget = HostPhaseBudget::with_live_bytes(
                 "j2k CUDA dequantization target phase",
                 live_host_bytes,

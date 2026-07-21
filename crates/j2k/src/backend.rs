@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::J2kError;
+use crate::{DecodeSettings, J2kError};
 use j2k_core::{Colorspace, Info};
 
-pub(crate) use j2k_native::{ColorSpace, DecodeSettings, DecodedComponents, Image, RawBitmap};
+pub(crate) use j2k_native::{ColorSpace, DecodedComponents, Image, RawBitmap};
 
-pub(crate) fn image(bytes: &[u8], settings: DecodeSettings) -> Result<Image<'_>, J2kError> {
-    Image::new(bytes, &settings).map_err(J2kError::from_native_decode_error)
+pub(crate) fn image(
+    bytes: &[u8],
+    settings: DecodeSettings,
+    target_resolution: Option<(u32, u32)>,
+) -> Result<Image<'_>, J2kError> {
+    Image::new(bytes, &settings.to_native(target_resolution))
+        .map_err(J2kError::from_native_decode_error)
 }
 
 pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {
-    let image = image(bytes, DecodeSettings::default())?;
+    let image = image(bytes, DecodeSettings::default(), None)?;
     Ok(inspect_info_from_image(&image))
 }
 

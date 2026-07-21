@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, env};
 
 use crate::process::{self, cargo, CommandContext};
 
-const GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED";
+const METAL_GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME";
 const METAL_COMPILE_ENV: &[(&str, &str)] = &[("RUST_TEST_THREADS", "1")];
 const METAL_RUNTIME_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_METAL_RUNTIME", "1"),
@@ -88,7 +88,7 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         label: "Burn J2K Metal tensor integration",
         package: "j2k-ml",
         minimum_passed: 4,
-        required_test: "strict_metal_staged_decode_reports_route_and_pixels",
+        required_test: "sessions::persistent_metal_burn_decoder_writes_independent_ht_directly",
     },
     MetalTestSuite {
         label: "J2K public facade",
@@ -320,9 +320,9 @@ fn validate_exact_ignored_run(output: &str) -> Result<(), String> {
 }
 
 fn reject_skip_markers(output: &str, label: &str) -> Result<(), String> {
-    if output.contains(GPU_TEST_SKIP_MARKER) {
+    if output.contains(METAL_GPU_TEST_SKIP_MARKER) {
         Err(format!(
-            "{label} emitted {GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
+            "{label} emitted {METAL_GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
         ))
     } else {
         Ok(())

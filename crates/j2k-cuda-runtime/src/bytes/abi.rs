@@ -19,8 +19,10 @@ use crate::{
     },
     j2k_decode::{
         CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kInverseMctJob, CudaJ2kRect,
-        CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob,
-        CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctBatchJob, CudaJ2kStoreRgb8MctJob,
+        CudaJ2kStoreGray16BatchJob, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8BatchJob,
+        CudaJ2kStoreGray8Job, CudaJ2kStoreGrayI16BatchJob, CudaJ2kStoreRgb16Job,
+        CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctBatchJob,
+        CudaJ2kStoreRgb8MctJob,
     },
     jpeg::{
         CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
@@ -379,6 +381,24 @@ impl_cuda_gpu_abi! {
         addend: f32,
         bit_depth: u32,
     },
+    CudaJ2kStoreGray8BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray8Job,
+        reserved_tail: u32,
+    },
+    CudaJ2kStoreGray16BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray16Job,
+        reserved_tail: u32,
+    },
+    CudaJ2kStoreGrayI16BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray16Job,
+        reserved_tail: u32,
+    },
     CudaJ2kInverseMctJob {
         len: u32,
         irreversible97: u32,
@@ -451,6 +471,8 @@ impl_cuda_gpu_abi! {
         irreversible97: u32,
     },
 }
+
+mod native_store;
 
 #[cfg(test)]
 mod tests;

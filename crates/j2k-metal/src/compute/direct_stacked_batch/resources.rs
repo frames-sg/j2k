@@ -4,9 +4,8 @@ use std::mem::size_of;
 
 use metal::Buffer;
 
-use super::super::{
-    BandRequiredRegion, DirectScratchBuffer, DirectStatusCheck, Error, J2kDirectBandId,
-};
+use super::super::direct_roi::BandRequiredRegion;
+use super::super::{DirectScratchBuffer, DirectStatusCheck, Error, J2kDirectBandId};
 
 #[derive(Clone)]
 pub(in super::super) struct DirectBandSlice {
@@ -16,9 +15,15 @@ pub(in super::super) struct DirectBandSlice {
     pub(in super::super) window: BandRequiredRegion,
 }
 
+pub(super) struct StackedFinalPlane {
+    pub(super) buffer: Buffer,
+    pub(super) dimensions: (u32, u32),
+    pub(super) len: usize,
+}
+
 pub(super) struct StackedComponentResources {
     pub(super) band_sets: Vec<Vec<DirectBandSlice>>,
-    pub(super) final_plane: Option<Buffer>,
+    pub(super) final_plane: Option<StackedFinalPlane>,
 }
 
 pub(super) fn prepare_stacked_component_resources(
@@ -127,7 +132,7 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
                 message: "J2K MetalDirect repeated band offsets are not monotonic".to_string(),
             })?
     } else {
-        entry.window.width() as usize * entry.window.height() as usize * size_of::<f32>()
+        checked_repeated_band_fallback_stride(entry.window.width(), entry.window.height())?
     };
     if stride_bytes % size_of::<f32>() != 0 {
         return Err(Error::MetalKernel {
@@ -139,6 +144,20 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
             message: "J2K MetalDirect repeated band stride exceeds u32".to_string(),
         })?;
     Ok((entry, stride_elements))
+}
+
+fn checked_repeated_band_fallback_stride(width: u32, height: u32) -> Result<usize, Error> {
+    usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|elements| elements.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect repeated band fallback stride overflow".to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -204,6 +223,19 @@ mod tests {
             error,
             Error::MetalKernel { message }
                 if message == "missing J2K MetalDirect repeated band set"
+        ));
+    }
+
+    #[test]
+    fn repeated_band_fallback_stride_checks_f32_byte_span() {
+        assert_eq!(
+            checked_repeated_band_fallback_stride(u32::MAX, 1)
+                .expect("u32::MAX f32 elements fit in usize on supported Metal hosts"),
+            u32::MAX as usize * size_of::<f32>()
+        );
+        assert!(matches!(
+            checked_repeated_band_fallback_stride(u32::MAX, u32::MAX),
+            Err(Error::MetalKernel { message }) if message.contains("overflow")
         ));
     }
 }

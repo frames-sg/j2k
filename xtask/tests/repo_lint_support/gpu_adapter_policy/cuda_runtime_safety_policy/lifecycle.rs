@@ -22,6 +22,7 @@ struct LifecycleSources {
     htj2k_decode: String,
     htj2k_decode_queued: String,
     htj2k_decode_queued_drop: String,
+    htj2k_decode_queued_lifecycle: String,
     htj2k_decode_queued_status: String,
     htj2k_decode_queued_status_tests: String,
     memory_pinned_staging: String,
@@ -53,6 +54,9 @@ impl LifecycleSources {
             htj2k_decode_queued: read("crates/j2k-cuda-runtime/src/htj2k_decode/queued.rs"),
             htj2k_decode_queued_drop: read(
                 "crates/j2k-cuda-runtime/src/htj2k_decode/queued/drop_guard.rs",
+            ),
+            htj2k_decode_queued_lifecycle: read(
+                "crates/j2k-cuda-runtime/src/htj2k_decode/queued/lifecycle.rs",
             ),
             htj2k_decode_queued_status: read("crates/j2k-cuda-runtime/src/htj2k_decode/status.rs"),
             htj2k_decode_queued_status_tests: read(

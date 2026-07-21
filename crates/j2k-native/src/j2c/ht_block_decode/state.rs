@@ -50,9 +50,14 @@ impl HtBlockDecodeContext {
     pub(crate) fn coefficient_rows(&self) -> impl Iterator<Item = &[u32]> {
         self.coefficients.chunks_exact(self.width as usize)
     }
+
+    #[cfg(test)]
+    pub(crate) fn coefficient_owner_for_test(&self) -> (*const u32, usize) {
+        (self.coefficients.as_ptr(), self.coefficients.capacity())
+    }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct HtBlockDecodeScratch {
     pub(super) cleanup: Vec<u16>,
     pub(super) v_n: Vec<u32>,
@@ -61,6 +66,15 @@ pub(crate) struct HtBlockDecodeScratch {
 }
 
 impl HtBlockDecodeScratch {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            cleanup: Vec::new(),
+            v_n: Vec::new(),
+            sigma: Vec::new(),
+            prev_row_sig: Vec::new(),
+        }
+    }
+
     pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
         prepare_scratch(self, width, height)
     }

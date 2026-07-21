@@ -77,7 +77,8 @@ fn prepared_plan_cache_crossings_separate_allocation_and_invariant_failures() {
     let routes = read_source_files(
         root,
         &[
-            "crates/j2k-metal/src/session.rs",
+            "crates/j2k-metal/src/session/direct_plan_cache.rs",
+            "crates/j2k-metal/src/session/direct_plan_cache/tests.rs",
             "crates/j2k-metal/src/hybrid.rs",
             "crates/j2k-metal/src/hybrid/plan_resolution.rs",
         ],

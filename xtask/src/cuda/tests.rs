@@ -34,7 +34,7 @@ fn exact_cuda_inventories_are_unique_and_have_audited_sizes() {
     assert_eq!(ht.len(), HTJ2K_ENCODE_PARITY_TESTS.len());
     assert_eq!(transcode.len(), 8);
     assert_eq!(transcode.len(), TRANSCODE_PARITY_TESTS.len());
-    assert_eq!(ml.len(), 5);
+    assert_eq!(ml.len(), 11);
     assert_eq!(ml.len(), ML_CUDA_TESTS.len());
 }
 

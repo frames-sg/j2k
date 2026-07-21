@@ -7,7 +7,12 @@ use super::super::super::{
 use super::super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::HostPhaseBudget;
 
-pub(super) fn run_component_classic_batches(
+mod queued;
+pub(in crate::decoder) use queued::{
+    enqueue_component_classic_batches, QueuedComponentClassicDecode,
+};
+
+pub(in crate::decoder) fn run_component_classic_batches(
     context: &j2k_cuda_runtime::CudaContext,
     decode_resources: &CudaHtj2kDecodeResources,
     component_work: &mut [CudaComponentDecodeWork],

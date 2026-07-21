@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_buffer_slice, checked_metal_surface_len, commit_and_wait_metal, copied_slice_buffer,
-    dispatch_2d_pipeline, dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder,
-    new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of, with_runtime,
-    Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error, J2kGrayStoreParams,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
+    dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
+    new_compute_command_encoder, new_shared_buffer, size_of, with_runtime, Buffer,
+    CommandBufferRef, ComputeCommandEncoderRef, Error, J2kGrayStoreParams,
     J2kRepeatedGrayStoreParams, J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams,
     MTLSize, MetalRuntime, PixelFormat, Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
+};
+use crate::compute::direct_surface_pack::checked_metal_surface_len;
+#[cfg(target_os = "macos")]
+mod destination;
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) use self::destination::{
+    encode_gray_store_to_destination_in_encoder, GrayStoreDestinationRequest,
 };
 
 #[cfg(target_os = "macos")]
@@ -172,6 +180,26 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_command_buffer(
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated component store");
+    dispatch_store_component_repeated_in_encoder(
+        runtime,
+        &encoder,
+        input,
+        input_offset_bytes,
+        output,
+        params,
+    );
+    encoder.end_encoding();
+    Ok(())
+}
+
+pub(in crate::compute) fn dispatch_store_component_repeated_in_encoder(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    input: &Buffer,
+    input_offset_bytes: usize,
+    output: &Buffer,
+    params: J2kRepeatedStoreParams,
+) {
     encoder.set_compute_pipeline_state(&runtime.store_component_repeated);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), 0);
@@ -181,12 +209,10 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_command_buffer(
         (&raw const params).cast(),
     );
     dispatch_3d_pipeline(
-        &encoder,
+        encoder,
         &runtime.store_component_repeated,
         (params.copy_width, params.copy_height, params.batch_count),
     );
-    encoder.end_encoding();
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -309,6 +335,7 @@ pub(in crate::compute) fn encode_gray_store_to_surface_in_encoder(
     let pipeline = match fmt {
         PixelFormat::Gray8 => &runtime.store_component_gray_u8,
         PixelFormat::Gray16 => &runtime.store_component_gray_u16,
+        PixelFormat::GrayI16 => &runtime.store_component_gray_i16,
         _ => {
             return Err(Error::MetalKernel {
                 message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),

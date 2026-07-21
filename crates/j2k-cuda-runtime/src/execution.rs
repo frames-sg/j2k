@@ -7,7 +7,6 @@ mod queued;
 
 pub(crate) use completion::{select_uncertain_completion_error, CudaSynchronizationOutcome};
 pub(crate) use events::elapsed_event_us_ceil;
-#[cfg(test)]
 pub(crate) use events::CudaEvent;
 pub use queued::{
     CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput, CudaKernelOutput,
@@ -29,16 +28,6 @@ use std::{ffi::c_void, ops::Range};
 pub(crate) enum CudaLaunchMode {
     Sync,
     Async,
-}
-
-impl CudaLaunchMode {
-    pub(crate) fn from_synchronize(synchronize: bool) -> Self {
-        if synchronize {
-            Self::Sync
-        } else {
-            Self::Async
-        }
-    }
 }
 
 /// Marker for values that can be passed by address to a CUDA kernel launch.
@@ -153,7 +142,9 @@ impl CudaContext {
                 )
             };
             self.inner.driver.check("cuLaunchKernel", launch_status)
-        })
+        })?;
+        self.record_kernel_launch();
+        Ok(())
     }
 
     pub(crate) fn copy_device_to_device_with_kernel(
@@ -246,7 +237,10 @@ impl CudaContext {
             self.inner.driver.check("cuCtxSynchronize", status)
         });
         match result {
-            Ok(()) => CudaSynchronizationOutcome::Completed,
+            Ok(()) => {
+                self.record_context_host_synchronization();
+                CudaSynchronizationOutcome::Completed
+            }
             Err(error) => {
                 // The CUDA API may return both precondition failures and fatal
                 // asynchronous errors here. Neither is sufficient evidence

@@ -2,263 +2,366 @@
 
 #![cfg(all(feature = "cuda", not(target_os = "macos")))]
 
-use burn_autodiff::Autodiff;
-use burn_core::tensor::{DType, Shape, Tensor};
-use burn_cubecl::{
-    cubecl::{cuda::CudaRuntime, Runtime},
-    ops::numeric::empty_device_contiguous_dtype,
+use std::sync::Arc;
+
+use burn_core::tensor::DType;
+use burn_cuda::CudaDevice;
+use j2k::{
+    encode_j2k_lossless, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples,
+    DecodeRequest, Downscale, EncodedImage, J2kBlockCodingMode, J2kEncodeValidation,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
 };
-use burn_cuda::{Cuda, CudaDevice};
-#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
-use burn_flex::{Flex, FlexDevice};
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-use burn_ndarray::NdArrayDevice::Cpu as FlexDevice;
-use j2k::{DeviceDecodeRequest, Downscale, Rect};
-use j2k_cuda_runtime::{CudaContext, CudaExternalDeviceBufferViewMut};
-use j2k_ml::{
-    cpu, cuda, FloatNormalization, TensorDecodeError, TensorDecodeOptions, TensorInput,
-    TensorLayout, TensorRoute,
-};
+use j2k_ml::{BurnBatchTensor, CudaBurnDecoder};
 use j2k_test_support::{
-    cuda_runtime_and_strict_oxide_gate, htj2k_gray8_fixture, htj2k_gray8_large_fixture,
-    openhtj2k_refinement_fixture,
+    cuda_runtime_and_strict_oxide_gate, htj2k_gray8_large_fixture, OpenJphBatchFixture,
 };
 
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-type Flex = burn_ndarray::NdArray<f32, i64, i8>;
-
 #[test]
-fn direct_cuda_decode_reports_route_and_exact_pixels() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA direct") {
+fn direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA direct batch") {
         return;
     }
-    let encoded = htj2k_gray8_fixture(4, 3);
-    let decoded = cuda::decode_u8(
-        TensorInput::full(&encoded),
-        &TensorDecodeOptions::default(),
-        &CudaDevice::default(),
-    )
-    .expect("CUDA direct tensor decode");
-    assert_eq!(decoded.route, TensorRoute::CudaDirect);
-    assert_eq!(decoded.tensor.dims(), [1, 3, 4]);
-    assert_eq!(
-        decoded
+    let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
+        .expect("create persistent CUDA adapter");
+    let prepared = decoder
+        .prepare(vec![
+            EncodedImage::full(Arc::clone(&encoded)),
+            EncodedImage::full(encoded),
+        ])
+        .expect("prepare CUDA batch");
+
+    for _ in 0..2 {
+        let burn_batch = decoder
+            .decode_prepared(&prepared)
+            .expect("submit prepared CUDA batch");
+        assert!(burn_batch.errors.is_empty());
+        let BurnBatchTensor::U8(tensor) = burn_batch.groups.into_iter().next().unwrap().tensor
+        else {
+            panic!("expected U8 tensor")
+        };
+        assert_eq!(tensor.dims(), [2, 1, 8, 8]);
+        let values = tensor.into_data().into_vec::<u8>().expect("CUDA U8 data");
+        assert_eq!(&values[..64], &values[64..]);
+    }
+    assert!(decoder.codec().session().submissions() >= 2);
+}
+
+#[test]
+fn direct_cuda_preserves_native_u16_and_i16_samples() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA native integer batches") {
+        return;
+    }
+    let unsigned = [0_u16, 1, 2048, 4095];
+    let signed = [-2048_i16, -1, 0, 2047];
+    let cases = [
+        (
+            encode_gray(&unsigned, 12, false),
+            DType::U16,
+            unsigned
+                .iter()
+                .map(|value| i32::from(*value))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            encode_gray(&signed, 12, true),
+            DType::I16,
+            signed
+                .iter()
+                .map(|value| i32::from(*value))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    for (encoded, dtype, expected) in cases {
+        let mut decoder =
+            CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
+                .expect("create CUDA adapter");
+        let burn_batch = decoder
+            .decode(vec![EncodedImage::full(Arc::from(encoded))])
+            .expect("decode native CUDA type");
+        let tensor = burn_batch
+            .groups
+            .into_iter()
+            .next()
+            .unwrap()
             .tensor
-            .into_data()
-            .into_vec::<u8>()
-            .expect("u8 data"),
-        (0..12).collect::<Vec<_>>()
-    );
+            .into_tensor();
+        assert_eq!(tensor.dtype(), dtype);
+        let data = tensor.into_data();
+        let actual = match dtype {
+            DType::U16 => data
+                .into_vec::<u16>()
+                .expect("U16 data")
+                .into_iter()
+                .map(i32::from)
+                .collect::<Vec<_>>(),
+            DType::I16 => data
+                .into_vec::<i16>()
+                .expect("I16 data")
+                .into_iter()
+                .map(i32::from)
+                .collect::<Vec<_>>(),
+            _ => unreachable!("test only covers U16/I16"),
+        };
+        assert_eq!(actual, expected);
+    }
 }
 
 #[test]
-fn cubecl_stream_ordered_allocation_is_accessible_to_j2k_primary_context() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA CubeCL allocation interop") {
+fn direct_cuda_supports_roi_and_reduction_without_host_staging() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA ROI reduction") {
         return;
     }
-    let device = CudaDevice::default();
-    let context = CudaContext::retain_primary(device.index).expect("retain primary context");
-    let client = CudaRuntime::client(&device);
-    let cube =
-        empty_device_contiguous_dtype(client, device.clone(), Shape::from(vec![16]), DType::U8);
-    burn_cubecl::cubecl::future::block_on(cube.client.sync())
-        .expect("complete CubeCL stream-ordered allocation");
-    let mut resource = cube
-        .client
-        .get_resource(cube.handle.clone())
-        .expect("CubeCL managed resource");
-    let raw = resource.resource();
-
-    // SAFETY: `resource` is CubeCL's exclusive managed-resource guard for the
-    // live allocation, whose stream-ordered creation completed above.
-    let view = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(
-            &context,
-            raw.ptr,
-            16,
-            DType::U8.size(),
-            &mut resource,
-        )
-    }
-    .expect("adopt CubeCL stream-ordered allocation");
-    assert_eq!(view.byte_len(), 16);
-    assert_eq!(view.context().device_ordinal(), device.index);
-}
-
-#[test]
-fn direct_cuda_u16_matches_portable_and_batches() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA u16 tensor parity") {
-        return;
-    }
-    let device = CudaDevice::default();
-
-    let encoded_u16 = openhtj2k_refinement_fixture();
-    let expected_u16 = cpu::decode_u16::<Flex>(
-        TensorInput::full(encoded_u16),
-        &TensorDecodeOptions::default(),
-        &FlexDevice,
-    )
-    .expect("portable u16 decode")
-    .tensor
-    .into_data()
-    .into_vec::<u16>()
-    .expect("portable u16 data");
-    let actual_u16 = cuda::decode_u16(
-        TensorInput::full(encoded_u16),
-        &TensorDecodeOptions::default(),
-        &device,
-    )
-    .expect("direct u16 decode")
-    .tensor
-    .into_data()
-    .into_vec::<u16>()
-    .expect("direct u16 data");
-    assert_eq!(actual_u16, expected_u16);
-
-    let u16_batch = cuda::decode_u16_batch(
-        &[
-            TensorInput::full(encoded_u16),
-            TensorInput::full(encoded_u16),
-        ],
-        &TensorDecodeOptions::default(),
-        &device,
-    )
-    .expect("direct u16 batch");
-    assert_eq!(u16_batch.tensor.dims()[0], 2);
-    let expected_u16_batch = expected_u16
-        .iter()
-        .chain(&expected_u16)
-        .copied()
-        .collect::<Vec<_>>();
-    assert_eq!(
-        u16_batch
-            .tensor
-            .into_data()
-            .into_vec::<u16>()
-            .expect("direct u16 batch data"),
-        expected_u16_batch
-    );
-}
-
-#[test]
-fn direct_cuda_float_matches_portable_full_batch_and_roi() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA float tensor parity") {
-        return;
-    }
-    let device = CudaDevice::default();
-    let encoded = htj2k_gray8_fixture(4, 3);
-    for layout in [TensorLayout::ChannelsFirst, TensorLayout::ChannelsLast] {
-        for normalization in [
-            FloatNormalization::Raw,
-            FloatNormalization::Unit,
-            FloatNormalization::MeanStd {
-                mean: vec![0.25],
-                std: vec![0.5],
+    let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(64, 64));
+    let roi = Rect {
+        x: 8,
+        y: 12,
+        w: 32,
+        h: 24,
+    };
+    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default())
+        .expect("create CUDA adapter");
+    let burn_batch = decoder
+        .decode(vec![EncodedImage::new(
+            encoded,
+            DecodeRequest::RegionReduced {
+                roi,
+                scale: Downscale::Half,
             },
-        ] {
-            let options = TensorDecodeOptions {
-                layout,
-                normalization,
-                ..TensorDecodeOptions::default()
+        )])
+        .expect("decode CUDA ROI reduction");
+    let tensor = burn_batch
+        .groups
+        .into_iter()
+        .next()
+        .unwrap()
+        .tensor
+        .into_tensor();
+    assert_eq!(tensor.dims(), [1, 1, 12, 16]);
+}
+
+#[test]
+fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA exact RGB batches") {
+        return;
+    }
+    let rgb7 = (0_u16..4 * 4 * 3)
+        .map(|value| ((value * 29 + 7) & 0x7f) as u8)
+        .collect::<Vec<_>>();
+    let rgb12 = (0_u32..4 * 4 * 3)
+        .map(|value| ((value * 977 + 31) & 0x0fff) as u16)
+        .collect::<Vec<_>>();
+    let cases = [
+        (encode_rgb(&rgb7, 7), DType::U8),
+        (encode_rgb(&rgb12, 12), DType::U16),
+    ];
+
+    for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+        let options = BatchDecodeOptions {
+            layout,
+            ..BatchDecodeOptions::default()
+        };
+        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options)
+            .expect("create exact RGB CUDA adapter");
+        let mut cpu = CpuBatchDecoder::new(options);
+        for (encoded, expected_dtype) in &cases {
+            let prepared = decoder
+                .prepare(vec![EncodedImage::full(Arc::from(encoded.clone()))])
+                .expect("prepare exact RGB Burn batch");
+            let oracle = cpu
+                .decode_prepared(&prepared)
+                .expect("decode exact RGB CPU oracle");
+            let expected = match oracle.groups()[0].samples() {
+                CpuBatchSamples::U8(samples) => {
+                    samples.iter().copied().map(u16::from).collect::<Vec<_>>()
+                }
+                CpuBatchSamples::U16(samples) => samples.clone(),
+                other => panic!("unexpected exact RGB oracle type: {other:?}"),
             };
-            let expected =
-                cpu::decode_float::<Flex>(TensorInput::full(&encoded), &options, &FlexDevice)
-                    .expect("portable float decode")
-                    .tensor
-                    .into_data()
-                    .into_vec::<f32>()
-                    .expect("portable float data");
-            let actual = cuda::decode_float(TensorInput::full(&encoded), &options, &device)
-                .expect("direct float decode")
-                .tensor
-                .into_data()
-                .into_vec::<f32>()
-                .expect("direct float data");
-            for (actual, expected) in actual.iter().zip(expected) {
-                assert!((actual - expected).abs() <= 1.0e-6);
-            }
+
+            let burn_batch = decoder
+                .decode_prepared(&prepared)
+                .expect("decode exact RGB directly into Burn storage");
+            let group = burn_batch
+                .groups
+                .into_iter()
+                .next()
+                .expect("Burn RGB group");
+            let tensor = group.tensor.into_tensor();
+            assert_eq!(tensor.dtype(), *expected_dtype);
+            assert_eq!(
+                tensor.dims(),
+                match layout {
+                    BatchLayout::Nhwc => [1, 4, 4, 3],
+                    BatchLayout::Nchw => [1, 3, 4, 4],
+                    _ => unreachable!("test only covers public dense layouts"),
+                }
+            );
+            let data = tensor.into_data();
+            let actual = match expected_dtype {
+                DType::U8 => data
+                    .into_vec::<u8>()
+                    .expect("exact RGB U8 tensor data")
+                    .into_iter()
+                    .map(u16::from)
+                    .collect::<Vec<_>>(),
+                DType::U16 => data.into_vec::<u16>().expect("exact RGB U16 tensor data"),
+                _ => unreachable!("test only covers unsigned exact RGB tensors"),
+            };
+            assert_eq!(actual, expected, "{layout:?} {expected_dtype:?}");
         }
     }
+}
 
-    let options = TensorDecodeOptions {
-        layout: TensorLayout::ChannelsLast,
-        normalization: FloatNormalization::MeanStd {
-            mean: vec![0.25],
-            std: vec![0.5],
-        },
-        ..TensorDecodeOptions::default()
-    };
-    let batch = cuda::decode_float_batch(
-        &[TensorInput::full(&encoded), TensorInput::full(&encoded)],
-        &options,
-        &device,
-    )
-    .expect("direct float batch");
-    assert_eq!(batch.tensor.dims(), [2, 3, 4, 1]);
-
-    let large = htj2k_gray8_large_fixture(64, 64);
-    let roi_input = TensorInput {
-        encoded: &large,
-        request: DeviceDecodeRequest::RegionScaled {
+#[test]
+fn direct_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA signed RGB batches") {
+        return;
+    }
+    let fixtures = j2k_test_support::openjph_batch_fixtures()
+        .iter()
+        .filter(|fixture| {
+            matches!(
+                fixture.name,
+                "openjph-rgb-s8-53-single-raw"
+                    | "openjph-rgb-s12-53-single-raw"
+                    | "openjph-rgb-s16-53-single-raw"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fixtures.len(), 3);
+    let requests = [
+        DecodeRequest::Full,
+        DecodeRequest::Region {
             roi: Rect {
-                x: 8,
-                y: 8,
-                w: 32,
-                h: 32,
+                x: 2,
+                y: 3,
+                w: 9,
+                h: 7,
+            },
+        },
+        DecodeRequest::Reduced {
+            scale: Downscale::Half,
+        },
+        DecodeRequest::RegionReduced {
+            roi: Rect {
+                x: 2,
+                y: 4,
+                w: 10,
+                h: 8,
             },
             scale: Downscale::Half,
         },
-    };
-    let expected_roi = cpu::decode_float::<Flex>(roi_input, &options, &FlexDevice)
-        .expect("portable ROI decode")
-        .tensor
-        .into_data()
-        .into_vec::<f32>()
-        .expect("portable ROI data");
-    let direct_roi = cuda::decode_float(roi_input, &options, &device).expect("direct ROI decode");
-    assert_eq!(direct_roi.tensor.dims(), [16, 16, 1]);
-    for (actual, expected) in direct_roi
-        .tensor
-        .into_data()
-        .into_vec::<f32>()
-        .expect("direct ROI data")
-        .iter()
-        .zip(expected_roi)
-    {
-        assert!((actual - expected).abs() <= 1.0e-6);
+    ];
+
+    for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+        let options = BatchDecodeOptions {
+            layout,
+            ..BatchDecodeOptions::default()
+        };
+        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options)
+            .expect("create signed RGB CUDA adapter");
+        let mut cpu = CpuBatchDecoder::new(options);
+        for fixture in &fixtures {
+            let encoded = Arc::<[u8]>::from(fixture.encoded);
+            for request in requests {
+                let prepared = decoder
+                    .prepare(vec![EncodedImage::new(Arc::clone(&encoded), request)])
+                    .unwrap_or_else(|error| panic!("{} prepare: {error}", fixture.name));
+                let oracle = cpu
+                    .decode_prepared(&prepared)
+                    .unwrap_or_else(|error| panic!("{} CPU oracle: {error}", fixture.name));
+                let expected = match oracle.groups()[0].samples() {
+                    CpuBatchSamples::I16(samples) => samples.clone(),
+                    other => panic!(
+                        "{}: unexpected signed RGB oracle type: {other:?}",
+                        fixture.name
+                    ),
+                };
+                if layout == BatchLayout::Nhwc && request == DecodeRequest::Full {
+                    assert_eq!(
+                        expected,
+                        openjph_i16_oracle(fixture),
+                        "{} independent OpenJPH oracle",
+                        fixture.name
+                    );
+                }
+                let dimensions = prepared.groups()[0].info().dimensions;
+
+                let burn_batch = decoder
+                    .decode_prepared(&prepared)
+                    .unwrap_or_else(|error| panic!("{} Burn decode: {error}", fixture.name));
+                let group = burn_batch
+                    .groups
+                    .into_iter()
+                    .next()
+                    .expect("Burn signed RGB group");
+                let tensor = group.tensor.into_tensor();
+                assert_eq!(tensor.dtype(), DType::I16);
+                assert_eq!(
+                    tensor.dims(),
+                    match layout {
+                        BatchLayout::Nhwc => [1, dimensions.1 as usize, dimensions.0 as usize, 3,],
+                        BatchLayout::Nchw => [1, 3, dimensions.1 as usize, dimensions.0 as usize,],
+                        _ => unreachable!("test only covers public dense layouts"),
+                    }
+                );
+                let actual = tensor
+                    .into_data()
+                    .into_vec::<i16>()
+                    .expect("signed RGB I16 tensor data");
+                assert_eq!(actual, expected, "{} {layout:?} {request:?}", fixture.name);
+            }
+        }
     }
 }
 
-#[test]
-fn direct_cuda_reports_batch_mismatch_and_lifts_to_autodiff() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA tensor contracts") {
-        return;
+fn openjph_i16_oracle(fixture: &OpenJphBatchFixture) -> Vec<i16> {
+    if fixture.precision <= 8 {
+        fixture
+            .oracle
+            .iter()
+            .map(|sample| i16::from(i8::from_ne_bytes([*sample])))
+            .collect()
+    } else {
+        fixture
+            .oracle
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+            .collect()
     }
-    let device = CudaDevice::default();
-    let encoded = htj2k_gray8_fixture(4, 3);
-    let options = TensorDecodeOptions {
-        layout: TensorLayout::ChannelsLast,
-        normalization: FloatNormalization::MeanStd {
-            mean: vec![0.25],
-            std: vec![0.5],
-        },
-        ..TensorDecodeOptions::default()
-    };
-    let mismatch = htj2k_gray8_fixture(5, 3);
-    let error = cuda::decode_u8_batch(
-        &[TensorInput::full(&encoded), TensorInput::full(&mismatch)],
-        &TensorDecodeOptions::default(),
-        &device,
-    )
-    .expect_err("direct batch shape mismatch");
-    assert!(matches!(
-        error,
-        TensorDecodeError::BatchShapeMismatch { index: 1, .. }
-    ));
+}
 
-    let inner = cuda::decode_float(TensorInput::full(&encoded), &options, &device)
-        .expect("direct float for autodiff")
-        .tensor;
-    let autodiff = Tensor::<Autodiff<Cuda>, 3>::from_inner(inner).require_grad();
-    assert_eq!(autodiff.dims(), [3, 4, 1]);
+fn encode_gray<T: Copy>(samples: &[T], precision: u8, signed: bool) -> Vec<u8> {
+    let byte_len = std::mem::size_of_val(samples);
+    // SAFETY: plain integer fixtures are copied immediately into the encoder;
+    // their native little-endian representation is the codec's input format.
+    let bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_len) };
+    let samples = J2kLosslessSamples::new(bytes, 2, 2, 1, precision, signed)
+        .expect("valid native integer samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode native integer fixture")
+    .codestream
+}
+
+fn encode_rgb<T: Copy>(samples: &[T], precision: u8) -> Vec<u8> {
+    let byte_len = std::mem::size_of_val(samples);
+    // SAFETY: plain integer fixtures are copied immediately into the encoder;
+    // their native little-endian representation is the codec's input format.
+    let bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_len) };
+    let samples = J2kLosslessSamples::new(bytes, 4, 4, 3, precision, false)
+        .expect("valid RGB native integer samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode RGB native integer fixture")
+    .codestream
 }

@@ -177,11 +177,8 @@ pub(super) fn apply_significance_propagation_phase(
                 sigprop.advance(cnt);
             }
 
-            let combined_sig = new_sig | cs;
+            let combined_sig = new_sig | (cs & 0xFFFF);
             prev_row_sig[idx] = combined_sig as u16;
-            if idx + 1 < prev_row_sig.len() {
-                prev_row_sig[idx + 1] = (combined_sig >> 16) as u16;
-            }
 
             let t = combined_sig;
             let mut next_prev = combined_sig;

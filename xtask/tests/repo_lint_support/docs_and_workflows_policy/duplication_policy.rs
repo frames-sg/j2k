@@ -246,24 +246,34 @@ fn metal_direct_sub_band_group_scan_uses_shared_helper() {
         .expect("read Metal compute root");
     let direct_prepare =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
-            .expect("read Metal direct prepare");
+            .expect("read Metal direct prepare facade");
+    let classic =
+        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/classic.rs"))
+            .expect("read Metal classic direct preparation");
+    let ht = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare/ht.rs"))
+        .expect("read Metal HT direct preparation");
 
     assert_pattern_checks(&[
         PatternCheck::new("Metal compute prepare module", &compute)
             .required(&["mod direct_prepare;"]),
-        PatternCheck::new("Metal direct sub-band grouping helper", &direct_prepare).required(&[
+        PatternCheck::new("Metal direct preparation facade", &direct_prepare).required(&[
+            "mod classic;",
+            "mod ht;",
+            "prepare_sub_band_groups,",
+        ]),
+        PatternCheck::new("Metal direct sub-band grouping helper", &classic).required(&[
             "fn prepare_sub_band_groups<'a, SubBand: 'a, Group>",
             "prepare_sub_band_groups(",
             "PreparedDirectGrayscaleStep::ClassicSubBand(sub_band)",
-            "PreparedDirectGrayscaleStep::HtSubBand(sub_band)",
             "prepare_classic_sub_band_group,",
+        ]),
+        PatternCheck::new("Metal HT sub-band grouping caller", &ht).required(&[
+            "PreparedDirectGrayscaleStep::HtSubBand(sub_band)",
             "prepare_ht_sub_band_group,",
         ]),
     ]);
     assert_eq!(
-        direct_prepare
-            .matches("while step_idx < steps.len()")
-            .count(),
+        classic.matches("while step_idx < steps.len()").count(),
         1,
         "Metal direct classic/HT sub-band grouping must have one shared scan loop"
     );

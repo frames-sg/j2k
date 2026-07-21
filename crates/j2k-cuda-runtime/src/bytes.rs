@@ -17,9 +17,11 @@ use crate::{
         CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState,
     },
     j2k_decode::{
-        CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job,
-        CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job,
-        CudaJ2kStoreRgb8MctBatchJob,
+        CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kInverseMctJob,
+        CudaJ2kStoreGray16BatchJob, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8BatchJob,
+        CudaJ2kStoreGray8Job, CudaJ2kStoreGrayI16BatchJob, CudaJ2kStoreRgb16Job,
+        CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctBatchJob,
+        CudaJ2kStoreRgbNativeBatchJob, CudaJ2kStoreRgbaNativeBatchJob,
     },
     jpeg::{
         CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
@@ -103,6 +105,11 @@ gpu_slice_bytes! {
     #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), expect(dead_code, reason = "helper is used only by the JPEG encode kernel feature"))]
     cuda_jpeg_baseline_encode_statuses_as_bytes: CudaJpegBaselineEncodeStatus;
     store_rgb8_mct_batch_jobs_as_bytes: CudaJ2kStoreRgb8MctBatchJob;
+    store_rgb_native_batch_jobs_as_bytes: CudaJ2kStoreRgbNativeBatchJob;
+    store_rgba_native_batch_jobs_as_bytes: CudaJ2kStoreRgbaNativeBatchJob;
+    store_gray8_batch_jobs_as_bytes: CudaJ2kStoreGray8BatchJob;
+    store_gray16_batch_jobs_as_bytes: CudaJ2kStoreGray16BatchJob;
+    store_grayi16_batch_jobs_as_bytes: CudaJ2kStoreGrayI16BatchJob;
     htj2k_encode_jobs_as_bytes: CudaHtj2kEncodeKernelJob;
     htj2k_encode_multi_input_jobs_as_bytes: CudaHtj2kEncodeMultiInputKernelJob;
     htj2k_encode_compact_jobs_as_bytes: CudaHtj2kEncodeCompactJob;
@@ -146,5 +153,11 @@ pub(crate) fn htj2k_encode_statuses_byte_len(count: usize) -> Result<usize, Cuda
 pub(crate) fn htj2k_statuses_byte_len(count: usize) -> Result<usize, CudaError> {
     count
         .checked_mul(std::mem::size_of::<CudaHtj2kStatus>())
+        .ok_or(CudaError::LengthTooLarge { len: count })
+}
+
+pub(crate) fn classic_statuses_byte_len(count: usize) -> Result<usize, CudaError> {
+    count
+        .checked_mul(std::mem::size_of::<CudaClassicStatus>())
         .ok_or(CudaError::LengthTooLarge { len: count })
 }

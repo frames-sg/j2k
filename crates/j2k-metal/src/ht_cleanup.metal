@@ -194,10 +194,12 @@ inline ForwardBitReader forward_reader_new(device const uchar *data, uint data_l
 
 inline void forward_reader_fill(thread ForwardBitReader &reader) {
     while (reader.bits <= 32u) {
-        const uchar byte = reader.pos < reader.data_len ? reader.data[reader.pos++] : reader.pad;
-        reader.tmp |= (ulong(byte) << reader.bits);
+        const uchar raw_byte =
+            reader.pos < reader.data_len ? reader.data[reader.pos++] : reader.pad;
+        const uchar value = reader.unstuff ? raw_byte & uchar(0x7F) : raw_byte;
+        reader.tmp |= (ulong(value) << reader.bits);
         reader.bits += 8u - uint(reader.unstuff);
-        reader.unstuff = byte == uchar(0xFF);
+        reader.unstuff = raw_byte == uchar(0xFF);
     }
 }
 
@@ -257,15 +259,18 @@ inline ReverseBitReader reverse_reader_new_mrp(
 
 inline void reverse_reader_fill(thread ReverseBitReader &reader) {
     while (reader.bits <= 32u) {
-        const uchar byte = reader.remaining > 0u ? reader.data[reader.pos] : uchar(0u);
+        const uchar raw_byte = reader.remaining > 0u ? reader.data[reader.pos] : uchar(0u);
         if (reader.remaining > 0u) {
             reader.pos -= 1;
             reader.remaining -= 1u;
         }
-        const uint d_bits = 8u - uint(reader.unstuff && (byte & uchar(0x7F)) == uchar(0x7F));
-        reader.tmp |= (ulong(byte) << reader.bits);
+        const bool stuffed =
+            reader.unstuff && (raw_byte & uchar(0x7F)) == uchar(0x7F);
+        const uint d_bits = 8u - uint(stuffed);
+        const uchar value = stuffed ? raw_byte & uchar(0x7F) : raw_byte;
+        reader.tmp |= (ulong(value) << reader.bits);
         reader.bits += d_bits;
-        reader.unstuff = byte > uchar(0x8F);
+        reader.unstuff = raw_byte > uchar(0x8F);
     }
 }
 
@@ -331,7 +336,7 @@ inline void decode_mag_sgn_sample_with_vn(
     value |= (v_n + 2u) << (p - 1u);
 }
 
-inline void decode_ht_cleanup_impl(
+inline void decode_ht_cleanup_common(
     device const uchar *coded_data,
     device uint *decoded_data,
     J2kHtCleanupParams params,
@@ -339,10 +344,16 @@ inline void decode_ht_cleanup_impl(
     constant ushort *vlc_table1,
     constant ushort *uvlc_table0,
     constant ushort *uvlc_table1,
-    device J2kHtStatus *status
+    device J2kHtStatus *status,
+    thread ushort *scratch,
+    thread uint *v_n_scratch
 ) {
     set_ht_status(status, J2K_HT_STATUS_OK, 0u);
 
+    if (params.number_of_coding_passes > 3u) {
+        set_ht_status(status, J2K_HT_STATUS_FAIL, 3u);
+        return;
+    }
     uint num_passes = params.number_of_coding_passes;
     if (num_passes > 1u && params.refinement_length == 0u) {
         num_passes = 1u;
@@ -360,7 +371,7 @@ inline void decode_ht_cleanup_impl(
         set_ht_status(status, J2K_HT_STATUS_FAIL, 2u);
         return;
     }
-    if (num_passes > 3u || params.missing_msbs > 30u || params.missing_msbs == 30u) {
+    if (params.missing_msbs > 30u || params.missing_msbs == 30u) {
         set_ht_status(status, J2K_HT_STATUS_FAIL, 3u);
         return;
     }
@@ -389,9 +400,6 @@ inline void decode_ht_cleanup_impl(
         set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 6u);
         return;
     }
-
-    thread ushort scratch[J2K_HT_MAX_SCRATCH];
-    thread uint v_n_scratch[J2K_HT_MAX_VN];
 
     {
         thread MelDecoder mel = mel_decoder_new(coded_data, lcup, scup);
@@ -668,19 +676,35 @@ inline void decode_ht_cleanup_impl(
         }
     }
 
-    if (num_passes > 1u) {
-        const uint sigma_rows = ((height + 3u) / 4u) + 1u;
-        const uint mstr = ((((width + 3u) / 4u) + 2u + 7u) & ~7u);
-        const uint prev_row_len = ((width + 3u) / 4u) + 8u;
-        if (mstr > J2K_HT_MAX_MSTR || sigma_rows * mstr > J2K_HT_MAX_SIGMA) {
-            set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 15u);
-            return;
-        }
-        if (prev_row_len > J2K_HT_MAX_PREV_ROW_SIG) {
-            set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 16u);
-            return;
-        }
+}
 
+inline bool decode_ht_refinement_impl(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    J2kHtCleanupParams params,
+    uint num_passes,
+    device J2kHtStatus *status,
+    thread const ushort *scratch
+) {
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint stride = params.output_stride;
+    const uint sstr = (width + 9u) & ~7u;
+    const uint lcup = params.cleanup_length;
+    const uint p = 30u - params.missing_msbs;
+    const uint sigma_rows = ((height + 3u) / 4u) + 1u;
+    const uint mstr = ((((width + 3u) / 4u) + 2u + 7u) & ~7u);
+    const uint prev_row_len = ((width + 3u) / 4u) + 8u;
+    if (mstr > J2K_HT_MAX_MSTR || sigma_rows * mstr > J2K_HT_MAX_SIGMA) {
+        set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 15u);
+        return false;
+    }
+    if (prev_row_len > J2K_HT_MAX_PREV_ROW_SIG) {
+        set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 16u);
+        return false;
+    }
+
+    {
         thread ushort sigma[J2K_HT_MAX_SIGMA];
         thread ushort prev_row_sig[J2K_HT_MAX_PREV_ROW_SIG];
 
@@ -873,11 +897,8 @@ inline void decode_ht_cleanup_impl(
                     forward_reader_advance(sigprop, cnt);
                 }
 
-                const uint combined_sig = new_sig | cs;
+                const uint combined_sig = new_sig | (cs & 0xFFFFu);
                 prev_row_sig[idx] = ushort(combined_sig);
-                if (idx + 1u < prev_row_len) {
-                    prev_row_sig[idx + 1u] = ushort(combined_sig >> 16u);
-                }
 
                 const uint combined = combined_sig;
                 uint next_prev = combined_sig;
@@ -959,7 +980,16 @@ inline void decode_ht_cleanup_impl(
             }
         }
     }
+    return true;
+}
 
+inline void convert_ht_cleanup_coefficients(
+    device uint *decoded_data,
+    J2kHtCleanupParams params
+) {
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint stride = params.output_stride;
     for (uint y = 0u; y < height; ++y) {
         uint row_offset = params.output_offset + y * stride;
         for (uint x = 0u; x < width; ++x) {
@@ -971,6 +1001,63 @@ inline void decode_ht_cleanup_impl(
             );
         }
     }
+}
+
+inline void decode_ht_cleanup_only_impl(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    J2kHtCleanupParams params,
+    constant ushort *vlc_table0,
+    constant ushort *vlc_table1,
+    constant ushort *uvlc_table0,
+    constant ushort *uvlc_table1,
+    device J2kHtStatus *status
+) {
+    thread ushort scratch[J2K_HT_MAX_SCRATCH];
+    thread uint v_n_scratch[J2K_HT_MAX_VN];
+    decode_ht_cleanup_common(
+        coded_data, decoded_data, params, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, scratch, v_n_scratch
+    );
+    if (status->code != J2K_HT_STATUS_OK) {
+        return;
+    }
+    convert_ht_cleanup_coefficients(decoded_data, params);
+}
+
+inline void decode_ht_cleanup_impl(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    J2kHtCleanupParams params,
+    constant ushort *vlc_table0,
+    constant ushort *vlc_table1,
+    constant ushort *uvlc_table0,
+    constant ushort *uvlc_table1,
+    device J2kHtStatus *status
+) {
+    thread ushort scratch[J2K_HT_MAX_SCRATCH];
+    thread uint v_n_scratch[J2K_HT_MAX_VN];
+    decode_ht_cleanup_common(
+        coded_data, decoded_data, params, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, scratch, v_n_scratch
+    );
+    if (status->code != J2K_HT_STATUS_OK) {
+        return;
+    }
+
+    uint num_passes = params.number_of_coding_passes;
+    if (num_passes > 1u && params.refinement_length == 0u) {
+        num_passes = 1u;
+    }
+    if (params.missing_msbs == 29u && num_passes > 1u) {
+        num_passes = 1u;
+    }
+    if (num_passes > 1u && !decode_ht_refinement_impl(
+        coded_data, decoded_data, params, num_passes, status, scratch
+    )) {
+        return;
+    }
+    convert_ht_cleanup_coefficients(decoded_data, params);
 }
 
 kernel void j2k_decode_ht_cleanup(
@@ -1039,7 +1126,147 @@ kernel void j2k_decode_ht_cleanup_batched(
     );
 }
 
-kernel void j2k_decode_ht_cleanup_repeated_batched(
+inline J2kHtCleanupParams ht_cleanup_params_from_job(
+    const constant J2kHtCleanupBatchJob &job,
+    uint coding_passes,
+    uint output_offset
+) {
+    J2kHtCleanupParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coded_len = job.coded_len;
+    params.cleanup_length = job.cleanup_length;
+    params.refinement_length = job.refinement_length;
+    params.missing_msbs = job.missing_msbs;
+    params.num_bitplanes = job.num_bitplanes;
+    params.number_of_coding_passes = coding_passes;
+    params.output_stride = job.output_stride;
+    params.output_offset = output_offset;
+    params.dequantization_step = job.dequantization_step;
+    params.stripe_causal = job.stripe_causal;
+    return params;
+}
+
+template<uint CodingPasses>
+inline void decode_ht_cleanup_batched_specialized(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    constant J2kHtCleanupBatchJob *jobs,
+    constant ushort *vlc_table0,
+    constant ushort *vlc_table1,
+    constant ushort *uvlc_table0,
+    constant ushort *uvlc_table1,
+    device J2kHtStatus *status,
+    uint gid
+) {
+    const constant J2kHtCleanupBatchJob &job = jobs[gid];
+
+    const J2kHtCleanupParams params =
+        ht_cleanup_params_from_job(job, CodingPasses, job.output_offset);
+
+    decode_ht_cleanup_impl(
+        coded_data + job.coded_offset,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status + gid
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_batched_cleanup_only(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
+    constant ushort *vlc_table0 [[buffer(3)]],
+    constant ushort *vlc_table1 [[buffer(4)]],
+    constant ushort *uvlc_table0 [[buffer(5)]],
+    constant ushort *uvlc_table1 [[buffer(6)]],
+    device J2kHtStatus *status [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    const constant J2kHtCleanupBatchJob &job = jobs[gid];
+    const J2kHtCleanupParams params =
+        ht_cleanup_params_from_job(job, 1u, job.output_offset);
+    decode_ht_cleanup_only_impl(
+        coded_data + job.coded_offset, decoded_data, params,
+        vlc_table0, vlc_table1, uvlc_table0, uvlc_table1, status + gid
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_batched_sigprop(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
+    constant ushort *vlc_table0 [[buffer(3)]],
+    constant ushort *vlc_table1 [[buffer(4)]],
+    constant ushort *uvlc_table0 [[buffer(5)]],
+    constant ushort *uvlc_table1 [[buffer(6)]],
+    device J2kHtStatus *status [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    decode_ht_cleanup_batched_specialized<2u>(
+        coded_data, decoded_data, jobs, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, gid
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_batched_magref(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
+    constant ushort *vlc_table0 [[buffer(3)]],
+    constant ushort *vlc_table1 [[buffer(4)]],
+    constant ushort *uvlc_table0 [[buffer(5)]],
+    constant ushort *uvlc_table1 [[buffer(6)]],
+    device J2kHtStatus *status [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    decode_ht_cleanup_batched_specialized<3u>(
+        coded_data, decoded_data, jobs, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, gid
+    );
+}
+
+template<uint CodingPasses>
+inline void decode_ht_cleanup_repeated_batched_specialized(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    constant J2kHtCleanupBatchJob *jobs,
+    constant J2kHtRepeatedBatchParams &repeated,
+    constant ushort *vlc_table0,
+    constant ushort *vlc_table1,
+    constant ushort *uvlc_table0,
+    constant ushort *uvlc_table1,
+    device J2kHtStatus *status,
+    uint2 gid
+) {
+    if (gid.x >= repeated.job_count || gid.y >= repeated.batch_count) {
+        return;
+    }
+
+    const constant J2kHtCleanupBatchJob &job = jobs[gid.x];
+    const J2kHtCleanupParams params = ht_cleanup_params_from_job(
+        job,
+        CodingPasses,
+        job.output_offset + gid.y * repeated.output_plane_len
+    );
+
+    decode_ht_cleanup_impl(
+        coded_data + job.coded_offset,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status + gid.y * repeated.job_count + gid.x
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_repeated_batched_cleanup_only(
     device const uchar *coded_data [[buffer(0)]],
     device uint *decoded_data [[buffer(1)]],
     constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
@@ -1054,31 +1281,51 @@ kernel void j2k_decode_ht_cleanup_repeated_batched(
     if (gid.x >= repeated.job_count || gid.y >= repeated.batch_count) {
         return;
     }
-
     const constant J2kHtCleanupBatchJob &job = jobs[gid.x];
-
-    J2kHtCleanupParams params;
-    params.width = job.width;
-    params.height = job.height;
-    params.coded_len = job.coded_len;
-    params.cleanup_length = job.cleanup_length;
-    params.refinement_length = job.refinement_length;
-    params.missing_msbs = job.missing_msbs;
-    params.num_bitplanes = job.num_bitplanes;
-    params.number_of_coding_passes = job.number_of_coding_passes;
-    params.output_stride = job.output_stride;
-    params.output_offset = job.output_offset + gid.y * repeated.output_plane_len;
-    params.dequantization_step = job.dequantization_step;
-    params.stripe_causal = job.stripe_causal;
-
-    decode_ht_cleanup_impl(
-        coded_data + job.coded_offset,
-        decoded_data,
-        params,
-        vlc_table0,
-        vlc_table1,
-        uvlc_table0,
-        uvlc_table1,
+    const J2kHtCleanupParams params = ht_cleanup_params_from_job(
+        job,
+        1u,
+        job.output_offset + gid.y * repeated.output_plane_len
+    );
+    decode_ht_cleanup_only_impl(
+        coded_data + job.coded_offset, decoded_data, params,
+        vlc_table0, vlc_table1, uvlc_table0, uvlc_table1,
         status + gid.y * repeated.job_count + gid.x
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_repeated_batched_sigprop(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
+    constant J2kHtRepeatedBatchParams &repeated [[buffer(3)]],
+    constant ushort *vlc_table0 [[buffer(4)]],
+    constant ushort *vlc_table1 [[buffer(5)]],
+    constant ushort *uvlc_table0 [[buffer(6)]],
+    constant ushort *uvlc_table1 [[buffer(7)]],
+    device J2kHtStatus *status [[buffer(8)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    decode_ht_cleanup_repeated_batched_specialized<2u>(
+        coded_data, decoded_data, jobs, repeated, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, gid
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_repeated_batched_magref(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupBatchJob *jobs [[buffer(2)]],
+    constant J2kHtRepeatedBatchParams &repeated [[buffer(3)]],
+    constant ushort *vlc_table0 [[buffer(4)]],
+    constant ushort *vlc_table1 [[buffer(5)]],
+    constant ushort *uvlc_table0 [[buffer(6)]],
+    constant ushort *uvlc_table1 [[buffer(7)]],
+    device J2kHtStatus *status [[buffer(8)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    decode_ht_cleanup_repeated_batched_specialized<3u>(
+        coded_data, decoded_data, jobs, repeated, vlc_table0, vlc_table1,
+        uvlc_table0, uvlc_table1, status, gid
     );
 }

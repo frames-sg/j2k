@@ -157,8 +157,58 @@ fn metal_backend_sessions_own_distinct_direct_plan_caches() {
     let second = MetalBackendSession::new(device);
 
     assert_ne!(
-        first.direct_cache_ids_for_test(),
-        second.direct_cache_ids_for_test()
+        crate::session::direct_plan_cache::direct_cache_ids_for_test(&first),
+        crate::session::direct_plan_cache::direct_cache_ids_for_test(&second)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let pixels = j2k_test_support::gradient_u8(32, 32, 1);
+    let bytes = j2k_native::encode(
+        &pixels,
+        32,
+        32,
+        1,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode classic grayscale session-runtime fixture");
+    let session = MetalBackendSession::new(device.clone());
+    let session_runtime = session.runtime().expect("explicit session runtime");
+
+    crate::compute::reset_direct_tier1_input_buffer_prepares_for_test();
+    crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
+        let mut decoder = J2kDecoder::new(&bytes)?;
+        let prepared = decoder
+            .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)?;
+        assert!(prepared.is_some());
+        Ok(())
+    })
+    .expect("prepare direct plan with explicit session");
+
+    assert!(
+        crate::compute::direct_tier1_input_buffer_prepares_for_test() > 0,
+        "fixture must allocate classic Tier-1 input buffers"
+    );
+    assert_eq!(
+        crate::compute::direct_tier1_input_buffer_runtime_for_test(),
+        Arc::as_ptr(&session_runtime).addr(),
+        "fresh cached buffers must be prepared by the explicit session runtime"
     );
 }
 
