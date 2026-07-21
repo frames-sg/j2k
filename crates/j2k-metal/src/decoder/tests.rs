@@ -194,8 +194,8 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
     crate::compute::reset_direct_tier1_input_buffer_prepares_for_test();
     crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
         let mut decoder = J2kDecoder::new(&bytes)?;
-        let prepared = decoder
-            .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)?;
+        let prepared =
+            decoder.ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)?;
         assert!(prepared.is_some());
         Ok(())
     })
