@@ -7,24 +7,21 @@ use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage, PreparedBatch};
 use j2k_metal::{MetalBatchDecodeResult, MetalBatchDecoder};
 use j2k_ml::{BurnBatchDecode, CpuBurnDecoder, MetalBurnDecoder};
 
-#[path = "support/metal_process_policy.rs"]
-mod metal_process_policy;
+mod instrumentation;
 mod metal_telemetry;
-#[path = "support/process_policy.rs"]
-mod process_policy;
 mod support;
 
-use metal_process_policy::ensure_metal_criterion_instrumentation_disabled;
+use instrumentation::ensure_criterion_instrumentation_disabled;
 use metal_telemetry::{
     capture_burn_telemetry, capture_codec_telemetry, capture_staged_telemetry,
     print_metal_telemetry, MetalTelemetryCase, MetalTelemetryRow,
 };
-use process_policy::ProcessMode;
 use support::{
     decode_case::{decoded_pixels_per_batch, requests, require_prepared_success},
     input_selection::InputMode,
-    workload::{materialize_workload, workload_specs, Workload, WorkloadSpec},
-    BATCH_SIZES, LOW_BATCH_SIZES,
+    process_policy::ProcessMode,
+    workload::{materialize_workload, Workload, WorkloadSpec},
+    workload_catalog::{workload_specs, BATCH_SIZES, LOW_BATCH_SIZES},
 };
 
 fn main() {
@@ -33,8 +30,7 @@ fn main() {
     let workload_specs = workload_specs();
     match process_mode {
         ProcessMode::Criterion => {
-            ensure_metal_criterion_instrumentation_disabled()
-                .unwrap_or_else(|error| panic!("{error}"));
+            ensure_criterion_instrumentation_disabled().unwrap_or_else(|error| panic!("{error}"));
             let mut criterion = Criterion::default().configure_from_args();
             bench_codec_resident(&mut criterion, &workload_specs, input_mode);
             bench_burn_direct(&mut criterion, &workload_specs, input_mode);

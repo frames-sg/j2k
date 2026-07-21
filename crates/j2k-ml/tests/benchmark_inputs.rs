@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[path = "../benches/support/decode_case.rs"]
+mod decode_case;
 #[path = "../benches/support/fixture.rs"]
 mod fixture;
 #[path = "../benches/support/input_selection.rs"]
@@ -9,11 +11,9 @@ mod workload;
 
 use std::{collections::HashSet, sync::Arc};
 
-use j2k::{BatchDecodeOptions, CpuBatchDecoder, DecodeRequest};
 use input_selection::InputMode;
-use workload::{materialize_workload, workload_specs, WorkloadSpec};
-
-const GENERATED_BATCH_SIZE: usize = 64;
+use j2k::{BatchDecodeOptions, CpuBatchDecoder, DecodeRequest, Downscale};
+use workload::{materialize_workload, WorkloadSpec, GENERATED_BATCH_SIZE};
 
 fn tiny_gray12() -> WorkloadSpec {
     WorkloadSpec::new("tiny_gray12", 16, 16, 1, 12, false)
@@ -57,12 +57,33 @@ fn distinct_inputs_prepare_as_one_homogeneous_group() {
 
     let prepared = decoder.prepare(inputs).expect("prepare benchmark inputs");
 
-    assert!(prepared.errors().is_empty());
-    assert_eq!(prepared.groups().len(), 1);
+    decode_case::require_prepared_success(&prepared);
     assert_eq!(
         prepared.groups()[0].source_indices(),
         &[0, 1, 2, 3, 4, 5, 6, 7]
     );
+}
+
+#[test]
+fn benchmark_request_matrix_covers_all_owned_batch_requests() {
+    let requests = decode_case::requests((16, 12), true);
+    assert_eq!(requests.len(), 4);
+    assert!(matches!(requests[0].1, DecodeRequest::Full));
+    assert!(matches!(requests[1].1, DecodeRequest::Region { .. }));
+    assert!(matches!(
+        requests[2].1,
+        DecodeRequest::Reduced {
+            scale: Downscale::Half
+        }
+    ));
+    assert!(matches!(
+        requests[3].1,
+        DecodeRequest::RegionReduced {
+            scale: Downscale::Half,
+            ..
+        }
+    ));
+    assert_eq!(decode_case::decoded_pixels_per_batch(16, 8), 128);
 }
 
 #[test]
@@ -86,15 +107,4 @@ fn input_mode_defaults_to_distinct_and_rejects_unknown_values() {
     if let Err(error) = InputMode::from_env() {
         assert!(error.contains("J2K_ML_BATCH_INPUT_MODE"));
     }
-}
-
-#[test]
-fn benchmark_workload_catalog_names_are_unique() {
-    let workloads = workload_specs();
-    assert_eq!(workloads.len(), 16);
-    let names = workloads
-        .iter()
-        .map(|workload| workload.name)
-        .collect::<HashSet<_>>();
-    assert_eq!(names.len(), workloads.len());
 }

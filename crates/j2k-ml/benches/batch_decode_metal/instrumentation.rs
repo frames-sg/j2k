@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::process_policy::PROCESS_MODE_ENV;
+use super::support::process_policy::PROCESS_MODE_ENV;
 
-pub(crate) fn ensure_metal_criterion_instrumentation_disabled() -> Result<(), String> {
+pub(super) fn ensure_criterion_instrumentation_disabled() -> Result<(), String> {
     const INSTRUMENTATION_FLAGS: &[&str] = &[
         "J2K_PROFILE_STAGES",
         "J2K_METAL_PROFILE_STAGES",

@@ -14,8 +14,9 @@ mod support;
 use support::{
     decode_case::{decoded_pixels_per_batch, requests, require_prepared_success},
     input_selection::InputMode,
-    workload::{materialize_workload, workload_specs, WorkloadSpec},
-    BATCH_SIZES,
+    process_policy::ProcessMode,
+    workload::{materialize_workload, WorkloadSpec},
+    workload_catalog::{workload_specs, BATCH_SIZES},
 };
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -23,6 +24,10 @@ type CpuBackend = burn_ndarray::NdArray<f32, i64, i8>;
 
 fn main() {
     let input_mode = InputMode::from_env().unwrap_or_else(|error| panic!("{error}"));
+    match ProcessMode::from_env().unwrap_or_else(|error| panic!("{error}")) {
+        ProcessMode::Criterion => {}
+        ProcessMode::Profile => panic!("the CPU benchmark does not expose profile telemetry"),
+    }
     let workload_specs = workload_specs();
     let mut criterion = Criterion::default().configure_from_args();
     bench_codec(&mut criterion, &workload_specs, input_mode);

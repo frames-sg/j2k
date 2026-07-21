@@ -8,20 +8,18 @@ use j2k_cuda::{CudaBatchDecodeResult, CudaBatchDecoder};
 use j2k_ml::{BurnBatchDecode, CpuBurnDecoder, CudaBurnDecoder};
 
 mod cuda_telemetry;
-#[path = "support/process_policy.rs"]
-mod process_policy;
 mod support;
 
 use cuda_telemetry::{
     capture_burn_telemetry, capture_codec_telemetry, print_cuda_telemetry, CudaTelemetryCase,
     CudaTelemetryRow,
 };
-use process_policy::ProcessMode;
 use support::{
     decode_case::{decoded_pixels_per_batch, requests, require_prepared_success},
     input_selection::InputMode,
-    workload::{materialize_workload, workload_specs, Workload, WorkloadSpec},
-    BATCH_SIZES, LOW_BATCH_SIZES,
+    process_policy::ProcessMode,
+    workload::{materialize_workload, Workload, WorkloadSpec},
+    workload_catalog::{workload_specs, BATCH_SIZES, LOW_BATCH_SIZES},
 };
 
 fn main() {

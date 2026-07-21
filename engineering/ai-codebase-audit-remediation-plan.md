@@ -4,7 +4,21 @@ This file is the living current-state register for repository quality. It is
 not a release diary or a task transcript. Completed investigations and prior
 release states remain available through Git history.
 
-## v0.7.3 verdict
+## Evidence identities
+
+This register keeps two evidence sets separate:
+
+- **Published baseline:** `v0.7.3`, version `0.7.3`, peeled to
+  `494eebc3ef20895d331da86221b1d8c4bd4cabf8`. Its results are immutable
+  historical release evidence.
+- **Current candidate:** the untagged `0.7.4` remediation worktree. Candidate
+  results apply only to the exact locally reviewed source-freeze revision and
+  do not retroactively change the `0.7.3` baseline or authorize publication.
+
+Any unqualified “candidate” below means `0.7.4`; any unqualified “baseline”
+means the published `v0.7.3` tag.
+
+## v0.7.3 verdict — published baseline
 
 The authoritative source base is tag `v0.7.3`, peeled to commit
 `494eebc3ef20895d331da86221b1d8c4bd4cabf8`. The preserved pre-0.7.1 local
@@ -129,7 +143,7 @@ pass.
 
 ## Verification matrix
 
-| Gate | v0.7.3 baseline | Final cleanup tree |
+| Gate | Published `v0.7.3` baseline evidence | Current `0.7.4` candidate evidence |
 |---|---|---|
 | `cargo xtask fmt` | pass | pass |
 | `cargo xtask clippy` | pass | pass |
