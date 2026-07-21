@@ -7,6 +7,7 @@ use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage, PreparedBatch};
 use j2k_metal::{MetalBatchDecodeResult, MetalBatchDecoder};
 use j2k_ml::{BurnBatchDecode, CpuBurnDecoder, MetalBurnDecoder};
 
+#[path = "batch_decode_metal/instrumentation.rs"]
 mod instrumentation;
 mod metal_telemetry;
 mod support;
