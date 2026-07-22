@@ -296,3 +296,48 @@ pub(crate) const PERFORMANCE_BENCHMARKS: &[PerformanceBenchmark] = &[
         METAL_BENCH_ENV,
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{compile, performance, BenchmarkLane};
+
+    #[test]
+    fn registry_helpers_preserve_lane_names_and_benchmark_fields() {
+        for (lane, name) in [
+            (BenchmarkLane::Host, "host"),
+            (BenchmarkLane::Cuda, "cuda"),
+            (BenchmarkLane::Metal, "metal"),
+            (BenchmarkLane::All, "all"),
+        ] {
+            assert_eq!(lane.as_str(), name);
+        }
+
+        let compile_benchmark = compile(
+            "compile-package",
+            Some("compile-bench"),
+            Some("compile-feature"),
+            BenchmarkLane::Cuda,
+            &[("COMPILE_ENV", "1")],
+        );
+        assert_eq!(compile_benchmark.package, "compile-package");
+        assert_eq!(compile_benchmark.bench, Some("compile-bench"));
+        assert_eq!(compile_benchmark.features, Some("compile-feature"));
+        assert_eq!(compile_benchmark.lane, BenchmarkLane::Cuda);
+        assert_eq!(compile_benchmark.runtime_env, &[("COMPILE_ENV", "1")]);
+
+        let performance_benchmark = performance(
+            "performance-package",
+            "performance-bench",
+            Some("performance-filter"),
+            Some("performance-feature"),
+            BenchmarkLane::Metal,
+            &[("PERFORMANCE_ENV", "1")],
+        );
+        assert_eq!(performance_benchmark.package, "performance-package");
+        assert_eq!(performance_benchmark.bench, "performance-bench");
+        assert_eq!(performance_benchmark.filter, Some("performance-filter"));
+        assert_eq!(performance_benchmark.features, Some("performance-feature"));
+        assert_eq!(performance_benchmark.lane, BenchmarkLane::Metal);
+        assert_eq!(performance_benchmark.env, &[("PERFORMANCE_ENV", "1")]);
+    }
+}
