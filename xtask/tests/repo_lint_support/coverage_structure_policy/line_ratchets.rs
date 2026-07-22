@@ -156,6 +156,7 @@ fn coverage_source_modules_stay_within_structural_ratchets() {
         ),
         ("xtask/src/coverage/tests/deferred_bodies.rs", 200),
         ("xtask/src/coverage/tests/evaluation.rs", 250),
+        ("xtask/src/coverage/tests/exclusion_policy.rs", 150),
         ("xtask/src/coverage/tests/evaluation/non_executable.rs", 100),
         (
             "xtask/src/coverage/tests/evaluation/compiler_line_evidence.rs",

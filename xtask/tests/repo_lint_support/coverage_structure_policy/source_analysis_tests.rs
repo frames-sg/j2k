@@ -169,6 +169,7 @@ fn coverage_source_analysis_regression_ownership_stays_explicit() {
     let tests = read("xtask/src/coverage/tests.rs");
     let attributes = read("xtask/src/coverage/tests/attributes.rs");
     let cfg_provenance = read("xtask/src/coverage/tests/cfg_provenance.rs");
+    let exclusion_policy = read("xtask/src/coverage/tests/exclusion_policy.rs");
     let source = read("xtask/src/coverage/tests/source_analysis.rs");
 
     assert_pattern_checks(&[
@@ -176,12 +177,12 @@ fn coverage_source_analysis_regression_ownership_stays_explicit() {
             "mod attributes;",
             "mod cfg_provenance;",
             "mod deferred_bodies;",
+            "mod exclusion_policy;",
             "mod executable_evidence;",
             "fn parses_added_diff_hunks_without_counting_deletions()",
             "fn untracked_rust_sources_fail_the_local_coverage_preflight()",
             "fn lcov_parser_merges_duplicate_line_records_by_max_count()",
             "fn eighty_percent_changed_line_coverage_passes_exactly()",
-            "fn exclusion_policy_maps_every_narrow_rule_to_existing_tests()",
             "fn coverage_cli_defaults_to_host_and_accepts_explicit_lanes()",
         ]),
         PatternCheck::new("coverage attribute-disposition regressions", &attributes).required(&[
@@ -191,6 +192,10 @@ fn coverage_source_analysis_regression_ownership_stays_explicit() {
         ]),
         PatternCheck::new("coverage cfg provenance regressions", &cfg_provenance)
             .required(&["fn cfg_active_changed_source_cannot_evade_coverage_gate()"]),
+        PatternCheck::new("coverage exclusion regressions", &exclusion_policy).required(&[
+            "fn exclusion_policy_maps_every_narrow_rule_to_existing_tests()",
+            "fn vendored_gpu_interop_exclusion_covers_only_pinned_patch_roots()",
+        ]),
         PatternCheck::new("coverage source-analysis regressions", &source).required(&[
             "fn body_bearing_function_forms_have_item_and_body_spans()",
             "fn nested_inline_module_uses_its_real_module_directory()",

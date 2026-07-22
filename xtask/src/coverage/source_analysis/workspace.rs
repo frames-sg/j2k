@@ -13,7 +13,7 @@ use super::cfg_eval::CoverageCfgContext;
 use super::graph::ReachKind;
 use super::{
     SourceRole, GENERATED_DWT_DISPOSITION, VENDORED_BLOCK_DISPOSITION,
-    VENDORED_GPU_INTEROP_DISPOSITION,
+    VENDORED_GPU_INTEROP_DISPOSITION, VENDORED_GPU_INTEROP_ROOTS,
 };
 mod fuzz_manifests;
 #[cfg(test)]
@@ -64,14 +64,6 @@ struct SelectedPackage {
     enabled_features: BTreeSet<String>,
     has_build_script: bool,
 }
-
-const VENDORED_GPU_INTEROP_PREFIXES: &[&str] = &[
-    "third_party/cubecl-cuda-0.10.0-patched/",
-    "third_party/cubecl-runtime-0.10.0-patched/",
-    "third_party/wgpu-29.0.4-patched/",
-    "third_party/wgpu-core-29.0.4-patched/",
-    "third_party/wgpu-hal-29.0.4-patched/",
-];
 
 pub(super) fn discover_source_roots(
     root: &Path,
@@ -286,7 +278,7 @@ pub(super) fn classify_unreached_source(root: &Path, path: &str) -> Result<Sourc
     if path == "third_party/block-0.1.6-patched/src/test_utils.rs" {
         return Ok(SourceRole::TestOnly);
     }
-    if VENDORED_GPU_INTEROP_PREFIXES
+    if VENDORED_GPU_INTEROP_ROOTS
         .iter()
         .any(|prefix| path.starts_with(prefix))
     {
