@@ -275,6 +275,9 @@ pub(super) fn classify_unreached_source(root: &Path, path: &str) -> Result<Sourc
     if path == "third_party/block-0.1.6-patched/src/test_utils.rs" {
         return Ok(SourceRole::TestOnly);
     }
+    if path == "crates/j2k-test-support/fixtures/htj2k/openjph_batch/generate.rs" {
+        return Ok(SourceRole::TestOnly);
+    }
     if is_clone_audit_fixture(path) {
         return Ok(SourceRole::TestOnly);
     }

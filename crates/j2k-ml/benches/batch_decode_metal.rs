@@ -9,7 +9,9 @@ use j2k_ml::{CpuBurnDecoder, MetalBurnDecoder};
 
 #[path = "batch_decode_metal/instrumentation.rs"]
 mod instrumentation;
+#[cfg(target_os = "macos")]
 mod metal_telemetry;
+#[cfg(target_os = "macos")]
 #[path = "batch_decode_metal/profile.rs"]
 mod profile;
 mod support;
@@ -37,7 +39,10 @@ fn main() {
             bench_burn_direct(&mut criterion, &workload_specs, input_mode);
             criterion.final_summary();
         }
+        #[cfg(target_os = "macos")]
         ProcessMode::Profile => profile::run(&workload_specs, input_mode),
+        #[cfg(not(target_os = "macos"))]
+        ProcessMode::Profile => panic!("Metal profiling requires macOS"),
     }
 }
 

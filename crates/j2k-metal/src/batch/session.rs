@@ -53,6 +53,7 @@ impl SharedSession {
     }
 }
 
+/// Pending surface decode submitted through [`MetalSession`](crate::MetalSession).
 pub struct MetalSubmission {
     session: SharedSession,
     pub(super) slot: Option<usize>,
