@@ -157,10 +157,10 @@ fn semver_checks_commands_use_the_pinned_rustup_toolchain() {
 }
 
 #[test]
-fn source_incompatible_patch_exception_is_scoped_to_0_7_4() {
+fn source_incompatible_patch_exception_is_scoped_to_0_7_5() {
     let mut diff = PackageApiDiff {
         package: "alpha".to_string(),
-        candidate_version: "0.7.4".to_string(),
+        candidate_version: "0.7.5".to_string(),
         release_type: Some(ReleaseType::Minor),
         baseline_count: 1,
         candidate_count: 0,
@@ -171,7 +171,7 @@ fn source_incompatible_patch_exception_is_scoped_to_0_7_4() {
         hidden: BTreeSet::new(),
     };
     assert_eq!(semver_check_release_type(&diff), ReleaseType::Major);
-    diff.candidate_version = "0.7.5".to_string();
+    diff.candidate_version = "0.7.6".to_string();
     assert_eq!(semver_check_release_type(&diff), ReleaseType::Minor);
 }
 
