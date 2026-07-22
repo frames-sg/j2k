@@ -4,6 +4,7 @@ use std::fs;
 
 use crate::repo_lint_support::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
+mod binary_attributes;
 mod shared_codec;
 
 #[test]
