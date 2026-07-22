@@ -38,6 +38,7 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-transcode-metal",
     "j2k-jpeg-cuda",
     "j2k-cuda",
+    "j2k-ml",
     "j2k-cli",
 ];
 
@@ -58,6 +59,7 @@ const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
     "j2k-transcode-metal",
     "j2k-jpeg-cuda",
     "j2k-cuda",
+    "j2k-ml",
     "j2k-cli",
 ];
 
@@ -90,6 +92,7 @@ pub(super) const STABLE_SEMVER_PACKAGES: &[&str] = &[
     "j2k-types",
     "j2k-cuda-runtime",
     "j2k-profile",
+    "j2k-ml",
 ];
 
 pub(super) const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
@@ -110,6 +113,7 @@ pub(super) const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
     "j2k-types",
     "j2k-cuda-runtime",
     "j2k-profile",
+    "j2k-ml",
 ];
 
 #[expect(

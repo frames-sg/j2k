@@ -34,11 +34,11 @@ cuda-runtime = [
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.7.4" }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.4", optional = true }
-j2k = { path = "../j2k", version = "=0.7.4" }
-j2k-native = { path = "../j2k-native", version = "=0.7.4" }
-j2k-profile = { path = "../j2k-profile", version = "=0.7.4" }
+j2k-core = { path = "../j2k-core", version = "=0.7.5" }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.5", optional = true }
+j2k = { path = "../j2k", version = "=0.7.5" }
+j2k-native = { path = "../j2k-native", version = "=0.7.5" }
+j2k-profile = { path = "../j2k-profile", version = "=0.7.5" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

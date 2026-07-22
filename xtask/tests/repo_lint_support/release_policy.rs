@@ -2,6 +2,8 @@
 
 use std::fs;
 
+use serde_json::Value;
+
 use super::{
     assert_contains_all, assert_file_pattern_checks, assert_pattern_checks,
     cargo_metadata_workspace_edges, const_array_block, repo_root, xtask_sources, FilePatternCheck,
@@ -12,6 +14,54 @@ use super::{
 mod release_markdown;
 
 use release_markdown::content_lines as markdown_content_lines;
+
+#[test]
+fn j2k_ml_is_a_publishable_release_crate() {
+    let root = repo_root();
+    let manifest =
+        fs::read_to_string(root.join("crates/j2k-ml/Cargo.toml")).expect("read j2k-ml manifest");
+    let release_manifest = fs::read_to_string(root.join("release-crates.json"))
+        .expect("read ordered release manifest");
+    let release_manifest: Value =
+        serde_json::from_str(&release_manifest).expect("parse ordered release manifest");
+    let ordered_crates = release_manifest["ordered_crates"]
+        .as_array()
+        .expect("ordered_crates array")
+        .iter()
+        .map(|value| value.as_str().expect("crate name"))
+        .collect::<Vec<_>>();
+    let j2k_ml_index = ordered_crates
+        .iter()
+        .position(|name| *name == "j2k-ml")
+        .expect("j2k-ml must be in the release manifest");
+
+    assert!(
+        !manifest
+            .lines()
+            .any(|line| line.trim() == "publish = false"),
+        "j2k-ml must be publishable"
+    );
+    assert_contains_all(
+        "j2k-ml package metadata",
+        &manifest,
+        &[
+            "homepage.workspace = true",
+            "keywords.workspace = true",
+            "categories.workspace = true",
+            "[package.metadata.docs.rs]",
+        ],
+    );
+    for dependency in ["j2k", "j2k-cuda-runtime", "j2k-cuda", "j2k-metal"] {
+        let dependency_index = ordered_crates
+            .iter()
+            .position(|name| *name == dependency)
+            .unwrap_or_else(|| panic!("{dependency} must be in the release manifest"));
+        assert!(
+            dependency_index < j2k_ml_index,
+            "{dependency} must be published before j2k-ml"
+        );
+    }
+}
 
 #[test]
 fn crates_io_publish_policy_is_explicit() {
@@ -58,6 +108,7 @@ fn crates_io_publish_policy_is_explicit() {
                 "\"j2k-jpeg-cuda\"",
                 "\"j2k-metal\"",
                 "\"j2k-cuda\"",
+                "\"j2k-ml\"",
                 "\"j2k-cli\"",
             ])
             .forbidden(&["\"j2k-compare\""]),

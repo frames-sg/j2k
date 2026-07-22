@@ -1,8 +1,8 @@
 # Burn batch decoding with `j2k-ml`
 
-`j2k-ml` is an experimental, independently maintained integration for Burn
-0.21. It is not an official Tracel or Burn crate and remains `publish = false`
-through the 0.7 release cycle.
+`j2k-ml` is an independently maintained integration for Burn 0.21. It is not
+an official Tracel or Burn crate. It is included in the `j2k` 0.7.5 release and
+follows the workspace's reviewed semver policy.
 
 ## Ownership boundary
 

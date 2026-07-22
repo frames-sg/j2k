@@ -74,7 +74,7 @@ fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.4"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.5"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
 }
 
@@ -114,7 +114,7 @@ fn report_verification_is_workspace_anchored_and_empty_checks_are_a_noop() {
 fn semver_check_command_uses_the_reviewed_patch_exception_release_type() {
     let diff = PackageApiDiff {
         package: "j2k-core".to_string(),
-        candidate_version: "0.7.4".to_string(),
+        candidate_version: "0.7.5".to_string(),
         release_type: Some(ReleaseType::Minor),
         baseline_count: 1,
         candidate_count: 0,

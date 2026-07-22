@@ -24,7 +24,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, CUDA memory helpers, and guarded external-allocation validation shared by CUDA adapters. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration, persistent batch sessions, resident output, and validated caller-owned destinations for supported paths. |
-| `j2k-ml` | experimental integration | Thin Burn allocation and codec-interop adapter for owned integer batch output; unpublished during the 0.7 cycle. |
+| `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |

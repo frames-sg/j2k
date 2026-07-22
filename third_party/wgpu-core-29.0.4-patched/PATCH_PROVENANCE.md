@@ -22,7 +22,8 @@ external-write initialization and dependency-registration mechanism.
 
 ## Release approval
 
-- Status: pending maintainer review
+- Reviewer identity: `greg`
+- Approval date: `2026-07-22`
 
-Publication remains blocked until a human reviewer adds their identity and a
-calendar-valid approval date.
+The reviewer approved the pinned source and documented external-write
+initialization delta for the 0.7.5 release.

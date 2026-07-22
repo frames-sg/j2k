@@ -172,7 +172,7 @@ Use lower-level crates only when you need a specific integration point:
 | JPEG-to-HTJ2K coefficient-domain transcode | `j2k-transcode` |
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
-| Experimental Burn 0.21 native integer batch adapter | `j2k-ml` (unpublished) |
+| Burn 0.21 native integer batch adapter | `j2k-ml` |
 | Tile compression codecs | `j2k-tilecodec` |
 | Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
@@ -181,7 +181,7 @@ The names `statumen` and `wsi-dicom` are not current package names.
 ## Support and evidence
 
 The living codec support matrix is
-[docs/public-support.md](docs/public-support.md). The experimental Burn batch
+[docs/public-support.md](docs/public-support.md). The Burn batch
 adapter has a narrower, explicit boundary in
 [docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
 qualifications are recorded separately in

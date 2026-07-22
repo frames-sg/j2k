@@ -3,7 +3,7 @@
 use crate::repo_lint_support::{assert_file_pattern_checks, repo_root, FilePatternCheck};
 
 #[test]
-fn j2k_ml_stays_independent_experimental_and_explicitly_feature_gated() {
+fn j2k_ml_stays_independent_publishable_and_explicitly_feature_gated() {
     assert_file_pattern_checks(
         repo_root(),
         &[
@@ -11,7 +11,7 @@ fn j2k_ml_stays_independent_experimental_and_explicitly_feature_gated() {
                 .named("j2k-ml manifest")
                 .required(&[
                     "name = \"j2k-ml\"",
-                    "publish = false",
+                    "[package.metadata.docs.rs]",
                     "default = []",
                     "cpu = []",
                     "cuda = [",
