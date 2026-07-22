@@ -1,5 +1,7 @@
 use j2k_core::CodecError;
-use j2k_jpeg::{DecodeRequest, JpegBackend, JpegEncodeError, JpegSubsampling};
+#[cfg(target_os = "macos")]
+use j2k_jpeg::DecodeRequest;
+use j2k_jpeg::{JpegBackend, JpegEncodeError, JpegSubsampling};
 
 struct EncodeClassificationCase {
     error: JpegEncodeError,
@@ -133,19 +135,19 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
         .expect("upload test RGB pixels");
-
-    // SAFETY: the buffer was initialized before tile construction and no CPU
-    // or GPU writer accesses it while the tile is alive.
-    let tile = unsafe {
-        JpegBaselineMetalEncodeTile::new(
-            &buffer,
-            0,
-            (width, height),
-            width as usize * 3,
-            (width, height),
-            PixelFormat::Rgb8,
-        )
-    };
+    let layout = j2k_metal_support::MetalImageLayout::new(
+        0,
+        (width, height),
+        width as usize * 3,
+        PixelFormat::Rgb8,
+    )
+    .expect("valid resident JPEG layout");
+    // SAFETY: the upload completed synchronously and the raw buffer is moved
+    // into the immutable resident owner without a surviving writable alias.
+    let resident =
+        unsafe { j2k_metal_support::ResidentMetalImage::from_completed_buffer(buffer, layout) }
+            .expect("resident JPEG input");
+    let tile = JpegBaselineMetalEncodeTile::from_resident(&resident, (width, height));
     let encoded = encode_jpeg_baseline_from_metal_buffer(
         tile,
         JpegEncodeOptions {

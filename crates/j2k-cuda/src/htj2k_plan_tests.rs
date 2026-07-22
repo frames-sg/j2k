@@ -1,5 +1,5 @@
 use crate::{CudaHtj2kTransform, J2kDecoder, SurfaceResidency};
-use j2k_core::{CodecError, PixelFormat, Rect};
+use j2k_core::{PixelFormat, Rect};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{CudaContext, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables};
 #[cfg(feature = "cuda-runtime")]
@@ -211,14 +211,17 @@ fn flat_htj2k_scaled_region_plan_stores_compact_scaled_rect() {
 }
 
 #[test]
-fn flat_htj2k_plan_rejects_classic_j2k_subband_steps() {
+fn flat_cuda_plan_preserves_classic_j2k_subband_steps() {
     let bytes = classic_gray8_fixture();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
-    let error = decoder
+    let (plan, report) = decoder
         .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
-        .expect_err("classic plans must be rejected");
+        .expect("classic CUDA plan");
 
-    assert!(error.is_unsupported());
+    assert!(!plan.payload().is_empty());
+    assert!(!plan.classic_code_blocks().is_empty());
+    assert!(!plan.classic_segments().is_empty());
+    assert_eq!(report.block_count, plan.classic_code_blocks().len());
 }
 
 #[test]

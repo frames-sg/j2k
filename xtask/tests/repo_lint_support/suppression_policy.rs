@@ -20,6 +20,8 @@ const REVIEWED_DEVICE_INCLUDE_FILES: &[&str] = &[
     "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_dequantize/simt/src/main.rs",
     "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
     "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
+    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
+    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_ml/simt/src/main.rs",
     "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
     "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
     "crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src/main.rs",

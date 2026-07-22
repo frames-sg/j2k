@@ -18,9 +18,37 @@ use crate::{
     runtime::{
         checked_blit_encoder_from_autoreleased_ptr, checked_command_buffer_from_autoreleased_ptr,
         checked_command_queue_from_retained_ptr, checked_compute_encoder_from_autoreleased_ptr,
+        classify_command_buffer_status, CommandBufferCompletion,
     },
     system_default_device, two_d_threads_per_group, MetalCommandEncoderKind, MetalSupportError,
 };
+mod resident;
+
+#[test]
+fn command_buffer_status_classification_covers_every_metal_state() {
+    use metal::MTLCommandBufferStatus as Status;
+
+    assert_eq!(
+        classify_command_buffer_status(Status::Completed),
+        CommandBufferCompletion::Completed
+    );
+    assert_eq!(
+        classify_command_buffer_status(Status::Error),
+        CommandBufferCompletion::Failed
+    );
+    for status in [
+        Status::NotEnqueued,
+        Status::Enqueued,
+        Status::Committed,
+        Status::Scheduled,
+    ] {
+        assert_eq!(
+            classify_command_buffer_status(status),
+            CommandBufferCompletion::Incomplete,
+            "{status:?}"
+        );
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ZeroSizedAbi;

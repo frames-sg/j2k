@@ -5,16 +5,16 @@
 use super::options::validate_single_layer_packet_input;
 use super::{
     codestream_write, compact_payload_slice, count_compact_code_blocks, packet_encode,
-    preencoded_compact_97_level_count, public_packetization_progression_order, quantize,
-    validate_irreversible_quantization_profile, validate_precinct_exponents_for_options,
-    validate_preencoded_compact_htj2k97_image, BlockCodingMode, EncodeComponentSampleInfo,
-    EncodeOptions, EncodeParams, EncodeProgressionOrder, J2kEncodeStageAccelerator,
-    J2kPacketizationEncodeJob, NativeEncodePhase, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeRetainedInput, NativeEncodeSession,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
-    PreencodedHtj2k97CompactSubband, PreparedCompactCodeBlock, PreparedCompactResolutionPacket,
-    PreparedCompactSubband, QuantStepSize, Vec, MAX_J2K_SPEC_COMPONENTS,
+    preencoded_compact_97_level_count, quantize, validate_irreversible_quantization_profile,
+    validate_precinct_exponents_for_options, validate_preencoded_compact_htj2k97_image,
+    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams,
+    EncodeProgressionOrder, J2kEncodeStageAccelerator, J2kPacketizationEncodeJob,
+    NativeEncodePhase, NativeEncodePipelineError, NativeEncodePipelineResult,
+    NativeEncodeRetainedInput, NativeEncodeSession, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband, PreparedCompactCodeBlock,
+    PreparedCompactResolutionPacket, PreparedCompactSubband, QuantStepSize, Vec,
+    MAX_J2K_SPEC_COMPONENTS,
 };
 use crate::j2c::encode::allocation::{checked_add_bytes, checked_element_bytes};
 use crate::{
@@ -120,9 +120,7 @@ impl<'a> Compact97PacketPlan<'a> {
             num_components: self.params.num_components,
             code_block_count: count_compact_code_blocks(&self.prepared_packets)
                 .map_err(NativeEncodePipelineError::arithmetic_overflow)?,
-            progression_order: public_packetization_progression_order(
-                self.params.progression_order,
-            ),
+            progression_order: self.params.progression_order.packetization_order(),
             packet_descriptors: &self.packet_descriptors,
             resolutions: &packetization_resolutions,
         };

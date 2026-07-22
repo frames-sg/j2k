@@ -15,6 +15,10 @@ fn jpeg_device_decode_uses_private_internal_planes() {
         .decode_to_device_with_session(PixelFormat::Rgb8, &session)
         .expect("resident JPEG Metal decode");
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    let resident = surface
+        .resident_metal_image()
+        .expect("completed JPEG decode is resident");
+    assert_eq!(resident.dimensions(), surface.dimensions());
     assert!(
         compute::jpeg_private_buffer_allocations_for_test() > 0,
         "resident JPEG Metal decode should use Private internal planes"
@@ -44,8 +48,10 @@ fn jpeg_private_rgb8_tile_uses_private_output_buffer() {
     assert_eq!(raw_buffer.storage_mode(), metal::MTLStorageMode::Private);
     assert!(tile.status_buffer_trusted().length() > 0);
 
-    let handed_off = tile.clone().into_buffer();
-    assert_eq!(handed_off.storage_mode(), metal::MTLStorageMode::Private);
+    let resident = tile.resident_image();
+    assert_eq!(resident.dimensions(), (16, 16));
+    let handed_off = tile.clone().into_resident_image();
+    assert_eq!(handed_off.pixel_format(), PixelFormat::Rgb8);
     assert_eq!(tile.dimensions(), (16, 16));
 }
 

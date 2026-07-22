@@ -11,8 +11,13 @@ use super::*;
 )]
 fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
     let root = repo_root();
-    let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
-        .expect("read JPEG Metal surface module");
+    let surface = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg-metal/src/surface.rs",
+            "crates/j2k-jpeg-metal/src/surface/batch_buffer.rs",
+        ],
+    );
     let encode = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/encode.rs"))
         .expect("read JPEG Metal encode module");
     let batch_entry =
@@ -149,8 +154,13 @@ fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
 #[test]
 fn jpeg_metal_private_texture_aliases_share_safe_write_ordering() {
     let root = repo_root();
-    let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
-        .expect("read JPEG Metal surface module");
+    let surface = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg-metal/src/surface/batch_texture.rs",
+            "crates/j2k-jpeg-metal/src/surface/texture_tile.rs",
+        ],
+    );
     let batch_entry =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_entry.rs"))
             .expect("read JPEG Metal batch decode entry module");
@@ -238,8 +248,10 @@ fn jpeg_metal_private_texture_aliases_share_safe_write_ordering() {
 #[test]
 fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
     let root = repo_root();
-    let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
-        .expect("read JPEG Metal surface module");
+    let surface = read_source_files(
+        root,
+        &["crates/j2k-jpeg-metal/src/surface/resident_tile.rs"],
+    );
     let residency_tests =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/tests/textures/residency.rs"))
             .expect("read JPEG Metal texture residency tests");
@@ -256,9 +268,11 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
             "pub fn dimensions(&self) -> (u32, u32)",
             "pub fn pixel_format(&self) -> PixelFormat",
             "pub fn pitch_bytes(&self) -> usize",
+            "pub fn resident_image(&self) -> &ResidentMetalImage",
+            "pub fn into_resident_image(self) -> ResidentMetalImage",
             "pub unsafe fn buffer(&self) -> &BufferRef",
             "pub(crate) fn buffer_trusted(&self) -> &BufferRef",
-            "pub fn into_buffer(self) -> Buffer",
+            "pub unsafe fn into_buffer(self) -> Buffer",
             "every clone of this tile",
             "No surviving tile offers safe host readback",
             "normal Metal synchronization remains each",
@@ -272,6 +286,7 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
             "pub status_buffer: Buffer",
             "pub command_buffer: CommandBuffer",
             "pub fn buffer(&self) -> &BufferRef",
+            "pub fn into_buffer(self) -> Buffer",
         ]),
         PatternCheck::new(
             "JPEG Metal resident private tile regressions",
@@ -279,7 +294,8 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
         )
         .required(&[
             "let raw_buffer = unsafe { tile.buffer() };",
-            "let handed_off = tile.clone().into_buffer();",
+            "let handed_off = tile.clone().into_resident_image();",
+            "let resident = tile.resident_image();",
             "assert_eq!(tile.dimensions(), (16, 16));",
         ]),
     ]);

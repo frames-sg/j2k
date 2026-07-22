@@ -91,6 +91,9 @@ impl Default for DecodeSettings {
 
 /// A JPEG2000 image or codestream.
 pub struct Image<'a> {
+    /// Complete encoded input retained by the caller. Referenced execution
+    /// plans express compressed payload ranges relative to this owner.
+    pub(crate) encoded_input: &'a [u8],
     /// The tile-part payload used by the legacy JPEG 2000 decoder.
     pub(crate) codestream: &'a [u8],
     /// The header of the J2C codestream.
@@ -106,9 +109,24 @@ pub struct Image<'a> {
     pub(crate) color_space: ColorSpace,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ImageSource<'a> {
+    encoded_input: &'a [u8],
+    codestream: &'a [u8],
+}
+
+impl<'a> ImageSource<'a> {
+    pub(crate) const fn new(encoded_input: &'a [u8], codestream: &'a [u8]) -> Self {
+        Self {
+            encoded_input,
+            codestream,
+        }
+    }
+}
+
 impl<'a> Image<'a> {
     pub(crate) fn from_parsed_parts(
-        codestream: &'a [u8],
+        source: ImageSource<'a>,
         header: Header<'a>,
         boxes: ImageBoxes,
         settings: DecodeSettings,
@@ -116,7 +134,7 @@ impl<'a> Image<'a> {
         has_alpha: bool,
     ) -> Result<Self> {
         Self::from_parsed_parts_with_retained_baseline(
-            codestream,
+            source,
             header,
             boxes,
             settings,
@@ -127,7 +145,7 @@ impl<'a> Image<'a> {
     }
 
     pub(crate) fn from_parsed_parts_with_retained_baseline(
-        codestream: &'a [u8],
+        source: ImageSource<'a>,
         header: Header<'a>,
         boxes: ImageBoxes,
         settings: DecodeSettings,
@@ -138,7 +156,8 @@ impl<'a> Image<'a> {
         let metadata_bytes = retained_metadata_bytes(&header, &boxes, &color_space)?;
         allocation::combine_retained_bytes(retained_baseline_bytes, metadata_bytes)?;
         Ok(Self {
-            codestream,
+            encoded_input: source.encoded_input,
+            codestream: source.codestream,
             header,
             boxes,
             settings,
@@ -276,14 +295,15 @@ impl<'a> Image<'a> {
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
-            let mut decoded_image = self.prepare_decoded_image(decoder_context)?;
+            let mut decoded_image =
+                self.decode_image(decoder_context, None, None, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
                 self.width() as usize,
                 self.height() as usize,
                 decoded_image.decoded_components.len(),
             )?;
-            let mut budget = NativeOutputBudget::for_component_pack(
+            let mut budget = NativeOutputBudget::for_decoded_channels(
                 retained_image_bytes,
                 decoded_image.decoded_components,
                 component_owner_capacity,
@@ -327,7 +347,8 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
         self.validate_component_plane_precision()?;
-        let decoded_image = self.prepare_decoded_image(decoder_context)?;
+        let decoded_image =
+            self.decode_image(decoder_context, None, None, self.retained_metadata_bytes()?)?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -399,10 +420,8 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedNativeComponents> {
-        let decoded_image = self.prepare_decoded_image_with_retained_baseline(
-            decoder_context,
-            retained_baseline_bytes,
-        )?;
+        let decoded_image =
+            self.decode_image(decoder_context, None, None, retained_baseline_bytes)?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -424,8 +443,12 @@ impl<'a> Image<'a> {
         ht_decoder: &mut dyn HtCodeBlockDecoder,
     ) -> Result<DecodedComponents<'ctx>> {
         self.validate_component_plane_precision()?;
-        let decoded_image =
-            self.prepare_decoded_image_with_ht_decoder(decoder_context, ht_decoder)?;
+        let decoded_image = self.decode_image(
+            decoder_context,
+            None,
+            Some(ht_decoder),
+            self.retained_metadata_bytes()?,
+        )?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -451,7 +474,12 @@ impl<'a> Image<'a> {
         validate_roi((self.width(), self.height()), roi)?;
         self.validate_component_plane_precision()?;
         let (_x, _y, width, height) = roi;
-        let decoded_image = self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
+        let decoded_image = self.decode_image(
+            decoder_context,
+            Some(roi),
+            None,
+            self.retained_metadata_bytes()?,
+        )?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -479,7 +507,9 @@ impl<'a> Image<'a> {
             return self.decode_native_region_components_via_full_decode(roi, decoder_context);
         }
         let (_x, _y, width, height) = roi;
-        let decoded_image = self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
+        let retained_image_bytes = self.retained_metadata_bytes()?;
+        let decoded_image =
+            self.decode_image(decoder_context, Some(roi), None, retained_image_bytes)?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -489,7 +519,7 @@ impl<'a> Image<'a> {
             decoded_components,
             component_owner_capacity,
             (width, height),
-            self.retained_metadata_bytes()?,
+            retained_image_bytes,
         )
     }
 
@@ -505,10 +535,11 @@ impl<'a> Image<'a> {
         validate_roi((self.width(), self.height()), roi)?;
         self.validate_component_plane_precision()?;
         let (_x, _y, width, height) = roi;
-        let decoded_image = self.prepare_decoded_image_with_region_and_ht_decoder(
+        let decoded_image = self.decode_image(
             decoder_context,
             Some(roi),
             Some(ht_decoder),
+            self.retained_metadata_bytes()?,
         )?;
         let DecodedImage {
             decoded_components,
@@ -545,7 +576,7 @@ impl<'a> Image<'a> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let mut decoded_image =
-                self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
+                self.decode_image(decoder_context, Some(roi), None, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let (_x, _y, width, height) = roi;
             let data_len = checked_decode_byte_len3(
@@ -553,7 +584,7 @@ impl<'a> Image<'a> {
                 height as usize,
                 decoded_image.decoded_components.len(),
             )?;
-            let mut budget = NativeOutputBudget::for_component_pack(
+            let mut budget = NativeOutputBudget::for_decoded_channels(
                 retained_image_bytes,
                 decoded_image.decoded_components,
                 component_owner_capacity,
@@ -608,69 +639,15 @@ impl<'a> Image<'a> {
         buf: &mut [u8],
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
-        let mut decoded_image = self.prepare_decoded_image(decoder_context)?;
+        let mut decoded_image =
+            self.decode_image(decoder_context, None, None, self.retained_metadata_bytes()?)?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
         interleave_and_convert(&mut decoded_image, buf)?;
 
         Ok(())
     }
 
-    fn prepare_decoded_image<'ctx>(
-        &self,
-        decoder_context: &'ctx mut DecoderContext<'a>,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        self.prepare_decoded_image_with_region(decoder_context, None)
-    }
-
-    fn prepare_decoded_image_with_retained_baseline<'ctx>(
-        &self,
-        decoder_context: &'ctx mut DecoderContext<'a>,
-        retained_baseline_bytes: usize,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        self.prepare_decoded_image_with_region_and_ht_decoder_with_retained_baseline(
-            decoder_context,
-            None,
-            None,
-            retained_baseline_bytes,
-        )
-    }
-
-    fn prepare_decoded_image_with_ht_decoder<'ctx>(
-        &self,
-        decoder_context: &'ctx mut DecoderContext<'a>,
-        ht_decoder: &mut dyn HtCodeBlockDecoder,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        self.prepare_decoded_image_with_region_and_ht_decoder(
-            decoder_context,
-            None,
-            Some(ht_decoder),
-        )
-    }
-
-    fn prepare_decoded_image_with_region<'ctx>(
-        &self,
-        decoder_context: &'ctx mut DecoderContext<'a>,
-        output_region: Option<(u32, u32, u32, u32)>,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        self.prepare_decoded_image_with_region_and_ht_decoder(decoder_context, output_region, None)
-    }
-
-    fn prepare_decoded_image_with_region_and_ht_decoder<'ctx>(
-        &self,
-        decoder_context: &'ctx mut DecoderContext<'a>,
-        output_region: Option<(u32, u32, u32, u32)>,
-        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        let retained_baseline_bytes = self.retained_metadata_bytes()?;
-        self.prepare_decoded_image_with_region_and_ht_decoder_with_retained_baseline(
-            decoder_context,
-            output_region,
-            ht_decoder,
-            retained_baseline_bytes,
-        )
-    }
-
-    fn prepare_decoded_image_with_region_and_ht_decoder_with_retained_baseline<'ctx>(
+    fn decode_image<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
         output_region: Option<(u32, u32, u32, u32)>,
@@ -678,12 +655,17 @@ impl<'a> Image<'a> {
         retained_baseline_bytes: usize,
     ) -> Result<DecodedImage<'ctx, '_>> {
         let settings = &self.settings;
-        self.decode_with_output_region_and_ht_decoder_with_retained_baseline(
-            decoder_context,
-            output_region,
-            ht_decoder,
+        let mut ht_decoder = ht_decoder;
+        decoder_context.set_output_region(output_region);
+        let decode_result = j2c::decode(
+            self.codestream,
+            &self.header,
             retained_baseline_bytes,
-        )?;
+            decoder_context,
+            &mut ht_decoder,
+        );
+        decoder_context.set_output_region(None);
+        decode_result?;
         let mut decoded_image = DecodedImage {
             decoded_components: &mut decoder_context.tile_decode_context.channel_data,
             boxes: &self.boxes,
@@ -710,47 +692,5 @@ impl<'a> Image<'a> {
             .bit_depth;
         convert_color_space(&mut decoded_image, bit_depth)?;
         Ok(decoded_image)
-    }
-
-    fn decode_with_output_region(
-        &self,
-        decoder_context: &mut DecoderContext<'a>,
-        output_region: Option<(u32, u32, u32, u32)>,
-    ) -> Result<()> {
-        self.decode_with_output_region_and_ht_decoder(decoder_context, output_region, None)
-    }
-
-    fn decode_with_output_region_and_ht_decoder(
-        &self,
-        decoder_context: &mut DecoderContext<'a>,
-        output_region: Option<(u32, u32, u32, u32)>,
-        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
-    ) -> Result<()> {
-        let retained_metadata_bytes = self.retained_metadata_bytes()?;
-        self.decode_with_output_region_and_ht_decoder_with_retained_baseline(
-            decoder_context,
-            output_region,
-            ht_decoder,
-            retained_metadata_bytes,
-        )
-    }
-
-    fn decode_with_output_region_and_ht_decoder_with_retained_baseline(
-        &self,
-        decoder_context: &mut DecoderContext<'a>,
-        output_region: Option<(u32, u32, u32, u32)>,
-        mut ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
-        retained_baseline_bytes: usize,
-    ) -> Result<()> {
-        decoder_context.set_output_region(output_region);
-        let decode_result = j2c::decode(
-            self.codestream,
-            &self.header,
-            retained_baseline_bytes,
-            decoder_context,
-            &mut ht_decoder,
-        );
-        decoder_context.set_output_region(None);
-        decode_result
     }
 }

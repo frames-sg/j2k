@@ -33,6 +33,7 @@ const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
         accelerator_package("j2k-jpeg-metal", "crates/j2k-jpeg-metal/"),
         accelerator_package("j2k-metal", "crates/j2k-metal/"),
         accelerator_package("j2k-transcode-metal", "crates/j2k-transcode-metal/"),
+        accelerator_package("j2k-ml", "crates/j2k-ml/src/metal.rs"),
     ],
 };
 
@@ -42,8 +43,11 @@ const CUDA_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
         accelerator_package("j2k-jpeg-cuda", "crates/j2k-jpeg-cuda/"),
         accelerator_package("j2k-cuda", "crates/j2k-cuda/"),
         accelerator_package("j2k-transcode-cuda", "crates/j2k-transcode-cuda/"),
+        accelerator_package("j2k-ml", "crates/j2k-ml/src/cuda.rs"),
     ],
 };
+
+const ML_CUDA_MODULE_PREFIX: &str = "crates/j2k-ml/src/cuda/";
 
 const fn accelerator_package(
     name: &'static str,
@@ -105,6 +109,17 @@ impl CoverageLane {
         }
     }
 
+    pub(super) const fn enforces_overall_changed_lines(self) -> bool {
+        matches!(self, Self::Host)
+    }
+
+    pub(super) const fn line_gate_scope(self) -> &'static str {
+        match self {
+            Self::Host => "all-changed-production-rust",
+            Self::Metal | Self::Cuda => "release-critical-host-rust",
+        }
+    }
+
     pub(super) fn owns_path(self, path: &str) -> bool {
         match self {
             Self::Host => !is_accelerator_path(path),
@@ -113,7 +128,11 @@ impl CoverageLane {
                     || is_shared_accelerator_path(path)
                     || METAL_VENDOR_PATHS.contains(&path)
             }
-            Self::Cuda => CUDA_ACCELERATOR_LANE.owns_path(path) || is_shared_accelerator_path(path),
+            Self::Cuda => {
+                CUDA_ACCELERATOR_LANE.owns_path(path)
+                    || path.starts_with(ML_CUDA_MODULE_PREFIX)
+                    || is_shared_accelerator_path(path)
+            }
         }
     }
 
@@ -121,6 +140,13 @@ impl CoverageLane {
         self.accelerator_packages()
             .iter()
             .map(|package| package.name)
+    }
+
+    #[cfg(test)]
+    pub(super) fn accelerator_source_prefixes(self) -> impl Iterator<Item = &'static str> {
+        self.accelerator_packages()
+            .iter()
+            .map(|package| package.source_prefix)
     }
 
     pub(super) fn includes_source(self, path: &str, role: SourceRole) -> bool {
@@ -227,6 +253,7 @@ pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<Covera
 pub(super) fn is_accelerator_path(path: &str) -> bool {
     METAL_ACCELERATOR_LANE.owns_path(path)
         || CUDA_ACCELERATOR_LANE.owns_path(path)
+        || path.starts_with(ML_CUDA_MODULE_PREFIX)
         || is_shared_accelerator_path(path)
 }
 

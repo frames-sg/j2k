@@ -4,17 +4,18 @@ use std::sync::Arc;
 
 use crate::{
     error::CudaError,
-    execution::{CudaExecutionStats, CudaLaunchMode},
+    execution::CudaExecutionStats,
     htj2k_decode::{
         htj2k_decode_needs_zero_fill, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeOutput,
-        CudaHtj2kDecodeStageTimings, CudaQueuedHtj2kCleanup,
+        CudaHtj2kDecodeStageTimings,
     },
-    memory::pooled_device_buffer,
 };
 
 mod band_transfer;
 mod compact;
+mod creation;
 mod device;
+mod diagnostics;
 mod host_budget;
 mod inner;
 mod kernel_cache;
@@ -22,11 +23,13 @@ mod kernel_dispatch;
 mod lifecycle;
 mod operations;
 mod pinned_host;
+mod pointer;
 mod resource_creation;
 #[cfg(test)]
 mod test_kernels;
 
 pub use self::compact::{CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks};
+pub use self::diagnostics::CudaContextDiagnostics;
 #[doc(hidden)]
 pub use self::host_budget::{CudaExternalHostOwner, CudaExternalHostReservation};
 #[cfg(test)]
@@ -36,7 +39,7 @@ pub(crate) use self::test_kernels::{CudaKernelModule, CudaKernelName};
 pub(crate) use self::{
     band_transfer::cuda_idwt_trace_enabled,
     compact::HTJ2K_UVLC_ENCODE_TABLE_BYTES,
-    inner::ContextInner,
+    inner::{ContextInner, ContextOwnership},
     kernel_cache::{CompiledKernel, CompiledKernelKey},
     lifecycle::ContextResourceLifecycle,
     operations::ensure_context_ownership,
@@ -55,41 +58,14 @@ impl CudaContext {
     #[doc(hidden)]
     #[must_use]
     pub fn is_same_context(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        self.inner.context == other.inner.context
     }
 
-    /// Dequantize HTJ2K cleanup outputs using the metadata buffer already held
-    /// live by a queued cleanup launch.
+    /// Device ordinal associated with this context.
     #[doc(hidden)]
-    pub fn j2k_dequantize_queued_htj2k_cleanup_with_pool(
-        &self,
-        cleanup: &CudaQueuedHtj2kCleanup,
-    ) -> Result<CudaExecutionStats, CudaError> {
-        if !self.is_same_context(&cleanup.context) {
-            return Err(CudaError::InvalidArgument {
-                message: "queued HTJ2K cleanup belongs to a different CUDA context".to_string(),
-            });
-        }
-        self.inner.set_current()?;
-        if cleanup.status_count == 0 {
-            return Ok(CudaExecutionStats::default());
-        }
-        let Some(jobs_buffer) = cleanup.resources.first() else {
-            return Err(CudaError::InvalidArgument {
-                message: "queued HTJ2K cleanup has no metadata buffer".to_string(),
-            });
-        };
-        self.launch_j2k_dequantize_htj2k_cleanup_jobs_multi(
-            pooled_device_buffer(jobs_buffer)?,
-            cleanup.status_count,
-            CudaLaunchMode::Sync,
-        )?;
-        Ok(CudaExecutionStats {
-            kernel_dispatches: 1,
-            copy_kernel_dispatches: 0,
-            decode_kernel_dispatches: 1,
-            hardware_decode: false,
-        })
+    #[must_use]
+    pub fn device_ordinal(&self) -> usize {
+        self.inner.device_ordinal
     }
 
     pub(crate) fn decode_empty_htj2k_codeblocks(

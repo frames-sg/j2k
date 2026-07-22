@@ -21,15 +21,15 @@ path = "src/lib.rs"
 [features]
 scalar-only  = []   # retained for fuzz/reference decode until native SIMD backends land
 # Opt-in for the comparison benches only: probes pkg-config for
-# libturbojpeg/libjpeg and emits link directives. Off by default so library
+# libturbojpeg and emits link directives. Off by default so library
 # consumers never link a system JPEG.
 bench-libjpeg-turbo = []
 bench-internals = []
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
-j2k-core = { path = "../j2k-core", version = "=0.7.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.7.0" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.4" }
+j2k-core = { path = "../j2k-core", version = "=0.7.4" }
+j2k-profile = { path = "../j2k-profile", version = "=0.7.4" }
 thiserror = { workspace = true }
 memchr = { workspace = true }
 rayon = { workspace = true }

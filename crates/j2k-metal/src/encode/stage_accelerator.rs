@@ -3,12 +3,14 @@
 #[cfg(target_os = "macos")]
 use crate::compute;
 #[cfg(target_os = "macos")]
+use j2k::J2kEncodeStageError;
+#[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 use j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageResult, J2kForwardDwt53Job,
-    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
-    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
+    J2kEncodeStageAccelerator, J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Output,
+    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
     J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(target_os = "macos")]
@@ -189,7 +191,7 @@ impl MetalEncodeStageAccelerator {
     }
 
     /// Number of forward ICT stage attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn forward_ict_attempts(&self) -> usize {
         self.forward_ict_attempts
     }
@@ -201,13 +203,13 @@ impl MetalEncodeStageAccelerator {
     }
 
     /// Number of forward 9/7 DWT stage attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn forward_dwt97_attempts(&self) -> usize {
         self.forward_dwt97_attempts
     }
 
     /// Number of sub-band quantization stage attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn quantize_subband_attempts(&self) -> usize {
         self.quantize_subband_attempts
     }
@@ -219,7 +221,7 @@ impl MetalEncodeStageAccelerator {
     }
 
     /// Number of HT code-block encode attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn ht_code_block_attempts(&self) -> usize {
         self.ht_code_block_attempts
     }
@@ -243,43 +245,43 @@ impl MetalEncodeStageAccelerator {
     }
 
     /// Number of forward ICT Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn forward_ict_dispatches(&self) -> usize {
         self.forward_ict_dispatches
     }
 
     /// Number of forward 5/3 DWT Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn forward_dwt53_dispatches(&self) -> usize {
         self.forward_dwt53_dispatches
     }
 
     /// Number of forward 9/7 DWT Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn forward_dwt97_dispatches(&self) -> usize {
         self.forward_dwt97_dispatches
     }
 
     /// Number of sub-band quantization Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn quantize_subband_dispatches(&self) -> usize {
         self.quantize_subband_dispatches
     }
 
     /// Number of classic Tier-1 Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn tier1_code_block_dispatches(&self) -> usize {
         self.tier1_code_block_dispatches
     }
 
     /// Number of HT code-block Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn ht_code_block_dispatches(&self) -> usize {
         self.ht_code_block_dispatches
     }
 
     /// Number of packetization Metal dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn packetization_dispatches(&self) -> usize {
         self.packetization_dispatches
     }

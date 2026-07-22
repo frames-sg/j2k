@@ -68,8 +68,14 @@ pub(crate) struct MetalBatchProfileRow<'a> {
     pub(crate) outcome: &'a str,
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn metal_profile_stage_mode() -> j2k_profile::ProfileStageMode {
     crate::profile_env::metal_profile_stage_mode()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) const fn metal_profile_stage_mode() -> j2k_profile::ProfileStageMode {
+    j2k_profile::ProfileStageMode::Disabled
 }
 
 pub(crate) fn metal_profile_stages_enabled() -> bool {
@@ -211,6 +217,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn metal_batch_profile_uses_shared_summary_stage_mode() {
         let _guard = crate::profile_env::force_metal_profile_stage_mode_for_test(

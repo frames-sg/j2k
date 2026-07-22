@@ -43,7 +43,7 @@ pub(super) fn validate_cuda_htj2k_tile_job(
     job: J2kResidentHtj2kTileEncodeJob<'_>,
 ) -> CudaStageResult<()> {
     let _ = cuda_component_count_u8(
-        job.num_components(),
+        job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",
     )?;
     if job
@@ -65,12 +65,12 @@ pub(super) fn validate_cuda_htj2k_tile_job(
     // Only `{1, 3, 4}` component counts are in scope. Reject any other count with a
     // typed hard error rather than `Ok(None)` (a silent CPU fallback is forbidden for
     // in-scope inputs).
-    if !matches!(job.num_components(), 1 | 3 | 4) {
+    if !matches!(job.input.num_components(), 1 | 3 | 4) {
         return Err(J2kEncodeStageError::unsupported(
             "CUDA HTJ2K tile encode supports 1, 3, or 4 components",
         ));
     }
-    if job.use_mct && job.num_components() < 3 {
+    if job.use_mct && job.input.num_components() < 3 {
         return Err(J2kEncodeStageError::invalid_request(
             "CUDA HTJ2K tile encode requires at least three components for MCT",
         ));

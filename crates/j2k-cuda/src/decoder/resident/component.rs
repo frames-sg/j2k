@@ -2,55 +2,37 @@
 
 use super::super::{
     cuda_error, profile, CudaBufferPool, CudaCoefficientBand, CudaComponentDecodeWork,
-    CudaDecodeStageTimings, CudaDecodedComponent, CudaHtj2kCodeBlockJob, CudaHtj2kDecodePlan,
-    CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources, CudaPendingDequantBand, Error,
-    CUDA_HTJ2K_KERNELS_NOT_READY, CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
+    CudaDecodeStageTimings, CudaDecodedComponent, CudaHtj2kDecodePlan, CudaHtj2kDecodeResources,
+    CudaHtj2kDecodeTableResources, CudaPendingDequantBand, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
+    CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
 };
 use super::cleanup_dequant::run_component_cleanup_dequant_batches;
 use super::idwt::run_cuda_component_idwt_steps;
 use crate::allocation::{checked_cuda_element_count, host_allocation_error, HostPhaseBudget};
 
 #[cfg(feature = "cuda-runtime")]
-pub(in crate::decoder) fn cuda_code_block_job_from_plan_block(
-    block: &crate::CudaHtj2kCodeBlock,
-    subband_width: u32,
-) -> Result<CudaHtj2kCodeBlockJob, Error> {
-    let output_offset = block
-        .output_y
-        .checked_mul(subband_width)
-        .and_then(|base| base.checked_add(block.output_x))
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
-    Ok(CudaHtj2kCodeBlockJob {
-        payload_offset: block.payload_offset,
-        width: block.width,
-        height: block.height,
-        payload_len: block.payload_len,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        missing_bit_planes: block.missing_bit_planes,
-        num_bitplanes: block.num_bitplanes,
-        number_of_coding_passes: block.number_of_coding_passes,
-        output_stride: block.output_stride,
-        output_offset,
-        dequantization_step: block.dequantization_step,
-        stripe_causal: block.stripe_causal != 0,
-    })
-}
+mod classic;
+#[cfg(feature = "cuda-runtime")]
+use classic::append_classic_subbands;
+#[cfg(feature = "cuda-runtime")]
+mod ht;
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::decoder) use ht::cuda_code_block_job_from_plan_block;
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn decode_cuda_component_plan(
     context: &j2k_cuda_runtime::CudaContext,
     plan: &CudaHtj2kDecodePlan,
-    tables: &CudaHtj2kDecodeTableResources,
+    tables: Option<&CudaHtj2kDecodeTableResources>,
     pool: &CudaBufferPool,
     collect_stage_timings: bool,
 ) -> Result<CudaDecodedComponent, Error> {
     let resource_upload_start = profile::profile_now(collect_stage_timings);
-    let decode_resources = context
-        .upload_htj2k_decode_resources_with_tables(plan.payload(), tables)
-        .map_err(cuda_error)?;
+    let decode_resources = match tables {
+        Some(tables) => context.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
+        None => context.upload_j2k_decode_payload(plan.payload()),
+    }
+    .map_err(cuda_error)?;
     let resource_upload_us = profile::elapsed_us(resource_upload_start);
     let mut component = decode_cuda_component_plan_with_resources(
         context,
@@ -113,7 +95,8 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
     let band_capacity = plan
         .subbands()
         .len()
-        .checked_add(plan.idwt_steps().len())
+        .checked_add(plan.classic_subbands().len())
+        .and_then(|count| count.checked_add(plan.idwt_steps().len()))
         .ok_or_else(|| {
             host_allocation_error::<CudaCoefficientBand>(
                 usize::MAX,
@@ -121,6 +104,8 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
             )
         })?;
     let mut bands = host_budget.try_vec_with_capacity(band_capacity)?;
+    let mut pending_classic_bands =
+        host_budget.try_vec_with_capacity(plan.classic_subbands().len())?;
     let mut pending_dequant_bands = host_budget.try_vec_with_capacity(plan.subbands().len())?;
     let dispatches = 0usize;
     let decode_dispatches = 0usize;
@@ -170,6 +155,17 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
         }
     }
 
+    let classic_allocate_us = append_classic_subbands(
+        context,
+        plan,
+        pool,
+        collect_stage_timings,
+        host_budget,
+        &mut bands,
+        &mut pending_classic_bands,
+    )?;
+    timings.h2d = timings.h2d.saturating_add(classic_allocate_us);
+
     let [store] = plan.store_steps() else {
         return Err(Error::UnsupportedCudaRequest {
             reason: CUDA_HTJ2K_STORE_UNSUPPORTED,
@@ -178,6 +174,7 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
 
     Ok(CudaComponentDecodeWork {
         bands,
+        pending_classic_bands,
         pending_dequant_bands,
         store: *store,
         dispatches,

@@ -24,8 +24,10 @@ cuda-oxide = [
     "cuda-oxide-copy-u8",
     "cuda-oxide-j2k-encode",
     "cuda-oxide-j2k-decode-store",
+    "cuda-oxide-j2k-classic-decode",
     "cuda-oxide-j2k-dequantize",
     "cuda-oxide-j2k-idwt",
+    "cuda-oxide-j2k-ml",
     "cuda-oxide-htj2k-decode",
     "cuda-oxide-htj2k-encode",
     "cuda-oxide-transcode",
@@ -35,8 +37,10 @@ cuda-oxide = [
 cuda-oxide-copy-u8 = []
 cuda-oxide-j2k-encode = []
 cuda-oxide-j2k-decode-store = []
+cuda-oxide-j2k-classic-decode = []
 cuda-oxide-j2k-dequantize = []
 cuda-oxide-j2k-idwt = []
+cuda-oxide-j2k-ml = []
 cuda-oxide-htj2k-decode = []
 cuda-oxide-htj2k-encode = []
 cuda-oxide-transcode = []
@@ -44,10 +48,13 @@ cuda-oxide-jpeg-decode = []
 cuda-oxide-jpeg-encode = []
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
-j2k-core = { path = "../j2k-core", version = "=0.7.0" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.4" }
+j2k-core = { path = "../j2k-core", version = "=0.7.4" }
 libloading = { workspace = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.4" }
 
 [dev-dependencies]
 j2k-test-support = { path = "../j2k-test-support" }

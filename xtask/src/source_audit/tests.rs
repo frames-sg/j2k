@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::paths::production_path_for_test;
-use super::{inventory_panic_macro_sites, mask_test_only_syntax, PanicMacroInventory};
+use super::{
+    inventory_panic_macro_sites, mask_test_only_syntax, retain_test_only_syntax,
+    PanicMacroInventory,
+};
 
 const INLINE_TEST_A: &str = include_str!("../../tests/fixtures/clone_audit/inline_test_a.rs");
 const INLINE_TEST_B: &str = include_str!("../../tests/fixtures/clone_audit/inline_test_b.rs");
@@ -37,6 +40,24 @@ fn inline_cfg_test_clones_do_not_reach_production_clone_counts() {
     assert!(longest_shared_nonblank_run(&masked_a.text, &masked_b.text) < 20);
     assert!(!masked_a.text.contains("repeated_test_clone"));
     assert!(!masked_b.text.contains("repeated_test_clone"));
+}
+
+#[test]
+fn test_only_extraction_keeps_inline_tests_and_masks_production() {
+    let retained = retain_test_only_syntax(
+        repository_root(),
+        Path::new("crates/fixture/src/inline_test_a.rs"),
+        INLINE_TEST_A,
+    )
+    .expect("fixture must have classifiable Rust syntax");
+
+    assert!(retained.text.contains("repeated_test_clone"));
+    assert!(!retained.text.contains("alpha_production_value"));
+    assert_eq!(retained.text.len(), INLINE_TEST_A.len());
+    assert_eq!(
+        newline_positions(&retained.text),
+        newline_positions(INLINE_TEST_A)
+    );
 }
 
 #[test]

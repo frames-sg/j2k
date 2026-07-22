@@ -255,7 +255,7 @@ impl SharedHostLedger {
             .fetch_max(next_active, Ordering::AcqRel);
         let combined = cache_retained_bytes
             .checked_add(next_active)
-            .and_then(|bytes| bytes.checked_add(self.pinned_retained_bytes().ok()?));
+            .and_then(|bytes| bytes.checked_add(context_owner.pinned_retained_bytes().ok()?));
         if let Some(combined) = combined {
             self.peak_combined_bytes
                 .fetch_max(combined, Ordering::AcqRel);

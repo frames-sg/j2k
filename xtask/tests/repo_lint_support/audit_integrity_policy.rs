@@ -18,8 +18,9 @@ fn audit_modules_stay_focused_and_reuse_the_cfg_analyzer() {
         ("xtask/src/clone_audit/config.rs", 180),
         ("xtask/src/clone_audit/report.rs", 80),
         ("xtask/src/clone_audit/stage.rs", 120),
+        ("xtask/src/clone_audit/test_stage.rs", 120),
         ("xtask/src/source_audit.rs", 50),
-        ("xtask/src/source_audit/mask.rs", 200),
+        ("xtask/src/source_audit/mask.rs", 225),
         ("xtask/src/source_audit/panic_macros.rs", 160),
         ("xtask/src/source_audit/paths.rs", 200),
         ("xtask/src/coverage/source_analysis/audit.rs", 100),
@@ -75,8 +76,10 @@ fn clone_audit_is_source_aware_pinned_and_ci_required() {
     let config_policy = read("xtask/src/clone_audit/config.rs");
     let report = read("xtask/src/clone_audit/report.rs");
     let stage = read("xtask/src/clone_audit/stage.rs");
+    let test_stage = read("xtask/src/clone_audit/test_stage.rs");
     let tests = read("xtask/src/source_audit/tests.rs");
     let config = read(".jscpd.json");
+    let test_config = read(".jscpd-tests.json");
     let workflow = read(".github/workflows/ci.yml");
     let clone_job = workflow_job(&workflow, "clone-audit");
     let aggregate = workflow_job(&workflow, "release-candidate");
@@ -87,22 +90,31 @@ fn clone_audit_is_source_aware_pinned_and_ci_required() {
             "const JSCPD_PACKAGE: &str = \"jscpd@4.0.5\";",
             "validate_clone_config(&config_path)?",
             "stage_production_sources(&root, &stage_root)?",
+            "stage_test_sources(&root, &test_stage_root)?",
             "validate_jscpd_report(",
             "DUPLICATED_LINE_THRESHOLD",
+            "TEST_DUPLICATED_LINE_THRESHOLD",
         ]),
         PatternCheck::new("source-preserving production stage", &stage).required(&[
             "production_rust_sources(repository_root",
             "mask_test_only_syntax(repository_root",
             "stage_root.join(&source_path.relative)",
         ]),
+        PatternCheck::new("source-aware test stage", &test_stage).required(&[
+            "auditable_rust_sources(repository_root",
+            "retain_test_only_syntax(repository_root",
+            "is_production_rust_path(&source_path.relative)",
+            "stage_root.join(&source_path.relative)",
+        ]),
         PatternCheck::new("clone config ratchet", &config_policy).normalized_required(&[
-            "const DUPLICATED_LINE_THRESHOLD: f64 = 3.34",
-            "require_number(&config, \"threshold\", DUPLICATED_LINE_THRESHOLD)",
+            "const DUPLICATED_LINE_THRESHOLD: f64 = 2.01",
+            "const TEST_DUPLICATED_LINE_THRESHOLD: f64 = 4.14",
+            "require_number(&config, \"threshold\", threshold)",
             "require_number(&config, \"minLines\", 20.0)",
             "require_number(&config, \"maxLines\", 20_000.0)",
             "require_exact_keys(",
             "require_string_array(&config, \"reporters\", &[\"console\", \"json\"])",
-            "require_string_array( &config, \"ignore\"",
+            "require_string_array(&config, \"ignore\", ignore)",
         ]),
         PatternCheck::new("independent clone report validation", &report).required(&[
             "require_count(total, \"lines\")",
@@ -116,21 +128,28 @@ fn clone_audit_is_source_aware_pinned_and_ci_required() {
             "masking_preserves_source_byte_and_line_positions",
         ]),
         PatternCheck::new("repository jscpd config", &config).required(&[
-            "\"threshold\": 3.34",
+            "\"threshold\": 2.01",
             "\"output\": \"target/clone-audit/report\"",
             "\"gitignore\": false",
         ]),
+        PatternCheck::new("repository test jscpd config", &test_config).required(&[
+            "\"threshold\": 4.14",
+            "\"output\": \"target/clone-audit/test-report\"",
+            "\"ignore\": []",
+        ]),
         PatternCheck::new("CI clone audit", clone_job).required(&[
             "cargo xtask clone-audit",
-            "j2k-production-clone-audit",
+            "j2k-clone-audits",
             "target/clone-audit/report/jscpd-report.json",
+            "target/clone-audit/test-report/jscpd-report.json",
             "if-no-files-found: error",
         ]),
         PatternCheck::new("required clone gate", aggregate).required(&["clone-audit"]),
         PatternCheck::new("canonical clone evidence", &evidence).required(&[
             "cargo xtask clone-audit",
             "source-aware",
-            "Final candidate ratio: pending",
+            "Production baseline: 1.96%",
+            "Test/support baseline: 4.09%",
         ]),
     ]);
 }

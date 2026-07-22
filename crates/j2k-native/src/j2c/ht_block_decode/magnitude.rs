@@ -2,7 +2,7 @@
 
 use super::cleanup::{decode_cleanup_symbols_first_row, decode_cleanup_symbols_row};
 use super::readers::{ForwardBitReader, MelDecoder, ReverseBitReader};
-use super::state::HtDecodeObserver;
+use super::stats::HtDecodeObserver;
 
 fn sample_mask(bit: u32) -> u32 {
     1 << (4 + bit)

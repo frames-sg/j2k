@@ -7,6 +7,10 @@ use crate::repo_lint_support::{repo_root, rust_sources};
 
 const REVIEWED_ALLOWS: &[(&str, &str)] = &[
     (
+        "crates/j2k-ml/src/metal.rs",
+        "clippy::trivially_copy_pass_by_ref",
+    ),
+    (
         "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
         "clippy::manual_div_ceil",
     ),
@@ -37,6 +41,14 @@ const REVIEWED_ALLOWS: &[(&str, &str)] = &[
     (
         "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
         "static_mut_refs",
+    ),
+    (
+        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
+        "static_mut_refs",
+    ),
+    (
+        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_ml/simt/src/main.rs",
+        "clippy::too_many_arguments",
     ),
     (
         "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",

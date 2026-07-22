@@ -17,6 +17,61 @@ fn release_error() -> CudaError {
 }
 
 #[test]
+fn ht_cleanup_status_preserves_the_failing_descriptor_index() {
+    let statuses = [
+        CudaHtj2kStatus::default(),
+        CudaHtj2kStatus {
+            code: 7,
+            detail: 11,
+            ..CudaHtj2kStatus::default()
+        },
+    ];
+    assert!(matches!(
+        first_status_error(&statuses, "test_kernel"),
+        Some(CudaError::KernelJobStatus {
+            kernel: "test_kernel",
+            job_index: 1,
+            code: 7,
+            detail: 11,
+        })
+    ));
+}
+
+#[test]
+fn grouped_ht_cleanup_status_preserves_the_global_descriptor_index_and_kernel() {
+    let statuses = [
+        CudaHtj2kStatus::default(),
+        CudaHtj2kStatus::default(),
+        CudaHtj2kStatus {
+            code: 9,
+            detail: 17,
+            ..CudaHtj2kStatus::default()
+        },
+    ];
+    let spans = [
+        CudaHtj2kStatusSpan {
+            start: 0,
+            count: 1,
+            kernel: "cleanup_only",
+        },
+        CudaHtj2kStatusSpan {
+            start: 1,
+            count: 2,
+            kernel: "refinement",
+        },
+    ];
+    assert!(matches!(
+        first_group_status_error(&statuses, &spans),
+        Some(CudaError::KernelJobStatus {
+            kernel: "refinement",
+            job_index: 2,
+            code: 9,
+            detail: 17,
+        })
+    ));
+}
+
+#[test]
 fn kernel_and_release_failures_are_both_preserved() {
     let error = select_status_release_result(
         CudaExecutionStats::default(),

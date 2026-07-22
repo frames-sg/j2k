@@ -5,26 +5,26 @@ use j2k_core::{
 };
 #[cfg(all(target_os = "macos", test))]
 use j2k_core::{Downscale, Rect};
+#[cfg(target_os = "macos")]
+use j2k_jpeg::adapter::{JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1};
 use j2k_jpeg::{
-    adapter::{
-        JpegCachedPlan, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
-        JpegPlanCache,
-    },
+    adapter::{JpegCachedPlan, JpegPlanCache},
     Decoder as CpuDecoder, JpegView, ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
 
 use crate::{
     batch, decode_surface_from_decoder, routing, Error, JpegFastPackets, MetalBackendSession,
-    MetalDecodeRequest, ResidentPrivateJpegTile, SharedJpegFastPacket, SharedJpegInput, Surface,
+    MetalDecodeRequest, SharedJpegFastPacket, SharedJpegInput, Surface,
 };
 #[cfg(target_os = "macos")]
-use crate::{compute, reject_cpu_staged_metal_upload};
+use crate::{compute, reject_cpu_staged_metal_upload, ResidentPrivateJpegTile};
 
 /// JPEG decoder that can return host or Metal-resident surfaces.
 pub struct Decoder<'a> {
     pub(crate) inner: CpuDecoder<'a>,
     pub(crate) source: SharedJpegInput,
     pub(crate) fast_packet: Option<SharedJpegFastPacket>,
+    #[cfg(target_os = "macos")]
     pub(crate) batch_shape: batch::BatchShape,
 }
 
@@ -35,11 +35,13 @@ impl<'a> Decoder<'a> {
         let (plan, inner) = cache.resolve_with_decoder_and_external_live(input, 0)?;
         let source = plan.input().clone();
         let fast_packet = plan.fast_packet().cloned();
+        #[cfg(target_os = "macos")]
         let batch_shape = batch::BatchShape::from_summary(plan.batch_summary(), plan.color_space());
         Ok(Self {
             inner,
             source,
             fast_packet,
+            #[cfg(target_os = "macos")]
             batch_shape,
         })
     }
@@ -49,11 +51,13 @@ impl<'a> Decoder<'a> {
         let (plan, inner) = JpegCachedPlan::build_from_view_with_decoder(view, 0)?;
         let source = plan.input().clone();
         let fast_packet = plan.fast_packet().cloned();
+        #[cfg(target_os = "macos")]
         let batch_shape = batch::BatchShape::from_summary(plan.batch_summary(), plan.color_space());
         Ok(Self {
             inner,
             source,
             fast_packet,
+            #[cfg(target_os = "macos")]
             batch_shape,
         })
     }
@@ -127,7 +131,8 @@ impl<'a> Decoder<'a> {
                 return self.batch_shape;
             }
         }
-        let _ = backend;
+        #[cfg(not(target_os = "macos"))]
+        let _ = (self, backend);
         batch::BatchShape::unknown()
     }
 

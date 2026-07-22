@@ -132,10 +132,6 @@ pub(super) fn output_format_from_parts(
     }
 }
 
-pub(super) fn allocate_output_buffer(len: usize) -> Result<alloc::vec::Vec<u8>, JpegError> {
-    try_vec_filled(len, 0)
-}
-
 pub(super) fn checked_live_phase_bytes(
     live_bytes: usize,
     additional_bytes: usize,
@@ -160,7 +156,7 @@ pub(super) fn allocate_output_buffer_with_live_budget(
     cap: usize,
 ) -> Result<alloc::vec::Vec<u8>, JpegError> {
     checked_live_phase_bytes(*live_bytes, len, cap)?;
-    let output = allocate_output_buffer(len)?;
+    let output = try_vec_filled(len, 0)?;
     *live_bytes = checked_live_phase_bytes(*live_bytes, output.capacity(), cap)?;
     Ok(output)
 }

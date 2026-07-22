@@ -71,9 +71,8 @@ jobs:
         run: |
           cargo install typos-cli --version 1.42.3 --locked
           cargo install cargo-deny --locked
-      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
-        with:
-          tool: cargo-llvm-cov@0.8.7
+      - name: Ensure pinned coverage tool
+        run: scripts/ensure-cargo-llvm-cov.sh
       - run: cargo xtask typos
       - run: cargo xtask deny
       - run: cargo xtask coverage host
@@ -92,9 +91,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
-        with:
-          tool: cargo-llvm-cov@0.8.7
+      - name: Ensure pinned coverage tool
+        run: scripts/ensure-cargo-llvm-cov.sh
       - name: Run fail-closed Metal release validation
         run: cargo xtask release-metal
       - name: Collect changed-line Metal host coverage
@@ -139,9 +137,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
-        with:
-          tool: cargo-llvm-cov@0.8.7
+      - name: Ensure pinned coverage tool
+        run: scripts/ensure-cargo-llvm-cov.sh
       - name: Assert CUDA runtime gate is set
         run: |
           test -n "${J2K_REQUIRE_CUDA_RUNTIME:-}" || { echo "J2K_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }

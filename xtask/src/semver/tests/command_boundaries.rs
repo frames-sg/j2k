@@ -3,11 +3,13 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use super::super::{
-    baseline_api_snapshot, capture_command, current_api_snapshot, require_macos, run_semver_checks,
-    semver, verify_baseline_tag, verify_or_write_report, workspace_package_versions, Options,
-    SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
-    PUBLIC_API_SNAPSHOT,
+    capture_command, current_api_snapshot, run_semver_checks, semver_check_args,
+    validate_baseline_revision, verify_or_write_report, workspace_package_versions, Options,
+    PackageApiDiff, ReleaseType, SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION,
+    HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT,
 };
+#[cfg(target_os = "macos")]
+use super::super::{require_macos, semver};
 
 fn workspace_path(relative: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,11 +57,7 @@ fn command_capture_preserves_success_failure_and_non_utf8_diagnostics() {
 }
 
 #[test]
-fn committed_semver_inputs_match_the_pinned_workspace_contract() {
-    verify_baseline_tag().expect("pinned baseline tag");
-    let baseline = baseline_api_snapshot(CARGO_PUBLIC_API_VERSION).expect("baseline API snapshot");
-    assert!(baseline.starts_with("# J2K 1.0 Public API Snapshot"));
-
+fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     let ordinary = current_api_snapshot(
         &workspace_path(PUBLIC_API_SNAPSHOT),
         SnapshotKind::Ordinary,
@@ -76,8 +74,16 @@ fn committed_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.0"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.4"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
+}
+
+#[test]
+fn baseline_revision_validation_accepts_only_the_pinned_commit() {
+    assert_eq!(validate_baseline_revision(SEMVER_BASELINE_COMMIT), Ok(()));
+    let error = validate_baseline_revision("0000000000000000000000000000000000000000")
+        .expect_err("mismatched baseline revision");
+    assert!(error.contains(SEMVER_BASELINE_COMMIT));
 }
 
 #[test]
@@ -102,6 +108,41 @@ fn report_verification_is_workspace_anchored_and_empty_checks_are_a_noop() {
     .expect_err("stale semver report");
     assert!(error.contains("is stale"));
     assert_eq!(run_semver_checks(&[]), Ok(()));
+}
+
+#[test]
+fn semver_check_command_uses_the_reviewed_patch_exception_release_type() {
+    let diff = PackageApiDiff {
+        package: "j2k-core".to_string(),
+        candidate_version: "0.7.4".to_string(),
+        release_type: Some(ReleaseType::Minor),
+        baseline_count: 1,
+        candidate_count: 0,
+        added: BTreeSet::new(),
+        removed: ["pub struct j2k_core::DecoderContext<C>".to_string()]
+            .into_iter()
+            .collect(),
+        hidden: BTreeSet::new(),
+    };
+
+    assert_eq!(
+        semver_check_args(&diff),
+        [
+            "run",
+            "1.96",
+            "cargo",
+            "semver-checks",
+            "check-release",
+            "--package",
+            "j2k-core",
+            "--baseline-version",
+            "0.7.3",
+            "--release-type",
+            "major",
+            "--color",
+            "never",
+        ]
+    );
 }
 
 #[cfg(target_os = "macos")]

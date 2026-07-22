@@ -10,22 +10,27 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   CRATES_IO_ALLOW_PUBLISHED_RERUN: ${{ vars.CRATES_IO_ALLOW_PUBLISHED_RERUN || 'false' }}
-  CRATES_IO_INDEX_SETTLE_SECONDS: "130"
   DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.ref }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: "1.96"
       - name: Enforce dry-run-only manual publishing
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: test "${DRY_RUN_ONLY}" = "true"
@@ -57,240 +62,31 @@ jobs:
       - name: Verify final publish metadata
         if: ${{ github.event_name == 'push' }}
         run: cargo xtask release-integrity --publish
-      - name: Verify every crates.io target version before publication
+      - name: Verify canonical tag and current registry prefix
         if: ${{ github.event_name == 'push' }}
         run: scripts/publish-crate.sh --preflight-all
+      - name: Package and checksum the complete release manifest
+        run: python3 scripts/publish_release.py preflight
 
-  publish-j2k-core:
+  publish:
+    if: ${{ github.event_name == 'push' }}
     needs: [preflight]
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     environment: crates-io-publish
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-core
+          toolchain: nightly-2026-06-28
+      - name: Revalidate canonical release checkout after environment approval
+        run: scripts/publish-crate.sh --preflight-all
+      - name: Publish the remaining checksum-matched manifest prefix
         env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-profile:
-    needs: [publish-j2k-core]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-profile
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-types:
-    needs: [publish-j2k-profile]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-types
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-codec-math:
-    needs: [publish-j2k-types]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-codec-math
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-cuda-runtime:
-    needs: [publish-j2k-codec-math]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-cuda-runtime
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-metal-support:
-    needs: [publish-j2k-cuda-runtime]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-metal-support
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-native:
-    needs: [publish-j2k-metal-support]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-native
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-jpeg:
-    needs: [publish-j2k-native]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-jpeg
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-tilecodec:
-    needs: [publish-j2k-jpeg]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-tilecodec
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k:
-    needs: [publish-j2k-tilecodec]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-transcode:
-    needs: [publish-j2k]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-transcode
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-transcode-cuda:
-    needs: [publish-j2k-transcode]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-transcode-cuda
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-jpeg-metal:
-    needs: [publish-j2k-transcode-cuda]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-jpeg-metal
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-metal:
-    needs: [publish-j2k-jpeg-metal]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-metal
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-transcode-metal:
-    needs: [publish-j2k-metal]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-transcode-metal
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-jpeg-cuda:
-    needs: [publish-j2k-transcode-metal]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-jpeg-cuda
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-cuda:
-    needs: [publish-j2k-jpeg-cuda]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-cuda
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-
-  publish-j2k-cli:
-    needs: [publish-j2k-cuda]
-    runs-on: ubuntu-latest
-    environment: crates-io-publish
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: scripts/publish-crate.sh j2k-cli
-        env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+          CARGO_UNSTABLE_PUBLISH_TIMEOUT: "true"
+          CARGO_PUBLISH_TIMEOUT: "600"
+        run: python3 scripts/publish_release.py publish

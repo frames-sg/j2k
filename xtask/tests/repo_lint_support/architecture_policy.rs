@@ -409,7 +409,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "mod error;",
                     "mod scratch;",
                     "mod view;",
-                    "pub use adapter::encode_stage::{",
+                    "pub use j2k_types::{",
                     "pub use context::J2kContext;",
                     "pub use error::{BackendError, BackendErrorKind, J2kError, NativeBackendError};",
                     "pub use scratch::J2kScratchPool;",
@@ -459,7 +459,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "mod traits;",
                     "mod types;",
                     "pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};",
-                    "pub use context::{CacheStats, CodecContext, DecoderContext};",
+                    "pub use context::{CacheStats, CodecContext};",
                     "pub use device::validate_cuda_surface_backend_request;",
                     "pub use traits::{",
                     "pub use types::{CodedUnitLayout, Colorspace, DecodeOutcome, Info, Rect, TileLayout};",
@@ -533,12 +533,14 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                 ]),
             FilePatternCheck::new("crates/j2k-transcode/src/dct97_2d.rs")
                 .named("j2k-transcode 9/7 scratch API")
+                .required(&[
+                    "pub struct Dct97GridScratch",
+                    "pub fn dct8x8_blocks_then_dwt97_float_with_scratch",
+                ])
                 .forbidden(&[
                     "Dct97GridError",
-                    "pub struct Dct97GridScratch",
                     "pub fn max_abs_diff",
                     "pub fn spatial_sample_capacity",
-                    "pub fn dct8x8_blocks_then_dwt97_float_with_scratch",
                 ]),
             FilePatternCheck::new("crates/j2k-transcode/src/jpeg_to_htj2k.rs")
                 .named("j2k-transcode transcoder scratch API")
@@ -552,6 +554,10 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                 .forbidden(&["pub mod viewport;"]),
             FilePatternCheck::new("docs/stable-api-1.0.public-api.txt")
                 .named("ordinary stable API snapshot")
+                .required(&[
+                    "pub struct j2k_transcode::Dct97GridScratch",
+                    "pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch",
+                ])
                 .forbidden(&[
                     "cuda_dwt53_output_to_j2k_for_test",
                     "crate::adapter::DeviceBatchSummary",
@@ -705,7 +711,6 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "j2k_transcode::Dct53GridScratch::weight_row_capacity",
                     "j2k_transcode::Dct97GridScratch::spatial_sample_capacity",
                     "j2k_transcode::Dct53GridScratch",
-                    "j2k_transcode::Dct97GridScratch",
                     "j2k_transcode::Dwt53TwoDimensional<f64>::max_abs_diff",
                     "j2k_transcode::Dwt97TwoDimensional<f64>::max_abs_diff",
                     "j2k_transcode::Dct53GridError",
@@ -714,7 +719,6 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "j2k_transcode::dct8x8_to_dwt53_float_linear",
                     "j2k_transcode::idct8x8_then_dwt53_float",
                     "j2k_transcode::dct8x8_blocks_to_dwt53_float_linear_with_scratch",
-                    "j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch",
                     "JpegToHtj2kTranscoder::dct_block_scratch_capacity",
                     "JpegToHtj2kTranscoder::integer_idct_block_scratch_capacity",
                     "pub fn j2k::J2kDecoder<'a>::parse(&'a [u8]) -> core::result::Result<Self::View, Self::Error>",
@@ -913,8 +917,8 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "impl j2k_core::traits::ImageDecodeSubmit<'a> for j2k_jpeg_metal::Decoder",
                     "impl j2k_core::traits::DeviceSurface for j2k_jpeg_metal::Surface",
                     "impl j2k_core::accelerator::AcceleratorSession for j2k_jpeg_metal::MetalBackendSession",
-                    "pub fn j2k_jpeg_metal::Codec::decode_tiles_to_device(&mut j2k_core::context::DecoderContext",
-                    "pub fn j2k_jpeg_metal::Codec::submit_tile_to_device(&mut j2k_core::context::DecoderContext",
+                    "pub fn j2k_jpeg_metal::Codec::decode_tiles_to_device(&mut Self::Context",
+                    "pub fn j2k_jpeg_metal::Codec::submit_tile_to_device(&mut Self::Context",
                     "pub fn j2k_jpeg_metal::Decoder<'a>::submit_to_device",
                     "pub fn j2k_jpeg_metal::Surface::backend_kind",
                     "impl j2k_core::traits::TileBatchDecodeDevice for j2k_metal::Codec",
@@ -924,8 +928,8 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "impl j2k_core::traits::DeviceSurface for j2k_metal::Surface",
                     "impl j2k_core::traits::DeviceSubmission for j2k_metal::SubmittedJ2kLosslessMetal",
                     "impl j2k_core::accelerator::AcceleratorSession for j2k_metal::MetalBackendSession",
-                    "pub fn j2k_metal::Codec::decode_tiles_to_device(&mut j2k_core::context::DecoderContext",
-                    "pub fn j2k_metal::Codec::submit_tile_to_device(&mut j2k_core::context::DecoderContext",
+                    "pub fn j2k_metal::Codec::decode_tiles_to_device(&mut Self::Context",
+                    "pub fn j2k_metal::Codec::submit_tile_to_device(&mut Self::Context",
                     "pub fn j2k_metal::Surface::backend_kind",
                     "pub fn j2k_metal::SubmittedJ2kLosslessMetal",
                     "impl j2k_core::traits::TileBatchDecodeDevice for j2k_jpeg_cuda::Codec",
@@ -933,7 +937,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "impl j2k_core::traits::ImageDecodeDevice<'a> for j2k_jpeg_cuda::Decoder",
                     "impl j2k_core::traits::DeviceSurface for j2k_jpeg_cuda::Surface",
                     "impl j2k_core::accelerator::AcceleratorSession for j2k_jpeg_cuda::CudaSession",
-                    "pub fn j2k_jpeg_cuda::Codec::decode_tiles_to_device(&mut j2k_core::context::DecoderContext",
+                    "pub fn j2k_jpeg_cuda::Codec::decode_tiles_to_device(&mut Self::Context",
                     "pub fn j2k_jpeg_cuda::Surface::backend_kind",
                     "impl j2k_core::traits::TileBatchDecodeDevice for j2k_cuda::Codec",
                     "impl j2k_core::traits::TileBatchDecodeManyDevice for j2k_cuda::Codec",
@@ -941,7 +945,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "impl j2k_core::traits::DeviceSurface for j2k_cuda::Surface",
                     "impl j2k_core::traits::DeviceSubmission for j2k_cuda::SubmittedJ2kLosslessCudaEncode",
                     "impl j2k_core::accelerator::AcceleratorSession for j2k_cuda::CudaSession",
-                    "pub fn j2k_cuda::Codec::decode_tiles_to_device(&mut j2k_core::context::DecoderContext",
+                    "pub fn j2k_cuda::Codec::decode_tiles_to_device(&mut Self::Context",
                     "pub fn j2k_cuda::Surface::backend_kind",
                     "pub fn j2k_cuda::SubmittedJ2kLosslessCudaEncode::wait",
                     "j2k_metal::DecodeOperation",

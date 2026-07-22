@@ -6,7 +6,7 @@ use std::{
     process::{Command, Output},
 };
 
-use j2k_test_support::{minimal_gray8_jpeg, minimal_jp2, JPEG_GRAYSCALE_8X8};
+use j2k_test_support::{grayscale_8x8_jpeg, minimal_jp2, JPEG_GRAYSCALE_8X8};
 
 fn j2k_bin() -> &'static str {
     env!("CARGO_BIN_EXE_j2k")
@@ -37,7 +37,7 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn inspect_cli_reports_jpeg_info() {
-    let jpeg = minimal_gray8_jpeg();
+    let jpeg = grayscale_8x8_jpeg();
     let input = write_temp_file("grayscale_8x8.jpg", &jpeg);
 
     let output = run_j2k(&["inspect", path_str(&input)]);

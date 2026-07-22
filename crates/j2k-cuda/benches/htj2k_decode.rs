@@ -9,11 +9,11 @@ use std::{
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_core::{
-    BackendKind, BackendRequest, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
-    ImageDecode, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
+    BackendKind, BackendRequest, DeviceSubmission, DeviceSurface, Downscale, ImageDecode,
+    ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, J2kDecoder, SurfaceResidency};
-use j2k_native::{encode_htj2k, EncodeOptions};
+use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::{
     canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
     manifest_optional_value, optional_manifest_column,
@@ -59,15 +59,133 @@ struct ExternalDecodeCases {
 
 fn bench_htj2k_decode(c: &mut Criterion) {
     let corpus = all_decode_cases();
-    emit_input_metadata(&corpus);
+    let classic = classic_decode_case_if_enabled();
+    emit_input_metadata(&corpus, classic.as_ref());
     let scale = Downscale::Half;
 
+    if let Some(classic) = classic.as_ref() {
+        bench_classic_full_tile(c, classic);
+        bench_classic_tile_batch(c, classic);
+    }
     bench_full_tile(c, &corpus.cases);
     bench_roi(c, &corpus.cases);
     bench_scaled(c, &corpus.cases, scale);
     bench_roi_scaled(c, &corpus.cases, scale);
     bench_tile_batch(c, &corpus.cases);
     bench_mixed_external_tile_batch(c, &corpus.cases);
+}
+
+fn classic_decode_case_if_enabled() -> Option<DecodeBenchCase> {
+    if !include_generated_decode_cases() || !enabled_decode_cases().contains(&"rgb8") {
+        return None;
+    }
+    Some(decode_case(
+        "classic_rgb8",
+        "generated_classic",
+        classic_rgb8_fixture(TILE_DIM, TILE_DIM),
+        PixelFormat::Rgb8,
+        (TILE_DIM, TILE_DIM),
+    ))
+}
+
+fn bench_classic_full_tile(c: &mut Criterion, case: &DecodeBenchCase) {
+    let mut group = c.benchmark_group("j2k_cuda_classic_full_tile_decode");
+    group.bench_function("cpu_rgb8", |b| {
+        b.iter(|| {
+            let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                .expect("classic decoder");
+            let mut output = vec![0; TILE_DIM as usize * TILE_DIM as usize * 3];
+            decoder
+                .decode_into(&mut output, TILE_DIM as usize * 3, PixelFormat::Rgb8)
+                .expect("CPU classic decode");
+            std::hint::black_box(output)
+        });
+    });
+    if case.cuda_available {
+        let mut session = warm_cuda_session(|session| {
+            let mut decoder = J2kDecoder::new(case.fixture.as_slice()).expect("classic decoder");
+            let surface = decoder
+                .submit_to_device(session, PixelFormat::Rgb8, BackendRequest::Cuda)
+                .expect("strict CUDA classic warmup submission")
+                .wait()
+                .expect("strict CUDA classic warmup");
+            assert_cuda_resident_decode(&surface);
+            std::hint::black_box(surface);
+        });
+        group.bench_function("cuda_rgb8", |b| {
+            b.iter(|| {
+                let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                    .expect("classic decoder");
+                let surface = decoder
+                    .submit_to_device(&mut session, PixelFormat::Rgb8, BackendRequest::Cuda)
+                    .expect("strict CUDA classic decode submission")
+                    .wait()
+                    .expect("strict CUDA classic decode");
+                assert_cuda_resident_decode(&surface);
+                std::hint::black_box(surface)
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_classic_tile_batch(c: &mut Criterion, case: &DecodeBenchCase) {
+    let mut group = c.benchmark_group("j2k_cuda_classic_tile_batch_decode");
+    configure_batch_group(&mut group);
+    for &batch_size in BATCH_SIZES {
+        let fixtures = vec![case.fixture.clone(); batch_size];
+        let inputs = fixtures.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        group.bench_with_input(
+            BenchmarkId::new("cpu_rgb8", batch_size),
+            &inputs,
+            |b, inputs| {
+                b.iter(|| {
+                    let mut ctx = j2k_cuda::J2kContext::default();
+                    let mut pool = j2k_cuda::J2kScratchPool::new();
+                    let surfaces = Codec::decode_tiles_to_device(
+                        &mut ctx,
+                        &mut pool,
+                        std::hint::black_box(inputs),
+                        PixelFormat::Rgb8,
+                        BackendRequest::Cpu,
+                    )
+                    .expect("CPU classic batch decode");
+                    std::hint::black_box(surfaces)
+                });
+            },
+        );
+        if case.cuda_available {
+            let mut session = warm_cuda_session(|session| {
+                let surfaces = J2kDecoder::decode_batch_to_device_with_session(
+                    &inputs,
+                    PixelFormat::Rgb8,
+                    session,
+                )
+                .expect("strict CUDA classic batch warmup");
+                assert_eq!(surfaces.len(), inputs.len());
+                assert_cuda_resident_batch_decode(&surfaces);
+                std::hint::black_box(surfaces);
+            });
+            group.bench_with_input(
+                BenchmarkId::new("cuda_rgb8", batch_size),
+                &inputs,
+                |b, inputs| {
+                    b.iter(|| {
+                        let surfaces = J2kDecoder::decode_batch_to_device_with_session(
+                            std::hint::black_box(inputs),
+                            PixelFormat::Rgb8,
+                            &mut session,
+                        )
+                        .expect("strict CUDA classic batch decode");
+                        assert_eq!(surfaces.len(), inputs.len());
+                        assert_cuda_resident_batch_decode(&surfaces);
+                        std::hint::black_box(surfaces)
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
 }
 
 fn bench_full_tile(c: &mut Criterion, cases: &[DecodeBenchCase]) {
@@ -93,11 +211,20 @@ fn bench_full_tile(c: &mut Criterion, cases: &[DecodeBenchCase]) {
         );
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
+            let mut session = warm_cuda_session(|session| {
+                let mut decoder = J2kDecoder::new(case.fixture.as_slice()).expect("decoder");
+                let surface = decoder
+                    .submit_to_device(session, case.fmt, BackendRequest::Cuda)
+                    .expect("strict CUDA HTJ2K warmup submission")
+                    .wait()
+                    .expect("strict CUDA HTJ2K warmup");
+                assert_cuda_resident_decode(&surface);
+                std::hint::black_box(surface);
+            });
             group.bench_with_input(
                 BenchmarkId::new(cuda_id, dimensions_label(case.dimensions)),
                 case,
                 |b, case| {
-                    let mut session = CudaSession::default();
                     b.iter(|| {
                         let mut decoder =
                             J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
@@ -137,8 +264,17 @@ fn bench_roi(c: &mut Criterion, cases: &[DecodeBenchCase]) {
         });
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
+            let mut session = warm_cuda_session(|session| {
+                let mut decoder = J2kDecoder::new(case.fixture.as_slice()).expect("decoder");
+                let surface = decoder
+                    .submit_region_to_device(session, case.fmt, roi, BackendRequest::Cuda)
+                    .expect("strict CUDA HTJ2K ROI warmup submission")
+                    .wait()
+                    .expect("strict CUDA HTJ2K ROI warmup");
+                assert_cuda_resident_decode(&surface);
+                std::hint::black_box(surface);
+            });
             group.bench_with_input(BenchmarkId::new(cuda_id, roi.w), case, |b, case| {
-                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
@@ -177,8 +313,17 @@ fn bench_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downscale) 
         });
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
+            let mut session = warm_cuda_session(|session| {
+                let mut decoder = J2kDecoder::new(case.fixture.as_slice()).expect("decoder");
+                let surface = decoder
+                    .submit_scaled_to_device(session, case.fmt, scale, BackendRequest::Cuda)
+                    .expect("strict CUDA HTJ2K scaled warmup submission")
+                    .wait()
+                    .expect("strict CUDA HTJ2K scaled warmup");
+                assert_cuda_resident_decode(&surface);
+                std::hint::black_box(surface);
+            });
             group.bench_with_input(BenchmarkId::new(cuda_id, scaled.w), case, |b, case| {
-                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
@@ -223,8 +368,23 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downsca
         });
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
+            let mut session = warm_cuda_session(|session| {
+                let mut decoder = J2kDecoder::new(case.fixture.as_slice()).expect("decoder");
+                let surface = decoder
+                    .submit_region_scaled_to_device(
+                        session,
+                        case.fmt,
+                        roi,
+                        scale,
+                        BackendRequest::Cuda,
+                    )
+                    .expect("strict CUDA HTJ2K ROI+scaled warmup submission")
+                    .wait()
+                    .expect("strict CUDA HTJ2K ROI+scaled warmup");
+                assert_cuda_resident_decode(&surface);
+                std::hint::black_box(surface);
+            });
             group.bench_with_input(BenchmarkId::new(cuda_id, scaled.w), case, |b, case| {
-                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
@@ -264,7 +424,7 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                 &inputs,
                 |b, inputs| {
                     b.iter(|| {
-                        let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+                        let mut ctx = j2k_cuda::J2kContext::default();
                         let mut pool = j2k_cuda::J2kScratchPool::new();
                         let surfaces = Codec::decode_tiles_to_device(
                             &mut ctx,
@@ -280,11 +440,18 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
             );
             if case.cuda_available && cuda_batch_decode_supported(fmt) {
                 let cuda_id = cuda_benchmark_id(case);
+                let mut session = warm_cuda_session(|session| {
+                    let surfaces =
+                        J2kDecoder::decode_batch_to_device_with_session(&inputs, fmt, session)
+                            .expect("strict CUDA HTJ2K batch warmup");
+                    assert_eq!(surfaces.len(), inputs.len());
+                    assert_cuda_resident_batch_decode(&surfaces);
+                    std::hint::black_box(surfaces);
+                });
                 group.bench_with_input(
                     BenchmarkId::new(cuda_id, batch_size),
                     &inputs,
                     |b, inputs| {
-                        let mut session = CudaSession::default();
                         b.iter(|| {
                             let surfaces = J2kDecoder::decode_batch_to_device_with_session(
                                 std::hint::black_box(inputs),
@@ -336,7 +503,7 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
                 &inputs,
                 |b, inputs| {
                     b.iter(|| {
-                        let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+                        let mut ctx = j2k_cuda::J2kContext::default();
                         let mut pool = j2k_cuda::J2kScratchPool::new();
                         let surfaces = Codec::decode_tiles_to_device(
                             &mut ctx,
@@ -353,6 +520,14 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
             if cuda_batch_decode_supported(fmt)
                 && selected_cases.iter().all(|case| case.cuda_available)
             {
+                let mut session = warm_cuda_session(|session| {
+                    let surfaces =
+                        J2kDecoder::decode_batch_to_device_with_session(&inputs, fmt, session)
+                            .expect("strict CUDA HTJ2K mixed external batch warmup");
+                    assert_eq!(surfaces.len(), inputs.len());
+                    assert_cuda_resident_batch_decode(&surfaces);
+                    std::hint::black_box(surfaces);
+                });
                 group.bench_with_input(
                     BenchmarkId::new(
                         format!("cuda_external_mixed_{}", pixel_format_label(fmt)),
@@ -360,7 +535,6 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
                     ),
                     &inputs,
                     |b, inputs| {
-                        let mut session = CudaSession::default();
                         b.iter(|| {
                             let surfaces = J2kDecoder::decode_batch_to_device_with_session(
                                 std::hint::black_box(inputs),
@@ -584,7 +758,7 @@ fn external_decode_cases(enabled_cases: &[&str]) -> ExternalDecodeCases {
     ExternalDecodeCases { cases, stats }
 }
 
-fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
+fn emit_input_metadata(corpus: &DecodeBenchCorpus, classic: Option<&DecodeBenchCase>) {
     let external_count = corpus
         .cases
         .iter()
@@ -600,20 +774,30 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    let classic_batch_sizes = BATCH_SIZES
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     println!(
         "j2k_cuda_decode_generated_included\t{}",
         include_generated_decode_cases()
     );
     println!("j2k_cuda_decode_batch_sizes\t{mixed_batch_sizes}");
     println!("j2k_cuda_decode_case_batch_sizes\t{case_batch_sizes}");
+    println!("j2k_cuda_decode_classic_batch_sizes\t{classic_batch_sizes}");
     println!("j2k_cuda_decode_mixed_batch_sizes\t{mixed_batch_sizes}");
     println!("j2k_cuda_decode_sample_size\t{}", decode_sample_size());
+    println!(
+        "j2k_cuda_decode_measurement_seconds\t{}",
+        decode_measurement_time().as_secs()
+    );
     println!(
         "j2k_cuda_decode_batch_sample_size\t{}",
         decode_sample_size()
     );
     println!(
-        "j2k_cuda_decode_batch_policy\tper-fixture-batch-rows-use-case-batch-sizes;mixed-external-rows-use-public-large-batch-sizes"
+        "j2k_cuda_decode_batch_policy\tper-fixture-ht-rows-use-case-batch-sizes;classic-rows-use-classic-batch-sizes;mixed-external-rows-use-public-large-batch-sizes"
     );
     println!(
         "j2k_cuda_decode_mixed_large_batch_policy\tfull-external-corpus-up-to-batch-{MIXED_BATCH_FULL_CORPUS_MAX_BATCH};tile-sized-external-cases-above-that"
@@ -624,6 +808,7 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
     println!(
         "j2k_cuda_decode_io_policy\thost-memory-fixture-bytes-preloaded-no-filesystem-io-in-timed-loop;cuda-rows-return-device-resident-surfaces"
     );
+    println!("j2k_cuda_decode_session_policy\tsteady_state_route_warmed");
     println!(
         "j2k_cuda_decode_input_dirs\t{}",
         std::env::var("J2K_CUDA_DECODE_INPUT_DIRS").unwrap_or_else(|_| "not set".to_string())
@@ -632,7 +817,10 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
         "j2k_cuda_decode_manifest\t{}",
         std::env::var("J2K_CUDA_DECODE_MANIFEST").unwrap_or_else(|_| "not set".to_string())
     );
-    println!("j2k_cuda_decode_case_count\t{}", corpus.cases.len());
+    println!(
+        "j2k_cuda_decode_case_count\t{}",
+        corpus.cases.len() + usize::from(classic.is_some())
+    );
     println!("j2k_cuda_decode_external_case_count\t{external_count}");
     println!(
         "j2k_cuda_decode_external_fixture_count\t{}",
@@ -946,7 +1134,7 @@ fn configure_batch_group<M: criterion::measurement::Measurement>(
 ) {
     group.sample_size(decode_sample_size());
     group.warm_up_time(DECODE_WARM_UP);
-    group.measurement_time(DECODE_MEASUREMENT);
+    group.measurement_time(decode_measurement_time());
 }
 
 fn mixed_external_cases_for_batch<'a>(
@@ -972,7 +1160,7 @@ fn cuda_decode_criterion() -> Criterion {
     Criterion::default()
         .sample_size(decode_sample_size())
         .warm_up_time(DECODE_WARM_UP)
-        .measurement_time(DECODE_MEASUREMENT)
+        .measurement_time(decode_measurement_time())
 }
 
 fn decode_sample_size() -> usize {
@@ -988,6 +1176,21 @@ fn decode_sample_size() -> usize {
         "J2K_CUDA_DECODE_SAMPLE_SIZE must be at least Criterion's minimum sample size of 10"
     );
     sample_size
+}
+
+fn decode_measurement_time() -> Duration {
+    let Some(value) = std::env::var_os("J2K_CUDA_DECODE_MEASUREMENT_SECONDS") else {
+        return DECODE_MEASUREMENT;
+    };
+    let value = value.to_string_lossy();
+    let seconds = value.parse::<u64>().unwrap_or_else(|error| {
+        panic!("invalid J2K_CUDA_DECODE_MEASUREMENT_SECONDS `{value}`: {error}")
+    });
+    assert!(
+        seconds > 0,
+        "J2K_CUDA_DECODE_MEASUREMENT_SECONDS must be positive"
+    );
+    Duration::from_secs(seconds)
 }
 
 fn decode_case_batch_sizes() -> Vec<usize> {
@@ -1040,6 +1243,12 @@ fn cuda_benchmark_id(case: &DecodeBenchCase) -> String {
         "rgba8" => "cuda_rgba8".to_string(),
         other => format!("cuda_{other}"),
     }
+}
+
+fn warm_cuda_session(warm: impl FnOnce(&mut CudaSession)) -> CudaSession {
+    let mut session = CudaSession::default();
+    warm(&mut session);
+    session
 }
 
 fn assert_cuda_resident_decode(surface: &j2k_cuda::Surface) {
@@ -1103,6 +1312,21 @@ fn htj2k_gray8_fixture(width: u32, height: u32) -> Vec<u8> {
         ..EncodeOptions::default()
     };
     encode_htj2k(&pixels, width, height, 1, 8, false, &options).expect("encode HTJ2K fixture")
+}
+
+fn classic_rgb8_fixture(width: u32, height: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+    for index in 0..width * height {
+        pixels.push(((index * 17 + index / 3) & 0xff) as u8);
+        pixels.push(((index * 29 + 7) & 0xff) as u8);
+        pixels.push(((index * 43 + 19) & 0xff) as u8);
+    }
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, width, height, 3, 8, false, &options).expect("encode classic fixture")
 }
 
 fn htj2k_rgb8_fixture(width: u32, height: u32) -> Vec<u8> {

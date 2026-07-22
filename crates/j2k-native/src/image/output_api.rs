@@ -130,12 +130,17 @@ impl<'a> Image<'a> {
         retained_baseline_bytes: usize,
     ) -> Result<RawBitmap> {
         let bit_depth = self.uniform_header_bit_depth()?;
-        self.decode_with_output_region_and_ht_decoder_with_retained_baseline(
-            decoder_context,
-            None,
-            None,
+        let mut ht_decoder = None;
+        decoder_context.set_output_region(None);
+        let decode_result = j2c::decode(
+            self.codestream,
+            &self.header,
             retained_baseline_bytes,
-        )?;
+            decoder_context,
+            &mut ht_decoder,
+        );
+        decoder_context.set_output_region(None);
+        decode_result?;
 
         let components = &decoder_context.tile_decode_context.channel_data;
         let component_owner_capacity = components.capacity();
@@ -204,7 +209,18 @@ impl<'a> Image<'a> {
             return self.decode_native_region_via_full_decode(roi, decoder_context);
         }
         let bit_depth = self.uniform_header_bit_depth()?;
-        self.decode_with_output_region(decoder_context, Some(roi))?;
+        let retained_image_bytes = self.retained_metadata_bytes()?;
+        let mut ht_decoder = None;
+        decoder_context.set_output_region(Some(roi));
+        let decode_result = j2c::decode(
+            self.codestream,
+            &self.header,
+            retained_image_bytes,
+            decoder_context,
+            &mut ht_decoder,
+        );
+        decoder_context.set_output_region(None);
+        decode_result?;
 
         let components = &decoder_context.tile_decode_context.channel_data;
         let component_owner_capacity = components.capacity();
@@ -218,7 +234,6 @@ impl<'a> Image<'a> {
             usize::from(num_components),
             bytes_per_sample,
         )?;
-        let retained_image_bytes = self.retained_metadata_bytes()?;
         let mut budget = NativeOutputBudget::for_decoded_channels(
             retained_image_bytes,
             components,
@@ -296,7 +311,7 @@ impl<'a> Image<'a> {
         dimensions: (u32, u32),
     ) -> Result<DecodedComponents<'ctx>> {
         let retained_image_bytes = self.retained_metadata_bytes()?;
-        let mut budget = NativeOutputBudget::for_component_pack(
+        let mut budget = NativeOutputBudget::for_decoded_channels(
             retained_image_bytes,
             components,
             component_owner_capacity,

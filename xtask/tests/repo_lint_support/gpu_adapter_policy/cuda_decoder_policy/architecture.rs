@@ -3,6 +3,8 @@
 use super::super::super::{assert_pattern_checks, PatternCheck};
 use super::CudaDecoderSources;
 
+mod grayscale_batch;
+
 #[test]
 fn runtime_paths_live_in_focused_modules() {
     let sources = CudaDecoderSources::read();
@@ -35,11 +37,22 @@ fn assert_decoder_facade_ownership(sources: &CudaDecoderSources) {
             "pub fn decode_to_device_with_session",
             "impl<'a> CpuBackedImageDecode<'a>",
         ]),
-        PatternCheck::new("CUDA decoder plan module", &sources.plan).required(&[
-            "build_cuda_htj2k_grayscale_plan_with_profile",
-            "build_cuda_htj2k_color_plans_with_profile",
-            "build_cuda_htj2k_color_plans_from_bytes_with_profile",
-        ]),
+        PatternCheck::new("CUDA decoder plan facade", &sources.plan)
+            .required(&[
+                "mod color;",
+                "mod color_decoder;",
+                "mod color_referenced;",
+                "mod grayscale;",
+                "pub(super) use self::color::{",
+                "pub(super) use self::grayscale::{",
+            ])
+            .forbidden(&["fn build_cuda_htj2k_grayscale_plan_with_profile("]),
+        PatternCheck::new("CUDA grayscale plan ownership", &sources.plan_grayscale)
+            .required(&["fn build_cuda_htj2k_grayscale_plan_with_profile("]),
+        PatternCheck::new("CUDA color byte-plan ownership", &sources.plan_color)
+            .required(&["fn build_cuda_htj2k_color_plans_from_bytes_with_profile"]),
+        PatternCheck::new("CUDA color plans", &sources.plan_color_decoder)
+            .required(&["fn build_cuda_htj2k_color_plans_with_profile"]),
         PatternCheck::new("CUDA decoder resident facade", &sources.resident)
             .required(&[
                 "mod buffer_access;",
@@ -73,21 +86,18 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
                 "fn run_component_cleanup_dequant_batches",
                 "fn run_color_component_idwt_batches",
             ]),
-        PatternCheck::new(
-            "CUDA resident component ownership",
-            &sources.resident_component,
-        )
-        .required(&[
-            "fn decode_cuda_component_plan",
-            "fn decode_cuda_component_subbands_with_resources",
-            "fn finish_cuda_component_decode",
-            "fn cuda_code_block_job_from_plan_block",
-        ])
-        .forbidden(&[
-            "fn run_component_cleanup_dequant_batches",
-            "fn run_cuda_component_idwt_steps",
-            "fn decode_grayscale_cuda_resident_surface_with_plan_profile",
-        ]),
+        PatternCheck::new("CUDA resident components", &sources.resident_component)
+            .required(&[
+                "fn decode_cuda_component_plan",
+                "fn decode_cuda_component_subbands_with_resources",
+                "fn finish_cuda_component_decode",
+                "mod ht;",
+            ])
+            .forbidden(&[
+                "fn run_component_cleanup_dequant_batches",
+                "fn run_cuda_component_idwt_steps",
+                "fn decode_grayscale_cuda_resident_surface_with_plan_profile",
+            ]),
         PatternCheck::new(
             "CUDA resident cleanup/dequant ownership",
             &sources.resident_cleanup_dequant,

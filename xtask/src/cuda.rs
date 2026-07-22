@@ -45,6 +45,21 @@ const TRANSCODE_PARITY_TESTS: &[&str] = &[
     "ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path",
 ];
 
+const ML_CUDA_TESTS: &[&str] = &[
+    "burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches",
+    "cuda_burn_batch_continues_after_one_group_submit_failure",
+    "cuda_burn_decoder_construction_is_infallible_and_lazy",
+    "cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_without_cuda",
+    "direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session",
+    "direct_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts",
+    "direct_cuda_preserves_native_u16_and_i16_samples",
+    "direct_cuda_rgb_preserves_subnative_codes_and_burn_layout",
+    "direct_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout",
+    "direct_cuda_supports_roi_and_reduction_without_host_staging",
+    "dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable",
+    "empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializing_work",
+];
+
 struct CudaRuntimeSuite {
     label: &'static str,
     package: &'static str,
@@ -114,6 +129,10 @@ const CUDA_CLIPPY_SUITES: &[CudaClippySuite] = &[
         package: "j2k-cuda",
         features: "cuda-profiling",
     },
+    CudaClippySuite {
+        package: "j2k-ml",
+        features: "cuda",
+    },
 ];
 
 struct ExactCudaSuite {
@@ -125,6 +144,13 @@ struct ExactCudaSuite {
 }
 
 const EXACT_CUDA_SUITES: &[ExactCudaSuite] = &[
+    ExactCudaSuite {
+        label: "Burn J2K CUDA direct tensor integration",
+        package: "j2k-ml",
+        features: "cuda",
+        test_targets: &["cuda", "cuda_rgba", "cuda_batch_sessions"],
+        required_tests: ML_CUDA_TESTS,
+    },
     ExactCudaSuite {
         label: "HTJ2K encode CUDA parity inventory",
         package: "j2k-cuda",

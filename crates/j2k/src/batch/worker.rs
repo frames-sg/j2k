@@ -2,7 +2,7 @@
 
 //! Per-thread J2K batch worker state and disjoint-slot execution.
 
-use j2k_core::{BatchInfrastructureError, DecoderContext, PixelFormat};
+use j2k_core::{BatchInfrastructureError, PixelFormat};
 use std::sync::Arc;
 
 use super::admission::BatchAllocationBudget;
@@ -16,13 +16,21 @@ use super::{
 };
 use crate::{CpuDecodeParallelism, J2kContext, J2kError, J2kScratchPool};
 
+mod owned;
+
 /// One stack-owned worker. Dynamic native/direct ownership is covered by the
 /// authoritative per-worker claim in `allocation`; these exact owners are also
 /// counted structurally in the batch metadata plan.
-pub(super) struct BatchWorker {
-    ctx: DecoderContext<J2kContext>,
+pub(crate) struct BatchWorker {
+    ctx: J2kContext,
     pool: J2kScratchPool,
     direct: DirectWorkerState,
+    native_workspace: j2k_native::DecoderWorkspace,
+    prepared_plan_scratch: j2k_native::J2kDirectCpuScratch,
+    prepared_entropy_workspace: j2k_native::J2kDirectCpuEntropyWorkspace,
+    preparation_calls: u64,
+    preparation_worker_reuses: u64,
+    prepared_plan_decode_calls: u64,
     allocation_budget: Option<Arc<BatchAllocationBudget>>,
 }
 
@@ -31,13 +39,18 @@ impl BatchWorker {
         batch_size: usize,
         allocation_budget: Option<Arc<BatchAllocationBudget>>,
     ) -> Self {
-        let mut ctx = DecoderContext::<J2kContext>::new();
-        ctx.codec_mut()
-            .set_cpu_decode_parallelism(inner_parallelism_for_batch(batch_size));
+        let mut ctx = J2kContext::new();
+        ctx.set_cpu_decode_parallelism(inner_parallelism_for_batch(batch_size));
         Self {
             ctx,
             pool: J2kScratchPool::new(),
             direct: DirectWorkerState::default(),
+            native_workspace: j2k_native::DecoderWorkspace::default(),
+            prepared_plan_scratch: j2k_native::J2kDirectCpuScratch::new(),
+            prepared_entropy_workspace: j2k_native::J2kDirectCpuEntropyWorkspace::default(),
+            preparation_calls: 0,
+            preparation_worker_reuses: 0,
+            prepared_plan_decode_calls: 0,
             allocation_budget,
         }
     }

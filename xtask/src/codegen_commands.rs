@@ -254,10 +254,11 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
          {PUBLIC_API_TOOLCHAIN} cargo public-api -p <package> --all-features -sss \
          --color never --target {PUBLIC_API_TARGET}`. The ordinary public \
          inventory remains in `{PUBLIC_API_SNAPSHOT}` so its \
-         comparison with the 0.6.2 baseline keeps the same generator scope.\n\n\
-         The published 0.6.2 artifact did not record a hidden-enabled pass; \
-         this companion is staged-current inventory, not a reconstructed \
-         historical hidden-API baseline.\n\n\
+         comparison with the 0.7.3 baseline keeps the same generator scope.\n\n\
+         The published 0.7.3 artifact recorded a hidden-enabled pass. This \
+         companion is staged-candidate inventory; the ordinary baseline remains \
+         the compatibility input and this full hidden inventory remains exact \
+         candidate-review evidence.\n\n\
          Rustdoc-hidden implementation adapters are still public Rust API. \
          They must be reviewed explicitly and must not become a compatibility \
          escape hatch.\n\n\

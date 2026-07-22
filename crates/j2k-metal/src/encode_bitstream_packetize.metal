@@ -285,7 +285,7 @@ kernel void j2k_assemble_lossless_classic_codestream(
         ok = ok && j2k_codestream_write_marker(out, params.output_capacity, cursor, 0x55u);
         ok = ok && j2k_codestream_write_u16(out, params.output_capacity, cursor, 10u);
         ok = ok && j2k_codestream_write_u8(out, params.output_capacity, cursor, 0u);
-        ok = ok && j2k_codestream_write_u8(out, params.output_capacity, cursor, 0x22u);
+        ok = ok && j2k_codestream_write_u8(out, params.output_capacity, cursor, 0x60u);
         ok = ok && j2k_codestream_write_u16(out, params.output_capacity, cursor, 0u);
         ok = ok && j2k_codestream_write_u32(out, params.output_capacity, cursor, tile_part_len);
     }
@@ -424,7 +424,7 @@ kernel void j2k_assemble_lossless_codestream_batched(
         ok = ok && j2k_codestream_write_marker(tile_out, job.output_capacity, cursor, 0x55u);
         ok = ok && j2k_codestream_write_u16(tile_out, job.output_capacity, cursor, 10u);
         ok = ok && j2k_codestream_write_u8(tile_out, job.output_capacity, cursor, 0u);
-        ok = ok && j2k_codestream_write_u8(tile_out, job.output_capacity, cursor, 0x22u);
+        ok = ok && j2k_codestream_write_u8(tile_out, job.output_capacity, cursor, 0x60u);
         ok = ok && j2k_codestream_write_u16(tile_out, job.output_capacity, cursor, 0u);
         ok = ok && j2k_codestream_write_u32(tile_out, job.output_capacity, cursor, tile_part_len);
     }

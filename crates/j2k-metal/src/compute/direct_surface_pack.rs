@@ -1,12 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::mem::size_of;
+
+use j2k_core::checked_surface_len;
+use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
+
+use super::abi::{J2kPackParams, J2kRepeatedGrayPackParams};
 use super::{
-    checked_metal_surface_len, dispatch_2d_pipeline, dispatch_3d_pipeline, j2k_pack_scale_arrays,
-    j2k_scalar_pack_params, j2k_u32_param, new_compute_command_encoder, new_shared_buffer, size_of,
-    Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState, Error, J2kPackParams,
-    J2kRepeatedGrayPackParams, MetalRuntime, NativeColorSpace, PixelFormat, Rect, Surface,
+    j2k_pack_scale_arrays, j2k_scalar_pack_params, j2k_u32_param, new_compute_command_encoder,
+    new_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState,
+    Error, MetalRuntime, NativeColorSpace, PixelFormat, Rect, Surface,
 };
 use crate::error::metal_kernel_support_error;
+
+pub(in crate::compute) fn checked_metal_surface_len(
+    dims: (u32, u32),
+    bytes_per_pixel: usize,
+    context: &'static str,
+) -> Result<(usize, usize), Error> {
+    checked_surface_len(dims, bytes_per_pixel, usize::MAX, context).map_err(|error| {
+        Error::MetalKernel {
+            message: format!("{context}: {error}"),
+        }
+    })
+}
 
 #[cfg(target_os = "macos")]
 pub(super) fn copy_plane_samples(
@@ -144,7 +161,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
     );
     dispatch_2d_pipeline(encoder, pipeline, dims);
 
-    Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
+    Surface::from_metal_buffer(out_buffer, dims, fmt)
 }
 
 #[cfg(target_os = "macos")]
@@ -213,7 +230,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
             dims,
             fmt,
             instance_idx * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }

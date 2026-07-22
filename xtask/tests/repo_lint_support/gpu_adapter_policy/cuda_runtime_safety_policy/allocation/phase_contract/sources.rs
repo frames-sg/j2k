@@ -30,6 +30,12 @@ impl PhaseSources {
             decode_completion: [
                 read("crates/j2k-cuda-runtime/src/htj2k_decode/completion.rs"),
                 read("crates/j2k-cuda-runtime/src/htj2k_decode/completion/dequant.rs"),
+                read(
+                    "crates/j2k-cuda-runtime/src/htj2k_decode/completion/cleanup_enqueue.rs",
+                ),
+                read(
+                    "crates/j2k-cuda-runtime/src/htj2k_decode/completion/cleanup_dequant_enqueue.rs",
+                ),
             ]
             .concat(),
             decode_queued: read("crates/j2k-cuda-runtime/src/htj2k_decode/queued.rs"),

@@ -59,6 +59,32 @@ fn explicit_cuda_multi_checkpoint_420_uses_owned_decode_when_required() {
     assert_full_frame_owned_cuda_decode_when_required(&input, (32, 16));
 }
 
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_multi_row_and_column_420_matches_cpu_when_required() {
+    let input = generated_rgb_jpeg(j2k_jpeg::JpegSubsampling::Ybr420, 32, 32);
+    assert_full_frame_owned_cuda_decode_when_required(&input, (32, 32));
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_multi_mcu_422_matches_cpu_when_required() {
+    let input = generated_rgb_jpeg(j2k_jpeg::JpegSubsampling::Ybr422, 32, 8);
+    assert_full_frame_owned_cuda_decode_when_required(&input, (32, 8));
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_odd_subsampled_dimensions_match_cpu_when_required() {
+    for (subsampling, dimensions) in [
+        (j2k_jpeg::JpegSubsampling::Ybr420, (17, 17)),
+        (j2k_jpeg::JpegSubsampling::Ybr422, (17, 9)),
+    ] {
+        let input = generated_rgb_jpeg(subsampling, dimensions.0, dimensions.1);
+        assert_full_frame_owned_cuda_decode_when_required(&input, dimensions);
+    }
+}
+
 #[test]
 fn explicit_cuda_restart_checkpoint_420_uses_owned_decode_when_required() {
     let input = generated_rgb_jpeg_with_restart(j2k_jpeg::JpegSubsampling::Ybr420, 32, 16, Some(1));

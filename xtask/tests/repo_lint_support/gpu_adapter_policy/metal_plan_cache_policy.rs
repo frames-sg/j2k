@@ -98,13 +98,19 @@ fn metal_prepared_plan_cache_is_move_only_arc_shared_and_collision_safe() {
         .map(|(_, source)| source.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let session = read("crates/j2k-metal/src/session.rs");
-    let hybrid = read("crates/j2k-metal/src/hybrid.rs");
+    let direct_plan_cache = read("crates/j2k-metal/src/session/direct_plan_cache.rs");
+    let hybrid_cache = read("crates/j2k-metal/src/hybrid/cache.rs");
+    let hybrid_planning = read("crates/j2k-metal/src/hybrid/planning.rs");
+    let hybrid = [hybrid_cache.as_str(), hybrid_planning.as_str()].join("\n");
 
     identity::assert_lookup_and_eviction_policy(&combined);
-    optional_outcomes::assert_route_policy(&session, &hybrid);
+    optional_outcomes::assert_route_policy(&direct_plan_cache, &hybrid);
     assert_pattern_checks(&[
-        PatternCheck::new("Arc-shared native and prepared cache owners", &session).required(&[
+        PatternCheck::new(
+            "Arc-shared native and prepared cache owners",
+            &direct_plan_cache,
+        )
+        .required(&[
             "plan: Arc<J2kDirectGrayscalePlan>",
             "plan: Arc<J2kDirectColorPlan>",
             "prepared: Arc<crate::compute::PreparedDirectGrayscalePlan>",
@@ -117,10 +123,12 @@ fn metal_prepared_plan_cache_is_move_only_arc_shared_and_collision_safe() {
             "RandomState::new()",
             "hash_one(key)",
             "entry.digest == digest && entry.key.matches(key)",
-            "self.input.as_slice() == key.input",
+            "owned.as_slice() == input",
+            "Arc::ptr_eq(owned, input)",
             "&& self.format == key.format",
             "&& self.roi == key.roi",
             "&& self.scale == key.scale",
+            "&& self.request == key.request",
             "&& self.kind == key.kind",
         ]),
         PatternCheck::new("cache adversarial regressions", &combined).required(&[

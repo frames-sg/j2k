@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, PixelFormat};
-#[cfg(target_os = "macos")]
+use j2k_core::BackendRequest;
+use j2k_core::PixelFormat;
 use j2k_jpeg::adapter::JpegPlanCache;
 use j2k_jpeg::Decoder as CpuDecoder;
 
-use super::{
-    is_contiguous_viewport_workload, validate_viewport_workload_budget, viewport_source_bounds,
-    ViewportWorkload,
-};
-use crate::{batch, fast_packets::JpegFastPackets, routing, Error, SharedJpegFastPacket};
+use super::{is_contiguous_viewport_workload, ViewportWorkload};
+use super::{validate_viewport_workload_budget, viewport_source_bounds};
+use crate::{batch, fast_packets::JpegFastPackets, routing};
+use crate::{Error, SharedJpegFastPacket};
 
 #[cfg(all(target_os = "macos", test))]
 mod resident;
@@ -102,32 +101,19 @@ pub(super) fn resolve_viewport_surface_plan(
 ) -> Result<ResolvedViewportSurfacePlan, Error> {
     let decoder_live_bytes = j2k_jpeg::adapter::decoder_retained_allocation_bytes(decoder)?;
     if matches!(backend, BackendRequest::Metal) {
-        #[cfg(target_os = "macos")]
-        {
-            let (fast_packet, external_live_bytes) =
-                build_resolved_viewport_packet(decoder, decoder_live_bytes)?;
-            validate_explicit_metal_viewport_request_with_packets(
-                decoder,
-                workload,
-                JpegFastPackets::from_shared(fast_packet.as_ref()),
-                external_live_bytes,
-            )?;
-            return Ok(ResolvedViewportSurfacePlan {
-                strategy: choose_viewport_surface_strategy(workload, backend)?,
-                fast_packet,
-                external_live_bytes,
-            });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            return choose_viewport_surface_strategy(workload, backend).map(|strategy| {
-                ResolvedViewportSurfacePlan {
-                    strategy,
-                    fast_packet: None,
-                    external_live_bytes: decoder_live_bytes,
-                }
-            });
-        }
+        let (fast_packet, external_live_bytes) =
+            build_resolved_viewport_packet(decoder, decoder_live_bytes)?;
+        validate_explicit_metal_viewport_request_with_packets(
+            decoder,
+            workload,
+            JpegFastPackets::from_shared(fast_packet.as_ref()),
+            external_live_bytes,
+        )?;
+        return Ok(ResolvedViewportSurfacePlan {
+            strategy: choose_viewport_surface_strategy(workload, backend)?,
+            fast_packet,
+            external_live_bytes,
+        });
     }
 
     if !matches!(backend, BackendRequest::Auto) {
@@ -221,7 +207,6 @@ pub(super) fn validate_explicit_metal_viewport_request_with_packets(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn build_resolved_viewport_packet(
     decoder: &CpuDecoder<'_>,
     decoder_live_bytes: usize,

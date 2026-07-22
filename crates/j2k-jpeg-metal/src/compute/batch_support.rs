@@ -422,11 +422,12 @@ pub(super) fn surface_batch_success_results(
     let mut results = budget.try_vec(tile_count, "JPEG Metal surface batch result slots")?;
     for index in 0..tile_count {
         let offset = index * out_tile_len;
-        results.push(Ok(if let Some(output) = output {
+        let surface = if let Some(output) = output {
             Surface::from_batch_output_buffer_offset(output, dimensions, pixel_format, offset)
         } else {
-            Surface::from_metal_buffer_offset(out_buffer.clone(), dimensions, pixel_format, offset)
-        }));
+            Surface::from_metal_buffer_offset(out_buffer.clone(), dimensions, pixel_format, offset)?
+        };
+        results.push(Ok(surface));
     }
     Ok(results)
 }

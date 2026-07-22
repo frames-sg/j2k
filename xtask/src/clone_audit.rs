@@ -9,17 +9,25 @@ use crate::process::{self, CommandContext};
 mod config;
 mod report;
 mod stage;
+mod test_stage;
 
-use config::{validate_clone_config, DUPLICATED_LINE_THRESHOLD};
+use config::{
+    validate_clone_config, validate_test_clone_config, DUPLICATED_LINE_THRESHOLD,
+    TEST_DUPLICATED_LINE_THRESHOLD,
+};
 use report::validate_jscpd_report;
 use stage::{reset_generated_directory, stage_production_sources};
+use test_stage::stage_test_sources;
 
 const JSCPD_VERSION: &str = "4.0.5";
 const JSCPD_PACKAGE: &str = "jscpd@4.0.5";
 const CONFIG_RELATIVE: &str = ".jscpd.json";
+const TEST_CONFIG_RELATIVE: &str = ".jscpd-tests.json";
 const AUDIT_ROOT_RELATIVE: &str = "target/clone-audit";
 const STAGE_RELATIVE: &str = "target/clone-audit/production";
 const REPORT_RELATIVE: &str = "target/clone-audit/report";
+const TEST_STAGE_RELATIVE: &str = "target/clone-audit/tests";
+const TEST_REPORT_RELATIVE: &str = "target/clone-audit/test-report";
 
 pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), String> {
     let arguments = args.collect::<Vec<_>>();
@@ -32,18 +40,36 @@ pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), Stri
     let root = workspace_root()?;
     let config_path = root.join(CONFIG_RELATIVE);
     validate_clone_config(&config_path)?;
+    let test_config_path = root.join(TEST_CONFIG_RELATIVE);
+    validate_test_clone_config(&test_config_path)?;
 
     let audit_root = root.join(AUDIT_ROOT_RELATIVE);
     let stage_root = root.join(STAGE_RELATIVE);
     let report_root = root.join(REPORT_RELATIVE);
+    let test_stage_root = root.join(TEST_STAGE_RELATIVE);
+    let test_report_root = root.join(TEST_REPORT_RELATIVE);
     reset_generated_directory(&audit_root, &stage_root)?;
     reset_generated_directory(&audit_root, &report_root)?;
+    reset_generated_directory(&audit_root, &test_stage_root)?;
+    reset_generated_directory(&audit_root, &test_report_root)?;
     fs::create_dir_all(&stage_root)
         .map_err(|error| format!("create clone-audit stage {}: {error}", stage_root.display()))?;
     fs::create_dir_all(&report_root).map_err(|error| {
         format!(
             "create clone-audit report {}: {error}",
             report_root.display()
+        )
+    })?;
+    fs::create_dir_all(&test_stage_root).map_err(|error| {
+        format!(
+            "create test clone-audit stage {}: {error}",
+            test_stage_root.display()
+        )
+    })?;
+    fs::create_dir_all(&test_report_root).map_err(|error| {
+        format!(
+            "create test clone-audit report {}: {error}",
+            test_report_root.display()
         )
     })?;
 
@@ -61,12 +87,30 @@ pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), Stri
         &report_root.join("jscpd-report.json"),
         DUPLICATED_LINE_THRESHOLD,
     )?;
+    let test_summary = stage_test_sources(&root, &test_stage_root)?;
+    let test_scanner_args = jscpd_args(&test_stage_root, &test_config_path, &test_report_root)?;
+    process::run_command_owned(
+        OsString::from("npx"),
+        &test_scanner_args,
+        CommandContext::new().current_dir(&root),
+    )
+    .map_err(|error| format!("pinned jscpd {JSCPD_VERSION} test clone audit failed: {error}"))?;
+    validate_jscpd_report(
+        &test_report_root.join("jscpd-report.json"),
+        TEST_DUPLICATED_LINE_THRESHOLD,
+    )?;
     println!(
         "production clone audit passed across {} staged Rust sources; masked {} test-only syntax nodes on {} mixed lines; report: {}",
         summary.files,
         summary.masked_nodes,
         summary.mixed_lines,
         report_root.join("jscpd-report.json").display()
+    );
+    println!(
+        "test clone audit passed across {} staged Rust sources, including {} inline test-only syntax nodes; report: {}",
+        test_summary.files,
+        test_summary.masked_nodes,
+        test_report_root.join("jscpd-report.json").display()
     );
     Ok(())
 }

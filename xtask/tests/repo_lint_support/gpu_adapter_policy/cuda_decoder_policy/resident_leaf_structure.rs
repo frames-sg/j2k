@@ -4,7 +4,9 @@
 
 use std::fs;
 
-use super::super::{assert_pattern_checks, repo_root, PatternCheck};
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
+
+mod classic;
 
 #[test]
 fn resident_decode_shared_primitives_keep_downward_dependencies() {
@@ -47,7 +49,6 @@ fn resident_decode_shared_primitives_keep_downward_dependencies() {
             .required(&["checked_cuda_element_count("])
             .forbidden(&["fn checked_color_store_area("]),
     ]);
-
     let resident_sources = [&buffer, &cleanup, &component, &idwt, &surface];
     let pooled_buffer_implementations = resident_sources
         .into_iter()

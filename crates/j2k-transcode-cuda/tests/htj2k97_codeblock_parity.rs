@@ -18,7 +18,7 @@ use j2k_transcode::{
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
 use j2k_transcode_test_support::prequantized_component_from_dwt97;
 
-use j2k_test_support::{cuda_runtime_gate, jpeg_baseline_420_16x16};
+use j2k_test_support::{cuda_runtime_gate, minimal_baseline_420_jpeg};
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
 #[expect(
@@ -240,7 +240,7 @@ fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let inputs = vec![
         JpegTileBatchInput {
             bytes: jpeg.as_slice(),

@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+pub(crate) use j2k_core::try_batch_reserve_for_push as try_reserve_for_push;
 pub(crate) use j2k_core::{
     checked_batch_count_product as checked_count_product,
-    checked_batch_count_sum as checked_count_sum,
-    try_batch_reserve_for_push as try_reserve_for_push,
-    BatchAllocationBudget as BatchMetadataBudget, BatchAllocationRequest as BatchMetadataRequest,
+    checked_batch_count_sum as checked_count_sum, BatchAllocationBudget as BatchMetadataBudget,
+    BatchAllocationRequest as BatchMetadataRequest,
 };
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use core::mem::size_of;
 
     use j2k_core::{AdapterErrorKind, AdapterErrorParts, BatchInfrastructureError};
 
     use super::{checked_count_product, BatchMetadataBudget, BatchMetadataRequest};
+    #[cfg(target_os = "macos")]
     use crate::abi::JpegEntropyCheckpointHost;
     use crate::Error;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn jpeg_entropy_checkpoint_plan_honors_exact_cap_and_one_byte_over() {
         let tile_count = 2;

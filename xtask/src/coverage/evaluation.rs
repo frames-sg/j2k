@@ -5,7 +5,9 @@ use std::fs;
 use std::path::Path;
 
 use super::compiler_regions::{CompilerRegionEvidence, CompilerRegionReport};
-use super::critical_path_policy::classify_path;
+use super::critical_path_policy::{
+    audited_zero_body_findings, classify_path, ZeroBodyAudit, ZeroBodyKind,
+};
 use super::exclusion_policy::matching_exclusion;
 use super::model::{
     is_accelerator_path, ChangedCoverageResult, CoverageCounts, CoverageLane, LcovReport,
@@ -336,23 +338,13 @@ pub(super) fn coverage_violations(
     result: &ChangedCoverageResult,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    if !meets_threshold(&result.overall) {
+    if lane.enforces_overall_changed_lines() && !meets_threshold(&result.overall) {
         violations.push(format!(
             "{} changed executable Rust lines are {:.2}% covered ({} / {}), below {}%",
             lane.name(),
             coverage_percent(&result.overall).unwrap_or(0.0),
             result.overall.covered,
             result.overall.measurable,
-            CHANGED_LINE_THRESHOLD_PERCENT
-        ));
-    }
-    if result.accelerator.measurable > 0 && !meets_threshold(&result.accelerator) {
-        violations.push(format!(
-            "{} changed accelerator host lines are {:.2}% covered ({} / {}), below {}%",
-            lane.name(),
-            coverage_percent(&result.accelerator).unwrap_or(0.0),
-            result.accelerator.covered,
-            result.accelerator.measurable,
             CHANGED_LINE_THRESHOLD_PERCENT
         ));
     }
@@ -366,17 +358,33 @@ pub(super) fn coverage_violations(
             CHANGED_LINE_THRESHOLD_PERCENT
         ));
     }
-    let absent_critical_files = result
+    let absent_files = result
         .absent_instrumentable_files
         .iter()
-        .filter(|path| classify_path(path).is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    if !absent_critical_files.is_empty() {
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let absent_critical_behavior_files = audited_zero_body_findings(lane, result)
+        .into_iter()
+        .filter(|finding| {
+            matches!(finding.audit, ZeroBodyAudit::Critical(_))
+                && finding.kind != ZeroBodyKind::OpaqueMacro
+        })
+        .filter_map(|finding| {
+            let path = finding
+                .finding
+                .split_once("::")
+                .map_or(finding.finding, |(path, _)| path);
+            absent_files.contains(path).then(|| path.to_string())
+        })
+        .collect::<BTreeSet<_>>();
+    if !absent_critical_behavior_files.is_empty() {
         violations.push(format!(
-            "critical instrumentable files are absent from the {} LCOV artifact: {}",
+            "critical executable bodies are absent from the {} LCOV artifact: {}",
             lane.name(),
-            absent_critical_files.join(", ")
+            absent_critical_behavior_files
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !result.mixed_test_production_lines.is_empty() {

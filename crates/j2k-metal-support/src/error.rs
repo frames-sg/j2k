@@ -88,6 +88,18 @@ pub enum MetalSupportError {
         /// Metal buffer length in bytes.
         buffer_len: usize,
     },
+    /// Metal image layout metadata is internally inconsistent or overflows.
+    MetalImageLayout {
+        /// Stable description of the invalid layout property.
+        reason: &'static str,
+    },
+    /// A resident image was used with a different Metal device.
+    MetalImageDeviceMismatch {
+        /// Registry identifier recorded by the resident image.
+        image_registry_id: u64,
+        /// Registry identifier of the requested Metal device.
+        requested_registry_id: u64,
+    },
     /// A requested typed buffer view is not aligned for the element type.
     BufferAlignment {
         /// Byte offset requested by the caller.
@@ -170,15 +182,11 @@ impl fmt::Display for MetalSupportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MetalUnavailable => f.write_str("Metal is unavailable on this host"),
-            Self::CommandQueueUnavailable => {
-                f.write_str("Metal command queue is unavailable on this host")
-            }
+            Self::CommandQueueUnavailable => f.write_str("Metal command queue is unavailable"),
             Self::CommandQueue { message } => {
                 write!(f, "Metal command queue creation failed: {message}")
             }
-            Self::CommandBufferUnavailable => {
-                f.write_str("Metal command buffer is unavailable for the selected queue")
-            }
+            Self::CommandBufferUnavailable => f.write_str("Metal command buffer is unavailable"),
             Self::CommandBufferCreation { message } => {
                 write!(f, "Metal command buffer creation failed: {message}")
             }
@@ -215,6 +223,14 @@ impl fmt::Display for MetalSupportError {
             } => write!(
                 f,
                 "Metal buffer range offset {offset_bytes} length {byte_len} exceeds buffer length {buffer_len}"
+            ),
+            Self::MetalImageLayout { reason } => write!(f, "invalid Metal image layout: {reason}"),
+            Self::MetalImageDeviceMismatch {
+                image_registry_id,
+                requested_registry_id,
+            } => write!(
+                f,
+                "Metal image device {image_registry_id} does not match requested device {requested_registry_id}"
             ),
             Self::BufferAlignment {
                 offset_bytes,
@@ -260,12 +276,8 @@ impl fmt::Display for MetalSupportError {
             Self::TextureAllocation { message } => {
                 write!(f, "Metal texture allocation dispatch failed: {message}")
             }
-            Self::TextureDescriptorUnavailable => {
-                f.write_str("Metal texture descriptor allocation returned nil")
-            }
-            Self::BufferContentsUnavailable => {
-                f.write_str("Metal buffer contents are not CPU-visible")
-            }
+            Self::TextureDescriptorUnavailable => f.write_str("Metal texture is unavailable"),
+            Self::BufferContentsUnavailable => f.write_str("Metal buffer is not CPU-visible"),
         }
     }
 }

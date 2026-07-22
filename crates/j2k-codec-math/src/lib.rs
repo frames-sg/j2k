@@ -10,6 +10,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// JPEG 2000 classic Tier-1 probability and context tables.
+pub mod classic;
 /// JPEG 2000 DWT constants.
 pub mod dwt;
 /// Generated backend source fragments derived from codec constants.

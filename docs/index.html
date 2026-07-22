@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>J2K: Rust JPEG 2000 / HTJ2K Codec</title>
+  <title>J2K Codec Project — Documentation and Packages</title>
   <meta name="description" content="J2K provides safe public Rust APIs for JPEG 2000 Part 1 / HTJ2K Part 15, with audited unsafe implementation boundaries, JP2/JPH wrappers, and optional CUDA and Apple Metal adapters.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/">
-  <meta property="og:title" content="J2K: Rust JPEG 2000 / HTJ2K Codec">
+  <meta property="og:title" content="J2K Codec Project — Documentation and Packages">
   <meta property="og:description" content="Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/">
   <meta property="og:type" content="website">
@@ -14,7 +14,7 @@
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="J2K: Rust JPEG 2000 / HTJ2K Codec">
+  <meta name="twitter:title" content="J2K Codec Project — Documentation and Packages">
   <meta name="twitter:description" content="Safe public Rust JPEG 2000 / HTJ2K APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -25,7 +25,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "J2K",
-    "headline": "J2K: Rust JPEG 2000 / HTJ2K Codec",
+    "headline": "J2K Codec Project — Documentation and Packages",
     "codeRepository": "https://github.com/frames-sg/j2k",
     "programmingLanguage": "Rust",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
@@ -39,7 +39,7 @@
     <div class="bar">
       <a class="brand" href="./">J2K</a>
       <nav class="nav" aria-label="Primary">
-        <a href="rust-jpeg2000-codec/">Rust JPEG 2000</a>
+        <a href="rust-jpeg2000-codec/">Pure-Rust JPEG 2000 Codec</a>
         <a href="gpu-jpeg2000-rust/">GPU Backends</a>
         <a href="cuda-jpeg2000-rust/">CUDA</a>
         <a href="metal-jpeg2000-rust/">Metal</a>
@@ -52,14 +52,14 @@
     <section class="hero docs-hero">
       <div class="wrap narrow">
         <p class="eyebrow">Project documentation</p>
-        <h1>J2K: Rust JPEG 2000 / HTJ2K Codec</h1>
+        <h1>J2K Codec Project</h1>
         <p class="lead">Safe public Rust APIs for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and coefficient-domain JPEG-to-HTJ2K transcode workflows. CPU is the correctness baseline; CUDA and Apple Metal adapters accelerate supported paths without becoming the public API.</p>
         <div class="actions">
           <a class="button primary" href="https://crates.io/crates/j2k">crates.io</a>
           <a class="button" href="https://docs.rs/j2k">API docs</a>
           <a class="button" href="https://github.com/frames-sg/j2k">Repository</a>
         </div>
-        <p class="note"><strong>Release status:</strong> this page tracks the unreleased 0.7 workspace. The crates.io and docs.rs links currently resolve to the latest published 0.6.x release.</p>
+        <p class="note"><strong>Release status:</strong> j2k 0.7.3 is published on crates.io and docs.rs.</p>
       </div>
     </section>
 
@@ -173,7 +173,7 @@ j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
         <div>
           <h2>Topic pages</h2>
           <ul class="link-list">
-            <li><a href="rust-jpeg2000-codec/">Rust JPEG 2000 Codec</a><span>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
+            <li><a href="rust-jpeg2000-codec/">Pure-Rust JPEG 2000 Codec</a><span>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
             <li><a href="gpu-jpeg2000-rust/">GPU Backends</a><span>Backend behavior, CPU fallback, CUDA, Metal, and strict device requests.</span></li>
             <li><a href="cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a><span>NVIDIA adapter crates and runtime feature boundaries.</span></li>
             <li><a href="metal-jpeg2000-rust/">Metal JPEG2000 Rust</a><span>Apple Metal adapter crates for macOS GPU-backed paths.</span></li>

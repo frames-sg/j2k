@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    backend::{
-        image as backend_image, inspect_info, inspect_info_from_image, DecodeSettings, Image,
-    },
+    backend::{image as backend_image, inspect_info, inspect_info_from_image, Image},
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
         decode_warnings_for_settings, validate_buffer, validate_region, J2kDecodeOutcome,
@@ -11,7 +9,7 @@ use crate::{
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
-    CpuDecodeParallelism, J2kError, J2kSupportInfo,
+    CpuDecodeParallelism, DecodeSettings, J2kError, J2kSupportInfo,
 };
 use j2k_core::{
     CompressedPayloadKind, CompressedTransferSyntax, Downscale, Info, PassthroughCandidate,
@@ -49,7 +47,7 @@ impl<'a> J2kView<'a> {
             Err(error) if should_retry_with_backend(&error) => (inspect_info(input)?, None, None),
             Err(error) => return Err(error),
         };
-        let image = Some(backend_image(input, DecodeSettings::default())?);
+        let image = Some(backend_image(input, DecodeSettings::default(), None)?);
         Ok(Self {
             bytes: input,
             info,
@@ -361,12 +359,9 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        let settings = DecodeSettings {
-            target_resolution: Some(self.scaled_target_dims(scale)),
-            ..DecodeSettings::default()
-        };
+        let settings = DecodeSettings::default();
         let warnings = decode_warnings_for_settings(settings);
-        let image = backend_image(self.bytes, settings)?;
+        let image = backend_image(self.bytes, settings, Some(self.scaled_target_dims(scale)))?;
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
         let mut native_context = self.scaled_decode_native_context();
@@ -401,12 +396,9 @@ impl<'a> J2kDecoder<'a> {
         validate_region(roi, self.info.dimensions)?;
         let scaled_roi = roi.scaled_covering(scale);
         validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-        let settings = DecodeSettings {
-            target_resolution: Some(self.scaled_target_dims(scale)),
-            ..DecodeSettings::default()
-        };
+        let settings = DecodeSettings::default();
         let warnings = decode_warnings_for_settings(settings);
-        let image = backend_image(self.bytes, settings)?;
+        let image = backend_image(self.bytes, settings, Some(self.scaled_target_dims(scale)))?;
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;
         let mut native_context = self.scaled_decode_native_context();
@@ -423,7 +415,7 @@ impl<'a> J2kDecoder<'a> {
 
     fn ensure_image(&mut self) -> Result<(), J2kError> {
         if self.image.is_none() {
-            self.image = Some(backend_image(self.bytes, DecodeSettings::default())?);
+            self.image = Some(backend_image(self.bytes, DecodeSettings::default(), None)?);
             if self.info.tile_layout.is_none() {
                 self.info = inspect_info_from_image(self.cached_image()?);
             }

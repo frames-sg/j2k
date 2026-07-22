@@ -7,6 +7,8 @@ use j2k_core::{
     PixelFormat, SurfaceMetadata, SurfaceResidency,
 };
 #[cfg(target_os = "macos")]
+use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
+#[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
 use metal::Buffer;
@@ -15,11 +17,15 @@ use metal::Buffer;
 use crate::error::metal_kernel_support_error;
 use crate::Error;
 
+mod readback;
+
+pub use self::readback::download_surfaces_packed;
+
 #[derive(Clone)]
 pub(crate) enum Storage {
     Host(Arc<Vec<u8>>),
     #[cfg(target_os = "macos")]
-    Metal(Buffer),
+    Metal(ResidentMetalImage),
 }
 
 impl Storage {
@@ -88,14 +94,14 @@ impl Surface {
                 Ok(Cow::Borrowed(&bytes[range]))
             }
             #[cfg(target_os = "macos")]
-            Storage::Metal(buffer) => {
+            Storage::Metal(image) => {
                 // SAFETY: A returned `Surface` represents a completed decode.
                 // External access to the handle is unsafe and requires callers
                 // to exclude overlapping mutation during this owned readback.
                 match unsafe {
                     j2k_metal_support::checked_buffer_read_vec::<u8>(
-                        buffer,
-                        self.byte_offset,
+                        image.raw_buffer(),
+                        image.byte_offset(),
                         self.byte_len(),
                     )
                 } {
@@ -153,7 +159,29 @@ impl Surface {
     #[cfg(target_os = "macos")]
     pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
-            Storage::Metal(buffer) => Some((buffer, self.byte_offset)),
+            Storage::Metal(image) => {
+                // SAFETY: backend code binds this private handle under the
+                // immutable resident-image contract.
+                Some((unsafe { image.raw_buffer() }, image.byte_offset()))
+            }
+            Storage::Host(_) => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Borrow the immutable resident image when this surface is Metal-backed.
+    pub fn resident_metal_image(&self) -> Option<&ResidentMetalImage> {
+        match &self.storage {
+            Storage::Metal(image) => Some(image),
+            Storage::Host(_) => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Consume this surface and return its immutable resident image.
+    pub fn into_resident_metal_image(self) -> Option<ResidentMetalImage> {
+        match self.storage {
+            Storage::Metal(image) => Some(image),
             Storage::Host(_) => None,
         }
     }
@@ -163,16 +191,8 @@ impl Surface {
         buffer: Buffer,
         dimensions: (u32, u32),
         fmt: PixelFormat,
-    ) -> Self {
-        Self {
-            backend: BackendKind::Metal,
-            residency: SurfaceResidency::MetalResidentDecode,
-            dimensions,
-            fmt,
-            pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
-            byte_offset: 0,
-            storage: Storage::Metal(buffer),
-        }
+    ) -> Result<Self, Error> {
+        Self::from_metal_buffer_with_offset(buffer, dimensions, fmt, 0)
     }
 
     #[cfg(target_os = "macos")]
@@ -181,15 +201,43 @@ impl Surface {
         dimensions: (u32, u32),
         fmt: PixelFormat,
         byte_offset: usize,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        let pitch_bytes = usize::try_from(dimensions.0)
+            .ok()
+            .and_then(|width| width.checked_mul(fmt.bytes_per_pixel()))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal surface pitch overflows usize".to_string(),
+            })?;
+        let layout = MetalImageLayout::new(byte_offset, dimensions, pitch_bytes, fmt)
+            .map_err(|source| metal_kernel_support_error("J2K Metal surface layout", source))?;
+        // SAFETY: surface constructors are crate-private and producer paths do
+        // not expose the returned surface until their command buffer completes.
+        // The producer command owns the only pending write, and later raw
+        // access remains inside the audited backend.
+        let image = unsafe { ResidentMetalImage::from_exclusive_pending_buffer(buffer, layout) }
+            .map_err(|source| metal_kernel_support_error("J2K Metal resident surface", source))?;
+        Ok(Self {
             backend: BackendKind::Metal,
             residency: SurfaceResidency::MetalResidentDecode,
             dimensions,
             fmt,
-            pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
+            pitch_bytes,
             byte_offset,
-            storage: Storage::Metal(buffer),
+            storage: Storage::Metal(image),
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_resident_metal_image(image: ResidentMetalImage) -> Self {
+        let layout = image.layout();
+        Self {
+            backend: BackendKind::Metal,
+            residency: SurfaceResidency::MetalResidentDecode,
+            dimensions: layout.dimensions(),
+            fmt: layout.pixel_format(),
+            pitch_bytes: layout.pitch_bytes(),
+            byte_offset: layout.byte_offset(),
+            storage: Storage::Metal(image),
         }
     }
 }
@@ -220,10 +268,12 @@ impl DeviceSurface for Surface {
         match &self.storage {
             Storage::Host(_) => None,
             #[cfg(target_os = "macos")]
-            Storage::Metal(buffer) => Some(DeviceMemoryRange::new(
+            Storage::Metal(image) => Some(DeviceMemoryRange::new(
                 BackendKind::Metal,
-                u64::try_from(buffer.as_ptr() as usize).ok()?,
-                self.byte_offset,
+                // SAFETY: reading the handle identity does not access or mutate
+                // the allocation, and this surface retains the resident owner.
+                u64::try_from(unsafe { image.raw_buffer() }.as_ptr() as usize).ok()?,
+                image.byte_offset(),
                 self.byte_len(),
             )),
         }
@@ -272,10 +322,12 @@ mod tests {
         let surface = host_surface(vec![1, 2], 0);
         let cloned = surface.clone();
 
-        let (Storage::Host(original), Storage::Host(clone)) = (&surface.storage, &cloned.storage)
-        else {
-            panic!("host surface clone must preserve host storage");
-        };
-        assert!(std::sync::Arc::ptr_eq(original, clone));
+        match (&surface.storage, &cloned.storage) {
+            (Storage::Host(original), Storage::Host(clone)) => {
+                assert!(std::sync::Arc::ptr_eq(original, clone));
+            }
+            #[cfg(target_os = "macos")]
+            _ => panic!("host surface clone must preserve host storage"),
+        }
     }
 }

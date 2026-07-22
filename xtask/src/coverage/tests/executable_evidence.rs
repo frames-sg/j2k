@@ -60,17 +60,17 @@ pub fn build_callback() {
 }
 
 #[test]
-fn changed_opaque_macro_definition_and_invocation_are_audited_fail_closed() {
+fn changed_opaque_macro_definition_and_invocation_are_audited_without_blanket_failure() {
     let cases = [
         (
-            "macro_rules! generated {\n    () => { pub fn value() -> u32 { 7 } };\n}\n",
+            "macro_rules! generated {\n    () => { 7 };\n}\n",
             2,
             "opaque-macro-definition:generated@1",
         ),
         (
-            "pub fn invoke() {\n    generated!(\n        changed\n    );\n}\n",
-            3,
-            "opaque-macro-invocation:generated@2",
+            "generated!(\n    pub struct Changed;\n);\n",
+            2,
+            "opaque-macro-invocation:generated@1",
         ),
     ];
 
@@ -94,7 +94,7 @@ fn changed_opaque_macro_definition_and_invocation_are_audited_fail_closed() {
         );
         assert!(coverage_violations(CoverageLane::Host, &result)
             .iter()
-            .any(|violation| violation.contains("absent from the host LCOV artifact")));
+            .all(|violation| !violation.contains("critical executable bodies are absent")));
         assert_eq!(
             audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
             ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)

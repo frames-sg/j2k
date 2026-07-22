@@ -3,10 +3,34 @@
 use std::collections::BTreeSet;
 
 use super::super::{
-    collect_publish_workflow_crates, publish_crate_from_run_line, validate_publish_script_source,
+    parse_release_manifest_source, validate_publish_script_source,
     validate_publish_workflow_source, validate_release_docs_source,
     validate_unpublished_dependencies,
 };
+
+#[test]
+fn release_manifest_parser_requires_unique_ordered_crates_and_prefix_partition() {
+    let manifest = parse_release_manifest_source(
+        r#"{"schema":1,"ordered_crates":["base","consumer"],"registry_independent":["base"]}"#,
+    )
+    .expect("valid release manifest");
+    assert_eq!(manifest.ordered_crates, ["base", "consumer"]);
+    assert_eq!(manifest.registry_independent, ["base"]);
+
+    for (source, expected) in [
+        (
+            r#"{"schema":1,"ordered_crates":["base","base"],"registry_independent":["base"]}"#,
+            "duplicate",
+        ),
+        (
+            r#"{"schema":1,"ordered_crates":["base","consumer"],"registry_independent":["consumer"]}"#,
+            "prefix",
+        ),
+    ] {
+        let error = parse_release_manifest_source(source).expect_err("invalid manifest rejects");
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
 
 #[test]
 fn publish_workflow_validation_reports_parse_and_release_contract_failures() {
@@ -14,78 +38,26 @@ fn publish_workflow_validation_reports_parse_and_release_contract_failures() {
         .expect_err("malformed workflow YAML must reject");
     assert!(parse_error.contains("failed to parse .github/workflows/publish.yml"));
 
-    let workflow = r#"
-checks: |
-  --origin-url "${origin_url}"
-  --server-url "${GITHUB_SERVER_URL}"
-  cargo xtask release-integrity --publish
-  scripts/publish-crate.sh --preflight-all
-  scripts/publish-crate.sh j2k-core
-  scripts/publish-crate.sh unknown-crate
-"#;
+    let workflow = "jobs:\n  unexpected:\n    runs-on: ubuntu-latest\n";
     let mut errors = Vec::new();
     validate_publish_workflow_source(workflow, &mut errors).expect("valid workflow YAML");
 
     assert!(errors
         .iter()
-        .any(|error| error.contains("publish order is")));
-    assert!(errors
-        .iter()
-        .any(|error| error.contains("missing publish job for `j2k-profile`")));
-    assert!(errors
-        .iter()
-        .any(|error| error.contains("publishes unknown workspace crate `unknown-crate`")));
-}
-
-#[test]
-fn publish_workflow_collection_ignores_non_commands_and_missing_arguments() {
-    let workflow = serde_yaml_ng::Value::Sequence(vec![
-        serde_yaml_ng::Value::Bool(true),
-        serde_yaml_ng::Value::Null,
-        serde_yaml_ng::Value::String("scripts/publish-crate.sh j2k".to_string()),
-    ]);
-    let mut crates = Vec::new();
-
-    collect_publish_workflow_crates(&workflow, &mut crates);
-
-    assert_eq!(crates, ["j2k"]);
-    assert_eq!(
-        publish_crate_from_run_line("scripts/publish-crate.sh"),
-        None
-    );
+        .any(|error| error.contains("exactly preflight and publish jobs")));
+    assert!(errors.iter().any(|error| error.contains(
+        "does not enforce publication preflight `python3 scripts/publish_release.py publish`"
+    )));
 }
 
 #[test]
 fn publish_script_validation_fails_closed_for_missing_and_drifted_contracts() {
-    let missing_publishable = validate_publish_script_source("", &mut Vec::new())
-        .expect_err("missing publishable array must reject");
-    assert!(missing_publishable.contains("does not define the publishable_crates shell array"));
-
-    let missing_independent =
-        validate_publish_script_source("publishable_crates=(\n)\n", &mut Vec::new())
-            .expect_err("missing independent array must reject");
-    assert!(
-        missing_independent.contains("does not define the registry_independent_crates shell array")
-    );
-
-    let script = r"
-publishable_crates=(
-  unknown-crate
-)
-registry_independent_crates=(
-  another-unknown-crate
-)
-cargo info
-";
     let mut errors = Vec::new();
-    validate_publish_script_source(script, &mut errors).expect("arrays are structurally valid");
+    validate_publish_script_source("cargo info\n", &mut errors);
 
     assert!(errors
         .iter()
-        .any(|error| error.contains("publishable_crates is")));
-    assert!(errors
-        .iter()
-        .any(|error| error.contains("registry_independent_crates is")));
+        .any(|error| error.contains("--field ordered-crates")));
     assert!(errors.iter().any(|error| error
         .contains("does not enforce publish-script check `scripts/crates_io_version.py state`")));
     assert!(errors

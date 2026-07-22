@@ -7,7 +7,7 @@ use j2k::{
     ReversibleTransform,
 };
 use j2k_core::{
-    BufferError, DecoderContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
+    BufferError, CodecContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
     TileBatchDecode,
 };
 use j2k_native::{
@@ -16,9 +16,9 @@ use j2k_native::{
     PrecomputedHtj2k53Image,
 };
 use j2k_test_support::{
-    crop_interleaved_bytes, crop_interleaved_u8, openhtj2k_refinement_fixture,
-    openhtj2k_refinement_odd_fixture, openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels,
-    wrap_jp2_codestream, wrap_jp2_rgba_codestream, PixelRect,
+    crop_interleaved_bytes, openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
+    openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, wrap_jp2_codestream,
+    wrap_jp2_rgba_codestream, PixelRect,
 };
 
 type OpenHtFixture = (&'static str, fn() -> &'static [u8], fn() -> &'static [u8]);
@@ -192,7 +192,7 @@ fn locally_inspectable_codestream_without_decode_headers() -> Vec<u8> {
 }
 
 fn crop_u8(full: &[u8], full_width: usize, channels: usize, roi: Rect) -> Vec<u8> {
-    crop_interleaved_u8(full, full_width, channels, pixel_rect(roi))
+    crop_interleaved_bytes(full, full_width, channels, pixel_rect(roi))
 }
 
 fn crop_bytes(full: &[u8], full_width: usize, bytes_per_pixel: usize, roi: Rect) -> Vec<u8> {
@@ -1357,7 +1357,7 @@ fn tile_batch_decode_matches_borrowed_decoder_decode() {
         .decode_into(&mut expected, 2 * 3, PixelFormat::Rgb8)
         .expect("decoder decode");
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::new();
     let mut pool = j2k::J2kScratchPool::new();
     let mut out = [0_u8; 6];
     let outcome = <J2kCodec as TileBatchDecode>::decode_tile(
@@ -1391,7 +1391,7 @@ fn tile_batch_region_decode_matches_decoder_region_decode() {
         .decode_region_into(&mut pool, &mut expected, 2, PixelFormat::Gray8, roi)
         .expect("decoder region");
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::new();
     let mut out = [0_u8; 4];
     <J2kCodec as TileBatchDecode>::decode_tile_region(
         &mut ctx,
@@ -1423,7 +1423,7 @@ fn tile_batch_scaled_decode_matches_decoder_scaled_decode() {
         )
         .expect("decoder scaled");
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::new();
     let mut out = [0_u8; 12];
     <J2kCodec as TileBatchDecode>::decode_tile_scaled(
         &mut ctx,
@@ -1466,7 +1466,7 @@ fn tile_batch_region_scaled_decode_matches_decoder_region_scaled_decode() {
         )
         .expect("decoder region scaled");
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::new();
     let mut out = vec![0_u8; stride * scaled_roi.h as usize];
     let outcome = <J2kCodec as TileBatchDecode>::decode_tile_region_scaled(
         &mut ctx,
@@ -1561,7 +1561,7 @@ fn tile_batch_decode_matches_borrowed_decoder_for_htj2k() {
         .decode_into(&mut expected, 2, PixelFormat::Gray8)
         .expect("decoder decode");
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::new();
     let mut pool = j2k::J2kScratchPool::new();
     let mut out = [0_u8; 4];
     <J2kCodec as TileBatchDecode>::decode_tile(

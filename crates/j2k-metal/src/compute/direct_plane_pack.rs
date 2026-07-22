@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::{mem::size_of, sync::Arc};
+
+use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
+
+use crate::profile_env::{
+    hybrid_stage_signpost, label_compute_encoder, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
+};
+
+use super::abi::{J2kBatchedMctRgb8PackParams, J2kMctRgb8PackParams, J2kPackParams};
+use super::direct_surface_pack::checked_metal_surface_len;
 use super::{
-    checked_metal_surface_len, commit_and_wait_metal, copy_plane_samples, dispatch_2d_pipeline,
-    dispatch_3d_pipeline, hybrid_stage_signpost, j2k_pack_scale_arrays, j2k_u32_param,
-    label_compute_encoder, metal_profile_stages_enabled, new_blit_command_encoder,
-    new_command_buffer, new_compute_command_encoder, new_shared_buffer, output_shape_for,
-    record_hybrid_repeated_output_blit, signed_sample_bias, size_of, Arc, Buffer, CommandBufferRef,
-    Device, Error, J2kBatchedMctRgb8PackParams, J2kMctRgb8PackParams, J2kPackParams,
-    J2kWaveletTransform, MetalRuntime, NativeColorSpace, NativeDecodedComponents, PixelFormat,
-    PreparedDirectColorPlan, Rect, Surface, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
+    commit_and_wait_metal, copy_plane_samples, j2k_pack_scale_arrays, j2k_u32_param,
+    metal_profile_stages_enabled, new_blit_command_encoder, new_command_buffer,
+    new_compute_command_encoder, new_shared_buffer, output_shape_for,
+    record_hybrid_repeated_output_blit, signed_sample_bias, Buffer, CommandBufferRef, Device,
+    Error, J2kWaveletTransform, MetalRuntime, NativeColorSpace, NativeDecodedComponents,
+    PixelFormat, PreparedDirectColorPlan, Rect, Surface,
 };
 
 #[cfg(target_os = "macos")]
@@ -201,7 +209,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
     dispatch_2d_pipeline(&encoder, pipeline, stage.dims);
     encoder.end_encoding();
 
-    Ok(Surface::from_metal_buffer(out_buffer, stage.dims, fmt))
+    Surface::from_metal_buffer(out_buffer, stage.dims, fmt)
 }
 
 #[cfg(target_os = "macos")]
@@ -256,11 +264,7 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     encoder.end_encoding();
     drop(signpost);
 
-    Ok(Surface::from_metal_buffer(
-        out_buffer,
-        dims,
-        PixelFormat::Rgb8,
-    ))
+    Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
 }
 
 #[cfg(target_os = "macos")]
@@ -350,7 +354,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
             dims,
             PixelFormat::Rgb8,
             index * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }
@@ -478,7 +482,7 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
             dims,
             PixelFormat::Rgb8,
             index * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }

@@ -5,8 +5,8 @@
 use super::{J2kCodec, J2kDecoder, J2kRowDecodeOptions, J2kView};
 use crate::{context::J2kContext, decode::J2kDecodeWarning, scratch::J2kScratchPool, J2kError};
 use j2k_core::{
-    DecodeRowsError, DecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows, Info,
-    PixelFormat, Rect, RowSink, TileBatchDecode, TileRegionScaledDecodeJob,
+    DecodeRowsError, Downscale, ImageCodec, ImageDecode, ImageDecodeRows, Info, PixelFormat, Rect,
+    RowSink, TileBatchDecode, TileRegionScaledDecodeJob,
 };
 
 #[doc(hidden)]
@@ -120,7 +120,7 @@ impl TileBatchDecode for J2kCodec {
     type Context = J2kContext;
 
     fn decode_tile(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -128,12 +128,12 @@ impl TileBatchDecode for J2kCodec {
         fmt: PixelFormat,
     ) -> Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error> {
         let mut decoder = J2kDecoder::new(input)?;
-        decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
+        decoder.set_cpu_decode_parallelism(ctx.cpu_decode_parallelism());
         decoder.decode_into_with_scratch(pool, out, stride, fmt)
     }
 
     fn decode_tile_region(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -142,12 +142,12 @@ impl TileBatchDecode for J2kCodec {
         roi: Rect,
     ) -> Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error> {
         let mut decoder = J2kDecoder::new(input)?;
-        decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
+        decoder.set_cpu_decode_parallelism(ctx.cpu_decode_parallelism());
         decoder.decode_region_into(pool, out, stride, fmt, roi)
     }
 
     fn decode_tile_scaled(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -156,12 +156,12 @@ impl TileBatchDecode for J2kCodec {
         scale: Downscale,
     ) -> Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error> {
         let mut decoder = J2kDecoder::new(input)?;
-        decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
+        decoder.set_cpu_decode_parallelism(ctx.cpu_decode_parallelism());
         decoder.decode_scaled_into(pool, out, stride, fmt, scale)
     }
 
     fn decode_tile_region_scaled(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         fmt: PixelFormat,
         job: TileRegionScaledDecodeJob<'_, '_>,
@@ -174,7 +174,7 @@ impl TileBatchDecode for J2kCodec {
             scale,
         } = job;
         let mut decoder = J2kDecoder::new(input)?;
-        decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
+        decoder.set_cpu_decode_parallelism(ctx.cpu_decode_parallelism());
         decoder.decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
     }
 }

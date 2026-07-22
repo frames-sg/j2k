@@ -55,25 +55,25 @@ fn snapshot_scope_and_drift_report_missing_unexpected_and_changed_packages() {
 
 #[test]
 fn package_diff_planning_distinguishes_published_and_new_packages() {
-    let stable = ["j2k", "j2k-codec-math"];
+    let stable = ["j2k", "j2k-future"];
     let versions = BTreeMap::from([
-        ("j2k".to_string(), "0.7.0".to_string()),
-        ("j2k-codec-math".to_string(), "0.7.0".to_string()),
+        ("j2k".to_string(), "0.7.4".to_string()),
+        ("j2k-future".to_string(), "0.7.4".to_string()),
     ]);
     let baseline = BTreeMap::from([("j2k".to_string(), items(&["keep", "removed"]))]);
     let current = BTreeMap::from([
         ("j2k".to_string(), items(&["keep", "added"])),
-        ("j2k-codec-math".to_string(), items(&["new api"])),
+        ("j2k-future".to_string(), items(&["new api"])),
     ]);
     let hidden = BTreeMap::from([
         ("j2k".to_string(), items(&["hidden j2k"])),
-        ("j2k-codec-math".to_string(), items(&["hidden math"])),
+        ("j2k-future".to_string(), items(&["hidden future"])),
     ]);
 
     let diffs = build_package_diffs(
         &stable,
         &versions,
-        Version::parse("0.6.2").expect("baseline"),
+        Version::parse("0.7.3").expect("baseline"),
         &baseline,
         &current,
         &hidden,
@@ -81,16 +81,16 @@ fn package_diff_planning_distinguishes_published_and_new_packages() {
     .expect("package diffs");
 
     assert_eq!(diffs.len(), 2);
-    assert_eq!(diffs[0].release_type, Some(ReleaseType::Major));
+    assert_eq!(diffs[0].release_type, Some(ReleaseType::Minor));
     assert_eq!(diffs[0].added, items(&["added"]));
     assert_eq!(diffs[0].removed, items(&["removed"]));
     assert_eq!(diffs[1].release_type, None);
     assert_eq!(diffs[1].added, items(&["new api"]));
     assert!(diffs[1].removed.is_empty());
 
-    let report = render_report("0.7.0", &diffs, "0.52.0");
-    assert!(report.contains("## New packages without a 0.6.2 registry baseline"));
-    assert!(report.contains("- `j2k-codec-math` `0.7.0`: 1 ordinary public API items"));
+    let report = render_report("0.7.4", &diffs, "0.52.0");
+    assert!(report.contains("## New packages without a 0.7.3 registry baseline"));
+    assert!(report.contains("- `j2k-future` `0.7.4`: 1 ordinary public API items"));
     assert!(report.contains("### `j2k`"));
     assert!(report.contains("```text\nremoved\n```"));
     assert!(report.contains("```text\nadded\n```"));
@@ -102,7 +102,7 @@ fn package_diff_planning_reports_each_missing_inventory_boundary() {
     let baseline = BTreeMap::from([("j2k".to_string(), BTreeSet::new())]);
     let current = BTreeMap::from([("j2k".to_string(), BTreeSet::new())]);
     let hidden = BTreeMap::from([("j2k".to_string(), BTreeSet::new())]);
-    let baseline_version = Version::parse("0.6.2").expect("baseline");
+    let baseline_version = Version::parse("0.7.3").expect("baseline");
 
     for (versions, baseline, current, hidden, expected) in [
         (

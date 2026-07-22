@@ -30,7 +30,6 @@ fn jpeg_owned_output_and_public_reusable_buffer_remain_fallible() {
     assert_pattern_checks(&[
         PatternCheck::new("owned JPEG output allocation", &output_format)
             .required(&[
-                "fn allocate_output_buffer(len: usize) -> Result<",
                 "try_vec_filled(len, 0)",
                 "fn allocate_output_buffer_with_live_budget(",
                 "checked_live_phase_bytes(*live_bytes, len, cap)?;",

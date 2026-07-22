@@ -8,31 +8,8 @@ use crate::repo_lint_support::{
 };
 
 mod cache_identity;
-
-#[test]
-fn mq_qe_table_is_shared_by_encoder_and_decoder() {
-    let root = repo_root();
-    assert_file_pattern_checks(
-        root,
-        &[
-            FilePatternCheck::new("crates/j2k-native/src/j2c/mq.rs")
-                .named("native MQ table module")
-                .required(&[
-                    "pub(crate) struct QeData",
-                    "pub(crate) static QE_TABLE: [QeData; 47]",
-                    "Shared MQ arithmetic-coder probability table",
-                ]),
-            FilePatternCheck::new("crates/j2k-native/src/j2c/arithmetic_decoder.rs")
-                .named("native arithmetic decoder")
-                .required(&["use super::mq::QE_TABLE;"])
-                .forbidden(&["struct QeData", "static QE_TABLE"]),
-            FilePatternCheck::new("crates/j2k-native/src/j2c/arithmetic_encoder.rs")
-                .named("native arithmetic encoder")
-                .required(&["use super::mq::QE_TABLE;"])
-                .forbidden(&["struct QeData", "static QE_TABLE"]),
-        ],
-    );
-}
+mod classic_mq;
+mod pass_through;
 
 #[test]
 fn component_plane_metadata_accessors_are_shared() {
@@ -269,24 +246,43 @@ fn metal_direct_sub_band_group_scan_uses_shared_helper() {
         .expect("read Metal compute root");
     let direct_prepare =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
-            .expect("read Metal direct prepare");
+            .expect("read Metal direct prepare facade");
+    let classic = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/compute/direct_prepare/classic.rs",
+            "crates/j2k-metal/src/compute/direct_prepare/classic/grouped.rs",
+        ],
+    );
+    let ht = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/compute/direct_prepare/ht.rs",
+            "crates/j2k-metal/src/compute/direct_prepare/ht/grouped.rs",
+        ],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("Metal compute prepare module", &compute)
             .required(&["mod direct_prepare;"]),
-        PatternCheck::new("Metal direct sub-band grouping helper", &direct_prepare).required(&[
+        PatternCheck::new("Metal direct preparation facade", &direct_prepare).required(&[
+            "mod classic;",
+            "mod ht;",
+            "prepare_sub_band_groups,",
+        ]),
+        PatternCheck::new("Metal direct sub-band grouping helper", &classic).required(&[
             "fn prepare_sub_band_groups<'a, SubBand: 'a, Group>",
             "prepare_sub_band_groups(",
             "PreparedDirectGrayscaleStep::ClassicSubBand(sub_band)",
-            "PreparedDirectGrayscaleStep::HtSubBand(sub_band)",
             "prepare_classic_sub_band_group,",
+        ]),
+        PatternCheck::new("Metal HT sub-band grouping caller", &ht).required(&[
+            "PreparedDirectGrayscaleStep::HtSubBand(sub_band)",
             "prepare_ht_sub_band_group,",
         ]),
     ]);
     assert_eq!(
-        direct_prepare
-            .matches("while step_idx < steps.len()")
-            .count(),
+        classic.matches("while step_idx < steps.len()").count(),
         1,
         "Metal direct classic/HT sub-band grouping must have one shared scan loop"
     );
@@ -295,8 +291,13 @@ fn metal_direct_sub_band_group_scan_uses_shared_helper() {
 #[test]
 fn metal_hybrid_region_scaled_cache_uses_shared_scope() {
     let root = repo_root();
-    let hybrid =
-        fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs")).expect("read hybrid");
+    let hybrid = read_source_files(
+        root,
+        &[
+            "crates/j2k-metal/src/hybrid/cache.rs",
+            "crates/j2k-metal/src/hybrid/planning.rs",
+        ],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("Metal hybrid region-scaled cache scope", &hybrid)

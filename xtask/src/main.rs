@@ -39,7 +39,9 @@ mod stable_api;
 #[cfg(all(test, unix))]
 mod test_command;
 
-use benchmark_commands::{bench_build, bench_report, j2k_bench_signoff};
+use benchmark_commands::{
+    bench_build, bench_report, j2k_bench_signoff, j2k_ml_batch_bench_cuda, j2k_ml_batch_bench_metal,
+};
 use clone_audit::clone_audit;
 use codegen_commands::{codec_math_codegen, stable_api};
 #[cfg(test)]
@@ -74,6 +76,8 @@ fn run() -> Result<(), String> {
         "typos" => typos(),
         "bench-build" => bench_build(),
         "bench-report" => bench_report(env::args().skip(2)),
+        "j2k-ml-bench-metal" => j2k_ml_batch_bench_metal(),
+        "j2k-ml-bench-cuda" => j2k_ml_batch_bench_cuda(),
         #[cfg(feature = "adoption")]
         "adoption-benchmark" => adoption_benchmark::adoption_benchmark(env::args().skip(2)),
         #[cfg(not(feature = "adoption"))]
@@ -146,6 +150,8 @@ fn print_help() {
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
            bench-report  print or write a benchmark publication report\n\
+           j2k-ml-bench-metal benchmark Metal codec-resident and Burn-direct batch decode\n\
+           j2k-ml-bench-cuda benchmark CUDA codec-resident and Burn-direct batch decode\n\
            adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle [--features adoption]\n\
            adoption-curate stage inspectable external J2K fixtures and a pinned manifest [--features adoption]\n\
            adoption-manifest generate decode and encode fixture manifests for adoption benchmarks [--features adoption]\n\
@@ -174,7 +180,7 @@ fn print_help() {
            release-cuda  run fail-closed release-mode CUDA validation on Linux x86_64\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
-           coverage      enforce >=80% changed executable Rust coverage [host|metal|cuda] [--base REV]\n\
+           coverage      enforce >=80% host-wide or accelerator critical-path coverage [host|metal|cuda] [--base REV]\n\
            package       construct all staged packages from a clean worktree and publish-dry-run registry-independent crates"
     );
 }

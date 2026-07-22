@@ -22,12 +22,24 @@ use ast::analyze_source;
 pub(crate) use audit::{analyze_test_only_syntax, SourceAuditSyntax, SourceAuditTestSpan};
 use cfg_eval::CoverageCfgContext;
 use graph::{module_reachability, ReachKind};
+pub(in crate::coverage) use module_resolver::{
+    existing_repository_source, has_module_path_attribute, resolve_external_module,
+    source_module_dir, source_parent_dir,
+};
 use workspace::{
     classify_unreached_source, discover_source_roots, read_source, CoverageCfgContexts, SourceRoot,
 };
 
 pub(super) const GENERATED_DWT_DISPOSITION: &str = "generated-codec-math-fragment";
 pub(super) const VENDORED_BLOCK_DISPOSITION: &str = "vendored-block-ffi-binding";
+pub(super) const VENDORED_GPU_INTEROP_DISPOSITION: &str = "vendored-gpu-interop-patch";
+pub(super) const VENDORED_GPU_INTEROP_ROOTS: &[&str] = &[
+    "third_party/cubecl-cuda-0.10.0-patched/",
+    "third_party/cubecl-runtime-0.10.0-patched/",
+    "third_party/wgpu-29.0.4-patched/",
+    "third_party/wgpu-core-29.0.4-patched/",
+    "third_party/wgpu-hal-29.0.4-patched/",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SourceRole {

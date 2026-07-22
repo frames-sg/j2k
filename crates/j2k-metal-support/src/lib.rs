@@ -26,6 +26,8 @@ mod dispatch;
 #[cfg(target_os = "macos")]
 mod pipeline;
 #[cfg(target_os = "macos")]
+mod resident;
+#[cfg(target_os = "macos")]
 mod runtime;
 
 #[cfg(target_os = "macos")]
@@ -45,6 +47,10 @@ pub use dispatch::{
 };
 #[cfg(target_os = "macos")]
 pub use pipeline::{named_pipeline, shader_library, MetalPipelineLoader};
+#[cfg(target_os = "macos")]
+pub use resident::{
+    MetalImageDestination, MetalImageLayout, ResidentMetalImage, SubmittedMetalImages,
+};
 #[cfg(target_os = "macos")]
 pub use runtime::{
     checked_blit_command_encoder, checked_command_buffer, checked_command_queue,

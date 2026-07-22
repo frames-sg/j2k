@@ -21,6 +21,7 @@ impl PlanOwnerLedger {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn preflight_collective_metadata(
     phase: &'static str,
     owner_bytes: usize,

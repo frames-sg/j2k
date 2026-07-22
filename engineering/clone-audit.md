@@ -1,87 +1,62 @@
-# Production Clone Audit
+# Source-aware clone audits
 
-Release line: 0.7.0
+Release line: 0.7.3
 
-Final candidate ratio: pending. The command has been implementation-tested on
-the moving worktree, but its numeric result is not release evidence until the
-0.7 source tree is frozen and the command is rerun at the candidate SHA.
+Production baseline: 1.96% duplicated lines (5,254 lines, 192 exact
+clones, 1,193 jscpd sources). The enforced ceiling is 2.01%.
+
+Test/support baseline: 4.09% duplicated lines (7,300 lines, 198 exact
+clones, 905 jscpd sources). The enforced ceiling is 4.14%.
 
 ## Canonical command
-
-Run the repository-owned gate from the repository root:
 
 ```bash
 cargo xtask clone-audit
 ```
 
-The command stages source-aware production Rust under
-`target/clone-audit/production/`, preserving repository-relative paths, byte
-length, and line positions. It then invokes exactly `jscpd@4.0.5` with the
-checked-in `.jscpd.json` and validates the JSON report before succeeding. The
-report is generated at:
+The source-aware command pins `jscpd@4.0.5`, validates both checked-in configurations,
+stages both scopes below `target/clone-audit/`, independently validates both
+JSON reports, and fails at or above either ceiling. Configuration drift,
+malformed output, unreadable Rust, unsupported source symlinks, or scanner
+failure also fails closed.
 
-```text
-target/clone-audit/report/jscpd-report.json
-```
+Reports:
 
-The command accepts no arguments. Configuration drift, malformed or missing
-scanner output, a scanner failure, an unsupported source symlink, an unreadable
-or unparsable Rust source, or a result at or above the configured threshold
-fails the gate.
+- production: `target/clone-audit/report/jscpd-report.json`
+- tests/support: `target/clone-audit/test-report/jscpd-report.json`
 
-## Production-source scope
+## Scope ownership
 
-The scan covers Rust below `crates/`, including nested CUDA SIMT sources, while
-excluding physical test targets and helpers, benches, examples, fuzz targets,
-generated sources, build scripts, and test-support crates. Source selection and
-staging are repository-owned; invoking jscpd directly on `crates/` is not the
-canonical audit.
+The production lane covers Rust below `crates/` while excluding physical
+tests, test-support crates, benches, examples, fuzz targets, generated code,
+and build scripts. Its Syn-based source analysis replaces proven test-only
+syntax with spaces while preserving byte and newline positions. Ambiguous cfg
+expressions remain production.
 
-Inline test syntax is excluded structurally rather than by text matching. The
-clone audit reuses the coverage tool's Syn-based cfg and span analyzer through
-a narrow `pub(crate)` facade. Exact spans proven to be test-only, including
-`#[cfg(test)]` modules and `#[test]` items, are replaced with spaces while line
-breaks remain in place. Ambiguous cfg expressions remain in production scope,
-and mixed production/test lines are reported by the staging summary. This keeps
-the policy conservative and prevents duplicated inline tests from inflating the
-production clone count.
+The test/support lane includes physical test targets, test helper modules,
+test-support crates, and test-only syntax extracted from mixed production
+files. For mixed files it masks production syntax, preserving the same byte
+and newline positions. This keeps production and test duplication separately
+actionable without counting inline tests twice.
 
-Repository fixtures lock down both sides of that contract: a 20-line clone
-inside inline test modules falls below the production threshold after masking,
-while an equivalent production clone remains visible. Separate tests verify
-path preservation, unchanged byte/newline positions, conservative cfg handling,
-the pinned scanner invocation, the checked-in configuration, and fail-closed
-report validation.
+Both lanes require Rust detection, mild matching, at least 20 lines and 50
+tokens per clone, and a 20,000-line source ceiling. The higher source ceiling
+prevents large device algorithms and fixture owners from silently disappearing
+from reports.
 
-## Pinned policy
+## Production clones of at least 50 lines
 
-`.jscpd.json` requires Rust format detection, mild matching, at least 20 lines
-and 50 tokens per clone, a 20,000-line source ceiling, and a 3.34% duplicated-line
-failure threshold. The high source ceiling is intentional: jscpd's historical
-1,000-line default omitted the largest production files and produced misleading
-results.
+The v0.7.3 cleanup report contains five reviewed pairs:
 
-The generated stage lives below `target/`, so the canonical configuration does
-not ignore `**/target/**`. The xtask validates this invariant and supplies only
-the staged production directory to jscpd. This configuration must not be reused
-for an unscoped repository-root scan.
+| Lines | Owners | Disposition | Reconsideration trigger |
+|---:|---|---|---|
+| 53 | CUDA JPEG SIMT sampling loops | Retain explicit device-mode sequencing and checkpoint exits | Shared bug fix or a fourth sampling mode |
+| 66 | CUDA HTJ2K 9/7 resident/readback bands | Retain distinct pooled-resident and owned-readback lifecycles | Allocation or timing logic diverges, or an existing typed owner can express both |
+| 56 | CUDA J2K store sample/channel variants | Retain ABI-specific launch and output ownership after shared validation | Repeated validation defect or another output sample family |
+| 57 | JPEG/J2K CUDA image-device facades | Retain trait-protocol symmetry around codec-private decoders | Trait method set changes or a neutral existing request type covers both |
+| 81 | JPEG/J2K CUDA tile-device facades | Retain stable trait symmetry around codec-private contexts and surfaces | Another backend duplicates the block or the public trait gains a neutral owner |
 
-## Superseded measurements
-
-The 2026-07-09 manual snapshot reported 3.33% duplicated lines. It scanned the
-working `crates/` tree directly and therefore included inline test syntax in
-production files. That number, the earlier 1.74% scan that used jscpd's default
-file ceiling, and objectives derived from either number are not valid final
-0.7 release evidence. They are retained only as historical context in version
-control; this document intentionally does not promote a replacement ratio from
-the moving worktree.
-
-## Freeze rule
-
-After the final structural source commit, run `cargo xtask clone-audit` at the
-frozen candidate SHA and archive the JSON report from CI. A duplicated-line
-ratio of 3.34% or higher, a newly unclassified clone of at least 50 lines, any
-scope/configuration drift, or any non-zero command exit blocks the candidate
-until the cause is reviewed and recorded in the remediation runbook. Record the
-frozen SHA, source/file totals, clone totals, duplicated line/token totals and
-ratios, and dispositions for newly material pairs in this document.
+New production pairs of at least 50 lines require consolidation or an entry in
+the living remediation register with an owner, reason, and trigger. The
+ratchets may be lowered after sustained improvement; they must not be raised to
+accept regression.

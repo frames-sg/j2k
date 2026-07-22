@@ -105,12 +105,16 @@ pub(super) fn elapsed_host_us(start: Option<std::time::Instant>) -> u128 {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct CudaDecodeStageTimings {
     pub(super) h2d: u128,
+    pub(super) table_upload: u128,
     pub(super) payload_upload: u128,
+    pub(super) job_upload: u128,
     pub(super) status_d2h: u128,
     pub(super) ht_cleanup: u128,
     pub(super) ht_refine: u128,
+    pub(super) classic_tier1: u128,
     pub(super) dequant: u128,
     pub(super) ht_dispatch_count: usize,
+    pub(super) classic_dispatch_count: usize,
     pub(super) idwt: u128,
     pub(super) dequant_dispatch_count: usize,
     pub(super) idwt_dispatch_count: usize,
@@ -124,15 +128,25 @@ impl CudaDecodeStageTimings {
             .detail
             .payload_upload_us
             .saturating_add(self.payload_upload);
+        report.detail.table_upload_us = report
+            .detail
+            .table_upload_us
+            .saturating_add(self.table_upload);
+        report.detail.job_upload_us = report.detail.job_upload_us.saturating_add(self.job_upload);
         report.detail.status_d2h_us = report.detail.status_d2h_us.saturating_add(self.status_d2h);
         report.ht_cleanup_us = report.ht_cleanup_us.saturating_add(self.ht_cleanup);
         report.ht_refine_us = report.ht_refine_us.saturating_add(self.ht_refine);
+        report.classic_tier1_us = report.classic_tier1_us.saturating_add(self.classic_tier1);
         report.dequant_us = report.dequant_us.saturating_add(self.dequant);
         report.idwt_us = report.idwt_us.saturating_add(self.idwt);
         report.detail.ht_dispatch_count = report
             .detail
             .ht_dispatch_count
             .saturating_add(self.ht_dispatch_count);
+        report.detail.classic_dispatch_count = report
+            .detail
+            .classic_dispatch_count
+            .saturating_add(self.classic_dispatch_count);
         report.detail.dequant_dispatch_count = report
             .detail
             .dequant_dispatch_count
@@ -169,11 +183,20 @@ pub(super) fn add_decode_report(
     aggregate.h2d_us = aggregate.h2d_us.saturating_add(report.h2d_us);
     aggregate.ht_cleanup_us = aggregate.ht_cleanup_us.saturating_add(report.ht_cleanup_us);
     aggregate.ht_refine_us = aggregate.ht_refine_us.saturating_add(report.ht_refine_us);
+    aggregate.classic_tier1_us = aggregate
+        .classic_tier1_us
+        .saturating_add(report.classic_tier1_us);
     aggregate.dequant_us = aggregate.dequant_us.saturating_add(report.dequant_us);
     aggregate.idwt_us = aggregate.idwt_us.saturating_add(report.idwt_us);
     aggregate.mct_us = aggregate.mct_us.saturating_add(report.mct_us);
     aggregate.store_us = aggregate.store_us.saturating_add(report.store_us);
     aggregate.block_count = aggregate.block_count.saturating_add(report.block_count);
+    aggregate.classic_block_count = aggregate
+        .classic_block_count
+        .saturating_add(report.classic_block_count);
+    aggregate.ht_block_count = aggregate
+        .ht_block_count
+        .saturating_add(report.ht_block_count);
     aggregate.payload_bytes = aggregate.payload_bytes.saturating_add(report.payload_bytes);
     aggregate.dispatch_count = aggregate
         .dispatch_count
@@ -202,6 +225,10 @@ pub(super) fn add_decode_report(
         .detail
         .ht_dispatch_count
         .saturating_add(report.detail.ht_dispatch_count);
+    aggregate.detail.classic_dispatch_count = aggregate
+        .detail
+        .classic_dispatch_count
+        .saturating_add(report.detail.classic_dispatch_count);
     aggregate.detail.dequant_dispatch_count = aggregate
         .detail
         .dequant_dispatch_count

@@ -1020,7 +1020,8 @@ fn cpu_htj2k_rpcl_writes_cod_rpcl_and_tlm() {
 
     let cod_offset = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
     assert_eq!(encoded.codestream[cod_offset + 5], 0x02);
-    assert!(marker_offset(&encoded.codestream, 0x55).is_some());
+    let tlm_offset = marker_offset(&encoded.codestream, 0x55).expect("TLM marker");
+    assert_eq!(encoded.codestream[tlm_offset + 5], 0x60);
     assert_eq!(decode_native(&encoded.codestream).data, pixels);
 }
 
@@ -2615,7 +2616,7 @@ fn tlm_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
             let marker_len =
                 u16::from_be_bytes([codestream[offset + 2], codestream[offset + 3]]) as usize;
             assert_eq!(marker_len, 10);
-            assert_eq!(codestream[offset + 5], 0x22);
+            assert_eq!(codestream[offset + 5], 0x60);
             let tile_index = u16::from_be_bytes([codestream[offset + 6], codestream[offset + 7]]);
             let tile_part_length = u32::from_be_bytes([
                 codestream[offset + 8],

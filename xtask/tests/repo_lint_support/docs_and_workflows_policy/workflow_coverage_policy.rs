@@ -3,8 +3,8 @@
 use std::{fs, path::Path};
 
 use crate::repo_lint_support::{
-    assert_file_pattern_checks, assert_pattern_checks, repo_root, rust_sources, workflow_job,
-    xtask_sources, FilePatternCheck, PatternCheck,
+    assert_file_pattern_checks, assert_pattern_checks, assert_rust_source_scan_checks, repo_root,
+    rust_sources, workflow_job, xtask_sources, FilePatternCheck, PatternCheck, RustSourceScanCheck,
 };
 
 fn fuzz_target_names(manifest: &Path) -> Vec<String> {
@@ -39,6 +39,35 @@ fn fuzz_target_names(manifest: &Path) -> Vec<String> {
         manifest.display()
     );
     names
+}
+
+#[test]
+fn gpu_runtime_tests_do_not_silently_return_on_missing_hardware_gates() {
+    assert_rust_source_scan_checks(
+        repo_root(),
+        &[RustSourceScanCheck::new(
+            "GPU runtime tests must use j2k-test-support gates so optional local skips are visible and CI require gates fail closed",
+            &[
+                "crates/j2k-cuda-runtime/src",
+                "crates/j2k-cuda/src",
+                "crates/j2k-cuda/tests",
+                "crates/j2k-jpeg-cuda/tests",
+                "crates/j2k-transcode-cuda/tests",
+                "crates/j2k-metal/src",
+                "crates/j2k-metal/tests",
+                "crates/j2k-jpeg-metal/tests",
+                "crates/j2k-transcode-metal/tests",
+            ],
+        )
+        .forbidden(&[
+            "if !cuda_runtime_required() {\n        return;",
+            "if !cuda_strict_oxide_required() {\n        return;",
+            "if !cuda_jpeg_hardware_decode_required() {\n        return;",
+            "if std::env::var_os(\"J2K_REQUIRE_CUDA_RUNTIME\").is_none() {\n        return;",
+            "if Device::system_default().is_none() {\n            eprintln!(\"skipping",
+            "no Metal device is available",
+        ])],
+    );
 }
 
 #[test]
@@ -270,9 +299,10 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 "EvidenceClass::Primary",
                 "require_primary_evidence",
                 "enclosing_cfg_is_conditional",
-                "accelerator host lines",
+                "release-critical-host-rust",
+                "enforces_overall_changed_lines",
                 "--include-build-script",
-                "j2k-changed-line-coverage-v5",
+                "j2k-changed-line-coverage-v6",
                 "head_sha",
                 "lane_scope",
                 "changed_functions_without_covered_body",
@@ -317,7 +347,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
         PatternCheck::new("Metal hardware coverage", metal_job)
             .required(&[
                 "fetch-depth: 0",
-                "tool: cargo-llvm-cov@0.8.7",
+                "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage metal",
                 "name: j2k-metal-coverage",
                 "lcov-metal.info",
@@ -328,7 +358,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
         PatternCheck::new("CUDA hardware coverage", cuda_job)
             .required(&[
                 "fetch-depth: 0",
-                "tool: cargo-llvm-cov@0.8.7",
+                "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage cuda",
                 "name: j2k-cuda-coverage",
                 "lcov-cuda.info",
@@ -336,6 +366,37 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
                 "if-no-files-found: error",
             ])
             .forbidden(&["continue-on-error"]),
+    ]);
+}
+
+#[test]
+fn self_hosted_coverage_tool_bootstrap_is_pinned_and_non_privileged() {
+    let root = repo_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/gpu-validation.yml"))
+        .expect("read GPU validation workflow");
+    let bootstrap = fs::read_to_string(root.join("scripts/ensure-cargo-llvm-cov.sh"))
+        .expect("read self-hosted coverage-tool bootstrap");
+
+    for job_name in [
+        "linux-ci",
+        "metal-apple-silicon",
+        "cuda-x86_64-compatibility",
+    ] {
+        let job = workflow_job(&workflow, job_name);
+        assert_pattern_checks(&[PatternCheck::new("self-hosted coverage bootstrap", job)
+            .required(&["scripts/ensure-cargo-llvm-cov.sh"])
+            .forbidden(&["taiki-e/install-action@"])]);
+    }
+
+    assert_pattern_checks(&[
+        PatternCheck::new("self-hosted coverage-tool bootstrap", &bootstrap)
+            .required(&[
+                "cargo-llvm-cov 0.8.7",
+                "cargo llvm-cov --version",
+                "cargo install cargo-llvm-cov --version 0.8.7 --locked --force",
+                "RUSTFLAGS=",
+            ])
+            .forbidden(&["sudo", "apt-get", "brew install"]),
     ]);
 }
 

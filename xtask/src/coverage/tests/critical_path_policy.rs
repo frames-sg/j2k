@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::coverage::critical_path_policy::{
-    audit_zero_body, audited_zero_body_findings, classify_path, CriticalPathClass,
-    ResidualDisposition, ZeroBodyAudit, ZeroBodyKind,
+    audit_zero_body, audited_zero_body_findings, CriticalPathClass, ResidualDisposition,
+    ZeroBodyAudit, ZeroBodyKind,
 };
 use crate::coverage::evaluation::coverage_violations;
 use crate::coverage::model::{CoverageCounts, CoverageLane};
 use crate::coverage::tests::synthetic_result;
+
+mod release_gates;
 
 #[test]
 fn critical_path_threshold_cannot_be_masked_by_low_risk_tooling_coverage() {
@@ -38,39 +40,6 @@ fn low_risk_tooling_absence_is_an_audited_residual_not_a_critical_failure() {
         audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
         ZeroBodyAudit::Residual(ResidualDisposition::LowRiskTooling)
     );
-}
-
-#[test]
-fn critical_path_classification_covers_release_risk_boundaries() {
-    assert_eq!(
-        classify_path("crates/j2k-jpeg/src/parse/header.rs"),
-        Some(CriticalPathClass::Parser)
-    );
-    assert_eq!(
-        classify_path("crates/j2k-core/src/batch/allocation.rs"),
-        Some(CriticalPathClass::Ownership)
-    );
-    assert_eq!(
-        classify_path("crates/j2k/src/lib.rs"),
-        Some(CriticalPathClass::PublicApi)
-    );
-    assert_eq!(
-        classify_path("xtask/src/stable_api.rs"),
-        Some(CriticalPathClass::PublicApi)
-    );
-    assert_eq!(
-        classify_path("xtask/src/release_commands/release_integrity_policy.rs"),
-        Some(CriticalPathClass::Security)
-    );
-    assert_eq!(
-        classify_path("crates/j2k-native/src/unsafe_boundary.rs"),
-        Some(CriticalPathClass::Safety)
-    );
-    assert_eq!(
-        classify_path("crates/j2k-native/src/j2c/idwt.rs"),
-        Some(CriticalPathClass::Correctness)
-    );
-    assert_eq!(classify_path("xtask/src/perf_guard.rs"), None);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, env};
 
 use crate::process::{self, cargo, CommandContext};
 
-const GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED";
+const METAL_GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME";
 const METAL_COMPILE_ENV: &[(&str, &str)] = &[("RUST_TEST_THREADS", "1")];
 const METAL_RUNTIME_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_METAL_RUNTIME", "1"),
@@ -19,29 +19,36 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-jpeg-metal",
     "j2k-metal",
     "j2k-transcode-metal",
+    "j2k-ml",
     "j2k",
 ];
 
 const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
-    "compute::tests::cropped_region_ht_direct_plan_keeps_idwt_windows_bounded",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_compacts_coded_payloads",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work",
-    "compute::tests::distinct_prepared_ht_direct_plans_support_stacked_component_batch",
-    "compute::tests::grouped_ht_direct_plan_uses_one_group_coded_arena",
-    "compute::tests::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
-    "compute::tests::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
-    "compute::tests::prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder",
-    "compute::tests::prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
-    "compute::tests::repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::classic::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::classic::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
+    "compute::tests::grouping::distinct_prepared_ht_direct_plans_support_stacked_component_batch",
+    "compute::tests::grouping::grouped_ht_direct_plan_uses_one_group_coded_arena",
+    "compute::tests::grouping::prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder",
+    "compute::tests::grouping::prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::grouping::repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::roi::cropped_region_ht_direct_plan_keeps_idwt_windows_bounded",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_compacts_coded_payloads",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work",
     "direct::tests::classic_direct_plan_idwt_inputs_match_native_backend_job",
     "direct::tests::classic_direct_plan_pre_store_band_is_not_all_zero",
     "direct::tests::classic_direct_plan_store_plane_matches_native_decode",
     "direct::tests::classic_direct_plan_sub_band_decode_produces_nonzero_coefficients",
     "direct::tests::ht_direct_plan_sub_band_decode_produces_nonzero_coefficients",
-    "encode::tests::auto_htj2k_padded_private_gray8_single_host_output_stays_cpu",
-    "encode::tests::auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu",
+    "encode::tests::routing::auto_htj2k_padded_private_gray8_single_host_output_stays_cpu",
+    "encode::tests::routing::auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu",
+    "idwt::tests::metal_irreversible_idwt_perf_guard",
 ];
+
+// Capture requires an explicit output path and must never be folded into the
+// unattended release run. It remains inventoried so a new ignored test cannot
+// silently escape the fail-closed classification.
+const METAL_OPTIONAL_IGNORED_TESTS: &[&str] = &["idwt::tests::metal_irreversible_idwt_gpu_capture"];
 
 struct MetalTestSuite {
     label: &'static str,
@@ -68,7 +75,7 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         package: "j2k-metal",
         minimum_passed: 150,
         required_test:
-            "encode::tests::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips",
+            "encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips",
     },
     MetalTestSuite {
         label: "transcode Metal runtime",
@@ -76,6 +83,12 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         minimum_passed: 20,
         required_test:
             "ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling",
+    },
+    MetalTestSuite {
+        label: "Burn J2K Metal tensor integration",
+        package: "j2k-ml",
+        minimum_passed: 4,
+        required_test: "sessions::persistent_metal_burn_decoder_writes_independent_ht_directly",
     },
     MetalTestSuite {
         label: "J2K public facade",
@@ -144,7 +157,7 @@ fn run_release_metal() -> Result<(), String> {
         )?;
     }
 
-    let ignored_args = [
+    let mut ignored_args = vec![
         "test",
         "--release",
         "-p",
@@ -154,6 +167,9 @@ fn run_release_metal() -> Result<(), String> {
         "--ignored",
         "--show-output",
     ];
+    for optional_test in METAL_OPTIONAL_IGNORED_TESTS {
+        ignored_args.extend_from_slice(&["--skip", optional_test]);
+    }
     let output = run_cargo_captured(
         &ignored_args,
         METAL_RUNTIME_ENV,
@@ -205,6 +221,7 @@ fn validate_required_ignored_inventory() -> Result<(), String> {
     let actual = listed_rust_tests(&output);
     let expected = J2K_METAL_REQUIRED_IGNORED_TESTS
         .iter()
+        .chain(METAL_OPTIONAL_IGNORED_TESTS)
         .map(|name| (*name).to_string())
         .collect::<BTreeSet<_>>();
     if actual == expected {
@@ -303,9 +320,9 @@ fn validate_exact_ignored_run(output: &str) -> Result<(), String> {
 }
 
 fn reject_skip_markers(output: &str, label: &str) -> Result<(), String> {
-    if output.contains(GPU_TEST_SKIP_MARKER) {
+    if output.contains(METAL_GPU_TEST_SKIP_MARKER) {
         Err(format!(
-            "{label} emitted {GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
+            "{label} emitted {METAL_GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
         ))
     } else {
         Ok(())

@@ -29,6 +29,61 @@ pub(crate) fn mask_test_only_syntax(
         .map_err(|error| format!("mask test-only syntax in {relative}: {error}"))
 }
 
+pub(crate) fn retain_test_only_syntax(
+    repository_root: &Path,
+    relative_path: &Path,
+    source: &str,
+) -> Result<MaskedRustSource, String> {
+    let relative = relative_path.to_str().ok_or_else(|| {
+        format!(
+            "source-audit path is not UTF-8: {}",
+            relative_path.display()
+        )
+    })?;
+    let analysis = analyze_test_only_syntax(repository_root, relative, source)
+        .map_err(|error| format!("source-aware audit of {relative} failed: {error}"))?;
+    retain_analysis(source, analysis)
+        .map_err(|error| format!("retain test-only syntax in {relative}: {error}"))
+}
+
+fn retain_analysis(source: &str, analysis: SourceAuditSyntax) -> Result<MaskedRustSource, String> {
+    let masked_nodes = analysis.test_only_spans.len();
+    if analysis.fully_test_only {
+        return Ok(MaskedRustSource {
+            text: source.to_string(),
+            masked_nodes,
+            mixed_lines: analysis.mixed_lines,
+        });
+    }
+    let mut bytes = source
+        .bytes()
+        .map(|byte| {
+            if matches!(byte, b'\n' | b'\r') {
+                byte
+            } else {
+                b' '
+            }
+        })
+        .collect::<Vec<_>>();
+    let line_starts = line_starts(source);
+    let mut ranges = analysis
+        .test_only_spans
+        .iter()
+        .map(|span| span_range(source, &line_starts, *span))
+        .collect::<Result<Vec<_>, _>>()?;
+    ranges.sort_unstable();
+    for (start, end) in merge_ranges(&ranges) {
+        bytes[start..end].copy_from_slice(&source.as_bytes()[start..end]);
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|error| format!("retained Rust source is not UTF-8: {error}"))?;
+    Ok(MaskedRustSource {
+        text,
+        masked_nodes,
+        mixed_lines: analysis.mixed_lines,
+    })
+}
+
 fn mask_analysis(source: &str, analysis: SourceAuditSyntax) -> Result<MaskedRustSource, String> {
     let mut bytes = source.as_bytes().to_vec();
     let masked_nodes = analysis.test_only_spans.len();

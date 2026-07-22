@@ -11,6 +11,8 @@ use crate::{
 
 use super::Image;
 
+mod referenced;
+
 impl<'a> Image<'a> {
     /// Build an adapter grayscale direct device plan without materializing host component planes.
     #[doc(hidden)]

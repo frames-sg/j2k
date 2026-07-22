@@ -1,7 +1,59 @@
 # Changelog
 
-This changelog tracks the current staged release line. Historical phase notes
+This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
+
+## [Unreleased]
+
+Staged workspace version: `0.7.4`.
+
+- Compatibility exception: this candidate is an explicitly source-incompatible
+  `0.7.x` patch. It is staged only; it has not been published or tagged.
+- Removes the pass-through `j2k_core::DecoderContext<C>` type and its
+  `j2k::DecoderContext` re-export. Construct and pass the concrete context
+  directly: `J2kContext::new()` (or `Default`) for `j2k`, and
+  `j2k_jpeg::DecoderContext::new()` (or `Default`) for JPEG. Batch trait
+  implementations now receive `&mut Self::Context`; call `CodecContext::clear`
+  and `CodecContext::cache_stats` on that concrete value.
+- Removes `try_collect_ordered_batch_results`. Migrate to
+  `try_collect_ordered_batch_results_with_limits`, passing the previous
+  retained-byte and maximum-retained-byte pair for both its aggregate and
+  collection limit pairs.
+- Removes the five forwarding accessors on
+  `J2kResidentHtj2kTileEncodeJob`. Read the validated input directly through
+  `job.input.width()`, `height()`, `num_components()`, `bit_depth()`, and
+  `signed()`.
+- Internal: removes pass-through decode, encode, allocation, crop, recode,
+  coverage-normalization, fixture, cache-key, progression, and GPU-routing
+  layers while retaining codec-specific scratch-pool types.
+
+## [0.7.3] - 2026-07-15
+
+- Fixes invalid TLM `Stlm` descriptors in CPU and Metal codestream writers so
+  HTJ2K RPCL output is accepted by conforming external decoders.
+
+## [0.7.2] - 2026-07-15
+
+- Fixes strict CUDA Oxide builds from crates.io by resolving the packaged
+  `j2k-codec-math` source through Cargo build metadata instead of assuming the
+  unpublished workspace directory layout.
+
+## [0.7.1] - 2026-07-14
+
+- Adds CUDA classic JPEG 2000 Tier-1 code-block decoding with shared host/device
+  MQ and context tables, batched resident submission, bounded host accounting,
+  and explicit CUDA ABI and unsafe-boundary inventories.
+- Adds an opaque, zero-copy Metal resident-image contract with checked layout
+  and device identity, submission-owned input and output lifetimes, safe
+  decoder-to-encoder handoff, and explicit unsafe raw-buffer interop.
+- Improves Metal decode residency with dynamic pool ceilings and enforced
+  inflight limits, fixes irreversible inverse-MCT addends, fuses native inverse
+  MCT output handling, and uses a staged irreversible 9/7 IDWT implementation.
+- Adds hardened CUDA and Metal profiling/capture controls and documents their
+  benchmark-only environment variables.
+- Adds the unpublished experimental `j2k-ml` workspace crate with CPU and Metal
+  validation paths and an optional CUDA-Oxide kernel route, including checked
+  adoption and stream-order completion for CubeCL memory-pool allocations.
 
 ## [0.7.0] - 2026-07-12
 

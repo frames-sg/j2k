@@ -21,8 +21,9 @@ pub(super) fn temp_dir(label: &str) -> PathBuf {
 
 pub(super) fn recording_program(root: &Path) -> PathBuf {
     let path = root.join("record-command.sh");
+    let staging = root.join("record-command.staging");
     fs::write(
-        &path,
+        &staging,
         r#"#!/bin/sh
 for argument in "$@"; do
     printf 'arg=%s\n' "$argument"
@@ -55,12 +56,13 @@ printf 'stderr-custom=%s\n' "${CUSTOM-unset}" >&2
 exit "${EXIT_CODE-0}"
 "#,
     )
-    .expect("write recording program");
-    let mut permissions = fs::metadata(&path)
-        .expect("recording program metadata")
+    .expect("write staged recording program");
+    let mut permissions = fs::metadata(&staging)
+        .expect("staged recording program metadata")
         .permissions();
     permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).expect("make recording program executable");
+    fs::set_permissions(&staging, permissions).expect("make staged recording program executable");
+    fs::rename(staging, &path).expect("publish closed recording program");
     path
 }
 

@@ -1,0 +1,123 @@
+version: 2
+baseline_tag: v0.6.2
+baseline_version: 0.6.2
+candidate_version: "0.7.3"
+reviews:
+  j2k:
+    removed_fingerprint: "fnv1a64:6636444baca7f77c"
+    added_fingerprint: "fnv1a64:ff6625dda2d1913c"
+    hidden_count: 100
+    hidden_fingerprint: "fnv1a64:0d7c7465a7899265"
+    rationale: "Reviewed the complete 0.6.2-to-0.7 facade diff: experimental adaptive-routing and implementation-facing module paths are intentionally removed, supported codec types remain available at the root, batch errors become typed, large owners become move-only, and opaque NativeBackendError values preserve concrete source chains without exposing j2k-native."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k inventory; it consists of supported facade trait implementations and implementation-facing forms of the reviewed root API, including the opaque native source boundary, with no unreviewed public ownership escape."
+  j2k-core:
+    removed_fingerprint: "fnv1a64:77731319da5bb00b"
+    added_fingerprint: "fnv1a64:d8f97cd365d97513"
+    hidden_count: 142
+    hidden_fingerprint: "fnv1a64:6ed51ee7bd843cdb"
+    rationale: "Reviewed the core contract consolidation: legacy DecodeRequest default methods, BackendFailureKind, WarningKind, and the panic-prone batch collector are intentionally removed; typed batch infrastructure errors, explicit adapter error parts, device request data, and the documented unsafe GpuAbi contract replace them."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-core inventory, including root re-export forms, batch collection internals, and GPU ABI implementations; the removed collector is replaced by fallible ordered collectors that preserve infrastructure failures."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:2edcbda35cf5bab0"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete first-published j2k-codec-math API: it is a no_std, unsafe-free, allocation-free support crate containing shared codec constants, generated shader fragments, canonical Huffman validation, fixed-capacity DWT geometry helpers, and canonical classic JPEG 2000 MQ/context lookup tables used by the CUDA classic decoder, with no historical compatibility baseline."
+  j2k-jpeg:
+    removed_fingerprint: "fnv1a64:e9c8b4bcdfd4d07c"
+    added_fingerprint: "fnv1a64:22365f198fcff3a3"
+    hidden_count: 550
+    hidden_fingerprint: "fnv1a64:694878382ed6212c"
+    rationale: "Reviewed the JPEG contract cleanup: supported decode and encode entry points remain available, invalid coefficient input and allocation failures become typed, large JPEG owners become move-only with fallible cloning where appropriate, sampling and output allocation become fallible, and backend-neutral fast-packet naming replaces Metal-specific names."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-jpeg inventory, including fast-packet planning, parser and entropy adapters, allocation-accounted owners, and baseline DCT validation; removed implementation helpers have supported typed replacements or are explicitly unsupported internals."
+  j2k-tilecodec:
+    removed_fingerprint: "fnv1a64:d88ac6fa29213015"
+    added_fingerprint: "fnv1a64:0df1685ea89ef064"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the tilecodec contraction: TileCodecError is now non-exhaustive, the unused string Backend variant is removed, and malformed and I/O failures retain concrete std::io::Error sources for typed inspection."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-tilecodec inventory; codec and scratch implementations remain reachable while implementation-only module exposure is contracted, and all supported failures use the reviewed source-preserving error boundary."
+  j2k-jpeg-metal:
+    removed_fingerprint: "fnv1a64:7dba0ea76bbcfc83"
+    added_fingerprint: "fnv1a64:2a1f63ef1ed19f54"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:79227f0534bdbee0"
+    rationale: "Reviewed the Metal JPEG adapter redesign: batch permutations contract to request-and-target APIs, Surface::as_bytes becomes a fallible Cow readback, decoder surfaces expose an opaque resident image, safe encoders accept that resident image with device validation, raw Metal resource access remains unsafe, and typed Metal support errors preserve synchronization and allocation failures."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-jpeg-metal inventory, including reusable output, viewport, submission, and raw-resource seams. ResidentPrivateJpegTile now hands off ResidentMetalImage safely; its previous safe into_buffer escape is intentionally unsafe because callers must prove completion and exclusive ownership."
+  j2k-metal:
+    removed_fingerprint: "fnv1a64:cf808e7021f42efb"
+    added_fingerprint: "fnv1a64:030e13beed78dfc3"
+    hidden_count: 287
+    hidden_fingerprint: "fnv1a64:79d7834b64cda3b0"
+    rationale: "Reviewed the Metal J2K adapter changes: decode and lossless encode permutations consolidate behind request and batch contracts, decoder surfaces expose an opaque resident image, safe encoders accept that resident image with device validation, GPU-backed byte access becomes fallible, raw buffer construction and handoff remain unsafe, large owners become move-only, and opaque native errors retain concrete sources."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-metal inventory, including prepared-plan cache, pooled resource, submission, resident-image integration, and diagnostic surfaces; lifecycle-sensitive raw access is unsafe and source-preserving typed failures cover cache, accounting, device identity, and native boundaries."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "fnv1a64:b89441cc882c4788"
+    added_fingerprint: "fnv1a64:c7feb31cdb60d809"
+    hidden_count: 124
+    hidden_fingerprint: "fnv1a64:b8ecbb08e772efc7"
+    rationale: "Reviewed the CUDA JPEG adapter diff: batch decode results intentionally change from Vec to CudaJpegBatch so actual-capacity host leases outlive their allocations, growth is fallible and transactional, and runtime, cap, allocator, cache, and poisoned-session failures remain typed."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-jpeg-cuda inventory, including CudaJpegBatch and its owning iterator; slice, Deref, and IntoIterator access remain available while the allocation lease survives collection ownership and consuming iteration."
+  j2k-cuda:
+    removed_fingerprint: "fnv1a64:26bb93a098670693"
+    added_fingerprint: "fnv1a64:b89582cdf65a54b1"
+    hidden_count: 171
+    hidden_fingerprint: "fnv1a64:171da25cdbd064de"
+    rationale: "Reviewed the CUDA J2K adapter contraction: resident codestream ownership is split into metadata and a device-buffer owner, deprecated host outcome duplication is removed, encode-stage failures become typed, and opaque native and concrete CUDA runtime sources remain inspectable."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-cuda inventory, including resident decode, encode, HT-versus-classic decode profiling, and packetization adapters; owner graphs are move-only where payload duplication was unsafe and lifecycle-sensitive runtime work remains session-bound."
+  j2k-transcode:
+    removed_fingerprint: "fnv1a64:59c18a5d5c568d82"
+    added_fingerprint: "fnv1a64:5134f2653e8e74c1"
+    hidden_count: 455
+    hidden_fingerprint: "fnv1a64:fdd61f6fdda4a9ab"
+    rationale: "Reviewed the transcode redesign: accelerator, transform, metrics, grid, allocation, resident-handoff, and HTJ2K encode failures become typed and source-preserving; large transform and packetization owners become move-only, implementation modules consolidate behind root contracts, and the DCT97 grid scratch owner is public so production callers can reuse allocation without depending on a private module."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-transcode inventory, including resident-buffer handoffs and the opaque HTJ2K native encode source boundary; geometry, allocation, backend, and invariant failures remain distinguishable without string parsing."
+  j2k-transcode-cuda:
+    removed_fingerprint: "fnv1a64:bc3b3cb7278c3546"
+    added_fingerprint: "fnv1a64:a6bda71caf027368"
+    hidden_count: 17
+    hidden_fingerprint: "fnv1a64:3e3e69d35c4a62a5"
+    rationale: "Reviewed the CUDA transcode adapter changes: CudaTranscodeError becomes owned and source-preserving, runtime diagnostics retain operation and unavailability classification, and host cap and allocation failures receive explicit variants for correct Auto fallback."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-transcode-cuda inventory; low-level accelerator and resident paths use the reviewed typed transcode error boundary and preserve detailed CUDA runtime sources."
+  j2k-metal-support:
+    removed_fingerprint: "fnv1a64:1e97dea61ab37693"
+    added_fingerprint: "fnv1a64:f387ac03f02fd787"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:671e50d4d121b419"
+    rationale: "Reviewed the Metal support contraction and ownership API: MetalDeviceSession and borrowed buffer slices are removed, MetalRuntimeSession owns lifecycle state, MetalImageLayout validates image bounds, ResidentMetalImage keeps buffers opaque and device-identified, SubmittedMetalImages retains inputs and outputs through completion, allocation and command creation are checked and fallible, and CPU/GPU synchronization-sensitive raw operations are explicitly unsafe."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-metal-support inventory; checked command, allocation, completion, and unsafe buffer operations expose typed MetalSupportError failures without returning synchronization-dependent borrowed storage. The hidden in-flight-buffer adoption constructor is unsafe and exists only for audited producers that transfer exclusive ownership into a retaining submission."
+  j2k-transcode-metal:
+    removed_fingerprint: "fnv1a64:cb7b5d9d32919719"
+    added_fingerprint: "fnv1a64:c22ab3f78bbed4fc"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:5bf8a22a33753a2d"
+    rationale: "Reviewed the Metal transcode adapter changes: flattened static-string failures are replaced by typed Metal runtime sources and fallback reasons, while resident Metal codestream handoff validates ownership and exposes explicit resident metadata."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-transcode-metal inventory; transform, buffer, weight, code-block, and resident handoff paths retain typed allocation, Metal runtime, and source-chain failures."
+  j2k-native:
+    removed_fingerprint: "fnv1a64:3a778df648bed7a0"
+    added_fingerprint: "fnv1a64:4cb163fa9f7597dc"
+    hidden_count: 535
+    hidden_fingerprint: "fnv1a64:7c931c0e7c4eb27b"
+    rationale: "Reviewed the native engine contraction: encoding entry points move from static strings to non-exhaustive EncodeError and EncodeResult, decode adds allocation and classification APIs, large output graphs become move-only, shared stage types come from j2k-types, and implementation-detail exports are removed."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-native inventory, including direct-plan actual-capacity accounting and resident encode hooks; panic-prone deinterleave compatibility is removed and retained low-level paths return typed allocation, validation, accelerator, unsupported, or invariant failures."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:4b4595dc5d8ff8ce"
+    hidden_count: 60
+    hidden_fingerprint: "fnv1a64:bc3b26816db006bf"
+    rationale: "Reviewed the additive j2k-types contract: shared encode jobs and outputs retain their existing re-exported paths, while the stage accelerator now uses typed J2kEncodeStageResult failures and adds a validated resident HTJ2K input contract."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-types inventory, including resident input validation, move-only large encode graphs, and typed stage failure classification shared by facade, native, Metal, and CUDA implementations."
+  j2k-cuda-runtime:
+    removed_fingerprint: "fnv1a64:de98d6fa72f8a1f1"
+    added_fingerprint: "fnv1a64:c95260f698f6546d"
+    hidden_count: 918
+    hidden_fingerprint: "fnv1a64:61e8d94589aa373a"
+    rationale: "Reviewed the CUDA runtime contraction: ordinary root exports narrow to supported context, memory, execution, and error primitives; the added classic JPEG 2000 decode ABI, pooled coefficient allocation, payload upload, and timed multi-target dispatch use the existing context and buffer-pool ownership model; implementation-detail kernels remain outside the documented surface, and completion, host allocation, invariant, and resource-release failures receive typed variants."
+    hidden_rationale: "Reviewed the complete reachable rustdoc-hidden j2k-cuda-runtime inventory, including asynchronous cleanup, classic and HT decode jobs, IDWT, queued execution, pooled allocation, and packet ABI surfaces; enqueue and early-release operations requiring caller lifecycle proofs are unsafe and partial failures preserve both primary and cleanup errors."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the ordinary j2k-profile inventory: the documented surface remains the crate module root only; all callable profiling APIs are rustdoc-hidden and are reviewed separately against the 0.6.2 source contract."
+    hidden_rationale: "Manually reviewed the complete 117-item rustdoc-hidden j2k-profile inventory against the v0.6.2 source contract; the bounded, fallible, move-only profiling redesign and every removed legacy helper are accepted with explicit changelog replacements or an explicit statement that no compatibility replacement exists."

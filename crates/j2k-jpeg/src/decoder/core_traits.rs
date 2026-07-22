@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    ComponentRowWriter, CompressedTransferSyntax, CoreDecodeOutcome, CoreDecoderContext,
-    DecodeOutcome, DecodeRowsError, Decoder, DecoderContext, Downscale, DownscaleFactor,
-    ImageCodec, ImageDecode, ImageDecodeRows, Info, InterleavedRgbWriter, JpegCodec, JpegError,
-    JpegView, OutputWriter, PixelFormat, Rect, RowSink, ScratchPool, SofKind, TileBatchDecode, Vec,
-    Warning,
+    ComponentRowWriter, CompressedTransferSyntax, CoreDecodeOutcome, DecodeOutcome,
+    DecodeRowsError, Decoder, DecoderContext, Downscale, DownscaleFactor, ImageCodec, ImageDecode,
+    ImageDecodeRows, Info, InterleavedRgbWriter, JpegCodec, JpegError, JpegView, OutputWriter,
+    PixelFormat, Rect, RowSink, ScratchPool, SofKind, TileBatchDecode, Vec, Warning,
 };
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
@@ -174,20 +173,20 @@ impl TileBatchDecode for JpegCodec {
     type Context = DecoderContext;
 
     fn decode_tile(
-        ctx: &mut CoreDecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
+        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx)?;
         dec.decode_into_with_scratch(pool, out, stride, fmt)
             .map(core_outcome)
     }
 
     fn decode_tile_region(
-        ctx: &mut CoreDecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -195,13 +194,13 @@ impl TileBatchDecode for JpegCodec {
         fmt: PixelFormat,
         roi: j2k_core::Rect,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
+        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx)?;
         dec.decode_region_into_with_scratch(pool, out, stride, fmt, roi.into())
             .map(core_outcome)
     }
 
     fn decode_tile_scaled(
-        ctx: &mut CoreDecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -209,13 +208,13 @@ impl TileBatchDecode for JpegCodec {
         fmt: PixelFormat,
         scale: Downscale,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
+        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx)?;
         dec.decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)
             .map(core_outcome)
     }
 
     fn decode_tile_region_scaled(
-        ctx: &mut CoreDecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         fmt: PixelFormat,
         job: TileRegionScaledDecodeJob<'_, '_>,
@@ -227,7 +226,7 @@ impl TileBatchDecode for JpegCodec {
             roi,
             scale,
         } = job;
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
+        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx)?;
         dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi.into(), scale)
             .map(core_outcome)
     }

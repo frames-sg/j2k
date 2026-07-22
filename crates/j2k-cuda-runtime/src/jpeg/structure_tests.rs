@@ -9,6 +9,11 @@ const MODULES: &[(&str, &str, usize)] = &[
         include_str!("decode_launch.rs"),
         250,
     ),
+    (
+        "jpeg/decode_launch/decode_workspace.rs",
+        include_str!("decode_launch/decode_workspace.rs"),
+        150,
+    ),
     ("jpeg/diagnostics.rs", include_str!("diagnostics.rs"), 250),
     (
         "jpeg/diagnostics_allocation.rs",
@@ -127,7 +132,6 @@ fn cuda_jpeg_runtime_uses_focused_real_modules() {
         assert!(ROOT.contains(module), "jpeg.rs must contain {module}");
     }
     assert!(!ROOT.contains(&include_macro));
-
     for (path, source, max_lines) in MODULES {
         assert!(
             source.lines().count() < *max_lines,

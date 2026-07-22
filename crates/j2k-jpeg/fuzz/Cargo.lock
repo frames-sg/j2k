@@ -77,18 +77,18 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.7.0"
+version = "0.7.4"
 
 [[package]]
 name = "j2k-core"
-version = "0.7.0"
+version = "0.7.4"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.7.0"
+version = "0.7.4"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.7.0"
+version = "0.7.4"
 
 [[package]]
 name = "jobserver"

@@ -4,6 +4,10 @@ This document records published benchmark commands, measurements, and
 environment details. JSON and CSV artifacts remain the source of truth when
 they are produced by a benchmark harness.
 
+This is the sole narrative owner for dated benchmark hosts, commands, results,
+and historical performance qualifications. The workspace README, architecture,
+and integration guides link here instead of copying mutable measurements.
+
 ## Publication Status
 
 The codec support boundary is tracked separately in
@@ -240,7 +244,214 @@ cargo test -p j2k-cuda-runtime --lib \
 The validation host also needed its linker search path to include the local
 LLVM/libffi runtime used by cuda-oxide.
 
+## Metal Irreversible 9/7 Heatmap Experiment - 2026-07-13
+
+This local experiment used Apple's GPU performance heat maps to test whether
+the staged irreversible 9/7 IDWT should be replaced by full-axis
+threadgroup-memory kernels. The prototype was rejected and removed because it
+failed the targeted performance gate. The capture and dispersion harness at
+`c35b7d43` remains as permanent diagnostic infrastructure.
+
+Environment:
+
+- Machine: MacBook Pro `Mac16,8`, Apple M4 Pro, 48 GB
+- OS: macOS 26.5 build `25F71`
+- Xcode: 26.6 build `17F113`
+- Metal toolchain: `com.apple.dt.toolchain.Metal.32023.883`, component build
+  `17F109`
+- Baseline and retained source: `c35b7d43`
+- Profile: Cargo `release-bench`, isolated baseline/candidate target
+  directories, with no concurrent Cargo, CUDA, Metal, Criterion, or heavy
+  build workload
+
+The captured 1023 x 767 staged transform exposed the runtime-generated Metal
+source in Xcode. Profile GPU Trace reported 214.21 us total GPU time, one
+command buffer, one compute encoder, 11 dispatches, and 12.01 MiB of buffers.
+The four horizontal lifting dispatches accounted for 37.02% of GPU time, the
+four vertical lifting dispatches 36.43%, vertical scale 9.12%, horizontal
+scale 8.87%, and interleave 8.55%. The scale and lifting passes therefore
+accounted for 91.44% of captured GPU time.
+
+The trace reported 73.87% Occupancy Manager target, an 87.12% Compute Shader
+Launch limiter, and a 32.09% Last Level Cache limiter with 31.94% utilization.
+The staged pipelines used 12-14 allocated registers and spilled zero bytes.
+Those counters supported prototyping dispatch fusion; they did not establish
+that fusion would be faster.
+
+The prototype used one threadgroup per row or column, dynamic threadgroup
+memory, and separate horizontal and vertical kernels. Forced staged/fused
+tests matched within the existing irreversible tolerance across degenerate,
+odd/even, origin-parity, and 1023 x 767 cases. A pipeline-relative sweep then
+tested 1, 2, 4, 8, 16, and 32 SIMD groups per threadgroup:
+
+| SIMD groups | Threads on M4 Pro | Exploratory median | IQR |
+| ---: | ---: | ---: | ---: |
+| 1 | 32 | 1.658 ms | 0.227 ms |
+| 2 | 64 | 1.563 ms | 0.360 ms |
+| 4 | 128 | 1.437 ms | 0.298 ms |
+| 8 | 256 | 1.667 ms | 0.256 ms |
+| 16 | 512 | 1.686 ms | 0.207 ms |
+| 32 | 1024 | 1.745 ms | 0.701 ms |
+
+Because the 128-thread exploratory row appeared promising, it was remeasured
+in five alternating baseline/candidate processes with eleven warmed samples
+per process. Each cell reports process median / IQR:
+
+| Process | Staged baseline | 128-thread fused prototype |
+| ---: | ---: | ---: |
+| 1 | 1.422 / 0.381 ms | 1.641 / 0.300 ms |
+| 2 | 1.467 / 0.262 ms | 1.649 / 0.557 ms |
+| 3 | 1.629 / 0.261 ms | 1.677 / 0.288 ms |
+| 4 | 1.383 / 0.354 ms | 1.459 / 0.378 ms |
+| 5 | 1.324 / 0.410 ms | 1.646 / 0.373 ms |
+
+The median of process medians regressed from 1.422 ms to 1.646 ms (+15.75%).
+The initial maximum-thread configuration also regressed, from 1.550 ms to
+1.936 ms (+24.90%). Both miss the required 5% improvement by a wide margin.
+The kernel prototype and its temporary routing/tests were therefore removed.
+The end-to-end 512/1024 decode rows were not run because the targeted gate had
+already required rejection; no routing or performance claim changed.
+
+Changed-line coverage could not be reported. The canonical command
+`cargo xtask coverage metal --base HEAD^` failed before compiling coverage
+tests because the repository's Metal lane supplied `cargo-llvm-cov 0.8.7`
+with mutually incompatible `--no-report` and `--no-clean` options. The manual
+capture body is also intentionally skipped when coverage instrumentation is
+active so a coverage run cannot create a GPU trace. Package tests and strict
+Clippy passed, but this experiment therefore has no changed-line percentage.
+
+The permanent guard can be rerun with:
+
+```bash
+J2K_REQUIRE_METAL_RUNTIME=1 CARGO_TARGET_DIR=<isolated-target> \
+  cargo test -p j2k-metal metal_irreversible_idwt_perf_guard \
+  --profile release-bench --locked -- \
+  --ignored --nocapture --test-threads=1
+```
+
+The ignored GPU-capture test additionally requires `MTL_CAPTURE_ENABLED=1`
+and an absolute, nonexistent `.gputrace` path in
+`J2K_METAL_CAPTURE_PATH`. Captured timings are diagnostic only and are not
+used for acceptance.
+
+## July 19 Batch-Input Qualification
+
+The July 19 CUDA and Metal batch diagnostics below predate the explicit
+`distinct` and `repeated` input modes. Their harnesses cloned one encoded
+`Arc` for every image in a batch. Batch-1 measurements are unaffected. Every
+batch-greater-than-one measurement used identical encoded content, even when
+the codec still submitted each image independently.
+
+Metal color decoding additionally recognized pointer-identical RGB/RGBA inputs
+and decoded one image before broadcasting its pixels across the output batch.
+Consequently, the historical Metal RGB/RGBA batch-greater-than-one rows measure
+decode-once broadcast, not distinct-image batch throughput. Other historical
+batch-greater-than-one rows, including CUDA and Metal grayscale, measure
+identical-content reuse. The numbers remain preserved as historical diagnostic
+evidence, but none of those rows is an acceptance baseline or a claim about
+content-distinct batches. The corrected harness defaults to 64 deterministic,
+content-distinct codestreams per workload and labels repeated-owner runs
+separately. A corrected content-distinct acceptance matrix has not yet been
+recorded in this evidence log.
+
+## CUDA Status
+
+### HTJ2K batch and Burn-direct diagnostic - 2026-07-19
+
+This is implementation evidence, not a publication or adoption-facing speed
+claim. The source tree had uncommitted batch-pipeline changes, and the harness
+uses generated fixtures rather than a pinned external corpus.
+
+Host and command:
+
+- NVIDIA GeForce RTX 4070 SUPER under WSL2, driver 596.49
+- Ubuntu 24.04
+- Rust 1.96
+- `cargo bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda -- --quick`
+
+The matrix covered unsigned and signed Gray12/Gray16 at 512 and 1024 pixels,
+RGB8/RGB16 and RGBA8/RGBA16 at 256 and 512 pixels, all four request modes, and
+batch sizes 1/8/32/64. The fail-closed harness completed 1,024 accelerated
+telemetry rows. Every row had one status transfer and no decoded-pixel device
+readback; the decoded D2H counters exactly matched the status counters. No row
+used a codec event or context host synchronization. Codec-resident probes used
+no consumer host wait; Burn-direct probes used one final consumer sync solely
+to bound the end-to-end benchmark interval. The CUDA release suite separately
+passed the external-destination, event ordering, drop cleanup, and 1,000-batch
+session-reuse tests.
+
+Criterion median estimates for selected full-decode rows were:
+
+| Workload | Batch | CPU decode + Burn upload | Prepared Burn-direct CUDA | Ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Gray12 512 | 32 | 168.009 MP/s | 657.198 MP/s | 3.912x |
+| Gray12 512 | 64 | 156.981 MP/s | 487.790 MP/s | 3.107x |
+| Gray16 1024 | 32 | 142.390 MP/s | 439.150 MP/s | 3.084x |
+| Gray16 1024 | 64 | 138.807 MP/s | 294.203 MP/s | 2.120x |
+| RGB16 512 | 32 | 48.602 MP/s | 117.474 MP/s | 2.417x |
+| RGB16 512 | 64 | 48.151 MP/s | 103.962 MP/s | 2.159x |
+| RGBA16 512 | 32 | 38.114 MP/s | 73.382 MP/s | 1.925x |
+| RGBA16 512 | 64 | 37.845 MP/s | 71.748 MP/s | 1.896x |
+
+In this repeated-content run, across all 64 workload/request combinations,
+prepared Burn-direct was faster than CPU decode plus upload in 57 batch-1
+cases and all 64 batch-8, batch-32,
+and batch-64 cases. Mean staged/direct time ratios were 2.584x, 2.262x,
+2.837x, and 2.881x respectively. Backend selection remains explicit because
+these are quick local diagnostics, not pinned-corpus publication evidence.
+
 ## Metal Status
+
+### HTJ2K batch and Burn-direct diagnostic - 2026-07-19
+
+This is local implementation evidence, not a publication or adoption-facing
+speed claim. The source tree had uncommitted batch-pipeline changes, so the run
+is not tied to a reproducible git SHA. Fixtures were generated by the benchmark
+harness and are not an external corpus.
+
+Host and command:
+
+- Apple M4 Pro, 48 GB memory
+- macOS 26.5.2 build `25F84`
+- Rust 1.96
+- `cargo bench -p j2k-ml --bench batch_decode_metal --features cpu,metal -- --quick`
+
+The matrix covered unsigned and signed Gray12/Gray16 at 512 and 1024 pixels,
+RGB8/RGB16 and RGBA8/RGBA16 at 256 and 512 pixels, all four request modes, and
+batch sizes 1/8/32/64. The harness rejected any preparation or decode with an
+indexed error, group error, or output-group count other than one. It emitted
+1,280 completed telemetry rows. In that historical schema, all 1,024
+accelerated rows carried route-contract assertions for zero decoded host
+uploads/readbacks, zero final device copies, one final output destination, and
+one group-level completion boundary; those fields were not sampled hardware
+counters. The codec session diagnostics measured one group submission per
+row. Focused interop and submission tests, rather than those hard-coded
+telemetry fields, are the evidence for the transfer, allocation, copy, and
+completion-boundary contracts.
+
+The following are single warmed telemetry probes; Criterion data in the same
+run remains the statistically sampled result:
+
+| Workload, full decode | Batch | CPU decode + Burn upload | Prepared Burn-direct Metal |
+| --- | ---: | ---: | ---: |
+| Gray12 512 | 32 | 424.029 MP/s | 938.249 MP/s |
+| Gray12 512 | 64 | 449.605 MP/s | 1,316.428 MP/s |
+| Gray16 1024 | 32 | 269.275 MP/s | 1,044.676 MP/s |
+| Gray16 1024 | 64 | 280.599 MP/s | 870.603 MP/s |
+| RGB16 512 | 32 | 141.822 MP/s | 719.949 MP/s |
+| RGB16 512 | 64 | 139.696 MP/s | 1,560.369 MP/s |
+| RGBA16 512 | 32 | 115.776 MP/s | 743.564 MP/s |
+| RGBA16 512 | 64 | 114.878 MP/s | 1,399.131 MP/s |
+
+In this repeated-content run, across all 64 workload/request combinations,
+prepared Burn-direct was faster than the staged route in 52 batch-32 cases and
+all 64 batch-64 cases. It was
+faster in only 10 batch-1 and 21 batch-8 cases. Because the Metal color rows at
+batch greater than one were decode-once broadcast and all other batch-greater-
+than-one rows used identical content, these counts do not establish a
+content-distinct high-throughput route. They support keeping selection explicit
+until the corrected distinct-input matrix is recorded; they do not support
+blanket Auto routing or a single-image speed claim.
 
 Metal acceleration is selective. Public claims should say Metal-accelerated
 stages, not complete end-to-end Metal coverage for every encode, decode, or

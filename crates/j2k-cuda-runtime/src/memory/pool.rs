@@ -307,6 +307,7 @@ impl CudaBufferPool {
                         .driver
                         .check("cuMemcpyHtoD_v2", result)
                 })?;
+            self.inner.context.record_host_to_device_copy(bytes.len());
         }
         Ok(buffer)
     }
@@ -343,6 +344,9 @@ impl CudaBufferPool {
                     .driver
                     .check("cuMemcpyHtoD_v2", result)
             });
+        if upload_result.is_ok() {
+            self.inner.context.record_host_to_device_copy(bytes.len());
+        }
         let recycle_result = staging.recycle();
         select_pinned_upload_result(upload_result.map(|()| buffer), recycle_result)
     }
@@ -532,6 +536,9 @@ impl CudaPooledDeviceBuffer {
             };
             buffer.context.inner.driver.check("cuMemcpyDtoH_v2", result)
         })?;
+        buffer
+            .context
+            .record_device_to_host_copy(self.requested_len);
         Ok(())
     }
 }

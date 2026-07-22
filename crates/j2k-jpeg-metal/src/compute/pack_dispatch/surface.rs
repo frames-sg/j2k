@@ -37,7 +37,7 @@ pub(in crate::compute) fn encode_jpeg_pack_to_surface_in_command_buffer(
     } = request;
     match (mode, fmt) {
         (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) => {
-            return Ok(Surface::from_metal_buffer(plane0.clone(), dims, fmt));
+            return Surface::from_metal_buffer(plane0.clone(), dims, fmt);
         }
         (
             PlaneMode::Gray | PlaneMode::YCbCr | PlaneMode::Rgb,
@@ -90,5 +90,5 @@ pub(in crate::compute) fn encode_jpeg_pack_to_surface_in_command_buffer(
     dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, dims);
     encoder.end_encoding();
 
-    Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
+    Surface::from_metal_buffer(out_buffer, dims, fmt)
 }

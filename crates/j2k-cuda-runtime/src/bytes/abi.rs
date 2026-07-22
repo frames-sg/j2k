@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
+    classic_decode::{
+        CudaClassicKernelJob, CudaClassicKernelSegment, CudaClassicKernelTables, CudaClassicStatus,
+    },
     htj2k_decode::{
         CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCodeBlockKernelJob, CudaHtj2kDequantizeKernelJob,
         CudaHtj2kStatus,
@@ -16,8 +19,10 @@ use crate::{
     },
     j2k_decode::{
         CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kInverseMctJob, CudaJ2kRect,
-        CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob,
-        CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctBatchJob, CudaJ2kStoreRgb8MctJob,
+        CudaJ2kStoreGray16BatchJob, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8BatchJob,
+        CudaJ2kStoreGray8Job, CudaJ2kStoreGrayI16BatchJob, CudaJ2kStoreRgb16Job,
+        CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctBatchJob,
+        CudaJ2kStoreRgb8MctJob,
     },
     jpeg::{
         CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
@@ -287,6 +292,46 @@ impl_cuda_gpu_abi! {
         reserved0: u32,
         reserved1: u32,
     },
+    CudaClassicKernelJob {
+        output_ptr: u64,
+        coded_offset: u32,
+        coded_len: u32,
+        segment_offset: u32,
+        segment_count: u32,
+        scratch_offset: u32,
+        width: u32,
+        height: u32,
+        output_stride: u32,
+        output_offset: u32,
+        missing_msbs: u32,
+        total_bitplanes: u32,
+        number_of_coding_passes: u32,
+        sub_band_type: u32,
+        style_flags: u32,
+        strict: u32,
+        dequantization_step: f32,
+    },
+    CudaClassicKernelSegment {
+        data_offset: u32,
+        data_length: u32,
+        start_coding_pass: u32,
+        end_coding_pass: u32,
+        use_arithmetic: u32,
+    },
+    CudaClassicKernelTables {
+        mq_qe: [u32; 47],
+        mq_transitions: [u32; 47],
+        sign_contexts: [u16; 256],
+        zero_contexts_ll_lh: [u8; 256],
+        zero_contexts_hl: [u8; 256],
+        zero_contexts_hh: [u8; 256],
+    },
+    CudaClassicStatus {
+        code: u32,
+        detail: u32,
+        reserved0: u32,
+        reserved1: u32,
+    },
     CudaJ2kRect {
         x0: u32,
         y0: u32,
@@ -335,6 +380,24 @@ impl_cuda_gpu_abi! {
         output_y: u32,
         addend: f32,
         bit_depth: u32,
+    },
+    CudaJ2kStoreGray8BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray8Job,
+        reserved_tail: u32,
+    },
+    CudaJ2kStoreGray16BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray16Job,
+        reserved_tail: u32,
+    },
+    CudaJ2kStoreGrayI16BatchJob {
+        input_ptr: u64,
+        output_ptr: u64,
+        job: CudaJ2kStoreGray16Job,
+        reserved_tail: u32,
     },
     CudaJ2kInverseMctJob {
         len: u32,
@@ -409,57 +472,7 @@ impl_cuda_gpu_abi! {
     },
 }
 
+mod native_store;
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_tail_fields_preserve_cuda_host_abi_sizes_and_offsets() {
-        assert_eq!(size_of::<CudaJpegEntropyCheckpoint>(), 40);
-        assert_eq!(offset_of!(CudaJpegEntropyCheckpoint, reserved_tail), 36);
-        assert_eq!(size_of::<CudaHtj2kCleanupMultiKernelJob>(), 64);
-        assert_eq!(
-            offset_of!(CudaHtj2kCleanupMultiKernelJob, reserved_tail),
-            60
-        );
-        assert_eq!(size_of::<CudaHtj2kDequantizeKernelJob>(), 40);
-        assert_eq!(offset_of!(CudaHtj2kDequantizeKernelJob, reserved_tail), 36);
-        assert_eq!(size_of::<CudaJ2kIdwtMultiKernelJob>(), 128);
-        assert_eq!(offset_of!(CudaJ2kIdwtMultiKernelJob, reserved_tail), 124);
-        assert_eq!(size_of::<CudaJ2kStoreRgb8MctBatchJob>(), 128);
-        assert_eq!(offset_of!(CudaJ2kStoreRgb8MctBatchJob, reserved_tail), 124);
-    }
-
-    #[test]
-    fn explicit_cuda_tail_fields_are_part_of_safe_byte_views() {
-        let checkpoint = CudaJpegEntropyCheckpoint {
-            mcu_index: 1,
-            entropy_pos: 2,
-            bit_acc: 3,
-            bit_count: 4,
-            y_prev_dc: 5,
-            cb_prev_dc: 6,
-            cr_prev_dc: 7,
-            reserved: 8,
-            reserved_tail: 0x4433_2211,
-        };
-        let checkpoint_bytes = <CudaJpegEntropyCheckpoint as GpuAbi>::as_bytes(&checkpoint);
-        assert_eq!(checkpoint_bytes.len(), 40);
-        assert_eq!(&checkpoint_bytes[36..40], &0x4433_2211u32.to_ne_bytes());
-
-        let jobs = [CudaHtj2kDequantizeKernelJob {
-            output_ptr: 1,
-            width: 2,
-            height: 3,
-            output_stride: 4,
-            output_offset: 5,
-            num_bitplanes: 6,
-            reserved: 0,
-            dequantization_step: 1.0,
-            reserved_tail: 0x8877_6655,
-        }];
-        let job_bytes = <CudaHtj2kDequantizeKernelJob as GpuAbi>::slice_as_bytes(&jobs);
-        assert_eq!(job_bytes.len(), 40);
-        assert_eq!(&job_bytes[36..40], &0x8877_6655u32.to_ne_bytes());
-    }
-}
+mod tests;

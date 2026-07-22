@@ -25,23 +25,24 @@ pub use cuda::{
     cuda_runtime_required, cuda_strict_oxide_gate, cuda_strict_oxide_required,
 };
 pub use fixtures::{
-    baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_restart_32x16,
-    jpeg_baseline_420_restart_32x16_rgb, jpeg_baseline_422_16x8, jpeg_baseline_422_16x8_rgb,
-    jpeg_baseline_444_8x8, jpeg_baseline_444_8x8_rgb, jpeg_grayscale_8x8, minimal_baseline_jpeg,
-    minimal_baseline_jpeg_with_restart_interval, minimal_gray8_jpeg,
+    baseline_grayscale_jpeg, minimal_baseline_jpeg, minimal_baseline_jpeg_with_restart_interval,
     minimal_grayscale_jpeg_with_dimensions, minimal_j2k_codestream, minimal_jp2,
     openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
-    openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, restart_coded_grayscale_jpeg,
+    openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, openhtj2k_sigprop_fixture,
+    openhtj2k_sigprop_overlap_fixture, openhtj2k_sigprop_overlap_pixels,
+    openhtj2k_sigprop_pixels_le, openjph_batch_fixtures, restart_coded_grayscale_jpeg,
     rewrite_j2k_component_sampling, wrap_jp2_codestream, wrap_jp2_rgba_codestream,
-    JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB, JPEG_BASELINE_420_RESTART_32X16,
-    JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8, JPEG_BASELINE_422_16X8_RGB,
-    JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB, JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
+    OpenJphBatchFixture, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
+    JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8,
+    JPEG_BASELINE_422_16X8_RGB, JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB,
+    JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
 };
 #[cfg(feature = "j2k-native-fixtures")]
 pub use fixtures::{
-    classic_j2k_gray8_fixture, htj2k_gray8_97_fixture, htj2k_gray8_fixture,
-    htj2k_gray8_large_fixture, htj2k_rgb8_97_fixture, htj2k_rgb8_fixture,
-    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
+    classic_j2k_gray8_fixture, generated_htj2k_rgba_fixture, htj2k_gray8_97_fixture,
+    htj2k_gray8_fixture, htj2k_gray8_large_fixture, htj2k_rgb8_97_fixture, htj2k_rgb8_fixture,
+    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, Htj2kRgbaAlpha, Htj2kRgbaFixture,
+    Htj2kRgbaSampleProfile, Htj2kRgbaSamples,
 };
 pub use gpu_gate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_MARKER};
 /// Convenience prelude for the intentionally broad JPEG fixture catalog.
@@ -57,10 +58,9 @@ pub use manifest::{
 pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
 pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};
 pub use pixels::{
-    crop_interleaved_bytes, crop_interleaved_u16, crop_interleaved_u8,
-    project_scaled_interleaved_u16, project_scaled_interleaved_u8, rgb16le_to_rgba16le,
-    rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8, scaled_rect_covering, u16_samples_to_le_bytes,
-    PixelRect,
+    crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,
+    project_scaled_interleaved_u8, rgb16le_to_rgba16le, rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8,
+    scaled_rect_covering, u16_samples_to_le_bytes, PixelRect,
 };
 
 /// Generates deterministic RGB8 pixels for tests and benches.

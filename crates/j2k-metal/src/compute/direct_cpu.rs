@@ -13,20 +13,24 @@ use j2k_native::{
 };
 use rayon::prelude::*;
 
+use crate::profile_env::{hybrid_stage_signpost, SIGNPOST_DECODE_HYBRID_CPU_TIER1};
 use crate::{error::native_decode_error, Error};
 
-use super::{
-    checked_coefficient_len, hybrid_stage_signpost, packed_cpu_decode_coefficients,
-    packed_cpu_decode_coefficients_in, packed_cpu_decode_output_len,
-    record_hybrid_cpu_decode_inputs, record_hybrid_cpu_decode_worker_init,
-    required_classic_output_len, required_ht_output_len, CpuTier1DecodeSubstageCounters,
-    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob, PreparedClassicSubBand,
-    PreparedClassicSubBandGroup, PreparedDirectGrayscalePlan, PreparedHtSubBand,
-    PreparedHtSubBandGroup, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
+use super::abi::{
+    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob,
     J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES, J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS,
     J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
     J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS, J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT,
-    SIGNPOST_DECODE_HYBRID_CPU_TIER1,
+};
+use super::decode_dispatch::required_ht_output_len;
+use super::direct_grayscale_execute::checked_coefficient_len;
+use super::{
+    packed_cpu_decode_coefficients, packed_cpu_decode_coefficients_in,
+    packed_cpu_decode_output_len, record_hybrid_cpu_decode_inputs,
+    record_hybrid_cpu_decode_worker_init, required_classic_output_len,
+    CpuTier1DecodeSubstageCounters, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedDirectGrayscalePlan, PreparedHtPayloadSource, PreparedHtSubBand,
+    PreparedHtSubBandGroup, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
 };
 
 #[cfg(test)]
@@ -290,17 +294,18 @@ pub(super) fn decode_prepared_ht_sub_band_on_cpu_profile(
         "HTJ2K MetalDirect hybrid sub-band size overflow",
     )?;
     let mut output = packed_cpu_decode_coefficients(1, len)?;
+    let coded_data = sub_band.payload_source.materialize_for_cpu()?;
     if let Some(counters) = profile_counters {
         let mut workspace = HtCodeBlockDecodeWorkspace::default();
         decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
-            &sub_band.coded_data,
+            coded_data.as_ref(),
             &sub_band.jobs,
             &mut output,
             &mut workspace,
             counters,
         )?;
     } else {
-        decode_prepared_ht_jobs_on_cpu(&sub_band.coded_data, &sub_band.jobs, &mut output)?;
+        decode_prepared_ht_jobs_on_cpu(coded_data.as_ref(), &sub_band.jobs, &mut output)?;
     }
     Ok(output)
 }
@@ -311,17 +316,18 @@ pub(super) fn decode_prepared_ht_sub_band_group_on_cpu_profile(
 ) -> Result<Vec<f32>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let mut output = packed_cpu_decode_coefficients(1, group.total_coefficients)?;
+    let coded_data = group.payload_source.materialize_for_cpu()?;
     if let Some(counters) = profile_counters {
         let mut workspace = HtCodeBlockDecodeWorkspace::default();
         decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
-            &group.coded_arena.data,
+            coded_data.as_ref(),
             &group.jobs,
             &mut output,
             &mut workspace,
             counters,
         )?;
     } else {
-        decode_prepared_ht_jobs_on_cpu(&group.coded_arena.data, &group.jobs, &mut output)?;
+        decode_prepared_ht_jobs_on_cpu(coded_data.as_ref(), &group.jobs, &mut output)?;
     }
     Ok(output)
 }
@@ -450,7 +456,7 @@ pub(super) struct ClassicCpuDecodeInput<'a> {
 }
 
 pub(super) struct HtCpuDecodeInput<'a> {
-    pub(super) coded_data: &'a [u8],
+    pub(super) payload_source: &'a PreparedHtPayloadSource,
     pub(super) jobs: &'a [J2kHtCleanupBatchJob],
     pub(super) output_len: usize,
 }
@@ -528,9 +534,10 @@ fn decode_ht_inputs_on_cpu_parallel(
                 HtCodeBlockDecodeWorkspace::default()
             },
             |workspace, (output, input)| {
+                let coded_data = input.payload_source.materialize_for_cpu()?;
                 if let Some(counters) = profile_counters {
                     decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
-                        input.coded_data,
+                        coded_data.as_ref(),
                         input.jobs,
                         output,
                         workspace,
@@ -538,7 +545,7 @@ fn decode_ht_inputs_on_cpu_parallel(
                     )
                 } else {
                     decode_prepared_ht_jobs_on_cpu_with_workspace(
-                        input.coded_data,
+                        coded_data.as_ref(),
                         input.jobs,
                         output,
                         workspace,

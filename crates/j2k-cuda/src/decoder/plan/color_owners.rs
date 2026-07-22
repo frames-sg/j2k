@@ -2,11 +2,18 @@
 
 //! Aggregate ownership for flattened multi-component CUDA decode plans.
 
+mod referenced;
+
 use j2k_core::PixelFormat;
 use j2k_native::J2kDirectColorPlan;
 
 use crate::allocation::HostPhaseBudget;
 use crate::{CudaHtj2kDecodePlan, Error};
+
+pub(super) use referenced::{
+    flatten_referenced_classic_cuda_color_tile_components,
+    flatten_referenced_cuda_color_tile_components,
+};
 
 use super::super::CudaHtj2kColorDecodePlans;
 

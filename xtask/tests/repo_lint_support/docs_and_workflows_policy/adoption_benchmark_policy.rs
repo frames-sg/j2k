@@ -2,7 +2,23 @@
 
 use std::fs;
 
-use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
+use crate::repo_lint_support::{
+    assert_file_pattern_checks, assert_pattern_checks, repo_root, FilePatternCheck, PatternCheck,
+};
+
+#[test]
+fn reusable_benchmark_generators_live_in_test_support() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("crates/j2k-test-support/src/lib.rs")
+            .named("j2k-test-support")
+            .required(&[
+                "pub fn gradient_u8",
+                "pub fn patterned_rgb8_tiles",
+                "pub fn gpu_bench_rgb8",
+            ])],
+    );
+}
 
 #[test]
 #[expect(

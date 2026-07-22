@@ -136,12 +136,6 @@ pub(super) fn ordered_prepared_resolution_packets_for_session(
     Ok(packets)
 }
 
-pub(super) fn public_packetization_progression_order(
-    progression_order: EncodeProgressionOrder,
-) -> crate::J2kPacketizationProgressionOrder {
-    progression_order.packetization_order()
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
@@ -200,7 +194,7 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
             num_components,
             code_block_count: count_code_blocks(resolution_packets)
                 .map_err(NativeEncodePipelineError::arithmetic_overflow)?,
-            progression_order: public_packetization_progression_order(progression_order),
+            progression_order: progression_order.packetization_order(),
             packet_descriptors,
             resolutions: &packetization_resolutions,
         };

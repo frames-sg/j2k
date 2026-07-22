@@ -6,8 +6,7 @@ or test-only implementation details and must not be treated as user controls.
 
 Stability values:
 
-- Stable: supported for the staged v0.7.x contract. The published v0.6.x
-  surface may differ until the staged line is released.
+- Stable: supported for the published v0.7.x contract.
 - Experimental: accepted for diagnostics or adapter tuning, but may change
   before 1.0.
 - Test/CI: supported only for repository tests, CI, and release validation.
@@ -69,6 +68,8 @@ override it.
 
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
+| `J2K_ML_BATCH_INPUT_MODE` | Selects content-distinct generated inputs (`distinct`) or one repeated `Arc` owner (`repeated`) for the `j2k-ml` batch benchmarks. One process uses one mode. | `distinct` | Benchmark |
+| `J2K_ML_BATCH_PROCESS_MODE` | Selects uninstrumented Criterion measurement (`criterion`) or the separate low-batch telemetry/profile process (`profile`) for CUDA and Metal batch benchmarks. | `criterion` | Benchmark |
 | `J2K_REQUIRE_OPENJPEG` | Makes OpenJPEG parity tests and benchmark comparator runs fail instead of skip when OpenJPEG tools are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_GROK` | Makes Grok parity tests and benchmark comparator runs fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |
@@ -167,6 +168,7 @@ override it.
 | `J2K_CUDA_DECODE_BATCH_SIZES` | Comma-separated CUDA J2K decode mixed-external batch sizes. | Harness default | Benchmark |
 | `J2K_CUDA_DECODE_CASE_BATCH_SIZES` | Comma-separated CUDA J2K decode per-fixture batch sizes. Keep this bounded for external adoption runs; use `J2K_CUDA_DECODE_BATCH_SIZES` for huge mixed batches. | Harness default | Benchmark |
 | `J2K_CUDA_DECODE_SAMPLE_SIZE` | Criterion sample size for CUDA J2K decode benchmark rows. Must be at least 10. | 10 | Benchmark |
+| `J2K_CUDA_DECODE_MEASUREMENT_SECONDS` | Positive measurement duration in seconds for each CUDA J2K decode Criterion row. | 1 second | Benchmark |
 | `J2K_CUDA_DECODE_INPUT_DIRS` | Optional path-list of external HTJ2K `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the CUDA decode Criterion benchmark. | Not set | Benchmark |
 | `J2K_CUDA_DECODE_MANIFEST` | Optional TSV manifest for CUDA decode external fixtures. Uses the same pinned `path`, `input_fnv1a64`, `codec`, and `container` fields as `J2K_FIXTURE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_CUDA_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated CUDA decode fixtures when external fixtures are provided. | Generated CUDA decode fixtures included | Benchmark |
@@ -177,6 +179,7 @@ override it.
 | `J2K_METAL_DECODE_INPUT_DIRS` | Optional path-list of external `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the Metal decode benchmark. Wrapper containers are emitted as structured skips until wrapper-specific strict Metal parity is claimed. | Not set | Benchmark |
 | `J2K_METAL_DECODE_MANIFEST` | Optional TSV manifest for Metal decode external fixtures. Uses pinned `path` and `input_fnv1a64`; optional `codec` and `container` labels are recorded in benchmark rows. | Not set | Benchmark |
 | `J2K_METAL_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal decode smoke fixtures when external fixtures are provided. Publication gates require this to be false for Metal decode speed claims. | Generated Metal decode fixtures included | Benchmark |
+| `J2K_METAL_CAPTURE_PATH` | Absolute, nonexistent `.gputrace` output path for the ignored Metal GPU-capture diagnostic. Requires `MTL_CAPTURE_ENABLED=1`; captured timings are diagnostic only. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INPUT_DIRS` | Optional path-list of staged external `.pgm`, `.ppm`, or `.pnm` source images included in the Metal auto-routing encode benchmark. Use the same canonical PNM source assets as `J2K_ENCODE_COMPARE_INPUT_DIRS` after staging. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_MANIFEST` | Optional TSV manifest for Metal encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal host-input auto-routing rows when external staged PNM sources are provided. Stage microbenchmarks remain generated component rows. | Generated Metal host-input rows included | Benchmark |

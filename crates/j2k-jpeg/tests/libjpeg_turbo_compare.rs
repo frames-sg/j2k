@@ -4,6 +4,9 @@
 mod libjpeg_turbo;
 #[path = "../benches/common/libjpeg_turbo_extended.rs"]
 mod libjpeg_turbo_extended;
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+#[path = "../benches/common/libjpeg_turbo_v2.rs"]
+mod libjpeg_turbo_v2;
 
 use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};
 use j2k_test_support::{
@@ -98,6 +101,71 @@ fn turbojpeg_rgb_and_region_match_j2k_fixtures() {
     let turbo_rgb_422 = turbo.decode_rgb(bytes_422).expect("turbojpeg 4:2:2 RGB");
     assert_eq!(turbo_rgb_422, JPEG_BASELINE_422_16X8_RGB);
     assert_eq!(rgb_422, turbo_rgb_422);
+}
+
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+#[test]
+fn legacy_turbojpeg_abi_matches_the_v3_adapter() {
+    let bytes = JPEG_BASELINE_420_16X16;
+    let mut current = libjpeg_turbo::TurboJpegDecoder::new().expect("v3 turbojpeg decoder");
+    let mut legacy = libjpeg_turbo_v2::TurboJpegDecoder::new().expect("legacy turbojpeg decoder");
+
+    assert_eq!(
+        legacy.decode_rgb(bytes).expect("legacy full RGB"),
+        current.decode_rgb(bytes).expect("v3 full RGB")
+    );
+    assert_eq!(
+        legacy
+            .decode(JPEG_GRAYSCALE_8X8, 6, None, Downscale::None)
+            .expect("legacy grayscale"),
+        current
+            .decode(JPEG_GRAYSCALE_8X8, 6, None, Downscale::None)
+            .expect("v3 grayscale")
+    );
+    assert_eq!(
+        legacy
+            .decode(bytes, 0, None, Downscale::Quarter)
+            .expect("legacy scaled RGB"),
+        current
+            .decode(bytes, 0, None, Downscale::Quarter)
+            .expect("v3 scaled RGB")
+    );
+
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    assert_eq!(
+        legacy
+            .decode(bytes, 0, Some(roi), Downscale::None)
+            .expect("legacy region RGB"),
+        current
+            .decode(bytes, 0, Some(roi), Downscale::None)
+            .expect("v3 region RGB")
+    );
+    assert_eq!(
+        legacy
+            .decode(bytes, 0, Some(roi), Downscale::Quarter)
+            .expect("legacy scaled region RGB"),
+        current
+            .decode(bytes, 0, Some(roi), Downscale::Quarter)
+            .expect("v3 scaled region RGB")
+    );
+
+    let (width, height, _) = legacy
+        .prepare_full_frame(bytes)
+        .expect("legacy prepare RGB");
+    let pitch = width as usize * 3;
+    let mut prepared = vec![0_u8; pitch * height as usize];
+    legacy
+        .decompress(bytes, &mut prepared, pitch, 0)
+        .expect("legacy prepared RGB");
+    assert_eq!(
+        prepared,
+        current.decode_rgb(bytes).expect("v3 prepared reference")
+    );
 }
 
 fn crop_rgb(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {

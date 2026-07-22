@@ -37,11 +37,11 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
     let resident_job = resident_job_from_host(job)?;
     validate_cuda_htj2k_tile_job(resident_job)?;
     let num_components = cuda_component_count_u8(
-        resident_job.num_components(),
+        resident_job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",
     )?;
-    let num_pixels = (resident_job.width() as usize)
-        .checked_mul(resident_job.height() as usize)
+    let num_pixels = (resident_job.input.width() as usize)
+        .checked_mul(resident_job.input.height() as usize)
         .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile pixel count"))?;
     let (components, deinterleave_us) = time_cuda_stage(
         "j2k.htj2k.encode.tile.deinterleave",
@@ -52,8 +52,8 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
                 job.pixels,
                 num_pixels,
                 num_components,
-                resident_job.bit_depth(),
-                resident_job.signed(),
+                resident_job.input.bit_depth(),
+                resident_job.input.signed(),
             )
         },
     )
@@ -78,14 +78,14 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
 ) -> CudaStageResult<Option<CudaEncodedHtj2kTile>> {
     validate_cuda_htj2k_tile_job(job)?;
     let num_components = cuda_component_count_u8(
-        job.num_components(),
+        job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",
     )?;
     let format = cuda_encode_format(tile.format).map_err(|error| match error {
         crate::Error::UnsupportedCudaRequest { reason } => J2kEncodeStageError::unsupported(reason),
         source => adapter_error("validate CUDA HTJ2K tile format", source),
     })?;
-    if job.width() != tile.output_width || job.height() != tile.output_height {
+    if job.input.width() != tile.output_width || job.input.height() != tile.output_height {
         return Err(J2kEncodeStageError::invalid_request(
             "CUDA HTJ2K tile encode job dimensions do not match CUDA tile",
         ));
@@ -95,9 +95,9 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
             "CUDA HTJ2K tile encode does not support input padding",
         ));
     }
-    if job.num_components() != u16::from(format.components)
-        || job.bit_depth() != format.bit_depth
-        || job.signed()
+    if job.input.num_components() != u16::from(format.components)
+        || job.input.bit_depth() != format.bit_depth
+        || job.input.signed()
     {
         return Err(J2kEncodeStageError::invalid_request(
             "CUDA HTJ2K tile encode job sample format does not match CUDA tile",
@@ -115,8 +115,8 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
                 height: tile.height,
                 pitch_bytes: tile.pitch_bytes,
                 num_components,
-                bit_depth: job.bit_depth(),
-                signed: job.signed(),
+                bit_depth: job.input.bit_depth(),
+                signed: job.input.signed(),
             })
         },
     )
@@ -188,12 +188,12 @@ fn cuda_encode_htj2k_resident_components_body(
 
     let mut component_host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K component packet graph");
     let mut component_resolution_packets = component_host_budget
-        .try_vec_with_capacity(usize::from(job.num_components()))
+        .try_vec_with_capacity(usize::from(job.input.num_components()))
         .map_err(htj2k_allocation_error)?;
     if job.num_decomposition_levels == 0 {
-        for component in 0..job.num_components() {
+        for component in 0..job.input.num_components() {
             let y0 = u32::from(component)
-                .checked_mul(job.height())
+                .checked_mul(job.input.height())
                 .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile component offset"))?;
             let subband = cuda_encode_tile_subband_region(
                 runtime,
@@ -201,9 +201,9 @@ fn cuda_encode_htj2k_resident_components_body(
                 CudaTileSubbandRegion {
                     x0: 0,
                     y0,
-                    width: job.width(),
-                    height: job.height(),
-                    stride: job.width(),
+                    width: job.input.width(),
+                    height: job.input.height(),
+                    stride: job.input.width(),
                 },
                 job.quantization_steps[0],
                 job,
@@ -224,7 +224,7 @@ fn cuda_encode_htj2k_resident_components_body(
             component_resolution_packets.push(packets);
         }
     } else {
-        for component in 0..job.num_components() {
+        for component in 0..job.input.num_components() {
             let component_u8 =
                 cuda_component_count_u8(component, "CUDA HTJ2K tile component index exceeds 255")?;
             let packets = if job.reversible {
@@ -236,8 +236,8 @@ fn cuda_encode_htj2k_resident_components_body(
                         context.j2k_forward_dwt53_resident_component(
                             &components,
                             component_u8,
-                            job.width(),
-                            job.height(),
+                            job.input.width(),
+                            job.input.height(),
                             job.num_decomposition_levels,
                         )
                     },
@@ -264,8 +264,8 @@ fn cuda_encode_htj2k_resident_components_body(
                         context.j2k_forward_dwt97_resident_component(
                             &components,
                             component_u8,
-                            job.width(),
-                            job.height(),
+                            job.input.width(),
+                            job.input.height(),
                             job.num_decomposition_levels,
                         )
                     },
@@ -295,7 +295,7 @@ fn cuda_encode_htj2k_resident_components_body(
 
     let resolution_packets = cuda_order_component_resolution_packets(
         component_resolution_packets,
-        job.num_components(),
+        job.input.num_components(),
     )?;
     let (tile_data, packetization_dispatches, packetize_us) = cuda_packetize_tile_body(
         context,
@@ -460,7 +460,10 @@ fn cuda_encode_tile_subband_region(
                     quantization: CudaJ2kQuantizeJob {
                         step_exponent,
                         step_mantissa,
-                        range_bits: cuda_tile_subband_range_bits(job.bit_depth(), subband_kind),
+                        range_bits: cuda_tile_subband_range_bits(
+                            job.input.bit_depth(),
+                            subband_kind,
+                        ),
                         reversible: job.reversible,
                     },
                 },

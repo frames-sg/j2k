@@ -210,9 +210,9 @@ impl PlaneStage {
     ) -> Result<Surface, Error> {
         let cache_owned = self.cache_lease.is_some();
         match (self.mode, fmt) {
-            (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) if !cache_owned => Ok(
-                surface_from_plane_buffer(self.plane0, self.dims, fmt, residency),
-            ),
+            (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) if !cache_owned => {
+                surface_from_plane_buffer(self.plane0, self.dims, fmt, residency)
+            }
             (
                 PlaneMode::Gray | PlaneMode::YCbCr | PlaneMode::Rgb,
                 PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8,
@@ -270,9 +270,7 @@ impl PlaneStage {
         encoder.end_encoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
-        Ok(surface_from_plane_buffer(
-            out_buffer, self.dims, fmt, residency,
-        ))
+        surface_from_plane_buffer(out_buffer, self.dims, fmt, residency)
     }
 
     #[cfg(test)]
@@ -460,7 +458,7 @@ impl PlaneStage {
         commit_and_wait_jpeg(&command_buffer)?;
         let command_buffer = command_buffer.clone();
 
-        Ok(crate::ResidentPrivateJpegTile::new(
+        crate::ResidentPrivateJpegTile::new(
             out_buffer,
             0,
             self.dims,
@@ -468,7 +466,7 @@ impl PlaneStage {
             pitch_bytes,
             status_buffer,
             command_buffer,
-        ))
+        )
     }
 }
 
@@ -478,7 +476,7 @@ fn surface_from_plane_buffer(
     dims: (u32, u32),
     fmt: PixelFormat,
     residency: PlaneStageResidency,
-) -> Surface {
+) -> Result<Surface, Error> {
     match residency {
         PlaneStageResidency::CpuStagedMetalUpload => {
             Surface::from_cpu_staged_metal_buffer(buffer, dims, fmt)

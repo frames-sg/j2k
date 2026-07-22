@@ -2,7 +2,7 @@
 
 use j2k_core::{BackendKind, BackendRequest, PixelFormat};
 
-use crate::{profile, Surface};
+use crate::{profile, MetalBackendSession, Surface};
 
 use super::heuristics::{
     can_decode_requests_as_repeated_full_color_batch,
@@ -54,7 +54,7 @@ fn complete_cpu_host_fallback(session: &mut SessionState, requests: Vec<QueuedRe
     }
     for request in requests {
         session.submissions = session.submissions.saturating_add(1);
-        session.completed[request.output_slot] = Some(decode_individual(&request));
+        session.completed[request.output_slot] = Some(decode_individual(&request, None));
     }
 }
 
@@ -73,7 +73,11 @@ fn complete_batch_surfaces(
     true
 }
 
-pub(super) fn process_batch(session: &mut SessionState, grouped: GroupedRequests) {
+pub(super) fn process_batch(
+    session: &mut SessionState,
+    grouped: GroupedRequests,
+    backend: Option<&MetalBackendSession>,
+) {
     let GroupedRequests { route, requests } = grouped;
     let profile_enabled = profile::metal_profile_stages_enabled();
     let started = profile::profile_now(profile_enabled);
@@ -84,7 +88,7 @@ pub(super) fn process_batch(session: &mut SessionState, grouped: GroupedRequests
         None
     };
 
-    process_batch_inner(session, route, requests);
+    process_batch_inner(session, route, requests, backend);
 
     if let Some(pending) = pending_profile {
         profile::emit_metal_batch_profile_row(
@@ -110,6 +114,7 @@ fn process_batch_inner(
     session: &mut SessionState,
     route: BatchRoute,
     requests: Vec<QueuedRequest>,
+    backend: Option<&MetalBackendSession>,
 ) {
     if route == BatchRoute::AutoRegionScaledDirectCpu {
         complete_cpu_host_fallback(session, requests);
@@ -122,9 +127,9 @@ fn process_batch_inner(
     ) && requests.len() > 1
     {
         let decoded = if route == BatchRoute::AutoRepeatedRegionScaledDirectMetal {
-            decode_repeated_region_scaled_direct_batch_prechecked(&requests)
+            decode_repeated_region_scaled_direct_batch_prechecked(&requests, backend)
         } else {
-            decode_distinct_region_scaled_direct_batch_prechecked(&requests)
+            decode_distinct_region_scaled_direct_batch_prechecked(&requests, backend)
         };
         if let Some(Ok(surfaces)) = decoded {
             if complete_batch_surfaces(session, &requests, surfaces) {
@@ -136,7 +141,9 @@ fn process_batch_inner(
     }
 
     if can_decode_requests_as_repeated_full_grayscale_batch(&requests) {
-        if let Some(Ok(surfaces)) = decode_repeated_full_grayscale(&requests[0], requests.len()) {
+        if let Some(Ok(surfaces)) =
+            decode_repeated_full_grayscale(&requests[0], requests.len(), backend)
+        {
             if complete_batch_surfaces(session, &requests, surfaces) {
                 return;
             }
@@ -144,7 +151,9 @@ fn process_batch_inner(
     }
 
     if can_decode_requests_as_repeated_full_color_batch(&requests) {
-        if let Some(Ok(surfaces)) = decode_repeated_full_color(&requests[0], requests.len()) {
+        if let Some(Ok(surfaces)) =
+            decode_repeated_full_color(&requests[0], requests.len(), backend)
+        {
             if complete_batch_surfaces(session, &requests, surfaces) {
                 return;
             }
@@ -152,7 +161,7 @@ fn process_batch_inner(
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_full_grayscale_batch(&requests) {
+        if let Some(Ok(surfaces)) = decode_distinct_full_grayscale_batch(&requests, backend) {
             if complete_batch_surfaces(session, &requests, surfaces) {
                 return;
             }
@@ -160,7 +169,7 @@ fn process_batch_inner(
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_full_color_batch(&requests) {
+        if let Some(Ok(surfaces)) = decode_distinct_full_color_batch(&requests, backend) {
             if complete_batch_surfaces(session, &requests, surfaces) {
                 return;
             }
@@ -168,7 +177,7 @@ fn process_batch_inner(
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_region_scaled_direct_batch(&requests) {
+        if let Some(Ok(surfaces)) = decode_distinct_region_scaled_direct_batch(&requests, backend) {
             if complete_batch_surfaces(session, &requests, surfaces) {
                 return;
             }
@@ -185,7 +194,7 @@ fn process_batch_inner(
 
     for request in requests {
         session.submissions = session.submissions.saturating_add(1);
-        session.completed[request.output_slot] = Some(decode_individual(&request));
+        session.completed[request.output_slot] = Some(decode_individual(&request, backend));
     }
 }
 

@@ -264,7 +264,7 @@ struct FastRgbDecodeBuffer {
 #[cfg(target_os = "macos")]
 fn private_jpeg_tile_from_fast_rgb_buffer(
     decoded: FastRgbDecodeBuffer,
-) -> crate::ResidentPrivateJpegTile {
+) -> Result<crate::ResidentPrivateJpegTile, Error> {
     crate::ResidentPrivateJpegTile::new(
         decoded.buffer,
         0,

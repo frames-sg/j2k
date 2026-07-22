@@ -12,6 +12,7 @@
 
 mod batch;
 mod batch_allocation;
+mod batch_decoder;
 #[cfg(target_os = "macos")]
 mod buffer_pool;
 #[cfg(any(test, target_os = "macos"))]
@@ -54,7 +55,19 @@ use j2k_metal_support::{
 use metal::Buffer;
 
 pub use j2k_core::SurfaceResidency;
+#[cfg(target_os = "macos")]
+pub use j2k_metal_support::{MetalImageDestination, MetalImageLayout};
 
+#[doc(hidden)]
+pub use self::batch::MetalSubmission;
+pub use self::batch_decoder::{
+    MetalBatchDecodeResult, MetalBatchDecoder, MetalBatchGroup, MetalBatchGroupCompletion,
+    MetalBatchGroupError, MetalBatchGroupParts,
+};
+#[cfg(target_os = "macos")]
+pub use self::batch_decoder::{
+    MetalResidentBatch, SubmittedMetalGroupDecodeInto, SubmittedMetalPreparedBatch,
+};
 pub use self::decoder::{
     Codec, DecodeOperation, DecodeRouteReport, DecodeSurfaceWithReport, J2kDecoder, MetalDecodeOp,
     MetalDecodeRequest,
@@ -63,6 +76,7 @@ pub use self::error::{
     Error, MetalDirectFallbackReason, MetalKernelRetryClass, NativeBackendError,
 };
 pub use self::session::{MetalBackendSession, MetalSession};
+pub use self::surface::download_surfaces_packed;
 pub(crate) use self::surface::Storage;
 pub use self::surface::Surface;
 pub use self::tile_batch::MetalTileBatch;

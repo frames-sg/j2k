@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "ordered_crates": [
+    "j2k-core",
+    "j2k-profile",
+    "j2k-types",
+    "j2k-codec-math",
+    "j2k-cuda-runtime",
+    "j2k-metal-support",
+    "j2k-native",
+    "j2k-jpeg",
+    "j2k-tilecodec",
+    "j2k",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-transcode-metal",
+    "j2k-jpeg-cuda",
+    "j2k-cuda",
+    "j2k-cli"
+  ],
+  "registry_independent": [
+    "j2k-core",
+    "j2k-profile",
+    "j2k-types",
+    "j2k-codec-math"
+  ]
+}

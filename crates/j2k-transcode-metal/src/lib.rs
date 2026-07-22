@@ -60,15 +60,18 @@ mod tests {
     use j2k_core::{BackendKind, BackendRequest};
     use j2k_transcode::{BatchTranscodeReport, JpegToHtj2kCoefficientPath, TranscodeTimingReport};
 
+    #[cfg(target_os = "macos")]
     #[derive(Debug)]
     struct TestRuntimeError;
 
+    #[cfg(target_os = "macos")]
     impl core::fmt::Display for TestRuntimeError {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             formatter.write_str("driver rejected execution")
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl std::error::Error for TestRuntimeError {}
 
     #[cfg(target_os = "macos")]

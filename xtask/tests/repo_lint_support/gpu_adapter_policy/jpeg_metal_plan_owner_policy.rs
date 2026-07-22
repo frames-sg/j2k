@@ -2,7 +2,9 @@
 
 //! Retained owner-graph bounds for every JPEG Metal queued-request collection.
 
-use super::*;
+use std::{fs, path::Path};
+
+use crate::repo_lint_support::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
 struct PlanOwnerSources {
     ledger_main: String,
@@ -72,6 +74,10 @@ impl PlanOwnerSources {
                     "crates/j2k-jpeg-metal/src/batch/grouping.rs",
                     "crates/j2k-jpeg-metal/src/lib.rs",
                     "crates/j2k-jpeg-metal/src/surface.rs",
+                    "crates/j2k-jpeg-metal/src/surface/batch_buffer.rs",
+                    "crates/j2k-jpeg-metal/src/surface/batch_texture.rs",
+                    "crates/j2k-jpeg-metal/src/surface/resident_tile.rs",
+                    "crates/j2k-jpeg-metal/src/surface/texture_tile.rs",
                 ],
             ),
         }

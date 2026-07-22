@@ -5,7 +5,7 @@ use super::{
     reject_cuda_skip_markers, require_cuda_host, runtime_suite_args, successful_test_summaries,
     validate_complete_test_run, validate_cuda_device_probe, validate_exact_named_run,
     CUDA_CLIPPY_SUITES, CUDA_RUNTIME_SUITES, EXACT_CUDA_SUITES, HTJ2K_ENCODE_PARITY_TESTS,
-    TRANSCODE_PARITY_TESTS,
+    ML_CUDA_TESTS, TRANSCODE_PARITY_TESTS,
 };
 
 #[cfg(unix)]
@@ -26,10 +26,17 @@ fn exact_cuda_inventories_are_unique_and_have_audited_sizes() {
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
+    let ml = ML_CUDA_TESTS
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ht.len(), 7);
     assert_eq!(ht.len(), HTJ2K_ENCODE_PARITY_TESTS.len());
     assert_eq!(transcode.len(), 8);
     assert_eq!(transcode.len(), TRANSCODE_PARITY_TESTS.len());
+    assert_eq!(ml.len(), 12);
+    assert_eq!(ml.len(), ML_CUDA_TESTS.len());
+    assert!(ml.contains("cuda_burn_decoder_construction_is_infallible_and_lazy"));
 }
 
 #[test]
@@ -165,14 +172,18 @@ fn shell_lines(lines: &[&str], prefix: &str, suffix: &str) -> String {
 
 #[cfg(unix)]
 fn recording_cuda_cargo() -> RecordingProgram {
+    let ml_count = ML_CUDA_TESTS.len();
+    let ml_listed = shell_lines(ML_CUDA_TESTS, "", ": test");
     let ht_listed = shell_lines(HTJ2K_ENCODE_PARITY_TESTS, "", ": test");
     let transcode_listed = shell_lines(TRANSCODE_PARITY_TESTS, "", ": test");
     let ht_passed = shell_lines(HTJ2K_ENCODE_PARITY_TESTS, "test ", " ... ok");
     let transcode_passed = shell_lines(TRANSCODE_PARITY_TESTS, "test ", " ... ok");
+    let ml_passed = shell_lines(ML_CUDA_TESTS, "test ", " ... ok");
     let script = format!(
         r#"case "$*" in
 *"--list"*)
   case " $* " in
+  *" -p j2k-ml "*) {ml_listed} ;;
   *" -p j2k-cuda "*) {ht_listed} ;;
   *" -p j2k-transcode-cuda "*) {transcode_listed} ;;
   esac
@@ -180,6 +191,10 @@ fn recording_cuda_cargo() -> RecordingProgram {
   ;;
 *" --test "*)
   case " $* " in
+  *" -p j2k-ml "*)
+    {ml_passed}
+    printf '%s\n' 'test result: ok. {ml_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+    ;;
   *" -p j2k-cuda "*)
     {ht_passed}
     printf '%s\n' 'test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
@@ -218,7 +233,7 @@ fn cuda_release_executes_the_complete_hermetic_command_plan() {
     run_release_cuda("linux", "x86_64").expect("platform-independent CUDA release plan");
 
     let log = cargo.log();
-    assert_eq!(log.lines().count(), expected_runs * 16);
+    assert_eq!(log.lines().count(), expected_runs * 19);
     assert!(log.lines().all(|line| line.contains("RUST_TEST_THREADS=1")));
     assert_eq!(device.log().lines().count(), expected_runs);
 }

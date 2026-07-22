@@ -8,6 +8,7 @@ Pinned SHA-256 digests:
 - crates.io `block-0.1.6.crate` archive: `0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a`
 - upstream `block-0.1.6/src/lib.rs`: `eb31678adf63b53109d9b94eba23699fd5f9ebfdb950f6e1a57ad51bb6a146fa`
 - patched local `src/lib.rs`: `bf799f4d01bb497fdcffe7a5e28d998e721ed45c1be866ed1b454df39ce876a9`
+- patched tree inventory, excluding this provenance file and generated root lockfile: `ed11b5084e7c790c36466b1ea4033b9b8b1378739c38346b888d7c55178b3214`
 
 Documented ABI deltas from upstream are intentionally limited to:
 

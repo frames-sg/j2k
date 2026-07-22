@@ -1,6 +1,6 @@
 use j2k_core::{
-    BackendRequest, CodecError, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
-    ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
+    BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale, ImageDecode,
+    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
     TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
@@ -9,7 +9,7 @@ use j2k_test_support::{
     cuda_device_unavailable_is_skip, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
     htj2k_gray8_97_fixture, htj2k_gray8_fixture, htj2k_rgb8_97_fixture,
     htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, openhtj2k_refinement_odd_fixture,
-    rgb16ne_to_opaque_rgba16ne,
+    rgb16ne_to_opaque_rgba16ne, wrap_jp2_codestream,
 };
 
 fn fixture() -> Vec<u8> {
@@ -20,6 +20,20 @@ fn fixture() -> Vec<u8> {
         ..EncodeOptions::default()
     };
     encode(&pixels, 2, 2, 3, 8, false, &options).expect("encode")
+}
+
+fn fixture_classic(width: u32, height: u32, components: u16, reversible: bool) -> Vec<u8> {
+    let components_u32 = u32::from(components);
+    let pixels = (0..width * height * components_u32)
+        .map(|index| ((index * 29 + index / components_u32) & 0xff) as u8)
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible,
+        num_decomposition_levels: 2,
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, width, height, components, 8, false, &options)
+        .expect("encode classic matrix fixture")
 }
 
 fn fixture_ht_gray8() -> Vec<u8> {
@@ -171,28 +185,118 @@ fn auto_falls_back_to_cpu_surface() {
 }
 
 #[test]
-fn explicit_cuda_classic_j2k_request_rejects_cpu_staged_upload() {
+fn explicit_cuda_classic_j2k_request_matches_native() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
     let bytes = fixture();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
-
-    let error = decoder
+    let surface = decoder
         .decode_to_device(PixelFormat::Rgb8, BackendRequest::Cuda)
-        .expect_err("classic J2K must not be CPU-decoded and uploaded");
+        .expect("strict CUDA classic J2K surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
+    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+    assert_eq!(surface.as_host_bytes(), None);
 
-    assert!(error.is_unsupported());
+    let mut downloaded = vec![0u8; surface.byte_len()];
+    surface
+        .download_into(&mut downloaded, surface.pitch_bytes())
+        .expect("download CUDA classic surface");
+    let mut expected = vec![0u8; downloaded.len()];
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    host_decoder
+        .decode_into(&mut expected, 2 * 3, PixelFormat::Rgb8)
+        .expect("host classic decode");
+
+    assert_eq!(downloaded, expected);
+}
+
+#[test]
+fn explicit_cuda_classic_image_contract_matches_native() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let dimensions = (8, 8);
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 6,
+        h: 5,
+    };
+    let cases = [
+        StrictDecodeCase::Full,
+        StrictDecodeCase::Region(roi),
+        StrictDecodeCase::Scaled(Downscale::Half),
+        StrictDecodeCase::RegionScaled(roi, Downscale::Half),
+    ];
+
+    for reversible in [true, false] {
+        let gray_raw = fixture_classic(dimensions.0, dimensions.1, 1, reversible);
+        let gray_jp2 = wrap_jp2_codestream(&gray_raw, dimensions.0, dimensions.1, 1, 8, 17);
+        let color_raw = fixture_classic(dimensions.0, dimensions.1, 3, reversible);
+        let color_jp2 = wrap_jp2_codestream(&color_raw, dimensions.0, dimensions.1, 3, 8, 16);
+        let tolerance = if reversible { 0 } else { 2 };
+
+        for bytes in [&gray_raw, &gray_jp2] {
+            for format in [PixelFormat::Gray8, PixelFormat::Gray16] {
+                for case in cases {
+                    let surface = decode_strict_cuda_case(bytes, format, case)
+                        .expect("strict CUDA classic grayscale surface");
+                    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+                    let mut actual = vec![0; surface.byte_len()];
+                    surface
+                        .download_into(&mut actual, surface.pitch_bytes())
+                        .expect("download classic grayscale surface");
+                    let expected = expected_host_decode_case(bytes, format, case, dimensions);
+                    assert_bytes_within(
+                        &actual,
+                        &expected,
+                        tolerance,
+                        &format!("classic reversible={reversible} grayscale {format:?} {case:?}"),
+                    );
+                }
+            }
+        }
+
+        for bytes in [&color_raw, &color_jp2] {
+            for format in [
+                PixelFormat::Rgb8,
+                PixelFormat::Rgba8,
+                PixelFormat::Rgb16,
+                PixelFormat::Rgba16,
+            ] {
+                for case in cases {
+                    let surface = decode_strict_cuda_case(bytes, format, case)
+                        .expect("strict CUDA classic color surface");
+                    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+                    let mut actual = vec![0; surface.byte_len()];
+                    surface
+                        .download_into(&mut actual, surface.pitch_bytes())
+                        .expect("download classic color surface");
+                    let expected = expected_host_decode_case(bytes, format, case, dimensions);
+                    assert_bytes_within(
+                        &actual,
+                        &expected,
+                        tolerance,
+                        &format!("classic reversible={reversible} color {format:?} {case:?}"),
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn explicit_cuda_request_validates_decode_before_upload() {
+fn explicit_cuda_classic_rgba16_reaches_runtime_boundary() {
     let bytes = fixture();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
 
-    let error = decoder
-        .decode_to_device(PixelFormat::Rgba16, BackendRequest::Cuda)
-        .expect_err("unsupported decode");
-    assert!(error.is_unsupported());
-    assert!(!matches!(error, Error::CudaUnavailable));
+    match decoder.decode_to_device(PixelFormat::Rgba16, BackendRequest::Cuda) {
+        Ok(surface) => assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode),
+        Err(Error::CudaUnavailable | Error::CudaRuntime { .. }) => {}
+        Err(error) => panic!("classic Rgba16 must reach the CUDA runtime boundary: {error}"),
+    }
 }
 
 #[test]
@@ -247,6 +351,29 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_cuda_runtime_required() 
     assert!(report.idwt_us > 0);
     assert!(report.store_us > 0);
     assert_eq!(report.residency, SurfaceResidency::CudaResidentDecode);
+}
+
+#[test]
+fn explicit_cuda_classic_profile_splits_entropy_route_timings_when_cuda_runtime_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+
+    let bytes = fixture_classic(64, 64, 1, true);
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut session = CudaSession::default();
+    let (surface, report) = decoder
+        .decode_to_device_with_session_and_profile(PixelFormat::Gray8, &mut session)
+        .expect("strict CUDA classic profiled surface");
+
+    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+    assert_resident_cuda_surface(&surface);
+    assert!(report.classic_tier1_us > 0);
+    assert_eq!(report.ht_cleanup_us, 0);
+    assert!(report.detail.job_upload_us > 0);
+    assert!(report.detail.table_upload_us > 0);
+    assert!(report.detail.status_d2h_us > 0);
+    assert!(report.h2d_us >= report.detail.job_upload_us + report.detail.table_upload_us);
 }
 
 #[test]
@@ -1245,7 +1372,7 @@ fn tile_batch_region_cuda_surface_matches_host_when_cuda_runtime_required() {
         w: 2,
         h: 3,
     };
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let surface = Codec::decode_tile_region_to_device(
         &mut ctx,
@@ -1296,7 +1423,7 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required
     };
     let scale = Downscale::Half;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let surface = Codec::decode_tile_region_scaled_to_device(
         &mut ctx,
@@ -1337,7 +1464,7 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required
 #[test]
 fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 
@@ -1367,7 +1494,7 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
 #[test]
 fn decode_tiles_to_device_cpu_preserves_host_residency() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 
@@ -1394,7 +1521,7 @@ fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
     let first = fixture_ht_rgb8_pattern(32, 32, 17);
     let second = fixture_ht_rgb8_pattern(32, 32, 29);
     let inputs = [first.as_slice(), second.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = match Codec::decode_tiles_to_device(
@@ -1436,11 +1563,91 @@ fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
 }
 
 #[test]
+fn decode_tiles_to_device_explicit_cuda_mixed_classic_ht_batch_matches_host_bytes() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let classic = fixture_classic(32, 32, 3, true);
+    let ht = fixture_ht_rgb8_pattern(32, 32, 29);
+    let inputs = [classic.as_slice(), ht.as_slice()];
+    let mut ctx = j2k_cuda::J2kContext::default();
+    let mut pool = j2k_cuda::J2kScratchPool::new();
+
+    let surfaces = Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+    )
+    .expect("strict CUDA mixed classic/HT batch");
+    assert_eq!(surfaces.len(), inputs.len());
+    for surface in &surfaces {
+        assert_cuda_batch_surface(surface);
+    }
+
+    let actual = j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download mixed batch");
+    let expected = inputs
+        .iter()
+        .flat_map(|input| {
+            let mut output = vec![0; 32 * 32 * 3];
+            J2kDecoder::new(input)
+                .expect("host decoder")
+                .decode_into(&mut output, 32 * 3, PixelFormat::Rgb8)
+                .expect("host mixed batch decode");
+            output
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_mixed_grayscale_batch_matches_host_bytes() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let classic = fixture_classic(8, 8, 1, true);
+    let ht = fixture_ht_gray8();
+    let inputs = [classic.as_slice(), ht.as_slice()];
+    let mut ctx = j2k_cuda::J2kContext::default();
+    let mut pool = j2k_cuda::J2kScratchPool::new();
+
+    let surfaces = Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Gray8,
+        BackendRequest::Cuda,
+    )
+    .expect("strict CUDA mixed grayscale batch");
+    assert_eq!(surfaces.len(), 2);
+    for surface in &surfaces {
+        assert_resident_cuda_surface(surface);
+    }
+
+    let actual =
+        j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download mixed grayscale batch");
+    let expected = inputs
+        .iter()
+        .zip([(8usize, 8usize), (4, 4)])
+        .flat_map(|(input, (width, height))| {
+            let mut output = vec![0; width * height];
+            J2kDecoder::new(input)
+                .expect("host decoder")
+                .decode_into(&mut output, width, PixelFormat::Gray8)
+                .expect("host mixed grayscale decode");
+            output
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
     let first = fixture_ht_rgb8_pattern(32, 32, 31);
     let second = fixture_ht_rgb8_pattern(32, 32, 47);
     let inputs = [first.as_slice(), second.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = match Codec::decode_tiles_to_device(
@@ -1484,7 +1691,7 @@ fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
 #[test]
 fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 

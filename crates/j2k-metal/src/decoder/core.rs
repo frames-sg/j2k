@@ -17,11 +17,13 @@ use j2k_native::{
 use super::request::{
     surface_with_report, DecodeSurfaceWithReport, MetalDecodeOp, MetalDecodeRequest,
 };
+#[cfg(target_os = "macos")]
 use super::surface::{allocate_cpu_surface, upload_surface_to_metal_with_device};
 use crate::{routing, Error, MetalBackendSession, Surface};
 
 /// JPEG 2000 decoder that can return host or Metal-resident surfaces.
 pub struct J2kDecoder<'a> {
+    #[cfg(target_os = "macos")]
     pub(super) bytes: &'a [u8],
     pub(crate) inner: CpuDecoder<'a>,
     pub(super) pool: CpuJ2kScratchPool,
@@ -35,16 +37,21 @@ pub struct J2kDecoder<'a> {
     pub(super) native_prepared_direct_gray_plan:
         Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
+    pub(super) native_prepared_direct_gray_device_registry_id: Option<u64>,
+    #[cfg(target_os = "macos")]
     pub(super) native_direct_color_plan: Option<Arc<J2kDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_plan:
         Option<Arc<crate::compute::PreparedDirectColorPlan>>,
+    #[cfg(target_os = "macos")]
+    pub(super) native_prepared_direct_color_device_registry_id: Option<u64>,
 }
 
 impl<'a> J2kDecoder<'a> {
     /// Parse a J2K or HTJ2K codestream into a decoder.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         Ok(Self {
+            #[cfg(target_os = "macos")]
             bytes: input,
             inner: CpuDecoder::new(input)?,
             pool: CpuJ2kScratchPool::new(),
@@ -57,16 +64,22 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
+            native_prepared_direct_gray_device_registry_id: None,
+            #[cfg(target_os = "macos")]
             native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
+            #[cfg(target_os = "macos")]
+            native_prepared_direct_color_device_registry_id: None,
         })
     }
 
     /// Create a decoder from an already parsed J2K view.
     pub fn from_view(view: J2kView<'a>) -> Result<Self, Error> {
+        #[cfg(target_os = "macos")]
         let bytes = view.bytes();
         Ok(Self {
+            #[cfg(target_os = "macos")]
             bytes,
             inner: CpuDecoder::from_view(view)?,
             pool: CpuJ2kScratchPool::new(),
@@ -79,9 +92,13 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
+            native_prepared_direct_gray_device_registry_id: None,
+            #[cfg(target_os = "macos")]
             native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
+            #[cfg(target_os = "macos")]
+            native_prepared_direct_color_device_registry_id: None,
         })
     }
 

@@ -2,8 +2,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k_core::{
-    BackendRequest, DecoderContext, DeviceSubmission, ImageDecodeDevice, PixelFormat,
-    TileBatchDecodeSubmit,
+    BackendRequest, DeviceSubmission, ImageDecodeDevice, PixelFormat, TileBatchDecodeSubmit,
 };
 use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 use j2k_jpeg_metal::{Codec, Decoder as MetalDecoder, MetalSession, ScratchPool};
@@ -183,7 +182,7 @@ fn bench_batch_decode(c: &mut Criterion) {
 }
 
 fn device_decode_tile_batch(input: &[u8], batch_size: usize, backend: BackendRequest) {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let submissions = (0..batch_size)

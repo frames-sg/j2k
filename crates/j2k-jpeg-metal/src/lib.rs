@@ -68,9 +68,10 @@ pub(crate) use resident_batch::report_required_output_dimensions;
 pub use resident_batch::JpegMetalResidentBatchReport;
 pub use session::{MetalBackendSession, MetalSession};
 pub(crate) use surface::Storage;
+pub use surface::Surface;
+#[cfg(target_os = "macos")]
 pub use surface::{
     MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile, ResidentPrivateJpegTile,
-    Surface,
 };
 pub use tile_batch::JpegTileBatch;
 pub use viewport::{
@@ -205,7 +206,7 @@ impl TileBatchDecodeSubmit for Codec {
     type SubmittedSurface = batch::MetalSubmission;
 
     fn submit_tile_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -222,7 +223,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -240,7 +241,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -258,7 +259,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,
@@ -292,7 +293,7 @@ impl TileBatchDecodeManyDevice for Codec {
     type DeviceSurface = Surface;
 
     fn decode_tiles_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -394,13 +395,6 @@ pub(crate) fn decode_compatible_batch(
     Ok(None)
 }
 
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the non-Metal branch preserves the cross-platform session result contract"
-    )
-)]
 pub(crate) fn decode_compatible_batch_with_session(
     requests: &[batch::QueuedRequest],
     session: &mut session::SessionState,
@@ -876,18 +870,7 @@ pub(crate) fn upload_surface(
             {
                 let device = Device::system_default().ok_or(Error::MetalUnavailable)?;
                 let buffer = buffers::new_shared_buffer_with_data(&device, &bytes)?;
-                Ok(Surface {
-                    backend: BackendKind::Metal,
-                    residency: SurfaceResidency::CpuStagedMetalUpload,
-                    dimensions,
-                    fmt,
-                    pitch_bytes,
-                    storage: Storage::Metal {
-                        buffer,
-                        offset: 0,
-                        access_gate: None,
-                    },
-                })
+                Surface::from_cpu_staged_metal_buffer(buffer, dimensions, fmt)
             }
             #[cfg(not(target_os = "macos"))]
             {

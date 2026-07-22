@@ -10,7 +10,8 @@ use std::{
 use super::{
     command_template, command_version_label, dimensions_label, discover_command,
     extract_version_line, path_lookup, run_encoder_once, samples_label, selected_encoders_label,
-    tool_available, tool_command, tool_version, tool_version_available, version_line_by_priority,
+    start_with_executable_busy_retry, tool_available, tool_command, tool_version,
+    tool_version_available, version_line_by_priority, EXECUTABLE_BUSY_RETRY_DELAYS,
 };
 use crate::encode_compare::{EncoderKind, EncoderTool, ImageCase};
 
@@ -27,12 +28,51 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn executable(path: &Path, source: &str) {
-    fs::write(path, source).expect("write fake executable");
-    let mut permissions = fs::metadata(path)
+    let staging = path.with_extension("staging");
+    fs::write(&staging, source).expect("write staged fake executable");
+    let mut permissions = fs::metadata(&staging)
         .expect("fake executable metadata")
         .permissions();
     permissions.set_mode(0o700);
-    fs::set_permissions(path, permissions).expect("make fake executable runnable");
+    fs::set_permissions(&staging, permissions).expect("make staged fake executable runnable");
+    fs::rename(staging, path).expect("publish closed fake executable");
+}
+
+#[test]
+fn executable_busy_retry_is_bounded_and_preserves_other_start_errors() {
+    let mut transient_attempts = 0;
+    let value = start_with_executable_busy_retry(|| {
+        transient_attempts += 1;
+        if transient_attempts < 3 {
+            Err(std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy))
+        } else {
+            Ok("started")
+        }
+    })
+    .expect("transient executable-busy error is retried");
+    assert_eq!(value, "started");
+    assert_eq!(transient_attempts, 3);
+
+    let mut permanent_attempts = 0;
+    let error = start_with_executable_busy_retry::<()>(|| {
+        permanent_attempts += 1;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ))
+    })
+    .expect_err("non-transient start error is preserved");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(permanent_attempts, 1);
+
+    let mut exhausted_attempts = 0;
+    let error = start_with_executable_busy_retry::<()>(|| {
+        exhausted_attempts += 1;
+        Err(std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy))
+    })
+    .expect_err("persistent executable-busy error remains visible");
+    assert_eq!(error.kind(), std::io::ErrorKind::ExecutableFileBusy);
+    assert_eq!(exhausted_attempts, EXECUTABLE_BUSY_RETRY_DELAYS.len() + 1);
 }
 
 fn image_case(root: &Path) -> ImageCase {

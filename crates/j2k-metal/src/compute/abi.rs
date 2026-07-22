@@ -188,11 +188,6 @@ pub(crate) struct J2kClassicStatus {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) const J2K_IDWT_STATUS_OK: u32 = 0;
-#[cfg(target_os = "macos")]
-pub(crate) const J2K_IDWT_STATUS_FAIL: u32 = 1;
-
-#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct J2kIdwtSingleDecompositionParams {
@@ -251,16 +246,6 @@ pub(crate) struct J2kRepeatedIdwtSingleDecompositionParams {
     pub(crate) lh_instance_stride: u32,
     pub(crate) hh_instance_stride: u32,
     pub(crate) batch_count: u32,
-}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct J2kIdwtStatus {
-    pub(crate) code: u32,
-    pub(crate) detail: u32,
-    pub(crate) reserved0: u32,
-    pub(crate) reserved1: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -421,12 +406,31 @@ pub(crate) struct J2kGrayStoreParams {
     pub(crate) copy_width: u32,
     pub(crate) copy_height: u32,
     pub(crate) output_width: u32,
+    pub(crate) output_stride: u32,
+    pub(crate) output_item_offset: u32,
     pub(crate) output_x: u32,
     pub(crate) output_y: u32,
     pub(crate) addend: f32,
     pub(crate) max_value: f32,
     pub(crate) u8_scale: f32,
     pub(crate) u16_scale: f32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kNativeColorBatchStoreParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) plane_stride: u32,
+    pub(crate) output_row_stride: u32,
+    pub(crate) output_item_stride: u32,
+    pub(crate) batch_count: u32,
+    pub(crate) layout: u32,
+    pub(crate) mct: u32,
+    pub(crate) transform: u32,
+    pub(crate) signed: u32,
+    pub(crate) bit_depths: [u32; 4],
 }
 
 pub(crate) const J2K_HT_STATUS_OK: u32 = 0;
@@ -997,7 +1001,6 @@ impl_gpu_readback_abi!(
     J2kClassicStatus,
     J2kIdwtSingleDecompositionParams,
     J2kRepeatedIdwtSingleDecompositionParams,
-    J2kIdwtStatus,
     J2kIdwt97StepParams,
     J2kInverseMctParams,
     J2kForwardRctParams,
@@ -1010,6 +1013,7 @@ impl_gpu_readback_abi!(
     J2kRepeatedStoreParams,
     J2kRepeatedGrayStoreParams,
     J2kGrayStoreParams,
+    J2kNativeColorBatchStoreParams,
     J2kHtCleanupParams,
     J2kHtCleanupBatchJob,
     J2kHtRepeatedBatchParams,
@@ -1060,7 +1064,6 @@ mod gpu_readback_abi_tests {
         assert_u32_abi!(J2kValidateBytesStatus, 16);
         assert_u32_abi!(J2kClassicSegment, 20);
         assert_u32_abi!(J2kClassicStatus, 16);
-        assert_u32_abi!(J2kIdwtStatus, 16);
         assert_u32_abi!(J2kMctStatus, 16);
         assert_u32_abi!(J2kHtStatus, 16);
         assert_u32_abi!(J2kClassicEncodeStatus, 32);

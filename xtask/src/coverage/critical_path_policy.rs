@@ -2,6 +2,11 @@
 
 use super::model::{ChangedCoverageResult, CoverageLane};
 
+mod classification;
+
+pub(super) use classification::classify_path;
+use classification::{is_codec_behavior_path, is_hardware_only_path};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CriticalPathClass {
     Safety,
@@ -68,7 +73,7 @@ impl CriticalPathClass {
         match self {
             Self::Safety => "measurable lines are included in the safety-critical coverage gate",
             Self::Correctness => {
-                "measurable lines are included in the codec-correctness coverage gate"
+                "measurable lines are included in the codec contract, planning, routing, and shared-math coverage gate"
             }
             Self::Ownership => {
                 "measurable lines are included in the ownership and resource-lifecycle coverage gate"
@@ -102,7 +107,7 @@ impl ResidualDisposition {
                 "validated construction makes this defensive branch structurally unreachable"
             }
             Self::HardwareOnly => {
-                "the host lane cannot execute this hardware-owned path; its accelerator lane owns runtime evidence"
+                "exact backend behavior and parity evidence owns this accelerator implementation path"
             }
             Self::Trivial => {
                 "the finding is a formatting, accessor, or reporting shim with no independent state transition"
@@ -114,30 +119,8 @@ impl ResidualDisposition {
     }
 }
 
-pub(super) fn classify_path(path: &str) -> Option<CriticalPathClass> {
-    if is_parser_path(path) {
-        return Some(CriticalPathClass::Parser);
-    }
-    if is_ownership_path(path) {
-        return Some(CriticalPathClass::Ownership);
-    }
-    if is_public_api_path(path) {
-        return Some(CriticalPathClass::PublicApi);
-    }
-    if is_security_path(path) {
-        return Some(CriticalPathClass::Security);
-    }
-    if is_safety_path(path) {
-        return Some(CriticalPathClass::Safety);
-    }
-    if is_codec_production_path(path) || is_release_correctness_tool(path) {
-        return Some(CriticalPathClass::Correctness);
-    }
-    None
-}
-
 pub(super) fn audit_zero_body(
-    lane: CoverageLane,
+    _lane: CoverageLane,
     kind: ZeroBodyKind,
     finding: &str,
 ) -> ZeroBodyAudit {
@@ -145,16 +128,19 @@ pub(super) fn audit_zero_body(
     if is_explicitly_unreachable(finding) {
         return ZeroBodyAudit::Residual(ResidualDisposition::Unreachable);
     }
-    if lane == CoverageLane::Host && is_hardware_only_path(path) {
-        return ZeroBodyAudit::Residual(ResidualDisposition::HardwareOnly);
-    }
     if is_trivial_finding(kind, finding) {
         return ZeroBodyAudit::Residual(ResidualDisposition::Trivial);
     }
-    classify_path(path).map_or(
-        ZeroBodyAudit::Residual(ResidualDisposition::LowRiskTooling),
-        ZeroBodyAudit::Critical,
-    )
+    if let Some(class) = classify_path(path) {
+        return ZeroBodyAudit::Critical(class);
+    }
+    if is_hardware_only_path(path) {
+        return ZeroBodyAudit::Residual(ResidualDisposition::HardwareOnly);
+    }
+    if is_codec_behavior_path(path) {
+        return ZeroBodyAudit::Critical(CriticalPathClass::Correctness);
+    }
+    ZeroBodyAudit::Residual(ResidualDisposition::LowRiskTooling)
 }
 
 pub(super) fn audited_zero_body_findings(
@@ -197,94 +183,6 @@ pub(super) fn audited_zero_body_findings(
 
 fn finding_path(finding: &str) -> &str {
     finding.split_once("::").map_or(finding, |(path, _)| path)
-}
-
-fn is_parser_path(path: &str) -> bool {
-    [
-        "/parse/",
-        "/parser/",
-        "/header/",
-        "/jp2/",
-        "/segment/",
-        "codestream",
-        "packet_header",
-    ]
-    .iter()
-    .any(|marker| path.contains(marker))
-        || ["/parse.rs", "/parser.rs", "/header.rs", "/segment.rs"]
-            .iter()
-            .any(|suffix| path.ends_with(suffix))
-}
-
-fn is_ownership_path(path: &str) -> bool {
-    [
-        "/allocation",
-        "/batch/",
-        "/session/",
-        "/surface",
-        "/buffer",
-        "/workspace",
-        "/cache/",
-        "ownership",
-        "resource",
-        "resident",
-    ]
-    .iter()
-    .any(|marker| path.contains(marker))
-        || [
-            "/batch.rs",
-            "/session.rs",
-            "/surface.rs",
-            "/buffer.rs",
-            "/workspace.rs",
-            "/cache.rs",
-        ]
-        .iter()
-        .any(|suffix| path.ends_with(suffix))
-}
-
-fn is_public_api_path(path: &str) -> bool {
-    path.ends_with("/src/lib.rs")
-        || path.contains("/api/")
-        || path.ends_with("/api.rs")
-        || path.ends_with("/error.rs")
-        || path.contains("/traits/")
-        || path.ends_with("/traits.rs")
-        || path == "xtask/src/stable_api.rs"
-}
-
-fn is_security_path(path: &str) -> bool {
-    path.contains("security")
-        || path.contains("release_integrity")
-        || path.contains("unsafe_audit")
-        || path.contains("provenance")
-}
-
-fn is_safety_path(path: &str) -> bool {
-    path.contains("unsafe") || path.contains("validation") || path.contains("/bounds")
-}
-
-fn is_codec_production_path(path: &str) -> bool {
-    path.starts_with("crates/")
-        && (path.contains("/src/") || path.ends_with("/build.rs"))
-        && !path.starts_with("crates/j2k-compare/")
-        && !path.starts_with("crates/j2k-test-support/")
-        && !path.starts_with("crates/j2k-transcode-test-support/")
-}
-
-fn is_release_correctness_tool(path: &str) -> bool {
-    path.starts_with("xtask/src/coverage")
-        || path.starts_with("xtask/src/release")
-        || path.starts_with("xtask/src/semver")
-        || path.starts_with("xtask/src/stable_api")
-        || path.starts_with("xtask/src/publication_gate")
-}
-
-fn is_hardware_only_path(path: &str) -> bool {
-    path.contains("cuda")
-        || path.contains("metal")
-        || path.contains("/adapter/baseline_encode/")
-        || path.contains("/adapter/fast_packet/")
 }
 
 fn is_trivial_finding(kind: ZeroBodyKind, finding: &str) -> bool {

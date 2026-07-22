@@ -4,8 +4,11 @@
 
 | Version | Status |
 | --- | --- |
-| `0.7.0` workspace | Staged under `Unreleased`; not yet published or security-supported as a release |
-| `0.6.x` | Latest published and security-supported line |
+| `0.7.3` | Latest published and security-supported release |
+| `0.7.2` | Previous published release line; security-supported |
+| `0.7.1` | Previous published release line; security-supported |
+| `0.7.0` | Previous published release line; security-supported |
+| `0.6.x` | Supported for security fixes during the 0.7 transition |
 | Earlier than `0.6` | Unsupported |
 
 Security fixes are developed on the staged workspace line and backported to the
@@ -21,8 +24,8 @@ If that button is unavailable, do not put vulnerability details in a public
 issue. Open a [minimal issue](https://github.com/frames-sg/j2k/issues/new)
 asking the maintainers to provide a private contact, without naming the
 affected code or including proof-of-concept details. A
-verified direct private channel must be published before the staged `0.7.0`
-release is approved.
+verified direct private channel must be published before any future release is
+approved.
 
 The tag-publish preflight authenticates to GitHub and reads the repository's
 private-vulnerability-reporting setting. Publication fails closed unless that

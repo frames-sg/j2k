@@ -1,11 +1,12 @@
 [package]
 name        = "j2k"
-description = "Safe public JPEG 2000 and HTJ2K CPU codec APIs with optional CUDA and Metal adapters"
+description = "Pure-Rust JPEG 2000 and HTJ2K codec APIs with optional CUDA and Metal adapters"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace = true
+homepage.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
@@ -19,17 +20,17 @@ name = "j2k"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
-j2k-core = { path = "../j2k-core", version = "=0.7.0" }
-j2k-native = { path = "../j2k-native", version = "=0.7.0" }
-j2k-types = { path = "../j2k-types", version = "=0.7.0" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.4" }
+j2k-core = { path = "../j2k-core", version = "=0.7.4" }
+j2k-native = { path = "../j2k-native", version = "=0.7.4" }
+j2k-types = { path = "../j2k-types", version = "=0.7.4" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
-j2k-native = { path = "../j2k-native", version = "=0.7.0" }
-j2k-test-support = { path = "../j2k-test-support" }
+j2k-native = { path = "../j2k-native", version = "=0.7.4" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
 
 [[bench]]
 name = "public_api"

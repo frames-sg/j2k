@@ -8,6 +8,9 @@ use crate::repo_lint_support::{
 };
 
 mod lint_ratchets;
+mod living_audit;
+mod policy_line_limits;
+mod policy_ownership;
 
 #[test]
 fn large_test_files_stay_split_by_axis() {
@@ -63,220 +66,6 @@ fn large_test_files_stay_split_by_axis() {
         assert!(
             source.lines().count() < max_lines,
             "{relative} must stay below the split test-file line-count ratchet"
-        );
-    }
-}
-
-const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
-        (
-            "xtask/tests/repo_lint_support/audit_integrity_policy.rs",
-            200,
-        ),
-        (
-            "xtask/tests/repo_lint_support/docs_and_workflows_policy.rs",
-            2_750,
-        ),
-        (
-            "xtask/tests/repo_lint_support/encode_compare_structure_policy.rs",
-            250,
-        ),
-        (
-            "xtask/tests/repo_lint_support/fixture_compare_structure_policy.rs",
-            250,
-        ),
-        ("xtask/tests/repo_lint_support/gpu_adapter_policy.rs", 1_800),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy.rs",
-            250,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/architecture.rs",
-            175,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/color_runtime.rs",
-            150,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/resident_leaf_structure.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy.rs",
-            200,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/allocation.rs",
-            225,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/lifecycle.rs",
-            175,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/lifecycle/context.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/lifecycle/context/transitions.rs",
-            100,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/lifecycle/queued.rs",
-            70,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/lifecycle/queued/status.rs",
-            50,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/validation.rs",
-            225,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/validation/htj2k_output.rs",
-            175,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy/validation/htj2k_output/planning.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy.rs",
-            100,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/allocation_sources.rs",
-            300,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/checks.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/checks/adapter_checks.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/checks/checkpoint_checks.rs",
-            110,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/checks/packet_checks.rs",
-            130,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/checks/structure_checks.rs",
-            140,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/encoder_checks/contracts.rs",
-            110,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/gpu_capacity.rs",
-            100,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_metal_compute_structure_policy.rs",
-            300,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_metal_viewport_structure_policy.rs",
-            175,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/resident_encode_policy.rs",
-            150,
-        ),
-        (
-            "xtask/tests/repo_lint_support/gpu_device_structure_policy.rs",
-            500,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy.rs",
-            400,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy/adapter_tests.rs",
-            260,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy/owned_output.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy/support_contracts.rs",
-            100,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_encoder_structure_policy.rs",
-            225,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_restart_policy.rs",
-            125,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_restart_policy/counts.rs",
-            75,
-        ),
-        (
-            "xtask/tests/repo_lint_support/jpeg_metal_resource_safety_policy.rs",
-            350,
-        ),
-        (
-            "xtask/tests/repo_lint_support/metal_compute_structure_policy.rs",
-            550,
-        ),
-        (
-            "xtask/tests/repo_lint_support/tilecodec_error_policy.rs",
-            100,
-        ),
-        ("xtask/tests/repo_lint_support/transcode_api_policy.rs", 125),
-        (
-            "xtask/tests/repo_lint_support/transcode_structure_policy.rs",
-            375,
-        ),
-        (
-            "xtask/tests/repo_lint_support/transcode_structure_policy/cpu.rs",
-            250,
-        ),
-        (
-            "xtask/tests/repo_lint_support/transcode_structure_policy/cpu/batch.rs",
-            225,
-        ),
-        (
-            "xtask/tests/repo_lint_support/transcode_structure_policy/metal.rs",
-            150,
-        ),
-        (
-            "xtask/tests/repo_lint_support/xtask_main_structure_policy.rs",
-            300,
-        ),
-        (
-            "xtask/tests/repo_lint_support/xtask_main_structure_policy/codegen.rs",
-            100,
-        ),
-        (
-            "xtask/tests/repo_lint_support/xtask_main_structure_policy/lint_policy.rs",
-            50,
-        ),
-        (
-            "xtask/tests/repo_lint_support/xtask_main_structure_policy/release_integrity.rs",
-            100,
-        ),
-];
-
-#[test]
-fn repo_lint_policy_support_files_stay_split_by_axis() {
-    let root = repo_root();
-    for &(relative, max_lines) in REPO_LINT_POLICY_LINE_LIMITS {
-        let source = fs::read_to_string(root.join(relative))
-            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
-        assert!(
-            source.lines().count() < max_lines,
-            "{relative} must stay below the split repo-lint policy line-count ratchet"
         );
     }
 }
@@ -347,10 +136,23 @@ fn docs_and_workflows_policy_children_stay_split_by_responsibility() {
         ("stable_api_evidence.rs", 175),
         ("stable_api_governance.rs", 225),
         ("workflow_coverage_policy.rs", 500),
-        ("structural_ratchets.rs", 375),
+        ("structural_ratchets.rs", 225),
         ("structural_ratchets/lint_ratchets.rs", 150),
+        ("structural_ratchets/policy_line_limits.rs", 275),
+        ("structural_ratchets/policy_ownership.rs", 175),
+        ("structural_ratchets/policy_ownership/gpu_adapter.rs", 100),
+        ("structural_ratchets/policy_ownership/j2k_ml.rs", 100),
+        ("structural_ratchets/policy_ownership/metal_compute.rs", 75),
+        ("structural_ratchets/policy_ownership/path_patches.rs", 75),
+        ("structural_ratchets/policy_ownership/public_docs.rs", 75),
+        (
+            "structural_ratchets/policy_ownership/repository_domains.rs",
+            175,
+        ),
         ("duplication_policy.rs", 625),
         ("duplication_policy/cache_identity.rs", 100),
+        ("duplication_policy/classic_mq.rs", 75),
+        ("duplication_policy/pass_through.rs", 175),
         ("encoder_architecture_policy.rs", 700),
         ("encoder_architecture_policy/native_contracts.rs", 150),
         ("decoder_fixture_policy.rs", 475),

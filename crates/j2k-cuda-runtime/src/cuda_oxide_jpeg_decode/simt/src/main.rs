@@ -3,6 +3,8 @@ use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
+mod component_planes;
+
 const JPEG_STATUS_OK: u32 = 0;
 const JPEG_STATUS_TRUNCATED: u32 = 1;
 const JPEG_STATUS_HUFFMAN: u32 = 2;
@@ -844,82 +846,6 @@ fn idct_islow(coeffs: &[i32; 64], pixels: &mut [u8; 64]) {
 }
 
 #[inline(always)]
-fn h2v2_sample(
-    block: &[u8; 64],
-    chroma_cols: u32,
-    chroma_rows: u32,
-    output_x: u32,
-    chroma_y: u32,
-    bottom: bool,
-) -> u8 {
-    let n = if chroma_cols == 0 { 1 } else { chroma_cols };
-    let curr_y = if chroma_y < chroma_rows {
-        chroma_y
-    } else {
-        chroma_rows - 1
-    };
-    let near_y = if bottom {
-        if curr_y + 1 < chroma_rows {
-            curr_y + 1
-        } else {
-            chroma_rows - 1
-        }
-    } else if curr_y == 0 {
-        0
-    } else {
-        curr_y - 1
-    };
-    let sample = min_u32(output_x / 2, n - 1);
-    let curr = block[(curr_y * 8 + sample) as usize] as u32;
-    let near = block[(near_y * 8 + sample) as usize] as u32;
-    let this_sum = 3 * curr + near;
-    if n == 1 {
-        return ((4 * this_sum + 8) >> 4) as u8;
-    }
-    if output_x == 0 {
-        return ((this_sum * 4 + 8) >> 4) as u8;
-    }
-    if output_x == n * 2 - 1 {
-        return ((this_sum * 4 + 7) >> 4) as u8;
-    }
-    if (output_x & 1) == 0 {
-        let last_curr = block[(curr_y * 8 + sample - 1) as usize] as u32;
-        let last_near = block[(near_y * 8 + sample - 1) as usize] as u32;
-        let last_sum = 3 * last_curr + last_near;
-        return ((this_sum * 3 + last_sum + 8) >> 4) as u8;
-    }
-    let next_sample = min_u32(sample + 1, n - 1);
-    let next_curr = block[(curr_y * 8 + next_sample) as usize] as u32;
-    let next_near = block[(near_y * 8 + next_sample) as usize] as u32;
-    let next_sum = 3 * next_curr + next_near;
-    ((this_sum * 3 + next_sum + 7) >> 4) as u8
-}
-
-#[inline(always)]
-fn h2v1_sample(block: &[u8; 64], chroma_cols: u32, output_x: u32, chroma_y: u32) -> u8 {
-    let n = if chroma_cols == 0 { 1 } else { chroma_cols };
-    let row = min_u32(chroma_y, 7);
-    let base = row * 8;
-    if n == 1 {
-        return block[base as usize];
-    }
-    let sample = min_u32(output_x / 2, n - 1);
-    if output_x == 0 {
-        return block[base as usize];
-    }
-    if output_x == n * 2 - 1 {
-        return block[(base + n - 1) as usize];
-    }
-    let curr = block[(base + sample) as usize] as u32;
-    if (output_x & 1) == 0 {
-        let prev = block[(base + sample - 1) as usize] as u32;
-        return ((3 * curr + prev + 2) >> 2) as u8;
-    }
-    let next = block[(base + sample + 1) as usize] as u32;
-    ((3 * curr + next + 2) >> 2) as u8
-}
-
-#[inline(always)]
 fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8, r: &mut u8, g: &mut u8, b: &mut u8) {
     let yy = y as i32;
     let cb_centered = cb as i32 - 128;
@@ -927,121 +853,6 @@ fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8, r: &mut u8, g: &mut u8, b: &mut u8) {
     *r = clamp_i32(yy + ((91881 * cr_centered + (1 << 15)) >> 16));
     *g = clamp_i32(yy - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
     *b = clamp_i32(yy + ((116130 * cb_centered + (1 << 15)) >> 16));
-}
-
-#[inline(always)]
-fn store_rgb420_mcu(
-    out: *mut u8,
-    params: J2kJpeg420Params,
-    mx: u32,
-    my: u32,
-    blocks: Rgb420McuBlocks<'_>,
-) {
-    let base_x = mx * 16;
-    let base_y = my * 16;
-    let remaining_x = if params.width > base_x {
-        params.width - base_x
-    } else {
-        0
-    };
-    let remaining_y = if params.height > base_y {
-        params.height - base_y
-    } else {
-        0
-    };
-    let chroma_cols = min_u32(8, remaining_x / 2 + remaining_x % 2);
-    let chroma_rows = min_u32(8, remaining_y / 2 + remaining_y % 2);
-    let mut yy = 0;
-    while yy < 16 {
-        let py = base_y + yy;
-        if py < params.height {
-            let mut xx = 0;
-            while xx < 16 {
-                let px = base_x + xx;
-                if px < params.width {
-                    let yb = if yy < 8 {
-                        if xx < 8 {
-                            blocks.y0
-                        } else {
-                            blocks.y1
-                        }
-                    } else if xx < 8 {
-                        blocks.y2
-                    } else {
-                        blocks.y3
-                    };
-                    let y_idx = (yy & 7) * 8 + (xx & 7);
-                    let chroma_y = min_u32(yy / 2, chroma_rows - 1);
-                    let bottom = (yy & 1) != 0;
-                    let cbv =
-                        h2v2_sample(blocks.cb, chroma_cols, chroma_rows, xx, chroma_y, bottom);
-                    let crv =
-                        h2v2_sample(blocks.cr, chroma_cols, chroma_rows, xx, chroma_y, bottom);
-                    let dst = py * params.out_stride + px * 3;
-                    let mut r = 0;
-                    let mut g = 0;
-                    let mut b = 0;
-                    ycbcr_to_rgb(yb[y_idx as usize], cbv, crv, &mut r, &mut g, &mut b);
-                    store_u8(out, dst, r);
-                    store_u8(out, dst + 1, g);
-                    store_u8(out, dst + 2, b);
-                }
-                xx += 1;
-            }
-        }
-        yy += 1;
-    }
-}
-
-#[inline(always)]
-fn store_rgb422_mcu(
-    out: *mut u8,
-    params: J2kJpeg420Params,
-    mx: u32,
-    my: u32,
-    blocks: Rgb422McuBlocks<'_>,
-) {
-    let base_x = mx * 16;
-    let base_y = my * 8;
-    let remaining_x = if params.width > base_x {
-        params.width - base_x
-    } else {
-        0
-    };
-    let remaining_y = if params.height > base_y {
-        params.height - base_y
-    } else {
-        0
-    };
-    let chroma_cols = min_u32(8, remaining_x / 2 + remaining_x % 2);
-    let chroma_rows = min_u32(8, remaining_y);
-    let mut yy = 0;
-    while yy < 8 {
-        let py = base_y + yy;
-        if py < params.height {
-            let chroma_y = min_u32(yy, chroma_rows - 1);
-            let mut xx = 0;
-            while xx < 16 {
-                let px = base_x + xx;
-                if px < params.width {
-                    let yb = if xx < 8 { blocks.y0 } else { blocks.y1 };
-                    let y_idx = yy * 8 + (xx & 7);
-                    let cbv = h2v1_sample(blocks.cb, chroma_cols, xx, chroma_y);
-                    let crv = h2v1_sample(blocks.cr, chroma_cols, xx, chroma_y);
-                    let dst = py * params.out_stride + px * 3;
-                    let mut r = 0;
-                    let mut g = 0;
-                    let mut b = 0;
-                    ycbcr_to_rgb(yb[y_idx as usize], cbv, crv, &mut r, &mut g, &mut b);
-                    store_u8(out, dst, r);
-                    store_u8(out, dst + 1, g);
-                    store_u8(out, dst + 2, b);
-                }
-                xx += 1;
-            }
-        }
-        yy += 1;
-    }
 }
 
 #[inline(always)]
@@ -1665,7 +1476,7 @@ mod kernels {
             idct_islow(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
-            store_rgb420_mcu(
+            component_planes::store_420_mcu(
                 out,
                 params,
                 mx,
@@ -1804,7 +1615,7 @@ mod kernels {
             idct_islow(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
-            store_rgb422_mcu(
+            component_planes::store_422_mcu(
                 out,
                 params,
                 mx,
@@ -1819,6 +1630,21 @@ mod kernels {
             mcu += 1;
         }
         store_decode_status(status, gid, thread_status);
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_jpeg_subsampled_planes_to_rgb8(
+        planes: *const u8,
+        out: *mut u8,
+        params: J2kJpeg420Params,
+        sampling: u32,
+    ) {
+        let pixel = thread::index_1d().get() as u32;
+        let pixel_count = params.width * params.height;
+        if pixel >= pixel_count {
+            return;
+        }
+        component_planes::convert_pixel(planes, out, params, sampling, pixel);
     }
 
     #[kernel]

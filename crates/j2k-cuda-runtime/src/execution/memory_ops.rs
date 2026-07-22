@@ -62,4 +62,30 @@ impl CudaContext {
             })
         })
     }
+
+    pub(crate) fn memset_d32_async(
+        &self,
+        dst: &CudaDeviceBuffer,
+        value: c_uint,
+        words: usize,
+    ) -> Result<(), CudaError> {
+        let required = words
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(CudaError::LengthTooLarge { len: words })?;
+        if !self.validate_memset_target(dst, required)? {
+            return Ok(());
+        }
+        self.inner.with_current_resource_operation(|| {
+            // SAFETY: the destination is live and bounds-checked. A null
+            // stream orders the memset with the codec's default-stream graph.
+            self.inner.driver.check("cuMemsetD32Async", unsafe {
+                (self.inner.driver.cu_memset_d32_async)(
+                    dst.device_ptr(),
+                    value,
+                    words,
+                    std::ptr::null_mut(),
+                )
+            })
+        })
+    }
 }

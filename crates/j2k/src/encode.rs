@@ -397,7 +397,7 @@ fn j2k_lossy_decomposition_levels_for_options(
         options.progression,
         J2kProgressionOrder::Rpcl | J2kProgressionOrder::Pcrl | J2kProgressionOrder::Cprl
     ) {
-        j2k_lossy_position_progression_decomposition_levels(samples)
+        j2k_rpcl_lossless_decomposition_levels(samples.width, samples.height)
     } else {
         u8::from(samples.width.min(samples.height) >= MIN_LOSSLESS_DWT_DIMENSION)
     };
@@ -406,10 +406,6 @@ fn j2k_lossy_decomposition_levels_for_options(
             .min(max)
             .min(max_decomposition_levels(samples.width, samples.height))
     })
-}
-
-fn j2k_lossy_position_progression_decomposition_levels(samples: J2kLossySamples<'_>) -> u8 {
-    j2k_rpcl_lossless_decomposition_levels(samples.width, samples.height)
 }
 
 /// Return the effective lossless decomposition level policy for encode options.

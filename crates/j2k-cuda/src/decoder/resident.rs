@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod buffer_access;
+#[cfg(feature = "cuda-runtime")]
+mod chunked_cleanup;
 mod cleanup_dequant;
 mod component;
 mod error;
@@ -9,9 +11,18 @@ mod routing;
 mod surface;
 
 pub(super) use self::buffer_access::pooled_cuda_buffer;
+#[cfg(feature = "cuda-runtime")]
+pub(super) use self::chunked_cleanup::{
+    enqueue_chunked_htj2k_cleanup_dequant, ChunkedHtj2kCleanup,
+};
 pub(super) use self::cleanup_dequant::run_component_cleanup_dequant_batches;
 #[cfg(test)]
 pub(super) use self::cleanup_dequant::split_htj2k_subband_decode_dispatches;
+#[cfg(feature = "cuda-runtime")]
+pub(super) use self::cleanup_dequant::{
+    enqueue_component_classic_batches, enqueue_component_cleanup_dequant_batches,
+    QueuedComponentClassicDecode,
+};
 #[cfg(test)]
 pub(super) use self::cleanup_dequant::{
     htj2k_batched_cleanup_dequant_dispatches, htj2k_batched_cleanup_dispatches,

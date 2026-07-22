@@ -49,7 +49,7 @@ impl Dwt97TwoDimensional<f64> {
 
 /// Scratch storage for repeated DCT-grid to 9/7 transform calls.
 #[derive(Debug, Default)]
-pub(crate) struct Dct97GridScratch {
+pub struct Dct97GridScratch {
     geometry: Option<(usize, usize)>,
     spatial_samples: Vec<f64>,
     plane: Dwt97PlaneScratch,
@@ -103,7 +103,7 @@ pub fn dct8x8_blocks_then_dwt97_float(
 
 /// Reference 9/7 path with caller-owned spatial-sample scratch:
 /// DCT coefficients -> float IDCT samples -> separable linearized 9/7.
-pub(crate) fn dct8x8_blocks_then_dwt97_float_with_scratch(
+pub fn dct8x8_blocks_then_dwt97_float_with_scratch(
     blocks: &[[[f64; 8]; 8]],
     block_cols: usize,
     block_rows: usize,

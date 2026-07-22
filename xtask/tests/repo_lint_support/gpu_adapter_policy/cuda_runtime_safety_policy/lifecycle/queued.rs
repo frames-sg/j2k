@@ -35,19 +35,19 @@ pub(super) fn assert_queued_ownership_contract(sources: &LifecycleSources) {
         PatternCheck::new("CUDA recovered D2H pool ownership", &sources.htj2k_decode).required(&[
             "pool_reuse_guard.release_after_recoverable_operation_error(error)",
         ]),
-        PatternCheck::new("CUDA queued D2H error ownership", &sources.htj2k_decode_queued)
+        PatternCheck::new("CUDA queued lifecycle", &sources.htj2k_decode_queued_lifecycle)
             .required(&[
-                "fn release_after_recoverable_operation_error(&mut self, primary_error: CudaError)",
-                "fn synchronize_release_after_error(&mut self, primary_error: CudaError)",
+                "fn release_after_recoverable_operation_error(",
+                "fn synchronize_release_after_error(",
+                "select_uncertain_completion_error(primary_error, Some(completion_error))",
+            ]),
+        PatternCheck::new("CUDA queued D2H completion ownership", &sources.htj2k_decode_queued)
+            .required(&[
                 "HostPhaseBudget::with_live_bytes(",
                 "budget.try_vec_filled(self.status_count, CudaHtj2kStatus::default())",
-                "select_uncertain_completion_error(primary_error, Some(completion_error))",
                 "return Err(self.release_after_recoverable_operation_error(error));",
             ]),
-        PatternCheck::new(
-            "CUDA queued D2H drop ownership",
-            &sources.htj2k_decode_queued_drop,
-        )
+        PatternCheck::new("CUDA queued drop", &sources.htj2k_decode_queued_drop)
         .required(&[
             "impl Drop for CudaQueuedHtj2kCleanup",
             "self.context.synchronize_for_resource_release()",

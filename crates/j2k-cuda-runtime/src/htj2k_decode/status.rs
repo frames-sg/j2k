@@ -7,6 +7,13 @@ use crate::{
 
 use super::CudaHtj2kStatus;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CudaHtj2kStatusSpan {
+    pub(super) start: usize,
+    pub(super) count: usize,
+    pub(super) kernel: &'static str,
+}
+
 pub(super) fn first_status_error(
     statuses: &[CudaHtj2kStatus],
     kernel: &'static str,
@@ -14,12 +21,38 @@ pub(super) fn first_status_error(
     statuses
         .iter()
         .copied()
-        .find(|status| !status.is_ok())
-        .map(|status| CudaError::KernelStatus {
+        .enumerate()
+        .find(|(_, status)| !status.is_ok())
+        .map(|(job_index, status)| CudaError::KernelJobStatus {
             kernel,
+            job_index,
             code: status.code,
             detail: status.detail,
         })
+}
+
+pub(super) fn first_group_status_error(
+    statuses: &[CudaHtj2kStatus],
+    spans: &[CudaHtj2kStatusSpan],
+) -> Option<CudaError> {
+    for span in spans {
+        let end = span.start.checked_add(span.count)?;
+        let span_statuses = statuses.get(span.start..end)?;
+        if let Some((local_index, status)) = span_statuses
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, status)| !status.is_ok())
+        {
+            return Some(CudaError::KernelJobStatus {
+                kernel: span.kernel,
+                job_index: span.start.saturating_add(local_index),
+                code: status.code,
+                detail: status.detail,
+            });
+        }
+    }
+    None
 }
 
 pub(super) fn select_status_release_result(

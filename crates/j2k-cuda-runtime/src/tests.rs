@@ -1,3 +1,7 @@
+mod context_diagnostics;
+mod context_external;
+mod grayscale_external;
+
 use super::{
     checked_f32_words_byte_len, f32_slice_as_bytes_mut, format_idwt_batch_trace_row,
     idwt_batch_kernel_mode, idwt_batch_trace_row, idwt_batch_uses_cooperative_53,
@@ -12,23 +16,8 @@ use super::{
     CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState,
     CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaKernelName, CudaQueuedHtj2kCleanup,
 };
-
 fn cuda_runtime_gate() -> bool {
     j2k_test_support::cuda_runtime_gate(module_path!())
-}
-
-#[test]
-fn cuda_context_identity_distinguishes_clones_from_independent_contexts_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let cloned = context.clone();
-    let independent = CudaContext::system_default().expect("independent CUDA context");
-
-    assert!(context.is_same_context(&cloned));
-    assert!(!context.is_same_context(&independent));
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
@@ -384,10 +373,6 @@ fn assert_dwt97_bands_close(
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "small deterministic fixture indices are exactly representable as f32"
-)]
 fn dwt97_fixture_blocks(scale: f32) -> [f32; 64] {
     let mut blocks = [0.0f32; 64];
     for (index, value) in DWT97_FIXTURE_VALUES {
@@ -1767,6 +1752,10 @@ fn typed_device_view_reports_element_count_when_required() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the table intentionally inventories every decode and encode kernel entry point"
+)]
 fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
     let cases = [
         (
@@ -1822,11 +1811,44 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
         (CudaKernelName::J2kIdwtVertical97, "j2k_idwt_vertical_97"),
         (CudaKernelName::J2kInverseMct, "j2k_inverse_mct"),
         (CudaKernelName::J2kStoreGray8, "j2k_store_gray8"),
+        (CudaKernelName::J2kStoreGray8Batch, "j2k_store_gray8_batch"),
         (CudaKernelName::J2kStoreGray16, "j2k_store_gray16"),
+        (
+            CudaKernelName::J2kStoreGray16Batch,
+            "j2k_store_gray16_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreGrayI16Batch,
+            "j2k_store_grayi16_batch",
+        ),
         (CudaKernelName::J2kStoreRgb8, "j2k_store_rgb8"),
         (
             CudaKernelName::J2kStoreRgb8MctBatch,
             "j2k_store_rgb8_mct_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgb8NativeBatch,
+            "j2k_store_rgb8_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgb16NativeBatch,
+            "j2k_store_rgb16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgbI16NativeBatch,
+            "j2k_store_rgbi16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgba8NativeBatch,
+            "j2k_store_rgba8_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgba16NativeBatch,
+            "j2k_store_rgba16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgbaI16NativeBatch,
+            "j2k_store_rgbai16_native_batch",
         ),
         (CudaKernelName::J2kStoreRgb16, "j2k_store_rgb16"),
         (CudaKernelName::J2kStoreRgb16Mct, "j2k_store_rgb16_mct"),
@@ -1977,8 +1999,12 @@ fn htj2k_decode_table_resources_feed_multiple_payload_uploads_when_required() {
         .expect("second payload resources");
 
     assert!(std::sync::Arc::ptr_eq(
-        &first_resources.tables.inner,
-        &second_resources.tables.inner
+        &first_resources.tables.as_ref().expect("first tables").inner,
+        &second_resources
+            .tables
+            .as_ref()
+            .expect("second tables")
+            .inner
     ));
     assert_eq!(first_resources.payload_len, 2);
     assert_eq!(second_resources.payload_len, 3);

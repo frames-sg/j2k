@@ -25,7 +25,7 @@ impl<'a> Image<'a> {
         dimensions: (u32, u32),
         retained_baseline_bytes: usize,
     ) -> Result<DecodedNativeComponents> {
-        let mut budget = NativeOutputBudget::for_component_pack(
+        let mut budget = NativeOutputBudget::for_decoded_channels(
             retained_baseline_bytes,
             components,
             component_owner_capacity,

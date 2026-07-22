@@ -68,6 +68,25 @@ fn ci_fuzz_run_budgets_are_nontrivial() {
 }
 
 #[test]
+fn cuda_runtime_resolves_codec_math_from_packaged_build_metadata() {
+    let root = repo_root();
+    let codec_math_manifest = fs::read_to_string(root.join("crates/j2k-codec-math/Cargo.toml"))
+        .expect("read codec-math manifest");
+    let codec_math_build = fs::read_to_string(root.join("crates/j2k-codec-math/build.rs"))
+        .expect("read codec-math build script");
+    let runtime_manifest = fs::read_to_string(root.join("crates/j2k-cuda-runtime/Cargo.toml"))
+        .expect("read CUDA runtime manifest");
+    let runtime_build = fs::read_to_string(root.join("crates/j2k-cuda-runtime/build.rs"))
+        .expect("read CUDA runtime build script");
+
+    assert!(codec_math_manifest.contains("links = \"j2k_codec_math\""));
+    assert!(codec_math_build.contains("cargo::metadata=manifest_dir="));
+    assert!(runtime_manifest.contains("[build-dependencies]"));
+    assert!(runtime_build.contains("DEP_J2K_CODEC_MATH_MANIFEST_DIR"));
+    assert!(runtime_build.contains("codec_math_crate_path(&manifest_dir)?"));
+}
+
+#[test]
 fn deny_paste_advisory_ignore_has_review_metadata() {
     assert_file_pattern_checks(
         repo_root(),
@@ -80,6 +99,25 @@ fn deny_paste_advisory_ignore_has_review_metadata() {
                 "https://github.com/gfx-rs/metal-rs/blob/master/Cargo.toml",
                 "https://rustsec.org/advisories/RUSTSEC-2024-0436.html",
                 "https://github.com/gfx-rs/metal-rs/issues/349",
+            ])],
+    );
+}
+
+#[test]
+fn deny_bincode_advisory_ignore_and_license_exceptions_are_scoped() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("deny.toml")
+            .named("deny.toml burn dependency policy")
+            .required(&[
+                "RUSTSEC-2025-0141",
+                "Review-by: 2027-01-31",
+                "https://rustsec.org/advisories/RUSTSEC-2025-0141.html",
+                "https://github.com/tracel-ai/burn/tree/v0.21.0/crates/burn-core",
+                "{ crate = \"colored@3.1.1\", allow = [\"MPL-2.0\"] }",
+                "{ crate = \"hexf-parse@0.2.1\", allow = [\"CC0-1.0\"] }",
+                "{ crate = \"option-ext@0.2.0\", allow = [\"MPL-2.0\"] }",
+                "{ crate = \"xxhash-rust@0.8.16\", allow = [\"BSL-1.0\"] }",
             ])],
     );
 }
@@ -311,6 +349,7 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
                 "scripts/github_actions_verify.py verify-release",
                 "--origin-url \"${origin_url}\"",
                 "--server-url \"${GITHUB_SERVER_URL}\"",
+                "--ci-workflow ci.yml",
                 "--ci-branch main",
                 "--aggregate-job \"Release candidate aggregate\"",
                 "--cuda-job \"CUDA API compatibility on x86_64\"",
@@ -327,8 +366,10 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "cargo xtask release-integrity",
             "Verify final publish metadata",
             "cargo xtask release-integrity --publish",
-            "Verify every crates.io target version before publication",
+            "Verify canonical tag and current registry prefix",
             "scripts/publish-crate.sh --preflight-all",
+            "Package and checksum the complete release manifest",
+            "python3 scripts/publish_release.py preflight",
         ]),
         PatternCheck::new("GitHub Actions verifier mocked tests", &verifier_tests).required(&[
             "test_pull_request_files_are_paginated",
@@ -534,6 +575,7 @@ fn metal_xtask_owns_complete_compile_and_runtime_policy() {
                     "RUST_TEST_THREADS",
                     "J2K_GPU_TEST_SKIPPED",
                     "J2K_METAL_REQUIRED_IGNORED_TESTS",
+                    "METAL_OPTIONAL_IGNORED_TESTS",
                     "fn run_metal_compile()",
                     "fn run_release_metal()",
                     "validate_required_ignored_inventory",

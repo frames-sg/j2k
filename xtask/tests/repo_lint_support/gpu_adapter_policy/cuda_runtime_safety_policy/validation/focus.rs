@@ -7,6 +7,7 @@ fn cuda_runtime_validation_leaves_stay_focused() {
     for (relative, max_lines) in [
         ("htj2k_decode/queued.rs", 150usize),
         ("htj2k_decode/queued/drop_guard.rs", 50),
+        ("htj2k_decode/queued/lifecycle.rs", 80),
         ("htj2k_decode/status.rs", 100),
         ("htj2k_decode/status/tests.rs", 100),
         ("htj2k_encode/context_validation.rs", 100),

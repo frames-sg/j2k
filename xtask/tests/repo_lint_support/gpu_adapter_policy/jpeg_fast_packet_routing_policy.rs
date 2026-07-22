@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Single-family, typed-failure JPEG Metal fast-packet routing policy.
-use super::*;
+use std::fs;
+
+use crate::repo_lint_support::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
 mod error_contract;
 

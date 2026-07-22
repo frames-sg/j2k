@@ -238,7 +238,8 @@ fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
         ]),
         PatternCheck::new("Metal reversible ownership", &metal_reversible).required(&[
             "fn dispatch_dct_grid_to_reversible_dwt53(",
-            "fn dispatch_reversible_dwt53_batch_with_runtime(",
+            "fn dispatch_dct_grid_to_reversible_dwt53_batch(",
+            "batch::dispatch_with_runtime(",
         ]),
         PatternCheck::new("Metal irreversible ownership", &metal_irreversible).required(&[
             "fn dispatch_dct_grid_to_dwt97(",

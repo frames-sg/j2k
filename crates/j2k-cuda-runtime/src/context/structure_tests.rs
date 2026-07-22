@@ -8,6 +8,7 @@ const MODULES: &[(&str, &str, usize)] = &[
         75,
     ),
     ("context/compact.rs", include_str!("compact.rs"), 150),
+    ("context/creation.rs", include_str!("creation.rs"), 100),
     ("context/device.rs", include_str!("device.rs"), 80),
     ("context/inner.rs", include_str!("inner.rs"), 100),
     (
@@ -22,6 +23,12 @@ const MODULES: &[(&str, &str, usize)] = &[
     ),
     ("context/lifecycle.rs", include_str!("lifecycle.rs"), 175),
     ("context/operations.rs", include_str!("operations.rs"), 100),
+    ("context/pointer.rs", include_str!("pointer.rs"), 50),
+    (
+        "context/pointer/stream_ordered.rs",
+        include_str!("pointer/stream_ordered.rs"),
+        150,
+    ),
     ("context/pinned_host.rs", include_str!("pinned_host.rs"), 75),
     (
         "context/test_kernels.rs",
@@ -41,12 +48,14 @@ fn cuda_context_uses_focused_real_modules() {
     for module in [
         "mod band_transfer;",
         "mod compact;",
+        "mod creation;",
         "mod device;",
         "mod inner;",
         "mod kernel_cache;",
         "mod kernel_dispatch;",
         "mod lifecycle;",
         "mod operations;",
+        "mod pointer;",
         "mod pinned_host;",
     ] {
         assert!(CONTEXT.contains(module), "context.rs must contain {module}");

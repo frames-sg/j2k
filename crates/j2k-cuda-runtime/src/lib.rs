@@ -54,6 +54,7 @@ macro_rules! impl_cuda_htj2k_encoded_status_accessors {
 mod allocation;
 mod build_flags;
 mod bytes;
+mod classic_decode;
 mod context;
 mod driver;
 mod error;
@@ -66,15 +67,20 @@ mod j2k_encode;
 mod jpeg;
 mod kernels;
 mod memory;
+mod ml;
 #[cfg(test)]
 mod tests;
 mod transcode;
 
 pub use build_flags::transcode_kernels_built;
+pub use classic_decode::{
+    CudaClassicCodeBlockJob, CudaClassicDecodeStageTimings, CudaClassicDecodeTableResources,
+    CudaClassicDecodeTarget, CudaClassicSegment, CudaClassicStatus, CudaQueuedClassicDecode,
+};
 #[cfg(test)]
 pub(crate) use context::CudaKernelName;
 pub use context::{
-    CudaContext, CudaExternalHostOwner, CudaExternalHostReservation,
+    CudaContext, CudaContextDiagnostics, CudaExternalHostOwner, CudaExternalHostReservation,
     CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
 };
 pub use error::CudaError;
@@ -85,10 +91,11 @@ pub use execution::{
     CudaPooledKernelOutput, CudaQueuedExecution,
 };
 pub use htj2k_decode::{
-    CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeOutput, CudaHtj2kDecodeResources,
-    CudaHtj2kDecodeStageTimings, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables,
-    CudaHtj2kDequantizeTarget, CudaHtj2kStatus, CudaPooledHtj2kDecodeOutput,
-    CudaQueuedHtj2kCleanup,
+    htj2k_cleanup_multi_descriptor_bytes, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob,
+    CudaHtj2kDecodeOutput, CudaHtj2kDecodeResources, CudaHtj2kDecodeStageTimings,
+    CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables, CudaHtj2kDequantizeTarget,
+    CudaHtj2kStatus, CudaPooledHtj2kDecodeOutput, CudaQueuedHtj2kCleanup,
+    CudaQueuedHtj2kCleanupGroup,
 };
 pub use htj2k_encode::{
     CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResidentTarget,
@@ -103,8 +110,11 @@ pub use htj2k_packetize::{
 };
 pub use j2k_decode::{
     CudaJ2kIdwtJob, CudaJ2kIdwtTarget, CudaJ2kInverseMctJob, CudaJ2kRect, CudaJ2kStoreGray16Job,
-    CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job,
-    CudaJ2kStoreRgb8MctJob, CudaJ2kStoreRgb8MctTarget, CudaJ2kStridedInterleavedPixels,
+    CudaJ2kStoreGray16Target, CudaJ2kStoreGray8Job, CudaJ2kStoreGray8Target,
+    CudaJ2kStoreGrayI16Target, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job,
+    CudaJ2kStoreRgb8MctJob, CudaJ2kStoreRgb8MctTarget, CudaJ2kStoreRgbNativeJob,
+    CudaJ2kStoreRgbNativeTarget, CudaJ2kStoreRgbaNativeJob, CudaJ2kStoreRgbaNativeTarget,
+    CudaJ2kStridedInterleavedPixels, CudaQueuedJ2kStoreBatch,
 };
 pub use j2k_encode::{
     CudaDwt53LevelShape, CudaDwt53Output, CudaDwt97BatchStageTimings, CudaDwt97Output,
@@ -122,10 +132,11 @@ pub use jpeg::{
 pub use memory::{
     CudaBufferPool, CudaBufferPoolDiagnostics, CudaBufferPoolLimits, CudaBufferPoolTakeTrace,
     CudaDeviceBuffer, CudaDeviceBufferRange, CudaDeviceBufferView, CudaDeviceBufferViewMut,
-    CudaPinnedUploadOperationGuard, CudaPinnedUploadStagingCheckout,
-    CudaPinnedUploadStagingPoolDiagnostics, CudaPinnedUploadStagingPoolLimits,
-    CudaPooledDeviceBuffer,
+    CudaExternalDeviceBufferViewMut, CudaPinnedUploadOperationGuard,
+    CudaPinnedUploadStagingCheckout, CudaPinnedUploadStagingPoolDiagnostics,
+    CudaPinnedUploadStagingPoolLimits, CudaPooledDeviceBuffer,
 };
+pub use ml::{CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization, CudaJ2kMlSample};
 pub use transcode::{
     CudaDwt97BatchGeometry, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
     CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,

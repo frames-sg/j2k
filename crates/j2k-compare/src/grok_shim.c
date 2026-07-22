@@ -6,7 +6,13 @@
 
 #define GROK_OUTPUT_CAP_BYTES ((size_t)512 * 1024 * 1024)
 
+#if GRK_VERSION_MAJOR == 10
+void j2k_grok_initialize(void) { (void)grk_initialize(NULL, 1); }
+#elif GRK_VERSION_MAJOR == 20
 void j2k_grok_initialize(void) { grk_initialize(NULL, 1, NULL); }
+#else
+#error "j2k Grok shim supports Grok 10.x and 20.x"
+#endif
 
 static uint8_t j2k_clamp_u8(int32_t value) {
   if (value < 0) {
@@ -103,6 +109,10 @@ static int j2k_grok_component_sample_u8(const grk_image_comp *component,
   if (!component || !component->data || !sample) {
     return 0;
   }
+#if GRK_VERSION_MAJOR == 10
+  *sample = j2k_clamp_u8(component->data[index]);
+  return 1;
+#else
   switch (component->data_type) {
   case GRK_INT_8:
     if (!component->sgnd) {
@@ -130,6 +140,7 @@ static int j2k_grok_component_sample_u8(const grk_image_comp *component,
   default:
     return 0;
   }
+#endif
 }
 
 int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
@@ -140,7 +151,11 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
   grk_object *codec = NULL;
   grk_image *image = NULL;
   grk_stream_params stream_params;
+#if GRK_VERSION_MAJOR == 10
+  grk_decompress_core_params params;
+#else
   grk_decompress_parameters params;
+#endif
   grk_header_info header_info;
   uint8_t *packed = NULL;
 
@@ -158,10 +173,18 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
   memset(&header_info, 0, sizeof(header_info));
 
   stream_params.buf = (uint8_t *)bytes;
+#if GRK_VERSION_MAJOR == 10
+  stream_params.len = len;
+#else
   stream_params.buf_len = len;
   stream_params.stream_len = len;
   stream_params.is_read_stream = true;
+#endif
 
+#if GRK_VERSION_MAJOR == 10
+  grk_decompress_set_default_params(&params);
+  params.reduce = reduce;
+#else
   params.core.reduce = reduce;
   params.force_rgb = channels == 3;
   params.upsample = channels == 3;
@@ -172,11 +195,18 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
     params.dw_x1 = x1;
     params.dw_y1 = y1;
   }
+#endif
 
+#if GRK_VERSION_MAJOR == 10
+  header_info.decompressFormat = GRK_FMT_PXM;
+  header_info.forceRGB = channels == 3;
+  header_info.upsample = channels == 3;
+#else
   header_info.color_space = channels == 3 ? GRK_CLRSPC_SRGB : GRK_CLRSPC_GRAY;
   header_info.decompress_fmt = GRK_FMT_PXM;
   header_info.force_rgb = channels == 3;
   header_info.upsample = channels == 3;
+#endif
 
   codec = grk_decompress_init(&stream_params, &params);
   if (!codec) {
@@ -186,19 +216,38 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
     grk_object_unref(codec);
     return 0;
   }
+#if GRK_VERSION_MAJOR == 10
+  if (has_region &&
+      !grk_decompress_set_window(codec, (float)x0, (float)y0, (float)x1,
+                                 (float)y1)) {
+    grk_object_unref(codec);
+    return 0;
+  }
+#endif
   if (!grk_decompress(codec, NULL)) {
     grk_object_unref(codec);
     return 0;
   }
 
+#if GRK_VERSION_MAJOR == 10
+  image = grk_decompress_get_composited_image(codec);
+#else
   image = grk_decompress_get_image(codec);
+#endif
   if (!image || image->numcomps == 0 || !image->comps) {
     grk_object_unref(codec);
     return 0;
   }
 
+#if GRK_VERSION_MAJOR == 10
+  uint32_t width =
+      image->decompressWidth ? image->decompressWidth : image->comps[0].w;
+  uint32_t height =
+      image->decompressHeight ? image->decompressHeight : image->comps[0].h;
+#else
   uint32_t width = image->decompress_width ? image->decompress_width : image->comps[0].w;
   uint32_t height = image->decompress_height ? image->decompress_height : image->comps[0].h;
+#endif
   size_t total = 0;
   size_t last_index = 0;
   if (!j2k_grok_validate_component_count(image->numcomps, channels) ||

@@ -11,19 +11,19 @@ mod cross_stride;
 use self::cross_stride::validate_cross_stride_spans;
 
 #[derive(Clone, Copy)]
-pub(super) struct Htj2kOutputRect {
-    pub(super) row_start: usize,
-    pub(super) row_end: usize,
-    pub(super) column_start: usize,
-    pub(super) column_end: usize,
+pub(crate) struct Htj2kOutputRect {
+    pub(crate) row_start: usize,
+    pub(crate) row_end: usize,
+    pub(crate) column_start: usize,
+    pub(crate) column_end: usize,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Htj2kOutputRegion {
-    pub(super) stride: usize,
-    pub(super) rect: Htj2kOutputRect,
-    pub(super) linear_start: usize,
-    pub(super) linear_end: usize,
+pub(crate) struct Htj2kOutputRegion {
+    pub(crate) stride: usize,
+    pub(crate) rect: Htj2kOutputRect,
+    pub(crate) linear_start: usize,
+    pub(crate) linear_end: usize,
 }
 
 fn validate_same_stride_rects(
@@ -79,7 +79,7 @@ fn validate_same_stride_rects(
     Ok(())
 }
 
-pub(super) fn validate_disjoint_output_regions(
+pub(crate) fn validate_disjoint_output_regions(
     regions: &mut [Htj2kOutputRegion],
     live_region_bytes: usize,
 ) -> Result<(), CudaError> {

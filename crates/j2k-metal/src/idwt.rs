@@ -429,6 +429,96 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    struct MetalCaptureGuard<'a> {
+        manager: &'a metal::CaptureManagerRef,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for MetalCaptureGuard<'_> {
+        fn drop(&mut self) {
+            if self.manager.is_capturing() {
+                self.manager.stop_capture();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "GPU capture harness; run explicitly with --ignored --nocapture"]
+    fn metal_irreversible_idwt_gpu_capture() {
+        use metal::{CaptureDescriptor, CaptureManager, MTLCaptureDestination};
+
+        if !should_run_metal_runtime() {
+            return;
+        }
+        if std::env::var_os("CARGO_LLVM_COV_TARGET_DIR").is_some() {
+            println!("skipping GPU capture while the Metal coverage lane is instrumented");
+            return;
+        }
+        assert_eq!(
+            std::env::var("MTL_CAPTURE_ENABLED").as_deref(),
+            Ok("1"),
+            "set MTL_CAPTURE_ENABLED=1 to enable the Metal capture API"
+        );
+        let trace_path = std::path::PathBuf::from(
+            std::env::var_os("J2K_METAL_CAPTURE_PATH")
+                .expect("set J2K_METAL_CAPTURE_PATH to an absolute .gputrace output path"),
+        );
+        assert!(
+            trace_path.is_absolute(),
+            "J2K_METAL_CAPTURE_PATH must be absolute"
+        );
+        assert_eq!(
+            trace_path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("gputrace"),
+            "J2K_METAL_CAPTURE_PATH must end in .gputrace"
+        );
+        assert!(
+            !trace_path.exists(),
+            "refusing to overwrite existing GPU trace {}",
+            trace_path.display()
+        );
+
+        let fixture = IrreversibleIdwtPerfFixture::new();
+        let mut output = IrreversibleIdwtPerfFixture::output();
+        let device = j2k_metal_support::system_default_device().expect("Metal capture device");
+        crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
+            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+                fixture.job(),
+                &mut output,
+            )?;
+
+            let manager = CaptureManager::shared();
+            assert!(
+                manager.supports_destination(MTLCaptureDestination::GpuTraceDocument),
+                "Metal GPU trace documents are unavailable on this host"
+            );
+            let descriptor = CaptureDescriptor::new();
+            descriptor.set_capture_device(&device);
+            descriptor.set_destination(MTLCaptureDestination::GpuTraceDocument);
+            descriptor.set_output_url(&trace_path);
+            manager
+                .start_capture(&descriptor)
+                .map_err(|message| crate::Error::MetalRuntime { message })?;
+            let capture = MetalCaptureGuard { manager };
+            let result = crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+                fixture.job(),
+                &mut output,
+            );
+            drop(capture);
+            result
+        })
+        .expect("captured irreversible Metal IDWT");
+
+        assert!(
+            trace_path.is_dir(),
+            "Metal capture did not create GPU trace package {}",
+            trace_path.display()
+        );
+        println!("j2k_metal_idwt97_capture path={}", trace_path.display());
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "performance guard harness; run explicitly with --ignored --nocapture"]
     fn metal_irreversible_idwt_perf_guard() {

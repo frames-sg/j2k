@@ -33,7 +33,15 @@ pub(crate) type CuCtxCreate = unsafe extern "C" fn(*mut CuContext, c_uint, CuDev
 
 pub(crate) type CuCtxDestroy = unsafe extern "C" fn(CuContext) -> CuResult;
 
+pub(crate) type CuDevicePrimaryCtxRetain =
+    unsafe extern "C" fn(*mut CuContext, CuDevice) -> CuResult;
+
+pub(crate) type CuDevicePrimaryCtxRelease = unsafe extern "C" fn(CuDevice) -> CuResult;
+
 pub(crate) type CuCtxSetCurrent = unsafe extern "C" fn(CuContext) -> CuResult;
+
+pub(crate) type CuPointerGetAttribute =
+    unsafe extern "C" fn(*mut c_void, c_int, CuDevicePtr) -> CuResult;
 
 pub(crate) type CuMemAlloc = unsafe extern "C" fn(*mut CuDevicePtr, usize) -> CuResult;
 
@@ -50,6 +58,9 @@ pub(crate) type CuMemcpyDtoH = unsafe extern "C" fn(*mut c_void, CuDevicePtr, us
 pub(crate) type CuMemsetD8 = unsafe extern "C" fn(CuDevicePtr, u8, usize) -> CuResult;
 
 pub(crate) type CuMemsetD32 = unsafe extern "C" fn(CuDevicePtr, c_uint, usize) -> CuResult;
+
+pub(crate) type CuMemsetD32Async =
+    unsafe extern "C" fn(CuDevicePtr, c_uint, usize, CuStream) -> CuResult;
 
 pub(crate) type CuGetErrorName = unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult;
 
@@ -88,7 +99,11 @@ pub(crate) type CuEventDestroy = unsafe extern "C" fn(CuEvent) -> CuResult;
 
 pub(crate) type CuEventRecord = unsafe extern "C" fn(CuEvent, CuStream) -> CuResult;
 
+pub(crate) type CuStreamWaitEvent = unsafe extern "C" fn(CuStream, CuEvent, c_uint) -> CuResult;
+
 pub(crate) type CuEventSynchronize = unsafe extern "C" fn(CuEvent) -> CuResult;
+
+pub(crate) type CuEventQuery = unsafe extern "C" fn(CuEvent) -> CuResult;
 
 pub(crate) type CuEventElapsedTime = unsafe extern "C" fn(*mut f32, CuEvent, CuEvent) -> CuResult;
 
@@ -105,7 +120,10 @@ pub(crate) struct Driver {
     pub(crate) cu_device_get: CuDeviceGet,
     pub(crate) cu_ctx_create: CuCtxCreate,
     pub(crate) cu_ctx_destroy: CuCtxDestroy,
+    pub(crate) cu_device_primary_ctx_retain: CuDevicePrimaryCtxRetain,
+    pub(crate) cu_device_primary_ctx_release: CuDevicePrimaryCtxRelease,
     pub(crate) cu_ctx_set_current: CuCtxSetCurrent,
+    pub(crate) cu_pointer_get_attribute: CuPointerGetAttribute,
     pub(crate) cu_mem_alloc: CuMemAlloc,
     pub(crate) cu_mem_free: CuMemFree,
     pub(crate) cu_mem_host_alloc: CuMemHostAlloc,
@@ -114,6 +132,7 @@ pub(crate) struct Driver {
     pub(crate) cu_memcpy_dtoh: CuMemcpyDtoH,
     pub(crate) cu_memset_d8: CuMemsetD8,
     pub(crate) cu_memset_d32: CuMemsetD32,
+    pub(crate) cu_memset_d32_async: CuMemsetD32Async,
     pub(crate) cu_get_error_name: CuGetErrorName,
     #[cfg_attr(
         not(j2k_cuda_oxide_enabled),
@@ -138,7 +157,9 @@ pub(crate) struct Driver {
     pub(crate) cu_event_create: CuEventCreate,
     pub(crate) cu_event_destroy: CuEventDestroy,
     pub(crate) cu_event_record: CuEventRecord,
+    pub(crate) cu_stream_wait_event: CuStreamWaitEvent,
     pub(crate) cu_event_synchronize: CuEventSynchronize,
+    pub(crate) cu_event_query: CuEventQuery,
     pub(crate) cu_event_elapsed_time: CuEventElapsedTime,
 }
 
@@ -174,7 +195,13 @@ impl Driver {
             cu_device_get: load_symbol(&library, b"cuDeviceGet\0")?,
             cu_ctx_create: load_symbol(&library, b"cuCtxCreate_v2\0")?,
             cu_ctx_destroy: load_symbol(&library, b"cuCtxDestroy_v2\0")?,
+            cu_device_primary_ctx_retain: load_symbol(&library, b"cuDevicePrimaryCtxRetain\0")?,
+            cu_device_primary_ctx_release: load_symbol(
+                &library,
+                b"cuDevicePrimaryCtxRelease_v2\0",
+            )?,
             cu_ctx_set_current: load_symbol(&library, b"cuCtxSetCurrent\0")?,
+            cu_pointer_get_attribute: load_symbol(&library, b"cuPointerGetAttribute\0")?,
             cu_mem_alloc: load_symbol(&library, b"cuMemAlloc_v2\0")?,
             cu_mem_free: load_symbol(&library, b"cuMemFree_v2\0")?,
             cu_mem_host_alloc: load_symbol(&library, b"cuMemHostAlloc\0")?,
@@ -183,6 +210,7 @@ impl Driver {
             cu_memcpy_dtoh: load_symbol(&library, b"cuMemcpyDtoH_v2\0")?,
             cu_memset_d8: load_symbol(&library, b"cuMemsetD8_v2\0")?,
             cu_memset_d32: load_symbol(&library, b"cuMemsetD32_v2\0")?,
+            cu_memset_d32_async: load_symbol(&library, b"cuMemsetD32Async\0")?,
             cu_get_error_name: load_symbol(&library, b"cuGetErrorName\0")?,
             cu_module_load_data: load_symbol(&library, b"cuModuleLoadData\0")?,
             cu_module_unload: load_symbol(&library, b"cuModuleUnload\0")?,
@@ -196,7 +224,9 @@ impl Driver {
             cu_event_create: load_symbol(&library, b"cuEventCreate\0")?,
             cu_event_destroy: load_symbol(&library, b"cuEventDestroy_v2\0")?,
             cu_event_record: load_symbol(&library, b"cuEventRecord\0")?,
+            cu_stream_wait_event: load_symbol(&library, b"cuStreamWaitEvent\0")?,
             cu_event_synchronize: load_symbol(&library, b"cuEventSynchronize\0")?,
+            cu_event_query: load_symbol(&library, b"cuEventQuery\0")?,
             cu_event_elapsed_time: load_symbol(&library, b"cuEventElapsedTime\0")?,
             _library: library,
         })

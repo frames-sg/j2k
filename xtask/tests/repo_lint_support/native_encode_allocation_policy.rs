@@ -347,7 +347,7 @@ fn native_packet_owners_share_typed_checked_allocation_contract() {
                 "try_reserve_exact(count)",
                 "claim.reconcile(",
                 "compare_exchange_weak(",
-                "fetch_update(",
+                "try_update(",
                 "poisoned.store(true",
             ])
             .forbidden(&["Cell<", "saturating_sub(", "512 * 1024 * 1024"]),

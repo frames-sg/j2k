@@ -1,0 +1,87 @@
+name: publish v0.7.1 recovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: publish-v0.7.1-recovery
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATES_IO_INDEX_SETTLE_SECONDS: "130"
+  RELEASE_TAG: v0.7.1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Check out the immutable annotated release tag
+        shell: bash
+        run: |
+          test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = tag
+          candidate_sha="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          git checkout --detach "${candidate_sha}"
+          test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = tag
+          test "$(git rev-parse HEAD)" = "${candidate_sha}"
+      - name: Reverify the tagged exact-SHA release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          candidate_sha="$(git rev-parse HEAD)"
+          origin_url="$(git remote get-url origin)"
+          python3 scripts/github_actions_verify.py verify-release \
+            --repository "${GITHUB_REPOSITORY}" \
+            --origin-url "${origin_url}" \
+            --server-url "${GITHUB_SERVER_URL}" \
+            --tag "${RELEASE_TAG}" \
+            --candidate-sha "${candidate_sha}" \
+            --ci-workflow ci.yml \
+            --ci-branch main \
+            --aggregate-job "Release candidate aggregate" \
+            --gpu-workflow gpu-validation.yml \
+            --cuda-job "CUDA API compatibility on x86_64" \
+            --metal-job "Metal validation on Apple Silicon"
+      - name: Verify the complete unpublished release set
+        run: env GITHUB_REF_NAME="${RELEASE_TAG}" scripts/publish-crate.sh --preflight-all
+      - name: Publish every crate in dependency order
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+        shell: bash
+        run: |
+          for crate in \
+            j2k-core \
+            j2k-profile \
+            j2k-types \
+            j2k-codec-math \
+            j2k-cuda-runtime \
+            j2k-metal-support \
+            j2k-native \
+            j2k-jpeg \
+            j2k-tilecodec \
+            j2k \
+            j2k-transcode \
+            j2k-transcode-cuda \
+            j2k-jpeg-metal \
+            j2k-metal \
+            j2k-transcode-metal \
+            j2k-jpeg-cuda \
+            j2k-cuda \
+            j2k-cli
+          do
+            env GITHUB_REF_NAME="${RELEASE_TAG}" scripts/publish-crate.sh "${crate}"
+          done

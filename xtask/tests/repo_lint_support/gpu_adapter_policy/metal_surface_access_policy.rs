@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::*;
+use std::fs;
+
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
 
 #[test]
 fn j2k_metal_surface_byte_access_remains_fallible() {

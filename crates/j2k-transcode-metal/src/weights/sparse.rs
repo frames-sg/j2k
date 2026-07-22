@@ -2,8 +2,10 @@
 
 use j2k_core::try_host_vec_with_capacity;
 
+#[cfg(target_os = "macos")]
+use super::budget::metal_sparse_weight_budget;
 use super::{
-    budget::{bounded_sparse_weight_budget, metal_sparse_weight_budget},
+    budget::bounded_sparse_weight_budget,
     error::allocation_error,
     shared::{high_len, low_len, WaveletBand, WaveletKind},
     symbolic::write_symbolic_row,
@@ -29,12 +31,14 @@ impl SparseDwt97WeightRows {
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn allocation_bytes_for_len(
         sample_len: usize,
     ) -> Result<usize, SparseWeightRowsError> {
         sparse_allocation_bytes(sample_len, WaveletKind::Irreversible97)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn metal_bytes_for_len(sample_len: usize) -> Result<usize, SparseWeightRowsError> {
         sparse_metal_bytes(sample_len, WaveletKind::Irreversible97)
     }
@@ -65,12 +69,14 @@ impl SparseDwt53WeightRows {
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn allocation_bytes_for_len(
         sample_len: usize,
     ) -> Result<usize, SparseWeightRowsError> {
         sparse_allocation_bytes(sample_len, WaveletKind::Reversible53)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn metal_bytes_for_len(sample_len: usize) -> Result<usize, SparseWeightRowsError> {
         sparse_metal_bytes(sample_len, WaveletKind::Reversible53)
     }
@@ -135,6 +141,7 @@ fn empty_sparse_rows(
     Ok(rows)
 }
 
+#[cfg(target_os = "macos")]
 fn sparse_allocation_bytes(
     sample_len: usize,
     wavelet: WaveletKind,
@@ -142,6 +149,7 @@ fn sparse_allocation_bytes(
     bounded_sparse_weight_budget(sample_len, wavelet.max_taps_per_row())
 }
 
+#[cfg(target_os = "macos")]
 fn sparse_metal_bytes(
     sample_len: usize,
     wavelet: WaveletKind,

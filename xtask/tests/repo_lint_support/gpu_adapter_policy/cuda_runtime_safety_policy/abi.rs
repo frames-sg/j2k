@@ -13,6 +13,8 @@ fn cuda_gpu_abi_byte_views_require_compile_time_no_padding_proofs() {
         .expect("read CUDA byte-view facade");
     let abi = fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/bytes/abi.rs"))
         .expect("read CUDA GPU ABI proofs");
+    let abi_tests = fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/bytes/abi/tests.rs"))
+        .expect("read CUDA GPU ABI proof tests");
     let reversible53 =
         fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/transcode/reversible53.rs"))
             .expect("read CUDA reversible transcode upload");
@@ -20,6 +22,10 @@ fn cuda_gpu_abi_byte_views_require_compile_time_no_padding_proofs() {
     assert!(
         abi.lines().count() < 500,
         "CUDA GPU ABI proof ledger must remain focused"
+    );
+    assert!(
+        abi_tests.lines().count() < 100,
+        "CUDA GPU ABI proof tests must remain focused"
     );
     assert_pattern_checks(&[
         PatternCheck::new("shared safe GPU byte-view contract", &core).required(&[
@@ -46,6 +52,9 @@ fn cuda_gpu_abi_byte_views_require_compile_time_no_padding_proofs() {
             "CudaJ2kIdwtMultiKernelJob {",
             "CudaJ2kStoreRgb8MctBatchJob {",
             "reserved_tail: u32",
+            "mod tests;",
+        ]),
+        PatternCheck::new("CUDA no-padding proof tests", &abi_tests).required(&[
             "explicit_tail_fields_preserve_cuda_host_abi_sizes_and_offsets",
             "explicit_cuda_tail_fields_are_part_of_safe_byte_views",
         ]),
@@ -91,7 +100,7 @@ fn cuda_host_device_mirrors_explicitly_occupy_existing_tail_padding() {
     let host_j2k = read("crates/j2k-cuda-runtime/src/j2k_decode/types.rs");
     let device_idwt = read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs");
     let device_store =
-        read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src/main.rs");
+        read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src/abi.rs");
 
     for (name, source, minimum_tail_fields) in [
         ("CUDA JPEG host ABI", host_jpeg.as_str(), 1usize),

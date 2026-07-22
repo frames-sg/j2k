@@ -24,15 +24,6 @@ pub(super) fn recode(
     options: J2kToHtj2kOptions,
     output_transfer_syntax: CompressedTransferSyntax,
 ) -> Result<ReencodedHtj2k, J2kError> {
-    recode_components(bytes, parsed, options, output_transfer_syntax)
-}
-
-fn recode_components(
-    bytes: &[u8],
-    parsed: &ParsedImageInfo,
-    options: J2kToHtj2kOptions,
-    output_transfer_syntax: CompressedTransferSyntax,
-) -> Result<ReencodedHtj2k, J2kError> {
     let encode_options = encode_options(parsed, options);
     let resolve_to_reference_grid = parsed.file_metadata.as_ref().is_some_and(|metadata| {
         metadata.palette.is_some() || !metadata.component_mappings.is_empty()

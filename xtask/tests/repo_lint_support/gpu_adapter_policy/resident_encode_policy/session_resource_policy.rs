@@ -34,7 +34,7 @@ fn resident_cuda_encode_resources_are_session_owned_and_context_bound() {
     assert_pattern_checks(&[
         PatternCheck::new("minimum CUDA context identity API", &runtime_context).required(&[
             "pub fn is_same_context(&self, other: &Self) -> bool",
-            "Arc::ptr_eq(&self.inner, &other.inner)",
+            "self.inner.context == other.inner.context",
             "#[doc(hidden)]",
         ]),
         PatternCheck::new("session-owned HTJ2K encode resources", &session).required(&[

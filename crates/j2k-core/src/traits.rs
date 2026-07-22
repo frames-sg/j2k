@@ -6,7 +6,7 @@ use crate::{
     accelerator::{DeviceMemoryRange, ExecutionStats, SurfaceResidency},
     backend::{BackendKind, BackendRequest},
     batch::{TileRegionScaledDecodeJob, TileRegionScaledDeviceDecodeRequest},
-    context::{CodecContext, DecoderContext},
+    context::CodecContext,
     error::CodecError,
     pixel::PixelFormat,
     row_sink::RowSink,
@@ -543,7 +543,7 @@ pub trait TileBatchDecode: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the tile input or output layout cannot
     /// be decoded.
     fn decode_tile(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -558,7 +558,7 @@ pub trait TileBatchDecode: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the tile, region, or output layout
     /// cannot be decoded.
     fn decode_tile_region(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -574,7 +574,7 @@ pub trait TileBatchDecode: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the tile, scale, or output layout
     /// cannot be decoded.
     fn decode_tile_scaled(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         out: &mut [u8],
@@ -590,7 +590,7 @@ pub trait TileBatchDecode: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the tile, region, scale, or output
     /// layout cannot be decoded.
     fn decode_tile_region_scaled(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         fmt: PixelFormat,
         job: TileRegionScaledDecodeJob<'_, '_>,
@@ -611,7 +611,7 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] if the tile cannot be submitted or device
     /// execution fails.
     fn decode_tile_to_device(
-        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
+        ctx: &mut <Self as TileBatchDecodeDevice>::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         fmt: PixelFormat,
@@ -642,7 +642,7 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] if the region is invalid or submission or
     /// device execution fails.
     fn decode_tile_region_to_device(
-        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
+        ctx: &mut <Self as TileBatchDecodeDevice>::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         fmt: PixelFormat,
@@ -675,7 +675,7 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] if the scale is unsupported or submission
     /// or device execution fails.
     fn decode_tile_scaled_to_device(
-        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
+        ctx: &mut <Self as TileBatchDecodeDevice>::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         fmt: PixelFormat,
@@ -708,7 +708,7 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] if the region or scale is invalid or
     /// submission or device execution fails.
     fn decode_tile_region_scaled_to_device(
-        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
+        ctx: &mut <Self as TileBatchDecodeDevice>::Context,
         pool: &mut Self::Pool,
         input: &[u8],
         fmt: PixelFormat,
@@ -753,7 +753,7 @@ pub trait TileBatchDecodeManyDevice: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] if any tile cannot be decoded by the
     /// requested backend.
     fn decode_tiles_to_device(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -779,7 +779,7 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the request is invalid, unsupported,
     /// or cannot be submitted.
     fn submit_tile_to_device(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -794,7 +794,7 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the region or backend request is
     /// invalid, unsupported, or cannot be submitted.
     fn submit_tile_region_to_device(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -810,7 +810,7 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the scale or backend request is
     /// invalid, unsupported, or cannot be submitted.
     fn submit_tile_scaled_to_device(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -826,7 +826,7 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     /// Returns the codec-specific [`ImageCodec::Error`] when the request is invalid, unsupported,
     /// or cannot be submitted.
     fn submit_tile_region_scaled_to_device(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,

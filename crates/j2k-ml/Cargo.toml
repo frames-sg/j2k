@@ -1,0 +1,114 @@
+[package]
+name = "j2k-ml"
+description = "Thin Burn tensor adapter for JPEG 2000 and HTJ2K batch decoding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+readme = "README.md"
+autobenches = false
+
+[package.metadata.cargo-machete]
+ignored = ["criterion"]
+
+[features]
+default = []
+cpu = []
+cuda = [
+    "dep:burn-cuda",
+    "dep:burn-cubecl",
+    "dep:burn-fusion",
+    "dep:burn-ir",
+    "dep:j2k-cuda",
+    "dep:j2k-cuda-runtime",
+]
+metal = [
+    "dep:burn-cubecl",
+    "dep:burn-fusion",
+    "dep:burn-ir",
+    "dep:burn-wgpu",
+    "dep:j2k-metal",
+    "dep:metal",
+    "dep:wgpu-hal",
+]
+
+[dependencies]
+burn-core = { workspace = true }
+burn-cuda = { workspace = true, optional = true }
+burn-cubecl = { workspace = true, optional = true }
+burn-fusion = { workspace = true, optional = true }
+burn-ir = { workspace = true, optional = true }
+burn-wgpu = { workspace = true, optional = true }
+j2k = { path = "../j2k", version = "=0.7.4" }
+j2k-cuda = { path = "../j2k-cuda", version = "=0.7.4", features = ["cuda-runtime"], optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.4", optional = true }
+j2k-metal = { path = "../j2k-metal", version = "=0.7.4", optional = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { workspace = true, optional = true }
+wgpu-hal = { version = "29.0.4", default-features = false, features = ["metal"], optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+j2k-core = { path = "../j2k-core" }
+j2k-native = { path = "../j2k-native" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+burn-ndarray = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
+burn-flex = { workspace = true }
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+undocumented_unsafe_blocks = "warn"
+
+[[test]]
+name = "metal"
+required-features = ["metal"]
+
+[[test]]
+name = "cuda"
+required-features = ["cuda"]
+
+[[test]]
+name = "cuda_rgba"
+required-features = ["cuda"]
+
+[[test]]
+name = "cuda_batch_sessions"
+required-features = ["cuda"]
+
+[[test]]
+name = "benchmark_inputs"
+required-features = ["cpu"]
+
+[[bench]]
+name = "batch_decode"
+harness = false
+test = false
+required-features = ["cpu"]
+
+[[bench]]
+name = "batch_decode_metal"
+harness = false
+test = false
+required-features = ["cpu", "metal"]
+
+[[bench]]
+name = "batch_decode_cuda"
+harness = false
+test = false
+required-features = ["cpu", "cuda"]

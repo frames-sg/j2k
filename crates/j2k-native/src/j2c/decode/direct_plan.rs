@@ -11,9 +11,70 @@ use super::{
     J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kWaveletTransform, ResolutionTile,
     Result, RoiPlan, SubBand, SubBandDecodeParameters, Tile, ValidationError, Vec,
 };
+use crate::j2c::rect::IntRect;
+use crate::{
+    HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange, J2kDirectRgbaPlan,
+    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedPayloadRecordSpan,
+    J2kReferencedTileGeometry, J2kReferencedTilePlan,
+};
 
 mod classic;
-pub(super) use self::classic::collect_classic_code_block_data;
+pub(super) use self::classic::{
+    collect_classic_code_block_data, collect_referenced_classic_code_block_data,
+};
+mod color;
+pub(crate) use self::color::build_direct_color_plan;
+mod referenced_color;
+pub(crate) use self::referenced_color::{
+    build_referenced_classic_color_plan, build_referenced_classic_rgba_plan,
+    build_referenced_htj2k_color_plan, build_referenced_htj2k_rgba_plan,
+};
+mod referenced_grayscale;
+pub(crate) use self::referenced_grayscale::{
+    build_referenced_classic_grayscale_plan, build_referenced_htj2k_grayscale_plan,
+};
+mod storage;
+use self::storage::build_component_plan_from_storage;
+use self::storage::sub_band::{strip_classic_payload_owners, strip_grayscale_payload_owners};
+
+#[derive(Clone, Copy)]
+struct PayloadRangeOwner<'a> {
+    encoded_input: &'a [u8],
+    codestream: &'a [u8],
+}
+
+struct ClassicPayloadCollector<'a> {
+    payloads: &'a mut Vec<J2kClassicCodeBlockPayload>,
+    ranges: &'a mut Vec<J2kCodestreamRange>,
+}
+
+impl ClassicPayloadCollector<'_> {
+    fn prepare(
+        &mut self,
+        payload_capacity: usize,
+        range_capacity: usize,
+        budget: &mut DecodeAllocationBudget,
+    ) -> Result<()> {
+        budget.reserve_new(self.payloads, payload_capacity)?;
+        budget.reserve_new(self.ranges, range_capacity)
+    }
+
+    fn push_range(&mut self, range: J2kCodestreamRange) -> Result<()> {
+        if self.ranges.len() == self.ranges.capacity() {
+            bail!(DecodingError::HostAllocationFailed);
+        }
+        self.ranges.push(range);
+        Ok(())
+    }
+
+    fn push_payload(&mut self, payload: J2kClassicCodeBlockPayload) -> Result<()> {
+        if self.payloads.len() == self.payloads.capacity() {
+            bail!(DecodingError::HostAllocationFailed);
+        }
+        self.payloads.push(payload);
+        Ok(())
+    }
+}
 
 pub(crate) fn build_direct_grayscale_plan<'a>(
     data: &'a [u8],
@@ -22,16 +83,27 @@ pub(crate) fn build_direct_grayscale_plan<'a>(
     ctx: &mut DecoderContext<'a>,
 ) -> Result<J2kDirectGrayscalePlan> {
     ctx.release_reusable_allocations();
-    let result = build_direct_grayscale_plan_inner(data, header, retained_image_bytes, ctx);
+    let result = build_direct_grayscale_plan_inner(
+        data,
+        data,
+        header,
+        retained_image_bytes,
+        ctx,
+        None,
+        None,
+    );
     ctx.release_reusable_allocations();
     result
 }
 
 fn build_direct_grayscale_plan_inner<'a>(
     data: &'a [u8],
+    payload_range_owner: &'a [u8],
     header: &Header<'a>,
     retained_image_bytes: usize,
     ctx: &mut DecoderContext<'a>,
+    ht_payloads: Option<&mut Vec<HtCodeBlockPayloadRanges>>,
+    classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
 ) -> Result<J2kDirectGrayscalePlan> {
     let mut reader = BitReader::new(data);
     let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
@@ -42,7 +114,40 @@ fn build_direct_grayscale_plan_inner<'a>(
         ));
     }
 
-    let tile = &tiles[0];
+    let mut next_band_id = 0;
+    let output_region = ctx.tile_decode_context.output_region;
+    build_direct_grayscale_tile_plan(
+        data,
+        payload_range_owner,
+        &tiles[0],
+        header,
+        tiles.structural_workspace_bytes(),
+        ctx,
+        &mut next_band_id,
+        output_region,
+        None,
+        ht_payloads,
+        classic_payloads,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tile-local planning keeps the borrowed input, retained baseline, global band namespace, output region, and payload collector explicit"
+)]
+fn build_direct_grayscale_tile_plan<'a>(
+    data: &'a [u8],
+    payload_range_owner: &'a [u8],
+    tile: &Tile<'a>,
+    header: &Header<'a>,
+    structural_workspace_bytes: usize,
+    ctx: &mut DecoderContext<'a>,
+    next_band_id: &mut J2kDirectBandId,
+    decode_region: Option<super::OutputRegion>,
+    store_region: Option<super::OutputRegion>,
+    ht_payloads: Option<&mut Vec<HtCodeBlockPayloadRanges>>,
+    mut classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
+) -> Result<J2kDirectGrayscalePlan> {
     if tile.component_infos.len() != 1 {
         bail!(DecodingError::DirectPlanUnsupported(
             DirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream
@@ -54,11 +159,11 @@ fn build_direct_grayscale_plan_inner<'a>(
     build::build(
         tile,
         &mut ctx.storage,
-        tiles.structural_workspace_bytes(),
-        ctx.tile_decode_context.output_region.is_some(),
+        structural_workspace_bytes,
+        decode_region.is_some(),
         build::BuildWorkspace::CoefficientsOnly,
     )?;
-    if let Some(output_region) = ctx.tile_decode_context.output_region {
+    if let Some(output_region) = decode_region {
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;
         if ctx.storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(&mut ctx.storage, tile.component_infos.len())?;
@@ -69,48 +174,69 @@ fn build_direct_grayscale_plan_inner<'a>(
 
     let component_info = &tile.component_infos[0];
     let mut budget = DecodeAllocationBudget::for_storage(&ctx.storage)?;
+    if let Some(collector) = classic_payloads.as_deref_mut() {
+        collector.prepare(
+            ctx.storage.code_blocks.len(),
+            ctx.storage.segments.len(),
+            &mut budget,
+        )?;
+    }
     build_component_plan_from_storage(
+        PayloadRangeOwner {
+            encoded_input: payload_range_owner,
+            codestream: data,
+        },
         tile,
         header,
         &ctx.storage,
         0,
         component_unsigned_level_shift(component_info),
         &mut budget,
+        next_band_id,
+        store_region,
+        ht_payloads,
+        classic_payloads,
     )
 }
 
-pub(crate) fn build_direct_color_plan<'a>(
-    data: &'a [u8],
-    header: &Header<'a>,
-    retained_image_bytes: usize,
-    ctx: &mut DecoderContext<'a>,
-) -> Result<J2kDirectColorPlan> {
-    ctx.release_reusable_allocations();
-    let result = build_direct_color_plan_inner(data, header, retained_image_bytes, ctx);
-    ctx.release_reusable_allocations();
-    result
+fn referenced_output_region(header: &Header<'_>, ctx: &DecoderContext<'_>) -> super::OutputRegion {
+    ctx.tile_decode_context
+        .output_region
+        .unwrap_or(super::OutputRegion {
+            x: 0,
+            y: 0,
+            width: header.size_data.image_width(),
+            height: header.size_data.image_height(),
+        })
 }
 
-fn build_direct_color_plan_inner<'a>(
-    data: &'a [u8],
-    header: &Header<'a>,
-    retained_image_bytes: usize,
-    ctx: &mut DecoderContext<'a>,
-) -> Result<J2kDirectColorPlan> {
-    let mut reader = BitReader::new(data);
-    let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
+fn output_region_rect(output_region: super::OutputRegion) -> J2kRect {
+    J2kRect {
+        x0: output_region.x,
+        y0: output_region.y,
+        x1: output_region.x.saturating_add(output_region.width),
+        y1: output_region.y.saturating_add(output_region.height),
+    }
+}
 
-    if tiles.len() != 1 {
+fn validate_grayscale_tile(tile: &Tile<'_>) -> Result<()> {
+    if tile.component_infos.len() != 1 {
         bail!(DecodingError::DirectPlanUnsupported(
-            DirectPlanUnsupportedReason::ColorSingleTileCodestream
+            DirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream
         ));
     }
+    validate_unit_sampled_component(&tile.component_infos[0])
+}
 
-    let tile = &tiles[0];
-    if tile.component_infos.len() != 3 {
-        bail!(DecodingError::DirectPlanUnsupported(
-            DirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream
-        ));
+fn validate_color_tile<const COMPONENT_COUNT: usize>(
+    tile: &Tile<'_>,
+    component_count_error: DirectPlanUnsupportedReason,
+) -> Result<()> {
+    if tile.component_infos.len() != COMPONENT_COUNT {
+        bail!(DecodingError::DirectPlanUnsupported(component_count_error));
+    }
+    for component_info in &tile.component_infos {
+        validate_unit_sampled_component(component_info)?;
     }
     let transform = tile.component_infos[0].wavelet_transform();
     if tile.mct
@@ -119,78 +245,10 @@ fn build_direct_color_plan_inner<'a>(
     {
         bail!(ColorError::Mct);
     }
-
-    ctx.tile_decode_context.channel_data.clear();
-    ctx.storage.reset_for_next_tile();
-
-    build::build(
-        tile,
-        &mut ctx.storage,
-        tiles.structural_workspace_bytes(),
-        ctx.tile_decode_context.output_region.is_some(),
-        build::BuildWorkspace::CoefficientsOnly,
-    )?;
-    if let Some(output_region) = ctx.tile_decode_context.output_region {
-        ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;
-        if ctx.storage.roi_plan.is_none() {
-            build::release_unused_roi_workspace(&mut ctx.storage, tile.component_infos.len())?;
-        }
-    }
-
-    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
-
-    let mut bit_depths = [0_u8; 3];
-    let mut budget = DecodeAllocationBudget::for_storage(&ctx.storage)?;
-    let mut component_plans = Vec::new();
-    budget.reserve_new(&mut component_plans, bit_depths.len())?;
-    for (component_idx, bit_depth) in bit_depths.iter_mut().enumerate() {
-        let component_info = &tile.component_infos[component_idx];
-        *bit_depth = component_info.size_info.precision;
-        let addend = if tile.mct {
-            0.0
-        } else {
-            component_unsigned_level_shift(component_info)
-        };
-        component_plans.push(build_component_plan_from_storage(
-            tile,
-            header,
-            &ctx.storage,
-            component_idx,
-            addend,
-            &mut budget,
-        )?);
-    }
-
-    Ok(J2kDirectColorPlan {
-        dimensions: (
-            header.size_data.image_width(),
-            header.size_data.image_height(),
-        ),
-        bit_depths,
-        mct: tile.mct,
-        transform: J2kWaveletTransform::from(transform),
-        component_plans,
-    })
+    Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
-fn build_component_plan_from_storage(
-    tile: &Tile<'_>,
-    header: &Header<'_>,
-    storage: &DecompositionStorage<'_>,
-    component_idx: usize,
-    store_addend: f32,
-    budget: &mut DecodeAllocationBudget,
-) -> Result<J2kDirectGrayscalePlan> {
-    let component_info =
-        tile.component_infos
-            .get(component_idx)
-            .ok_or(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::ComponentIndexOutOfRange,
-            ))?;
+fn validate_unit_sampled_component(component_info: &ComponentInfo) -> Result<()> {
     if component_info.size_info.horizontal_resolution != 1
         || component_info.size_info.vertical_resolution != 1
     {
@@ -198,290 +256,162 @@ fn build_component_plan_from_storage(
             DirectPlanUnsupportedReason::ComponentUnitSampled
         ));
     }
+    Ok(())
+}
 
-    let tile_decompositions = storage.tile_decompositions.get(component_idx).ok_or(
-        DecodingError::DirectPlanUnsupported(
-            DirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange,
-        ),
-    )?;
-    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
-    let active_decomposition_count = decompositions
-        .len()
-        .saturating_sub(header.skipped_resolution_levels as usize);
-    let sub_band_step_count = (0..component_info.num_resolution_levels()
-        - header.skipped_resolution_levels)
-        .try_fold(0_usize, |total, resolution| {
-            tile_decompositions
-                .sub_band_iter(resolution, &storage.decompositions)
-                .count()
-                .checked_add(total)
-                .ok_or(ValidationError::ImageTooLarge)
-        })?;
-    let step_capacity = sub_band_step_count
-        .checked_add(active_decomposition_count)
-        .and_then(|count| count.checked_add(1))
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let mut steps = Vec::new();
-    budget.reserve_new(&mut steps, step_capacity)?;
-    let mut next_band_id: J2kDirectBandId = 0;
-    let mut sub_band_ids = Vec::new();
-    budget.resize_new(&mut sub_band_ids, storage.sub_bands.len(), None)?;
-
-    for resolution in 0..component_info.num_resolution_levels() - header.skipped_resolution_levels {
-        let sub_band_iter = tile_decompositions.sub_band_iter(resolution, &storage.decompositions);
-        for sub_band_idx in sub_band_iter {
-            if let Some(step) = build_grayscale_sub_band_step(
-                &storage.sub_bands[sub_band_idx],
-                sub_band_idx,
-                next_band_id,
-                resolution,
-                component_info,
-                storage,
-                header,
-                budget,
-            )? {
-                sub_band_ids[sub_band_idx] = Some(next_band_id);
-                next_band_id = next_band_id
-                    .checked_add(1)
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                steps.push(step);
-            }
-        }
-    }
-
-    let mut current_ll_rect = storage.sub_bands[tile_decompositions.first_ll_sub_band].rect;
-    let mut current_ll_band_id = sub_band_ids[tile_decompositions.first_ll_sub_band]
+fn tile_intersects_output(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    output_region: super::OutputRegion,
+) -> Result<bool> {
+    let component_info = tile
+        .component_infos
+        .first()
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    let decompositions = &decompositions[..active_decomposition_count];
-    for decomposition in decompositions {
-        let hl = &storage.sub_bands[decomposition.sub_bands[0]];
-        let lh = &storage.sub_bands[decomposition.sub_bands[1]];
-        let hh = &storage.sub_bands[decomposition.sub_bands[2]];
-        let output_band_id = next_band_id;
-        next_band_id = next_band_id
-            .checked_add(1)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        steps.push(J2kDirectGrayscaleStep::Idwt(J2kDirectIdwtStep {
-            output_band_id,
-            rect: J2kRect::from(decomposition.rect),
-            transform: J2kWaveletTransform::from(component_info.wavelet_transform()),
-            ll_band_id: current_ll_band_id,
-            ll: J2kRect::from(current_ll_rect),
-            hl_band_id: sub_band_ids[decomposition.sub_bands[0]]
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
-            hl: J2kRect::from(hl.rect),
-            lh_band_id: sub_band_ids[decomposition.sub_bands[1]]
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
-            lh: J2kRect::from(lh.rect),
-            hh_band_id: sub_band_ids[decomposition.sub_bands[2]]
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
-            hh: J2kRect::from(hh.rect),
-        }));
-        current_ll_rect = decomposition.rect;
-        current_ll_band_id = output_band_id;
-    }
-
+    validate_unit_sampled_component(component_info)?;
     let component_tile = ComponentTile::new(tile, component_info);
     let resolution_tile = ResolutionTile::new(
         component_tile,
         component_info.num_resolution_levels() - 1 - header.skipped_resolution_levels,
     );
-    let image_x_offset = header.size_data.image_area_x_offset;
-    let image_y_offset = header.size_data.image_area_y_offset;
-    let source_x = image_x_offset.saturating_sub(current_ll_rect.x0);
-    let source_y = image_y_offset.saturating_sub(current_ll_rect.y0);
-    let copy_width = resolution_tile
-        .rect
-        .width()
-        .min(current_ll_rect.width().saturating_sub(source_x));
-    let copy_height = resolution_tile
-        .rect
-        .height()
-        .min(current_ll_rect.height().saturating_sub(source_y));
-    let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
-    let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
-    steps.push(J2kDirectGrayscaleStep::Store(J2kDirectStoreStep {
-        input_band_id: current_ll_band_id,
-        input_rect: J2kRect::from(current_ll_rect),
-        source_x,
-        source_y,
-        copy_width,
-        copy_height,
-        output_width: header.size_data.image_width(),
-        output_height: header.size_data.image_height(),
-        output_x,
-        output_y,
-        addend: store_addend,
-    }));
+    let x_offset = header
+        .size_data
+        .image_area_x_offset
+        .div_ceil(header.size_data.x_shrink_factor);
+    let y_offset = header
+        .size_data
+        .image_area_y_offset
+        .div_ceil(header.size_data.y_shrink_factor);
+    let request_left = output_region.x.saturating_add(x_offset);
+    let request_top = output_region.y.saturating_add(y_offset);
+    let request_right = request_left.saturating_add(output_region.width);
+    let request_bottom = request_top.saturating_add(output_region.height);
+    Ok(resolution_tile.rect.x0 < request_right
+        && request_left < resolution_tile.rect.x1
+        && resolution_tile.rect.y0 < request_bottom
+        && request_top < resolution_tile.rect.y1)
+}
 
-    let sub_band_id_capacity = sub_band_ids.capacity();
-    drop(sub_band_ids);
-    budget.release_elements::<Option<J2kDirectBandId>>(sub_band_id_capacity)?;
-
-    Ok(J2kDirectGrayscalePlan {
-        dimensions: (
-            header.size_data.image_width(),
-            header.size_data.image_height(),
-        ),
-        bit_depth: component_info.size_info.precision,
-        steps,
+fn payload_record_span(
+    first_record: usize,
+    record_count: usize,
+) -> Result<J2kReferencedPayloadRecordSpan> {
+    first_record
+        .checked_add(record_count)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(J2kReferencedPayloadRecordSpan {
+        first_record,
+        record_count,
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the direct-plan boundary keeps validated band identity, geometry, storage, and the shared live budget explicit"
-)]
-fn build_grayscale_sub_band_step(
-    sub_band: &SubBand,
-    sub_band_idx: usize,
-    band_id: J2kDirectBandId,
-    resolution: u8,
-    component_info: &ComponentInfo,
-    storage: &DecompositionStorage<'_>,
-    header: &Header<'_>,
-    budget: &mut DecodeAllocationBudget,
-) -> Result<Option<J2kDirectGrayscaleStep>> {
-    let SubBandDecodeParameters {
-        dequantization_step,
-        num_bitplanes,
-    } = sub_band_decode_parameters(sub_band, resolution, component_info)?;
-
-    if component_info
-        .coding_style
-        .parameters
-        .code_block_style
-        .uses_high_throughput_block_coding()
-    {
-        let coded_bitplanes =
-            add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
-        let stripe_causal = component_info
-            .coding_style
-            .parameters
-            .code_block_style
-            .vertically_causal_context;
-        let job_capacity = direct_sub_band_job_capacity(sub_band, storage)?;
-        let mut jobs = Vec::new();
-        budget.reserve_new(&mut jobs, job_capacity)?;
-        for precinct in sub_band
-            .precincts
-            .clone()
-            .map(|idx| &storage.precincts[idx])
-        {
-            for code_block in precinct
-                .code_blocks
-                .clone()
-                .map(|idx| &storage.code_blocks[idx])
-            {
-                if !code_block_required_by_index(storage, sub_band_idx, code_block) {
-                    continue;
-                }
-                if !ht_code_block_has_decodable_passes(code_block, coded_bitplanes, header.strict)?
-                {
-                    continue;
-                }
-
-                let combined =
-                    ht_block_decode::collect_code_block_data(code_block, storage, budget)?;
-                jobs.push(HtOwnedCodeBlockBatchJob {
-                    output_x: code_block.rect.x0 - sub_band.rect.x0,
-                    output_y: code_block.rect.y0 - sub_band.rect.y0,
-                    data: combined.data,
-                    cleanup_length: combined.cleanup_length,
-                    refinement_length: combined.refinement_length,
-                    width: code_block.rect.width(),
-                    height: code_block.rect.height(),
-                    output_stride: sub_band.rect.width() as usize,
-                    missing_bit_planes: code_block.missing_bit_planes,
-                    number_of_coding_passes: code_block.number_of_coding_passes,
-                    num_bitplanes,
-                    roi_shift: component_info.roi_shift,
-                    stripe_causal,
-                    strict: header.strict,
-                    dequantization_step,
-                });
-            }
-        }
-
-        return Ok(Some(J2kDirectGrayscaleStep::HtSubBand(
-            HtOwnedSubBandPlan {
-                band_id,
-                rect: J2kRect::from(sub_band.rect),
-                width: sub_band.rect.width(),
-                height: sub_band.rect.height(),
-                jobs,
-            },
-        )));
-    }
-
-    let (classic_job_sub_band_type, classic_job_style) =
-        classic_decode_job_parameters(sub_band.sub_band_type, component_info);
-
-    let job_capacity = direct_sub_band_job_capacity(sub_band, storage)?;
-    let mut jobs = Vec::new();
-    budget.reserve_new(&mut jobs, job_capacity)?;
-    for precinct in sub_band
-        .precincts
-        .clone()
-        .map(|idx| &storage.precincts[idx])
-    {
-        for code_block in precinct
-            .code_blocks
-            .clone()
-            .map(|idx| &storage.code_blocks[idx])
-        {
-            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
-                continue;
-            }
-            let (combined_data, segments) = collect_classic_code_block_data(
-                code_block,
-                &component_info.coding_style.parameters.code_block_style,
-                storage,
-                budget,
-            )?;
-            jobs.push(J2kOwnedCodeBlockBatchJob {
-                output_x: code_block.rect.x0 - sub_band.rect.x0,
-                output_y: code_block.rect.y0 - sub_band.rect.y0,
-                data: combined_data,
-                segments,
-                width: code_block.rect.width(),
-                height: code_block.rect.height(),
-                output_stride: sub_band.rect.width() as usize,
-                missing_bit_planes: code_block.missing_bit_planes,
-                number_of_coding_passes: code_block.number_of_coding_passes,
-                total_bitplanes: num_bitplanes,
-                roi_shift: component_info.roi_shift,
-                sub_band_type: classic_job_sub_band_type,
-                style: classic_job_style,
-                strict: header.strict,
-                dequantization_step,
-            });
-        }
-    }
-
-    Ok(Some(J2kDirectGrayscaleStep::ClassicSubBand(
-        J2kOwnedSubBandPlan {
-            band_id,
-            rect: J2kRect::from(sub_band.rect),
-            width: sub_band.rect.width(),
-            height: sub_band.rect.height(),
-            jobs,
-        },
-    )))
+fn append_decode_elements<T>(destination: &mut Vec<T>, source: &mut Vec<T>) -> Result<()> {
+    let target_len = destination
+        .len()
+        .checked_add(source.len())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    crate::try_reserve_decode_elements(destination, target_len)?;
+    destination.append(source);
+    Ok(())
 }
 
-fn direct_sub_band_job_capacity(
-    sub_band: &SubBand,
-    storage: &DecompositionStorage<'_>,
-) -> Result<usize> {
-    sub_band
-        .precincts
-        .clone()
-        .map(|idx| storage.precincts[idx].code_blocks.len())
-        .try_fold(0_usize, |total, count| {
-            total
-                .checked_add(count)
-                .ok_or(ValidationError::ImageTooLarge.into())
-        })
+fn append_classic_payload_records(
+    payloads: &mut Vec<J2kClassicCodeBlockPayload>,
+    ranges: &mut Vec<J2kCodestreamRange>,
+    tile_payloads: &mut Vec<J2kClassicCodeBlockPayload>,
+    tile_ranges: &mut Vec<J2kCodestreamRange>,
+) -> Result<()> {
+    let range_base = ranges.len();
+    for payload in tile_payloads.iter_mut() {
+        payload.first_range = payload
+            .first_range
+            .checked_add(range_base)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let end_range = payload.end_range().ok_or(ValidationError::ImageTooLarge)?;
+        let combined_range_len = range_base
+            .checked_add(tile_ranges.len())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        if end_range > combined_range_len {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
+    }
+    append_decode_elements(payloads, tile_payloads)?;
+    append_decode_elements(ranges, tile_ranges)
+}
+
+fn grayscale_plan_rects(
+    geometry: &J2kDirectGrayscalePlan,
+    output_rect: J2kRect,
+) -> Result<(J2kRect, J2kRect)> {
+    let mut stores = geometry.steps.iter().filter_map(|step| match step {
+        J2kDirectGrayscaleStep::Store(store) => Some(store),
+        J2kDirectGrayscaleStep::ClassicSubBand(_)
+        | J2kDirectGrayscaleStep::HtSubBand(_)
+        | J2kDirectGrayscaleStep::Idwt(_) => None,
+    });
+    let store = stores.next().ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    if stores.next().is_some() || store.copy_width == 0 || store.copy_height == 0 {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let destination_rect = J2kRect {
+        x0: store.output_x,
+        y0: store.output_y,
+        x1: store.output_x.saturating_add(store.copy_width),
+        y1: store.output_y.saturating_add(store.copy_height),
+    };
+    let decoded_rect = J2kRect {
+        x0: output_rect.x0.saturating_add(destination_rect.x0),
+        y0: output_rect.y0.saturating_add(destination_rect.y0),
+        x1: output_rect.x0.saturating_add(destination_rect.x1),
+        y1: output_rect.y0.saturating_add(destination_rect.y1),
+    };
+    Ok((decoded_rect, destination_rect))
+}
+
+fn color_plan_rects<const COMPONENT_COUNT: usize>(
+    component_plans: &[J2kDirectGrayscalePlan],
+    output_rect: J2kRect,
+) -> Result<(J2kRect, J2kRect)> {
+    if component_plans.len() != COMPONENT_COUNT {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let expected = grayscale_plan_rects(&component_plans[0], output_rect)?;
+    for component in &component_plans[1..] {
+        if grayscale_plan_rects(component, output_rect)? != expected {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
+    }
+    Ok(expected)
+}
+
+fn validate_and_strip_referenced_payload_owners(
+    component_plans: &mut [J2kDirectGrayscalePlan],
+    payload_count: usize,
+) -> Result<()> {
+    let mut job_count = 0_usize;
+    for component in component_plans {
+        job_count = job_count
+            .checked_add(strip_grayscale_payload_owners(component)?)
+            .ok_or(ValidationError::ImageTooLarge)?;
+    }
+    if job_count != payload_count {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    Ok(())
+}
+
+fn validate_and_strip_classic_payload_owners(
+    component_plans: &mut [J2kDirectGrayscalePlan],
+    payload_count: usize,
+) -> Result<()> {
+    let mut job_count = 0usize;
+    for component in component_plans {
+        job_count = job_count
+            .checked_add(strip_classic_payload_owners(component)?)
+            .ok_or(ValidationError::ImageTooLarge)?;
+    }
+    if job_count != payload_count {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    Ok(())
 }

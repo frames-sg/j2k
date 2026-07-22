@@ -172,5 +172,8 @@ fn release_integrity_rejects_publishable_packages_without_versions() {
     let error = release_integrity(std::iter::empty())
         .expect_err("publishable package without a version must reject");
 
-    assert!(error.contains("cargo metadata package `j2k-core` has no string version"));
+    assert!(
+        error.contains("cargo metadata package `j2k-core` has no string version"),
+        "unexpected error: {error}"
+    );
 }
