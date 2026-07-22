@@ -23,6 +23,7 @@ impl MetalBatchDecoder {
 
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = self;
             let _ = group;
             let _ = options;
             Err(Error::MetalUnavailable)

@@ -7,7 +7,7 @@ Pinned SHA-256 digests:
 - crates.io archive: `2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7`
 - upstream `src/device/global.rs`: `8d8554b2400b46b595af68b0d2fab472da06b8c11fa1823299728b5bc2cf2caa`
 - patched local `src/device/global.rs`: `ceab63ff6129a22e1bea8e9e1e691edb745080541d9c65b3ec043981d0a21978`
-- patched tree inventory, excluding this provenance file: `fd09d50213becd3f1b4a2bb5c714049d0be68d2b30cc9bc75ddb99d98bdc2296`
+- patched tree inventory, excluding this provenance file and generated root lockfile: `13631d9cf9230ea52ae5458c440d60ccf23988839b9d89ff48cb026e7c324411`
 
 Local change: add the hidden core half of the audited external-write handoff.
 It validates that the requested byte range belongs to a live buffer and drains

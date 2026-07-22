@@ -9,7 +9,7 @@ Pinned SHA-256 digests:
 - patched local `src/client.rs`: `2ba96df7c895b975d9e171f3c2452fc61e887091af565384061bbd816d471e1b`
 - upstream `src/server/base.rs`: `c6292c16d5a73d7a1570776ffd25ec10afc339b942dbc5a693d8c791feb8ef5b`
 - patched local `src/server/base.rs`: `93ad450ed4aba9c39478be65afd428110118f6014dd080f79ced701612baafe2`
-- patched tree inventory, excluding this provenance file: `125c6b04cf8d43fabc00360d9c79ea61141362946528cf376c8b631ac2b21106`
+- patched tree inventory, excluding this provenance file and generated root lockfile: `0ae2be14bb10fc27c633c99b0a862dce8b237fc32768fd63eff0b6ad53ef0047`
 
 Local change: add one hidden `ExternalWriteServer` hook and one unsafe
 `ComputeClient::external_write_stream` method. The hook resolves the normal

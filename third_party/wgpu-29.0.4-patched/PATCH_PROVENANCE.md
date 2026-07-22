@@ -9,7 +9,7 @@ Pinned SHA-256 digests:
 - patched local `src/api/buffer.rs`: `19ba97b38b63fd491e480cfcc773fa2055f691a97ee727d7541a7255bbf82ba4`
 - upstream `src/backend/wgpu_core.rs`: `8c0e1fab257ef93a86f6d6c93f1970f9756dececcaf3cebaa398a90a9d58efa9`
 - patched local `src/backend/wgpu_core.rs`: `efdb2d9a3351718d29ca0a4a843b1e61cc778dcb5fb46a0c365e9dd79507101c`
-- patched tree inventory, excluding this provenance file: `d3baa4fa75e494319ee92b7849ebaacbd7ae88d62743df728c0dc779c5fdf839`
+- patched tree inventory, excluding this provenance file and generated root lockfile: `c958c8a0308bc8c1b3753f32f5696cc5d15ef50f3dec56b64eb1936d9a22a1f5`
 
 Local change: add a hidden, unsafe, range-scoped
 `Buffer::mark_external_write_initialized` hook and its private-construction
