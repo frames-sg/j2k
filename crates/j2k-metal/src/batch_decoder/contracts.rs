@@ -246,8 +246,8 @@ impl MetalBatchGroup {
     ///
     /// Gray groups and NHWC color groups expose one convenience [`Surface`]
     /// per image. NCHW color groups return an empty slice because a [`Surface`]
-    /// promises interleaved pixel semantics; use [`Self::resident_batch`] for
-    /// their dense planar allocation.
+    /// promises interleaved pixel semantics; on macOS, use `resident_batch`
+    /// for their dense planar allocation.
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
     }

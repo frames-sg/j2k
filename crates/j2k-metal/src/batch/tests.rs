@@ -6,10 +6,13 @@ use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 
 use crate::{Error, MetalSession};
 
+#[cfg(target_os = "macos")]
 use super::execute::process_batch;
+#[cfg(target_os = "macos")]
+use super::heuristics::GroupedRequests;
 use super::heuristics::{
     auto_region_scaled_direct_metal_min_dim, can_decode_requests_as_repeated_region_scaled_batch,
-    group_metal_requests, profile_route_label, same_input_bytes, BatchRoute, GroupedRequests,
+    group_metal_requests, profile_route_label, same_input_bytes, BatchRoute,
     AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
     AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
     AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
