@@ -41,7 +41,7 @@ const PATH_PATCHES: &[PathPatch] = &[
         name: "cubecl-cuda",
         directory: "third_party/cubecl-cuda-0.10.0-patched",
         archive_sha256: "b6b0a69ff45688d322ad8e92c8bf645167b9ca490fa8fa087fc6adac8c5e46be",
-        tree_sha256: "7ea9844b39b5402a2f0afec42cbe92aa48f3f6a46c8e05af948e711a555eff73",
+        tree_sha256: "7af55592787c15a3ac4647339dcd638cd8040588ded8aeae3c96a7398d8261de",
         files: &[
             PatchedFile {
                 path: "src/compute/command.rs",
@@ -59,7 +59,7 @@ const PATH_PATCHES: &[PathPatch] = &[
         name: "cubecl-runtime",
         directory: "third_party/cubecl-runtime-0.10.0-patched",
         archive_sha256: "b68491bf5b3e997ae36bdc4e63b4ccd6d2f0e86b3b596a5d7a48d2b9e92622a0",
-        tree_sha256: "e7d20369aff883f81057356bce8b48eb1c33fb35195759d9e0fbd8e836021a35",
+        tree_sha256: "125c6b04cf8d43fabc00360d9c79ea61141362946528cf376c8b631ac2b21106",
         files: &[
             PatchedFile {
                 path: "src/client.rs",
@@ -77,7 +77,7 @@ const PATH_PATCHES: &[PathPatch] = &[
         name: "wgpu",
         directory: "third_party/wgpu-29.0.4-patched",
         archive_sha256: "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07",
-        tree_sha256: "21872d88aa2b24f4a24f40148d3cc6182067e783885762fc91a8844cd934e3ba",
+        tree_sha256: "d3baa4fa75e494319ee92b7849ebaacbd7ae88d62743df728c0dc779c5fdf839",
         files: &[
             PatchedFile {
                 path: "src/api/buffer.rs",
@@ -95,7 +95,7 @@ const PATH_PATCHES: &[PathPatch] = &[
         name: "wgpu-core",
         directory: "third_party/wgpu-core-29.0.4-patched",
         archive_sha256: "2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7",
-        tree_sha256: "e494cac012a4503763ffb461980967eedf23b5ac00b8cde28020a558dcef04a5",
+        tree_sha256: "fd09d50213becd3f1b4a2bb5c714049d0be68d2b30cc9bc75ddb99d98bdc2296",
         files: &[PatchedFile {
             path: "src/device/global.rs",
             upstream_sha256: "8d8554b2400b46b595af68b0d2fab472da06b8c11fa1823299728b5bc2cf2caa",
@@ -106,7 +106,7 @@ const PATH_PATCHES: &[PathPatch] = &[
         name: "wgpu-hal",
         directory: "third_party/wgpu-hal-29.0.4-patched",
         archive_sha256: "97ace1c17727311c22a46e4e3faf56ea6de81af99dcc839bdfb54857b94d448d",
-        tree_sha256: "fd7b218ab74d8ad48090c3e03dd2f738ada2c1644a96d2932b5b145c24762449",
+        tree_sha256: "3ea41da6b01f5c50a996cd7c5208820eae48a76b5227f25a4fa8b20e8ddf7700",
         files: &[PatchedFile {
             path: "src/metal/mod.rs",
             upstream_sha256: "daed7a2d7c1cd7b9431b3009b5b7feb2ca8e45648ffd7eb0185c46cfcbeb2ada",

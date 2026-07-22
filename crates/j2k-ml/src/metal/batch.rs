@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use burn_core::tensor::backend::Backend;
 use burn_wgpu::{Wgpu, WgpuDevice};
-use j2k::{
-    BatchDecodeOptions, BatchGroupInfo, EncodedImage, IndexedBatchError, NativeSampleType,
-    PreparedBatch, PreparedBatchGroup, PreparedImage,
-};
+use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch, PreparedImage};
+#[cfg(target_os = "macos")]
+use j2k::{BatchGroupInfo, IndexedBatchError, NativeSampleType, PreparedBatchGroup};
 use j2k_metal::MetalBatchDecoder as CodecDecoder;
 
+#[cfg(target_os = "macos")]
 use crate::batch_contract::{dtype, tensor_shape};
-use crate::{
-    BurnBatchDecode, BurnBatchGroup, BurnBatchGroupError, BurnBatchTensor, BurnDecodeError,
-};
+use crate::{BurnBatchDecode, BurnDecodeError};
+#[cfg(target_os = "macos")]
+use crate::{BurnBatchGroup, BurnBatchGroupError, BurnBatchTensor};
 
 #[cfg(target_os = "macos")]
 use super::interop::{
@@ -78,6 +79,7 @@ impl SubmittedMetalBurnBatch {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
+/// Uninhabited pending Metal batch returned only for cross-platform API compatibility.
 pub struct SubmittedMetalBurnBatch {
     _private: (),
 }

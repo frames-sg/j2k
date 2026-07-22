@@ -12,9 +12,13 @@
 use burn_core::tensor::{backend::Backend, Int, Tensor};
 use j2k::{BatchGroupInfo, IndexedBatchError, J2kDecodeWarning, Rect};
 
-#[cfg(any(feature = "cpu", feature = "cuda", feature = "metal"))]
+#[cfg(any(
+    feature = "cpu",
+    feature = "cuda",
+    all(feature = "metal", target_os = "macos")
+))]
 mod batch_contract;
-#[cfg(any(feature = "cuda", feature = "metal", test))]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
 mod completion;
 
 #[cfg(feature = "cpu")]
@@ -89,7 +93,7 @@ pub struct BurnBatchGroupError {
 }
 
 impl BurnBatchGroupError {
-    #[cfg(any(feature = "cuda", feature = "metal", test))]
+    #[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
     pub(crate) fn new(source_indices: Vec<usize>, source: BurnDecodeError) -> Self {
         Self {
             source_indices,

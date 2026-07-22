@@ -7,7 +7,7 @@ Pinned SHA-256 digests:
 - crates.io archive: `97ace1c17727311c22a46e4e3faf56ea6de81af99dcc839bdfb54857b94d448d`
 - upstream `src/metal/mod.rs`: `daed7a2d7c1cd7b9431b3009b5b7feb2ca8e45648ffd7eb0185c46cfcbeb2ada`
 - patched local `src/metal/mod.rs`: `ffa9a5a9767b5e458d50001a66bdf904be5a3199adfb213cac033a9765d0e5a6`
-- patched tree inventory, excluding this provenance file: `fd7b218ab74d8ad48090c3e03dd2f738ada2c1644a96d2932b5b145c24762449`
+- patched tree inventory, excluding this provenance file: `3ea41da6b01f5c50a996cd7c5208820eae48a76b5227f25a4fa8b20e8ddf7700`
 
 Local change: add three Metal-only retained raw-handle accessors, for the
 selected `MTLDevice`, its `MTLCommandQueue`, and an `MTLBuffer`. Each accessor
