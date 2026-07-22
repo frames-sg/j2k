@@ -9,7 +9,7 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.7.4` | Staged source-incompatible candidate; not published or tagged. | Not yet a published release line. |
+| `0.7.5` | Frozen source-incompatible release candidate; not published or tagged until the exact-SHA gates and annotated tag complete. | Not yet a published release line. |
 | `0.7.3` | Latest publicly published crates and documentation. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
 | `0.7.1` | Previous published release line. | Supported. |
@@ -32,11 +32,11 @@ regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is
 regenerated and verified after that release's final source freeze.
 
-The staged `0.7.4` candidate is an explicit source-compatibility exception to
+The `0.7.5` candidate is an explicit source-compatibility exception to
 the normal patch policy. Its wrapper-removal migrations are recorded under
-`Unreleased` in the [`CHANGELOG`](../CHANGELOG.md), and its provisional reviewed
+the dated `0.7.5` heading in the [`CHANGELOG`](../CHANGELOG.md), and its reviewed
 API evidence is compared directly with the published `v0.7.3` baseline. This
-staging statement does not authorize publication or assert that the candidate
+candidate statement does not authorize publication or assert that the candidate
 has passed exact-SHA release gates.
 
 ## Candidate freeze and exact-SHA evidence
@@ -132,7 +132,8 @@ Publish in this order:
 15. `j2k-transcode-metal`
 16. `j2k-jpeg-cuda`
 17. `j2k-cuda`
-18. `j2k-cli`
+18. `j2k-ml`
+19. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
 Use the repo-owned package gate from a clean worktree:
@@ -150,8 +151,8 @@ cargo package --no-verify
 cargo publish --dry-run
 ```
 
-The gate lists all 18 package contents. It then constructs `.crate` archives
-with `cargo package --no-verify` for the 14 staged packages whose workspace
+The gate lists all 19 package contents. It then constructs `.crate` archives
+with `cargo package --no-verify` for the 15 staged packages whose workspace
 dependencies are not yet available from crates.io. The four
 registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `j2k-codec-math`) run
@@ -169,7 +170,7 @@ intentional partial retry, `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits only
 the checksum-matched already-published prefix without moving the tag.
 
 After `crates-io-publish` environment approval, one runner repeats the canonical
-tag and prefix proof, packages all 18 archives, and publishes the remaining
+tag and prefix proof, packages all 19 archives, and publishes the remaining
 manifest entries sequentially with `cargo publish --locked -p <crate>`. Cargo's
 verification build stays enabled. There are no unconditional registry sleeps;
 only retryable transport, HTTP 429, or server failures are retried with bounded

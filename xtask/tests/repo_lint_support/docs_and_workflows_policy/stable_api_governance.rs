@@ -120,7 +120,7 @@ fn assert_inventory_contracts(
                 "SEMVER_TOOLCHAIN: &str = \"1.96\"",
                 "SEMVER_BASELINE_VERSION: &str = \"0.7.3\"",
                 "SEMVER_BASELINE_TAG: &str = \"v0.7.3\"",
-                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = \"0.7.4\"",
+                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = \"0.7.5\"",
                 "SEMVER_BASELINE_TAG}:docs/stable-api-1.0.public-api.txt",
                 "collect_package_apis(stable_packages)?",
                 "SnapshotKind::Ordinary",
@@ -150,7 +150,7 @@ fn assert_inventory_contracts(
         PatternCheck::new("stable API policy", policy).required(&[
             "published 0.7.3 artifact recorded both ordinary and hidden-enabled passes",
             "explicit, maintainer-approved source-compatibility exception",
-            "exception applies only to `0.7.4`",
+            "exception applies only to `0.7.5`",
             "complete hidden-inventory count and fingerprint",
             "Every semver invocation collects both live passes",
             "Nonempty hidden inventories also require a package-specific hidden rationale",

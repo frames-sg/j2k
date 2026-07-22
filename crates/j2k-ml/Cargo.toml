@@ -6,9 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 readme = "README.md"
 autobenches = false
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
 
 [package.metadata.cargo-machete]
 ignored = ["criterion"]
@@ -41,10 +47,10 @@ burn-cubecl = { workspace = true, optional = true }
 burn-fusion = { workspace = true, optional = true }
 burn-ir = { workspace = true, optional = true }
 burn-wgpu = { workspace = true, optional = true }
-j2k = { path = "../j2k", version = "=0.7.4" }
-j2k-cuda = { path = "../j2k-cuda", version = "=0.7.4", features = ["cuda-runtime"], optional = true }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.4", optional = true }
-j2k-metal = { path = "../j2k-metal", version = "=0.7.4", optional = true }
+j2k = { path = "../j2k", version = "=0.7.5" }
+j2k-cuda = { path = "../j2k-cuda", version = "=0.7.5", features = ["cuda-runtime"], optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.5", optional = true }
+j2k-metal = { path = "../j2k-metal", version = "=0.7.5", optional = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

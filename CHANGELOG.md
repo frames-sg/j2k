@@ -3,12 +3,20 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.7.5] - 2026-07-22
 
-Staged workspace version: `0.7.4`.
-
-- Compatibility exception: this candidate is an explicitly source-incompatible
-  `0.7.x` patch. It is staged only; it has not been published or tagged.
+- Compatibility exception: this release is an explicitly source-incompatible
+  `0.7.x` patch against the published `0.7.3` API. The reviewed compatibility
+  evidence and migration notes cover the complete contracted surface.
+- Adds persistent, high-throughput owned batch decoding for JPEG 2000 and
+  HTJ2K, including prepared-input reuse, homogeneous exact-integer output
+  groups, CPU decode, and resident/external-destination CUDA and Metal paths.
+- Publishes `j2k-ml`, the thin Burn 0.21 adapter for ordinary rank-4 `U8`,
+  `U16`, and `I16` tensors. The codec remains responsible for parsing,
+  grouping, and decoding; the adapter owns only tensor allocation and guarded
+  CPU/CUDA/Metal interop.
+- Fixes Metal stacked multi-tile batch output and removes redundant same-queue
+  synchronization while preserving strict completion and status validation.
 - Removes the pass-through `j2k_core::DecoderContext<C>` type and its
   `j2k::DecoderContext` re-export. Construct and pass the concrete context
   directly: `J2kContext::new()` (or `Default`) for `j2k`, and

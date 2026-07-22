@@ -28,9 +28,9 @@ const SEMVER_TOOLCHAIN: &str = "1.96";
 const SEMVER_BASELINE_VERSION: &str = "0.7.3";
 const SEMVER_BASELINE_TAG: &str = "v0.7.3";
 const SEMVER_BASELINE_COMMIT: &str = "494eebc3ef20895d331da86221b1d8c4bd4cabf8";
-const SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = "0.7.4";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.4.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.4.yml";
+const SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = "0.7.5";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.5.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.5.yml";
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
@@ -52,7 +52,7 @@ const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k-profile",
 ];
 
-const SEMVER_NEW_PACKAGES: &[&str] = &[];
+const SEMVER_NEW_PACKAGES: &[&str] = &["j2k-ml"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Version {
@@ -716,7 +716,7 @@ fn render_report(
     if candidate_version == SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION {
         writeln!(
             &mut out,
-            "- Compatibility exception: `0.7.4` is an explicitly reviewed source-incompatible patch candidate; compatibility checks use `major` while package versions remain `0.7.4`."
+            "- Compatibility exception: `{candidate_version}` is an explicitly reviewed source-incompatible patch candidate; compatibility checks use `major` while package versions remain `{candidate_version}`."
         )
         .unwrap();
     }

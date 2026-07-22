@@ -18,6 +18,7 @@
     "j2k-transcode-metal",
     "j2k-jpeg-cuda",
     "j2k-cuda",
+    "j2k-ml",
     "j2k-cli"
   ],
   "registry_independent": [

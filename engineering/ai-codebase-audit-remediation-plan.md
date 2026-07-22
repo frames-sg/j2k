@@ -1,8 +1,10 @@
 # J2K codebase audit and remediation register
 
-This file is the living current-state register for repository quality. It is
-not a release diary or a task transcript. Completed investigations and prior
-release states remain available through Git history.
+This file preserves the 0.7.4 remediation audit state that preceded the 0.7.5
+release candidate. Its present-tense candidate and unpublished-`j2k-ml`
+statements are historical evidence, superseded by `docs/release.md`, the 0.7.5
+changelog, and the current manifests. It is not the current release-status
+register or a task transcript.
 
 ## Evidence identities
 

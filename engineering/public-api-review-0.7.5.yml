@@ -1,7 +1,7 @@
 version: 2
 baseline_tag: v0.7.3
 baseline_version: 0.7.3
-candidate_version: "0.7.4"
+candidate_version: "0.7.5"
 reviews:
   j2k:
     removed_fingerprint: "fnv1a64:2bb387c8d09725f1"
@@ -121,3 +121,9 @@ reviews:
     hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
     rationale: "Reviewed the ordinary j2k-profile inventory against 0.7.3; its documented surface remains the crate module root only."
     hidden_rationale: "Reviewed the complete hidden profiling inventory; bounded capture, move-only ownership, fallible controls, and every callable profiling surface are unchanged from the published baseline."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:4a17fae48a20cc8c"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete new thin Burn adapter surface: persistent CPU, CUDA, and Metal decoders; prepared and one-shot batch entry points; exact U8/U16/I16 rank-4 tensor groups; indexed preparation and group failures; asynchronous GPU submission owners; and typed codec/interop errors. The adapter exposes no decoding, normalization, dataset, or training-policy implementation of its own."

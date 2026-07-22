@@ -41,12 +41,12 @@ therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
 compatibility escape hatch.
 
 The published 0.7.3 artifact recorded both ordinary and hidden-enabled passes
-with the same generator, rustdoc, and target pins. The generated 0.7.4 semver
+with the same generator, rustdoc, and target pins. The generated 0.7.5 semver
 report compares the ordinary candidate inventory with 0.7.3 and also records
 each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed
 companions, and requires exact ordinary added/removed fingerprints plus the
-hidden count/fingerprint in `engineering/public-api-review-0.7.4.yml`.
+hidden count/fingerprint in `engineering/public-api-review-0.7.5.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 Consequently, additions and removals remain blocked until the snapshots,
 report, and review evidence are updated together and their diffs are reviewed.
@@ -62,7 +62,7 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The staged comparison belongs in the generated
-[`0.7.4` reviewed API report](../engineering/reviewed-public-api-diff-0.7.4.md).
+[`0.7.5` reviewed API report](../engineering/reviewed-public-api-diff-0.7.5.md).
 It remains candidate evidence until source freeze and the exact-SHA local,
 hosted, Metal, and CUDA gates complete; it does not claim a release.
 
@@ -78,7 +78,7 @@ source compatibility with `0.6.x`.
   `j2k-tilecodec`, `j2k-jpeg-metal`, `j2k-metal`,
   `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode`, `j2k-transcode-cuda`,
   `j2k-metal-support`, `j2k-transcode-metal`, `j2k-native`, `j2k-types`,
-  `j2k-cuda-runtime`, `j2k-profile`, and `j2k-codec-math`.
+  `j2k-cuda-runtime`, `j2k-profile`, `j2k-codec-math`, and `j2k-ml`.
 - Adapter and transcode crates are semver-gated published libraries, but their
   supported runtime shapes remain limited by feature gates, hardware
   availability, and `docs/public-support.md`.
@@ -86,10 +86,10 @@ source compatibility with `0.6.x`.
 - Unpublished tooling: test support, comparators, and xtask automation helpers.
 
 Patch releases normally preserve the active `0.x` public contract. Version
-`0.7.4` is an explicit, maintainer-approved source-compatibility exception for
+`0.7.5` is an explicit, maintainer-approved source-compatibility exception for
 removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
-exception applies only to `0.7.4`; it does not silently relax later patch
+exception applies only to `0.7.5`; it does not silently relax later patch
 releases. Before `1.0`, a minor release may intentionally change the contract
 under the same evidence requirements. Starting with `1.0`, stable crates follow
 the normal compatibility guarantees for the declared major version.

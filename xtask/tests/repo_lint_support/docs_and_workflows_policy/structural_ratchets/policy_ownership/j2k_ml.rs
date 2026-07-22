@@ -44,7 +44,7 @@ fn j2k_ml_policy_keeps_domain_specific_children() {
         (
             "j2k_ml_policy/features.rs",
             &[
-                "fn j2k_ml_stays_independent_experimental_and_explicitly_feature_gated(",
+                "fn j2k_ml_stays_independent_publishable_and_explicitly_feature_gated(",
                 "fn j2k_ml_uses_a_portable_arm_linux_test_backend(",
             ][..],
             100usize,
