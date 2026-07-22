@@ -197,6 +197,7 @@ esac"#,
     assert!(lines[1]
         .contains("--candidate-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --token-env GH_TOKEN"));
     assert!(lines[1].contains("--aggregate-job Release candidate aggregate"));
-    assert!(lines[1].contains("--cuda-job CUDA API compatibility on x86_64"));
-    assert!(lines[1].contains("--metal-job Metal validation on Apple Silicon"));
+    assert!(lines[1].contains("--ci-workflow full-validation.yml"));
+    assert!(lines[1].contains("--cuda-job CUDA full release validation"));
+    assert!(lines[1].contains("--metal-job Metal full release validation"));
 }

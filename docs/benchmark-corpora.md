@@ -321,20 +321,14 @@ generated Metal host inputs disabled, no skipped auto rows, no probe errors, and
 the Metal timing policy. Omit the `--require-*` flag when the hardware rows are
 diagnostic context rather than part of the adoption claim.
 
-On the self-hosted CUDA GitHub runner, dispatch `GPU validation` with
-`run-adoption-benchmark=true`. For the full pinned corpus, set repository variables
+On a self-hosted GPU runner, dispatch `GPU benchmarks` with `suite=adoption`
+and the required CUDA or Metal lane. Set repository variables
 `J2K_ADOPTION_FIXTURES`, `J2K_ADOPTION_MANIFEST`,
 `J2K_ADOPTION_ENCODE_FIXTURES`, and `J2K_ADOPTION_ENCODE_MANIFEST` to the
-pinned corpus paths available on that runner. If those variables are absent,
-the workflow builds a default public starter corpus from Kodak plus curated
-OpenJPEG data under `target/j2k-public-corpora`. The fallback verifies the
-Kodak SHA-256 list above and checks out OpenJPEG-data commit
-`39524bd3a601d90ed8e0177559400d23945f96a9`. It then runs the same
-`adoption-benchmark --cuda --require-cuda` command and uploads the bundle as
-the `cuda-adoption-benchmark` artifact.
-
-The fallback is pinned, not floating: it uses SHA-256-checked Kodak PNGs and a
-fixed OpenJPEG-data commit before any adoption benchmark rows are generated.
+pinned corpus paths available on that runner. The workflow fails closed when
+any variable is absent; it does not synthesize or download a fallback corpus.
+It runs `adoption-benchmark` with `--require-cuda` or `--require-metal` and
+uploads the lane-specific bundle together with device and suite metadata.
 
 Use `--quick --include-generated` only for local smoke checks. A smoke bundle is
 not publication evidence. Full external `adoption-benchmark` runs fail after

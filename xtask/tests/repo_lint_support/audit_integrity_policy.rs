@@ -80,7 +80,7 @@ fn clone_audit_is_source_aware_pinned_and_ci_required() {
     let tests = read("xtask/src/source_audit/tests.rs");
     let config = read(".jscpd.json");
     let test_config = read(".jscpd-tests.json");
-    let workflow = read(".github/workflows/ci.yml");
+    let workflow = read(".github/workflows/full-validation.yml");
     let clone_job = workflow_job(&workflow, "clone-audit");
     let aggregate = workflow_job(&workflow, "release-candidate");
     let evidence = read("engineering/clone-audit.md");

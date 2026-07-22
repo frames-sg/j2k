@@ -4,6 +4,7 @@
 
 use std::{collections::BTreeSet, env};
 
+use crate::gpu_validation::ValidationMode;
 use crate::process::{self, cargo, CommandContext};
 
 const METAL_GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME";
@@ -138,16 +139,24 @@ fn run_metal_compile() -> Result<(), String> {
 }
 
 /// Runs every required Metal runtime suite and rejects all evidence of skipping.
-pub(crate) fn release_metal() -> Result<(), String> {
+pub(crate) fn release_metal(args: impl Iterator<Item = String>) -> Result<(), String> {
     require_macos("release-metal")?;
-    run_release_metal()
+    run_release_metal(ValidationMode::parse(args)?)
 }
 
-fn run_release_metal() -> Result<(), String> {
-    validate_required_ignored_inventory()?;
+fn run_release_metal(mode: ValidationMode) -> Result<(), String> {
+    if mode == ValidationMode::Quick {
+        let output = run_cargo_captured(
+            &quick_clippy_args(),
+            METAL_RUNTIME_ENV,
+            "quick Metal production-feature Clippy",
+        )?;
+        reject_skip_markers(&output, "quick Metal production-feature Clippy")?;
+    }
+    validate_required_ignored_inventory(mode)?;
 
     for suite in METAL_TEST_SUITES {
-        let args = runtime_suite_args(suite.package);
+        let args = runtime_suite_args(suite.package, mode);
         let output = run_cargo_captured(&args, METAL_RUNTIME_ENV, suite.label)?;
         validate_test_run(
             &output,
@@ -157,16 +166,16 @@ fn run_release_metal() -> Result<(), String> {
         )?;
     }
 
-    let mut ignored_args = vec![
-        "test",
-        "--release",
+    let mut ignored_args = vec!["test"];
+    ignored_args.extend_from_slice(mode.cargo_profile_args());
+    ignored_args.extend_from_slice(&[
         "-p",
         "j2k-metal",
         "--lib",
         "--",
         "--ignored",
         "--show-output",
-    ];
+    ]);
     for optional_test in METAL_OPTIONAL_IGNORED_TESTS {
         ignored_args.extend_from_slice(&["--skip", optional_test]);
     }
@@ -178,10 +187,26 @@ fn run_release_metal() -> Result<(), String> {
     validate_exact_ignored_run(&output)
 }
 
-fn runtime_suite_args(package: &str) -> Vec<&str> {
-    let mut args = vec!["test", "--release", "--all-features"];
+fn quick_clippy_args() -> Vec<&'static str> {
+    let mut args = vec!["clippy", "--profile", "gpu-quick", "--all-targets"];
+    append_packages(&mut args);
+    args.extend_from_slice(&["--features", "j2k-ml/metal"]);
+    args.extend_from_slice(&["--", "-D", "warnings"]);
+    args
+}
+
+fn runtime_suite_args(package: &str, mode: ValidationMode) -> Vec<&str> {
+    let mut args = vec!["test"];
+    args.extend_from_slice(mode.cargo_profile_args());
+    if mode == ValidationMode::Full {
+        args.push("--all-features");
+    }
     args.extend_from_slice(METAL_RUNTIME_TEST_TARGETS);
-    args.extend_from_slice(&["-p", package, "--", "--show-output"]);
+    args.extend_from_slice(&["-p", package]);
+    if mode == ValidationMode::Quick && package == "j2k-ml" {
+        args.extend_from_slice(&["--features", "metal"]);
+    }
+    args.extend_from_slice(&["--", "--show-output"]);
     args
 }
 
@@ -202,17 +227,10 @@ fn append_packages(args: &mut Vec<&str>) {
     }
 }
 
-fn validate_required_ignored_inventory() -> Result<(), String> {
-    let args = [
-        "test",
-        "--release",
-        "-p",
-        "j2k-metal",
-        "--lib",
-        "--",
-        "--ignored",
-        "--list",
-    ];
+fn validate_required_ignored_inventory(mode: ValidationMode) -> Result<(), String> {
+    let mut args = vec!["test"];
+    args.extend_from_slice(mode.cargo_profile_args());
+    args.extend_from_slice(&["-p", "j2k-metal", "--lib", "--", "--ignored", "--list"]);
     let output = run_cargo_captured(
         &args,
         METAL_RUNTIME_ENV,

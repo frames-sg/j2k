@@ -5,6 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::benchmark_registry::{
+    BenchmarkLane as PerfLane, PerformanceBenchmark as BenchCommand,
+    PERFORMANCE_BENCHMARKS as BENCH_COMMANDS,
+};
 use crate::process::{self, cargo, CommandContext};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +35,7 @@ struct PerfGuardOptions {
     mode: PerfGuardMode,
     threshold_percent: f64,
     quick: bool,
+    lane: PerfLane,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,15 +43,6 @@ enum PerfGuardMode {
     GitRef { baseline_ref: String },
     RecordCurrent { name: String },
     CompareCurrent { name: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BenchCommand {
-    package: &'static str,
-    bench: &'static str,
-    filter: Option<&'static str>,
-    features: Option<&'static str>,
-    env: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,78 +63,7 @@ const BENCH_PACKAGE_MANIFESTS: &[&str] = &[
     "crates/j2k-jpeg/Cargo.toml",
     "crates/j2k-native/Cargo.toml",
     "crates/j2k-cuda/Cargo.toml",
-];
-const BENCH_COMMANDS: &[BenchCommand] = &[
-    BenchCommand {
-        package: "j2k",
-        bench: "public_api",
-        filter: None,
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-jpeg",
-        bench: "encode_cpu",
-        filter: Some("jpeg_cpu_encode_runtime/"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "tier1_bitplane",
-        filter: Some("htj2k_cleanup_decode/"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "tier1_bitplane",
-        filter: Some("htj2k_refinement_fixture_decode"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "tier1_bitplane",
-        filter: Some("htj2k_refinement_block_decode"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "tier1_bitplane",
-        filter: Some("htj2k_cleanup_encode/"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "tier1_bitplane",
-        filter: Some("htj2k_cleanup_encode_distribution"),
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-native",
-        bench: "htj2k_sigprop_phase",
-        filter: None,
-        features: None,
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-cuda",
-        bench: "htj2k_decode",
-        filter: Some("j2k_cuda_htj2k_"),
-        features: Some("cuda-runtime"),
-        env: &[],
-    },
-    BenchCommand {
-        package: "j2k-cuda",
-        bench: "htj2k_encode",
-        filter: Some("j2k_cuda_htj2k_"),
-        features: Some("cuda-runtime"),
-        env: &[],
-    },
+    "crates/j2k-jpeg-metal/Cargo.toml",
 ];
 const BENCH_SOURCE_FILES: &[&str] = &[
     "crates/j2k/benches/public_api.rs",
@@ -148,6 +73,7 @@ const BENCH_SOURCE_FILES: &[&str] = &[
     "crates/j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k",
     "crates/j2k-cuda/benches/htj2k_decode.rs",
     "crates/j2k-cuda/benches/htj2k_encode.rs",
+    "crates/j2k-jpeg-metal/benches/compare.rs",
 ];
 const BENCH_MANIFEST_STANZAS: &[BenchManifestStanza] = &[
     BenchManifestStanza {
@@ -165,12 +91,20 @@ const BENCH_MANIFEST_STANZAS: &[BenchManifestStanza] = &[
         bench_name: "htj2k_encode",
         stanza: "[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
     },
+    BenchManifestStanza {
+        path: "crates/j2k-jpeg-metal/Cargo.toml",
+        bench_name: "compare",
+        stanza: "[[bench]]\nname = \"compare\"\nharness = false\n",
+    },
 ];
 
 pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), String> {
     let options = PerfGuardOptions::parse(args)?;
     let root = repo_root()?;
-    let perf_root = root.join("target").join("j2k-perf");
+    let perf_root = root
+        .join("target")
+        .join("j2k-perf")
+        .join(options.lane.as_str());
     fs::create_dir_all(&perf_root)
         .map_err(|err| format!("failed to create {}: {err}", perf_root.display()))?;
 
@@ -186,8 +120,15 @@ pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), S
             reset_dir(&baseline_target)?;
             reset_dir(&current_target)?;
 
-            run_benches(&baseline_worktree, &baseline_target, options.quick)?;
-            run_benches(&root, &current_target, options.quick)?;
+            build_benches(&baseline_worktree, &baseline_target, options.lane)?;
+            build_benches(&root, &current_target, options.lane)?;
+            run_benches(
+                &baseline_worktree,
+                &baseline_target,
+                options.quick,
+                options.lane,
+            )?;
+            run_benches(&root, &current_target, options.quick, options.lane)?;
 
             let baseline = discover_estimates(&baseline_target.join("criterion"))?;
             let current = discover_estimates(&current_target.join("criterion"))?;
@@ -196,7 +137,8 @@ pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), S
         PerfGuardMode::RecordCurrent { name } => {
             let target = perf_root.join("current-record-target");
             reset_dir(&target)?;
-            run_benches(&root, &target, options.quick)?;
+            build_benches(&root, &target, options.lane)?;
+            run_benches(&root, &target, options.quick, options.lane)?;
             let estimates = discover_estimates(&target.join("criterion"))?;
             let snapshot = current_snapshot_path(&perf_root, name)?;
             write_estimate_snapshot(&snapshot, &estimates)?;
@@ -211,7 +153,8 @@ pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), S
             let baseline = read_estimate_snapshot(&snapshot)?;
             let target = perf_root.join("current-compare-target");
             reset_dir(&target)?;
-            run_benches(&root, &target, options.quick)?;
+            build_benches(&root, &target, options.lane)?;
+            run_benches(&root, &target, options.quick, options.lane)?;
             let current = discover_estimates(&target.join("criterion"))?;
             compare_estimates(&baseline, &current, options.threshold_percent)?
         }
@@ -662,8 +605,13 @@ fn emit_report(outcomes: &[RegressionOutcome], threshold_percent: f64) {
     }
 }
 
-fn run_benches(workdir: &Path, target_dir: &Path, quick: bool) -> Result<(), String> {
-    for bench in BENCH_COMMANDS {
+fn run_benches(
+    workdir: &Path,
+    target_dir: &Path,
+    quick: bool,
+    lane: PerfLane,
+) -> Result<(), String> {
+    for bench in BENCH_COMMANDS.iter().filter(|bench| bench.lane == lane) {
         let args = bench_args(*bench, quick);
         process::run_command(
             cargo(),
@@ -675,6 +623,30 @@ fn run_benches(workdir: &Path, target_dir: &Path, quick: bool) -> Result<(), Str
         )?;
     }
     Ok(())
+}
+
+fn build_benches(workdir: &Path, target_dir: &Path, lane: PerfLane) -> Result<(), String> {
+    for bench in BENCH_COMMANDS.iter().filter(|bench| bench.lane == lane) {
+        process::run_command(
+            cargo(),
+            &bench_build_args(*bench),
+            CommandContext::new()
+                .current_dir(workdir)
+                .target_dir(target_dir)
+                .envs(bench.env),
+        )?;
+    }
+    Ok(())
+}
+
+fn bench_build_args(bench: BenchCommand) -> Vec<&'static str> {
+    let mut args = vec!["bench", "-p", bench.package, "--bench", bench.bench];
+    if let Some(features) = bench.features {
+        args.push("--features");
+        args.push(features);
+    }
+    args.push("--no-run");
+    args
 }
 
 fn bench_args(bench: BenchCommand, quick: bool) -> Vec<&'static str> {
@@ -736,19 +708,39 @@ fn repo_root() -> Result<PathBuf, String> {
 
 impl PerfGuardOptions {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+        let mut lane_set = false;
         let mut options = Self {
             mode: PerfGuardMode::GitRef {
                 baseline_ref: DEFAULT_BASELINE_REF.to_string(),
             },
             threshold_percent: DEFAULT_THRESHOLD_PERCENT,
             quick: false,
+            lane: PerfLane::Host,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--lane" => {
+                    if lane_set {
+                        return Err("--lane may be specified only once".to_string());
+                    }
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--lane requires host, cuda, or metal".to_string())?;
+                    options.lane = match PerfLane::parse(&value)? {
+                        PerfLane::All => {
+                            return Err(
+                                "performance lane must be exactly host, cuda, or metal".to_string()
+                            )
+                        }
+                        lane => lane,
+                    };
+                    lane_set = true;
+                }
                 "--baseline-ref" => {
                     let baseline_ref = args
                         .next()
                         .ok_or_else(|| "--baseline-ref requires a value".to_string())?;
+                    validate_commit_sha(&baseline_ref)?;
                     options.set_mode(PerfGuardMode::GitRef { baseline_ref })?;
                 }
                 "--record-current" => {
@@ -786,6 +778,9 @@ impl PerfGuardOptions {
                 }
             }
         }
+        if !lane_set {
+            return Err(format!("--lane is required\n{}", help_text()));
+        }
         Ok(options)
     }
 
@@ -803,7 +798,15 @@ impl PerfGuardOptions {
 }
 
 fn help_text() -> String {
-    "usage: cargo xtask j2k-perf-guard [--baseline-ref REF | --record-current NAME | --compare-current NAME] [--threshold-percent N] [--quick]".to_string()
+    "usage: cargo xtask j2k-perf-guard --lane host|cuda|metal [--baseline-ref COMMIT_SHA | --record-current NAME | --compare-current NAME] [--threshold-percent N] [--quick]".to_string()
+}
+
+fn validate_commit_sha(value: &str) -> Result<(), String> {
+    if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("--baseline-ref must be a full 40-character commit SHA".to_string())
+    }
 }
 
 fn path_str(path: &Path) -> Result<&str, String> {
@@ -814,17 +817,21 @@ fn path_str(path: &Path) -> Result<&str, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bench_args, compare_estimates, is_enforced_perf_id, read_estimate_snapshot,
-        validate_baseline_layout, write_estimate_snapshot, BenchCommand, BenchEstimate,
-        BenchManifestStanza, PerfGuardMode, PerfGuardOptions, BENCH_COMMANDS,
-        BENCH_PACKAGE_MANIFESTS, DEFAULT_BASELINE_REF,
+        bench_args, bench_build_args, compare_estimates, is_enforced_perf_id,
+        read_estimate_snapshot, validate_baseline_layout, write_estimate_snapshot, BenchCommand,
+        BenchEstimate, BenchManifestStanza, PerfGuardMode, PerfGuardOptions, PerfLane,
+        BENCH_COMMANDS, BENCH_PACKAGE_MANIFESTS, DEFAULT_BASELINE_REF,
     };
+    use crate::benchmark_registry::CUDA_BENCH_ENV;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn perf_guard_defaults_to_documented_immutable_baseline() {
-        let options = PerfGuardOptions::parse(std::iter::empty()).unwrap();
+    fn perf_guard_requires_lane_and_defaults_to_documented_immutable_baseline() {
+        assert!(PerfGuardOptions::parse(std::iter::empty()).is_err());
+        let options =
+            PerfGuardOptions::parse(["--lane".to_string(), "host".to_string()].into_iter())
+                .unwrap();
 
         assert_eq!(
             options.mode,
@@ -832,10 +839,25 @@ mod tests {
                 baseline_ref: "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139".to_string(),
             }
         );
+        assert_eq!(options.lane, PerfLane::Host);
         assert_eq!(
             DEFAULT_BASELINE_REF,
             "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139"
         );
+
+        for mutable_or_abbreviated in ["main", "v0.7.3", "29143c8e"] {
+            let error = PerfGuardOptions::parse(
+                [
+                    "--lane".to_string(),
+                    "host".to_string(),
+                    "--baseline-ref".to_string(),
+                    mutable_or_abbreviated.to_string(),
+                ]
+                .into_iter(),
+            )
+            .unwrap_err();
+            assert!(error.contains("full 40-character commit SHA"));
+        }
     }
 
     #[test]
@@ -868,9 +890,15 @@ mod tests {
     #[test]
     fn perf_guard_parses_current_tree_record_mode() {
         let options = PerfGuardOptions::parse(
-            ["--record-current", "htj2k-roi-baseline", "--quick"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "--lane",
+                "host",
+                "--record-current",
+                "htj2k-roi-baseline",
+                "--quick",
+            ]
+            .into_iter()
+            .map(str::to_string),
         )
         .unwrap();
 
@@ -887,6 +915,8 @@ mod tests {
     fn perf_guard_parses_current_tree_compare_mode() {
         let options = PerfGuardOptions::parse(
             [
+                "--lane",
+                "cuda",
                 "--compare-current",
                 "htj2k-roi-baseline",
                 "--threshold-percent",
@@ -903,15 +933,23 @@ mod tests {
                 name: "htj2k-roi-baseline".to_string()
             }
         );
+        assert_eq!(options.lane, PerfLane::Cuda);
         assert!((options.threshold_percent - 7.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn perf_guard_rejects_multiple_baseline_modes() {
         let error = PerfGuardOptions::parse(
-            ["--record-current", "one", "--compare-current", "two"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "--lane",
+                "host",
+                "--record-current",
+                "one",
+                "--compare-current",
+                "two",
+            ]
+            .into_iter()
+            .map(str::to_string),
         )
         .unwrap_err();
 
@@ -919,6 +957,29 @@ mod tests {
             error.contains("choose only one baseline mode"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn accelerator_lanes_require_hardware_and_never_share_commands() {
+        let cuda = BENCH_COMMANDS
+            .iter()
+            .filter(|command| command.lane == PerfLane::Cuda)
+            .collect::<Vec<_>>();
+        let metal = BENCH_COMMANDS
+            .iter()
+            .filter(|command| command.lane == PerfLane::Metal)
+            .collect::<Vec<_>>();
+
+        assert!(!cuda.is_empty());
+        assert!(!metal.is_empty());
+        assert!(cuda.iter().all(|command| {
+            command.env.contains(&("J2K_REQUIRE_CUDA_BENCH", "1"))
+                && !command.package.contains("metal")
+        }));
+        assert!(metal.iter().all(|command| {
+            command.env.contains(&("J2K_REQUIRE_METAL_BENCH", "1"))
+                && !command.package.contains("cuda")
+        }));
     }
 
     #[test]
@@ -1045,6 +1106,7 @@ mod tests {
                 bench: "encode_cpu",
                 filter: Some("jpeg_cpu_encode_runtime/"),
                 features: None,
+                lane: PerfLane::Host,
                 env: &[],
             },
             BenchCommand {
@@ -1052,6 +1114,7 @@ mod tests {
                 bench: "tier1_bitplane",
                 filter: Some("htj2k_cleanup_encode/"),
                 features: None,
+                lane: PerfLane::Host,
                 env: &[],
             },
             BenchCommand {
@@ -1059,6 +1122,7 @@ mod tests {
                 bench: "tier1_bitplane",
                 filter: Some("htj2k_cleanup_decode/"),
                 features: None,
+                lane: PerfLane::Host,
                 env: &[],
             },
             BenchCommand {
@@ -1066,6 +1130,7 @@ mod tests {
                 bench: "htj2k_sigprop_phase",
                 filter: None,
                 features: None,
+                lane: PerfLane::Host,
                 env: &[],
             },
         ];
@@ -1139,6 +1204,7 @@ mod tests {
             bench: "tier1_bitplane",
             filter: Some("htj2k_cleanup_encode/"),
             features: None,
+            lane: PerfLane::Host,
             env: &[],
         };
 
@@ -1164,6 +1230,7 @@ mod tests {
             bench: "htj2k_encode",
             filter: Some("j2k_cuda_htj2k_"),
             features: Some("cuda-runtime"),
+            lane: PerfLane::Cuda,
             env: &[],
         };
 
@@ -1180,6 +1247,32 @@ mod tests {
                 "--",
                 "j2k_cuda_htj2k_",
                 "--quick",
+            ]
+        );
+    }
+
+    #[test]
+    fn benchmark_prebuild_never_passes_filters_or_measurement_flags() {
+        let command = BenchCommand {
+            package: "j2k-cuda",
+            bench: "htj2k_decode",
+            filter: Some("j2k_cuda_htj2k_"),
+            features: Some("cuda-runtime"),
+            lane: PerfLane::Cuda,
+            env: CUDA_BENCH_ENV,
+        };
+
+        assert_eq!(
+            bench_build_args(command),
+            vec![
+                "bench",
+                "-p",
+                "j2k-cuda",
+                "--bench",
+                "htj2k_decode",
+                "--features",
+                "cuda-runtime",
+                "--no-run",
             ]
         );
     }

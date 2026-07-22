@@ -14,7 +14,8 @@ fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
     let env_vars = fs::read_to_string(root.join("docs/env-vars.md")).expect("read env var docs");
     let benchmark_docs = format!("{benchmark_corpora}\n{benchmark_evidence}\n{env_vars}");
     let xtask = xtask_sources(root);
-    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let full_validation = fs::read_to_string(root.join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
 
     assert_pattern_checks(&[
         PatternCheck::new("benchmark publication docs", &benchmark_docs).required(&[
@@ -36,7 +37,7 @@ fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
             "passed_test_count",
             "expected at least",
         ]),
-        PatternCheck::new("CI comparator parity job", &ci).required(&[
+        PatternCheck::new("full validation comparator parity job", &full_validation).required(&[
             "comparator-parity:",
             "grokj2k-tools",
             "libgrokj2k1-dev",
@@ -53,50 +54,46 @@ fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
 }
 
 #[test]
-fn adoption_starter_corpus_fallback_is_pinned() {
+fn adoption_gpu_workflow_requires_explicit_external_corpora() {
     let root = repo_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/gpu-validation.yml"))
-        .expect("read GPU validation workflow");
+    let workflow = fs::read_to_string(root.join(".github/workflows/gpu-benchmarks.yml"))
+        .expect("read GPU benchmark workflow");
     let benchmark_docs = fs::read_to_string(root.join("docs/benchmark-corpora.md"))
         .expect("read benchmark corpus docs");
-    let openjpeg_commit = "39524bd3a601d90ed8e0177559400d23945f96a9";
 
     let workflow_required = [
-        "sha256sum -c - <<'SHA256'".to_string(),
-        "a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd  kodim01.png".to_string(),
-        "1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png".to_string(),
-        "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned".to_string(),
-        format!("J2K_STARTER_OPENJPEG_DATA_COMMIT={openjpeg_commit}"),
-        "git -C target/j2k-public-corpora/openjpeg-data fetch --depth 1 origin".to_string(),
-        "git -C target/j2k-public-corpora/openjpeg-data checkout --detach".to_string(),
-        format!("source-native-openjpeg-data-conformance-dir@{openjpeg_commit}"),
-        format!("source-native-openjpeg-data-nonregression-dir@{openjpeg_commit}"),
+        "inputs.suite == 'adoption'".to_string(),
+        ": \"${J2K_ADOPTION_FIXTURES:?Set J2K_ADOPTION_FIXTURES}\"".to_string(),
+        ": \"${J2K_ADOPTION_MANIFEST:?Set J2K_ADOPTION_MANIFEST}\"".to_string(),
+        ": \"${J2K_ADOPTION_ENCODE_FIXTURES:?Set J2K_ADOPTION_ENCODE_FIXTURES}\"".to_string(),
+        ": \"${J2K_ADOPTION_ENCODE_MANIFEST:?Set J2K_ADOPTION_ENCODE_MANIFEST}\"".to_string(),
+        "--require-cuda".to_string(),
+        "--require-metal".to_string(),
     ];
     let workflow_required = workflow_required
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
     let benchmark_docs_required = [
-        "sha256sum -c - <<'SHA256'",
-        openjpeg_commit,
-        "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned",
-        "OpenJPEG-data commit",
-        "SHA-256-checked Kodak PNGs",
-        "fixed OpenJPEG-data commit",
+        "dispatch `GPU benchmarks` with `suite=adoption`",
+        "fails closed when any variable is absent",
+        "does not synthesize or download a fallback corpus",
+        "--require-cuda",
+        "--require-metal",
     ];
 
     assert_pattern_checks(&[
         PatternCheck::new(
-            "GPU adoption fallback pinned starter corpus inputs",
+            "GPU adoption workflow strict external corpus inputs",
             &workflow,
         )
         .required(&workflow_required)
-        .forbidden(&["git clone --depth 1 https://github.com/uclouvain/openjpeg-data"]),
+        .forbidden(&["git clone", "curl ", "wget "]),
         PatternCheck::new(
-            "benchmark corpus docs pinned starter corpus inputs",
+            "benchmark corpus docs strict external corpus inputs",
             &benchmark_docs,
         )
-        .required(&benchmark_docs_required),
+        .normalized_required(&benchmark_docs_required),
     ]);
 }
 

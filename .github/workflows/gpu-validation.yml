@@ -3,36 +3,20 @@ name: GPU validation
 on:
   workflow_dispatch:
     inputs:
-      run-timed-benchmarks:
-        description: "Run Criterion timing benches on the GPU runners"
-        type: boolean
-        required: false
-        default: false
-      run-metal-validation:
-        description: "Run Apple Silicon Metal validation jobs"
-        type: boolean
-        required: false
-        # Default off: with no Metal runner online the job sits queued forever,
-        # which holds the whole run "in progress" and locks every job's logs
-        # (including the CUDA gate). Opt in explicitly when a Metal runner is up.
-        default: false
-      run-linux-ci:
-        description: "Run the Linux CI gate on the self-hosted CUDA runner"
-        type: boolean
-        required: false
-        default: false
-      run-cuda-htj2k-decode-profile:
-        description: "Collect CUDA HTJ2K decode RCA/profile log, trace, and Criterion artifacts"
-        type: boolean
-        required: false
-        default: false
-      run-adoption-benchmark:
-        description: "Run the fixture-backed adoption benchmark bundle on the CUDA runner"
-        type: boolean
-        required: false
-        default: false
+      target:
+        description: "Accelerator lane to validate"
+        type: choice
+        required: true
+        default: cuda
+        options: [cuda, metal, all]
+      mode:
+        description: "Quick validates selected lanes; full is release-grade and requires all"
+        type: choice
+        required: true
+        default: quick
+        options: [quick, full]
       coverage-base-ref:
-        description: "Git revision used as the changed-line coverage base"
+        description: "Git revision used as the changed-line coverage base in full mode"
         type: string
         required: false
         default: "v0.6.2"
@@ -40,91 +24,37 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gpu-validation-${{ github.sha }}-${{ inputs.target }}-${{ inputs.mode }}
+  cancel-in-progress: ${{ inputs.mode == 'quick' }}
+
 env:
   CARGO_TERM_COLOR: always
   J2K_COVERAGE_BASE: ${{ inputs.coverage-base-ref }}
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  linux-ci:
-    if: ${{ inputs.run-linux-ci }}
-    name: Linux CI on self-hosted CUDA runner
-    runs-on: [self-hosted, Linux, X64, cuda]
+  validate-inputs:
+    name: Validate GPU request
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-      - name: Show runner diagnostics
-        run: |
-          uname -a
-          rustc -Vv
-          cargo -V
-      - run: cargo xtask ci
-      - run: cargo xtask no-std
-      - run: cargo xtask bench-build
-      - run: cargo xtask fuzz-build
-      - name: Install CI helper tools
-        run: |
-          cargo install typos-cli --version 1.42.3 --locked
-          cargo install cargo-deny --locked
-      - name: Ensure pinned coverage tool
-        run: scripts/ensure-cargo-llvm-cov.sh
-      - run: cargo xtask typos
-      - run: cargo xtask deny
-      - run: cargo xtask coverage host
-
-  metal-apple-silicon:
-    if: ${{ inputs.run-metal-validation }}
-    name: Metal validation on Apple Silicon
-    runs-on: [self-hosted, macOS, ARM64, metal]
-    env:
-      J2K_REQUIRE_METAL_RUNTIME: "1"
-      RUST_TEST_THREADS: "1"
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Ensure pinned coverage tool
-        run: scripts/ensure-cargo-llvm-cov.sh
-      - name: Run fail-closed Metal release validation
-        run: cargo xtask release-metal
-      - name: Collect changed-line Metal host coverage
-        run: cargo xtask coverage metal
-      - name: Upload Metal coverage evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: j2k-metal-coverage
-          path: |
-            lcov-metal.info
-            coverage-metal-summary.json
-            coverage-metal-regions.json
-          if-no-files-found: error
-      - run: cargo bench -p j2k-jpeg-metal --no-run
-      - if: ${{ inputs.run-timed-benchmarks }}
+      - name: Reject unsafe or contradictory requests
         env:
-          J2K_GPU_BENCH_DIM: "1024"
-          J2K_GPU_BENCH_BATCH: "64"
-          J2K_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p j2k-jpeg-metal --bench device_upload -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p j2k-jpeg-metal --bench compare -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          MODE: ${{ inputs.mode }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${MODE}" = full ] && [ "${TARGET}" != all ]; then
+            echo "full GPU validation requires target=all" >&2
+            exit 1
+          fi
 
-  # cuda-x86_64-compatibility is THE authoritative CUDA parity gate.
-  # It must be run (via workflow_dispatch) before merging any change to the
-  # CUDA encode path (crates/j2k-cuda, crates/j2k-cuda-runtime).
-  # The job is workflow_dispatch-only; do not add push/pull_request triggers
-  # without a policy decision — these are cost-sensitive self-hosted GPU runners.
-  cuda-x86_64-compatibility:
-    name: CUDA API compatibility on x86_64
+  cuda-quick:
+    name: CUDA quick validation
+    needs: [validate-inputs]
+    if: ${{ inputs.mode == 'quick' && (inputs.target == 'cuda' || inputs.target == 'all') }}
     runs-on: [self-hosted, Linux, X64, cuda]
+    # Quick timing is telemetry until representative warm-cache runs establish a budget.
+    timeout-minutes: 90
     env:
       J2K_REQUIRE_CUDA_RUNTIME: "1"
       J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
@@ -136,284 +66,214 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
-      - name: Ensure pinned coverage tool
-        run: scripts/ensure-cargo-llvm-cov.sh
-      - name: Assert CUDA runtime gate is set
+          toolchain: "1.96"
+      - name: Fingerprint CUDA cache environment
         run: |
-          test -n "${J2K_REQUIRE_CUDA_RUNTIME:-}" || { echo "J2K_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }
+          {
+            nvidia-smi --query-gpu=driver_version --format=csv,noheader
+            nvcc --version
+          } | sha256sum | awk '{print "J2K_GPU_CACHE_ENV=cuda-" $1}' \
+            >> "${GITHUB_ENV}"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: gpu-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
+          key: profiles-gpu-quick-release-v1
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST J2K_GPU_CACHE_ENV"
+          cache-bin: false
+          save-if: false
       - name: Show CUDA runner diagnostics
         run: |
           uname -a
           rustc -Vv
           cargo -V
-          if command -v nvidia-smi >/dev/null 2>&1; then
-            nvidia-smi
-          else
-            echo "nvidia-smi not found; CUDA runtime validation requires a working CUDA driver"
-          fi
+          nvidia-smi
           command -v nvcc
           nvcc --version
       - name: Configure CUDA Oxide bindgen
+        run: bash scripts/configure-cuda-bindgen.sh
+      - name: Run fail-closed quick CUDA validation
         run: |
-          if [ -z "${LIBCLANG_PATH:-}" ]; then
-            libclang_dir=""
-            for dir in /usr/lib/llvm-*/lib "${HOME}"/.local/llvm*/usr/lib/llvm-*/lib; do
-              if compgen -G "${dir}/libclang*.so*" >/dev/null; then
-                libclang_dir="${dir}"
-              fi
-            done
-            test -n "${libclang_dir}" || { echo "libclang not found; CUDA Oxide bindgen cannot run"; exit 1; }
-            echo "LIBCLANG_PATH=${libclang_dir}" >> "${GITHUB_ENV}"
-          fi
+          started="$(date +%s)"
+          status=0
+          cargo xtask release-cuda --mode quick || status=$?
+          elapsed="$(( $(date +%s) - started ))"
+          echo "CUDA quick wall time: ${elapsed}s" | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
 
-          resource_dir=""
-          for dir in /usr/lib/llvm-*/lib/clang/[0-9]* "${HOME}"/.local/llvm*/usr/lib/llvm-*/lib/clang/[0-9]*; do
-            if [ -d "${dir}/include" ]; then
-              resource_dir="${dir}"
-            fi
-          done
+  metal-quick:
+    name: Metal quick validation
+    needs: [validate-inputs]
+    if: ${{ inputs.mode == 'quick' && (inputs.target == 'metal' || inputs.target == 'all') }}
+    runs-on: [self-hosted, macOS, ARM64, metal]
+    # Keep the 15-minute target informational until runner variance is measured.
+    timeout-minutes: 60
+    env:
+      J2K_REQUIRE_METAL_RUNTIME: "1"
+      RUST_TEST_THREADS: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+          components: clippy
+      - name: Fingerprint Metal cache environment
+        run: |
+          {
+            sw_vers
+            xcrun metal --version
+          } | shasum -a 256 | awk '{print "J2K_GPU_CACHE_ENV=metal-" $1}' \
+            >> "${GITHUB_ENV}"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: gpu-metal-${{ runner.os }}-${{ runner.arch }}-1.96
+          key: profiles-gpu-quick-release-v1
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST J2K_GPU_CACHE_ENV"
+          cache-bin: false
+          save-if: false
+      - name: Show Metal runner diagnostics
+        run: |
+          uname -a
+          system_profiler SPDisplaysDataType
+          rustc -Vv
+          cargo -V
+      - name: Run fail-closed quick Metal validation
+        run: |
+          started="$(date +%s)"
+          status=0
+          cargo xtask release-metal --mode quick || status=$?
+          elapsed="$(( $(date +%s) - started ))"
+          echo "Metal quick wall time: ${elapsed}s (telemetry target: <=900s)" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
 
-          bindgen_args="${BINDGEN_EXTRA_CLANG_ARGS:-}"
-          if [ -n "${resource_dir}" ]; then
-            bindgen_args="${bindgen_args:+${bindgen_args} }-resource-dir=${resource_dir}"
-          fi
-          gcc_include="$(gcc -print-file-name=include)"
-          if [ -d "${gcc_include}" ]; then
-            bindgen_args="${bindgen_args:+${bindgen_args} }-I${gcc_include}"
-          fi
-          if [ -d /usr/local/cuda/include ]; then
-            bindgen_args="${bindgen_args:+${bindgen_args} }-I/usr/local/cuda/include"
-          fi
-          echo "BINDGEN_EXTRA_CLANG_ARGS=${bindgen_args}" >> "${GITHUB_ENV}"
-      - name: Run fail-closed CUDA release validation
-        run: cargo xtask release-cuda
+  cuda-full:
+    name: CUDA full release validation
+    needs: [validate-inputs]
+    if: ${{ inputs.mode == 'full' && inputs.target == 'all' }}
+    runs-on: [self-hosted, Linux, X64, cuda]
+    timeout-minutes: 90
+    env:
+      J2K_REQUIRE_CUDA_RUNTIME: "1"
+      J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
+      J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
+      RUST_TEST_THREADS: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+          components: clippy
+      - name: Fingerprint CUDA cache environment
+        run: |
+          {
+            nvidia-smi --query-gpu=driver_version --format=csv,noheader
+            nvcc --version
+          } | sha256sum | awk '{print "J2K_GPU_CACHE_ENV=cuda-" $1}' \
+            >> "${GITHUB_ENV}"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: gpu-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
+          key: profiles-gpu-quick-release-v1
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST J2K_GPU_CACHE_ENV"
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Show CUDA runner diagnostics
+        run: |
+          uname -a
+          rustc -Vv
+          cargo -V
+          nvidia-smi
+          command -v nvcc
+          nvcc --version
+      - name: Configure CUDA Oxide bindgen
+        run: bash scripts/configure-cuda-bindgen.sh
+      - name: Run fail-closed full CUDA validation
+        run: |
+          started="$(date +%s)"
+          status=0
+          cargo xtask release-cuda --mode full || status=$?
+          elapsed="$(( $(date +%s) - started ))"
+          echo "CUDA full wall time: ${elapsed}s" | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+      - name: Ensure pinned coverage tool
+        run: scripts/ensure-cargo-llvm-cov.sh
       - name: Collect changed-line CUDA host coverage
         run: cargo xtask coverage cuda
+      - name: Compile CUDA benchmark lane
+        run: cargo xtask bench-build --lane cuda
       - name: Upload CUDA coverage evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: j2k-cuda-coverage
+          name: j2k-cuda-full-coverage-${{ github.sha }}
           path: |
             lcov-cuda.info
             coverage-cuda-summary.json
             coverage-cuda-regions.json
           if-no-files-found: error
-      - run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
-      - run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime --no-run
-      - run: cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
-      - run: cargo bench -p j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          J2K_REQUIRE_CUDA_BENCH: "1"
-          J2K_GPU_BENCH_DIM: "4096"
-          J2K_GPU_BENCH_BATCH: "64"
-          J2K_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          J2K_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          J2K_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - name: CUDA HTJ2K decode RCA profile
-        if: ${{ inputs.run-cuda-htj2k-decode-profile }}
-        env:
-          J2K_REQUIRE_CUDA_RUNTIME: "1"
-          J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
-          J2K_REQUIRE_CUDA_BENCH: "1"
-          J2K_PROFILE_STAGES: summary
-          J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json
+
+  metal-full:
+    name: Metal full release validation
+    needs: [validate-inputs]
+    if: ${{ inputs.mode == 'full' && inputs.target == 'all' }}
+    runs-on: [self-hosted, macOS, ARM64, metal]
+    timeout-minutes: 60
+    env:
+      J2K_REQUIRE_METAL_RUNTIME: "1"
+      RUST_TEST_THREADS: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+          components: clippy
+      - name: Fingerprint Metal cache environment
         run: |
-          set -o pipefail
-          mkdir -p target
-          samply_status_file=target/cuda_htj2k_decode_samply_status.txt
-          bench_cmd=(
-            cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime,cuda-profiling --
-            --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-          )
-          if ! command -v samply >/dev/null 2>&1; then
-            RUSTFLAGS="" cargo install samply --version 0.13.1 --locked
-          fi
-          samply --version
-          run_samply=1
-          if [ -r /proc/sys/kernel/perf_event_paranoid ]; then
-            current_perf_event_paranoid="$(cat /proc/sys/kernel/perf_event_paranoid)"
-            echo "perf_event_paranoid=${current_perf_event_paranoid}"
-            if [ "${current_perf_event_paranoid}" -gt 1 ] 2>/dev/null; then
-              perf_lowered=0
-              if [ -w /proc/sys/kernel/perf_event_paranoid ]; then
-                if echo 1 > /proc/sys/kernel/perf_event_paranoid; then
-                  perf_lowered=1
-                fi
-              fi
-              if [ "${perf_lowered}" -ne 1 ] && command -v sudo >/dev/null 2>&1; then
-                if echo 1 | sudo -n tee /proc/sys/kernel/perf_event_paranoid >/dev/null; then
-                  perf_lowered=1
-                else
-                  echo "passwordless sudo could not lower perf_event_paranoid for samply"
-                fi
-              fi
-              if [ "${perf_lowered}" -eq 1 ]; then
-                echo "perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)"
-              else
-                run_samply=0
-                {
-                  echo "samply_status=blocked"
-                  echo "perf_event_paranoid=${current_perf_event_paranoid}"
-                  echo "reason=passwordless sudo unavailable and /proc/sys/kernel/perf_event_paranoid is not writable"
-                  echo "fallback=cargo bench with J2K_PROFILE_STAGES and J2K_CUDA_TRACE"
-                } | tee "${samply_status_file}"
-              fi
-            fi
-          fi
-          if [ "${run_samply}" -eq 1 ]; then
-            echo "samply_status=attempting" | tee "${samply_status_file}"
-            samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
-              "${bench_cmd[@]}" \
-              2>&1 | tee target/cuda_htj2k_decode_profile.log
-            echo "samply_status=recorded" > "${samply_status_file}"
-          else
-            "${bench_cmd[@]}" 2>&1 | tee target/cuda_htj2k_decode_profile.log
-          fi
-      - name: Upload CUDA HTJ2K decode RCA profile artifacts
-        if: ${{ inputs.run-cuda-htj2k-decode-profile && always() }}
+          {
+            sw_vers
+            xcrun metal --version
+          } | shasum -a 256 | awk '{print "J2K_GPU_CACHE_ENV=metal-" $1}' \
+            >> "${GITHUB_ENV}"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: gpu-metal-${{ runner.os }}-${{ runner.arch }}-1.96
+          key: profiles-gpu-quick-release-v1
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST J2K_GPU_CACHE_ENV"
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Show Metal runner diagnostics
+        run: |
+          uname -a
+          system_profiler SPDisplaysDataType
+          rustc -Vv
+          cargo -V
+      - name: Run fail-closed full Metal validation
+        run: |
+          started="$(date +%s)"
+          status=0
+          cargo xtask release-metal --mode full || status=$?
+          elapsed="$(( $(date +%s) - started ))"
+          echo "Metal full wall time: ${elapsed}s" | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+      - name: Ensure pinned coverage tool
+        run: scripts/ensure-cargo-llvm-cov.sh
+      - name: Collect changed-line Metal host coverage
+        run: cargo xtask coverage metal
+      - name: Compile Metal benchmark lane
+        run: cargo xtask bench-build --lane metal
+      - name: Upload Metal coverage evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: cuda-htj2k-decode-rca-profile
+          name: j2k-metal-full-coverage-${{ github.sha }}
           path: |
-            target/cuda_htj2k_decode_profile.log
-            target/cuda_htj2k_decode_trace.json
-            target/cuda_htj2k_decode_samply.json.gz
-            target/cuda_htj2k_decode_samply_status.txt
-            target/criterion
-          if-no-files-found: warn
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          J2K_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - name: CUDA adoption benchmark bundle
-        if: ${{ inputs.run-adoption-benchmark }}
-        env:
-          J2K_ADOPTION_FIXTURES: ${{ vars.J2K_ADOPTION_FIXTURES }}
-          J2K_ADOPTION_MANIFEST: ${{ vars.J2K_ADOPTION_MANIFEST }}
-          J2K_ADOPTION_ENCODE_FIXTURES: ${{ vars.J2K_ADOPTION_ENCODE_FIXTURES }}
-          J2K_ADOPTION_ENCODE_MANIFEST: ${{ vars.J2K_ADOPTION_ENCODE_MANIFEST }}
-          J2K_ADOPTION_OUT_DIR: target/j2k-adoption-benchmark/cuda-full
-        run: |
-          set -euo pipefail
-          command -v opj_compress >/dev/null
-          command -v grk_compress >/dev/null
-          if [ -n "${J2K_ADOPTION_FIXTURES:-}${J2K_ADOPTION_MANIFEST:-}${J2K_ADOPTION_ENCODE_FIXTURES:-}${J2K_ADOPTION_ENCODE_MANIFEST:-}" ]; then
-            : "${J2K_ADOPTION_FIXTURES:?Set repository variable J2K_ADOPTION_FIXTURES to the pinned decode fixture directory list}"
-            : "${J2K_ADOPTION_MANIFEST:?Set repository variable J2K_ADOPTION_MANIFEST to the pinned decode manifest TSV}"
-            : "${J2K_ADOPTION_ENCODE_FIXTURES:?Set repository variable J2K_ADOPTION_ENCODE_FIXTURES to the pinned staged PNM encode fixture directory list}"
-            : "${J2K_ADOPTION_ENCODE_MANIFEST:?Set repository variable J2K_ADOPTION_ENCODE_MANIFEST to the pinned encode manifest TSV}"
-          else
-            echo "No adoption corpus repository variables set; building the default public starter corpus"
-            mkdir -p target/j2k-public-corpora/kodak
-            for n in $(seq -w 1 24); do
-              kodak="target/j2k-public-corpora/kodak/kodim${n}.png"
-              if [ ! -f "${kodak}" ]; then
-                curl -L --fail \
-                  "https://r0k.us/graphics/kodak/kodak/kodim${n}.png" \
-                  -o "${kodak}"
-              fi
-            done
-            (
-              cd target/j2k-public-corpora/kodak
-              sha256sum -c - <<'SHA256'
-          a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd  kodim01.png
-          4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd  kodim02.png
-          e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db  kodim03.png
-          e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa  kodim04.png
-          10349e963c5c813d327852f82c1795fa4148d69fedffc4c589bee458e3ac3d53  kodim05.png
-          363510303b715d4cbc384e1ce227e466b613a09e1b71ae985882bf8e7fbd9b18  kodim06.png
-          b77d3f006f42414bb242222e0482e750c0fb9e5ee8d4bed2f6f11c5605fe54a4  kodim07.png
-          ba23983c76b4832ee0e8af0592664756841a16779acd69f792e268fb6d13d6e7  kodim08.png
-          6a4361c2fc194feb4edaa9f9a4a0620fb9943e460ac7fdf037fb0f6dd6607a7d  kodim09.png
-          9dfb70f5867c29ff9ed6313683f19b3d867849e40fbc0c4c54a4a89df341cf23  kodim10.png
-          7936814b58b5387fce2e4e2488b4ec830dadd95fa9520f358ddb30990b50f2b6  kodim11.png
-          d78c37c2f04f23761ed2367dd77e2db584ddd4c3950833fecf89f199a8126980  kodim12.png
-          bc34a3ce58dea09dce1704c997171602de90cb34d0c8503a988b77f473d39b08  kodim13.png
-          55a94550ff18f3246c4074fd32b77b0c74447c26b6ad274d564d999c0450ba6e  kodim14.png
-          7538cbb80cb9103606c48b806eae57d56c885c7f90b9b3be70a41160f9cbb683  kodim15.png
-          a89c7268ccd4718ba424a99fc4643c572cf692ca6eae887185ceb4e9f11d2e54  kodim16.png
-          37afcc89fbdcb76d9518e04b2fc011027e2f4cd14b3b2f83cefd721641a47c5b  kodim17.png
-          1a9258c365988961d87a0598725b609139c303ad48a5aad6c503c3b1a87849aa  kodim18.png
-          b7450b264b1b0a411390d8931b112c27905a992520fc90569dc4b920aa32bbdc  kodim19.png
-          3b46c71e3b92a563820ba32936be8330c586c41f938efd94be938386aae4328a  kodim20.png
-          ac958597c82073f6bb65129c68f72b651db5b9efd82e11547d07350214bc268b  kodim21.png
-          1cee58eb1f2d9c7ebb254d208a03c783ce6cf2c4d8c2cf45e235dd23b4ce1b29  kodim22.png
-          e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf  kodim23.png
-          1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
-          SHA256
-            )
-            cargo run -p xtask --features adoption -- adoption-materialize \
-              --encode-fixtures target/j2k-public-corpora/kodak \
-              --source-command "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned" \
-              --license-status redistributable \
-              --corpus-name kodak \
-              --corpus-category natural-image \
-              --out-dir target/j2k-public-corpora/materialized-kodak
-            readonly J2K_STARTER_OPENJPEG_DATA_COMMIT=39524bd3a601d90ed8e0177559400d23945f96a9
-            if [ ! -d target/j2k-public-corpora/openjpeg-data/.git ]; then
-              mkdir -p target/j2k-public-corpora/openjpeg-data
-              git -C target/j2k-public-corpora/openjpeg-data init
-            fi
-            git -C target/j2k-public-corpora/openjpeg-data remote get-url origin >/dev/null 2>&1 \
-              && git -C target/j2k-public-corpora/openjpeg-data remote set-url origin https://github.com/uclouvain/openjpeg-data \
-              || git -C target/j2k-public-corpora/openjpeg-data remote add origin https://github.com/uclouvain/openjpeg-data
-            git -C target/j2k-public-corpora/openjpeg-data fetch --depth 1 origin "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
-            git -C target/j2k-public-corpora/openjpeg-data checkout --detach "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
-            test "$(git -C target/j2k-public-corpora/openjpeg-data rev-parse HEAD)" = "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
-            cargo run -p xtask --features adoption -- adoption-curate \
-              --fixtures target/j2k-public-corpora/openjpeg-data/input/conformance \
-              --encode-command "source-native-openjpeg-data-conformance-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
-              --license-status permissive-test-fixture \
-              --corpus-name openjpeg-data-conformance \
-              --corpus-category conformance \
-              --out-dir target/j2k-public-corpora/openjpeg-conformance-curated
-            cargo run -p xtask --features adoption -- adoption-curate \
-              --fixtures target/j2k-public-corpora/openjpeg-data/input/nonregression \
-              --encode-command "source-native-openjpeg-data-nonregression-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
-              --license-status permissive-test-fixture \
-              --corpus-name openjpeg-data \
-              --corpus-category interop \
-              --max-files 24 \
-              --out-dir target/j2k-public-corpora/openjpeg-interop-curated
-            mkdir -p target/j2k-public-corpora/combined-adoption
-            awk 'FNR == 1 && NR != 1 { next } { print }' \
-              target/j2k-public-corpora/materialized-kodak/fixtures.tsv \
-              target/j2k-public-corpora/openjpeg-conformance-curated/fixtures.tsv \
-              target/j2k-public-corpora/openjpeg-interop-curated/fixtures.tsv \
-              > target/j2k-public-corpora/combined-adoption/fixtures.tsv
-            cp target/j2k-public-corpora/materialized-kodak/encode-fixtures.tsv \
-              target/j2k-public-corpora/combined-adoption/encode-fixtures.tsv
-            J2K_ADOPTION_FIXTURES="target/j2k-public-corpora/materialized-kodak/decode-fixtures:target/j2k-public-corpora/openjpeg-conformance-curated/fixtures:target/j2k-public-corpora/openjpeg-interop-curated/fixtures"
-            J2K_ADOPTION_MANIFEST="target/j2k-public-corpora/combined-adoption/fixtures.tsv"
-            J2K_ADOPTION_ENCODE_FIXTURES="target/j2k-public-corpora/materialized-kodak/staged-pnm"
-            J2K_ADOPTION_ENCODE_MANIFEST="target/j2k-public-corpora/combined-adoption/encode-fixtures.tsv"
-          fi
-          cargo run -p xtask --features adoption -- adoption-benchmark \
-            --fixtures "${J2K_ADOPTION_FIXTURES}" \
-            --manifest "${J2K_ADOPTION_MANIFEST}" \
-            --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
-            --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
-            --cuda \
-            --require-cuda \
-            --cuda-decode-batch-sizes 1,16,256,1024 \
-            --out-dir "${J2K_ADOPTION_OUT_DIR}"
-          cargo run -p xtask --features adoption -- adoption-report \
-            --run-dir "${J2K_ADOPTION_OUT_DIR}" \
-            --out "${J2K_ADOPTION_OUT_DIR}/adoption-report.md"
-      - name: Upload CUDA adoption benchmark artifacts
-        if: ${{ inputs.run-adoption-benchmark && always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: cuda-adoption-benchmark
-          path: target/j2k-adoption-benchmark/cuda-full
-          if-no-files-found: warn
+            lcov-metal.info
+            coverage-metal-summary.json
+            coverage-metal-regions.json
+          if-no-files-found: error

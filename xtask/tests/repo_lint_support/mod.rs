@@ -97,6 +97,7 @@ pub(crate) fn sha256_hex(path: &Path) -> String {
 pub(crate) fn xtask_sources(root: &Path) -> String {
     const SOURCES: &[&str] = &[
         "xtask/src/main.rs",
+        "xtask/src/benchmark_registry.rs",
         "xtask/src/benchmark_commands.rs",
         "xtask/src/codegen_commands.rs",
         "xtask/src/codegen_commands/transaction.rs",

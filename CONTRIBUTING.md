@@ -41,16 +41,21 @@ cost-sensitive self-hosted CUDA and Metal runners.
 Pull requests that touch CUDA, Metal, shared GPU-profile paths, or
 `.github/workflows/gpu-validation.yml` must record a successful manual
 `gpu-validation.yml` dispatch for the PR head SHA before merge. The normal CI
-`gpu-path-policy` job checks the PR diff, queries `gpu-validation.yml` runs by
-head SHA, and fails until the required backend job names have succeeded:
+planner checks the PR diff, queries `gpu-validation.yml` runs by head SHA, and
+fails until the required quick backend job names have succeeded:
 
-- `CUDA API compatibility on x86_64` for CUDA or shared GPU changes.
-- `Metal validation on Apple Silicon` for Metal or shared GPU changes.
+- `CUDA quick validation` for CUDA or shared GPU changes.
+- `Metal quick validation` for Metal or shared GPU changes.
+
+Release candidates require one exact-SHA `target=all`, `mode=full` dispatch in
+which `CUDA full release validation` and `Metal full release validation` both
+succeed. Manual performance and profiling work belongs in the separate
+`gpu-benchmarks.yml` workflow so it cannot contend with validation implicitly.
 
 Hosted macOS CI runs `cargo xtask metal-compile`; that is a compile and pure-test
 gate, not Metal hardware evidence. The self-hosted Metal job runs
-`cargo xtask release-metal`, which fails on skipped runtime tests or a missing
-Metal device.
+`cargo xtask release-metal` with either `--mode quick` or `--mode full`. It
+fails on skipped runtime tests or a missing Metal device.
 
 Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without an
 explicit policy decision.

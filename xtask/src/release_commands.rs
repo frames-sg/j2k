@@ -441,9 +441,9 @@ fn validate_publish_workflow_source(
     for required in [
         "--origin-url \"${origin_url}\"",
         "--server-url \"${GITHUB_SERVER_URL}\"",
-        "--ci-workflow ci.yml",
-        "--cuda-job \"CUDA API compatibility on x86_64\"",
-        "--metal-job \"Metal validation on Apple Silicon\"",
+        "--ci-workflow full-validation.yml",
+        "--cuda-job \"CUDA full release validation\"",
+        "--metal-job \"Metal full release validation\"",
         "cargo xtask release-integrity --publish",
         "scripts/publish-crate.sh --preflight-all",
         "python3 scripts/publish_release.py preflight",

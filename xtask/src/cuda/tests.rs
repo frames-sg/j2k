@@ -7,6 +7,9 @@ use super::{
     CUDA_CLIPPY_SUITES, CUDA_RUNTIME_SUITES, EXACT_CUDA_SUITES, HTJ2K_ENCODE_PARITY_TESTS,
     ML_CUDA_TESTS, TRANSCODE_PARITY_TESTS,
 };
+use crate::gpu_validation::ValidationMode;
+
+mod command_plan;
 
 #[cfg(unix)]
 use super::{
@@ -42,7 +45,7 @@ fn exact_cuda_inventories_are_unique_and_have_audited_sizes() {
 #[test]
 fn release_commands_name_packages_features_and_non_benchmark_test_targets() {
     for suite in CUDA_RUNTIME_SUITES {
-        let args = runtime_suite_args(suite);
+        let args = runtime_suite_args(suite, ValidationMode::Full);
         assert!(args.windows(2).any(|pair| pair == ["-p", suite.package]));
         assert!(args
             .windows(2)
@@ -57,8 +60,8 @@ fn release_commands_name_packages_features_and_non_benchmark_test_targets() {
     }
 
     for suite in EXACT_CUDA_SUITES {
-        let list_args = exact_suite_args(suite, true);
-        let run_args = exact_suite_args(suite, false);
+        let list_args = exact_suite_args(suite, true, ValidationMode::Full);
+        let run_args = exact_suite_args(suite, false, ValidationMode::Full);
         for target in suite.test_targets {
             assert!(list_args.windows(2).any(|pair| pair == ["--test", target]));
         }
@@ -206,6 +209,13 @@ fn recording_cuda_cargo() -> RecordingProgram {
   esac
   exit 0
   ;;
+*"test --profile gpu-quick"*)
+  {ml_passed}
+  {ht_passed}
+  {transcode_passed}
+  printf '%s\n' 'test smoke ... ok'
+  printf '%s\n' 'test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+  ;;
 *"test --release"*)
   printf '%s\n' 'test smoke ... ok'
   printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
@@ -225,17 +235,38 @@ fn cuda_release_executes_the_complete_hermetic_command_plan() {
 
     let mut expected_runs = 1;
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        release_cuda().expect("platform wrapper should execute the hermetic CUDA release plan");
+        release_cuda(std::iter::empty())
+            .expect("platform wrapper should execute the hermetic CUDA release plan");
         expected_runs += 1;
     } else {
-        assert!(release_cuda().is_err());
+        assert!(release_cuda(std::iter::empty()).is_err());
     }
-    run_release_cuda("linux", "x86_64").expect("platform-independent CUDA release plan");
+    run_release_cuda("linux", "x86_64", ValidationMode::Full)
+        .expect("platform-independent CUDA release plan");
 
     let log = cargo.log();
     assert_eq!(log.lines().count(), expected_runs * 19);
     assert!(log.lines().all(|line| line.contains("RUST_TEST_THREADS=1")));
     assert_eq!(device.log().lines().count(), expected_runs);
+}
+
+#[cfg(unix)]
+#[test]
+fn cuda_quick_executes_one_shared_runtime_graph() {
+    let device = RecordingProgram::new("cuda-quick-device-test", "printf '%s\n' '0, GPU-QUICK'");
+    let _device = use_test_nvidia_smi_program(device.program().as_os_str().to_owned());
+    let cargo = recording_cuda_cargo();
+    let _cargo = use_test_cargo_program(cargo.program().as_os_str().to_owned());
+
+    run_release_cuda("linux", "x86_64", ValidationMode::Quick).expect("quick CUDA command plan");
+
+    let log = cargo.log();
+    assert_eq!(log.lines().count(), 1);
+    assert!(!log.contains("clippy --profile gpu-quick"));
+    assert_eq!(log.matches("test --profile gpu-quick").count(), 1);
+    assert!(!log.contains("--list"));
+    assert!(!log.contains(" --test "));
+    assert!(!log.contains("test --release"));
 }
 
 #[cfg(unix)]
@@ -265,7 +296,8 @@ fn exact_inventory_and_captured_cargo_report_subprocess_failures() {
     );
     {
         let _cargo = use_test_cargo_program(mismatch.program().as_os_str().to_owned());
-        let error = validate_exact_inventory(&EXACT_CUDA_SUITES[0]).unwrap_err();
+        let error =
+            validate_exact_inventory(&EXACT_CUDA_SUITES[0], ValidationMode::Full).unwrap_err();
         assert!(error.contains("inventory mismatch"));
         assert!(error.contains("unexpected_test"));
     }

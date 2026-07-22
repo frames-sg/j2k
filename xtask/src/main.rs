@@ -16,11 +16,13 @@ mod adoption_materialize;
 #[cfg(feature = "adoption")]
 mod adoption_report;
 mod benchmark_commands;
+mod benchmark_registry;
 mod clone_audit;
 mod codegen_commands;
 mod command_support;
 mod coverage;
 mod cuda;
+mod gpu_validation;
 #[cfg(feature = "adoption")]
 mod markdown;
 mod metal;
@@ -74,7 +76,7 @@ fn run() -> Result<(), String> {
         "nextest" => nextest(),
         "doc" | "docs" => doc(),
         "typos" => typos(),
-        "bench-build" => bench_build(),
+        "bench-build" => bench_build(env::args().skip(2)),
         "bench-report" => bench_report(env::args().skip(2)),
         "j2k-ml-bench-metal" => j2k_ml_batch_bench_metal(),
         "j2k-ml-bench-cuda" => j2k_ml_batch_bench_cuda(),
@@ -122,9 +124,9 @@ fn run() -> Result<(), String> {
         "release-integrity" => release_integrity(env::args().skip(2)),
         "release-status" => release_status::release_status(env::args().skip(2)),
         "release-cpu" => release_cpu(),
-        "release-cuda" => cuda::release_cuda(),
+        "release-cuda" => cuda::release_cuda(env::args().skip(2)),
         "metal-compile" => metal::metal_compile(),
-        "release-metal" => metal::release_metal(),
+        "release-metal" => metal::release_metal(env::args().skip(2)),
         "coverage" => coverage::coverage(env::args().skip(2)),
         "package" => package(),
         "ci" => ci(),
@@ -148,7 +150,7 @@ fn print_help() {
            nextest       run workspace tests with cargo-nextest\n\
            doc           build workspace docs with warnings denied\n\
            typos         run typos\n\
-           bench-build   compile benchmark targets\n\
+           bench-build   compile benchmark targets [--lane host|cuda|metal|all]\n\
            bench-report  print or write a benchmark publication report\n\
            j2k-ml-bench-metal benchmark Metal codec-resident and Burn-direct batch decode\n\
            j2k-ml-bench-cuda benchmark CUDA codec-resident and Burn-direct batch decode\n\
@@ -159,7 +161,7 @@ fn print_help() {
            adoption-report render a marketing-safe report from an adoption benchmark bundle [--features adoption]\n\
           public-support verify the public J2K/HTJ2K support matrix and publication gates [--final]\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
-          j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
+          j2k-perf-guard compare one strict host/CUDA/Metal Criterion lane against a baseline git ref\n\
           codec-math-codegen check generated codec-math Rust and Metal fragments\n\
            fuzz-build    compile fuzz harnesses\n\
            fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
@@ -177,9 +179,9 @@ fn print_help() {
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
            release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
            release-cpu   run release-mode CPU codec tests\n\
-           release-cuda  run fail-closed release-mode CUDA validation on Linux x86_64\n\
+           release-cuda  run fail-closed CUDA validation on Linux x86_64 [--mode quick|full]\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
-           release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
+           release-metal run fail-closed Metal hardware validation on macOS [--mode quick|full]\n\
            coverage      enforce >=80% host-wide or accelerator critical-path coverage [host|metal|cuda] [--base REV]\n\
            package       construct all staged packages from a clean worktree and publish-dry-run registry-independent crates"
     );
@@ -358,56 +360,34 @@ some other output: 12 passed
         let root = temp_dir("j2k-perf-guard-sync-test");
         let source = root.join("source");
         let target = root.join("target");
-        let jpeg_manifest = "crates/j2k-jpeg/Cargo.toml";
-        let cuda_manifest = "crates/j2k-cuda/Cargo.toml";
         let public_bench = "crates/j2k/benches/public_api.rs";
         let jpeg_encode_bench = "crates/j2k-jpeg/benches/encode_cpu.rs";
         let cuda_decode_bench = "crates/j2k-cuda/benches/htj2k_decode.rs";
         let cuda_encode_bench = "crates/j2k-cuda/benches/htj2k_encode.rs";
+        let metal_bench = "crates/j2k-jpeg-metal/benches/compare.rs";
         let native_bench = "crates/j2k-native/benches/tier1_bitplane.rs";
         let native_sigprop_bench = "crates/j2k-native/benches/htj2k_sigprop_phase.rs";
         let native_fixture = "crates/j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k";
-        fs::create_dir_all(source.join("crates/j2k/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/j2k-jpeg/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/j2k-native/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/j2k-native/fixtures/htj2k")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-jpeg")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-cuda")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-jpeg/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-native/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/j2k-native/fixtures/htj2k")).unwrap();
-        fs::write(
-            source.join(jpeg_manifest),
-            "[package]\nname = \"j2k-jpeg\"\n\n[[bench]]\nname = \"encode_cpu\"\nharness = false\n",
-        )
-        .unwrap();
-        fs::write(
-            target.join(jpeg_manifest),
-            "[package]\nname = \"j2k-jpeg\"\n",
-        )
-        .unwrap();
-        fs::write(
-            target.join(cuda_manifest),
-            "[package]\nname = \"j2k-cuda\"\n",
-        )
-        .unwrap();
-        fs::write(source.join(public_bench), "current public bench").unwrap();
-        fs::write(source.join(jpeg_encode_bench), "current jpeg encode bench").unwrap();
-        fs::write(source.join(cuda_decode_bench), "current cuda decode bench").unwrap();
-        fs::write(source.join(cuda_encode_bench), "current cuda encode bench").unwrap();
-        fs::write(source.join(native_bench), "current native bench").unwrap();
-        fs::write(source.join(native_sigprop_bench), "current sigprop bench").unwrap();
-        fs::write(source.join(native_fixture), "current fixture").unwrap();
-        fs::write(target.join(public_bench), "old public bench").unwrap();
-        fs::write(target.join(jpeg_encode_bench), "old jpeg encode bench").unwrap();
-        fs::write(target.join(cuda_decode_bench), "old cuda decode bench").unwrap();
-        fs::write(target.join(cuda_encode_bench), "old cuda encode bench").unwrap();
-        fs::write(target.join(native_bench), "old native bench").unwrap();
-        fs::write(target.join(native_sigprop_bench), "old sigprop bench").unwrap();
-        fs::write(target.join(native_fixture), "old fixture").unwrap();
+        for (path, current) in [
+            (public_bench, "current public bench"),
+            (jpeg_encode_bench, "current jpeg encode bench"),
+            (cuda_decode_bench, "current cuda decode bench"),
+            (cuda_encode_bench, "current cuda encode bench"),
+            (metal_bench, "current metal bench"),
+            (native_bench, "current native bench"),
+            (native_sigprop_bench, "current sigprop bench"),
+            (native_fixture, "current fixture"),
+        ] {
+            write_fixture(&source, path, current);
+            write_fixture(&target, path, "old fixture content");
+        }
+        for (path, package) in [
+            ("crates/j2k-jpeg/Cargo.toml", "j2k-jpeg"),
+            ("crates/j2k-cuda/Cargo.toml", "j2k-cuda"),
+            ("crates/j2k-jpeg-metal/Cargo.toml", "j2k-jpeg-metal"),
+        ] {
+            write_fixture(&target, path, &format!("[package]\nname = \"{package}\"\n"));
+        }
 
         sync_benchmark_sources(&source, &target).unwrap();
 
@@ -419,7 +399,8 @@ some other output: 12 passed
             fs::read_to_string(target.join(jpeg_encode_bench)).unwrap(),
             "current jpeg encode bench"
         );
-        let target_jpeg_manifest = fs::read_to_string(target.join(jpeg_manifest)).unwrap();
+        let target_jpeg_manifest =
+            fs::read_to_string(target.join("crates/j2k-jpeg/Cargo.toml")).unwrap();
         assert!(
             target_jpeg_manifest.contains("name = \"encode_cpu\"")
                 && target_jpeg_manifest.contains("harness = false"),
@@ -433,12 +414,23 @@ some other output: 12 passed
             fs::read_to_string(target.join(cuda_encode_bench)).unwrap(),
             "current cuda encode bench"
         );
-        let target_cuda_manifest = fs::read_to_string(target.join(cuda_manifest)).unwrap();
+        let target_cuda_manifest =
+            fs::read_to_string(target.join("crates/j2k-cuda/Cargo.toml")).unwrap();
         assert!(
             target_cuda_manifest.contains("name = \"htj2k_decode\"")
                 && target_cuda_manifest.contains("name = \"htj2k_encode\"")
                 && target_cuda_manifest.contains("required-features = [\"cuda-runtime\"]"),
             "baseline overlay must register CUDA HTJ2K Criterion benches"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(metal_bench)).unwrap(),
+            "current metal bench"
+        );
+        assert!(
+            fs::read_to_string(target.join("crates/j2k-jpeg-metal/Cargo.toml"))
+                .unwrap()
+                .contains("name = \"compare\""),
+            "baseline overlay must register the Metal Criterion bench"
         );
         assert_eq!(
             fs::read_to_string(target.join(native_bench)).unwrap(),
@@ -453,6 +445,12 @@ some other output: 12 passed
             "current fixture"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_fixture(root: &std::path::Path, relative: &str, contents: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {

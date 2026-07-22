@@ -39,13 +39,18 @@ SHARED_GPU_EXACT_PATHS = frozenset(
     {
         ".github/CODEOWNERS",
         ".github/workflows/ci.yml",
+        ".github/workflows/full-validation.yml",
+        ".github/workflows/gpu-benchmarks.yml",
         ".github/workflows/gpu-validation.yml",
         ".github/workflows/publish.yml",
+        "scripts/ci_plan.py",
         "scripts/github_actions_verify.py",
     }
 )
-CUDA_JOB = "CUDA API compatibility on x86_64"
-METAL_JOB = "Metal validation on Apple Silicon"
+CUDA_QUICK_JOB = "CUDA quick validation"
+METAL_QUICK_JOB = "Metal quick validation"
+CUDA_JOB = "CUDA full release validation"
+METAL_JOB = "Metal full release validation"
 RELEASE_CANDIDATE_JOB = "Release candidate aggregate"
 
 
@@ -234,9 +239,9 @@ def classify_gpu_paths(paths: Iterable[str]) -> GpuPolicyDecision:
 
     required: list[str] = []
     if cuda_paths or shared_paths:
-        required.append(CUDA_JOB)
+        required.append(CUDA_QUICK_JOB)
     if metal_paths or shared_paths:
-        required.append(METAL_JOB)
+        required.append(METAL_QUICK_JOB)
     return GpuPolicyDecision(
         tuple(sorted(cuda_paths | metal_paths | shared_paths)), tuple(required)
     )
@@ -657,7 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--server-url", required=True)
     release_parser.add_argument("--tag", required=True)
     release_parser.add_argument("--candidate-sha", required=True)
-    release_parser.add_argument("--ci-workflow", default="ci.yml")
+    release_parser.add_argument("--ci-workflow", default="full-validation.yml")
     release_parser.add_argument("--aggregate-job", default=RELEASE_CANDIDATE_JOB)
     release_parser.add_argument("--gpu-workflow", default="gpu-validation.yml")
     release_parser.add_argument("--cuda-job", default=CUDA_JOB)
@@ -670,7 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_api_arguments(candidate_parser)
     candidate_parser.add_argument("--candidate-sha", required=True)
-    candidate_parser.add_argument("--ci-workflow", default="ci.yml")
+    candidate_parser.add_argument("--ci-workflow", default="full-validation.yml")
     candidate_parser.add_argument("--aggregate-job", default=RELEASE_CANDIDATE_JOB)
     candidate_parser.add_argument("--gpu-workflow", default="gpu-validation.yml")
     candidate_parser.add_argument("--cuda-job", default=CUDA_JOB)

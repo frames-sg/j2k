@@ -1,17 +1,13 @@
-name: CI
+name: PR checks
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 8 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: pr-checks-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -20,31 +16,30 @@ env:
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
-  gpu-path-policy:
+  planner:
+    name: Change planner
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: read
+    outputs:
+      rust: ${{ steps.plan.outputs.rust }}
+      docs: ${{ steps.plan.outputs.docs }}
+      cuda: ${{ steps.plan.outputs.cuda }}
+      metal: ${{ steps.plan.outputs.metal }}
+      metal_compile: ${{ steps.plan.outputs.metal_compile }}
+      expectations: ${{ steps.plan.outputs.expectations }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - name: Non-PR events do not require GPU path policy
-        if: ${{ github.event_name != 'pull_request' }}
-        run: echo "GPU path policy only applies to pull requests."
-      - name: Require GPU validation for GPU path changes
-        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+      - id: plan
+        name: Classify changed paths and dependency impact
         env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_API_URL: ${{ github.api_url }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          python3 scripts/github_actions_verify.py pr-gpu-policy \
-            --repository "${REPOSITORY}" \
-            --pr-number "${PR_NUMBER}" \
-            --head-sha "${HEAD_SHA}" \
-            --workflow gpu-validation.yml
+        run: python3 scripts/ci_plan.py plan --base "${BASE_SHA}" --head "${HEAD_SHA}"
 
   github-actions-verifier:
     name: GitHub Actions verifier tests
@@ -53,448 +48,148 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: "1.96"
-          components: rustfmt
-      - run: cargo xtask fmt
-
   diff-check:
+    name: Diff check
     runs-on: ubuntu-latest
-    env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Reject whitespace errors in the submitted delta
-        run: |
-          if [ -n "${BASE_SHA}" ] \
-            && [ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ] \
-            && git cat-file -e "${BASE_SHA}^{commit}"; then
-            git diff --check "${BASE_SHA}...${GITHUB_SHA}"
-          else
-            git show --check --format=fuller "${GITHUB_SHA}" >/dev/null
-          fi
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "${BASE_SHA}...${HEAD_SHA}"
 
   secret-scan:
     name: Secret scan
     uses: ./.github/workflows/secret-scan.yml
 
-  clippy:
+  rust-quality:
+    name: Rust quality
+    needs: [planner]
+    if: ${{ needs.planner.outputs.rust == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-          components: clippy
-      - run: cargo xtask clippy
-
-  clippy-strict:
-    name: Strict Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-          components: clippy
-      - run: cargo xtask clippy-strict
-
-  panic-surface:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-          components: clippy
-      - run: cargo xtask panic-surface
-
-  clone-audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask clone-audit
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: j2k-clone-audits
-          path: |
-            target/clone-audit/report/jscpd-report.json
-            target/clone-audit/test-report/jscpd-report.json
-          if-no-files-found: error
-
-  comparator-parity:
-    runs-on: ubuntu-latest
-    env:
-      J2K_OPENJPEG_BIN: /usr/bin/opj_decompress
-      J2K_OPENJPEG_DECOMPRESS_BIN: /usr/bin/opj_decompress
-      J2K_OPENJPEG_COMPRESS_BIN: /usr/bin/opj_compress
-      J2K_GROK_BIN: /usr/bin/grk_decompress
-      J2K_GROK_COMPRESS_BIN: /usr/bin/grk_compress
-      J2K_REQUIRE_OPENJPEG: "1"
-      J2K_REQUIRE_GROK: "1"
-      J2K_REQUIRE_LIBJPEG_TURBO: "1"
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Install comparator tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            grokj2k-tools \
-            libgrokj2k1-dev \
-            libopenjp2-tools \
-            libturbojpeg0-dev \
-            pkg-config
-      - name: Verify comparator tools
-        run: |
-          command -v opj_compress
-          command -v opj_decompress
-          command -v grk_compress
-          command -v grk_decompress
-          pkg-config --modversion libgrokj2k
-          pkg-config --modversion libturbojpeg
-      - run: cargo xtask j2k-bench-signoff
-
-  semver:
-    # Published Metal baselines include macOS-gated public API and must be
-    # rustdoc-built on macOS for cargo-semver-checks.
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: "1.96"
-      - run: cargo install cargo-semver-checks --version 0.48.0 --locked
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          toolchain: nightly-2026-06-28
-          targets: aarch64-apple-darwin
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-public-api@0.52.0
-      - run: cargo xtask semver
+          shared-key: pr-host-${{ runner.os }}-${{ runner.arch }}-1.96
+          cache-bin: false
+          save-if: false
+      - name: Run fast hosted Rust gates
+        run: |
+          cargo xtask fmt
+          cargo xtask clippy
+          cargo xtask clippy-strict
+          cargo xtask test
+          cargo xtask release-integrity
+          cargo xtask repo-lint
 
   docs:
+    name: Documentation
+    needs: [planner]
+    if: ${{ needs.planner.outputs.docs == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: pr-docs-${{ runner.os }}-${{ runner.arch }}-1.96
+          cache-bin: false
+          save-if: false
       - run: cargo xtask doc
-
-  stable-api:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: nightly-2026-06-28
-          targets: aarch64-apple-darwin
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-public-api@0.52.0
-      - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
-      - run: cargo xtask stable-api
-
-  codec-math-codegen:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask codec-math-codegen
-
-  public-support-final:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask public-support --final
-
-  machete:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-machete@0.9.2
-      - run: cargo xtask machete
-
-  repo-lint:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: nightly-2026-06-28
-          targets: aarch64-apple-darwin
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-public-api@0.52.0
-      - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
-      - name: Run normal and strict repository policy
-        run: cargo xtask repo-lint --strict
-
-  release-integrity:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask release-integrity
-
-  unsafe-audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask unsafe-audit
-
-  typos:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: crate-ci/typos@d80b8e26878e372a041833cd67163dbdb6a4336e
-
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest,      rust: stable, arch: x86_64 }
-          - { os: ubuntu-latest,      rust: beta,   arch: x86_64 }
-          - { os: ubuntu-latest,      rust: "1.96", arch: x86_64 }
-          - { os: ubuntu-24.04-arm,   rust: stable, arch: aarch64 }
-          - { os: ubuntu-24.04-arm,   rust: "1.96", arch: aarch64 }
-          - { os: macos-latest,       rust: stable, arch: aarch64 }
-          - { os: macos-latest,       rust: "1.96", arch: aarch64 }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: ${{ matrix.rust }}
-      - run: cargo xtask test
-
-  release-cpu:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask release-cpu
 
   metal-compile:
     name: Metal compile and pure tests
+    needs: [planner]
+    if: ${{ needs.planner.outputs.metal_compile == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: "1.96"
           components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: pr-metal-compile-${{ runner.os }}-${{ runner.arch }}-1.96
+          cache-bin: false
+          save-if: false
       - run: cargo xtask metal-compile
 
-  no-std:
+  gpu-evidence:
+    name: GPU evidence policy
+    needs: [planner]
+    if: ${{ always() && needs.planner.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask no-std
-
-  miri:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: nightly
-          components: miri
-      - run: cargo xtask miri
-
-  bench-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask bench-build
-
-  fuzz-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask fuzz-build
-
-  fuzz-run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: nightly
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-fuzz
-      - run: cargo xtask fuzz-run
+      - name: Require exact-SHA quick GPU validation for affected lanes
         env:
-          J2K_FUZZ_RUNS: "512"
-          J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "60"
+          CUDA_REQUIRED: ${{ needs.planner.outputs.cuda }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          METAL_REQUIRED: ${{ needs.planner.outputs.metal }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "${CUDA_REQUIRED}" = true ] && [ "${METAL_REQUIRED}" = true ]; then
+            python3 scripts/github_actions_verify.py verify-workflow \
+              --repository "${REPOSITORY}" --workflow gpu-validation.yml \
+              --sha "${HEAD_SHA}" --event workflow_dispatch \
+              --required-job "CUDA quick validation" \
+              --required-job "Metal quick validation"
+          elif [ "${CUDA_REQUIRED}" = true ]; then
+            python3 scripts/github_actions_verify.py verify-workflow \
+              --repository "${REPOSITORY}" --workflow gpu-validation.yml \
+              --sha "${HEAD_SHA}" --event workflow_dispatch \
+              --required-job "CUDA quick validation"
+          elif [ "${METAL_REQUIRED}" = true ]; then
+            python3 scripts/github_actions_verify.py verify-workflow \
+              --repository "${REPOSITORY}" --workflow gpu-validation.yml \
+              --sha "${HEAD_SHA}" --event workflow_dispatch \
+              --required-job "Metal quick validation"
+          else
+            echo "No GPU evidence is required for this pull request."
+          fi
 
-  fuzz-run-long:
-    if: ${{ github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: nightly
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
-        with:
-          tool: cargo-fuzz
-      - run: cargo xtask fuzz-run
-        env:
-          J2K_FUZZ_RUNS: "20000"
-          J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "900"
-
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - run: cargo xtask package
-
-  coverage:
-    runs-on: ubuntu-latest
-    env:
-      J2K_COVERAGE_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || 'HEAD^' }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
-        with:
-          tool: cargo-llvm-cov@0.8.7
-      - run: cargo xtask coverage host
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: j2k-host-coverage
-          path: |
-            lcov-host.info
-            coverage-host-summary.json
-            coverage-host-regions.json
-          if-no-files-found: error
-
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
-        with: { command: check licenses advisories bans sources }
-
-  release-candidate:
-    name: Release candidate aggregate
+  pr-required-checks:
+    name: PR required checks
     if: ${{ always() }}
     needs:
-      - gpu-path-policy
+      - planner
       - github-actions-verifier
-      - fmt
       - diff-check
       - secret-scan
-      - clippy
-      - clippy-strict
-      - panic-surface
-      - clone-audit
-      - comparator-parity
-      - semver
+      - rust-quality
       - docs
-      - stable-api
-      - codec-math-codegen
-      - public-support-final
-      - machete
-      - repo-lint
-      - release-integrity
-      - unsafe-audit
-      - typos
-      - test
-      - release-cpu
       - metal-compile
-      - no-std
-      - miri
-      - bench-build
-      - fuzz-build
-      - fuzz-run
-      - package
-      - coverage
-      - deny
+      - gpu-evidence
     runs-on: ubuntu-latest
     env:
+      EXPECTATIONS: ${{ needs.planner.outputs.expectations }}
       REQUIRED_RESULTS: ${{ toJSON(needs) }}
     steps:
-      - name: Require every core and API gate
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Require planned gates and reject unexpected skips
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-
-          needs = json.loads(os.environ["REQUIRED_RESULTS"])
-          failed = {}
-          for name, details in needs.items():
-              result = details.get("result", "missing") if isinstance(details, dict) else "malformed"
-              if result != "success":
-                  failed[name] = result
-          if failed:
-              for name, result in sorted(failed.items()):
-                  print(f"required gate {name}: {result}", file=sys.stderr)
-              raise SystemExit(1)
-          print(f"all {len(needs)} required release-candidate gates succeeded")
-          PY
+          python3 scripts/ci_plan.py aggregate \
+            --expectations-json "${EXPECTATIONS}" \
+            --needs-json "${REQUIRED_RESULTS}" \
+            --always-required planner \
+            --always-required github-actions-verifier \
+            --always-required diff-check \
+            --always-required secret-scan \
+            --always-required gpu-evidence

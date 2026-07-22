@@ -3,146 +3,40 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::benchmark_registry::{BenchmarkLane, CompileBenchmark, COMPILE_BENCHMARKS};
 use crate::command_support::{
     command_output, command_output_allow_failure, command_output_os, run_cargo,
     run_cargo_test_with_pass_floor, workspace_version,
 };
 use crate::process::cargo;
 
-pub(super) fn bench_build() -> Result<(), String> {
-    run_cargo(&["bench", "-p", "j2k", "--bench", "public_api", "--no-run"])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-native",
-        "--bench",
-        "tier1_bitplane",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-native",
-        "--bench",
-        "htj2k_sigprop_phase",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-native",
-        "--bench",
-        "direct_cpu",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-jpeg",
-        "--bench",
-        "encode_cpu",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-jpeg",
-        "--features",
-        "bench-libjpeg-turbo",
-        "--no-run",
-    ])?;
-    bench_build_accelerators()?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-tilecodec",
-        "--bench",
-        "compare",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-transcode",
-        "--bench",
-        "dct53",
-        "--no-run",
-    ])?;
-    run_cargo(transcode_metal_bench_args())
+pub(super) fn bench_build(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let lane = parse_bench_lane(args)?;
+    for benchmark in COMPILE_BENCHMARKS
+        .iter()
+        .filter(|benchmark| lane.selects(benchmark.lane))
+    {
+        run_cargo(&compile_benchmark_args(*benchmark))?;
+    }
+    Ok(())
 }
 
-fn bench_build_accelerators() -> Result<(), String> {
-    run_cargo(&["bench", "-p", "j2k-jpeg-metal", "--no-run"])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-jpeg-cuda",
-        "--bench",
-        "device_decode",
-        "--features",
-        "cuda-runtime",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-cuda",
-        "--bench",
-        "encode_stages",
-        "--features",
-        "cuda-runtime",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-cuda",
-        "--bench",
-        "htj2k_decode",
-        "--features",
-        "cuda-runtime",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-cuda",
-        "--bench",
-        "htj2k_encode",
-        "--features",
-        "cuda-runtime",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-ml",
-        "--bench",
-        "batch_decode",
-        "--features",
-        "cpu",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-ml",
-        "--bench",
-        "batch_decode_metal",
-        "--features",
-        "cpu,metal",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-ml",
-        "--bench",
-        "batch_decode_cuda",
-        "--features",
-        "cpu,cuda",
-        "--no-run",
-    ])
+fn parse_bench_lane(mut args: impl Iterator<Item = String>) -> Result<BenchmarkLane, String> {
+    let Some(argument) = args.next() else {
+        return Ok(BenchmarkLane::All);
+    };
+    if argument != "--lane" {
+        return Err(format!(
+            "unknown bench-build argument `{argument}`; expected --lane host|cuda|metal|all"
+        ));
+    }
+    let value = args
+        .next()
+        .ok_or_else(|| "--lane requires host, cuda, metal, or all".to_string())?;
+    if let Some(extra) = args.next() {
+        return Err(format!("unexpected bench-build argument `{extra}`"));
+    }
+    BenchmarkLane::parse(&value)
 }
 
 pub(super) fn j2k_ml_batch_bench_metal() -> Result<(), String> {
@@ -169,17 +63,16 @@ pub(super) fn j2k_ml_batch_bench_cuda() -> Result<(), String> {
     ])
 }
 
-fn transcode_metal_bench_args() -> &'static [&'static str] {
-    &[
-        "bench",
-        "-p",
-        "j2k-transcode-metal",
-        "--bench",
-        "dct97",
-        "--features",
-        "bench-internals",
-        "--no-run",
-    ]
+fn compile_benchmark_args(benchmark: CompileBenchmark) -> Vec<&'static str> {
+    let mut args = vec!["bench", "-p", benchmark.package];
+    if let Some(bench) = benchmark.bench {
+        args.extend_from_slice(&["--bench", bench]);
+    }
+    if let Some(features) = benchmark.features {
+        args.extend_from_slice(&["--features", features]);
+    }
+    args.push("--no-run");
+    args
 }
 
 pub(super) fn j2k_bench_signoff() -> Result<(), String> {

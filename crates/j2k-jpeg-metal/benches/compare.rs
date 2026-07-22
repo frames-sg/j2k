@@ -815,14 +815,20 @@ fn sparse_viewport_workload(workload: &ViewportWorkload) -> Option<ViewportWorkl
 }
 
 fn metal_available() -> bool {
+    let required = std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_some();
     #[cfg(target_os = "macos")]
     {
-        metal::Device::system_default().is_some()
+        let available = metal::Device::system_default().is_some();
+        assert!(
+            !required || available,
+            "J2K_REQUIRE_METAL_BENCH is set but no default Metal device is available"
+        );
+        available
     }
     #[cfg(not(target_os = "macos"))]
     {
         assert!(
-            std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_none(),
+            !required,
             "J2K_REQUIRE_METAL_BENCH is set but this is not a Metal host"
         );
         false

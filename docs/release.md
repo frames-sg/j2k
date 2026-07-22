@@ -65,9 +65,11 @@ date or note change creates a new candidate and requires the exact-SHA gates
 again.
 
 Move the intended protected `origin/main` tip to exactly `RC_SHA` through the
-repository's normal reviewed push/merge workflow, then run hosted CI and both
-self-hosted GPU workflows for that exact commit. Verify the aggregate only
-after those jobs have completed:
+repository's normal reviewed push/merge workflow. Let `full-validation.yml`
+finish for that push, then dispatch one `gpu-validation.yml` run with
+`target=all` and `mode=full` for that exact commit. CUDA and Metal execute in
+parallel within that run. Verify the evidence only after all three release jobs
+have completed:
 
 ```bash
 test "$(git rev-parse origin/main)" = "$RC_SHA"
@@ -255,7 +257,7 @@ Benchmark compilation is a release build-health gate, not a performance
 regression threshold. A release may claim performance only when the relevant
 CPU, Metal, or CUDA benchmark artifacts are recorded in
 [`docs/benchmark-evidence.md`](benchmark-evidence.md) or an attached run
-bundle. `cargo xtask j2k-perf-guard` is available for explicit CPU Criterion
+bundle. `cargo xtask j2k-perf-guard --lane host` is available for explicit CPU Criterion
 median regression signoff, but it is not part of the default release gate until
 the release checklist supplies a baseline ref and artifact retention policy.
 GPU performance signoff remains hardware-runner evidence, not hosted CI.

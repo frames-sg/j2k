@@ -41,8 +41,8 @@ fn github_workflows_parse_as_yaml() {
 
 #[test]
 fn ci_miri_job_is_a_required_gate() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
     let miri_job = workflow_job(&workflow, "miri");
 
     assert_pattern_checks(&[PatternCheck::new("CI miri job", miri_job).required(&[
@@ -56,14 +56,16 @@ fn ci_miri_job_is_a_required_gate() {
 fn ci_fuzz_run_budgets_are_nontrivial() {
     assert_file_pattern_checks(
         repo_root(),
-        &[FilePatternCheck::new(".github/workflows/ci.yml")
-            .named("CI fuzz budgets")
-            .required(&[
-                "J2K_FUZZ_RUNS: \"512\"",
-                "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"60\"",
-                "J2K_FUZZ_RUNS: \"20000\"",
-                "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"900\"",
-            ])],
+        &[
+            FilePatternCheck::new(".github/workflows/full-validation.yml")
+                .named("CI fuzz budgets")
+                .required(&[
+                    "J2K_FUZZ_RUNS: \"512\"",
+                    "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"60\"",
+                    "J2K_FUZZ_RUNS: \"20000\"",
+                    "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"900\"",
+                ]),
+        ],
     );
 }
 
@@ -142,11 +144,15 @@ fn unsafe_audit_rows_include_invariants_and_regression_guards() {
 }
 
 #[test]
-fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
+fn ci_workflow_has_read_only_permissions_and_fail_closed_gpu_planning() {
     let root = repo_root();
     let workflow =
         fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
-    let gpu_policy = workflow_job(&workflow, "gpu-path-policy");
+    let planner = workflow_job(&workflow, "planner");
+    let gpu_policy = workflow_job(&workflow, "gpu-evidence");
+    let aggregate = workflow_job(&workflow, "pr-required-checks");
+    let planner_script =
+        fs::read_to_string(root.join("scripts/ci_plan.py")).expect("read CI planner");
     let verifier = fs::read_to_string(root.join("scripts/github_actions_verify.py"))
         .expect("read GitHub Actions verifier");
     let codeowners = fs::read_to_string(root.join(".github/CODEOWNERS")).expect("read CODEOWNERS");
@@ -154,18 +160,43 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
     assert_pattern_checks(&[
         PatternCheck::new("CI workflow default permissions", &workflow)
             .normalized_required(&["permissions:\n  contents: read"]),
-        PatternCheck::new("CI GPU path policy job", gpu_policy)
+        PatternCheck::new("CI dependency-aware planner", planner).required(&[
+            "fetch-depth: 0",
+            "ref: ${{ github.event.pull_request.head.sha }}",
+            "python3 scripts/ci_plan.py plan",
+            "expectations: ${{ steps.plan.outputs.expectations }}",
+        ]),
+        PatternCheck::new("CI exact-SHA quick GPU evidence job", gpu_policy)
             .required(&[
-                "pull-requests: read",
                 "actions: read",
                 "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
-                "scripts/github_actions_verify.py pr-gpu-policy",
                 "--repository \"${REPOSITORY}\"",
-                "--pr-number \"${PR_NUMBER}\"",
-                "--head-sha \"${HEAD_SHA}\"",
                 "--workflow gpu-validation.yml",
+                "--sha \"${HEAD_SHA}\"",
+                "--event workflow_dispatch",
+                "CUDA quick validation",
+                "Metal quick validation",
             ])
             .forbidden(&["urllib.request", "python3 <<'PY'"]),
+        PatternCheck::new("CI validated required-check aggregate", aggregate).required(&[
+            "if: ${{ always() }}",
+            "python3 scripts/ci_plan.py aggregate",
+            "--expectations-json \"${EXPECTATIONS}\"",
+            "--always-required planner",
+            "--always-required secret-scan",
+            "--always-required gpu-evidence",
+        ]),
+        PatternCheck::new("repository-owned CI planner", &planner_script).required(&[
+            "git",
+            "diff",
+            "--name-status",
+            "-z",
+            "cargo",
+            "metadata",
+            "validate_aggregate",
+            "required job",
+            "optional job",
+        ]),
         PatternCheck::new("repository-owned GitHub Actions verifier", &verifier).required(&[
             "def fetch_pull_request_paths(",
             "def classify_gpu_paths(",
@@ -177,8 +208,10 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
             "def require_github_release_absent(",
             "def verify_candidate_evidence(",
             "def verify_release_evidence(",
-            "CUDA API compatibility on x86_64",
-            "Metal validation on Apple Silicon",
+            "CUDA quick validation",
+            "Metal quick validation",
+            "CUDA full release validation",
+            "Metal full release validation",
             "Release candidate aggregate",
             "workflow run pagination exceeded",
             "workflow job pagination exceeded",
@@ -186,9 +219,13 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
         ]),
         PatternCheck::new("CODEOWNERS GPU path coverage", &codeowners).required(&[
             ".github/workflows/ci.yml",
+            ".github/workflows/full-validation.yml",
+            ".github/workflows/gpu-benchmarks.yml",
             ".github/workflows/gpu-validation.yml",
             ".github/workflows/publish.yml",
             "scripts/github_actions_verify.py",
+            "scripts/ci_plan.py",
+            "scripts/publish_release.py",
             "crates/j2k-cuda-runtime/",
             "crates/j2k-jpeg-cuda/",
             "crates/j2k-cuda/",
@@ -208,7 +245,8 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
 )]
 fn release_candidate_and_publish_evidence_are_fail_closed() {
     let root = repo_root();
-    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let ci = fs::read_to_string(root.join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
     let secret_scan_workflow = fs::read_to_string(root.join(".github/workflows/secret-scan.yml"))
         .expect("read secret scan workflow");
     let publish = fs::read_to_string(root.join(".github/workflows/publish.yml"))
@@ -241,7 +279,6 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "name: Release candidate aggregate",
             "if: ${{ always() }}",
             "github-actions-verifier",
-            "gpu-path-policy",
             "fmt",
             "diff-check",
             "secret-scan",
@@ -331,8 +368,9 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
                 "GH_TOKEN",
                 "GITHUB_TOKEN",
                 "Release candidate aggregate",
-                "CUDA API compatibility on x86_64",
-                "Metal validation on Apple Silicon",
+                "full-validation.yml",
+                "CUDA full release validation",
+                "Metal full release validation",
             ])
             .forbidden(&["verify-release", "--tag"]),
         PatternCheck::new("candidate private-reporting prerequisite", &verifier).required(&[
@@ -349,11 +387,11 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
                 "scripts/github_actions_verify.py verify-release",
                 "--origin-url \"${origin_url}\"",
                 "--server-url \"${GITHUB_SERVER_URL}\"",
-                "--ci-workflow ci.yml",
                 "--ci-branch main",
                 "--aggregate-job \"Release candidate aggregate\"",
-                "--cuda-job \"CUDA API compatibility on x86_64\"",
-                "--metal-job \"Metal validation on Apple Silicon\"",
+                "--ci-workflow full-validation.yml",
+                "--cuda-job \"CUDA full release validation\"",
+                "--metal-job \"Metal full release validation\"",
             ])
             .forbidden(&["inputs.dry-run-only"]),
         PatternCheck::new("publish preflight exact-SHA policy", preflight).required(&[
@@ -417,8 +455,14 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                 .named("GPU validation workflow")
                 .required(&[
                     "workflow_dispatch",
-                    "run-timed-benchmarks",
-                    "run-metal-validation",
+                    "target:",
+                    "mode:",
+                    "Validate GPU request",
+                    "full GPU validation requires target=all",
+                    "CUDA quick validation",
+                    "Metal quick validation",
+                    "CUDA full release validation",
+                    "Metal full release validation",
                     "self-hosted",
                     "metal",
                     "cuda",
@@ -426,28 +470,78 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                     "J2K_REQUIRE_METAL_RUNTIME",
                     "cargo xtask release-cuda",
                     "cargo xtask release-metal",
-                    "cargo run -p xtask --features adoption -- adoption-materialize",
-                    "cargo run -p xtask --features adoption -- adoption-curate",
-                    "cargo run -p xtask --features adoption -- adoption-benchmark",
-                    "cargo run -p xtask --features adoption -- adoption-report",
+                    "cargo xtask bench-build --lane cuda",
+                    "cargo xtask bench-build --lane metal",
                 ])
-                .forbidden(&["cargo xtask adoption-"]),
+                .forbidden(&["pull_request:", "push:", "schedule:"]),
+            FilePatternCheck::new(".github/workflows/gpu-benchmarks.yml")
+                .named("isolated GPU benchmark workflow")
+                .required(&[
+                    "workflow_dispatch",
+                    "Validate benchmark request",
+                    "baseline must be a full 40-character commit SHA",
+                    "group: gpu-benchmark-${{ inputs.lane }}",
+                    "cancel-in-progress: false",
+                    "baseline-ref:",
+                    "profile-mode:",
+                    "cargo xtask j2k-perf-guard",
+                    "J2K_REQUIRE_CUDA_BENCH",
+                    "J2K_REQUIRE_METAL_BENCH",
+                    "adoption-benchmark",
+                ])
+                .forbidden(&[
+                    "Prebuild selected CUDA lane",
+                    "Prebuild selected Metal lane",
+                ]),
             FilePatternCheck::new("CONTRIBUTING.md")
                 .named("contributor GPU validation policy")
                 .required(&[
                     "The GPU validation workflow is intentionally `workflow_dispatch` only.",
-                    "`CUDA API compatibility on x86_64`",
-                    "`Metal validation on Apple Silicon`",
+                    "`CUDA quick validation`",
+                    "`Metal quick validation`",
+                    "`CUDA full release validation`",
+                    "`Metal full release validation`",
                 ])
                 .normalized_required(&[
                     "It does not run automatically on `pull_request` or `push`",
                     "successful manual `gpu-validation.yml` dispatch for the PR head SHA before merge",
-                    "The normal CI `gpu-path-policy` job checks the PR diff",
+                    "The normal CI planner checks the PR diff",
                     "queries `gpu-validation.yml` runs by head SHA",
                     "Hosted macOS CI runs `cargo xtask metal-compile`",
                     "The self-hosted Metal job runs `cargo xtask release-metal`",
                     "fails on skipped runtime tests or a missing Metal device",
                     "Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without an explicit policy decision.",
+                ]),
+        ],
+    );
+
+    let validation = fs::read_to_string(repo_root().join(".github/workflows/gpu-validation.yml"))
+        .expect("read GPU validation workflow");
+    for lane in ["cuda", "metal"] {
+        let shared_key =
+            format!("shared-key: gpu-{lane}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-1.96");
+        assert_eq!(
+            validation.matches(&shared_key).count(),
+            2,
+            "quick restore-only and trusted full {lane} writers must share one cache namespace"
+        );
+    }
+    assert!(!validation.contains("-1.96-quick"));
+    assert!(!validation.contains("-1.96-full"));
+}
+
+#[test]
+fn strict_metal_benchmarks_require_a_real_default_device() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[
+            FilePatternCheck::new("crates/j2k-jpeg-metal/benches/compare.rs")
+                .named("strict Metal benchmark availability")
+                .normalized_required(&[
+                    "let required = std::env::var_os(\"J2K_REQUIRE_METAL_BENCH\").is_some();",
+                    "let available = metal::Device::system_default().is_some();",
+                    "!required || available,",
+                    "J2K_REQUIRE_METAL_BENCH is set but no default Metal device is available",
                 ]),
         ],
     );
@@ -458,7 +552,11 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
     let root = repo_root();
     let workflow_path = root.join(".github/workflows/gpu-validation.yml");
     let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
-    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+    let cuda_job = format!(
+        "{}\n{}",
+        workflow_job(&workflow, "cuda-quick"),
+        workflow_job(&workflow, "cuda-full")
+    );
 
     let forbidden_j2k_metal_compare_bench =
         ["cargo bench -p ", "j2k-metal", " --bench compare --no-run"].concat();
@@ -478,30 +576,28 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
         "executed-count floor",
         "passed=$(echo",
     ];
-    assert_pattern_checks(&[PatternCheck::new("CUDA GPU validation job", cuda_job)
+    assert_pattern_checks(&[PatternCheck::new("CUDA GPU validation jobs", &cuda_job)
         .required(&[
             "runs-on: [self-hosted, Linux, X64, cuda]",
             "J2K_REQUIRE_CUDA_RUNTIME",
             "J2K_REQUIRE_CUDA_OXIDE_BUILD",
             "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
-            "J2K_GPU_BENCH_DIM",
-            "J2K_GPU_BENCH_BATCH",
-            "J2K_GPU_BENCH_BATCH_DIM",
             "uname -a",
             "rustc -Vv",
             "cargo -V",
             "nvidia-smi",
-            "CUDA runtime validation requires a working CUDA driver",
-            "Run fail-closed CUDA release validation",
-            "cargo xtask release-cuda",
-            "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run",
-            "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot",
+            "Run fail-closed quick CUDA validation",
+            "Run fail-closed full CUDA validation",
+            "cargo xtask release-cuda --mode quick",
+            "cargo xtask release-cuda --mode full",
+            "cargo xtask bench-build --lane cuda",
+            "cargo xtask coverage cuda",
         ])
         .forbidden(&forbidden)]);
     assert_eq!(
         cuda_job.matches("cargo xtask release-cuda").count(),
-        1,
-        "CUDA GPU validation must delegate exactly once to the repository-owned release gate"
+        2,
+        "quick and full CUDA jobs must each delegate once to the repository-owned release gate"
     );
 }
 
@@ -531,16 +627,23 @@ fn metal_gpu_validation_job_fails_closed_and_stays_metal_focused() {
     let root = repo_root();
     let workflow_path = root.join(".github/workflows/gpu-validation.yml");
     let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
-    let metal_job = workflow_job(&workflow, "metal-apple-silicon");
+    let metal_job = format!(
+        "{}\n{}",
+        workflow_job(&workflow, "metal-quick"),
+        workflow_job(&workflow, "metal-full")
+    );
 
-    assert_pattern_checks(&[PatternCheck::new("Metal GPU validation job", metal_job)
+    assert_pattern_checks(&[PatternCheck::new("Metal GPU validation jobs", &metal_job)
         .required(&[
             "runs-on: [self-hosted, macOS, ARM64, metal]",
             "J2K_REQUIRE_METAL_RUNTIME: \"1\"",
             "RUST_TEST_THREADS: \"1\"",
-            "Run fail-closed Metal release validation",
-            "cargo xtask release-metal",
-            "cargo bench -p j2k-jpeg-metal --no-run",
+            "Run fail-closed quick Metal validation",
+            "Run fail-closed full Metal validation",
+            "cargo xtask release-metal --mode quick",
+            "cargo xtask release-metal --mode full",
+            "cargo xtask bench-build --lane metal",
+            "cargo xtask coverage metal",
         ])
         .forbidden(&[
             "nvidia-smi",
@@ -577,7 +680,7 @@ fn metal_xtask_owns_complete_compile_and_runtime_policy() {
                     "J2K_METAL_REQUIRED_IGNORED_TESTS",
                     "METAL_OPTIONAL_IGNORED_TESTS",
                     "fn run_metal_compile()",
-                    "fn run_release_metal()",
+                    "fn run_release_metal(mode: ValidationMode)",
                     "validate_required_ignored_inventory",
                     "validate_exact_ignored_run",
                     "passed != J2K_METAL_REQUIRED_IGNORED_TESTS.len()",
@@ -762,32 +865,28 @@ fn cuda_oxide_shared_strict_build_gate_is_wired_and_documented() {
 #[test]
 fn cuda_decode_profile_workflow_exports_rca_artifacts() {
     let root = repo_root();
-    let workflow_path = root.join(".github/workflows/gpu-validation.yml");
-    let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
-    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+    let workflow_path = root.join(".github/workflows/gpu-benchmarks.yml");
+    let workflow = fs::read_to_string(&workflow_path).expect("read GPU benchmark workflow");
+    let cuda_job = workflow_job(&workflow, "cuda");
 
     assert_pattern_checks(&[PatternCheck::new(
         "CUDA decode profile workflow/job",
         &format!("{workflow}\n{cuda_job}"),
     )
     .required(&[
-        "run-cuda-htj2k-decode-profile",
-        "CUDA HTJ2K decode RCA profile",
+        "Profile CUDA HTJ2K decode",
         "J2K_REQUIRE_CUDA_BENCH: \"1\"",
         "J2K_PROFILE_STAGES: summary",
-        "J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json",
-        "/proc/sys/kernel/perf_event_paranoid",
-        "cargo install samply --version 0.13.1 --locked",
-        "samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz",
-        "target/cuda_htj2k_decode_samply_status.txt",
-        "samply_status=blocked",
-        "passwordless sudo",
+        "J2K_CUDA_TRACE: ${{ github.workspace }}/target/gpu-benchmark/cuda-trace.json",
+        "group: gpu-benchmark-${{ inputs.lane }}",
+        "cancel-in-progress: false",
+        "device-before.txt",
+        "performance-state-before.txt",
+        "suite-parameters.txt",
         "--features cuda-runtime,cuda-profiling",
-        "2>&1 | tee target/cuda_htj2k_decode_profile.log",
-        "cuda-htj2k-decode-rca-profile",
-        "target/cuda_htj2k_decode_profile.log",
-        "target/cuda_htj2k_decode_trace.json",
-        "target/cuda_htj2k_decode_samply.json.gz",
+        "2>&1 | tee target/gpu-benchmark/profile.log",
+        "cuda-${{ inputs.suite }}-${{ github.sha }}",
+        "target/gpu-benchmark",
         "target/criterion",
     ])]);
 }
