@@ -16,6 +16,9 @@ pub(super) fn assert_regressions_stay_focused() {
     let orchestration =
         fs::read_to_string(root.join("xtask/src/release_commands/tests/orchestration.rs"))
             .expect("read release orchestration command tests");
+    let path_patches =
+        fs::read_to_string(root.join("xtask/src/release_commands/tests/path_patches.rs"))
+            .expect("read release path-patch command tests");
     let validation =
         fs::read_to_string(root.join("xtask/src/release_commands/tests/validation.rs"))
             .expect("read release validation command tests");
@@ -38,6 +41,11 @@ pub(super) fn assert_regressions_stay_focused() {
             175,
         ),
         (
+            "xtask/src/release_commands/tests/path_patches.rs",
+            &path_patches,
+            125,
+        ),
+        (
             "xtask/src/release_commands/tests/validation.rs",
             &validation,
             180,
@@ -55,6 +63,7 @@ pub(super) fn assert_regressions_stay_focused() {
                 "mod file_boundaries;",
                 "mod integrity;",
                 "mod orchestration;",
+                "mod path_patches;",
                 "mod validation;",
             ]),
         PatternCheck::new("release file-boundary regressions", &file_boundaries)
@@ -71,6 +80,10 @@ pub(super) fn assert_regressions_stay_focused() {
                 "release_integrity_publish_mode_accepts_hermetic_final_metadata",
                 "package_command_executes_list_and_dependency_aware_gates_hermetically",
             ]),
+        PatternCheck::new("release path-patch regressions", &path_patches).required(&[
+            "path_patch_provenance_discovery_rejects_repository_escape",
+            "release_integrity_publish_mode_requires_approval_for_every_workspace_path_patch",
+        ]),
         PatternCheck::new("release validation command regressions", &validation).required(&[
             "fn publish_workflow_validation_reports_parse_and_release_contract_failures()",
             "fn publish_script_validation_fails_closed_for_missing_and_drifted_contracts()",

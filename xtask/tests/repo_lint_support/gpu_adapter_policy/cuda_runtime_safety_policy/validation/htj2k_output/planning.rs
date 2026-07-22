@@ -39,13 +39,17 @@ fn htj2k_output_planning_precedes_allocation_and_initializes_gaps() {
         "pooled HTJ2K output validation must precede context binding and allocation"
     );
     let zero_fill = allocation
-        .find("self.memset_d32(coefficient_buffer, 0, output_words)?")
+        .find("self.memset_d32_async(coefficient_buffer, 0, output_words)?")
         .expect("pooled HTJ2K partial output must be initialized");
-    let completion = allocation
-        .find("self.synchronize()?")
-        .expect("pooled HTJ2K zero fill must establish completion");
+    let returned = allocation
+        .find("Ok(CudaPooledHtj2kDecodeOutput")
+        .expect("pooled HTJ2K allocation result");
     assert!(
-        pool_take < zero_fill && zero_fill < completion,
-        "pooled HTJ2K zero fill must complete before the checkout can be returned or recycled"
+        pool_take < zero_fill && zero_fill < returned,
+        "pooled HTJ2K zero fill must be ordered before the checkout is returned"
+    );
+    assert!(
+        !allocation[..returned].contains("self.synchronize()?"),
+        "pooled HTJ2K zero fill must not add a per-subband host synchronization"
     );
 }

@@ -21,15 +21,18 @@ pub(super) fn assert_insert_policy(source: &str) {
     );
 }
 
-pub(super) fn assert_route_policy(session: &str, hybrid: &str) {
-    for (label, source) in [("session", session), ("global/session hybrid", hybrid)] {
+pub(super) fn assert_route_policy(direct_plan_cache: &str, hybrid: &str) {
+    for (label, source) in [
+        ("session direct-plan cache", direct_plan_cache),
+        ("global/session hybrid", hybrid),
+    ] {
         assert!(
             contains_normalized(source, ".insert(key, value).map(|_| ()).map_err(|error|"),
             "{label} cache route must treat optional admission outcomes as decode continuation"
         );
     }
     assert!(
-        session.contains("prepared_plan_cache_error"),
+        direct_plan_cache.contains("prepared_plan_cache_error"),
         "hard cache failures must preserve ERR-009 typed routing"
     );
     assert!(

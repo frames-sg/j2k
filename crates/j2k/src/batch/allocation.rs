@@ -15,7 +15,7 @@ use crate::J2kDecodeWarning;
 ///
 /// This is a 0.7 safety/performance policy, not an estimate of a particular
 /// image. Requested concurrency above four is reduced before spawning.
-pub(super) const MAX_GENERIC_BATCH_WORKERS: usize = 4;
+pub(crate) const MAX_GENERIC_BATCH_WORKERS: usize = 4;
 
 /// Maximum number of scheduled region-scaled workers when weighted runtime
 /// admission is active. At most four worst-case generic claims execute at once;
@@ -26,7 +26,7 @@ pub(super) const MAX_ADMITTED_BATCH_WORKERS: usize = MAX_GENERIC_BATCH_WORKERS *
 /// Fixed ceiling for batch-owned slots, handles, outcomes, and warnings.
 ///
 /// This is a facade policy allowance rather than a codec memory requirement.
-pub(super) const J2K_BATCH_METADATA_ALLOWANCE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const J2K_BATCH_METADATA_ALLOWANCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Authoritative worst-case claim for one generic native decoder worker.
 pub(super) const GENERIC_WORKER_CLAIM_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES;

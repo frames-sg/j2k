@@ -2,7 +2,9 @@
 
 //! Generic JPEG sequential scan-driver ownership policy.
 
-use super::*;
+use std::fs;
+
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
 
 #[test]
 fn jpeg_generic_output_modes_share_one_typed_scan_driver() {

@@ -230,6 +230,7 @@ pub(in crate::compute) fn dispatch_reversible53_single_decomposition_buffers_in_
         &runtime.idwt_interleave,
         (params.width, params.height),
     );
+    encoder.memory_barrier_with_resources(&[decoded]);
 
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
@@ -254,6 +255,7 @@ pub(in crate::compute) fn dispatch_reversible53_single_decomposition_buffers_in_
             depth: 1,
         },
     );
+    encoder.memory_barrier_with_resources(&[decoded]);
 
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
@@ -376,4 +378,93 @@ pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buff
     );
     encoder.end_encoding();
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_encoder_with_offsets(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: RepeatedIdwtDispatch<'_>,
+) {
+    let RepeatedIdwtDispatch {
+        runtime,
+        sub_bands,
+        params,
+        decoded,
+    } = dispatch;
+    let IdwtSubBandBuffers {
+        ll,
+        ll_offset,
+        hl,
+        hl_offset,
+        lh,
+        lh_offset,
+        hh,
+        hh_offset,
+    } = sub_bands;
+    encoder.set_compute_pipeline_state(&runtime.idwt_interleave_batched);
+    encoder.set_buffer(0, Some(ll), ll_offset as u64);
+    encoder.set_buffer(1, Some(hl), hl_offset as u64);
+    encoder.set_buffer(2, Some(lh), lh_offset as u64);
+    encoder.set_buffer(3, Some(hh), hh_offset as u64);
+    encoder.set_buffer(4, Some(decoded), 0);
+    encoder.set_bytes(
+        5,
+        size_of::<J2kRepeatedIdwtSingleDecompositionParams>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.idwt_interleave_batched,
+        (params.width, params.height, params.batch_count),
+    );
+    encoder.memory_barrier_with_resources(&[decoded]);
+
+    encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal_batched);
+    encoder.set_buffer(0, Some(decoded), 0);
+    encoder.set_bytes(
+        1,
+        size_of::<J2kRepeatedIdwtSingleDecompositionParams>() as u64,
+        (&raw const params).cast(),
+    );
+    let horizontal_width = runtime
+        .idwt_reversible53_horizontal_batched
+        .thread_execution_width()
+        .max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(params.height),
+            height: u64::from(params.batch_count),
+            depth: 1,
+        },
+        MTLSize {
+            width: horizontal_width,
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.memory_barrier_with_resources(&[decoded]);
+
+    encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical_batched);
+    encoder.set_buffer(0, Some(decoded), 0);
+    encoder.set_bytes(
+        1,
+        size_of::<J2kRepeatedIdwtSingleDecompositionParams>() as u64,
+        (&raw const params).cast(),
+    );
+    let vertical_width = runtime
+        .idwt_reversible53_vertical_batched
+        .thread_execution_width()
+        .max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(params.width),
+            height: u64::from(params.batch_count),
+            depth: 1,
+        },
+        MTLSize {
+            width: vertical_width,
+            height: 1,
+            depth: 1,
+        },
+    );
 }

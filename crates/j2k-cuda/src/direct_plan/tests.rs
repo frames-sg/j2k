@@ -327,3 +327,70 @@ fn region_plan_rejects_store_outside_output_rect() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn referenced_prepared_plan_materializes_only_the_execution_arena() {
+    let encoded = std::sync::Arc::<[u8]>::from(
+        j2k_native::encode_htj2k(
+            &(0_u8..64).collect::<Vec<_>>(),
+            8,
+            8,
+            1,
+            8,
+            false,
+            &j2k_native::EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 1,
+                ..j2k_native::EncodeOptions::default()
+            },
+        )
+        .expect("encode referenced-plan fixture"),
+    );
+    let prepared = j2k::prepare_batch(
+        vec![j2k::EncodedImage::full(std::sync::Arc::clone(&encoded))],
+        j2k::BatchDecodeOptions::default(),
+    )
+    .expect("prepare referenced-plan fixture");
+    let image = &prepared.groups()[0].images()[0];
+    let prepared_plan = image.htj2k_plan().expect("retained HTJ2K plan");
+    let referenced = prepared_plan
+        .adapter_view()
+        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
+        .expect("native referenced HTJ2K plan adapter");
+    let tile = &referenced.tiles()[0];
+    let geometry = tile
+        .grayscale_geometry()
+        .expect("grayscale referenced tile geometry");
+    let span = tile.payload_records();
+    let payload_end = span.end_record().expect("payload span end");
+    let tile_payloads = &referenced.payloads()[span.first_record..payload_end];
+    let mut expected = Vec::new();
+    for payload in referenced.payloads() {
+        let cleanup_end = payload.cleanup.end().expect("cleanup range end");
+        expected.extend_from_slice(&encoded[payload.cleanup.offset..cleanup_end]);
+        if let Some(refinement) = payload.refinement {
+            let refinement_end = refinement.end().expect("refinement range end");
+            expected.extend_from_slice(&encoded[refinement.offset..refinement_end]);
+        }
+    }
+
+    let output = image.plan().output_rect();
+    let mut shared = Vec::new();
+    let mut budget = crate::allocation::HostPhaseBudget::new("referenced CUDA plan test");
+    let cuda = CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_into_shared(
+        geometry,
+        tile_payloads,
+        &encoded,
+        PixelFormat::Gray8,
+        (output.x, output.y),
+        (output.w, output.h),
+        &mut shared,
+        &mut budget,
+    )
+    .expect("flatten referenced CUDA plan");
+
+    assert_eq!(shared, expected);
+    assert!(cuda.payload().is_empty());
+    assert_eq!(cuda.code_blocks().len(), referenced.payloads().len());
+    assert_eq!(cuda.code_blocks()[0].payload_offset, 0);
+}

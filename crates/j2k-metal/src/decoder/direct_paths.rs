@@ -20,7 +20,7 @@ use crate::direct;
 #[cfg(target_os = "macos")]
 use crate::error::{adapter_backend_error, native_decode_error};
 #[cfg(target_os = "macos")]
-use crate::session::{
+use crate::session::direct_plan_cache::{
     cached_session_direct_color_plan, cached_session_direct_gray_plan, direct_gray_plan_cache_key,
     direct_plan_cache_key, store_session_direct_color_plan, store_session_direct_gray_plan,
 };
@@ -34,6 +34,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         prepare_fresh: $prepare_fresh:ident,
         plan_field: $plan_field:ident,
         prepared_field: $prepared_field:ident,
+        prepared_device_field: $prepared_device_field:ident,
         prepared_ty: $prepared_ty:path,
         cache_key: $cache_key:ident,
         cached: $cached:ident,
@@ -42,30 +43,46 @@ macro_rules! define_ensure_prepared_direct_plan {
         prepare: $prepare:path
     ) => {
         #[cfg(target_os = "macos")]
-        fn $with_session(
+        pub(super) fn $with_session(
             &mut self,
             fmt: PixelFormat,
             session: &MetalBackendSession,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
+            let device_registry_id = session.device().registry_id();
+            if self.$prepared_field.is_some()
+                && self.$prepared_device_field != Some(device_registry_id)
+            {
+                self.$prepared_field = None;
+                self.$prepared_device_field = None;
+            }
             if self.$prepared_field.is_none() {
                 let cache_key = $cache_key(self.bytes, fmt);
                 if let Some((plan, prepared)) = $cached(session, cache_key)? {
                     self.$plan_field = Some(plan);
                     self.$prepared_field = Some(prepared);
+                    self.$prepared_device_field = Some(device_registry_id);
                 }
             }
-            self.$prepare_fresh(Some((session, fmt)))
+            self.$prepare_fresh(Some((session, fmt)), device_registry_id)
         }
 
         #[cfg(target_os = "macos")]
         fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
-            self.$prepare_fresh(None)
+            let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+            if self.$prepared_field.is_some()
+                && self.$prepared_device_field != Some(device_registry_id)
+            {
+                self.$prepared_field = None;
+                self.$prepared_device_field = None;
+            }
+            self.$prepare_fresh(None, device_registry_id)
         }
 
         #[cfg(target_os = "macos")]
         fn $prepare_fresh(
             &mut self,
             session_cache: Option<(&MetalBackendSession, PixelFormat)>,
+            device_registry_id: u64,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
             if self.$prepared_field.is_none() {
                 self.ensure_native_image()?;
@@ -83,13 +100,20 @@ macro_rules! define_ensure_prepared_direct_plan {
                     }
                     Err(error) => return Err(native_decode_error(error)),
                 };
-                let prepared = Arc::new($prepare(plan.as_ref())?);
+                let prepared = if let Some((session, _)) = &session_cache {
+                    Arc::new(crate::compute::with_runtime_for_session(session, |_| {
+                        $prepare(plan.as_ref())
+                    })?)
+                } else {
+                    Arc::new($prepare(plan.as_ref())?)
+                };
                 if let Some((session, fmt)) = session_cache {
                     let cache_key = $cache_key(self.bytes, fmt);
                     $store(session, cache_key, plan.clone(), prepared.clone())?;
                 }
                 self.$plan_field = Some(plan);
                 self.$prepared_field = Some(prepared);
+                self.$prepared_device_field = Some(device_registry_id);
             }
             Ok(self.$prepared_field.clone())
         }
@@ -119,6 +143,7 @@ impl J2kDecoder<'_> {
         prepare_fresh: prepare_fresh_direct_gray_plan,
         plan_field: native_direct_gray_plan,
         prepared_field: native_prepared_direct_gray_plan,
+        prepared_device_field: native_prepared_direct_gray_device_registry_id,
         prepared_ty: crate::compute::PreparedDirectGrayscalePlan,
         cache_key: direct_gray_plan_cache_key,
         cached: cached_session_direct_gray_plan,
@@ -133,6 +158,7 @@ impl J2kDecoder<'_> {
         prepare_fresh: prepare_fresh_direct_color_plan,
         plan_field: native_direct_color_plan,
         prepared_field: native_prepared_direct_color_plan,
+        prepared_device_field: native_prepared_direct_color_device_registry_id,
         prepared_ty: crate::compute::PreparedDirectColorPlan,
         cache_key: direct_plan_cache_key,
         cached: cached_session_direct_color_plan,
@@ -164,7 +190,7 @@ impl J2kDecoder<'_> {
             };
             return match crate::compute::execute_prepared_direct_color_plan(plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
-                Err(error) if is_direct_color_runtime_fallback_error(&error) => Ok(None),
+                Err(error) if is_direct_runtime_fallback_error(&error) => Ok(None),
                 Err(error) => Err(error),
             };
         }
@@ -206,7 +232,7 @@ impl J2kDecoder<'_> {
                 session.device_handle(),
             ) {
                 Ok(surface) => Ok(Some(surface)),
-                Err(error) if is_direct_color_runtime_fallback_error(&error) => Ok(None),
+                Err(error) if is_direct_runtime_fallback_error(&error) => Ok(None),
                 Err(error) => Err(error),
             };
         }
@@ -282,33 +308,50 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         count: usize,
     ) -> Result<Vec<Surface>, Error> {
+        self.decode_repeated_grayscale_direct_to_device_routed(fmt, count, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn decode_repeated_grayscale_direct_to_device_with_session(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Surface>, Error> {
+        self.decode_repeated_grayscale_direct_to_device_routed(fmt, count, Some(session))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn decode_repeated_grayscale_direct_to_device_routed(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: Option<&MetalBackendSession>,
+    ) -> Result<Vec<Surface>, Error> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        if self.native_direct_gray_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(adapter_backend_error(
-                    "native image cache missing".to_string(),
-                )));
-            };
-            let plan = Arc::new(
-                image
-                    .build_direct_grayscale_plan_with_context(native_context)
-                    .map_err(native_decode_error)?,
-            );
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(
-                plan.as_ref(),
-            )?);
-            self.native_direct_gray_plan = Some(plan);
-            self.native_prepared_direct_gray_plan = Some(prepared);
-        }
-        let Some(plan) = self.native_prepared_direct_gray_plan.as_ref() else {
-            return Ok(Vec::new());
+        let plan = match session {
+            Some(session) => self.ensure_prepared_direct_gray_plan_with_session(fmt, session)?,
+            None => self.ensure_prepared_direct_gray_plan()?,
         };
-        crate::compute::execute_repeated_prepared_direct_grayscale_plan(plan, fmt, count)
+        let Some(plan) = plan else {
+            return Err(Error::MetalDirectFallback {
+                message: format!(
+                    "explicit J2K MetalDirect repeated batch does not support {fmt:?}"
+                ),
+                reason: MetalDirectFallbackReason::UnsupportedPlan,
+            });
+        };
+        match session {
+            Some(session) => crate::compute::with_runtime_for_session(session, |_| {
+                crate::compute::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
+            }),
+            None => {
+                crate::compute::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -318,10 +361,37 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         count: usize,
     ) -> Result<Vec<Surface>, Error> {
+        self.decode_repeated_color_direct_to_device_routed(fmt, count, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn decode_repeated_color_direct_to_device_with_session(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Surface>, Error> {
+        self.decode_repeated_color_direct_to_device_routed(fmt, count, Some(session))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn decode_repeated_color_direct_to_device_routed(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: Option<&MetalBackendSession>,
+    ) -> Result<Vec<Surface>, Error> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        let surface = self.decode_to_surface_impl(fmt, BackendRequest::Metal)?;
+        let surface = match session {
+            Some(session) => self.decode_request_to_device_with_session(
+                crate::MetalDecodeRequest::full(fmt, BackendRequest::Metal),
+                session,
+            )?,
+            None => self.decode_to_surface_impl(fmt, BackendRequest::Metal)?,
+        };
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal repeated color surface collection",
         );
@@ -347,7 +417,14 @@ impl J2kDecoder<'_> {
         {
             return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
         }
-        if self.native_direct_gray_plan.is_none() {
+        let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+        if self.native_prepared_direct_gray_plan.is_some()
+            && self.native_prepared_direct_gray_device_registry_id != Some(device_registry_id)
+        {
+            self.native_prepared_direct_gray_plan = None;
+            self.native_prepared_direct_gray_device_registry_id = None;
+        }
+        if self.native_prepared_direct_gray_plan.is_none() {
             self.ensure_native_image()?;
             let (Some(image), native_context) =
                 (self.native_image.as_ref(), &mut self.native_context)
@@ -365,6 +442,7 @@ impl J2kDecoder<'_> {
             )?);
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
+            self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
         }
         let Some(plan) = self.native_direct_gray_plan.as_ref() else {
             return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
@@ -381,19 +459,15 @@ impl J2kDecoder<'_> {
 }
 
 #[cfg(target_os = "macos")]
-fn is_direct_color_runtime_fallback_error(error: &Error) -> bool {
-    is_direct_runtime_fallback_error(error)
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn is_direct_runtime_fallback_error(error: &Error) -> bool {
     error.is_direct_fallback()
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_full_grayscale_batch_direct_to_device(
+pub(crate) fn decode_full_grayscale_batch_direct_to_device_routed(
     inputs: &[Arc<[u8]>],
     fmt: PixelFormat,
+    session: Option<&MetalBackendSession>,
 ) -> Result<Vec<Surface>, Error> {
     if inputs.is_empty() {
         return Ok(Vec::new());
@@ -409,7 +483,11 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device(
     let mut plans = budget.try_vec(inputs.len(), "J2K Metal direct grayscale plans")?;
     for input in inputs {
         let mut decoder = J2kDecoder::new(input.as_ref())?;
-        let Some(plan) = decoder.ensure_prepared_direct_gray_plan()? else {
+        let plan = match session {
+            Some(session) => decoder.ensure_prepared_direct_gray_plan_with_session(fmt, session)?,
+            None => decoder.ensure_prepared_direct_gray_plan()?,
+        };
+        let Some(plan) = plan else {
             return Err(Error::MetalDirectFallback {
                 message: format!(
                     "explicit J2K MetalDirect batch currently supports full grayscale Gray8/Gray16 only; fmt={fmt:?}"
@@ -419,13 +497,19 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device(
         };
         plans.push(plan);
     }
-    crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+    match session {
+        Some(session) => crate::compute::with_runtime_for_session(session, |_| {
+            crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+        }),
+        None => crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_full_color_batch_direct_to_device(
+pub(crate) fn decode_full_color_batch_direct_to_device_routed(
     inputs: &[Arc<[u8]>],
     fmt: PixelFormat,
+    session: Option<&MetalBackendSession>,
 ) -> Result<Vec<Surface>, Error> {
     if inputs.is_empty() {
         return Ok(Vec::new());
@@ -444,7 +528,13 @@ pub(crate) fn decode_full_color_batch_direct_to_device(
     let mut plans = budget.try_vec(inputs.len(), "J2K Metal direct color plans")?;
     for input in inputs {
         let mut decoder = J2kDecoder::new(input.as_ref())?;
-        let Some(plan) = decoder.ensure_prepared_direct_color_plan()? else {
+        let plan = match session {
+            Some(session) => {
+                decoder.ensure_prepared_direct_color_plan_with_session(fmt, session)?
+            }
+            None => decoder.ensure_prepared_direct_color_plan()?,
+        };
+        let Some(plan) = plan else {
             return Err(Error::MetalDirectFallback {
                 message: format!(
                     "explicit J2K MetalDirect batch currently supports full RGB color only; fmt={fmt:?}"
@@ -454,9 +544,15 @@ pub(crate) fn decode_full_color_batch_direct_to_device(
         };
         plans.push(plan);
     }
-    match crate::compute::execute_prepared_direct_color_plan_batch(&plans, fmt) {
+    let result = match session {
+        Some(session) => crate::compute::with_runtime_for_session(session, |_| {
+            crate::compute::execute_prepared_direct_color_plan_batch(&plans, fmt)
+        }),
+        None => crate::compute::execute_prepared_direct_color_plan_batch(&plans, fmt),
+    };
+    match result {
         Ok(surfaces) => Ok(surfaces),
-        Err(error) if is_direct_color_runtime_fallback_error(&error) => {
+        Err(error) if is_direct_runtime_fallback_error(&error) => {
             Err(Error::UnsupportedMetalRequest {
                 reason: CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
             })

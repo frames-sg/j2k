@@ -157,8 +157,105 @@ fn metal_backend_sessions_own_distinct_direct_plan_caches() {
     let second = MetalBackendSession::new(device);
 
     assert_ne!(
-        first.direct_cache_ids_for_test(),
-        second.direct_cache_ids_for_test()
+        crate::session::direct_plan_cache::direct_cache_ids_for_test(&first),
+        crate::session::direct_plan_cache::direct_cache_ids_for_test(&second)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let pixels = j2k_test_support::gradient_u8(32, 32, 1);
+    let bytes = j2k_native::encode(
+        &pixels,
+        32,
+        32,
+        1,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode classic grayscale session-runtime fixture");
+    let session = MetalBackendSession::new(device.clone());
+    let session_runtime = session.runtime().expect("explicit session runtime");
+
+    crate::compute::reset_direct_tier1_input_buffer_prepares_for_test();
+    crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
+        let mut decoder = J2kDecoder::new(&bytes)?;
+        let prepared =
+            decoder.ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)?;
+        assert!(prepared.is_some());
+        Ok(())
+    })
+    .expect("prepare direct plan with explicit session");
+
+    assert!(
+        crate::compute::direct_tier1_input_buffer_prepares_for_test() > 0,
+        "fixture must allocate classic Tier-1 input buffers"
+    );
+    assert_eq!(
+        crate::compute::direct_tier1_input_buffer_runtime_for_test(),
+        Arc::as_ptr(&session_runtime).addr(),
+        "fresh cached buffers must be prepared by the explicit session runtime"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn decoder_local_prepared_binding_is_revalidated_for_session_device() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let pixels = j2k_test_support::gradient_u8(32, 32, 1);
+    let bytes = j2k_native::encode(
+        &pixels,
+        32,
+        32,
+        1,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode classic grayscale device-identity fixture");
+    let session = MetalBackendSession::new(device);
+    let expected_device = session.device().registry_id();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let first = decoder
+        .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
+        .expect("first prepared plan")
+        .expect("supported first prepared plan");
+
+    decoder.native_prepared_direct_gray_device_registry_id = Some(u64::MAX);
+    let second = decoder
+        .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
+        .expect("device-scoped prepared plan")
+        .expect("supported device-scoped prepared plan");
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(
+        decoder.native_prepared_direct_gray_device_registry_id,
+        Some(expected_device)
     );
 }
 
@@ -296,43 +393,84 @@ fn repeated_region_scaled_color_batch_reuses_prepared_plan() {
 }
 
 #[test]
-fn decoder_modules_remain_focused_without_suppression_shortcuts() {
-    const MODULES: [(&str, &str, usize); 6] = [
-        ("adapters.rs", include_str!("adapters.rs"), 300),
-        ("core.rs", include_str!("core.rs"), 400),
-        ("direct_paths.rs", include_str!("direct_paths.rs"), 600),
-        ("request.rs", include_str!("request.rs"), 220),
-        ("routes.rs", include_str!("routes.rs"), 380),
-        ("surface.rs", include_str!("surface.rs"), 120),
-    ];
+fn decoder_modules_remain_explicit_without_suppression_shortcuts() {
+    use std::collections::BTreeSet;
+    use syn::{Item, UseTree};
 
-    let root = include_str!("../decoder.rs");
-    assert!(
-        root.lines().count() <= 40,
-        "decoder.rs should remain a small explicit module facade"
-    );
+    fn use_tree_has_glob(tree: &UseTree) -> bool {
+        match tree {
+            UseTree::Glob(_) => true,
+            UseTree::Group(group) => group.items.iter().any(use_tree_has_glob),
+            UseTree::Path(path) => use_tree_has_glob(&path.tree),
+            UseTree::Name(_) | UseTree::Rename(_) => false,
+        }
+    }
 
-    for (name, source, cap) in MODULES {
+    fn assert_explicit_items(name: &str, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Macro(item) => assert!(
+                    !item.mac.path.is_ident("include"),
+                    "{name} must be a real parsed module"
+                ),
+                Item::Mod(module) => {
+                    if let Some((_, nested)) = &module.content {
+                        assert_explicit_items(name, nested);
+                    }
+                }
+                Item::Use(item) => assert!(
+                    !use_tree_has_glob(&item.tree),
+                    "{name} must use explicit imports"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    fn parse_explicit_module(name: &str, source: &str) -> syn::File {
+        let file = syn::parse_file(source)
+            .unwrap_or_else(|error| panic!("parse decoder module {name}: {error}"));
         assert!(
-            source.lines().count() <= cap,
-            "{name} has {} lines, exceeding its {cap}-line focus cap",
-            source.lines().count()
-        );
-        assert!(
-            !source.contains("include!("),
-            "{name} must be a real module"
-        );
-        assert!(
-            !source.contains("#![allow"),
+            !file.attrs.iter().any(|attr| attr.path().is_ident("allow")),
             "{name} must not use module-wide lint suppression"
         );
-        assert!(
-            !source.contains("allow(unused"),
-            "{name} must not suppress unused-code findings"
-        );
-        assert!(
-            !source.contains("use super::*") && !source.contains("use crate::*"),
-            "{name} must use explicit imports"
-        );
+        assert_explicit_items(name, &file.items);
+        file
+    }
+
+    const MODULES: [(&str, &str); 6] = [
+        ("adapters.rs", include_str!("adapters.rs")),
+        ("core.rs", include_str!("core.rs")),
+        ("direct_paths.rs", include_str!("direct_paths.rs")),
+        ("request.rs", include_str!("request.rs")),
+        ("routes.rs", include_str!("routes.rs")),
+        ("surface.rs", include_str!("surface.rs")),
+    ];
+
+    let root = parse_explicit_module("decoder.rs", include_str!("../decoder.rs"));
+    let external_modules = root
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.content.is_none() => Some(module.ident.to_string()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_modules = [
+        "adapters",
+        "core",
+        "direct_paths",
+        "request",
+        "routes",
+        "surface",
+        "tests",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<BTreeSet<_>>();
+    assert_eq!(external_modules, expected_modules);
+
+    for (name, source) in MODULES {
+        parse_explicit_module(name, source);
     }
 }

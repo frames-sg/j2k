@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
+use super::grayscale_batch::decode_grayscale_cuda_resident_batch_into_with_profile;
+#[cfg(feature = "cuda-runtime")]
 use super::resident::{
     decode_batch_to_cuda_resident_surface_with_profile_control,
     decode_region_scaled_to_cuda_resident_surface_impl,
@@ -194,6 +196,31 @@ impl<'a> J2kDecoder<'a> {
         session: &mut CudaSession,
     ) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
         decode_batch_to_cuda_resident_surface_with_profile_control(inputs, session, fmt, true)
+    }
+
+    /// Strictly decode a full grayscale batch directly into a validated
+    /// caller-owned CUDA destination.
+    #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
+    pub fn decode_batch_into_external_device_with_session(
+        inputs: &[&[u8]],
+        fmt: PixelFormat,
+        destination: &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>,
+        session: &mut CudaSession,
+    ) -> Result<
+        (
+            Vec<j2k_cuda_runtime::CudaDeviceBufferRange>,
+            CudaHtj2kProfileReport,
+        ),
+        Error,
+    > {
+        decode_grayscale_cuda_resident_batch_into_with_profile(
+            inputs,
+            session,
+            fmt,
+            destination,
+            false,
+        )
     }
 
     /// Strictly decode a full-resolution HTJ2K region into a CUDA-backed

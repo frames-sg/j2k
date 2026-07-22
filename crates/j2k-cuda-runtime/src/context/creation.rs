@@ -8,6 +8,7 @@ use std::{
 use crate::{driver::Driver, error::CudaError, memory::PinnedUploadStagingPool};
 
 use super::{
+    diagnostics::{CudaContextDiagnosticsState, CudaEventPoolState},
     host_budget::SharedCudaHostBudget,
     inner::{ContextInner, ContextOwnership},
     validate_resource_handle, ContextResourceLifecycle, CudaContext,
@@ -68,8 +69,7 @@ pub(super) fn create_context(
     ) {
         match ownership {
             ContextOwnership::Owned => {
-                // SAFETY: a successful context-create call is balanced on the
-                // validation failure path before ownership can escape.
+                // SAFETY: balance successful creation before ownership can escape.
                 let _ = unsafe { (driver.cu_ctx_destroy)(context) };
             }
             ContextOwnership::RetainedPrimary { device } => {
@@ -88,6 +88,8 @@ pub(super) fn create_context(
             ownership,
             device_ordinal,
             modules: Mutex::new(HashMap::new()),
+            event_pool: Mutex::new(CudaEventPoolState::default()),
+            diagnostics: CudaContextDiagnosticsState::default(),
             pinned_upload_operation: Mutex::new(()),
             pinned_upload_staging: Mutex::new(PinnedUploadStagingPool::new()),
             host_budget: SharedCudaHostBudget::new(),

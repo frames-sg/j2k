@@ -12,13 +12,6 @@ use super::{
 
 impl CudaHtj2kDecodePlan {
     #[cfg(feature = "cuda-runtime")]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "output dimensions accessor supports CUDA plan tests"
-        )
-    )]
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }

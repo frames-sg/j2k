@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use super::super::build::CodeBlock;
 use super::pipeline::prepare_scratch;
 use crate::error::{Result, ValidationError};
-use crate::profile;
 use crate::{checked_decode_sample_count, try_resize_decode_elements};
 use core::mem::size_of;
 
@@ -50,9 +49,14 @@ impl HtBlockDecodeContext {
     pub(crate) fn coefficient_rows(&self) -> impl Iterator<Item = &[u32]> {
         self.coefficients.chunks_exact(self.width as usize)
     }
+
+    #[cfg(test)]
+    pub(crate) fn coefficient_owner_for_test(&self) -> (*const u32, usize) {
+        (self.coefficients.as_ptr(), self.coefficients.capacity())
+    }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct HtBlockDecodeScratch {
     pub(super) cleanup: Vec<u16>,
     pub(super) v_n: Vec<u32>,
@@ -61,6 +65,15 @@ pub(crate) struct HtBlockDecodeScratch {
 }
 
 impl HtBlockDecodeScratch {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            cleanup: Vec::new(),
+            v_n: Vec::new(),
+            sigma: Vec::new(),
+            prev_row_sig: Vec::new(),
+        }
+    }
+
     pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
         prepare_scratch(self, width, height)
     }
@@ -83,126 +96,6 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
         .checked_add(additional)
         .ok_or(ValidationError::ImageTooLarge)?;
     Ok(())
-}
-
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HtBlockDecodeStats {
-    pub(crate) blocks: u128,
-    pub(crate) refinement_blocks: u128,
-    pub(crate) cleanup_bytes: u128,
-    pub(crate) refinement_bytes: u128,
-    pub(crate) ht_cleanup_us: u128,
-    pub(crate) ht_mag_sgn_us: u128,
-    pub(crate) ht_sigma_us: u128,
-    pub(crate) ht_sigprop_us: u128,
-    pub(crate) ht_magref_us: u128,
-}
-
-impl HtBlockDecodeStats {
-    fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
-        self.blocks += 1;
-        self.cleanup_bytes += cleanup_bytes as u128;
-        if refinement_bytes > 0 {
-            self.refinement_blocks += 1;
-            self.refinement_bytes += refinement_bytes as u128;
-        }
-    }
-}
-
-pub(super) trait HtDecodeObserver {
-    #[inline(always)]
-    fn record_block(&mut self, _cleanup_bytes: usize, _refinement_bytes: usize) {}
-
-    #[expect(
-        clippy::inline_always,
-        reason = "erase the unprofiled observer clock hook"
-    )]
-    #[inline(always)]
-    fn phase_start(&self) -> Option<profile::ProfileInstant> {
-        None
-    }
-
-    #[inline(always)]
-    fn add_cleanup_us(&mut self, _start: Option<profile::ProfileInstant>) {}
-
-    #[inline(always)]
-    fn add_mag_sgn_us(&mut self, _start: Option<profile::ProfileInstant>) {}
-
-    #[inline(always)]
-    fn add_sigma_us(&mut self, _start: Option<profile::ProfileInstant>) {}
-
-    #[inline(always)]
-    fn add_sigprop_us(&mut self, _start: Option<profile::ProfileInstant>) {}
-
-    #[inline(always)]
-    fn add_magref_us(&mut self, _start: Option<profile::ProfileInstant>) {}
-}
-
-pub(super) struct NoHtDecodeStats;
-
-impl HtDecodeObserver for NoHtDecodeStats {}
-
-pub(super) struct RecordingHtDecodeStats<'a> {
-    pub(super) stats: &'a mut HtBlockDecodeStats,
-    pub(super) profile_enabled: bool,
-}
-
-impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
-    #[expect(clippy::inline_always, reason = "fuse observer accounting into decode")]
-    #[inline(always)]
-    fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
-        self.stats.record_block(cleanup_bytes, refinement_bytes);
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn phase_start(&self) -> Option<profile::ProfileInstant> {
-        if self.profile_enabled {
-            profile::profile_now(true)
-        } else {
-            None
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn add_cleanup_us(&mut self, start: Option<profile::ProfileInstant>) {
-        if self.profile_enabled {
-            self.stats.ht_cleanup_us += profile::elapsed_us(start);
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn add_mag_sgn_us(&mut self, start: Option<profile::ProfileInstant>) {
-        if self.profile_enabled {
-            self.stats.ht_mag_sgn_us += profile::elapsed_us(start);
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn add_sigma_us(&mut self, start: Option<profile::ProfileInstant>) {
-        if self.profile_enabled {
-            self.stats.ht_sigma_us += profile::elapsed_us(start);
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn add_sigprop_us(&mut self, start: Option<profile::ProfileInstant>) {
-        if self.profile_enabled {
-            self.stats.ht_sigprop_us += profile::elapsed_us(start);
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
-    #[inline(always)]
-    fn add_magref_us(&mut self, start: Option<profile::ProfileInstant>) {
-        if self.profile_enabled {
-            self.stats.ht_magref_us += profile::elapsed_us(start);
-        }
-    }
 }
 
 #[cfg(test)]

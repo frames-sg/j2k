@@ -43,9 +43,15 @@ mod store;
 mod subband;
 mod subband_params;
 mod tier1;
+mod workspace;
 pub(crate) use self::allocation::DecodeAllocationBudget;
 use self::direct_plan::collect_classic_code_block_data;
-pub(crate) use self::direct_plan::{build_direct_color_plan, build_direct_grayscale_plan};
+pub(crate) use self::direct_plan::{
+    build_direct_color_plan, build_direct_grayscale_plan, build_referenced_classic_color_plan,
+    build_referenced_classic_grayscale_plan, build_referenced_classic_rgba_plan,
+    build_referenced_htj2k_color_plan, build_referenced_htj2k_grayscale_plan,
+    build_referenced_htj2k_rgba_plan,
+};
 use self::store::{apply_sign_shift_after_mct, component_unsigned_level_shift, store};
 use self::subband::{code_block_required_by_index, decode_component_tile_bit_planes};
 #[cfg(all(test, feature = "parallel"))]
@@ -61,8 +67,50 @@ use self::subband_params::{
     classic_decode_job_parameters, ht_code_block_has_decodable_passes, sub_band_decode_parameters,
     SubBandDecodeParameters,
 };
+pub use self::workspace::{
+    CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
+};
 
-pub(crate) fn decode<'a>(
+pub(crate) fn decode_with_capacity_retry<'a>(
+    data: &'a [u8],
+    header: &Header<'a>,
+    retained_image_bytes: usize,
+    ctx: &mut DecoderContext<'a>,
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+) -> Result<()> {
+    ctx.storage.release_all_allocations();
+    let retained_component_bytes = ctx.tile_decode_context.retained_channel_bytes()?;
+    let retained_tier1_bytes = ctx.tile_decode_context.tier1_capacity_bytes()?;
+    let retained_idwt_bytes = ctx.tile_decode_context.idwt_capacity_bytes()?;
+    let retained_scratch_bytes = retained_tier1_bytes
+        .checked_add(retained_idwt_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    ctx.record_decode_start(
+        retained_component_bytes,
+        retained_tier1_bytes,
+        retained_idwt_bytes,
+    );
+
+    let first_result = decode(data, header, retained_image_bytes, ctx, ht_decoder);
+    let result = ctx.retry_without_retained_scratch_on_capacity(
+        retained_scratch_bytes,
+        first_result,
+        |ctx| decode(data, header, retained_image_bytes, ctx, ht_decoder),
+    );
+
+    ctx.storage.release_all_allocations();
+    let retained_component_bytes = ctx.tile_decode_context.retained_channel_bytes()?;
+    let retained_tier1_bytes = ctx.tile_decode_context.tier1_capacity_bytes()?;
+    let retained_idwt_bytes = ctx.tile_decode_context.idwt_capacity_bytes()?;
+    ctx.record_decode_complete(
+        retained_component_bytes,
+        retained_tier1_bytes,
+        retained_idwt_bytes,
+    );
+    result
+}
+
+fn decode<'a>(
     data: &'a [u8],
     header: &Header<'a>,
     retained_image_bytes: usize,
@@ -75,8 +123,9 @@ pub(crate) fn decode<'a>(
     let mut profile_timings = DecodeProfileTimings::default();
     let stage_start = profile::profile_now(profile_enabled);
     let mut reader = BitReader::new(data);
-    let mut parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_bytes);
-    if reused_baseline.retained_channel_bytes != 0
+    let mut parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_live);
+    if reused_baseline.scratch_capacity == 0
+        && reused_baseline.channel_capacity != 0
         && matches!(
             parsed_tiles.as_ref(),
             Err(error) if reuse::is_capacity_error(error)
@@ -86,11 +135,12 @@ pub(crate) fn decode<'a>(
         // otherwise valid decode to fail its aggregate allocation cap.
         ctx.discard_reused_channels();
         reused_baseline = reuse::ReusedDecodeBaseline {
-            parser_bytes: retained_image_bytes,
-            retained_channel_bytes: 0,
+            parser_live: retained_image_bytes,
+            channel_capacity: 0,
+            scratch_capacity: 0,
         };
         reader = BitReader::new(data);
-        parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_bytes);
+        parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_live);
     }
     let tiles = parsed_tiles?;
     profile_timings.parse_tiles_us += profile::elapsed_us(stage_start);
@@ -103,8 +153,11 @@ pub(crate) fn decode<'a>(
         header,
         &tiles[0],
         tiles.structural_workspace_bytes(),
-        reused_baseline.retained_channel_bytes,
+        reused_baseline.channel_capacity,
     )?;
+    let retained_decode_base_without_scratch = retained_decode_baseline
+        .checked_sub(reused_baseline.scratch_capacity)
+        .ok_or(ValidationError::ImageTooLarge)?;
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism;
     let (tile_ctx, storage) = (&mut ctx.tile_decode_context, &mut ctx.storage);
 
@@ -128,7 +181,7 @@ pub(crate) fn decode<'a>(
             cpu_decode_parallelism,
             profile_enabled,
             &mut profile_timings,
-            retained_decode_baseline,
+            retained_decode_base_without_scratch,
         )?;
     }
 
@@ -146,11 +199,10 @@ pub(crate) fn decode<'a>(
         emit_decode_profile_row(tile_ctx, &profile_timings, total_start);
     }
 
-    // The returned image only borrows channel data. Release tile graph,
-    // packet, Tier-1, and IDWT owners before callers allocate packed output so
-    // output conversion does not overlap a completed decode workspace.
+    // The returned image only borrows channel data. Parsed tile and packet
+    // graphs borrow the codestream and must be released. Tier-1 and IDWT
+    // owners are lifetime-free and remain available to the next image.
     storage.release_all_allocations();
-    tile_ctx.release_tile_scratch_allocations();
 
     Ok(())
 }
@@ -187,55 +239,6 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,
 }
 
-/// CPU parallelism policy for native JPEG 2000 decode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CpuDecodeParallelism {
-    /// Allow a single tile decode to use internal code-block parallelism.
-    #[default]
-    Auto,
-    /// Keep code-block decode serial for callers that already parallelize tiles.
-    Serial,
-}
-
-/// A decoder context for decoding JPEG2000 images.
-pub struct DecoderContext<'a> {
-    pub(crate) tile_decode_context: TileDecodeContext,
-    pub(crate) storage: DecompositionStorage<'a>,
-    cpu_decode_parallelism: CpuDecodeParallelism,
-}
-
-impl Default for DecoderContext<'_> {
-    fn default() -> Self {
-        Self {
-            tile_decode_context: TileDecodeContext::default(),
-            storage: DecompositionStorage::default(),
-            cpu_decode_parallelism: CpuDecodeParallelism::Auto,
-        }
-    }
-}
-
-impl DecoderContext<'_> {
-    pub(crate) fn release_reusable_allocations(&mut self) {
-        self.tile_decode_context.release_all_allocations();
-        self.storage.release_all_allocations();
-    }
-
-    pub(crate) fn set_output_region(&mut self, output_region: Option<(u32, u32, u32, u32)>) {
-        self.tile_decode_context.output_region = output_region.map(OutputRegion::from_tuple);
-    }
-
-    /// Return the native CPU decode parallelism policy.
-    #[must_use]
-    pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {
-        self.cpu_decode_parallelism
-    }
-
-    /// Set the native CPU decode parallelism policy.
-    pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
-        self.cpu_decode_parallelism = parallelism;
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
@@ -253,7 +256,13 @@ fn decode_tile<'a, 'b>(
     retained_decode_baseline: usize,
 ) -> Result<()> {
     storage.reset_for_next_tile();
-    tile_ctx.release_tile_scratch_allocations();
+    let retained_scratch_bytes = tile_ctx.retained_scratch_bytes()?;
+    let retained_decode_baseline = retained_decode_baseline
+        .checked_add(retained_scratch_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if retained_decode_baseline > crate::DEFAULT_MAX_DECODE_BYTES {
+        return Err(ValidationError::ImageTooLarge.into());
+    }
     storage.exact_integer_decode = tile_requires_exact_integer_decode(tile);
     if storage.exact_integer_decode {
         validate_exact_integer_decode_tile(tile)?;
@@ -313,7 +322,6 @@ fn decode_tile<'a, 'b>(
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         // Next, we apply the inverse discrete wavelet transform.
         let stage_start = profile::profile_now(profile_enabled);
-        tile_ctx.release_idwt_allocations();
         idwt::apply(
             storage,
             tile_ctx,
@@ -360,7 +368,7 @@ pub(crate) fn decode_component_tile_bit_planes_budgeted<'a>(
         cpu_decode_parallelism,
         profile_enabled,
     );
-    tier1::release_tier1_workspace(tile_ctx, storage, tier1_workspace_bytes)?;
+    tier1::release_tier1_workspace(tile_ctx, storage, &tier1_workspace_bytes)?;
     decode_result
 }
 
@@ -648,6 +656,21 @@ impl TileDecodeContext {
         classic_bytes
             .checked_add(buffer_bytes)
             .and_then(|bytes| bytes.checked_add(ht_bytes))
+            .ok_or(ValidationError::ImageTooLarge.into())
+    }
+
+    pub(crate) fn idwt_capacity_bytes(&self) -> Result<usize> {
+        let mut bytes = 0_usize;
+        include_capacity::<f32>(&mut bytes, self.idwt_output.coefficients.capacity())?;
+        include_capacity::<i64>(&mut bytes, self.idwt_output.coefficients_i64.capacity())?;
+        include_capacity::<f32>(&mut bytes, self.idwt_scratch_buffer.capacity())?;
+        include_capacity::<i64>(&mut bytes, self.idwt_scratch_buffer_i64.capacity())?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn retained_scratch_bytes(&self) -> Result<usize> {
+        self.tier1_capacity_bytes()?
+            .checked_add(self.idwt_capacity_bytes()?)
             .ok_or(ValidationError::ImageTooLarge.into())
     }
 

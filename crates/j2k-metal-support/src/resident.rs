@@ -7,95 +7,9 @@ use metal::{Buffer, BufferRef, CommandBuffer, DeviceRef, MTLCommandBufferStatus}
 
 use crate::{wait_for_completion, MetalSupportError};
 
-/// Validated byte layout for one image stored in a Metal buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MetalImageLayout {
-    byte_offset: usize,
-    dimensions: (u32, u32),
-    pitch_bytes: usize,
-    pixel_format: PixelFormat,
-    byte_len: usize,
-}
+mod destination;
 
-impl MetalImageLayout {
-    /// Validate image geometry and construct a Metal buffer layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MetalSupportError::MetalImageLayout`] when row geometry or
-    /// the represented byte range overflows, or when the pitch is shorter than
-    /// one pixel row.
-    pub fn new(
-        byte_offset: usize,
-        dimensions: (u32, u32),
-        pitch_bytes: usize,
-        pixel_format: PixelFormat,
-    ) -> Result<Self, MetalSupportError> {
-        if dimensions.0 == 0 || dimensions.1 == 0 {
-            return Err(MetalSupportError::MetalImageLayout {
-                reason: "image dimensions must be nonzero",
-            });
-        }
-        let row_bytes = usize::try_from(dimensions.0)
-            .ok()
-            .and_then(|width| width.checked_mul(pixel_format.bytes_per_pixel()))
-            .ok_or(MetalSupportError::MetalImageLayout {
-                reason: "pixel row byte count overflows usize",
-            })?;
-        if pitch_bytes < row_bytes {
-            return Err(MetalSupportError::MetalImageLayout {
-                reason: "pitch is shorter than one pixel row",
-            });
-        }
-        let byte_len = pitch_bytes.checked_mul(dimensions.1 as usize).ok_or(
-            MetalSupportError::MetalImageLayout {
-                reason: "pitched image byte length overflows usize",
-            },
-        )?;
-        byte_offset
-            .checked_add(byte_len)
-            .ok_or(MetalSupportError::MetalImageLayout {
-                reason: "image byte range overflows usize",
-            })?;
-        Ok(Self {
-            byte_offset,
-            dimensions,
-            pitch_bytes,
-            pixel_format,
-            byte_len,
-        })
-    }
-
-    /// Byte offset of the first pixel row.
-    #[must_use]
-    pub const fn byte_offset(self) -> usize {
-        self.byte_offset
-    }
-
-    /// Image dimensions in pixels.
-    #[must_use]
-    pub const fn dimensions(self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Number of bytes between consecutive image rows.
-    #[must_use]
-    pub const fn pitch_bytes(self) -> usize {
-        self.pitch_bytes
-    }
-
-    /// Pixel format stored in the image range.
-    #[must_use]
-    pub const fn pixel_format(self) -> PixelFormat {
-        self.pixel_format
-    }
-
-    /// Number of bytes represented by the pitched image.
-    #[must_use]
-    pub const fn byte_len(self) -> usize {
-        self.byte_len
-    }
-}
+pub use self::destination::{MetalImageDestination, MetalImageLayout};
 
 /// Owned, logically immutable Metal-resident image.
 ///

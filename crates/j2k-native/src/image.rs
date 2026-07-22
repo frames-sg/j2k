@@ -91,6 +91,9 @@ impl Default for DecodeSettings {
 
 /// A JPEG2000 image or codestream.
 pub struct Image<'a> {
+    /// Complete encoded input retained by the caller. Referenced execution
+    /// plans express compressed payload ranges relative to this owner.
+    pub(crate) encoded_input: &'a [u8],
     /// The tile-part payload used by the legacy JPEG 2000 decoder.
     pub(crate) codestream: &'a [u8],
     /// The header of the J2C codestream.
@@ -106,9 +109,24 @@ pub struct Image<'a> {
     pub(crate) color_space: ColorSpace,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ImageSource<'a> {
+    encoded_input: &'a [u8],
+    codestream: &'a [u8],
+}
+
+impl<'a> ImageSource<'a> {
+    pub(crate) const fn new(encoded_input: &'a [u8], codestream: &'a [u8]) -> Self {
+        Self {
+            encoded_input,
+            codestream,
+        }
+    }
+}
+
 impl<'a> Image<'a> {
     pub(crate) fn from_parsed_parts(
-        codestream: &'a [u8],
+        source: ImageSource<'a>,
         header: Header<'a>,
         boxes: ImageBoxes,
         settings: DecodeSettings,
@@ -116,7 +134,7 @@ impl<'a> Image<'a> {
         has_alpha: bool,
     ) -> Result<Self> {
         Self::from_parsed_parts_with_retained_baseline(
-            codestream,
+            source,
             header,
             boxes,
             settings,
@@ -127,7 +145,7 @@ impl<'a> Image<'a> {
     }
 
     pub(crate) fn from_parsed_parts_with_retained_baseline(
-        codestream: &'a [u8],
+        source: ImageSource<'a>,
         header: Header<'a>,
         boxes: ImageBoxes,
         settings: DecodeSettings,
@@ -138,7 +156,8 @@ impl<'a> Image<'a> {
         let metadata_bytes = retained_metadata_bytes(&header, &boxes, &color_space)?;
         allocation::combine_retained_bytes(retained_baseline_bytes, metadata_bytes)?;
         Ok(Self {
-            codestream,
+            encoded_input: source.encoded_input,
+            codestream: source.codestream,
             header,
             boxes,
             settings,

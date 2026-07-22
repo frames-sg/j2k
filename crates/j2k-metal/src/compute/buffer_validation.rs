@@ -7,12 +7,12 @@ use metal::Buffer;
 
 use crate::{profile_env::label_command_buffer, Error};
 
+use super::abi::{J2kCopyInterleavedParams, J2kValidateBytesParams, J2kValidateBytesStatus};
 use super::{
     commit_and_wait_metal,
     direct_buffers::{checked_buffer_read, zeroed_shared_buffer},
     new_command_buffer, new_compute_command_encoder, new_shared_buffer,
-    new_shared_buffer_with_slice, with_runtime_for_session, J2kCopyInterleavedParams,
-    J2kValidateBytesParams, J2kValidateBytesStatus,
+    new_shared_buffer_with_slice, with_runtime_for_session,
 };
 
 pub(crate) fn validate_metal_buffer_matches_bytes(

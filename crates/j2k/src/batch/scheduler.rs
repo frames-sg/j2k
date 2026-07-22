@@ -21,6 +21,10 @@ use super::planning::{select_batch_plan, select_direct_batch_plan, BatchPlan};
 use super::worker::BatchWorker;
 use super::{BatchOutcome, J2kBatchResultSlot, TileBatchError};
 
+mod retained;
+
+pub(crate) use self::retained::run_retained_chunks;
+
 pub(super) type ScopedWorkerHandle<'scope> = (
     usize,
     std::thread::ScopedJoinHandle<'scope, Result<(), BatchInfrastructureError>>,

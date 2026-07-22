@@ -17,6 +17,9 @@ const STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
 const STYLE_SEGMENTATION_SYMBOLS: u32 = 1 << 3;
 const STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS: u32 = 1 << 4;
 
+#[cfg(feature = "cuda-runtime")]
+pub(super) mod referenced;
+
 pub(super) fn append_classic_subband(
     owners: &mut CudaPlanOwners,
     subband: &J2kOwnedSubBandPlan,
@@ -51,12 +54,23 @@ fn append_classic_job(
     subband_index: u32,
     job: &J2kOwnedCodeBlockBatchJob,
 ) -> Result<(), Error> {
-    validate_classic_job(job)?;
+    validate_classic_job(job, job.data.len())?;
     let payload_offset = checked_u64(owners.payload.len())?;
     let payload_len = checked_u32(job.data.len())?;
+    append_classic_job_metadata(owners, subband_index, job, payload_offset, payload_len)?;
+    owners.payload.extend_from_slice(&job.data);
+    Ok(())
+}
+
+fn append_classic_job_metadata(
+    owners: &mut CudaPlanOwners,
+    subband_index: u32,
+    job: &J2kOwnedCodeBlockBatchJob,
+    payload_offset: u64,
+    payload_len: u32,
+) -> Result<(), Error> {
     let segment_start = checked_u32(owners.classic_segments.len())?;
     let output_stride = checked_u32(job.output_stride)?;
-    owners.payload.extend_from_slice(&job.data);
     owners
         .classic_segments
         .extend(job.segments.iter().map(convert_classic_segment));
@@ -82,7 +96,7 @@ fn append_classic_job(
     Ok(())
 }
 
-fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob) -> Result<(), Error> {
+fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> Result<(), Error> {
     if job.roi_shift != 0
         || !(1..=64).contains(&job.width)
         || !(1..=64).contains(&job.height)
@@ -113,7 +127,7 @@ fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob) -> Result<(), Error> {
         )?;
     }
     if expected_pass != job.number_of_coding_passes
-        || usize::try_from(expected_offset).ok() != Some(job.data.len())
+        || usize::try_from(expected_offset).ok() != Some(payload_len)
     {
         return invalid_classic_plan();
     }

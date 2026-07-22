@@ -3,8 +3,8 @@
 use std::{fs, path::Path};
 
 use crate::repo_lint_support::{
-    assert_file_pattern_checks, assert_pattern_checks, repo_root, rust_sources, workflow_job,
-    xtask_sources, FilePatternCheck, PatternCheck,
+    assert_file_pattern_checks, assert_pattern_checks, assert_rust_source_scan_checks, repo_root,
+    rust_sources, workflow_job, xtask_sources, FilePatternCheck, PatternCheck, RustSourceScanCheck,
 };
 
 fn fuzz_target_names(manifest: &Path) -> Vec<String> {
@@ -39,6 +39,35 @@ fn fuzz_target_names(manifest: &Path) -> Vec<String> {
         manifest.display()
     );
     names
+}
+
+#[test]
+fn gpu_runtime_tests_do_not_silently_return_on_missing_hardware_gates() {
+    assert_rust_source_scan_checks(
+        repo_root(),
+        &[RustSourceScanCheck::new(
+            "GPU runtime tests must use j2k-test-support gates so optional local skips are visible and CI require gates fail closed",
+            &[
+                "crates/j2k-cuda-runtime/src",
+                "crates/j2k-cuda/src",
+                "crates/j2k-cuda/tests",
+                "crates/j2k-jpeg-cuda/tests",
+                "crates/j2k-transcode-cuda/tests",
+                "crates/j2k-metal/src",
+                "crates/j2k-metal/tests",
+                "crates/j2k-jpeg-metal/tests",
+                "crates/j2k-transcode-metal/tests",
+            ],
+        )
+        .forbidden(&[
+            "if !cuda_runtime_required() {\n        return;",
+            "if !cuda_strict_oxide_required() {\n        return;",
+            "if !cuda_jpeg_hardware_decode_required() {\n        return;",
+            "if std::env::var_os(\"J2K_REQUIRE_CUDA_RUNTIME\").is_none() {\n        return;",
+            "if Device::system_default().is_none() {\n            eprintln!(\"skipping",
+            "no Metal device is available",
+        ])],
+    );
 }
 
 #[test]

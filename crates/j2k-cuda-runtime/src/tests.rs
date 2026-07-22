@@ -1,132 +1,23 @@
+mod context_diagnostics;
+mod context_external;
+mod grayscale_external;
+
 use super::{
     checked_f32_words_byte_len, f32_slice_as_bytes_mut, format_idwt_batch_trace_row,
     idwt_batch_kernel_mode, idwt_batch_trace_row, idwt_batch_uses_cooperative_53,
     jpeg_entropy_overflow_count, pool_fit_buffer_index_by_len, validate_dct_block_grid,
     CudaContext, CudaDwt97BatchGeometry, CudaError, CudaExecutionStats,
-    CudaExternalDeviceBufferViewMut, CudaHtj2k97CodeblockBatchWithPoolRequest,
-    CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob,
-    CudaHtj2kDecodeTables, CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob,
-    CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables,
-    CudaJ2kIdwtBatchKernelMode, CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget,
-    CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig,
+    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2kCleanupMultiKernelJob,
+    CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables,
+    CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
+    CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
+    CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
+    CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig,
     CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState,
     CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaKernelName, CudaQueuedHtj2kCleanup,
 };
-#[cfg(feature = "cuda-oxide-j2k-ml")]
-use super::{CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization, CudaJ2kMlSample};
-
 fn cuda_runtime_gate() -> bool {
     j2k_test_support::cuda_runtime_gate(module_path!())
-}
-
-#[test]
-fn cuda_context_identity_distinguishes_clones_from_independent_contexts_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let cloned = context.clone();
-    let independent = CudaContext::system_default().expect("independent CUDA context");
-
-    assert!(context.is_same_context(&cloned));
-    assert!(!context.is_same_context(&independent));
-}
-
-#[test]
-fn retained_primary_context_identity_and_release_are_balanced_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let first = CudaContext::retain_primary(0).expect("retain primary context");
-    let second = CudaContext::retain_primary(0).expect("retain primary context again");
-    let owned = CudaContext::system_default().expect("independent owned context");
-
-    assert!(first.is_same_context(&second));
-    assert!(!first.is_same_context(&owned));
-    assert_eq!(first.device_ordinal(), 0);
-
-    drop(first);
-    drop(second);
-    let retained_again = CudaContext::retain_primary(0).expect("retain primary after release");
-    assert_eq!(retained_again.device_ordinal(), 0);
-}
-
-#[test]
-fn external_cuda_view_rejects_foreign_context_and_never_owns_memory_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let foreign = CudaContext::system_default().expect("foreign CUDA context");
-    let mut allocation = context.allocate(16).expect("device allocation");
-    let ptr = allocation.device_ptr();
-    let len = allocation.byte_len();
-
-    // SAFETY: `allocation` owns the live range and is exclusively borrowed by
-    // the view for the duration of this scope.
-    let view = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(&context, ptr, len, 4, &mut allocation)
-    }
-    .expect("external view");
-    assert_eq!(view.device_ptr(), ptr);
-    assert_eq!(view.byte_len(), 16);
-    drop(view);
-
-    // The external view has no ownership: the original allocation remains
-    // live and is still responsible for freeing its memory.
-    assert_eq!(allocation.device_ptr(), ptr);
-    assert_eq!(allocation.byte_len(), 16);
-
-    // SAFETY: the allocation remains live and exclusively borrowed, but the
-    // deliberately foreign context must reject its pointer identity.
-    let error = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(&foreign, ptr, len, 4, &mut allocation)
-    }
-    .expect_err("foreign context must fail");
-    assert!(matches!(error, CudaError::InvalidArgument { .. }));
-}
-
-#[cfg(feature = "cuda-oxide-j2k-ml")]
-#[test]
-fn j2k_ml_external_destination_checks_batch_offsets_before_launch_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let source = context.upload(&[1, 2, 3, 4]).expect("source upload");
-    let mut allocation = context.allocate(4).expect("destination allocation");
-    let ptr = allocation.device_ptr();
-    let len = allocation.byte_len();
-    // SAFETY: `allocation` owns this live four-byte range and the view holds
-    // its exclusive borrow until validation returns.
-    let mut destination = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(&context, ptr, len, 1, &mut allocation)
-    }
-    .expect("external view");
-
-    let error = context
-        .j2k_ml_convert_into_external(
-            source.device_ptr(),
-            source.byte_len(),
-            &mut destination,
-            CudaJ2kMlKernelConfig {
-                width: 2,
-                height: 2,
-                channels: 1,
-                sample: CudaJ2kMlSample::U8,
-                layout: CudaJ2kMlLayout::ChannelsFirst,
-                destination_offset_elements: 1,
-                normalization: CudaJ2kMlNormalization::Integer,
-            },
-        )
-        .expect_err("offset must exceed destination bounds");
-    assert!(matches!(error, CudaError::OutputTooSmall { .. }));
-    drop(destination);
-    assert_eq!(allocation.device_ptr(), ptr);
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
@@ -1861,6 +1752,10 @@ fn typed_device_view_reports_element_count_when_required() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the table intentionally inventories every decode and encode kernel entry point"
+)]
 fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
     let cases = [
         (
@@ -1916,11 +1811,44 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
         (CudaKernelName::J2kIdwtVertical97, "j2k_idwt_vertical_97"),
         (CudaKernelName::J2kInverseMct, "j2k_inverse_mct"),
         (CudaKernelName::J2kStoreGray8, "j2k_store_gray8"),
+        (CudaKernelName::J2kStoreGray8Batch, "j2k_store_gray8_batch"),
         (CudaKernelName::J2kStoreGray16, "j2k_store_gray16"),
+        (
+            CudaKernelName::J2kStoreGray16Batch,
+            "j2k_store_gray16_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreGrayI16Batch,
+            "j2k_store_grayi16_batch",
+        ),
         (CudaKernelName::J2kStoreRgb8, "j2k_store_rgb8"),
         (
             CudaKernelName::J2kStoreRgb8MctBatch,
             "j2k_store_rgb8_mct_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgb8NativeBatch,
+            "j2k_store_rgb8_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgb16NativeBatch,
+            "j2k_store_rgb16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgbI16NativeBatch,
+            "j2k_store_rgbi16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgba8NativeBatch,
+            "j2k_store_rgba8_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgba16NativeBatch,
+            "j2k_store_rgba16_native_batch",
+        ),
+        (
+            CudaKernelName::J2kStoreRgbaI16NativeBatch,
+            "j2k_store_rgbai16_native_batch",
         ),
         (CudaKernelName::J2kStoreRgb16, "j2k_store_rgb16"),
         (CudaKernelName::J2kStoreRgb16Mct, "j2k_store_rgb16_mct"),

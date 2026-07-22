@@ -6,6 +6,7 @@ use crate::{backend::BackendRequest, pixel::PixelFormat, scale::Downscale, types
 
 mod allocation;
 mod collection;
+mod gpu_job_chunk;
 
 #[doc(hidden)]
 pub use allocation::{
@@ -14,6 +15,12 @@ pub use allocation::{
 };
 pub use collection::{
     try_collect_indexed_batch_results, try_collect_ordered_batch_results_with_limits,
+};
+#[doc(hidden)]
+pub use gpu_job_chunk::{
+    plan_ht_gpu_job_chunks, HtGpuJobChunk, HtGpuJobChunkEntry, HtGpuJobChunkLimit,
+    HtGpuJobChunkLimits, HtGpuJobChunkPlan, HtGpuJobChunkPlanError, HtGpuJobChunkRequest,
+    HtGpuJobPassBucket,
 };
 
 /// Worker configuration for CPU tile batches.
@@ -132,6 +139,12 @@ pub enum BatchInfrastructureError {
     /// An internal planning boundary was invoked without any submitted jobs.
     #[error("batch plan requires at least one job")]
     EmptyBatchPlan,
+    /// A newer shared batch contract cannot be represented by this consumer.
+    #[error("unsupported batch contract: {what}")]
+    UnsupportedContract {
+        /// Contract element that the current consumer cannot represent.
+        what: &'static str,
+    },
     /// Batch-owned metadata would exceed the operation's host-memory budget.
     #[error("{what} is too large: requested {requested} bytes, cap {cap}")]
     AllocationTooLarge {

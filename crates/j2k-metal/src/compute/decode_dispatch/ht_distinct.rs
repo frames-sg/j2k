@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    copied_slice_buffer, dispatch_ht_cleanup_batched_in_command_buffer, ht_batch_output_word_count,
-    new_shared_buffer, Buffer, CommandBufferRef, DirectStatusCheck, Error, J2kHtCleanupBatchJob,
-    MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
+    default_metal_ht_chunk_limits, encode_metal_ht_batches_in_encoder, new_compute_command_encoder,
+    new_shared_buffer, Buffer, CommandBufferRef, DirectStatusCheck, Error, HtBatchInput,
+    J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
+    sub_bands: &[&PreparedHtSubBand],
+    output: &Buffer,
+) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    let result =
+        encode_distinct_ht_sub_bands_to_buffer_in_encoder(runtime, &encoder, sub_bands, output);
+    encoder.end_encoding();
+    result
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_encoder(
+    runtime: &MetalRuntime,
+    encoder: &metal::ComputeCommandEncoderRef,
     sub_bands: &[&PreparedHtSubBand],
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
@@ -20,22 +34,31 @@ pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_command_buff
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                source_indices: None,
+                recyclable_status: None,
             },
         ));
     };
     let per_instance_len = first.width as usize * first.height as usize;
-    encode_distinct_ht_batches_to_buffer_in_command_buffer(
+    let output_word_count = per_instance_len
+        .checked_mul(sub_bands.len())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K MetalDirect distinct sub-band output length overflow".to_string(),
+        })?;
+    encode_distinct_ht_batches_to_buffer_in_encoder(
         runtime,
-        command_buffer,
+        encoder,
         sub_bands
             .iter()
             .enumerate()
             .map(|(index, sub_band)| DistinctHtBatch {
-                coded_data: &sub_band.coded_data,
+                payload: sub_band.payload_source.as_ht_payload_source(),
                 jobs: &sub_band.jobs,
                 output_base: index * per_instance_len,
+                execution_owner: &sub_band.execution_owner,
             }),
         output,
+        output_word_count,
     )
 }
 
@@ -46,6 +69,20 @@ pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_comman
     groups: &[&PreparedHtSubBandGroup],
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    let result =
+        encode_distinct_ht_sub_band_groups_to_buffer_in_encoder(runtime, &encoder, groups, output);
+    encoder.end_encoding();
+    result
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_encoder(
+    runtime: &MetalRuntime,
+    encoder: &metal::ComputeCommandEncoderRef,
+    groups: &[&PreparedHtSubBandGroup],
+    output: &Buffer,
+) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     let Some(first) = groups.first() else {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
@@ -53,181 +90,103 @@ pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_comman
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                source_indices: None,
+                recyclable_status: None,
             },
         ));
     };
     let per_instance_len = first.total_coefficients;
-    encode_distinct_ht_batches_to_buffer_in_command_buffer(
+    let output_word_count =
+        per_instance_len
+            .checked_mul(groups.len())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K MetalDirect distinct group output length overflow".to_string(),
+            })?;
+    encode_distinct_ht_batches_to_buffer_in_encoder(
         runtime,
-        command_buffer,
+        encoder,
         groups
             .iter()
             .enumerate()
             .map(|(index, group)| DistinctHtBatch {
-                coded_data: &group.coded_arena.data,
+                payload: group.payload_source.as_ht_payload_source(),
                 jobs: &group.jobs,
                 output_base: index * per_instance_len,
+                execution_owner: &group.execution_owner,
             }),
         output,
+        output_word_count,
     )
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
 pub(in crate::compute) struct DistinctHtBatch<'a> {
-    pub(in crate::compute) coded_data: &'a [u8],
+    pub(in crate::compute) payload: super::HtPayloadSource<'a>,
     pub(in crate::compute) jobs: &'a [J2kHtCleanupBatchJob],
     pub(in crate::compute) output_base: usize,
+    pub(in crate::compute) execution_owner:
+        &'a std::sync::Arc<crate::compute::PreparedHtExecutionOwner>,
 }
 
 #[cfg(target_os = "macos")]
-struct DistinctHtMetadata {
-    coded_data: Vec<u8>,
-    jobs: Vec<J2kHtCleanupBatchJob>,
-}
-
-#[cfg(target_os = "macos")]
-fn allocate_distinct_ht_metadata(
-    coded_len: usize,
-    job_count: usize,
-    mut budget: crate::batch_allocation::BatchMetadataBudget,
-) -> Result<DistinctHtMetadata, Error> {
-    let requests = [
-        crate::batch_allocation::BatchMetadataRequest::of::<u8>(coded_len),
-        crate::batch_allocation::BatchMetadataRequest::of::<J2kHtCleanupBatchJob>(job_count),
-    ];
-    budget.preflight(&requests)?;
-    Ok(DistinctHtMetadata {
-        coded_data: budget.try_vec(
-            coded_len,
-            "HTJ2K MetalDirect distinct grayscale coded payload",
-        )?,
-        jobs: budget.try_vec(job_count, "HTJ2K MetalDirect distinct grayscale jobs")?,
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(in crate::compute) fn encode_distinct_ht_batches_to_buffer_in_command_buffer<'a>(
+fn encode_distinct_ht_batches_to_buffer_in_encoder<'a>(
     runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
+    encoder: &metal::ComputeCommandEncoderRef,
     batches: impl Iterator<Item = DistinctHtBatch<'a>> + Clone,
     output: &Buffer,
+    output_word_count: usize,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    let coded_len = crate::batch_allocation::checked_count_sum(
-        batches.clone().map(|batch| batch.coded_data.len()),
-        "HTJ2K MetalDirect distinct grayscale coded payload",
+    let batch_count = batches.clone().count();
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "HTJ2K MetalDirect distinct chunk submission",
+    );
+    let mut inputs = budget.try_vec(
+        batch_count,
+        "HTJ2K MetalDirect distinct chunk input descriptors",
     )?;
-    let job_count = crate::batch_allocation::checked_count_sum(
-        batches.clone().map(|batch| batch.jobs.len()),
-        "HTJ2K MetalDirect distinct grayscale jobs",
-    )?;
-    let DistinctHtMetadata {
-        mut coded_data,
-        mut jobs,
-    } = allocate_distinct_ht_metadata(
-        coded_len,
-        job_count,
-        crate::batch_allocation::BatchMetadataBudget::new(
-            "HTJ2K MetalDirect distinct grayscale submission",
-        ),
-    )?;
-
-    for batch in batches {
-        let coded_base = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K MetalDirect distinct grayscale coded payload exceeds u32".to_string(),
-        })?;
-        coded_data.extend_from_slice(batch.coded_data);
-        let output_base = u32::try_from(batch.output_base).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K MetalDirect distinct grayscale output offset exceeds u32".to_string(),
-        })?;
-        for job in batch.jobs {
-            let mut adjusted = *job;
-            adjusted.coded_offset =
-                adjusted
-                    .coded_offset
-                    .checked_add(coded_base)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K MetalDirect distinct grayscale job coded offset overflow"
-                            .to_string(),
-                    })?;
-            adjusted.output_offset =
-                adjusted
-                    .output_offset
-                    .checked_add(output_base)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K MetalDirect distinct grayscale job output offset overflow"
-                            .to_string(),
-                    })?;
-            jobs.push(adjusted);
+    inputs.extend(
+        batches
+            .enumerate()
+            .map(|(source_index, batch)| HtBatchInput {
+                source_index,
+                payload: batch.payload,
+                jobs: batch.jobs,
+                output_base: batch.output_base,
+                execution_owner: batch.execution_owner,
+            }),
+    );
+    for input in &inputs {
+        for job in input.jobs {
+            let output_offset = (job.output_offset as usize)
+                .checked_add(input.output_base)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K MetalDirect distinct output span overflow".to_string(),
+                })?;
+            let output_offset = u32::try_from(output_offset).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K MetalDirect distinct output span exceeds u32".to_string(),
+            })?;
+            let job_output_end = super::ht_output_word_count(
+                output_offset,
+                job.output_stride,
+                job.width,
+                job.height,
+            )?;
+            if job_output_end > output_word_count {
+                return Err(Error::MetalStateInvariant {
+                    state: "HTJ2K MetalDirect distinct output",
+                    reason: "code-block output span exceeds the logical coefficient arena",
+                });
+            }
         }
     }
 
-    if jobs.is_empty() {
-        let empty = new_shared_buffer(&runtime.device, 1)?;
-        return Ok((
-            vec![empty.clone()],
-            DirectStatusCheck::Ht {
-                buffer: empty,
-                len: 0,
-            },
-        ));
-    }
-
-    let coded_buffer = copied_slice_buffer(&runtime.device, &coded_data)?;
-    let jobs_buffer = copied_slice_buffer(&runtime.device, &jobs)?;
-    let status_check = dispatch_ht_cleanup_batched_in_command_buffer(
+    encode_metal_ht_batches_in_encoder(
         runtime,
-        command_buffer,
-        &coded_buffer,
-        &jobs_buffer,
-        jobs.len(),
+        encoder,
+        &inputs,
         output,
-        ht_batch_output_word_count(&jobs)?,
-    )?;
-    Ok((vec![coded_buffer, jobs_buffer], status_check))
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use core::mem::size_of;
-
-    use j2k_core::BatchInfrastructureError;
-
-    use super::{allocate_distinct_ht_metadata, Error, J2kHtCleanupBatchJob};
-    use crate::batch_allocation::BatchMetadataBudget;
-
-    #[test]
-    fn distinct_ht_metadata_honors_exact_cap_and_one_byte_over() {
-        let coded_len = 7;
-        let job_count = 3;
-        let exact_cap = coded_len + job_count * size_of::<J2kHtCleanupBatchJob>();
-        let owners = allocate_distinct_ht_metadata(
-            coded_len,
-            job_count,
-            BatchMetadataBudget::with_cap(
-                "HTJ2K MetalDirect distinct grayscale submission",
-                exact_cap,
-            ),
-        )
-        .expect("exact distinct HT metadata cap");
-        assert_eq!(owners.coded_data.capacity(), coded_len);
-        assert_eq!(owners.jobs.capacity(), job_count);
-
-        assert!(matches!(
-            allocate_distinct_ht_metadata(
-                coded_len,
-                job_count,
-                BatchMetadataBudget::with_cap(
-                    "HTJ2K MetalDirect distinct grayscale submission",
-                    exact_cap - 1,
-                ),
-            ),
-            Err(Error::BatchInfrastructure(
-                BatchInfrastructureError::AllocationTooLarge {
-                    requested,
-                    cap,
-                    ..
-                }
-            )) if requested == exact_cap && cap == exact_cap - 1
-        ));
-    }
+        output_word_count,
+        default_metal_ht_chunk_limits(),
+    )
 }

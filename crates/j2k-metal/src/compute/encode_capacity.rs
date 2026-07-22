@@ -2,13 +2,13 @@
 
 use j2k_native::{EncodeProgressionOrder, J2kPacketizationProgressionOrder};
 
-use super::{
-    J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode, HT_PACKET_CAPACITY_ENV,
-    J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+use super::abi::{
+    HT_PACKET_CAPACITY_ENV, J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
     J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS, J2K_HT_ENCODE_BASE_OUTPUT_SIZE,
     J2K_HT_ENCODE_MAX_SAMPLES, J2K_HT_ENCODE_MEL_SIZE, J2K_HT_ENCODE_MS_BYTES_PER_SAMPLE_FLOOR,
     J2K_HT_ENCODE_MS_SIZE, J2K_HT_ENCODE_VLC_SIZE,
 };
+use super::{J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode};
 use crate::Error;
 
 const JP2K_SOC_MARKER_BYTES: usize = 2;

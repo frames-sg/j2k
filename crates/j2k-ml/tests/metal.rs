@@ -2,200 +2,199 @@
 
 #![cfg(all(feature = "metal", target_os = "macos"))]
 
-use burn_flex::{Flex, FlexDevice};
-use burn_wgpu::WgpuDevice;
-use j2k::{DeviceDecodeRequest, Downscale, Rect};
-use j2k_ml::{
-    cpu, metal, FloatNormalization, TensorDecodeOptions, TensorInput, TensorLayout, TensorRoute,
+use std::sync::Arc;
+
+use burn_core::tensor::DType;
+use j2k::{
+    encode_j2k_lossless, prepare_batch, wrap_j2k_codestream, BatchDecodeOptions, BatchItemError,
+    BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest, DecodeSettings, Downscale,
+    EncodedImage, J2kBlockCodingMode, J2kChannelAssociation, J2kChannelDefinition, J2kChannelType,
+    J2kEncodeValidation, J2kFileBoxMetadata, J2kFileColorSpec, J2kFileWrapOptions,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
 };
+use j2k_core::Colorspace;
+use j2k_ml::{BurnBatchTensor, BurnDecodeError, MetalBurnDecoder};
+use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::{
-    classic_j2k_gray8_fixture, metal_runtime_gate, openhtj2k_refinement_fixture,
+    generated_htj2k_rgba_fixture, htj2k_rgb8_97_fixture, metal_runtime_gate,
+    openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture, openhtj2k_refinement_pixels,
+    Htj2kRgbaAlpha, Htj2kRgbaSampleProfile,
 };
 
-#[test]
-fn strict_metal_staged_decode_reports_route_and_pixels() {
-    if !metal_runtime_gate("j2k-ml strict Metal staged decode") {
-        return;
-    }
-    let encoded = classic_j2k_gray8_fixture(4, 3);
-    let decoded = metal::decode_u8(
-        TensorInput::full(&encoded),
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
+fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
+    let alpha_type = match alpha {
+        Htj2kRgbaAlpha::Straight => J2kChannelType::Opacity,
+        Htj2kRgbaAlpha::Premultiplied => J2kChannelType::PremultipliedOpacity,
+    };
+    let channel_definitions = [
+        J2kChannelDefinition {
+            channel_index: 0,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 1 },
+        },
+        J2kChannelDefinition {
+            channel_index: 1,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 2 },
+        },
+        J2kChannelDefinition {
+            channel_index: 2,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 3 },
+        },
+        J2kChannelDefinition {
+            channel_index: 3,
+            channel_type: alpha_type,
+            association: J2kChannelAssociation::WholeImage,
+        },
+    ];
+    wrap_j2k_codestream(
+        codestream,
+        J2kFileWrapOptions::jph()
+            .with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb))
+            .with_metadata(J2kFileBoxMetadata {
+                palette: None,
+                component_mappings: &[],
+                channel_definitions: &channel_definitions,
+            }),
     )
-    .expect("strict Metal tensor decode");
-
-    assert_eq!(decoded.route, TensorRoute::MetalStaged);
-    assert_eq!(decoded.tensor.dims(), [1, 3, 4]);
-    assert_eq!(
-        decoded
-            .tensor
-            .into_data()
-            .into_vec::<u8>()
-            .expect("u8 data"),
-        (0..12).collect::<Vec<_>>()
-    );
+    .expect("wrap explicit HTJ2K RGBA image")
 }
 
-#[test]
-fn metal_batch_returns_one_rank_four_tensor() {
-    if !metal_runtime_gate("j2k-ml Metal staged batch") {
-        return;
-    }
-    let first = classic_j2k_gray8_fixture(2, 2);
-    let second = classic_j2k_gray8_fixture(2, 2);
-    let decoded = metal::decode_u8_batch(
-        &[TensorInput::full(&first), TensorInput::full(&second)],
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
-    )
-    .expect("strict Metal batch");
-    assert_eq!(decoded.route, TensorRoute::MetalStaged);
-    assert_eq!(decoded.tensor.dims(), [2, 1, 2, 2]);
-}
-
-#[test]
-fn metal_u16_and_float_match_portable_decode() {
-    if !metal_runtime_gate("j2k-ml Metal u16 and float parity") {
-        return;
-    }
-    let encoded = openhtj2k_refinement_fixture();
-    let expected_u16 = cpu::decode_u16::<Flex>(
-        TensorInput::full(encoded),
-        &TensorDecodeOptions::default(),
-        &FlexDevice,
-    )
-    .expect("portable u16")
-    .tensor
-    .into_data()
-    .into_vec::<u16>()
-    .expect("portable u16 data");
-    let actual_u16 = metal::decode_u16(
-        TensorInput::full(encoded),
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
-    )
-    .expect("Metal u16")
-    .tensor
-    .into_data()
-    .into_vec::<u16>()
-    .expect("Metal u16 data");
-    assert_eq!(actual_u16, expected_u16);
-
-    for layout in [TensorLayout::ChannelsFirst, TensorLayout::ChannelsLast] {
-        for normalization in [
-            FloatNormalization::Raw,
-            FloatNormalization::Unit,
-            FloatNormalization::MeanStd {
-                mean: vec![0.25],
-                std: vec![0.5],
+fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
+    let pixels = (0..4_u8)
+        .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
+        .collect::<Vec<_>>();
+    Arc::from(
+        encode(
+            &pixels,
+            2,
+            2,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 1,
+                roi_component_shifts: vec![3, 0, 0],
+                ..EncodeOptions::default()
             },
-        ] {
-            let options = TensorDecodeOptions {
-                layout,
-                normalization,
-                ..TensorDecodeOptions::default()
-            };
-            let expected =
-                cpu::decode_float::<Flex>(TensorInput::full(encoded), &options, &FlexDevice)
-                    .expect("portable float")
-                    .tensor
-                    .into_data()
-                    .into_vec::<f32>()
-                    .expect("portable float data");
-            let actual = metal::decode_float(
-                TensorInput::full(encoded),
-                &options,
-                &WgpuDevice::DefaultDevice,
-            )
-            .expect("Metal float")
-            .tensor
-            .into_data()
-            .into_vec::<f32>()
-            .expect("Metal float data");
-            for (actual, expected) in actual.iter().zip(expected) {
-                assert!((actual - expected).abs() <= 1.0e-6);
+        )
+        .expect("encode classic RGB8 with unsupported RGN maxshift"),
+    )
+}
+
+fn encode_gray12(samples: &[u16]) -> Vec<u8> {
+    let bytes = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&bytes, 2, 2, 1, 12, false).expect("Gray12 samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode Gray12")
+    .codestream
+}
+
+fn encode_signed_gray12(samples: &[i16]) -> Vec<u8> {
+    let bytes = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let samples =
+        J2kLosslessSamples::new(&bytes, 2, 2, 1, 12, true).expect("signed Gray12 samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode signed Gray12")
+    .codestream
+}
+
+fn encode_gray8(samples: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let samples =
+        J2kLosslessSamples::new(samples, width, height, 1, 8, false).expect("Gray8 samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode Gray8")
+    .codestream
+}
+
+fn encode_rgb_u8(width: u32, height: u32, offset: u8) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(width as usize * height as usize * 3);
+    for y in 0..height {
+        for x in 0..width {
+            for pattern in [x * 3 + y * 5, x * 7 + y * 11 + 13, x * 17 + y * 19 + 29] {
+                let pattern = u8::try_from(pattern & 0x3f).expect("six-bit RGB pattern");
+                bytes.push(offset.wrapping_add(pattern) & 0x3f);
             }
         }
     }
+    let samples =
+        J2kLosslessSamples::new(&bytes, width, height, 3, 6, false).expect("six-bit RGB samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External),
+    )
+    .expect("encode HT RGB U8")
+    .codestream
 }
 
-#[test]
-fn metal_roi_scale_and_all_batch_output_modes_report_staged_route() {
-    if !metal_runtime_gate("j2k-ml Metal ROI and batch modes") {
-        return;
+fn encode_rgb_u16(width: u32, height: u32, offset: u16) -> Vec<u8> {
+    encode_rgb_u16_with_mode(width, height, offset, J2kBlockCodingMode::HighThroughput)
+}
+
+fn encode_classic_rgb_u16(width: u32, height: u32, offset: u16) -> Vec<u8> {
+    encode_rgb_u16_with_mode(width, height, offset, J2kBlockCodingMode::Classic)
+}
+
+fn encode_rgb_u16_with_mode(
+    width: u32,
+    height: u32,
+    offset: u16,
+    block_coding_mode: J2kBlockCodingMode,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(width as usize * height as usize * 3 * 2);
+    for y in 0..height {
+        for x in 0..width {
+            for pattern in [
+                x * 193 + y * 257,
+                x * 313 + y * 97 + 31,
+                x * 71 + y * 401 + 63,
+            ] {
+                let pattern = u16::try_from(pattern & 0x07ff).expect("twelve-bit RGB pattern");
+                let sample = offset.wrapping_add(pattern);
+                bytes.extend_from_slice(&(sample & 0x0fff).to_le_bytes());
+            }
+        }
     }
-    let encoded = classic_j2k_gray8_fixture(8, 8);
-    let roi = Rect {
-        x: 2,
-        y: 2,
-        w: 4,
-        h: 4,
-    };
-    let input = TensorInput {
-        encoded: &encoded,
-        request: DeviceDecodeRequest::RegionScaled {
-            roi,
-            scale: Downscale::Half,
-        },
-    };
-    let decoded = metal::decode_float(
-        input,
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
+    let samples = J2kLosslessSamples::new(&bytes, width, height, 3, 12, false)
+        .expect("twelve-bit RGB samples");
+    encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_block_coding_mode(block_coding_mode)
+            .with_validation(J2kEncodeValidation::External),
     )
-    .expect("Metal ROI-scaled float");
-    assert_eq!(decoded.route, TensorRoute::MetalStaged);
-    assert_eq!(decoded.tensor.dims(), [1, 2, 2]);
-    let expected_roi =
-        cpu::decode_float::<Flex>(input, &TensorDecodeOptions::default(), &FlexDevice)
-            .expect("portable ROI-scaled float")
-            .tensor
-            .into_data()
-            .into_vec::<f32>()
-            .expect("portable ROI data");
-    assert_eq!(
-        decoded
-            .tensor
-            .into_data()
-            .into_vec::<f32>()
-            .expect("Metal ROI data"),
-        expected_roi
-    );
-
-    let encoded_u16 = openhtj2k_refinement_fixture();
-    let u16_batch = metal::decode_u16_batch(
-        &[
-            TensorInput::full(encoded_u16),
-            TensorInput::full(encoded_u16),
-        ],
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
-    )
-    .expect("Metal u16 batch");
-    assert_eq!(u16_batch.route, TensorRoute::MetalStaged);
-    assert_eq!(u16_batch.tensor.dims()[0], 2);
-    let u16_values = u16_batch
-        .tensor
-        .into_data()
-        .into_vec::<u16>()
-        .expect("Metal u16 batch data");
-    let midpoint = u16_values.len() / 2;
-    assert_eq!(&u16_values[..midpoint], &u16_values[midpoint..]);
-
-    let float_batch = metal::decode_float_batch(
-        &[TensorInput::full(&encoded), TensorInput::full(&encoded)],
-        &TensorDecodeOptions::default(),
-        &WgpuDevice::DefaultDevice,
-    )
-    .expect("Metal float batch");
-    assert_eq!(float_batch.route, TensorRoute::MetalStaged);
-    assert_eq!(float_batch.tensor.dims(), [2, 1, 8, 8]);
-    let float_values = float_batch
-        .tensor
-        .into_data()
-        .into_vec::<f32>()
-        .expect("Metal float batch data");
-    let midpoint = float_values.len() / 2;
-    assert_eq!(&float_values[..midpoint], &float_values[midpoint..]);
+    .expect("encode RGB U16")
+    .codestream
 }
+
+#[path = "metal/native_color.rs"]
+mod native_color;
+#[path = "metal/requests.rs"]
+mod requests;
+#[path = "metal/sessions.rs"]
+mod sessions;

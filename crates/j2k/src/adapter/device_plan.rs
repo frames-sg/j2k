@@ -50,7 +50,7 @@ impl DeviceDecodePlan {
             DeviceDecodeRequest::RegionScaled { roi, scale } => (roi, scale),
         };
 
-        if !source_rect.is_within(source_dims) {
+        if source_rect.w == 0 || source_rect.h == 0 || !source_rect.is_within(source_dims) {
             return Err(J2kError::InvalidRegion {
                 x: source_rect.x,
                 y: source_rect.y,

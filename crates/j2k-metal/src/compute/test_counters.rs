@@ -47,15 +47,101 @@ test_atomic_counter!(
     reset_flattened_hybrid_cpu_decode_batches_for_test,
     flattened_hybrid_cpu_decode_batches_for_test
 );
-
 std::thread_local! {
+    static STACKED_COMPONENT_BATCHES: Cell<usize> = const { Cell::new(0) };
     static RESIDENT_GPU_TIMESTAMP_QUERIES: Cell<usize> = const { Cell::new(0) };
     static RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
+    static DIRECT_TIER1_INPUT_BUFFER_RUNTIME: Cell<usize> = const { Cell::new(0) };
     static HYBRID_CPU_DECODE_INPUTS_FOR_THREAD: Cell<usize> = const { Cell::new(0) };
     static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static CLASSIC_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
+    static HT_IMMUTABLE_PAYLOAD_UPLOADS: Cell<usize> = const { Cell::new(0) };
+    static HT_IMMUTABLE_JOB_UPLOADS: Cell<usize> = const { Cell::new(0) };
+    static METAL_COMMAND_BUFFERS: Cell<usize> = const { Cell::new(0) };
+    static METAL_COMPUTE_ENCODERS: Cell<usize> = const { Cell::new(0) };
+    static DIRECT_DESTINATION_EVENT_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static DIRECT_DESTINATION_EVENT_SIGNALS: Cell<usize> = const { Cell::new(0) };
+    static DIRECT_DESTINATION_EVENT_WAITS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn reset_direct_destination_event_bridge_for_test() {
+    DIRECT_DESTINATION_EVENT_ALLOCATIONS.with(|count| count.set(0));
+    DIRECT_DESTINATION_EVENT_SIGNALS.with(|count| count.set(0));
+    DIRECT_DESTINATION_EVENT_WAITS.with(|count| count.set(0));
+}
+
+pub(crate) fn direct_destination_event_bridge_for_test() -> (usize, usize, usize) {
+    (
+        DIRECT_DESTINATION_EVENT_ALLOCATIONS.with(Cell::get),
+        DIRECT_DESTINATION_EVENT_SIGNALS.with(Cell::get),
+        DIRECT_DESTINATION_EVENT_WAITS.with(Cell::get),
+    )
+}
+
+pub(crate) fn record_direct_destination_event_allocation() {
+    DIRECT_DESTINATION_EVENT_ALLOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn record_direct_destination_event_signal() {
+    DIRECT_DESTINATION_EVENT_SIGNALS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn record_direct_destination_event_wait() {
+    DIRECT_DESTINATION_EVENT_WAITS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn reset_metal_command_buffers_for_test() {
+    METAL_COMMAND_BUFFERS.with(|count| count.set(0));
+}
+
+pub(crate) fn metal_command_buffers_for_test() -> usize {
+    METAL_COMMAND_BUFFERS.with(Cell::get)
+}
+
+pub(crate) fn record_metal_command_buffer() {
+    METAL_COMMAND_BUFFERS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn reset_metal_compute_encoders_for_test() {
+    METAL_COMPUTE_ENCODERS.with(|count| count.set(0));
+}
+
+pub(crate) fn metal_compute_encoders_for_test() -> usize {
+    METAL_COMPUTE_ENCODERS.with(Cell::get)
+}
+
+pub(crate) fn record_metal_compute_encoder() {
+    METAL_COMPUTE_ENCODERS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn reset_ht_immutable_payload_uploads_for_test() {
+    HT_IMMUTABLE_PAYLOAD_UPLOADS.with(|uploads| uploads.set(0));
+}
+
+pub(crate) fn ht_immutable_payload_uploads_for_test() -> usize {
+    HT_IMMUTABLE_PAYLOAD_UPLOADS.with(Cell::get)
+}
+
+pub(crate) fn reset_ht_immutable_job_uploads_for_test() {
+    HT_IMMUTABLE_JOB_UPLOADS.with(|uploads| uploads.set(0));
+}
+
+pub(crate) fn ht_immutable_job_uploads_for_test() -> usize {
+    HT_IMMUTABLE_JOB_UPLOADS.with(Cell::get)
+}
+
+pub(crate) fn reset_stacked_component_batches_for_test() {
+    STACKED_COMPONENT_BATCHES.with(|counter| counter.set(0));
+}
+
+pub(crate) fn stacked_component_batches_for_test() -> usize {
+    STACKED_COMPONENT_BATCHES.with(Cell::get)
+}
+
+pub(crate) fn record_stacked_component_batch() {
+    STACKED_COMPONENT_BATCHES.with(|counter| counter.set(counter.get().saturating_add(1)));
 }
 
 pub(crate) fn reset_resident_gpu_timestamp_queries_for_test() {
@@ -84,14 +170,25 @@ pub(crate) fn record_resident_codestream_command_buffer_wait() {
 
 pub(crate) fn reset_direct_tier1_input_buffer_prepares_for_test() {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(0));
+    DIRECT_TIER1_INPUT_BUFFER_RUNTIME.with(|identity| identity.set(0));
 }
 
 pub(crate) fn direct_tier1_input_buffer_prepares_for_test() -> usize {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(Cell::get)
 }
 
-pub(crate) fn record_direct_tier1_input_buffer_prepare() {
+pub(crate) fn direct_tier1_input_buffer_runtime_for_test() -> usize {
+    DIRECT_TIER1_INPUT_BUFFER_RUNTIME.with(Cell::get)
+}
+
+pub(crate) fn record_direct_tier1_input_buffer_prepare(_runtime: &super::MetalRuntime) {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get() + 1));
+}
+
+pub(crate) fn record_direct_tier1_input_buffer_runtime(runtime: &super::MetalRuntime) {
+    DIRECT_TIER1_INPUT_BUFFER_RUNTIME.with(|identity| {
+        identity.set(std::ptr::from_ref(runtime).addr());
+    });
 }
 
 pub(crate) fn reset_thread_hybrid_cpu_decode_inputs_for_test() {
@@ -165,4 +262,12 @@ pub(crate) fn record_hybrid_cpu_decode_inputs(count: usize) {
 
 pub(crate) fn record_flattened_hybrid_cpu_decode_batch() {
     FLATTENED_HYBRID_CPU_DECODE_BATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_ht_immutable_payload_upload() {
+    HT_IMMUTABLE_PAYLOAD_UPLOADS.with(|uploads| uploads.set(uploads.get().saturating_add(1)));
+}
+
+pub(crate) fn record_ht_immutable_job_upload() {
+    HT_IMMUTABLE_JOB_UPLOADS.with(|uploads| uploads.set(uploads.get().saturating_add(1)));
 }

@@ -127,9 +127,12 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
                 PAD
             };
 
+            let valid_bits = 8 - u32::from(self.unstuff);
+            let next_unstuff = byte == 0xFF;
+            let byte = if self.unstuff { byte & 0x7F } else { byte };
             self.tmp |= u64::from(byte) << self.bits;
-            self.bits += 8 - u32::from(self.unstuff);
-            self.unstuff = byte == 0xFF;
+            self.bits += valid_bits;
+            self.unstuff = next_unstuff;
         }
     }
 
@@ -199,10 +202,13 @@ impl<'a> ReverseBitReader<'a> {
                 0
             };
 
-            let d_bits = 8 - u32::from(self.unstuff && (byte & 0x7F) == 0x7F);
+            let stuffed = self.unstuff && (byte & 0x7F) == 0x7F;
+            let d_bits = 8 - u32::from(stuffed);
+            let next_unstuff = byte > 0x8F;
+            let byte = if stuffed { byte & 0x7F } else { byte };
             self.tmp |= u64::from(byte) << self.bits;
             self.bits += d_bits;
-            self.unstuff = byte > 0x8F;
+            self.unstuff = next_unstuff;
         }
     }
 
@@ -245,7 +251,7 @@ mod tests {
         assert_eq!(forward.fetch(), 0xFFFF_C03F);
         assert_eq!(
             (forward.pos, forward.bits, forward.tmp, forward.unstuff),
-            (5, 37, 0x0000_003F_FFFF_C03F, true)
+            (5, 37, 0x0000_001F_FFFF_C03F, true)
         );
 
         let mut reverse = ReverseBitReader::new_mrp(&data);

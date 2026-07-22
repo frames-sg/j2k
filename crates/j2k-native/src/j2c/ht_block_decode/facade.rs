@@ -4,7 +4,8 @@ use super::super::build::CodeBlock;
 use super::super::decode::DecompositionStorage;
 use super::collect_code_block_segments;
 use super::pipeline::PHASE_LIMIT_MAGREF;
-use super::state::{HtBlockDecodeContext, HtBlockDecodeStats};
+use super::state::HtBlockDecodeContext;
+use super::stats::HtBlockDecodeStats;
 use super::validation::decode_segments_validated_with_scratch_for_phase;
 use crate::error::{bail, DecodingError, Result};
 

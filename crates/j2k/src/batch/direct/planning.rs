@@ -8,10 +8,10 @@ use j2k_native::{
     DecodingError as NativeDecodingError, J2kDirectColorPlan, J2kRect,
 };
 
-use crate::backend::{self, DecodeSettings};
+use crate::backend;
 use crate::decode::validate_region;
 use crate::parse::parse_image_info;
-use crate::J2kError;
+use crate::{DecodeSettings, J2kError};
 
 pub(super) fn build_direct_color_region_plan(
     input: &[u8],
@@ -37,13 +37,7 @@ pub(super) fn build_direct_color_region_plan(
         parsed.info.dimensions.1.div_ceil(scale.denominator()),
     );
     let output_region = roi.scaled_covering(scale);
-    let image = backend::image(
-        input,
-        DecodeSettings {
-            target_resolution: Some(target_dims),
-            ..DecodeSettings::default()
-        },
-    )?;
+    let image = backend::image(input, DecodeSettings::default(), Some(target_dims))?;
     validate_region(output_region, (image.width(), image.height()))?;
 
     let mut native_context = j2k_native::DecoderContext::default();

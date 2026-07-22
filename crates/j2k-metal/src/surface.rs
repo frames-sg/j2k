@@ -226,6 +226,20 @@ impl Surface {
             storage: Storage::Metal(image),
         })
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_resident_metal_image(image: ResidentMetalImage) -> Self {
+        let layout = image.layout();
+        Self {
+            backend: BackendKind::Metal,
+            residency: SurfaceResidency::MetalResidentDecode,
+            dimensions: layout.dimensions(),
+            fmt: layout.pixel_format(),
+            pitch_bytes: layout.pitch_bytes(),
+            byte_offset: layout.byte_offset(),
+            storage: Storage::Metal(image),
+        }
+    }
 }
 
 #[doc(hidden)]

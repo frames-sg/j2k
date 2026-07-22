@@ -82,6 +82,7 @@ impl CudaContext {
             jobs,
             tables,
             statuses,
+            status_byte_offset,
             job_count,
             mode,
         } = launch;
@@ -91,7 +92,16 @@ impl CudaContext {
         let mut vlc_table1_ptr = tables.vlc_table1.device_ptr();
         let mut uvlc_table0_ptr = tables.uvlc_table0.device_ptr();
         let mut uvlc_table1_ptr = tables.uvlc_table1.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
+        let mut statuses_ptr = statuses
+            .device_ptr()
+            .checked_add(u64::try_from(status_byte_offset).map_err(|_| {
+                CudaError::LengthTooLarge {
+                    len: status_byte_offset,
+                }
+            })?)
+            .ok_or(CudaError::LengthTooLarge {
+                len: status_byte_offset,
+            })?;
         let mut job_count = c_uint::try_from(job_count)
             .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
         let mut params = cuda_kernel_params!(

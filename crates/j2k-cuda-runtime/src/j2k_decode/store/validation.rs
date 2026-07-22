@@ -3,7 +3,7 @@
 use crate::{
     context::{ensure_context_ownership, CudaContext},
     error::CudaError,
-    j2k_decode::types::CudaJ2kStoreRgb8MctTarget,
+    j2k_decode::types::{CudaJ2kStoreRgb8MctTarget, CudaJ2kStoreRgbNativeJob},
     memory::CudaDeviceBuffer,
 };
 
@@ -60,6 +60,26 @@ pub(super) fn validate_inverse_mct_planes_disjoint(
         planes[0].overlaps(planes[2])?,
         planes[1].overlaps(planes[2])?,
     ])
+}
+
+pub(super) fn validate_rgb_tile_compatibility(
+    previous: &CudaJ2kStoreRgbNativeJob,
+    current: &CudaJ2kStoreRgbNativeJob,
+) -> Result<(), CudaError> {
+    if previous.output_width != current.output_width
+        || previous.output_height != current.output_height
+        || previous.bit_depth0 != current.bit_depth0
+        || previous.bit_depth1 != current.bit_depth1
+        || previous.bit_depth2 != current.bit_depth2
+        || previous.layout != current.layout
+        || previous.transform != current.transform
+    {
+        return Err(CudaError::InvalidArgument {
+            message: "tile stores for one exact-native RGB output have incompatible metadata"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn validate_store_plane(

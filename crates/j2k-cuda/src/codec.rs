@@ -43,7 +43,13 @@ impl Codec {
     fn supports_cuda_batch_format(fmt: PixelFormat) -> bool {
         matches!(
             fmt,
-            PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16
+            PixelFormat::Gray8
+                | PixelFormat::Gray16
+                | PixelFormat::GrayI16
+                | PixelFormat::Rgb8
+                | PixelFormat::Rgba8
+                | PixelFormat::Rgb16
+                | PixelFormat::Rgba16
         )
     }
 

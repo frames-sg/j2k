@@ -3,8 +3,8 @@
 use crate::{
     checked_blit_command_encoder, checked_buffer_read_vec, checked_command_buffer,
     checked_command_queue, checked_shared_buffer_for_len, checked_shared_buffer_with_slice,
-    system_default_device, MetalImageLayout, MetalSupportError, ResidentMetalImage,
-    SubmittedMetalImages,
+    system_default_device, MetalImageDestination, MetalImageLayout, MetalSupportError,
+    ResidentMetalImage, SubmittedMetalImages,
 };
 use j2k_core::{DeviceSubmission, PixelFormat};
 
@@ -24,6 +24,28 @@ fn metal_image_layout_rejects_short_pitch_and_overflow() {
     ));
     assert!(matches!(
         MetalImageLayout::new(0, (1, 2), usize::MAX, PixelFormat::Gray8),
+        Err(MetalSupportError::MetalImageLayout { .. })
+    ));
+}
+
+#[test]
+fn metal_image_batch_layout_allows_unaligned_gray8_item_offsets_from_aligned_base() {
+    let layout = MetalImageLayout::new_batch(4, (3, 3), 3, PixelFormat::Gray8, 2, 9)
+        .expect("valid odd Gray8 batch layout");
+
+    assert_eq!(layout.byte_offset(), 4);
+    assert_eq!(layout.image_count(), 2);
+    assert_eq!(layout.image_stride_bytes(), 9);
+    assert_eq!(layout.image_offset_bytes(0), Some(0));
+    assert_eq!(layout.image_offset_bytes(1), Some(9));
+    assert_eq!(layout.image_offset_bytes(2), None);
+    assert_eq!(layout.byte_len(), 18);
+    assert!(matches!(
+        MetalImageLayout::new_batch(4, (3, 3), 3, PixelFormat::Gray8, 0, 9),
+        Err(MetalSupportError::MetalImageLayout { .. })
+    ));
+    assert!(matches!(
+        MetalImageLayout::new_batch(4, (3, 3), 3, PixelFormat::Gray8, 2, 8),
         Err(MetalSupportError::MetalImageLayout { .. })
     ));
 }
@@ -211,4 +233,68 @@ fn metal_image_device_identity_reports_mismatched_registry_ids() {
             requested_registry_id: 29,
         })
     ));
+}
+
+#[test]
+fn metal_image_destination_rejects_unaligned_and_out_of_bounds_subranges() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let Ok(device) = system_default_device() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let buffer = checked_shared_buffer_for_len::<u8>(&device, 16).expect("bounded buffer");
+    let unaligned =
+        MetalImageLayout::new(1, (4, 1), 4, PixelFormat::Gray8).expect("standalone layout");
+
+    // SAFETY: No CPU or GPU operation accesses this fresh allocation while
+    // destination construction validates the proposed exclusive range.
+    let error = unsafe { MetalImageDestination::from_exclusive_buffer(buffer.clone(), unaligned) }
+        .expect_err("unaligned destination");
+    assert_eq!(
+        error,
+        MetalSupportError::BufferAlignment {
+            offset_bytes: 1,
+            align: 4,
+        }
+    );
+
+    let out_of_bounds =
+        MetalImageLayout::new(12, (8, 1), 8, PixelFormat::Gray8).expect("standalone layout");
+    // SAFETY: As above, construction is the only access to the fresh buffer.
+    let error = unsafe { MetalImageDestination::from_exclusive_buffer(buffer, out_of_bounds) }
+        .expect_err("out-of-bounds destination");
+    assert_eq!(
+        error,
+        MetalSupportError::BufferBounds {
+            offset_bytes: 12,
+            byte_len: 8,
+            buffer_len: 16,
+        }
+    );
+}
+
+#[test]
+fn metal_image_destination_validates_device_and_preserves_subrange_layout() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let Ok(device) = system_default_device() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let buffer = checked_shared_buffer_for_len::<u8>(&device, 32).expect("bounded buffer");
+    let layout =
+        MetalImageLayout::new(8, (4, 2), 4, PixelFormat::Gray8).expect("valid subrange layout");
+
+    // SAFETY: The test keeps no concurrent CPU/GPU access to this destination.
+    let destination = unsafe { MetalImageDestination::from_exclusive_buffer(buffer, layout) }
+        .expect("valid destination");
+
+    assert_eq!(destination.layout(), layout);
+    assert_eq!(destination.device_registry_id(), device.registry_id());
+    destination
+        .validate_device(&device)
+        .expect("matching destination device");
 }

@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use j2k::DecodeRequest;
 use j2k_core::{Downscale, PixelFormat, Rect};
 
 use super::*;
@@ -63,6 +64,104 @@ fn roi(x: u32) -> Rect {
 
 fn id(value: Option<&TestValue>) -> Option<usize> {
     value.map(|value| value.id)
+}
+
+#[test]
+fn prepared_image_keys_match_only_the_exact_arc_request_and_format() {
+    let bytes = Arc::<[u8]>::from(b"same codestream".as_slice());
+    let alias = bytes.clone();
+    let distinct_owner = Arc::<[u8]>::from(b"same codestream".as_slice());
+    let mut cache = PreparedPlanCache::new(8);
+    cache
+        .insert(
+            PreparedPlanCacheKey::prepared_gray(&bytes, DecodeRequest::Full, PixelFormat::Gray16),
+            value(41, 0, 0),
+        )
+        .expect("insert exact prepared-image identity");
+
+    assert_eq!(
+        id(cache.get(PreparedPlanCacheKey::prepared_gray(
+            &alias,
+            DecodeRequest::Full,
+            PixelFormat::Gray16,
+        ))),
+        Some(41)
+    );
+    for key in [
+        PreparedPlanCacheKey::prepared_gray(
+            &distinct_owner,
+            DecodeRequest::Full,
+            PixelFormat::Gray16,
+        ),
+        PreparedPlanCacheKey::prepared_gray(
+            &bytes,
+            DecodeRequest::Reduced {
+                scale: Downscale::Half,
+            },
+            PixelFormat::Gray16,
+        ),
+        PreparedPlanCacheKey::prepared_gray(&bytes, DecodeRequest::Full, PixelFormat::GrayI16),
+        PreparedPlanCacheKey::prepared_color(&bytes, DecodeRequest::Full, PixelFormat::Gray16),
+    ] {
+        assert_eq!(id(cache.get(key)), None);
+    }
+}
+
+#[test]
+fn prepared_image_arc_bytes_drive_eviction_and_oversized_admission() {
+    let first = Arc::<[u8]>::from(vec![1_u8; 32]);
+    let second = Arc::<[u8]>::from(vec![2_u8; 32]);
+    let first_key =
+        PreparedPlanCacheKey::prepared_color(&first, DecodeRequest::Full, PixelFormat::Rgb8);
+    let second_key =
+        PreparedPlanCacheKey::prepared_color(&second, DecodeRequest::Full, PixelFormat::Rgb8);
+
+    let mut probe = PreparedPlanCache::with_limits_and_digest_builder(
+        2,
+        usize::MAX,
+        usize::MAX,
+        ConstantDigestBuilder,
+    );
+    probe
+        .insert(first_key, value(1, 0, 0))
+        .expect("probe one prepared Arc entry");
+    let one_entry_limit = probe.retained_host_bytes().expect("probe retained bytes");
+
+    let mut bounded = PreparedPlanCache::with_limits_and_digest_builder(
+        2,
+        one_entry_limit,
+        usize::MAX,
+        ConstantDigestBuilder,
+    );
+    assert_eq!(
+        bounded.insert(first_key, value(1, 0, 0)).unwrap(),
+        PreparedPlanCacheInsert::Cached
+    );
+    assert_eq!(
+        bounded.insert(second_key, value(2, 0, 0)).unwrap(),
+        PreparedPlanCacheInsert::Cached
+    );
+    assert_eq!(id(bounded.get(first_key)), None);
+    assert_eq!(id(bounded.get(second_key)), Some(2));
+    assert!(bounded.retained_host_bytes().unwrap() <= one_entry_limit);
+
+    let oversized = Arc::<[u8]>::from(vec![3_u8; 33]);
+    let oversized_key =
+        PreparedPlanCacheKey::prepared_color(&oversized, DecodeRequest::Full, PixelFormat::Rgb8);
+    let mut rejecting = PreparedPlanCache::with_limits_and_digest_builder(
+        2,
+        one_entry_limit,
+        usize::MAX,
+        ConstantDigestBuilder,
+    );
+    assert_eq!(
+        rejecting
+            .insert(oversized_key, value(3, 0, 0))
+            .expect("oversized prepared Arc admission"),
+        PreparedPlanCacheInsert::SkippedOversized
+    );
+    assert_eq!(rejecting.len(), 0);
+    assert_eq!(Arc::strong_count(&oversized), 1);
 }
 
 #[test]

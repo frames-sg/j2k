@@ -17,6 +17,7 @@ mod batch;
 mod decode;
 mod encode;
 mod metadata;
+mod owned_batch;
 mod parallelism;
 mod recode;
 mod wrap;
@@ -67,8 +68,8 @@ pub use batch::{
 };
 
 pub use decode::{
-    J2kComponentPlane, J2kDecodeWarning, J2kDecodedColorSpace, J2kDecodedComponents,
-    J2kDecodedNativeComponents, J2kNativeComponentPlane,
+    DecodeSettings, J2kComponentPlane, J2kDecodeWarning, J2kDecodedColorSpace,
+    J2kDecodedComponents, J2kDecodedNativeComponents, J2kNativeComponentPlane,
 };
 
 pub use parallelism::CpuDecodeParallelism;
@@ -77,6 +78,16 @@ pub use metadata::{
     J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentInfo,
     J2kComponentMapping, J2kComponentMappingType, J2kFileMetadata, J2kPaletteColumn,
     J2kPaletteMetadata, J2kSupportInfo,
+};
+
+pub use owned_batch::{
+    prepare_batch, prepare_batch_from_images, BatchAlpha, BatchCodecRoute, BatchColor,
+    BatchDecodeOptions, BatchDecoder, BatchErrorStage, BatchGroupInfo, BatchItemError, BatchLayout,
+    BatchWaveletTransform, ClassicCodeBlockPayload, CpuBatchDecodeResult, CpuBatchDecoder,
+    CpuBatchGroup, CpuBatchSamples, CpuBatchWorkspaceStats, DecodeRequest, EncodedImage,
+    Htj2kPayloadRanges, IndexedBatchError, J2kCodestreamRange, NativeSampleType,
+    NonRepresentableReason, PreparationDepth, PreparedBatch, PreparedBatchGroup,
+    PreparedClassicPlan, PreparedHtj2kPlan, PreparedImage,
 };
 
 pub use encode::{
@@ -103,10 +114,10 @@ pub use wrap::{wrap_j2k_codestream, J2kFileBoxMetadata, J2kFileColorSpec, J2kFil
 pub use parse::{extract_j2k_codestream_payload, J2kCodestreamPayload};
 
 pub use j2k_core::{
-    BackendKind, BackendRequest, BufferError, CodecError, CompressedPayloadKind,
-    CompressedTransferSyntax, DecodeOutcome, DecodeRowsError, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeRows, PassthroughCandidate, PassthroughDecision, PassthroughRejectReason,
-    PassthroughRequirements, PixelFormat, Rect, RowSink, TileBatchDecode,
+    BackendKind, BackendRequest, BatchInfrastructureError, BufferError, CodecError,
+    CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome, DecodeRowsError, Downscale,
+    ImageCodec, ImageDecode, ImageDecodeRows, PassthroughCandidate, PassthroughDecision,
+    PassthroughRejectReason, PassthroughRequirements, PixelFormat, Rect, RowSink, TileBatchDecode,
 };
 
 pub(crate) mod parse;

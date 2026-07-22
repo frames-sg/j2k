@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use super::super::{assert_pattern_checks, repo_root, PatternCheck};
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
 
 mod classic;
 

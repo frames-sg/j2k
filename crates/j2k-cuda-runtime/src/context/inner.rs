@@ -8,7 +8,10 @@ use crate::{
 };
 
 use super::host_budget::SharedCudaHostBudget;
-use super::{CompiledKernel, CompiledKernelKey, ContextResourceLifecycle};
+use super::{
+    diagnostics::{CudaContextDiagnosticsState, CudaEventPoolState},
+    CompiledKernel, CompiledKernelKey, ContextResourceLifecycle,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ContextOwnership {
@@ -22,6 +25,8 @@ pub(crate) struct ContextInner {
     pub(crate) ownership: ContextOwnership,
     pub(crate) device_ordinal: usize,
     pub(crate) modules: Mutex<HashMap<CompiledKernelKey, CompiledKernel>>,
+    pub(crate) event_pool: Mutex<CudaEventPoolState>,
+    pub(crate) diagnostics: CudaContextDiagnosticsState,
     pub(crate) pinned_upload_operation: Mutex<()>,
     pub(crate) pinned_upload_staging: Mutex<PinnedUploadStagingPool>,
     pub(crate) host_budget: std::sync::Arc<SharedCudaHostBudget>,
@@ -52,6 +57,15 @@ impl Drop for ContextInner {
                     // SAFETY: modules were loaded into this CUDA context. Drop
                     // cannot surface errors, so cleanup failures are ignored.
                     let _ = unsafe { (self.driver.cu_module_unload)(compiled.module) };
+                }
+                let event_pool = match self.event_pool.get_mut() {
+                    Ok(event_pool) => event_pool,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                for event in event_pool.drain() {
+                    // SAFETY: cached event handles were created by this CUDA
+                    // context and are released before the context itself.
+                    let _ = unsafe { (self.driver.cu_event_destroy)(event) };
                 }
             }
             match self.ownership {

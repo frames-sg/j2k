@@ -179,13 +179,26 @@ pub use color::{
 pub use color::{ComponentPlaneParts, NativeComponentPlaneParts};
 #[doc(hidden)]
 pub use direct_cpu::{
-    execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into, J2kDirectCpuScratch,
+    execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into,
+    execute_referenced_classic_entropy_job, execute_referenced_classic_plan,
+    execute_referenced_classic_plan_from_payloads, execute_referenced_htj2k_entropy_job,
+    execute_referenced_htj2k_plan, execute_referenced_htj2k_plan_from_payloads,
+    finish_referenced_classic_staged, finish_referenced_classic_tile_staged,
+    finish_referenced_htj2k_staged, finish_referenced_htj2k_tile_staged,
+    prepare_referenced_classic_entropy_workspace, prepare_referenced_classic_staged,
+    prepare_referenced_classic_tile_staged, prepare_referenced_htj2k_entropy_workspace,
+    prepare_referenced_htj2k_staged, prepare_referenced_htj2k_tile_staged, J2kDirectCodeBlockIndex,
+    J2kDirectCpuEntropyWorkspace, J2kDirectCpuScratch, J2kDirectDecodedComponents,
+    J2kDirectDecodedPlane,
 };
 #[doc(hidden)]
 pub use direct_plan::{
-    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan,
+    HtCodeBlockPayloadRanges, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
+    J2kClassicCodeBlockPayload, J2kCodestreamRange, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectRgbaPlan,
+    J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kReferencedClassicPlan,
+    J2kReferencedHtj2kPlan, J2kReferencedPayloadRecordSpan, J2kReferencedTileGeometry,
+    J2kReferencedTilePlan,
 };
 #[doc(hidden)]
 pub use direct_roi::{
@@ -240,7 +253,10 @@ pub use j2c::encode::{
     irreversible_quantization_step_for_subband, EncodeComponentPlane, EncodeOptions,
     EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
 };
-pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
+pub use j2c::{
+    CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
+    Reversible53CoefficientImage,
+};
 #[doc(hidden)]
 pub use j2k_types::{
     sort_packet_descriptors_for_progression, CpuOnlyJ2kEncodeStageAccelerator,

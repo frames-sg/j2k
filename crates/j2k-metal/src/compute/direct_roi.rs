@@ -1,14 +1,42 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::abi::{
+    J2kClassicCleanupBatchJob, J2kHtCleanupBatchJob, J2kIdwtSingleDecompositionParams,
+    J2kRepeatedIdwtSingleDecompositionParams,
+};
+use super::direct_prepare::{prepare_classic_sub_band_groups, prepare_ht_sub_band_groups};
 use super::{
-    copied_slice_buffer, idwt_required_input_windows, idwt_required_output_margin,
-    prepare_classic_sub_band_groups, prepare_ht_sub_band_groups,
-    prepare_ungrouped_ht_sub_band_buffers, with_runtime, DirectBandSlice, DirectTier1Mode, Error,
-    J2kClassicCleanupBatchJob, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kHtCleanupBatchJob, J2kIdwtSingleDecompositionParams,
-    J2kRepeatedIdwtSingleDecompositionParams, J2kRequiredBandRegion, PreparedDirectGrayscalePlan,
+    copied_slice_buffer, idwt_required_input_windows, idwt_required_output_margin, with_runtime,
+    DirectBandSlice, DirectTier1Mode, Error, J2kDirectBandId, J2kDirectIdwtStep,
+    J2kDirectStoreStep, J2kRequiredBandRegion, PreparedDirectGrayscalePlan,
     PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtSubBand, Rect,
 };
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CheckedF32Span {
+    pub(super) elements: usize,
+    pub(super) bytes: usize,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn checked_f32_span(
+    width: usize,
+    height: usize,
+    context: &str,
+) -> Result<CheckedF32Span, Error> {
+    let elements = width
+        .checked_mul(height)
+        .ok_or_else(|| Error::MetalKernel {
+            message: format!("{context} element count overflow"),
+        })?;
+    let bytes = elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: format!("{context} byte count overflow"),
+        })?;
+    Ok(CheckedF32Span { elements, bytes })
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn crop_prepared_direct_grayscale_plan_to_output_region(
@@ -190,11 +218,6 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
     apply_prepared_direct_idwt_output_windows(plan, &idwt_outputs)?;
     plan.classic_groups = prepare_classic_sub_band_groups(&plan.steps, plan.tier1_prepare_mode)?;
     plan.ht_groups = prepare_ht_sub_band_groups(&plan.steps, plan.tier1_prepare_mode)?;
-    prepare_ungrouped_ht_sub_band_buffers(
-        &mut plan.steps,
-        &plan.ht_groups,
-        plan.tier1_prepare_mode,
-    )?;
     Ok(())
 }
 
@@ -350,8 +373,13 @@ pub(super) struct PreparedIdwtInputStrides {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn prepared_idwt_output_len(idwt: &PreparedDirectIdwt) -> usize {
-    idwt.output_window.width() as usize * idwt.output_window.height() as usize
+pub(super) fn prepared_idwt_output_len(idwt: &PreparedDirectIdwt) -> Result<usize, Error> {
+    checked_f32_span(
+        idwt.output_window.width() as usize,
+        idwt.output_window.height() as usize,
+        "J2K MetalDirect IDWT output",
+    )
+    .map(|span| span.elements)
 }
 
 #[cfg(target_os = "macos")]
@@ -489,6 +517,14 @@ pub(super) fn compact_ht_sub_band_coded_data(
     sub_band: &mut PreparedHtSubBand,
     _tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<(), Error> {
+    let coded_data =
+        sub_band
+            .payload_source
+            .contiguous_mut()
+            .ok_or(Error::MetalStateInvariant {
+                state: "HTJ2K MetalDirect cropped plan",
+                reason: "post-prepare ROI compaction requires a legacy contiguous payload plan",
+            })?;
     let compacted_len = crate::batch_allocation::checked_count_sum(
         sub_band.jobs.iter().map(|job| job.coded_len as usize),
         "HTJ2K MetalDirect cropped coded payload",
@@ -503,7 +539,7 @@ pub(super) fn compact_ht_sub_band_coded_data(
             .ok_or_else(|| Error::MetalKernel {
                 message: "HTJ2K MetalDirect cropped coded payload range overflow".to_string(),
             })?;
-        if end > sub_band.coded_data.len() {
+        if end > coded_data.len() {
             return Err(Error::MetalKernel {
                 message: "HTJ2K MetalDirect cropped coded payload range out of bounds".to_string(),
             });
@@ -513,7 +549,7 @@ pub(super) fn compact_ht_sub_band_coded_data(
         "HTJ2K MetalDirect cropped coded payload",
     );
     let mut compacted = budget.try_vec(compacted_len, "HTJ2K MetalDirect cropped coded payload")?;
-    let previous = std::mem::take(&mut sub_band.coded_data);
+    let previous = std::mem::take(coded_data);
 
     for job in &mut sub_band.jobs {
         let start = job.coded_offset as usize;
@@ -525,9 +561,7 @@ pub(super) fn compact_ht_sub_band_coded_data(
         compacted.extend_from_slice(&previous[start..end]);
     }
 
-    sub_band.coded_data = compacted;
-    sub_band.coded_buffer = None;
-    sub_band.jobs_buffer = None;
+    *coded_data = compacted;
     Ok(())
 }
 
@@ -596,4 +630,37 @@ pub(super) fn crop_direct_store_step_to_output_region(
     store.output_x = intersection.0 - region_bounds.0;
     store.output_y = intersection.1 - region_bounds.1;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod span_tests {
+    use std::mem::size_of;
+
+    use super::*;
+
+    #[test]
+    fn non_stacked_f32_span_accepts_exact_byte_boundary_and_rejects_one_over() {
+        let exact_elements = usize::MAX / size_of::<f32>();
+        let exact = checked_f32_span(exact_elements, 1, "J2K MetalDirect non-stacked test span")
+            .expect("largest exactly representable f32 span");
+        assert_eq!(exact.elements, exact_elements);
+        assert_eq!(exact.bytes, exact_elements * size_of::<f32>());
+
+        assert!(matches!(
+            checked_f32_span(
+                exact_elements + 1,
+                1,
+                "J2K MetalDirect non-stacked test span",
+            ),
+            Err(Error::MetalKernel { message }) if message.contains("byte count overflow")
+        ));
+        assert!(matches!(
+            checked_f32_span(
+                usize::MAX,
+                2,
+                "J2K MetalDirect non-stacked test span",
+            ),
+            Err(Error::MetalKernel { message }) if message.contains("element count overflow")
+        ));
+    }
 }

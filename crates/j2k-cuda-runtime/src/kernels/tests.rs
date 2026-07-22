@@ -165,6 +165,94 @@ fn htj2k_cleanup_decode_geometry_packs_large_batches_into_warps() {
 }
 
 #[test]
+fn htj2k_sigprop_forward_reader_discards_a_set_stuffed_overlap_bit() {
+    let data = [0xFF_u8, 0x80, 0x00, 0x00, 0x00];
+    let mut tmp = 0_u64;
+    let mut bits = 0_u32;
+    let mut unstuff = false;
+    for byte in data {
+        let valid_bits = 8 - u32::from(unstuff);
+        let next_unstuff = byte == 0xFF;
+        let byte = if unstuff { byte & 0x7F } else { byte };
+        tmp |= u64::from(byte) << bits;
+        bits += valid_bits;
+        unstuff = next_unstuff;
+    }
+    assert_eq!(
+        u32::try_from(tmp).expect("low CUDA reservoir word"),
+        0x0000_00FF
+    );
+
+    let device = include_str!("../cuda_oxide_htj2k_decode/simt/src/main.rs");
+    let fill = device
+        .split("fn forward_reader_fill")
+        .nth(1)
+        .expect("CUDA HT forward-reader fill")
+        .split("fn forward_reader_fetch")
+        .next()
+        .expect("CUDA HT forward-reader fill body");
+    assert!(
+        fill.contains("let byte = if reader.unstuff { byte & 0x7f } else { byte };")
+            || fill.contains("let byte = if reader.unstuff { byte & 0x7F } else { byte };")
+    );
+    assert!(fill.contains("reader.unstuff = next_unstuff;"));
+}
+
+#[test]
+fn htj2k_sigprop_quad_preserves_the_next_above_stripe_context() {
+    let mut previous_row = [0x0000_u16, 0xA5A5];
+    let new_sig = 0x0000_0088_u32;
+    let cleanup_sig_pair = 0xF00F_0011_u32;
+    let combined_sig = new_sig | (cleanup_sig_pair & 0xFFFF);
+    previous_row[0] = u16::try_from(combined_sig).expect("low significance half");
+    assert_eq!(previous_row, [0x0099, 0xA5A5]);
+
+    let device = include_str!("../cuda_oxide_htj2k_decode/simt/src/main.rs");
+    let sigprop = device
+        .split("fn apply_significance_propagation")
+        .nth(1)
+        .expect("CUDA HT SigProp phase")
+        .split("fn apply_magnitude_refinement")
+        .next()
+        .expect("CUDA HT SigProp phase body");
+    assert!(sigprop.contains("let combined_sig = new_sig | (cs & 0xffff);"));
+    assert!(!sigprop.contains("prev_row_sig[idx as usize + 1] ="));
+}
+
+#[test]
+fn htj2k_magref_reverse_reader_discards_a_set_stuffed_overlap_bit() {
+    let data = [0x00_u8, 0x00, 0x00, 0x00, 0xFF];
+    let mut tmp = 0_u64;
+    let mut bits = 0_u32;
+    let mut unstuff = true;
+    for raw in data.into_iter().rev() {
+        let stuffed = unstuff && (raw & 0x7F) == 0x7F;
+        let valid_bits = 8 - u32::from(stuffed);
+        let next_unstuff = raw > 0x8F;
+        let byte = if stuffed { raw & 0x7F } else { raw };
+        tmp |= u64::from(byte) << bits;
+        bits += valid_bits;
+        unstuff = next_unstuff;
+    }
+    assert_eq!(
+        u32::try_from(tmp).expect("low CUDA reservoir word"),
+        0x0000_007F
+    );
+
+    let device = include_str!("../cuda_oxide_htj2k_decode/simt/src/main.rs");
+    let fill = device
+        .split("fn reverse_reader_fill")
+        .nth(1)
+        .expect("CUDA HT reverse-reader fill")
+        .split("fn reverse_reader_fetch")
+        .next()
+        .expect("CUDA HT reverse-reader fill body");
+    assert!(fill.contains("let stuffed = reader.unstuff && (byte & 0x7f) == 0x7f;"));
+    assert!(fill.contains("let byte = if stuffed { byte & 0x7f } else { byte };"));
+    assert!(fill.contains("reader.unstuff = next_unstuff;"));
+}
+
+#[test]
 fn classic_decode_geometry_and_device_stride_share_a_classic_owned_constant() {
     let geometry = j2k_classic_codeblock_launch_geometry(3).expect("classic geometry");
     assert_eq!(geometry.grid(), (3, 1, 1));
@@ -306,6 +394,12 @@ fn cuda_oxide_j2k_decode_store_kernel_metadata_matches_generated_ptx() {
         CudaKernel::J2kStoreGray16,
         CudaKernel::J2kStoreRgb8,
         CudaKernel::J2kStoreRgb8MctBatch,
+        CudaKernel::J2kStoreRgb8NativeBatch,
+        CudaKernel::J2kStoreRgb16NativeBatch,
+        CudaKernel::J2kStoreRgbI16NativeBatch,
+        CudaKernel::J2kStoreRgba8NativeBatch,
+        CudaKernel::J2kStoreRgba16NativeBatch,
+        CudaKernel::J2kStoreRgbaI16NativeBatch,
         CudaKernel::J2kStoreRgb16,
         CudaKernel::J2kStoreRgb16Mct,
     ];

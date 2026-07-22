@@ -8,6 +8,8 @@ use super::super::color_batch::{
     decode_color_cuda_resident_region_scaled_surface, decode_color_cuda_resident_region_surface,
     decode_color_cuda_resident_scaled_surface, decode_color_cuda_resident_surface_with_profile,
 };
+#[cfg(feature = "cuda-runtime")]
+use super::super::grayscale_batch::decode_grayscale_cuda_resident_batch_surfaces_with_profile;
 use super::super::{
     profile, CudaHtj2kProfileReport, CudaSession, DeviceDecodePlan, DeviceDecodeRequest, Downscale,
     Error, J2kDecoder, PixelFormat, Rect, Surface, SurfaceResidency,
@@ -90,6 +92,14 @@ pub(in crate::decoder) fn decode_batch_to_cuda_resident_surface_with_profile_con
         ));
     }
     match fmt {
+        PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16 => {
+            decode_grayscale_cuda_resident_batch_surfaces_with_profile(
+                inputs,
+                session,
+                fmt,
+                collect_stage_timings,
+            )
+        }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
             decode_color_cuda_resident_batch_surfaces_with_profile(
                 inputs,

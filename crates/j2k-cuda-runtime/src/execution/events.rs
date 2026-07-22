@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    build_flags::cuda_stage_timings_disabled, context::CudaContext, driver::CudaNvtxRange,
-    error::CudaError,
+    build_flags::cuda_stage_timings_disabled,
+    context::CudaContext,
+    driver::CudaNvtxRange,
+    error::{select_resource_release_error, CudaError},
 };
 
 mod handles;
+mod interop;
 
 pub(crate) use handles::CudaEvent;
 #[cfg(test)]
@@ -48,6 +51,20 @@ impl CudaContext {
 
     /// Create a CUDA timing event owned by this context.
     pub(crate) fn create_event(&self) -> Result<CudaEvent, CudaError> {
+        if let Some(event) = self
+            .inner
+            .event_pool
+            .lock()
+            .map_err(|error| CudaError::StatePoisoned {
+                message: error.to_string(),
+            })?
+            .take()
+        {
+            return Ok(CudaEvent {
+                context: self.clone(),
+                event,
+            });
+        }
         let mut event = std::ptr::null_mut();
         self.inner.with_current_stateful_operation(|| {
             // SAFETY: CUDA writes a new event handle while the context
@@ -60,6 +77,26 @@ impl CudaContext {
                 "CUDA returned a null event after successful creation",
             )
         })?;
+        match self.inner.event_pool.lock() {
+            Ok(mut events) => events.record_driver_allocation(),
+            Err(error) => {
+                let primary = CudaError::StatePoisoned {
+                    message: error.to_string(),
+                };
+                let release = self.inner.with_current_stateful_operation(|| {
+                    // SAFETY: event was just created by this context and has
+                    // not escaped. A poisoned diagnostics/cache lock must not
+                    // leak the raw driver allocation.
+                    self.inner.driver.check("cuEventDestroy_v2", unsafe {
+                        (self.inner.driver.cu_event_destroy)(event)
+                    })
+                });
+                return match release {
+                    Ok(()) => Err(primary),
+                    Err(release) => Err(select_resource_release_error(primary, release)),
+                };
+            }
+        }
         Ok(CudaEvent {
             context: self.clone(),
             event,

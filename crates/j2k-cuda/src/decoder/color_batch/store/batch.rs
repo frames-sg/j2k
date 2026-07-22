@@ -65,7 +65,7 @@ pub(in crate::decoder::color_batch) fn prepare_rgb8_mct_batch_store(
     ];
     let store_plan = ColorStorePlan::new(
         stores,
-        color.bit_depths,
+        color.rgb_bit_depths(),
         addends,
         ColorStoreRoute::for_mct(true, color.transform),
     );

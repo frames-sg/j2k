@@ -12,6 +12,7 @@
 #![warn(unreachable_pub)]
 
 mod allocation;
+mod batch;
 mod codec;
 mod decoder;
 #[cfg(any(feature = "cuda-runtime", test))]
@@ -23,6 +24,14 @@ mod runtime;
 mod session;
 mod surface;
 
+pub use batch::{
+    CudaBatchDecodeResult, CudaBatchDecoder, CudaBatchError, CudaBatchGroup, CudaBatchGroupError,
+};
+#[cfg(feature = "cuda-runtime")]
+pub use batch::{
+    CudaExternalBatchGroup, CudaExternalBatchTryFinish, CudaResidentBatchBuffer,
+    SubmittedCudaExternalBatch, SubmittedCudaResidentBatch,
+};
 pub use codec::Codec;
 pub use decoder::J2kDecoder;
 #[cfg(feature = "cuda-runtime")]
@@ -53,4 +62,6 @@ pub use profile::{
     CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
 };
 pub use session::CudaSession;
+#[cfg(feature = "cuda-runtime")]
+pub use session::{CudaDecodePoolDiagnostics, CudaDecodePoolSnapshot, CudaSessionDiagnostics};
 pub use surface::{CudaSurface, CudaSurfaceStats, Surface, SurfaceResidency};

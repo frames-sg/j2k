@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{J2kResidentEncodeStageStats, J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS};
+use super::abi::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS;
+use super::J2kResidentEncodeStageStats;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct J2kClassicTier1PassClassCounts {
