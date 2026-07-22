@@ -234,6 +234,44 @@ class CratesIoApi:
         return RegistryRecord(True, checksum)
 
 
+def package_archive_checksum(
+    crate: str, version: str, extra_arguments: Sequence[str] = ()
+) -> str:
+    command = [
+        "cargo",
+        "package",
+        "--locked",
+        "--no-verify",
+        "-p",
+        crate,
+        *extra_arguments,
+    ]
+    result = subprocess.run(
+        command, cwd=ROOT, check=False, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise PublishError(
+            f"cargo package failed for {crate}:\n{result.stderr.strip()}"
+        )
+    archive = ROOT / "target" / "package" / f"{crate}-{version}.crate"
+    try:
+        return hashlib.sha256(archive.read_bytes()).hexdigest()
+    except OSError as error:
+        raise PublishError(f"could not hash packaged archive {archive}: {error}") from None
+
+
+def is_unpublished_dependency_failure(output: str) -> bool:
+    message = output.lower()
+    return all(
+        marker in message
+        for marker in (
+            "failed to select a version for the requirement",
+            "candidate versions found which didn't match",
+            "location searched: crates.io index",
+        )
+    )
+
+
 def package_checksums(
     manifest: ReleaseManifest, version: str, metadata: Mapping[str, Any]
 ) -> dict[str, str]:
@@ -270,27 +308,14 @@ def package_checksums(
 
     checksums: dict[str, str] = {}
     for crate in manifest.ordered_crates:
-        command = [
-            "cargo",
-            "package",
-            "--locked",
-            "--no-verify",
-            "-p",
-            crate,
-            *patch_arguments,
-        ]
-        result = subprocess.run(
-            command, cwd=ROOT, check=False, capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise PublishError(
-                f"cargo package failed for {crate}:\n{result.stderr.strip()}"
-            )
-        archive = ROOT / "target" / "package" / f"{crate}-{version}.crate"
         try:
-            checksums[crate] = hashlib.sha256(archive.read_bytes()).hexdigest()
-        except OSError as error:
-            raise PublishError(f"could not hash packaged archive {archive}: {error}") from None
+            checksums[crate] = package_archive_checksum(crate, version)
+        except PublishError as error:
+            if not is_unpublished_dependency_failure(str(error)):
+                raise
+            checksums[crate] = package_archive_checksum(
+                crate, version, patch_arguments
+            )
     return checksums
 
 
@@ -435,7 +460,7 @@ def publish_remaining(
     api: Any,
     manifest: ReleaseManifest,
     version: str,
-    checksums: Mapping[str, str],
+    checksums: dict[str, str],
     start_index: int,
     *,
     run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_publish,
@@ -453,6 +478,7 @@ def publish_remaining(
                 print(result.stdout.rstrip())
             if result.stderr:
                 print(result.stderr.rstrip(), file=sys.stderr)
+            checksums[crate] = package_archive_checksum(crate, version)
             if result.returncode == 0:
                 break
 

@@ -93,6 +93,16 @@ class PackagingTests(unittest.TestCase):
             def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 commands.append(command)
                 self.assertEqual(kwargs["cwd"], root)
+                crate = command[command.index("-p") + 1]
+                if crate == "consumer" and "--config" not in command:
+                    return subprocess.CompletedProcess(
+                        command,
+                        1,
+                        "",
+                        "failed to select a version for the requirement "
+                        "`base = \"=0.7.3\"`; candidate versions found which "
+                        "didn't match; location searched: crates.io index",
+                    )
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with (
@@ -105,14 +115,15 @@ class PackagingTests(unittest.TestCase):
             f'patch.crates-io.{crate}.path="{root.resolve() / "crates" / crate}"'
             for crate in manifest.ordered_crates
         }
-        self.assertEqual(len(commands), 2)
-        for command in commands:
-            configs = {
-                command[index + 1]
-                for index, argument in enumerate(command)
-                if argument == "--config"
-            }
-            self.assertEqual(configs, expected_patches)
+        self.assertEqual(len(commands), 3)
+        self.assertNotIn("--config", commands[0])
+        self.assertNotIn("--config", commands[1])
+        configs = {
+            commands[2][index + 1]
+            for index, argument in enumerate(commands[2])
+            if argument == "--config"
+        }
+        self.assertEqual(configs, expected_patches)
 
 
 class RegistryTests(unittest.TestCase):
@@ -200,19 +211,33 @@ class RegistryTests(unittest.TestCase):
             api.records["a"] = publish_release.RegistryRecord(True, "aaa")
             return subprocess.CompletedProcess(command, 0, "published", "")
 
-        publish_release.publish_remaining(
-            api,
-            manifest,
-            "0.7.3",
-            {"a": "aaa"},
-            0,
-            run=run,
-            sleep=delays.append,
-        )
+        refreshed: list[tuple[str, str]] = []
+
+        def package_archive_checksum(crate: str, version: str) -> str:
+            refreshed.append((crate, version))
+            return "aaa"
+
+        checksums = {"a": "staged-checksum"}
+        with mock.patch.object(
+            publish_release,
+            "package_archive_checksum",
+            side_effect=package_archive_checksum,
+        ):
+            publish_release.publish_remaining(
+                api,
+                manifest,
+                "0.7.3",
+                checksums,
+                0,
+                run=run,
+                sleep=delays.append,
+            )
 
         self.assertEqual(attempts, 2)
         self.assertEqual(delays, [5])
         self.assertGreaterEqual(len(api.calls), 1)
+        self.assertEqual(refreshed, [("a", "0.7.3"), ("a", "0.7.3")])
+        self.assertEqual(checksums, {"a": "aaa"})
 
     def test_authentication_and_validation_failures_are_never_retried(self) -> None:
         for output in (
