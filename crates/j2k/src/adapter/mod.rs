@@ -4,6 +4,3 @@
 
 /// Device decode request normalization.
 pub(crate) mod device_plan;
-
-/// Encode-stage adapter contracts.
-pub(crate) mod encode_stage;

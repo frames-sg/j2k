@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod color_native;
+mod color_native_rgba;
+
+pub(crate) use color_native::CudaJ2kStoreRgbNativeBatchJob;
+pub use color_native::{CudaJ2kStoreRgbNativeJob, CudaJ2kStoreRgbNativeTarget};
+pub(crate) use color_native_rgba::CudaJ2kStoreRgbaNativeBatchJob;
+pub use color_native_rgba::{CudaJ2kStoreRgbaNativeJob, CudaJ2kStoreRgbaNativeTarget};
+
 use crate::{driver::CuDevicePtr, memory::CudaDeviceBuffer};
 
 /// CUDA-side integer rectangle for JPEG 2000 direct-plan kernels.
@@ -122,6 +130,69 @@ pub struct CudaJ2kStoreGray16Job {
     pub addend: f32,
     /// Source component bit depth.
     pub bit_depth: u32,
+}
+
+/// One Gray8 store item for a batched dispatch.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub struct CudaJ2kStoreGray8Target<'a> {
+    /// Dense output index; consecutive tile stores may write disjoint rectangles.
+    pub output_index: usize,
+    /// Source reconstructed component plane.
+    pub input: &'a CudaDeviceBuffer,
+    /// Store geometry, level shift, and precision.
+    pub job: CudaJ2kStoreGray8Job,
+}
+
+/// One Gray16 store item for a batched dispatch.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub struct CudaJ2kStoreGray16Target<'a> {
+    /// Dense output image receiving this store.
+    pub output_index: usize,
+    /// Source reconstructed component plane.
+    pub input: &'a CudaDeviceBuffer,
+    /// Store geometry, level shift, and precision.
+    pub job: CudaJ2kStoreGray16Job,
+}
+
+/// One signed GrayI16 store item for a batched dispatch.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub struct CudaJ2kStoreGrayI16Target<'a> {
+    /// Dense output image receiving this store.
+    pub output_index: usize,
+    /// Source reconstructed component plane.
+    pub input: &'a CudaDeviceBuffer,
+    /// Store geometry, zero signed level shift, and precision.
+    pub job: CudaJ2kStoreGray16Job,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CudaJ2kStoreGray8BatchJob {
+    pub(crate) input_ptr: CuDevicePtr,
+    pub(crate) output_ptr: CuDevicePtr,
+    pub(crate) job: CudaJ2kStoreGray8Job,
+    pub(crate) reserved_tail: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CudaJ2kStoreGray16BatchJob {
+    pub(crate) input_ptr: CuDevicePtr,
+    pub(crate) output_ptr: CuDevicePtr,
+    pub(crate) job: CudaJ2kStoreGray16Job,
+    pub(crate) reserved_tail: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CudaJ2kStoreGrayI16BatchJob {
+    pub(crate) input_ptr: CuDevicePtr,
+    pub(crate) output_ptr: CuDevicePtr,
+    pub(crate) job: CudaJ2kStoreGray16Job,
+    pub(crate) reserved_tail: u32,
 }
 
 /// In-place inverse MCT dispatch over three device f32 component planes.

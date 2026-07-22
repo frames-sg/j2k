@@ -1,4 +1,4 @@
-# J2K
+# J2K — Pure-Rust JPEG 2000 and HTJ2K Codec
 
 [![crates.io](https://img.shields.io/crates/v/j2k.svg)](https://crates.io/crates/j2k)
 [![docs.rs](https://img.shields.io/docsrs/j2k)](https://docs.rs/j2k)
@@ -6,7 +6,7 @@
 [![downloads](https://img.shields.io/crates/d/j2k.svg)](https://crates.io/crates/j2k)
 [![license](https://img.shields.io/crates/l/j2k.svg)](#license)
 
-**Docs & guides:** <https://frames-sg.github.io/j2k/>
+**Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
 **Release status:** `0.7.3` is published and security-supported. See the
 [release notes](CHANGELOG.md) and [release policy](docs/release.md).
@@ -121,6 +121,39 @@ CUDA paths use J2K-owned CUDA Oxide device kernels through `cuda-runtime`.
 NVIDIA performance claims require self-hosted benchmark evidence; hosted CI is
 not treated as NVIDIA performance evidence.
 
+## High-throughput owned batches
+
+The additive owned-batch API accepts `EncodedImage` values containing an
+`Arc<[u8]>` and one of `Full`, `Region`, `Reduced`, or `RegionReduced`. It
+prepares inputs concurrently, keeps unlike output shapes in separate groups
+without padding, and returns source indices, indexed preparation failures, and
+homogeneous group execution failures. Representable Gray, RGB, and RGBA groups
+use exact native `U8`, `U16`, or `I16` storage in NCHW or NHWC order; float
+conversion and normalization are deliberately not codec operations.
+
+Preparation can retain either a `PreparedHtj2kPlan` or a
+`PreparedClassicPlan` with per-tile packet, code-block, and destination
+geometry. Both plans reference compressed payload ranges inside the original
+`Arc<[u8]>`; neither duplicates the codestream. `CpuBatchDecoder` consumes
+single- and multi-tile plans without reparsing. Inputs outside the retained-plan
+boundary can remain metadata-only and use the broader CPU codec when that path
+supports them.
+
+`j2k-cuda` and `j2k-metal` own persistent accelerator sessions, resident
+output, and validated caller-owned destinations. Their direct final stores
+produce the requested native dtype and layout in the destination allocation,
+so decoded pixels do not make a GPU-to-CPU-to-GPU round trip. The codec-wide
+support boundary is maintained in
+[docs/public-support.md](docs/public-support.md); the exact experimental Burn
+adapter boundary is maintained in [docs/j2k-ml.md](docs/j2k-ml.md). Dated
+hardware validation and performance results live only in
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+
+`j2k-ml` is only the thin Burn allocation and synchronization adapter over
+these codec sessions. Readers such as `wsi-rs` remain responsible for finding
+and supplying encoded image bytes. Codec support and correctness do not by
+themselves constitute a speedup claim.
+
 ## Which crate should I use?
 
 Use `cargo add j2k` for JPEG 2000 / HTJ2K application code. Lower-level
@@ -139,26 +172,20 @@ Use lower-level crates only when you need a specific integration point:
 | JPEG-to-HTJ2K coefficient-domain transcode | `j2k-transcode` |
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
-| Experimental Burn 0.21 tensor decode integration | `j2k-ml` (unpublished) |
+| Experimental Burn 0.21 native integer batch adapter | `j2k-ml` (unpublished) |
 | Tile compression codecs | `j2k-tilecodec` |
 | Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
 The names `statumen` and `wsi-dicom` are not current package names.
 
-## Support Matrix
+## Support and evidence
 
-| Area | Current support | Notes |
-| --- | --- | --- |
-| JPEG 2000 Part 1 inspect | Raw J2K/J2C codestreams and JP2 still-image files | Unsupported or malformed input fails explicitly. |
-| JPEG 2000 Part 1 decode | Full-frame, ROI, scaled, row, tile-batch, and component-plane API surfaces | CPU is the portable correctness baseline. |
-| JPEG 2000 Part 1 encode | Native Rust encode APIs for codestream and JP2 output, including component-plane metadata | Stable public API is centered on `j2k`; adapter SPI remains experimental. |
-| HTJ2K Part 15 inspect/decode/encode | Raw HT codestreams and JPH still-image files, including cleanup and refinement paths | HT requests beyond the Part 15 coded-bitplane limit reject explicitly. |
-| JP2/JPH metadata | IHDR/COLR/BPCC/PCLR/CMAP/CDEF/ICC still-image metadata paths covered by repo-local tests | Broader external JP2/JPH metadata parity remains publication evidence. |
-| Recode | J2K-to-HTJ2K coefficient recode where valid, pixel-preserving fallback otherwise | Palette/component-mapped fallbacks intentionally drop mapping metadata after resolving pixels. |
-| JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
-| JPEG-to-HTJ2K coefficient-domain transcode | CPU transcode primitives plus CUDA/Metal stage adapters | The public workflow requires HT block coding. |
-| CUDA acceleration | J2K-owned CUDA kernels with CUDA Oxide as the target device-kernel backend | Requires self-hosted CUDA validation before performance claims. |
-| Metal acceleration | macOS Metal adapters for selected decode, encode-stage, and transcode stages | Auto routing stays conservative and benchmark-gated. |
+The living codec support matrix is
+[docs/public-support.md](docs/public-support.md). The experimental Burn batch
+adapter has a narrower, explicit boundary in
+[docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
+qualifications are recorded separately in
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
 ## Fast Path For LLM-Assisted Use
 
@@ -203,7 +230,8 @@ transcode crates, and backend encode-stage adapter SPI.
 
 Codec contracts include `ImageDecode`, `decode_region_scaled_into`,
 `decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and
-`DecoderContext`. `BackendRequest::Auto` may return CPU output.
+the concrete `J2kContext` and `j2k_jpeg::DecoderContext` types.
+`BackendRequest::Auto` may return CPU output.
 `BackendRequest::Metal` and `BackendRequest::Cuda` are strict and fail for
 unsupported shapes.
 
@@ -230,8 +258,8 @@ Reference files:
   environment variables
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
   HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
-- [docs/j2k-ml.md](docs/j2k-ml.md) - Burn tensor layouts, normalization,
-  batching, and accelerator route guarantees
+- [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
+  prepared reuse, and direct accelerator destination guarantees
 - [docs/release.md](docs/release.md) - release and package validation policy
 - [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
 - [CHANGELOG.md](CHANGELOG.md) - current release notes

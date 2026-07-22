@@ -3,6 +3,8 @@
 use super::*;
 use crate::j2c::ComponentData;
 
+mod workspace_reuse;
+
 #[test]
 fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
     let pixels = vec![0, 16, 32, 64, 80, 96, 128, 144, 160, 192, 208, 224];
@@ -22,7 +24,6 @@ fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
         ))
     );
 }
-
 #[test]
 fn ht_uvlc_encode_table_bytes_match_entry_packing_order() {
     let entries = ht_uvlc_encode_table();

@@ -20,21 +20,30 @@ pub(super) enum DirectTier1Mode {
 }
 
 #[cfg(test)]
-fn record_direct_tier1_input_buffer_prepare() {
-    super::test_counters::record_direct_tier1_input_buffer_prepare();
+fn record_direct_tier1_input_buffer_prepare(runtime: &MetalRuntime) {
+    super::test_counters::record_direct_tier1_input_buffer_prepare(runtime);
 }
 
 #[cfg(not(test))]
-fn record_direct_tier1_input_buffer_prepare() {}
+fn record_direct_tier1_input_buffer_prepare(_runtime: &MetalRuntime) {}
+
+#[cfg(test)]
+fn record_direct_tier1_input_buffer_runtime(runtime: &MetalRuntime) {
+    super::test_counters::record_direct_tier1_input_buffer_runtime(runtime);
+}
+
+#[cfg(not(test))]
+fn record_direct_tier1_input_buffer_runtime(_runtime: &MetalRuntime) {}
 
 pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
     mode: DirectTier1Mode,
 ) -> Result<Buffer, Error> {
+    record_direct_tier1_input_buffer_runtime(runtime);
     match mode {
         DirectTier1Mode::Metal => {
-            record_direct_tier1_input_buffer_prepare();
+            record_direct_tier1_input_buffer_prepare(runtime);
             copied_slice_buffer(&runtime.device, data)
         }
         DirectTier1Mode::CpuUpload => Ok(runtime.tier1_dummy_buffer.clone()),
@@ -65,6 +74,14 @@ pub(super) fn record_hybrid_stacked_component_batch(tier1_mode: DirectTier1Mode)
         super::test_counters::record_hybrid_stacked_component_batch();
     }
 }
+
+#[cfg(test)]
+pub(super) fn record_stacked_component_batch() {
+    super::test_counters::record_stacked_component_batch();
+}
+
+#[cfg(not(test))]
+pub(super) fn record_stacked_component_batch() {}
 
 #[cfg(not(test))]
 pub(super) fn record_hybrid_stacked_component_batch(_tier1_mode: DirectTier1Mode) {}

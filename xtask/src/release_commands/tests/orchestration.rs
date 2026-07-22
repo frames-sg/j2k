@@ -67,17 +67,25 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
             "scripts/publish-crate.sh",
             include_str!("../../../../scripts/publish-crate.sh"),
         ),
+        (
+            "scripts/publish_release.py",
+            include_str!("../../../../scripts/publish_release.py"),
+        ),
+        (
+            "release-crates.json",
+            include_str!("../../../../release-crates.json"),
+        ),
     ] {
         std::fs::write(release_root.join(path), source).expect("write release contract fixture");
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.7.3\"\n",
+        "[workspace.package]\nversion = \"0.7.4\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.7.3] - 2026-07-15\n",
+        "# Changelog\n\n## [0.7.4] - 2026-07-16\n",
     )
     .expect("write finalized changelog fixture");
     std::fs::write(

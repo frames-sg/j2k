@@ -2,6 +2,7 @@
 
 //! Release-version and reviewed public-API compatibility gates.
 
+mod compatibility;
 mod review;
 
 use std::{
@@ -18,18 +19,23 @@ use crate::stable_api::{
     collect_package_apis, verify_cargo_public_api_version, CARGO_PUBLIC_API_VERSION,
     HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET, PUBLIC_API_TOOLCHAIN,
 };
+use compatibility::run_semver_checks;
+#[cfg(test)]
+use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
 const SEMVER_TOOLCHAIN: &str = "1.96";
-const SEMVER_BASELINE_VERSION: &str = "0.6.2";
-const SEMVER_BASELINE_TAG: &str = "v0.6.2";
-const SEMVER_BASELINE_COMMIT: &str = "55ee746e1b49f7309e4d030cc01a69d580173920";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.3.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.3.yml";
+const SEMVER_BASELINE_VERSION: &str = "0.7.3";
+const SEMVER_BASELINE_TAG: &str = "v0.7.3";
+const SEMVER_BASELINE_COMMIT: &str = "494eebc3ef20895d331da86221b1d8c4bd4cabf8";
+const SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = "0.7.4";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.4.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.4.yml";
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
     "j2k-core",
+    "j2k-codec-math",
     "j2k-jpeg",
     "j2k-tilecodec",
     "j2k-jpeg-metal",
@@ -46,7 +52,7 @@ const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k-profile",
 ];
 
-const SEMVER_NEW_PACKAGES: &[&str] = &["j2k-codec-math"];
+const SEMVER_NEW_PACKAGES: &[&str] = &[];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Version {
@@ -181,7 +187,7 @@ pub(crate) fn semver(
     let baseline_snapshot = baseline_api_snapshot(cargo_public_api_version)?;
     let baseline_apis = parse_api_snapshot(&baseline_snapshot)?;
     validate_snapshot_scope(
-        "published 0.6.2 ordinary snapshot",
+        "published 0.7.3 ordinary snapshot",
         SEMVER_BASELINE_PACKAGES,
         &baseline_apis,
     )?;
@@ -707,6 +713,13 @@ fn render_report(
     )
     .unwrap();
     writeln!(&mut out, "- Candidate version: `{candidate_version}`").unwrap();
+    if candidate_version == SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION {
+        writeln!(
+            &mut out,
+            "- Compatibility exception: `0.7.4` is an explicitly reviewed source-incompatible patch candidate; compatibility checks use `major` while package versions remain `0.7.4`."
+        )
+        .unwrap();
+    }
     writeln!(
         &mut out,
         "- Tool pins: Rust `{SEMVER_TOOLCHAIN}`, `cargo-semver-checks {CARGO_SEMVER_CHECKS_VERSION}`, `cargo-public-api {cargo_public_api_version}`, rustdoc `{PUBLIC_API_TOOLCHAIN}`, target `{PUBLIC_API_TARGET}`"
@@ -747,25 +760,27 @@ fn render_report(
         .unwrap();
     }
 
-    writeln!(&mut out).unwrap();
-    writeln!(
-        &mut out,
-        "## New packages without a 0.6.2 registry baseline"
-    )
-    .unwrap();
-    writeln!(&mut out).unwrap();
-    for diff in diffs.iter().filter(|diff| diff.release_type.is_none()) {
+    if diffs.iter().any(|diff| diff.release_type.is_none()) {
+        writeln!(&mut out).unwrap();
         writeln!(
             &mut out,
-            "- `{}` `{}`: {} ordinary public API items, fingerprint `{}`; {} rustdoc-hidden public API items, full-inventory fingerprint `{}`.",
-            diff.package,
-            diff.candidate_version,
-            diff.candidate_count,
-            diff.added_fingerprint(),
-            diff.hidden.len(),
-            diff.hidden_fingerprint()
+            "## New packages without a {SEMVER_BASELINE_VERSION} registry baseline"
         )
         .unwrap();
+        writeln!(&mut out).unwrap();
+        for diff in diffs.iter().filter(|diff| diff.release_type.is_none()) {
+            writeln!(
+                &mut out,
+                "- `{}` `{}`: {} ordinary public API items, fingerprint `{}`; {} rustdoc-hidden public API items, full-inventory fingerprint `{}`.",
+                diff.package,
+                diff.candidate_version,
+                diff.candidate_count,
+                diff.added_fingerprint(),
+                diff.hidden.len(),
+                diff.hidden_fingerprint()
+            )
+            .unwrap();
+        }
     }
 
     writeln!(&mut out).unwrap();
@@ -843,27 +858,6 @@ fn verify_or_write_report(options: Options, rendered: &str) -> Result<(), String
             path.display()
         ))
     }
-}
-
-fn run_semver_checks(diffs: &[PackageApiDiff]) -> Result<(), String> {
-    for diff in diffs.iter().filter(|diff| diff.release_type.is_some()) {
-        let release_type = diff.release_type.expect("published diff release type");
-        let args = semver_cargo_args([
-            "semver-checks",
-            "check-release",
-            "--package",
-            diff.package.as_str(),
-            "--baseline-version",
-            SEMVER_BASELINE_VERSION,
-            "--release-type",
-            release_type.as_str(),
-            "--color",
-            "never",
-        ]);
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        process::run_command(OsString::from("rustup"), &args, CommandContext::new())?;
-    }
-    Ok(())
 }
 
 fn capture_command(

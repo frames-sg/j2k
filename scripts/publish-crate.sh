@@ -9,34 +9,27 @@ if [[ "$#" -ne 1 ]]; then
 fi
 requested="$1"
 dry_run="${DRY_RUN_ONLY:-false}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+release_manifest="${script_dir}/../release-crates.json"
 
-publishable_crates=(
- j2k-core
- j2k-profile
- j2k-types
- j2k-codec-math
- j2k-cuda-runtime
- j2k-metal-support
- j2k-native
- j2k-jpeg
- j2k-tilecodec
- j2k
- j2k-transcode
- j2k-transcode-cuda
- j2k-jpeg-metal
- j2k-metal
- j2k-transcode-metal
- j2k-jpeg-cuda
- j2k-cuda
- j2k-cli
-)
-
-registry_independent_crates=(
- j2k-core
- j2k-profile
- j2k-types
- j2k-codec-math
-)
+publishable_output="$(
+  python3 "${script_dir}/publish_release.py" manifest \
+    --manifest "$release_manifest" \
+    --field ordered-crates
+)"
+registry_independent_output="$(
+  python3 "${script_dir}/publish_release.py" manifest \
+    --manifest "$release_manifest" \
+    --field registry-independent
+)"
+publishable_crates=()
+while IFS= read -r crate; do
+  [[ -n "$crate" ]] && publishable_crates+=("$crate")
+done <<< "$publishable_output"
+registry_independent_crates=()
+while IFS= read -r crate; do
+  [[ -n "$crate" ]] && registry_independent_crates+=("$crate")
+done <<< "$registry_independent_output"
 
 workspace_version() {
   awk '

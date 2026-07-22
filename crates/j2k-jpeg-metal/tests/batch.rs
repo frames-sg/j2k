@@ -1,6 +1,6 @@
 use j2k_core::{
-    BackendKind, BackendRequest, CodecError, DecoderContext, DeviceSubmission, DeviceSurface,
-    Downscale, PixelFormat, Rect, TileBatchDecodeDevice, TileBatchDecodeSubmit,
+    BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
+    PixelFormat, Rect, TileBatchDecodeDevice, TileBatchDecodeSubmit,
 };
 use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 #[cfg(target_os = "macos")]
@@ -26,7 +26,7 @@ fn tile_device_decode_matches_host_tile_decode() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
@@ -60,7 +60,7 @@ fn tile_scaled_device_decode_has_expected_dimensions() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
@@ -90,7 +90,7 @@ fn tile_region_device_decode_has_expected_dimensions() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let roi = Rect {
         x: 4,
@@ -135,7 +135,7 @@ fn compatible_tile_submits_flush_once() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
@@ -219,7 +219,7 @@ fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
 
 #[test]
 fn auto_small_restart_tile_batch_stays_cpu_surface() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420_RESTART)
@@ -260,7 +260,7 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420_RESTART)
@@ -301,7 +301,7 @@ fn compatible_region_scaled_tile_submits_flush_once() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let roi = Rect {
@@ -358,7 +358,7 @@ fn compatible_region_scaled_tile_submits_flush_once() {
 
 #[test]
 fn auto_tile_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let roi = Rect {
         x: 4,
@@ -387,7 +387,7 @@ fn auto_tile_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
 
 #[test]
 fn explicit_metal_tile_unsupported_shape_is_rejected() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let result = Codec::decode_tile_to_device(
         &mut ctx,
@@ -411,7 +411,7 @@ fn explicit_metal_tile_unsupported_shape_is_rejected() {
 
 #[test]
 fn explicit_metal_tile_unsupported_error_is_codec_unsupported() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let err = match Codec::decode_tile_to_device(
         &mut ctx,
@@ -432,7 +432,7 @@ fn explicit_metal_tile_unsupported_error_is_codec_unsupported() {
 
 #[test]
 fn cuda_tile_request_remains_unsupported_backend() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let result = Codec::decode_tile_to_device(
         &mut ctx,
@@ -460,7 +460,7 @@ fn cuda_tile_request_remains_unsupported_backend() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn non_macos_explicit_metal_tile_decode_is_unavailable() {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let result = Codec::decode_tile_to_device(
         &mut ctx,
@@ -483,7 +483,7 @@ fn incompatible_shapes_split_batches() {
         return;
     }
 
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
 

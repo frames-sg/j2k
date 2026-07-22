@@ -5,6 +5,94 @@ use std::fs;
 use super::*;
 
 #[test]
+fn cuda_j2k_decode_store_simt_modules_are_focused_and_staged() {
+    let root = repo_root();
+    let source_root = root.join("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src");
+    let main = fs::read_to_string(source_root.join("main.rs"))
+        .expect("read CUDA Oxide J2K decode-store SIMT root");
+    let build = fs::read_to_string(root.join("crates/j2k-cuda-runtime/build.rs"))
+        .expect("read CUDA runtime build script");
+    let modules = [
+        ("abi", "abi.rs", 275),
+        ("color", "color.rs", 200),
+        ("exports", "exports.rs", 400),
+        ("layout", "layout.rs", 60),
+        ("memory", "memory.rs", 75),
+        ("native_color", "native_color.rs", 325),
+        ("sample", "sample.rs", 125),
+        ("transform", "transform.rs", 50),
+    ];
+
+    assert!(
+        main.lines().count() < 40,
+        "CUDA Oxide J2K decode-store SIMT main.rs must remain a focused module shell"
+    );
+    assert_eq!(
+        main.matches("include!(\"../../../cuda_oxide_simt_prelude.rs\");")
+            .count(),
+        1,
+        "the decode-store SIMT root must include the shared prelude exactly once"
+    );
+    assert!(
+        !main.contains("#[cuda_module]"),
+        "the authoritative decode-store CUDA export surface must live in exports.rs"
+    );
+
+    let staging_start = build
+        .find("const CUDA_OXIDE_J2K_DECODE_STORE_EXTRA_SOURCES")
+        .expect("J2K decode-store extra-source staging declaration");
+    let staging_tail = &build[staging_start..];
+    let staging_end = staging_tail
+        .find("];")
+        .expect("end of J2K decode-store extra-source staging declaration");
+    let staging = &staging_tail[..staging_end];
+    assert_eq!(
+        staging.matches("\"simt/src/").count(),
+        modules.len(),
+        "the staged decode-store SIMT source list must exactly match the declared modules"
+    );
+    assert_pattern_checks(&[
+        PatternCheck::new("CUDA J2K decode-store SIMT staging", &build)
+            .required(&[
+                "for relative in CUDA_OXIDE_J2K_DECODE_STORE_EXTRA_SOURCES",
+                "for relative in cuda_oxide_extra_sources(source_dir)",
+                "source_dir == Path::new(\"src/cuda_oxide_j2k_decode_store\")",
+            ])
+            .normalized_required(&[
+                "copy_cuda_oxide_file( source_dir, project_dir, Path::new(relative), codec_math_crate_path, );",
+            ]),
+    ]);
+
+    let mut module_sources = String::new();
+    for (module, filename, max_lines) in modules {
+        assert!(
+            main.contains(&format!("mod {module};")),
+            "decode-store SIMT root must declare module {module}"
+        );
+        assert!(
+            staging.contains(&format!("\"simt/src/{filename}\"")),
+            "decode-store SIMT module {filename} must be staged for Linux/PTX builds"
+        );
+        let source = fs::read_to_string(source_root.join(filename))
+            .unwrap_or_else(|error| panic!("read decode-store SIMT module {filename}: {error}"));
+        assert!(
+            source.lines().count() < max_lines,
+            "decode-store SIMT module {filename} exceeded its focused line-count ratchet"
+        );
+        module_sources.push_str(&source);
+    }
+    assert!(
+        !module_sources.contains("use super::*"),
+        "decode-store SIMT modules must use explicit imports"
+    );
+
+    let exports = fs::read_to_string(source_root.join("exports.rs"))
+        .expect("read CUDA Oxide J2K decode-store export surface");
+    assert_eq!(exports.matches("#[cuda_module]").count(), 1);
+    assert_eq!(exports.matches("#[kernel]").count(), 16);
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the complete CUDA transcode device ABI and staging ledger is clearest in one audit"

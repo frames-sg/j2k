@@ -6,9 +6,8 @@ use super::pipeline::{decode_impl, prepare_scratch};
 #[cfg(test)]
 use super::segments::CombinedCodeBlockData;
 use super::segments::HtCodeBlockSegments;
-use super::state::{
-    HtBlockDecodeScratch, HtBlockDecodeStats, NoHtDecodeStats, RecordingHtDecodeStats,
-};
+use super::state::HtBlockDecodeScratch;
+use super::stats::{HtBlockDecodeStats, NoHtDecodeStats, RecordingHtDecodeStats};
 use crate::error::{bail, DecodingError, Result};
 
 #[expect(

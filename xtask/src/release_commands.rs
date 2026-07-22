@@ -8,11 +8,17 @@ use crate::command_support::{
 use crate::process::cargo;
 
 mod package_gate;
+mod path_patches;
 mod release_integrity_policy;
+mod release_manifest;
 
+use path_patches::workspace_path_patch_provenance_paths;
 use release_integrity_policy::{
     validate_changelog_state, validate_patch_provenance, ReleaseIntegrityMode,
 };
+#[cfg(test)]
+use release_manifest::parse_release_manifest_source;
+use release_manifest::{release_manifest_contract, validate_release_manifest_contract};
 
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-core",
@@ -114,7 +120,12 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
     let mode = ReleaseIntegrityMode::parse(args)?;
     let metadata = cargo_metadata()?;
     let workspace_version = workspace_version()?;
-    let publishable_set = str_set(PUBLISHABLE_PACKAGES);
+    let release_manifest = release_manifest_contract()?;
+    let publishable_set = release_manifest
+        .ordered_crates
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let docs_set = str_set(STABLE_DOC_LIBRARY_PACKAGES);
     let semver_set = str_set(STABLE_SEMVER_PACKAGES);
     let mut errors = Vec::new();
@@ -122,6 +133,7 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
     validate_package_gate_partition(&mut errors);
 
     let workspace_packages = workspace_package_records(&metadata)?;
+    validate_release_manifest_contract(&release_manifest, &workspace_packages, &mut errors)?;
     let mut workspace_names = BTreeSet::new();
 
     let unpublished_members = workspace_packages
@@ -194,8 +206,8 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
         }
     }
 
-    for package in PUBLISHABLE_PACKAGES {
-        if !workspace_names.contains(*package) {
+    for package in &release_manifest.ordered_crates {
+        if !workspace_names.contains(package) {
             errors.push(format!(
                 "`{package}` is listed in PUBLISHABLE_PACKAGES but is not a workspace member"
             ));
@@ -290,11 +302,15 @@ fn validate_release_metadata(
     }
 
     if mode == ReleaseIntegrityMode::Publish {
-        let provenance_path = Path::new("third_party/block-0.1.6-patched/PATCH_PROVENANCE.md");
-        let provenance = fs::read_to_string(provenance_path)
-            .map_err(|err| format!("failed to read {}: {err}", provenance_path.display()))?;
-        if let Err(error) = validate_patch_provenance(&provenance) {
-            errors.push(format!("{}: {error}", provenance_path.display()));
+        let manifest_path = Path::new("Cargo.toml");
+        let manifest = fs::read_to_string(manifest_path)
+            .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+        for provenance_path in workspace_path_patch_provenance_paths(&manifest)? {
+            let provenance = fs::read_to_string(&provenance_path)
+                .map_err(|err| format!("failed to read {}: {err}", provenance_path.display()))?;
+            if let Err(error) = validate_patch_provenance(&provenance) {
+                errors.push(format!("{}: {error}", provenance_path.display()));
+            }
         }
     }
     Ok(())
@@ -425,12 +441,34 @@ fn validate_publish_workflow_source(
     for required in [
         "--origin-url \"${origin_url}\"",
         "--server-url \"${GITHUB_SERVER_URL}\"",
+        "--ci-workflow ci.yml",
+        "--cuda-job \"CUDA API compatibility on x86_64\"",
+        "--metal-job \"Metal validation on Apple Silicon\"",
         "cargo xtask release-integrity --publish",
         "scripts/publish-crate.sh --preflight-all",
+        "python3 scripts/publish_release.py preflight",
+        "python3 scripts/publish_release.py publish",
+        "environment: crates-io-publish",
+        "CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}",
+        "CARGO_UNSTABLE_PUBLISH_TIMEOUT: \"true\"",
+        "CARGO_PUBLISH_TIMEOUT: \"600\"",
+        "toolchain: nightly-",
     ] {
         if !workflow_source.contains(required) {
             errors.push(format!(
                 "{} does not enforce publication preflight `{required}`",
+                workflow_path.display()
+            ));
+        }
+    }
+    for forbidden in [
+        "cargo publish --workspace",
+        "CRATES_IO_INDEX_SETTLE_SECONDS",
+        "sleep ",
+    ] {
+        if workflow_source.contains(forbidden) {
+            errors.push(format!(
+                "{} contains forbidden publishing behavior `{forbidden}`",
                 workflow_path.display()
             ));
         }
@@ -449,128 +487,72 @@ fn validate_publish_workflow_source(
     }
     let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow_source)
         .map_err(|err| format!("failed to parse {}: {err}", workflow_path.display()))?;
-    let mut crates = Vec::new();
-    collect_publish_workflow_crates(&workflow, &mut crates);
-
-    let expected = PUBLISHABLE_PACKAGES
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if crates != expected {
+    let workflow_mapping = workflow
+        .as_mapping()
+        .ok_or_else(|| format!("{} root must be a mapping", workflow_path.display()))?;
+    let jobs = workflow_mapping
+        .get(serde_yaml_ng::Value::String("jobs".to_string()))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| format!("{} jobs must be a mapping", workflow_path.display()))?;
+    let actual_jobs = jobs
+        .keys()
+        .map(|key| {
+            key.as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| format!("{} job names must be strings", workflow_path.display()))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let expected_jobs = BTreeSet::from(["preflight".to_string(), "publish".to_string()]);
+    if actual_jobs != expected_jobs {
         errors.push(format!(
-            "{} publish order is {:?}, expected {:?}",
-            workflow_path.display(),
-            crates,
-            expected
+            "{} must contain exactly preflight and publish jobs; found {actual_jobs:?}",
+            workflow_path.display()
         ));
     }
 
-    let seen = crates.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    for package in PUBLISHABLE_PACKAGES {
-        if !seen.contains(package) {
-            errors.push(format!(
-                "{} is missing publish job for `{package}`",
-                workflow_path.display()
-            ));
-        }
-    }
-    for package in crates {
-        if !PUBLISHABLE_PACKAGES.contains(&package.as_str()) {
-            errors.push(format!(
-                "{} publishes unknown workspace crate `{package}`",
-                workflow_path.display()
-            ));
-        }
-    }
-
     Ok(())
-}
-
-fn collect_publish_workflow_crates(value: &serde_yaml_ng::Value, crates: &mut Vec<String>) {
-    match value {
-        serde_yaml_ng::Value::String(text) => {
-            for line in text.lines() {
-                if let Some(package) = publish_crate_from_run_line(line) {
-                    crates.push(package);
-                }
-            }
-        }
-        serde_yaml_ng::Value::Sequence(items) => {
-            for item in items {
-                collect_publish_workflow_crates(item, crates);
-            }
-        }
-        serde_yaml_ng::Value::Mapping(map) => {
-            for value in map.values() {
-                collect_publish_workflow_crates(value, crates);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn publish_crate_from_run_line(line: &str) -> Option<String> {
-    let marker = "scripts/publish-crate.sh";
-    let after = line.split_once(marker)?.1;
-    let argument = after
-        .split_whitespace()
-        .next()
-        .map(|package| package.trim_matches(['"', '\'']).to_string())?;
-    if argument == "--preflight-all" {
-        None
-    } else {
-        Some(argument)
-    }
 }
 
 fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
     let script_path = Path::new("scripts/publish-crate.sh");
     let script = fs::read_to_string(script_path)
         .map_err(|err| format!("failed to read {}: {err}", script_path.display()))?;
-    validate_publish_script_source(&script, errors)
+    validate_publish_script_source(&script, errors);
+
+    let publisher_path = Path::new("scripts/publish_release.py");
+    let publisher = fs::read_to_string(publisher_path)
+        .map_err(|err| format!("failed to read {}: {err}", publisher_path.display()))?;
+    for required in [
+        "DEFAULT_MANIFEST = ROOT / \"release-crates.json\"",
+        "hashlib.sha256",
+        "validate_release_graph",
+        "validate_registry_state",
+        "RETRY_DELAYS_SECONDS = (5, 15, 30)",
+        "[\"cargo\", \"publish\", \"--locked\", \"-p\", crate]",
+        "CARGO_REGISTRY_TOKEN",
+    ] {
+        if !publisher.contains(required) {
+            errors.push(format!(
+                "{} does not enforce publisher check `{required}`",
+                publisher_path.display()
+            ));
+        }
+    }
+    if publisher.contains("cargo publish --workspace") {
+        errors.push(format!(
+            "{} must preserve the ordered partial-release policy",
+            publisher_path.display()
+        ));
+    }
+    Ok(())
 }
 
-fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) -> Result<(), String> {
+fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) {
     let script_path = Path::new("scripts/publish-crate.sh");
-    let crates = shell_array_values(script, "publishable_crates").ok_or_else(|| {
-        format!(
-            "{} does not define the publishable_crates shell array",
-            script_path.display()
-        )
-    })?;
-    let expected = PUBLISHABLE_PACKAGES
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if crates != expected {
-        errors.push(format!(
-            "{} publishable_crates is {:?}, expected {:?}",
-            script_path.display(),
-            crates,
-            expected
-        ));
-    }
-
-    let independent =
-        shell_array_values(script, "registry_independent_crates").ok_or_else(|| {
-            format!(
-                "{} does not define the registry_independent_crates shell array",
-                script_path.display()
-            )
-        })?;
-    let expected_independent = REGISTRY_INDEPENDENT_PACKAGES
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if independent != expected_independent {
-        errors.push(format!(
-            "{} registry_independent_crates is {:?}, expected {:?}",
-            script_path.display(),
-            independent,
-            expected_independent
-        ));
-    }
     for required in [
+        "publish_release.py\" manifest",
+        "--field ordered-crates",
+        "--field registry-independent",
         "scripts/crates_io_version.py verify-set",
         "scripts/crates_io_version.py state",
         "cargo xtask release-integrity --publish",
@@ -601,34 +583,6 @@ fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) -> Res
             script_path.display()
         ));
     }
-    Ok(())
-}
-
-fn shell_array_values(script: &str, name: &str) -> Option<Vec<String>> {
-    let marker = format!("{name}=(");
-    let mut values = Vec::new();
-    let mut in_array = false;
-    for raw_line in script.lines() {
-        let line = raw_line.trim();
-        if !in_array {
-            if line == marker {
-                in_array = true;
-            }
-            continue;
-        }
-        if line == ")" {
-            return Some(values);
-        }
-        let line = line.split('#').next()?.trim();
-        if line.is_empty() {
-            continue;
-        }
-        values.extend(
-            line.split_whitespace()
-                .map(|entry| entry.trim_matches(['"', '\'']).to_string()),
-        );
-    }
-    None
 }
 
 fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {

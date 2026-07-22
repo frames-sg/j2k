@@ -5,10 +5,10 @@ use super::{
     checked_host_workspace_bytes, dispatch_dct_grid_to_dwt53_with_runtime,
     idct_blocks_to_signed_samples_rayon, size_of, try_transcode_vec_with_capacity,
     validate_float_projection_allocations, validate_grid, validate_reversible_batch_geometry,
-    DctGridToDwt53Job, DctGridToReversibleDwt53Job, Dwt53TwoDimensional, MetalRuntime,
-    MetalTranscodeError, MetalTranscodeSession, ReversibleDwt53FirstLevel, SparseDwt53WeightRows,
-    TranscodeStageError, METAL_DCT53_UNSUPPORTED_GRID, METAL_DCT_KERNEL_FAILED,
-    METAL_READBACK_CHUNK_BYTES, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    DctGridToDwt53Job, DctGridToReversibleDwt53Job, Dwt53TwoDimensional, MetalTranscodeError,
+    MetalTranscodeSession, ReversibleDwt53FirstLevel, SparseDwt53WeightRows, TranscodeStageError,
+    METAL_DCT53_UNSUPPORTED_GRID, METAL_DCT_KERNEL_FAILED, METAL_READBACK_CHUNK_BYTES,
+    METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
 
 mod batch;
@@ -92,7 +92,7 @@ pub(crate) fn dispatch_dct_grid_to_reversible_dwt53_batch(
     }
 
     session.with_runtime(|runtime| {
-        dispatch_reversible_dwt53_batch_with_runtime(
+        batch::dispatch_with_runtime(
             runtime,
             &block_samples,
             jobs.len(),
@@ -152,22 +152,4 @@ pub(crate) fn dispatch_dct_grid_to_dwt53(
     session.with_runtime(|runtime| {
         dispatch_dct_grid_to_dwt53_with_runtime(runtime, job, &x_weights, &y_weights)
     })
-}
-
-pub(super) fn dispatch_reversible_dwt53_batch_with_runtime(
-    runtime: &MetalRuntime,
-    block_samples: &[[i32; 64]],
-    batch_count: usize,
-    block_cols: usize,
-    width: usize,
-    height: usize,
-) -> Result<Vec<ReversibleDwt53FirstLevel>, MetalTranscodeError> {
-    batch::dispatch_with_runtime(
-        runtime,
-        block_samples,
-        batch_count,
-        block_cols,
-        width,
-        height,
-    )
 }

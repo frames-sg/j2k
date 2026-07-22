@@ -326,6 +326,7 @@ fn read_cuda_runtime_sources() -> String {
         "htj2k_decode.rs",
         "htj2k_decode/api.rs",
         "htj2k_decode/completion.rs",
+        "htj2k_decode/completion/cleanup_enqueue.rs",
         "htj2k_decode/context_validation.rs",
         "htj2k_decode/launch.rs",
         "htj2k_decode/output_regions.rs",

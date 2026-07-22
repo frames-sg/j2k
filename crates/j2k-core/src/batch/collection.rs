@@ -72,28 +72,6 @@ pub fn try_collect_indexed_batch_results<T, E>(
     Ok(ordered)
 }
 
-/// Fallibly collect pre-indexed ordered worker slots without a second indexed
-/// descriptor vector.
-///
-/// Codec failures are inspected before output allocation so a cap or allocator
-/// failure cannot mask the first tile error already produced by a worker.
-#[doc(hidden)]
-pub fn try_collect_ordered_batch_results<T, E>(
-    job_count: usize,
-    results: Vec<BatchResultSlot<T, E>>,
-    retained_live_bytes: usize,
-    max_live_bytes: usize,
-) -> Result<Vec<T>, BatchDecodeError<E>> {
-    try_collect_ordered_batch_results_with_limits(
-        job_count,
-        results,
-        retained_live_bytes,
-        max_live_bytes,
-        retained_live_bytes,
-        max_live_bytes,
-    )
-}
-
 /// Fallibly collect ordered worker slots under separate aggregate and
 /// collection-owned memory limits.
 ///

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    bench_build, bench_report, best_version_line, j2k_bench_signoff, one_line,
-    render_benchmark_report, split_semicolon_list, transcode_metal_bench_args, BenchmarkReport,
+    bench_build, bench_report, best_version_line, j2k_bench_signoff, j2k_ml_batch_bench_cuda,
+    j2k_ml_batch_bench_metal, one_line, render_benchmark_report, split_semicolon_list,
+    transcode_metal_bench_args, BenchmarkReport,
 };
 
 #[cfg(unix)]
@@ -42,10 +43,32 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains(
         "bench -p j2k-transcode-metal --bench dct97 --features bench-internals --no-run|"
     ));
-    assert!(log.contains("bench -p j2k-ml --bench tensor_decode --features cpu --no-run|"));
+    assert!(log.contains("bench -p j2k-ml --bench batch_decode --features cpu --no-run|"));
+    assert!(
+        log.contains("bench -p j2k-ml --bench batch_decode_metal --features cpu,metal --no-run|")
+    );
+    assert!(log.contains("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 19);
+    assert_eq!(log.lines().count(), 21);
+}
+
+#[cfg(unix)]
+#[test]
+fn accelerator_batch_benchmark_commands_select_one_explicit_backend() {
+    let recording = RecordingProgram::new("j2k-ml-benchmark-command-test", "");
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    j2k_ml_batch_bench_metal().expect("Metal batch benchmark command");
+    j2k_ml_batch_bench_cuda().expect("CUDA batch benchmark command");
+
+    let log = recording.log();
+    let lines = log.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines[0].starts_with("bench -p j2k-ml --bench batch_decode_metal --features cpu,metal|")
+    );
+    assert!(lines[1].starts_with("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda|"));
 }
 
 #[test]

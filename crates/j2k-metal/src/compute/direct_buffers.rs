@@ -12,9 +12,10 @@ use metal::{Buffer, Device};
 
 use crate::{error::metal_kernel_support_error, Error};
 
+use super::abi::J2K_CLASSIC_MAX_COEFF_COUNT;
 use super::{
     direct_scratch::{take_recyclable_shared_buffer, DirectScratchBuffer},
-    MetalRuntime, J2K_CLASSIC_MAX_COEFF_COUNT,
+    MetalRuntime,
 };
 
 fn buffer_access_error(context: &str, error: MetalSupportError) -> Error {

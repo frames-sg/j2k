@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::{
-    classic_tier1_gpu_token_pack_supported, dispatch_classic_tier1_split_token_emit_for_cpu_pack,
+use super::super::abi::{J2kClassicTier1SymbolPlanCounters, J2kClassicTier1TokenSegment};
+use super::super::resident_tier1::{
+    dispatch_classic_tier1_split_token_emit_for_cpu_pack,
     dispatch_classic_tier1_split_token_emit_for_gpu_pack,
     dispatch_classic_tier1_split_token_pack_from_gpu_tokens,
     dispatch_classic_tier1_token_emit_for_gpu_pack,
     dispatch_classic_tier1_token_pack_from_gpu_tokens,
-    pack_j2k_code_block_scalar_from_tier1_tokens, J2kClassicTier1SymbolPlanCounters,
-    J2kClassicTier1TokenSegment, J2kTier1TokenSegment,
+};
+use super::super::{
+    classic_tier1_gpu_token_pack_supported, pack_j2k_code_block_scalar_from_tier1_tokens,
+    J2kTier1TokenSegment,
 };
 use super::*;
 

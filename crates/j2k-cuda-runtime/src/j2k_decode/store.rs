@@ -18,7 +18,12 @@ use super::types::{
 };
 
 mod batch;
+mod color_native_batch;
+mod color_native_rgba_batch;
 mod destination;
+mod destination_groups;
+mod grayscale_batch;
+pub use grayscale_batch::CudaQueuedJ2kStoreBatch;
 mod validation;
 
 use destination::{validate_store_destination, zero_unwritten_store_output};

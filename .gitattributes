@@ -1,0 +1,8 @@
+*.ppm binary
+*.pgm binary
+*.raw binary
+*.gray binary
+*.j2k binary
+*.j2c binary
+*.jp2 binary
+*.jph binary

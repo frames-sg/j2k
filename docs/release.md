@@ -9,6 +9,7 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.7.4` | Staged source-incompatible candidate; not published or tagged. | Not yet a published release line. |
 | `0.7.3` | Latest publicly published crates and documentation. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
 | `0.7.1` | Previous published release line. | Supported. |
@@ -30,6 +31,13 @@ records the additions, removals, and changed signatures. That report was
 regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is
 regenerated and verified after that release's final source freeze.
+
+The staged `0.7.4` candidate is an explicit source-compatibility exception to
+the normal patch policy. Its wrapper-removal migrations are recorded under
+`Unreleased` in the [`CHANGELOG`](../CHANGELOG.md), and its provisional reviewed
+API evidence is compared directly with the published `v0.7.3` baseline. This
+staging statement does not authorize publication or assert that the candidate
+has passed exact-SHA release gates.
 
 ## Candidate freeze and exact-SHA evidence
 
@@ -72,11 +80,14 @@ maintainer create an annotated `v<workspace-version>` tag that peels to
 `RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
 release tag, or treat a GitHub Pages deployment as release evidence.
 
-Before final candidate freeze, complete both structured fields in the patched
-`block`
+Before final candidate freeze, complete both structured fields in every
+`[patch.crates-io]` path override's `PATCH_PROVENANCE.md` record with the
+actual reviewer identity and review date. The publish-integrity command
+discovers these records from the workspace manifest and fails if any one is
+missing or unapproved. The date must be a calendar-valid `YYYY-MM-DD`; never
+infer either value from commit metadata. The patched `block`
 [release approval record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
-with the actual reviewer identity and review date. The date must be a
-calendar-valid `YYYY-MM-DD`; never infer either value from commit metadata.
+remains the example for the required format.
 Also have a repository administrator enable GitHub private vulnerability
 reporting under **Security** settings before exact-SHA candidate verification.
 The authenticated candidate verifier reads that repository setting and fails
@@ -85,15 +96,20 @@ prerequisite.
 
 ## Versions and publish order
 
-Release scripts must use manifest versions. Do not publish from stale hard-coded crate/version pairs.
+[`release-crates.json`](../release-crates.json) is the ordered release manifest
+and source of truth for release-integrity, package construction, registry
+recovery, and publication. Release scripts must use manifest versions and must
+not publish from stale hard-coded crate/version pairs.
 
 Real publishes must run from tag `v<workspace.package.version>`. All
 publishable crates must share that workspace version. If a crate version is
 already on crates.io, the publish script fails by default; set
 `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` only for an intentional idempotent
 rerun. A valid partial retry may contain only an already-published prefix of
-the dependency-ordered list below; a published crate after an available crate
-is inconsistent state and fails closed.
+the dependency-ordered list below, and every published `.crate` SHA-256 must
+match the archive packaged locally from the exact tag. A published crate after
+an available crate, or any checksum mismatch, is inconsistent state and fails
+closed.
 
 Publish in this order:
 
@@ -138,21 +154,26 @@ dependencies are not yet available from crates.io. The four
 registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `j2k-codec-math`) run
 `cargo publish --dry-run`, including Cargo's package verification build. Manual
-publish-workflow dry runs use the same split; listing alone is not package
-construction.
+publish-workflow runs remain dry-run-only: they validate the manifest and
+construct every local archive without receiving the crates.io token.
 
-Before the first real publish job, the hosted preflight verifies that the
-checkout `origin` is the exact workflow repository, no draft, prerelease, or
-published GitHub Release exists for the tag, and every target crate version has
-a determinate crates.io state. Only an exact HTTP 404 means a version is
-available; authentication errors, rate limits, server failures, timeouts, and
-malformed responses stop publication. On an intentional partial retry,
-`CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits the already-published prefix and
-the per-crate jobs skip that prefix without moving the tag.
-`CRATES_IO_PUBLISH_ATTEMPTS` must be a positive decimal integer;
-`CRATES_IO_RATE_LIMIT_RETRY_SECONDS` and `CRATES_IO_INDEX_SETTLE_SECONDS` must
-be nonnegative decimal integers. Invalid release-control values stop the script
-before any registry operation.
+Before publication, the hosted preflight verifies that the checkout `origin` is
+the exact workflow repository, no draft, prerelease, or published GitHub
+Release exists for the tag, every target crate version has a determinate
+crates.io state, and all archives package locally. Only an exact HTTP 404 means
+a version is available; authentication errors, authorization failures,
+malformed responses, and checksum mismatches stop publication. On an
+intentional partial retry, `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits only
+the checksum-matched already-published prefix without moving the tag.
+
+After `crates-io-publish` environment approval, one runner repeats the canonical
+tag and prefix proof, packages all 18 archives, and publishes the remaining
+manifest entries sequentially with `cargo publish --locked -p <crate>`. Cargo's
+verification build stays enabled. There are no unconditional registry sleeps;
+only retryable transport, HTTP 429, or server failures are retried with bounded
+5, 15, and 30 second delays. The publisher re-queries and checksum-validates the
+entire prefix before each retry. Authentication, authorization, package
+verification, manifest, version, and checksum failures are never retried.
 
 Run this before publishing:
 
@@ -165,9 +186,9 @@ cargo xtask public-support --final
 
 The codec-math codegen gate verifies generated Rust and Metal fragments against
 the Rust source of truth. The integrity gate parses lockfile-strict cargo
-metadata with `cargo metadata --locked --no-deps`, manifests,
-`.github/workflows/publish.yml`, and this release document. It fails if a
-publishable workspace crate is missing from publish order, docs.rs metadata,
+metadata with `cargo metadata --locked --no-deps`, `release-crates.json`,
+manifests, `.github/workflows/publish.yml`, and this release document. It fails if a
+publishable workspace crate is missing from the dependency-ordered manifest, docs.rs metadata,
 semver/doc gates, or release docs, or if a workspace crate is neither
 publishable nor explicitly `publish = false`.
 

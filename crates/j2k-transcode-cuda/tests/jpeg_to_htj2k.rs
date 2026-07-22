@@ -12,7 +12,7 @@
 #![cfg(feature = "cuda-runtime")]
 
 use j2k_native::{DecodeSettings, Image};
-use j2k_test_support::{cuda_runtime_gate, jpeg_baseline_420_16x16};
+use j2k_test_support::{cuda_runtime_gate, minimal_baseline_420_jpeg};
 use j2k_transcode::{
     JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
@@ -24,7 +24,7 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let inputs = vec![
         JpegTileBatchInput {
             bytes: jpeg.as_slice(),

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod color_native;
+mod color_native_rgba;
+
 use crate::{
     context::CudaContext,
     error::CudaError,
@@ -41,6 +44,48 @@ impl CudaContext {
         let geometry = j2k_forward_rct_launch_geometry(pixels)
             .ok_or(CudaError::LengthTooLarge { len: pixels })?;
         self.launch_kernel(function, geometry, &mut params)
+    }
+
+    pub(in crate::j2k_decode) unsafe fn launch_j2k_store_gray8_batch_enqueue(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_pixels: usize,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreGray8Batch)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = cuda_kernel_params!(jobs_ptr);
+        let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: max_pixels })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    pub(in crate::j2k_decode) unsafe fn launch_j2k_store_gray16_batch_enqueue(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_pixels: usize,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreGray16Batch)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = cuda_kernel_params!(jobs_ptr);
+        let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: max_pixels })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    pub(in crate::j2k_decode) unsafe fn launch_j2k_store_grayi16_batch_enqueue(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_pixels: usize,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreGrayI16Batch)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = cuda_kernel_params!(jobs_ptr);
+        let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: max_pixels })?;
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(in crate::j2k_decode) fn launch_j2k_inverse_mct(
@@ -106,7 +151,7 @@ impl CudaContext {
         self.launch_kernel(function, geometry, &mut params)
     }
 
-    pub(in crate::j2k_decode) fn launch_j2k_store_rgb8_mct_batch(
+    pub(in crate::j2k_decode) unsafe fn launch_j2k_store_rgb8_mct_batch_enqueue(
         &self,
         jobs: &CudaDeviceBuffer,
         max_pixels: usize,
@@ -117,7 +162,7 @@ impl CudaContext {
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
             .ok_or(CudaError::LengthTooLarge { len: max_pixels })?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(in crate::j2k_decode) fn launch_j2k_store_rgb16_mct(
@@ -148,5 +193,32 @@ impl CudaContext {
     ) -> Result<crate::driver::CuFunction, CudaError> {
         self.inner
             .cuda_oxide_j2k_decode_store_kernel_function(kernel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn grayscale_batch_final_stores_enqueue_without_context_synchronization() {
+        let source = include_str!("store_launch.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production store launch source");
+        for name in [
+            "launch_j2k_store_gray8_batch_enqueue",
+            "launch_j2k_store_gray16_batch_enqueue",
+            "launch_j2k_store_grayi16_batch_enqueue",
+        ] {
+            let function = source
+                .split(name)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .split("\n    }")
+                .next()
+                .expect("batch store function");
+            assert!(function.contains("launch_kernel_async"), "{name}");
+            assert!(!function.contains("launch_kernel(function"), "{name}");
+            assert!(!function.contains("synchronize"), "{name}");
+        }
     }
 }

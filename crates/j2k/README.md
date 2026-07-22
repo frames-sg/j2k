@@ -1,4 +1,4 @@
-# j2k
+# j2k — Pure-Rust JPEG 2000 and HTJ2K Codec
 
 JPEG 2000 Part 1 and HTJ2K Part 15 public CPU codec facade for J2K.
 
@@ -38,5 +38,6 @@ callers that need fail-closed validation should construct native images with
 ## Links
 
 - API docs: <https://docs.rs/j2k>
+- [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

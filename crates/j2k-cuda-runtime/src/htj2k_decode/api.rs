@@ -169,8 +169,7 @@ impl CudaContext {
         let coefficients = pool.take(output_layout.output_bytes)?;
         let coefficient_buffer = pooled_device_buffer(&coefficients)?;
         if output_layout.needs_zero_fill {
-            self.memset_d32(coefficient_buffer, 0, output_words)?;
-            self.synchronize()?;
+            self.memset_d32_async(coefficient_buffer, 0, output_words)?;
         }
         Ok(CudaPooledHtj2kDecodeOutput {
             coefficients,

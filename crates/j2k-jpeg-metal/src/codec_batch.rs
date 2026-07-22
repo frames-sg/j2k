@@ -715,7 +715,7 @@ impl Codec {
     /// Submit a tile decode request into a reusable Metal session.
     #[doc(hidden)]
     pub fn submit_tile_request_to_device(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
+        ctx: &mut CpuDecoderContext,
         session: &mut MetalSession,
         pool: &mut CpuScratchPool,
         input: &[u8],

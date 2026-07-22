@@ -72,3 +72,37 @@ fn invalid_region_is_rejected() {
 
     assert!(result.is_err(), "out-of-bounds ROI must be rejected");
 }
+
+#[test]
+fn empty_regions_are_rejected_before_decode() {
+    for roi in [
+        Rect {
+            x: 8,
+            y: 8,
+            w: 0,
+            h: 16,
+        },
+        Rect {
+            x: 8,
+            y: 8,
+            w: 16,
+            h: 0,
+        },
+    ] {
+        let full_resolution =
+            DeviceDecodePlan::for_image((64, 64), DeviceDecodeRequest::Region { roi });
+        assert!(
+            full_resolution.is_err(),
+            "zero-area full-resolution ROI must be rejected"
+        );
+
+        let reduced = DeviceDecodePlan::for_image(
+            (64, 64),
+            DeviceDecodeRequest::RegionScaled {
+                roi,
+                scale: Downscale::Half,
+            },
+        );
+        assert!(reduced.is_err(), "zero-area reduced ROI must be rejected");
+    }
+}

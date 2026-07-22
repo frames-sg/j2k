@@ -39,9 +39,8 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 pub use j2k_core::TileBatchOptions;
 use j2k_core::{
-    CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError,
-    DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
-    PixelFormat, RowSink, TileBatchDecode,
+    CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError, Downscale,
+    ImageCodec, ImageDecode, ImageDecodeRows, PixelFormat, RowSink, TileBatchDecode,
 };
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

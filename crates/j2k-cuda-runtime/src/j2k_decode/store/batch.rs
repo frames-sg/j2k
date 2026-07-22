@@ -16,6 +16,8 @@ use super::{
 };
 use crate::j2k_decode::types::{CudaJ2kStoreRgb8MctBatchJob, CudaJ2kStoreRgb8MctTarget};
 
+mod external;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Rgb8MctTargetPlan {
     output_bytes: usize,
@@ -215,7 +217,16 @@ impl CudaContext {
             plan.active_job_count,
             "J2K store batch active-job count mismatch",
         )?;
-        self.launch_j2k_store_rgb8_mct_batch(&jobs_buffer, plan.max_pixels, plan.active_job_count)?;
+        // SAFETY: this owned path retains every plane, output, and uploaded
+        // job buffer through the immediate context completion boundary.
+        unsafe {
+            self.launch_j2k_store_rgb8_mct_batch_enqueue(
+                &jobs_buffer,
+                plan.max_pixels,
+                plan.active_job_count,
+            )?;
+        }
+        self.synchronize()?;
         Ok(CudaKernelBatchOutput {
             outputs,
             execution: CudaExecutionStats {
@@ -311,7 +322,16 @@ impl CudaContext {
         if initialize_output()? {
             self.synchronize()?;
         }
-        self.launch_j2k_store_rgb8_mct_batch(&jobs_buffer, plan.max_pixels, plan.active_job_count)?;
+        // SAFETY: this owned path retains every plane, output, and uploaded
+        // job buffer through the immediate context completion boundary.
+        unsafe {
+            self.launch_j2k_store_rgb8_mct_batch_enqueue(
+                &jobs_buffer,
+                plan.max_pixels,
+                plan.active_job_count,
+            )?;
+        }
+        self.synchronize()?;
         Ok(CudaKernelContiguousBatchOutput {
             output,
             ranges,
@@ -326,18 +346,4 @@ impl CudaContext {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ensure_internal_count;
-    use crate::error::CudaError;
-
-    #[test]
-    fn batch_materialization_mismatch_is_a_typed_error() {
-        assert!(ensure_internal_count(3, 3, "matching counts").is_ok());
-        assert!(matches!(
-            ensure_internal_count(2, 3, "fixture mismatch"),
-            Err(CudaError::InternalInvariant {
-                what: "fixture mismatch"
-            })
-        ));
-    }
-}
+mod tests;

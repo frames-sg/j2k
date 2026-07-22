@@ -24,12 +24,12 @@ name = "j2k_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.3" }
-j2k-core = { path = "../j2k-core", version = "=0.7.3" }
-j2k = { path = "../j2k", version = "=0.7.3" }
-j2k-native = { path = "../j2k-native", version = "=0.7.3" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.7.3" }
-j2k-profile = { path = "../j2k-profile", version = "=0.7.3" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.4" }
+j2k-core = { path = "../j2k-core", version = "=0.7.4" }
+j2k = { path = "../j2k", version = "=0.7.4" }
+j2k-native = { path = "../j2k-native", version = "=0.7.4" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.7.4" }
+j2k-profile = { path = "../j2k-profile", version = "=0.7.4" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -39,7 +39,8 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 rayon = { workspace = true }
-j2k-test-support = { path = "../j2k-test-support" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+syn = { workspace = true, features = ["full"] }
 
 [build-dependencies]
 cc = { workspace = true }

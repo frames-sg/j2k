@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{
-    BackendRequest, CodecError, DecoderContext, DeviceSurface, PixelFormat,
-    TileBatchDecodeManyDevice,
-};
+use j2k_core::{BackendRequest, CodecError, DeviceSurface, PixelFormat, TileBatchDecodeManyDevice};
 use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, CudaSession, Error};
 use j2k_test_support::cuda_jpeg_hardware_decode_gate;
@@ -12,7 +9,7 @@ use super::support::{assert_cuda_surface, assert_surface_bytes_match_or_are_clos
 
 #[test]
 fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_420];
 
@@ -86,7 +83,7 @@ fn decode_tiles_to_device_with_session_auto_preserves_order_and_matches_host_byt
 
 #[test]
 fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error() {
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_420];
 
@@ -111,7 +108,7 @@ fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailab
 
 #[test]
 fn decode_tiles_to_device_explicit_cuda_gray8_fails_without_cpu_upload() {
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_420];
 
@@ -133,7 +130,7 @@ fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
         return;
     }
 
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_420];
 

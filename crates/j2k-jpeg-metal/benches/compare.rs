@@ -2,8 +2,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k_core::{
-    BackendRequest, DecoderContext, DeviceSubmission, Downscale, ImageDecodeSubmit, PixelFormat,
-    Rect, TileBatchDecodeSubmit,
+    BackendRequest, DeviceSubmission, Downscale, ImageDecodeSubmit, PixelFormat, Rect,
+    TileBatchDecodeSubmit,
 };
 use j2k_jpeg::{
     adapter::{
@@ -584,7 +584,7 @@ fn auto_decode_tile_batch(bytes: &[u8], batch_size: usize) {
 }
 
 fn device_decode_tile_batch(bytes: &[u8], batch_size: usize, backend: BackendRequest) {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let submissions = (0..batch_size)
@@ -619,7 +619,7 @@ fn device_decode_tile_batch_scaled(
     factor: Downscale,
     backend: BackendRequest,
 ) {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let submissions = (0..batch_size)
@@ -649,7 +649,7 @@ fn metal_decode_tile_batch_region_scaled(
 ) {
     let cpu = CpuDecoder::new(bytes).expect("cpu decoder");
     let roi = centered_roi(cpu.info().dimensions, side);
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let submissions = (0..batch_size)
@@ -685,7 +685,7 @@ fn metal_decode_distinct_tile_batch_region_scaled(
     side: u32,
     factor: Downscale,
 ) {
-    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
     let submissions = tiles

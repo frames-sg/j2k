@@ -21,7 +21,8 @@ fn codec_api_guide_covers_public_surfaces() {
                 "BackendRequest::Cuda",
                 "DeviceSurface",
                 "ScratchPool",
-                "DecoderContext",
+                "J2kContext",
+                "j2k_jpeg::DecoderContext",
             ])],
     );
 }

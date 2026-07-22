@@ -1,11 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Independent Burn tensor integration for JPEG 2000 and HTJ2K.
+//! Thin Burn tensor adapter for the `j2k` owned batch codec.
+//!
+//! The codec crates own parsing, grouping, decoding, and accelerator execution.
+//! This crate only materializes CPU groups or lends unique Burn allocations to
+//! the CUDA and Metal external-destination APIs. Casting and normalization stay
+//! in ordinary Burn tensor operations after decode.
 
 #![deny(missing_docs)]
 
-use burn_core::tensor::Tensor;
-use j2k::{DeviceDecodeRequest, J2kDecodeWarning, Rect};
+use burn_core::tensor::{backend::Backend, Int, Tensor};
+use j2k::{BatchGroupInfo, IndexedBatchError, J2kDecodeWarning, Rect};
+
+#[cfg(any(
+    feature = "cpu",
+    feature = "cuda",
+    all(feature = "metal", target_os = "macos")
+))]
+mod batch_contract;
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
+mod completion;
 
 #[cfg(feature = "cpu")]
 pub mod cpu;
@@ -14,195 +28,144 @@ pub mod cuda;
 #[cfg(feature = "metal")]
 pub mod metal;
 
-/// Tensor memory layout.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TensorLayout {
-    /// Channels precede spatial dimensions (`CHW` or `NCHW`).
-    #[default]
-    ChannelsFirst,
-    /// Channels follow spatial dimensions (`HWC` or `NHWC`).
-    ChannelsLast,
+#[cfg(feature = "cpu")]
+pub use cpu::CpuBurnDecoder;
+#[cfg(feature = "cuda")]
+pub use cuda::{CudaBurnDecoder, SubmittedCudaBurnBatch};
+#[cfg(feature = "metal")]
+pub use metal::{MetalBurnDecoder, SubmittedMetalBurnBatch};
+
+/// Ordinary rank-4 Burn integer tensor tagged with its exact codec sample type.
+#[derive(Debug)]
+pub enum BurnBatchTensor<B: Backend> {
+    /// Unsigned samples with precision at most eight bits.
+    U8(Tensor<B, 4, Int>),
+    /// Unsigned samples with precision from nine through sixteen bits.
+    U16(Tensor<B, 4, Int>),
+    /// Signed samples with precision at most sixteen bits.
+    I16(Tensor<B, 4, Int>),
 }
 
-/// Output channel selection.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ChannelSelection {
-    /// Preserve grayscale as one channel and otherwise produce RGB.
-    #[default]
-    Auto,
-    /// Produce one grayscale channel.
-    Gray,
-    /// Produce three RGB channels.
-    Rgb,
-    /// Produce four RGBA channels.
-    Rgba,
-}
-
-/// Floating-point sample normalization.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum FloatNormalization {
-    /// Scale integer samples into the inclusive range `0..=1`.
-    #[default]
-    Unit,
-    /// Cast integer samples without scaling.
-    Raw,
-    /// Unit-scale, then apply per-channel `(x - mean) / std`.
-    MeanStd {
-        /// Per-channel means.
-        mean: Vec<f32>,
-        /// Per-channel standard deviations.
-        std: Vec<f32>,
-    },
-}
-
-/// Options shared by all tensor decode routes.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct TensorDecodeOptions {
-    /// Requested tensor layout.
-    pub layout: TensorLayout,
-    /// Requested output channels.
-    pub channels: ChannelSelection,
-    /// Floating-point normalization.
-    pub normalization: FloatNormalization,
-}
-
-/// Route that produced a tensor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TensorRoute {
-    /// Host decode followed by a Burn upload.
-    CpuStaged,
-    /// Decode and conversion directly into a CUDA tensor allocation.
-    CudaDirect,
-    /// Metal decode followed by one packed readback and Burn upload.
-    MetalStaged,
-}
-
-/// Borrowed compressed input and its decode geometry request.
-#[derive(Debug, Clone, Copy)]
-pub struct TensorInput<'a> {
-    /// JP2, JPH, raw J2K, or raw HTJ2K bytes.
-    pub encoded: &'a [u8],
-    /// Full-frame, ROI, scaled, or ROI-scaled request.
-    pub request: DeviceDecodeRequest,
-}
-
-impl<'a> TensorInput<'a> {
-    /// Construct a full-resolution input.
+impl<B: Backend> BurnBatchTensor<B> {
+    /// Borrow the ordinary Burn integer tensor regardless of its codec dtype tag.
     #[must_use]
-    pub const fn full(encoded: &'a [u8]) -> Self {
-        Self {
-            encoded,
-            request: DeviceDecodeRequest::Full,
+    pub const fn tensor(&self) -> &Tensor<B, 4, Int> {
+        match self {
+            Self::U8(tensor) | Self::U16(tensor) | Self::I16(tensor) => tensor,
+        }
+    }
+
+    /// Consume the codec dtype tag and return the ordinary Burn integer tensor.
+    #[must_use]
+    pub fn into_tensor(self) -> Tensor<B, 4, Int> {
+        match self {
+            Self::U8(tensor) | Self::U16(tensor) | Self::I16(tensor) => tensor,
         }
     }
 }
 
-/// Successful single-image tensor decode.
+/// One homogeneous decoded tensor group and its codec metadata.
 #[derive(Debug)]
-pub struct TensorDecode<T> {
-    /// Decoded Burn tensor.
-    pub tensor: T,
-    /// Rectangle actually decoded.
-    pub decoded: Rect,
-    /// Non-fatal codec warnings.
-    pub warnings: Vec<J2kDecodeWarning>,
-    /// Route actually used.
-    pub route: TensorRoute,
-}
-
-/// Successful batch tensor decode.
-#[derive(Debug)]
-pub struct TensorBatchDecode<T> {
-    /// Decoded Burn tensor.
-    pub tensor: T,
-    /// Rectangle decoded for each item, in input order.
-    pub decoded: Vec<Rect>,
-    /// Codec warnings for each item, in input order.
+pub struct BurnBatchGroup<B: Backend> {
+    /// Decoded rank-4 integer tensor.
+    pub tensor: BurnBatchTensor<B>,
+    /// Exact codec and output metadata shared by the group.
+    pub info: BatchGroupInfo,
+    /// Original caller indices in tensor batch order.
+    pub source_indices: Vec<usize>,
+    /// Actual decoded source rectangle for each tensor item.
+    pub decoded_rects: Vec<Rect>,
+    /// Non-fatal codec warnings for each tensor item.
     pub warnings: Vec<Vec<J2kDecodeWarning>>,
-    /// Route actually used.
-    pub route: TensorRoute,
 }
 
-/// Tensor decode failure.
+/// Failure while submitting or completing one homogeneous Burn tensor group.
+///
+/// No partially written tensor from the affected group is exposed. Other
+/// homogeneous groups may still succeed when the retained codec and framework
+/// sessions remain usable.
 #[derive(Debug, thiserror::Error)]
-pub enum TensorDecodeError {
-    /// The codec rejected the compressed input or decode request.
-    #[error("JPEG 2000 decode failed: {0}")]
-    Codec(#[from] j2k::J2kError),
-    /// A requested integer dtype is unsupported by the selected Burn backend.
-    #[error("Burn backend does not support requested dtype {dtype:?}")]
+#[error("Burn batch group containing source indices {source_indices:?} failed: {source}")]
+pub struct BurnBatchGroupError {
+    source_indices: Vec<usize>,
+    #[source]
+    source: BurnDecodeError,
+}
+
+impl BurnBatchGroupError {
+    #[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
+    pub(crate) fn new(source_indices: Vec<usize>, source: BurnDecodeError) -> Self {
+        Self {
+            source_indices,
+            source,
+        }
+    }
+
+    /// Original input indices whose dense tensor group was discarded.
+    #[must_use]
+    pub fn source_indices(&self) -> &[usize] {
+        &self.source_indices
+    }
+
+    /// Structured codec, framework, or interop failure for this group.
+    #[must_use]
+    pub const fn source(&self) -> &BurnDecodeError {
+        &self.source
+    }
+
+    /// Consume the group failure into affected indices and its source.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<usize>, BurnDecodeError) {
+        (self.source_indices, self.source)
+    }
+}
+
+/// Successful tensor groups plus indexed preparation and homogeneous execution failures.
+#[derive(Debug)]
+pub struct BurnBatchDecode<B: Backend> {
+    /// Successfully decoded homogeneous tensor groups.
+    pub groups: Vec<BurnBatchGroup<B>>,
+    /// Structured preparation or decode failures in original input order.
+    pub errors: Vec<IndexedBatchError>,
+    /// Homogeneous groups discarded after adapter submission or completion failed.
+    pub group_errors: Vec<BurnBatchGroupError>,
+}
+
+/// Failure at the codec-to-Burn ownership boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum BurnDecodeError {
+    /// The codec could not allocate or schedule the requested batch.
+    #[error("JPEG 2000 batch infrastructure failed: {0}")]
+    Infrastructure(#[from] j2k::BatchInfrastructureError),
+    /// The selected Burn backend cannot represent the codec's exact integer type.
+    #[error("Burn backend does not support exact codec dtype {dtype:?}")]
     UnsupportedDType {
-        /// Unsupported dtype.
+        /// Required Burn storage dtype.
         dtype: burn_core::tensor::DType,
     },
-    /// Normalization parameters are invalid.
-    #[error("invalid float normalization: {message}")]
-    InvalidNormalization {
-        /// Actionable validation detail.
-        message: String,
-    },
-    /// A batch contained no inputs.
-    #[error("cannot decode an empty tensor batch")]
-    EmptyBatch,
-    /// A batch item shape differs from the first item.
-    #[error("batch item {index} has shape {actual:?}; expected {expected:?}")]
-    BatchShapeMismatch {
-        /// Index of the mismatching item.
-        index: usize,
-        /// Expected HWC shape.
-        expected: [usize; 3],
-        /// Actual HWC shape.
-        actual: [usize; 3],
-    },
-    /// A particular batch item failed to decode or convert.
-    #[error("batch item {index} failed: {source}")]
-    BatchItem {
-        /// Input index.
-        index: usize,
-        /// Item-specific failure.
-        #[source]
-        source: Box<Self>,
-    },
-    /// A requested allocation size overflowed `usize`.
-    #[error("tensor size overflow")]
+    /// Codec group metadata and the returned native sample owner disagreed.
+    #[error("codec batch sample owner did not match its declared sample type")]
+    SampleTypeMismatch,
+    /// Tensor shape arithmetic overflowed the host index type.
+    #[error("Burn tensor shape overflow")]
     SizeOverflow,
-    /// Accelerator route failed without falling back.
-    #[error("strict {route:?} route failed: {message}")]
-    StrictRoute {
-        /// Requested route.
-        route: TensorRoute,
-        /// Backend failure detail.
+    /// A newer codec contract cannot be represented by this adapter version.
+    #[error("unsupported codec batch layout or sample type")]
+    UnsupportedCodecContract,
+    /// CUDA rejected or could not complete one homogeneous codec group.
+    #[cfg(feature = "cuda")]
+    #[error(transparent)]
+    Cuda(#[from] j2k_cuda::CudaBatchError),
+    /// Metal rejected or could not complete one homogeneous codec group.
+    #[cfg(feature = "metal")]
+    #[error(transparent)]
+    Metal(#[from] j2k_metal::Error),
+    /// A framework allocation could not be handed to an accelerator safely.
+    #[error("{backend} tensor interop failed: {message}")]
+    AcceleratorInterop {
+        /// Accelerator runtime at the failing boundary.
+        backend: &'static str,
+        /// Actionable ownership, context, bounds, or ordering detail.
         message: String,
     },
-}
-
-/// Infallible Burn batcher that intentionally panics on float decode errors.
-#[derive(Debug, Clone)]
-pub struct PanicOnDecodeError<B> {
-    options: TensorDecodeOptions,
-    backend: core::marker::PhantomData<B>,
-}
-
-impl<B> PanicOnDecodeError<B> {
-    /// Construct an adapter with explicit decode options.
-    #[must_use]
-    pub fn new(options: TensorDecodeOptions) -> Self {
-        Self {
-            options,
-            backend: core::marker::PhantomData,
-        }
-    }
-}
-
-#[cfg(feature = "cpu")]
-impl<'a, B> burn_core::data::dataloader::batcher::Batcher<B, TensorInput<'a>, Tensor<B, 4>>
-    for PanicOnDecodeError<B>
-where
-    B: burn_core::tensor::backend::Backend,
-{
-    fn batch(&self, items: Vec<TensorInput<'a>>, device: &B::Device) -> Tensor<B, 4> {
-        cpu::decode_float_batch(&items, &self.options, device)
-            .unwrap_or_else(|error| panic!("j2k-ml batch decode failed: {error}"))
-            .tensor
-    }
 }

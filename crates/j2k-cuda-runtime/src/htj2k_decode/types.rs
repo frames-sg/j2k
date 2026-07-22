@@ -93,6 +93,13 @@ pub(crate) struct CudaHtj2kCleanupMultiKernelJob {
     pub(crate) reserved_tail: u32,
 }
 
+/// Device descriptor bytes used by one multi-target HTJ2K cleanup job.
+#[doc(hidden)]
+#[must_use]
+pub const fn htj2k_cleanup_multi_descriptor_bytes() -> usize {
+    core::mem::size_of::<CudaHtj2kCleanupMultiKernelJob>()
+}
+
 /// One output buffer and its code-block jobs for batched HTJ2K dequantization.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
@@ -310,6 +317,7 @@ pub(super) struct Htj2kDecodeCodeblocksMultiLaunch<'a> {
     pub(super) jobs: &'a CudaDeviceBuffer,
     pub(super) tables: Htj2kDecodeKernelTables<'a>,
     pub(super) statuses: &'a CudaDeviceBuffer,
+    pub(super) status_byte_offset: usize,
     pub(super) job_count: usize,
     pub(super) mode: CudaLaunchMode,
 }

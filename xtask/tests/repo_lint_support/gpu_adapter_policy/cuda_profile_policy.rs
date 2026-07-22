@@ -4,7 +4,9 @@
 
 use std::fs;
 
-use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
+use crate::repo_lint_support::{
+    assert_file_pattern_checks, assert_pattern_checks, repo_root, FilePatternCheck, PatternCheck,
+};
 
 fn read(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
@@ -135,4 +137,38 @@ fn assert_focus_ratchets(
             "{relative} must remain below its {limit}-line focus ratchet"
         );
     }
+}
+
+#[test]
+fn cuda_trace_export_is_non_clobbering_and_documented() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[
+            FilePatternCheck::new("crates/j2k-cuda/src/profile/trace.rs")
+                .named("CUDA profile trace writer")
+                .required(&[
+                    "OpenOptions::new().write(true).create_new(true).open(path)",
+                    "fn write_trace_file",
+                    "emit_trace_write_error(\"cuda_htj2k_trace_write\"",
+                    "emit_trace_write_error(\"cuda_htj2k_encode_trace_write\"",
+                    "std::io::ErrorKind::AlreadyExists",
+                    "CUDA trace path already exists",
+                ])
+                .forbidden(&["std::fs::write(&trace_path"]),
+            FilePatternCheck::new("crates/j2k-cuda/src/profile/tests.rs")
+                .named("CUDA trace non-clobber regression")
+                .required(&[
+                    "write_trace_file(&path, trace)",
+                    "write_trace_file(&path, \"replace\")",
+                    "ErrorKind::AlreadyExists",
+                ]),
+            FilePatternCheck::new("docs/env-vars.md")
+                .named("environment variable docs")
+                .required(&[
+                    "operator-supplied path",
+                    "Existing files are not overwritten",
+                    "parent directories are not created",
+                ]),
+        ],
+    );
 }

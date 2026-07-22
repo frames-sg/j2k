@@ -682,7 +682,7 @@ fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
     let backend_session = MetalBackendSession::system_default().expect("Metal backend session");
     assert!(!backend_session.runtime_initialized_for_test());
     let mut session = MetalSession::with_backend_session(backend_session.clone());
-    let mut ctx = j2k_core::DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = ScratchPool::new();
 
     let submissions = (0..2)
@@ -730,7 +730,7 @@ fn default_queued_jpeg_batch_decode_lazily_initializes_backend_session() {
         .expect("metal session")
         .backend_session
         .is_none());
-    let mut ctx = j2k_core::DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = ScratchPool::new();
 
     let submissions = (0..2)

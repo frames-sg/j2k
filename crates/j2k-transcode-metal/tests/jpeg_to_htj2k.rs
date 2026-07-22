@@ -4,7 +4,7 @@
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
 use j2k_test_support::{
-    jpeg_baseline_420_16x16, jpeg_baseline_422_16x8, jpeg_baseline_444_8x8, jpeg_grayscale_8x8,
+    baseline_422_16x8_jpeg, baseline_444_8x8_jpeg, grayscale_8x8_jpeg, minimal_baseline_420_jpeg,
 };
 #[cfg(target_os = "macos")]
 use j2k_transcode::accelerator::TranscodeStageError;
@@ -29,7 +29,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -83,7 +83,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -135,7 +135,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
 #[test]
 fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        &jpeg_grayscale_8x8(),
+        &grayscale_8x8_jpeg(),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1)],
         &[(1, 1)],
@@ -147,7 +147,7 @@ fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        &jpeg_baseline_444_8x8(),
+        &baseline_444_8x8_jpeg(),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1), (8, 8, 1, 1), (8, 8, 1, 1)],
         &[(1, 1), (1, 1), (1, 1)],
@@ -159,7 +159,7 @@ fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        &jpeg_baseline_422_16x8(),
+        &baseline_422_16x8_jpeg(),
         "native_component_sampling_integer_direct_53",
         &[(16, 8, 1, 1), (8, 8, 2, 1), (8, 8, 2, 1)],
         &[(1, 1), (2, 1), (2, 1)],
@@ -171,7 +171,7 @@ fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        &jpeg_baseline_420_16x16(),
+        &minimal_baseline_420_jpeg(),
         "native_component_sampling_integer_direct_53",
         &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
         &[(1, 1), (2, 2), (2, 2)],
@@ -186,7 +186,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let inputs = vec![
         JpegTileBatchInput {
             bytes: jpeg.as_slice(),
@@ -236,7 +236,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let inputs = vec![
         JpegTileBatchInput {
             bytes: jpeg.as_slice(),
@@ -304,7 +304,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
         return;
     }
 
-    let jpeg = jpeg_baseline_420_16x16();
+    let jpeg = minimal_baseline_420_jpeg();
     let inputs = vec![
         JpegTileBatchInput {
             bytes: jpeg.as_slice(),

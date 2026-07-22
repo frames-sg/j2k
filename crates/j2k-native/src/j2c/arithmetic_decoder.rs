@@ -229,6 +229,10 @@ impl<'a> ArithmeticDecoder<'a> {
 pub(crate) struct ArithmeticDecoderContext(u8);
 
 impl ArithmeticDecoderContext {
+    pub(crate) const fn empty() -> Self {
+        Self(0)
+    }
+
     #[expect(
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"

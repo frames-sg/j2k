@@ -7,11 +7,11 @@ use core::mem::size_of;
 use metal::BufferRef;
 
 use super::{
-    HtCodedArena, PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
-    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedHtSubBand,
-    PreparedHtSubBandGroup,
+    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
+    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedHtExecutionOwner,
+    PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
-use crate::compute::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
+use crate::compute::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PreparedPlanRetainedBytes {
@@ -46,16 +46,6 @@ impl PreparedPlanRetainedBytes {
             .device
             .checked_add(bytes)
             .ok_or("prepared-plan aggregate device byte overflow")?;
-        Ok(())
-    }
-
-    fn include_optional_buffer(
-        &mut self,
-        buffer: Option<&metal::Buffer>,
-    ) -> Result<(), &'static str> {
-        if let Some(buffer) = buffer {
-            self.include_buffer(buffer)?;
-        }
         Ok(())
     }
 }
@@ -152,27 +142,33 @@ fn include_ht_sub_band(
     retained: &mut PreparedPlanRetainedBytes,
     sub_band: &PreparedHtSubBand,
 ) -> Result<(), &'static str> {
-    retained.include_host_capacity::<u8>(sub_band.coded_data.capacity())?;
+    include_ht_payload_source(retained, &sub_band.payload_source)?;
     retained.include_host_capacity::<J2kHtCleanupBatchJob>(sub_band.jobs.capacity())?;
-    retained.include_optional_buffer(sub_band.coded_buffer.as_ref())?;
-    retained.include_optional_buffer(sub_band.jobs_buffer.as_ref())
+    retained.include_host_bytes(size_of::<PreparedHtExecutionOwner>() + 2 * size_of::<usize>())
 }
 
 fn include_ht_group(
     retained: &mut PreparedPlanRetainedBytes,
     group: &PreparedHtSubBandGroup,
 ) -> Result<(), &'static str> {
-    include_ht_coded_arena(retained, &group.coded_arena)?;
+    include_ht_payload_source(retained, &group.payload_source)?;
     retained.include_host_capacity::<J2kHtCleanupBatchJob>(group.jobs.capacity())?;
     retained
         .include_host_capacity::<super::PreparedHtSubBandGroupMember>(group.members.capacity())?;
-    retained.include_buffer(&group.jobs_buffer)
+    retained.include_host_bytes(size_of::<PreparedHtExecutionOwner>() + 2 * size_of::<usize>())
 }
 
-fn include_ht_coded_arena(
+fn include_ht_payload_source(
     retained: &mut PreparedPlanRetainedBytes,
-    arena: &HtCodedArena,
+    payload_source: &PreparedHtPayloadSource,
 ) -> Result<(), &'static str> {
-    retained.include_host_capacity::<u8>(arena.data.capacity())?;
-    retained.include_buffer(&arena.buffer)
+    match payload_source {
+        PreparedHtPayloadSource::Contiguous(data) => {
+            retained.include_host_capacity::<u8>(data.capacity())
+        }
+        PreparedHtPayloadSource::Referenced { ranges, .. } => {
+            retained
+                .include_host_capacity::<j2k_native::HtCodeBlockPayloadRanges>(ranges.capacity())
+        }
+    }
 }

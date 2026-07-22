@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_idwt_status_error, dispatch_2d_pipeline, hybrid_stage_signpost, label_compute_encoder,
-    new_command_buffer, new_compute_command_encoder, size_of, with_runtime, zeroed_shared_buffer,
-    Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck, Error,
-    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kIdwtStatus,
-    J2kSingleDecompositionIdwtJob, MetalRuntime, J2K_IDWT_STATUS_OK,
-    SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
+    hybrid_stage_signpost, label_compute_encoder, new_command_buffer, new_compute_command_encoder,
+    size_of, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error,
+    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob,
+    MetalRuntime, SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 use super::{IdwtSubBandBuffers, SingleIdwtDispatch};
 use j2k_codec_math::dwt;
@@ -61,11 +59,9 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
         let lh = copied_slice_buffer(&runtime.device, job.lh.coefficients)?;
         let hh = copied_slice_buffer(&runtime.device, job.hh.coefficients)?;
         let decoded = copied_slice_buffer(&runtime.device, output)?;
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kIdwtStatus>())?;
-
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
+        dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
             &encoder,
             SingleIdwtDispatch {
                 runtime,
@@ -83,15 +79,10 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
                 decoded: &decoded,
                 decoded_offset: 0,
             },
-            &status_buffer,
         );
         encoder.end_encoding();
         commit_and_wait_metal(&command_buffer)?;
 
-        let status = checked_buffer_read::<J2kIdwtStatus>(&status_buffer, "IDWT status")?;
-        if status.code != J2K_IDWT_STATUS_OK {
-            return Err(decode_idwt_status_error(status));
-        }
         let decoded_host = checked_buffer_slice::<f32>(&decoded, output.len(), "IDWT output")?;
         output.copy_from_slice(&decoded_host);
         Ok(())
@@ -101,40 +92,20 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
 pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
     command_buffer: &CommandBufferRef,
     dispatch: SingleIdwtDispatch<'_>,
-) -> Result<DirectStatusCheck, Error> {
+) -> Result<(), Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
-    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>())?;
-
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid irreversible97 IDWT");
-    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
-        &encoder,
-        dispatch,
-        &status_buffer,
+    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
+        &encoder, dispatch,
     );
     encoder.end_encoding();
-
-    Ok(DirectStatusCheck::Idwt(status_buffer))
+    Ok(())
 }
 
 pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
     encoder: &ComputeCommandEncoderRef,
     dispatch: SingleIdwtDispatch<'_>,
-) -> Result<DirectStatusCheck, Error> {
-    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>())?;
-    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
-        encoder,
-        dispatch,
-        &status_buffer,
-    );
-
-    Ok(DirectStatusCheck::Idwt(status_buffer))
-}
-
-fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
-    encoder: &ComputeCommandEncoderRef,
-    dispatch: SingleIdwtDispatch<'_>,
-    _status_buffer: &Buffer,
 ) {
     let SingleIdwtDispatch {
         runtime,

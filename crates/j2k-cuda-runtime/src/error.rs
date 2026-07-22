@@ -106,6 +106,18 @@ pub enum CudaError {
         /// Kernel-defined detail code.
         detail: u32,
     },
+    /// A batched J2K CUDA kernel reported a failure for one descriptor.
+    #[error("CUDA kernel {kernel} reported status {code} detail {detail} for job {job_index}")]
+    KernelJobStatus {
+        /// Kernel entry point or logical stage name.
+        kernel: &'static str,
+        /// Zero-based descriptor index within this kernel launch.
+        job_index: usize,
+        /// Kernel-defined status code.
+        code: u32,
+        /// Kernel-defined detail code.
+        detail: u32,
+    },
     /// Caller supplied arguments that cannot be represented by this runtime API.
     #[error("CUDA invalid argument: {message}")]
     InvalidArgument {
@@ -131,6 +143,56 @@ impl CudaError {
             } => primary.is_unavailable() && completion.is_unavailable(),
             _ => false,
         }
+    }
+
+    /// Whether an error can mean that previously submitted CUDA work still
+    /// references caller-owned allocations.
+    ///
+    /// External-runtime adapters use this conservative classification to
+    /// quarantine allocations instead of freeing storage after an uncertain
+    /// completion boundary. Pure validation, capacity, and kernel-status
+    /// errors return `false`.
+    #[doc(hidden)]
+    pub fn completion_is_uncertain(&self) -> bool {
+        matches!(
+            self,
+            Self::Driver { .. }
+                | Self::StatePoisoned { .. }
+                | Self::CompletionFailed { .. }
+                | Self::ResourceReleaseFailed { .. }
+        )
+    }
+
+    /// Descriptor index reported by a batched kernel status, when available.
+    #[doc(hidden)]
+    pub fn kernel_job_index(&self) -> Option<usize> {
+        match self {
+            Self::KernelJobStatus { job_index, .. } => Some(*job_index),
+            Self::CompletionFailed { primary, .. }
+            | Self::ResourceReleaseFailed {
+                primary,
+                release: _,
+            } => primary.kernel_job_index(),
+            _ => None,
+        }
+    }
+
+    /// Whether the retained runtime session must not execute later groups.
+    ///
+    /// Validated argument, capacity, and kernel-status errors are scoped to
+    /// the affected submission. Driver, poisoned-state, and uncertain cleanup
+    /// errors can invalidate ordering or retained resources and therefore
+    /// terminate a persistent batch call.
+    #[doc(hidden)]
+    pub fn session_is_unusable(&self) -> bool {
+        matches!(
+            self,
+            Self::Unavailable { .. }
+                | Self::Driver { .. }
+                | Self::StatePoisoned { .. }
+                | Self::CompletionFailed { .. }
+                | Self::ResourceReleaseFailed { .. }
+        )
     }
 }
 
@@ -214,5 +276,20 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("primary unavailable"));
         assert!(rendered.contains("release pool hold"));
+    }
+
+    #[test]
+    fn completion_uncertainty_excludes_preflight_and_validated_kernel_status() {
+        assert!(!CudaError::InvalidArgument {
+            message: "preflight".to_string(),
+        }
+        .completion_is_uncertain());
+        assert!(!CudaError::KernelStatus {
+            kernel: "test",
+            code: 1,
+            detail: 2,
+        }
+        .completion_is_uncertain());
+        assert!(driver("cuEventSynchronize").completion_is_uncertain());
     }
 }

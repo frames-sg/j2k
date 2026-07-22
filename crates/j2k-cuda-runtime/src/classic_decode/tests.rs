@@ -137,3 +137,30 @@ fn classic_runtime_validates_empty_work_and_times_only_status_copy() {
         .expect("pool release");
     assert!(status_copy < status_timing && status_timing < pool_release);
 }
+
+#[test]
+fn queued_classic_launch_defers_its_only_status_copy_to_guard_completion() {
+    let launch = include_str!("launch.rs");
+    let enqueue = launch
+        .split("pub unsafe fn decode_classic_codeblocks_multi_enqueue_with_resources_and_pool")
+        .nth(1)
+        .expect("queued classic decode method")
+        .split("/// Decode classic Tier-1 code-blocks and return optional stage timings.")
+        .next()
+        .expect("queued classic decode body");
+    assert!(enqueue.contains("launch_kernel_async"));
+    assert!(enqueue.contains("CudaQueuedClassicDecode"));
+    assert!(!enqueue.contains("copy_to_host"));
+
+    let completion = include_str!("queued.rs")
+        .split("pub fn finish(")
+        .nth(1)
+        .expect("queued classic completion");
+    let status_copy = completion
+        .find("copy_to_host")
+        .expect("deferred status copy");
+    let release = completion
+        .find("let release_result = self.release_after_stream_completion()")
+        .expect("release after status completion");
+    assert!(status_copy < release);
+}

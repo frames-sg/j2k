@@ -6,6 +6,12 @@ use std::path::Path;
 
 use syn::{Attribute, Item};
 
+use super::source_analysis::VENDORED_GPU_INTEROP_ROOTS;
+
+use self::evidence_modules::collect_evidence_symbols_from_file;
+
+mod evidence_modules;
+
 const CUDA_SIMT_EVIDENCE: &[EvidenceTest] = &[
     supplemental_evidence(
         "crates/j2k-cuda-runtime/src/tests.rs",
@@ -71,6 +77,11 @@ const VENDORED_BLOCK_EVIDENCE: &[EvidenceTest] = &[
         "buffer_readback_copies_typed_shared_buffer_values",
     ),
 ];
+
+const VENDORED_GPU_INTEROP_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
+    "xtask/tests/repo_lint_support/dependency_policy/path_patches.rs",
+    "all_workspace_path_patches_have_pinned_provenance_and_local_digests",
+)];
 
 const fn primary_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
     EvidenceTest {
@@ -155,6 +166,15 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
         },
         evidence: VENDORED_BLOCK_EVIDENCE,
     },
+    CoverageExclusion {
+        id: "vendored-gpu-interop-patch",
+        reason: "the provenance-pinned GPU interop dependencies are outside workspace instrumentation and their exact patched trees are integrity-checked",
+        matcher: ExclusionMatcher::PathTrees {
+            roots: VENDORED_GPU_INTEROP_ROOTS,
+            suffix: ".rs",
+        },
+        evidence: VENDORED_GPU_INTEROP_EVIDENCE,
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -187,6 +207,10 @@ pub(super) enum ExclusionMatcher {
         prefix: &'static str,
         contains: Option<&'static str>,
         excludes: Option<&'static str>,
+        suffix: &'static str,
+    },
+    PathTrees {
+        roots: &'static [&'static str],
         suffix: &'static str,
     },
     MarkerSpan {
@@ -226,6 +250,9 @@ fn exclusion_matches(
             && contains.is_none_or(|needle| path.contains(needle))
             && excludes.is_none_or(|needle| !path.contains(needle))
             && path.ends_with(suffix)),
+        ExclusionMatcher::PathTrees { roots, suffix } => Ok(roots
+            .iter()
+            .any(|root| path.starts_with(root) && path.ends_with(suffix))),
         ExclusionMatcher::MarkerSpan {
             path: exact,
             start,
@@ -281,13 +308,7 @@ pub(super) fn validate_exclusion_policy(root: &Path) -> Result<(), String> {
         }
         require_primary_evidence(exclusion)?;
         for evidence in exclusion.evidence {
-            let source = fs::read_to_string(root.join(evidence.path)).map_err(|err| {
-                format!(
-                    "coverage exclusion `{}` evidence {} is unavailable: {err}",
-                    exclusion.id, evidence.path
-                )
-            })?;
-            validate_evidence_test_source(evidence.path, evidence.name, evidence.class, &source)
+            validate_evidence_test_path(root, evidence.path, evidence.name, evidence.class)
                 .map_err(|error| {
                     format!(
                         "coverage exclusion `{}` has invalid evidence test `{}::{}`: {error}",
@@ -322,6 +343,18 @@ struct EvidenceSymbolMatches {
     conditional: bool,
 }
 
+fn validate_evidence_test_path(
+    root: &Path,
+    path: &str,
+    name: &str,
+    expected_class: EvidenceClass,
+) -> Result<(), String> {
+    let mut matches = EvidenceSymbolMatches::default();
+    collect_evidence_symbols_from_file(root, Path::new(path), name, false, &mut matches)?;
+    validate_evidence_symbol_matches(&matches, expected_class)
+}
+
+#[cfg(test)]
 fn validate_evidence_test_source(
     path: &str,
     name: &str,
@@ -337,6 +370,13 @@ fn validate_evidence_test_source(
         enclosing_cfg_is_conditional(&file.attrs),
         &mut matches,
     );
+    validate_evidence_symbol_matches(&matches, expected_class)
+}
+
+fn validate_evidence_symbol_matches(
+    matches: &EvidenceSymbolMatches,
+    expected_class: EvidenceClass,
+) -> Result<(), String> {
     match matches.count {
         0 => return Err("no matching Rust function symbol exists".to_string()),
         1 => {}
@@ -452,6 +492,27 @@ fn validate_exclusion_matcher(root: &Path, exclusion: &CoverageExclusion) -> Res
                     "coverage exclusion `{}` path pattern matches no Rust file",
                     exclusion.id
                 ));
+            }
+        }
+        ExclusionMatcher::PathTrees { roots, .. } => {
+            if roots.is_empty() {
+                return Err(format!(
+                    "coverage exclusion `{}` path trees are empty",
+                    exclusion.id
+                ));
+            }
+            for tree_root in roots {
+                let directory = root.join(tree_root);
+                let matched = directory.is_dir()
+                    && collect_rust_files(&directory, root)?
+                        .into_iter()
+                        .any(|path| exclusion_matches(exclusion, &path, 1, &[]).unwrap_or(false));
+                if !matched {
+                    return Err(format!(
+                        "coverage exclusion `{}` path tree `{tree_root}` matches no Rust file",
+                        exclusion.id
+                    ));
+                }
             }
         }
         ExclusionMatcher::MarkerSpan { path, .. } => {

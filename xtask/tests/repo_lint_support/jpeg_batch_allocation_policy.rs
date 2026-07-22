@@ -94,7 +94,6 @@ fn prepared_batch_and_shared_collector_expose_typed_outer_failures() {
             "pub enum BatchInfrastructureError",
             "pub enum BatchDecodeError<E>",
             "pub fn try_collect_indexed_batch_results<T, E>(",
-            "pub fn try_collect_ordered_batch_results<T, E>(",
             "pub fn try_collect_ordered_batch_results_with_limits<T, E>(",
             "retained_live_bytes.max(retained_collection_bytes)",
             "ResultIndexOutOfBounds",

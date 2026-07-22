@@ -34,7 +34,7 @@ pub(super) fn cuda_packetize_tile_body(
     let packet_descriptors = cuda_tile_packet_descriptors(
         resolution_packets.len(),
         1,
-        job.num_components(),
+        job.input.num_components(),
         &mut host_budget,
     )?;
     let resolutions = cuda_tile_packetization_resolutions(resolution_packets, &mut host_budget)?;
@@ -43,7 +43,7 @@ pub(super) fn cuda_packetize_tile_body(
         resolution_count: u32::try_from(resolutions.len())
             .map_err(|_| arithmetic_overflow("CUDA HTJ2K tile resolution count exceeds u32"))?,
         num_layers: 1,
-        num_components: job.num_components(),
+        num_components: job.input.num_components(),
         code_block_count: u32::try_from(code_block_count)
             .map_err(|_| arithmetic_overflow("CUDA HTJ2K tile code-block count exceeds u32"))?,
         progression_order: job.progression_order,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use crate::memory::CudaDeviceBuffer;
 use j2k_codec_math::classic::{
     MQ_QE_VALUES, PACKED_MQ_TRANSITION_VALUES, PACKED_SIGN_CONTEXT_LOOKUP, ZERO_CTX_HH_LOOKUP,
@@ -129,6 +131,24 @@ pub struct CudaClassicDecodeStageTimings {
     pub kernel_us: u128,
     /// Host-observed status download time, in microseconds.
     pub status_d2h_us: u128,
+}
+
+/// Device-resident static lookup tables for classic JPEG 2000 Tier-1 decode.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct CudaClassicDecodeTableResources {
+    pub(crate) inner: Arc<CudaClassicDecodeTableResourceInner>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CudaClassicDecodeTableResourceInner {
+    pub(crate) tables: CudaDeviceBuffer,
+}
+
+impl CudaClassicDecodeTableResources {
+    pub(crate) fn is_owned_by(&self, context: &crate::CudaContext) -> bool {
+        self.inner.tables.is_owned_by(context)
+    }
 }
 
 #[repr(C)]

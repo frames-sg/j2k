@@ -22,6 +22,10 @@ fn crates_io_publish_policy_is_explicit() {
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
     let publish_workflow = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
+    let release_manifest = fs::read_to_string(root.join("release-crates.json"))
+        .expect("read ordered release manifest");
+    let publisher = fs::read_to_string(root.join("scripts/publish_release.py"))
+        .expect("read release publisher");
     let version = workspace_package_version(&workspace);
 
     assert!(
@@ -57,22 +61,26 @@ fn crates_io_publish_policy_is_explicit() {
                 "\"j2k-cli\"",
             ])
             .forbidden(&["\"j2k-compare\""]),
-        PatternCheck::new("publish workflow package jobs", &publish_workflow)
+        PatternCheck::new("single-runner publish workflow", &publish_workflow)
             .required(&[
-                "publish-j2k-core:",
-                "publish-j2k-cuda-runtime:",
-                "publish-j2k-profile:",
-                "publish-j2k-native:",
-                "publish-j2k-tilecodec:",
-                "publish-j2k-jpeg:",
-                "publish-j2k:",
-                "publish-j2k-jpeg-metal:",
-                "publish-j2k-jpeg-cuda:",
-                "publish-j2k-metal:",
-                "publish-j2k-cuda:",
-                "publish-j2k-cli:",
+                "preflight:",
+                "publish:",
+                "environment: crates-io-publish",
+                "python3 scripts/publish_release.py preflight",
+                "python3 scripts/publish_release.py publish",
+                "CARGO_PUBLISH_TIMEOUT: \"600\"",
             ])
-            .forbidden(&["publish-j2k-compare:"]),
+            .forbidden(&["publish-j2k-core:", "cargo publish --workspace", "sleep "]),
+        PatternCheck::new("ordered release manifest", &release_manifest)
+            .required(&["\"ordered_crates\"", "\"j2k-core\"", "\"j2k-cli\""])
+            .forbidden(&["j2k-compare"]),
+        PatternCheck::new("checksum-aware release publisher", &publisher).required(&[
+            "hashlib.sha256",
+            "validate_release_graph",
+            "validate_registry_state",
+            "RETRY_DELAYS_SECONDS = (5, 15, 30)",
+            "[\"cargo\", \"publish\", \"--locked\", \"-p\", crate]",
+        ]),
     ]);
 }
 
@@ -350,7 +358,9 @@ fn assert_package_gate_file_contracts(root: &std::path::Path) {
             FilePatternCheck::new("scripts/publish-crate.sh")
                 .named("publish script")
                 .required(&[
-                    "registry_independent_crates=(",
+                    "publish_release.py\" manifest",
+                    "--field ordered-crates",
+                    "--field registry-independent",
                     "if [[ \"$#\" -ne 1 ]]",
                     "--preflight-all",
                     "scripts/crates_io_version.py verify-set",
@@ -370,11 +380,21 @@ fn assert_package_gate_file_contracts(root: &std::path::Path) {
                     "require_positive_decimal \"CRATES_IO_PUBLISH_ATTEMPTS\"",
                     "require_nonnegative_decimal \"CRATES_IO_RATE_LIMIT_RETRY_SECONDS\"",
                     "require_nonnegative_decimal \"CRATES_IO_INDEX_SETTLE_SECONDS\"",
-                    "j2k-cli",
                     "cargo package -p \"$crate\" --no-verify",
                     "cargo publish -p \"$crate\" --dry-run",
                 ])
                 .forbidden(&["dry-run package list only", "cargo info"]),
+            FilePatternCheck::new("scripts/publish_release.py")
+                .named("ordered checksum-aware publisher")
+                .required(&[
+                    "release-crates.json",
+                    "hashlib.sha256",
+                    "validate_release_graph",
+                    "validate_registry_state_with_retry",
+                    "RETRY_DELAYS_SECONDS = (5, 15, 30)",
+                    "cargo\", \"publish\", \"--locked",
+                ])
+                .forbidden(&["cargo publish --workspace"]),
             FilePatternCheck::new("scripts/crates_io_version.py")
                 .named("fail-closed crates.io version helper")
                 .required(&[
@@ -444,9 +464,11 @@ fn const_array_entries(block: &str) -> Vec<&str> {
 }
 
 #[test]
-fn publish_script_covers_all_publishable_crates() {
+fn release_manifest_covers_all_publishable_crates() {
     let root = repo_root();
     let xtask = xtask_sources(root);
+    let release_manifest =
+        fs::read_to_string(root.join("release-crates.json")).expect("read release manifest");
     let publish_script =
         fs::read_to_string(root.join("scripts/publish-crate.sh")).expect("read publish script");
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
@@ -462,9 +484,14 @@ fn publish_script_covers_all_publishable_crates() {
         .collect();
 
     assert_contains_all(
-        "publish script publishable package coverage",
-        &publish_script,
+        "release manifest publishable package coverage",
+        &release_manifest,
         &publishable_packages,
+    );
+    assert_contains_all(
+        "legacy preflight consumes release manifest",
+        &publish_script,
+        &["publish_release.py\" manifest", "--field ordered-crates"],
     );
 }
 

@@ -562,6 +562,8 @@ kernel void j2k_pack_u16_repeated_gray(
         "\n",
         include_str!("../store.metal"),
         "\n",
+        include_str!("../store_native_color_batch.metal"),
+        "\n",
         include_str!("../ht_cleanup.metal"),
     ]
     .concat()

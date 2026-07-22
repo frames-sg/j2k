@@ -45,7 +45,7 @@ const CUDA_HTJ2K_KERNELS_NOT_READY: &str =
     "strict CUDA HTJ2K resident codestream decode kernels are not available in this build";
 #[cfg(feature = "cuda-runtime")]
 const CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED: &str =
-    "strict CUDA HTJ2K resident decode currently accepts Gray8, Gray16, Rgb8, Rgba8, Rgb16, and Rgba16 output";
+    "strict CUDA HTJ2K resident decode currently accepts Gray8, Gray16, GrayI16, Rgb8, Rgba8, Rgb16, and Rgba16 output";
 #[cfg(feature = "cuda-runtime")]
 const CUDA_HTJ2K_PLAN_INVARIANT_FAILED: &str =
     "strict CUDA HTJ2K resident decode plan has invalid internal ranges";
@@ -64,10 +64,20 @@ mod color_batch;
 #[path = "decoder/profile.rs"]
 mod decode_profile;
 #[cfg(feature = "cuda-runtime")]
+pub(crate) mod grayscale_batch;
+#[cfg(feature = "cuda-runtime")]
+mod pending_completion;
+#[cfg(feature = "cuda-runtime")]
 mod plan;
 #[cfg(feature = "cuda-runtime")]
 mod resident;
 
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use self::color_batch::native_batch::{
+    submit_native_color_resident_prepared_batch, submit_native_color_resident_prepared_batch_into,
+    NativeColorBatchInput, NativeColorOwnedBatch, SubmittedNativeColorExternalBatch,
+    SubmittedNativeColorResidentBatch,
+};
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) use self::color_batch::{
     testing_cuda_htj2k_batch_decode_calls, testing_reset_cuda_htj2k_batch_decode_calls,
@@ -142,6 +152,30 @@ struct CudaQueuedIdwtBatch {
 
 #[cfg(feature = "cuda-runtime")]
 impl CudaQueuedIdwtBatch {
+    fn merge(mut self, mut next: Self) -> Result<Self, Error> {
+        if !self.context.is_same_context(&next.context) {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+            });
+        }
+        self.queued
+            .try_reserve_exact(next.queued.len())
+            .map_err(|_| {
+                crate::allocation::host_allocation_error::<CudaQueuedExecution>(
+                    self.queued.len().saturating_add(next.queued.len()),
+                    "j2k CUDA independent IDWT completion guards",
+                )
+            })?;
+        self.queued.append(&mut next.queued);
+        self.kernel_dispatches = self
+            .kernel_dispatches
+            .saturating_add(next.kernel_dispatches);
+        self.decode_dispatches = self
+            .decode_dispatches
+            .saturating_add(next.decode_dispatches);
+        Ok(self)
+    }
+
     fn resources_pending(&self) -> bool {
         self.kernel_dispatches != 0 && !self.queued.is_empty()
     }
@@ -207,14 +241,22 @@ struct CudaDecodedComponent {
 
 #[cfg(feature = "cuda-runtime")]
 struct CudaHtj2kColorDecodePlans {
+    output_index: usize,
     dimensions: (u32, u32),
     mct_dimensions: (u32, u32),
-    bit_depths: [u8; 3],
+    bit_depths: [u8; 4],
     mct: bool,
     transform: CudaHtj2kTransform,
     payload: Vec<u8>,
     components: Vec<CudaHtj2kDecodePlan>,
     report: CudaHtj2kProfileReport,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl CudaHtj2kColorDecodePlans {
+    const fn rgb_bit_depths(&self) -> [u8; 3] {
+        [self.bit_depths[0], self.bit_depths[1], self.bit_depths[2]]
+    }
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]

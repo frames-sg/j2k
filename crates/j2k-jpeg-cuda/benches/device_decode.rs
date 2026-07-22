@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(feature = "cuda-runtime")]
+use j2k_core::TileBatchDecodeManyDevice;
 use j2k_core::{
     BackendRequest, DeviceSubmission, DeviceSurface, ImageDecodeDevice, ImageDecodeSubmit,
     PixelFormat,
 };
-#[cfg(feature = "cuda-runtime")]
-use j2k_core::{DecoderContext, TileBatchDecodeManyDevice};
 use j2k_jpeg::{
     encode_jpeg_baseline, DecodeRequest, Decoder as CpuDecoder, JpegBackend, JpegEncodeOptions,
     JpegSamples, JpegSubsampling,
@@ -281,7 +281,7 @@ fn bench_batch_decode(c: &mut Criterion) {
         });
     });
 
-    let mut probe_ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut probe_ctx = j2k_jpeg::DecoderContext::default();
     let mut probe_pool = j2k_jpeg::ScratchPool::new();
     if let Err(error) = CudaCodec::decode_tiles_to_device(
         &mut probe_ctx,
@@ -302,7 +302,7 @@ fn bench_batch_decode(c: &mut Criterion) {
     group.bench_function(
         format!("cuda_adapter_rgb8_batch{batch_size}_surfaces"),
         |b| {
-            let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+            let mut ctx = j2k_jpeg::DecoderContext::default();
             let mut pool = j2k_jpeg::ScratchPool::new();
             b.iter(|| {
                 let outputs = CudaCodec::decode_tiles_to_device(

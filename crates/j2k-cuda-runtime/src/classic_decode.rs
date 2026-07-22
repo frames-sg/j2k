@@ -3,11 +3,13 @@
 mod abi;
 mod launch;
 mod prepare;
+mod queued;
 #[cfg(test)]
 mod tests;
 
 pub use abi::{
-    CudaClassicCodeBlockJob, CudaClassicDecodeStageTimings, CudaClassicDecodeTarget,
-    CudaClassicSegment, CudaClassicStatus,
+    CudaClassicCodeBlockJob, CudaClassicDecodeStageTimings, CudaClassicDecodeTableResources,
+    CudaClassicDecodeTarget, CudaClassicSegment, CudaClassicStatus,
 };
 pub(crate) use abi::{CudaClassicKernelJob, CudaClassicKernelSegment, CudaClassicKernelTables};
+pub use queued::CudaQueuedClassicDecode;

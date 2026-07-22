@@ -3,6 +3,7 @@
 //! JP2/JPH container traversal and native decode parse orchestration.
 
 use crate::error::{bail, FormatError, Result};
+use crate::image::ImageSource;
 use crate::reader::BitReader;
 use crate::{resolve_alpha_and_color_space, DecodeSettings, Image};
 
@@ -178,7 +179,7 @@ pub(crate) fn parse_with_retained_baseline(
     )?;
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
-            parsed_codestream.data,
+            ImageSource::new(data, parsed_codestream.data),
             parsed_codestream.header,
             image_boxes,
             settings,
@@ -187,7 +188,7 @@ pub(crate) fn parse_with_retained_baseline(
         )
     } else {
         Image::from_parsed_parts_with_retained_baseline(
-            parsed_codestream.data,
+            ImageSource::new(data, parsed_codestream.data),
             parsed_codestream.header,
             image_boxes,
             settings,

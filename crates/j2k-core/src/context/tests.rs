@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{CacheStats, CodecContext, DecoderContext};
+use super::{CacheStats, CodecContext};
 
 #[derive(Debug, PartialEq, Eq)]
 struct SeededContext {
@@ -22,10 +22,10 @@ impl CodecContext for SeededContext {
 }
 
 #[test]
-fn new_constructs_the_codec_context_from_its_default() {
-    let context = DecoderContext::<SeededContext>::new();
+fn default_constructs_the_codec_context_state() {
+    let context = SeededContext::default();
 
-    assert_eq!(context.codec().retained_entries, 7);
+    assert_eq!(context.retained_entries, 7);
 }
 
 #[test]

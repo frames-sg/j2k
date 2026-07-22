@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use core::fmt;
-use j2k_core::{
-    DecodeRowsError, DecoderContext as CoreDecoderContext, ImageDecode, ImageDecodeRows,
-    TileBatchDecode,
-};
+use j2k_core::{DecodeRowsError, ImageDecode, ImageDecodeRows, TileBatchDecode};
 
 use super::{
     core_outcome, CroppedWriter, Decoder, DecoderContext, Downscale, DownscaleFactor,
@@ -185,7 +182,7 @@ fn core_image_decode_adapter_preserves_full_region_and_scaled_results() {
 
 #[test]
 fn core_tile_adapter_preserves_full_region_and_scaled_results() {
-    let mut context = CoreDecoderContext::<DecoderContext>::new();
+    let mut context = DecoderContext::new();
     let mut pool = ScratchPool::new();
 
     let (expected_full, expected_full_outcome) = decode_direct(None, Downscale::None);

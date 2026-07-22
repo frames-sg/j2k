@@ -1,8 +1,18 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use alloc::vec::Vec;
 
 use crate::{J2kRect, J2kWaveletTransform};
+pub use j2k_types::{HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange};
 
 mod allocation;
+mod referenced_classic;
+pub use referenced_classic::J2kReferencedClassicPlan;
+mod referenced_ht;
+pub use referenced_ht::{
+    J2kReferencedHtj2kPlan, J2kReferencedPayloadRecordSpan, J2kReferencedTileGeometry,
+    J2kReferencedTilePlan,
+};
 
 /// Adapter identifier for one device-owned grayscale coefficient band.
 pub type J2kDirectBandId = u32;
@@ -43,6 +53,21 @@ pub struct J2kDirectColorPlan {
     /// Wavelet transform used by the codestream's color transform.
     pub transform: J2kWaveletTransform,
     /// Per-component direct plans. RGB plans currently contain exactly three components.
+    pub component_plans: Vec<J2kDirectGrayscalePlan>,
+}
+
+/// Adapter RGBA direct device plan with RGB-only inverse MCT semantics.
+#[derive(Debug)]
+pub struct J2kDirectRgbaPlan {
+    /// Final output dimensions.
+    pub dimensions: (u32, u32),
+    /// Final output bit depths in semantic R, G, B, A order.
+    pub bit_depths: [u8; 4],
+    /// Whether inverse MCT must be applied to the first three component stores.
+    pub mct: bool,
+    /// Wavelet transform used by the codestream's RGB color transform.
+    pub transform: J2kWaveletTransform,
+    /// Per-component direct plans in semantic R, G, B, A order.
     pub component_plans: Vec<J2kDirectGrayscalePlan>,
 }
 

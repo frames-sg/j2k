@@ -30,16 +30,6 @@ pub fn scaled_rect_covering(rect: PixelRect, denom: u32) -> PixelRect {
     }
 }
 
-/// Crops interleaved `u8` samples from a full image.
-pub fn crop_interleaved_u8(
-    full: &[u8],
-    full_width: usize,
-    channels: usize,
-    roi: PixelRect,
-) -> Vec<u8> {
-    crop_interleaved_bytes(full, full_width, channels, roi)
-}
-
 /// Crops interleaved bytes from a full image.
 pub fn crop_interleaved_bytes(
     full: &[u8],

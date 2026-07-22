@@ -76,7 +76,7 @@ fn encode_modules(root: &Path) -> [FocusedModule; 9] {
     ]
 }
 
-fn decode_modules(root: &Path) -> [FocusedModule; 10] {
+fn decode_modules(root: &Path) -> [FocusedModule; 13] {
     [
         (
             "api",
@@ -98,6 +98,22 @@ fn decode_modules(root: &Path) -> [FocusedModule; 10] {
                 "crates/j2k-cuda-runtime/src/htj2k_decode/completion/dequant.rs",
             ),
             125,
+        ),
+        (
+            "cleanup enqueue",
+            read(
+                root,
+                "crates/j2k-cuda-runtime/src/htj2k_decode/completion/cleanup_enqueue.rs",
+            ),
+            225,
+        ),
+        (
+            "cleanup/dequant enqueue",
+            read(
+                root,
+                "crates/j2k-cuda-runtime/src/htj2k_decode/completion/cleanup_dequant_enqueue.rs",
+            ),
+            225,
         ),
         (
             "context validation",
@@ -129,6 +145,14 @@ fn decode_modules(root: &Path) -> [FocusedModule; 10] {
             "queued completion",
             read(root, "crates/j2k-cuda-runtime/src/htj2k_decode/queued.rs"),
             180,
+        ),
+        (
+            "queued lifecycle",
+            read(
+                root,
+                "crates/j2k-cuda-runtime/src/htj2k_decode/queued/lifecycle.rs",
+            ),
+            80,
         ),
         (
             "status",
@@ -250,10 +274,27 @@ fn assert_decode_ownership(modules: &[FocusedModule]) {
             module_source(modules, "completion"),
         )
         .required(&[
-            "decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool",
             "select_status_release_result",
             "submit_htj2k_decode_and_dequantize",
             "CudaHtj2kDecodeStageTimings",
+        ]),
+        PatternCheck::new(
+            "HTJ2K decode cleanup enqueue ownership",
+            module_source(modules, "cleanup enqueue"),
+        )
+        .required(&[
+            "decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool",
+            "let mut queued_resources = host_budget.try_vec_with_capacity(1)?;",
+            "finish_host_live_bytes: finish_budget.live_bytes()",
+        ]),
+        PatternCheck::new(
+            "HTJ2K decode cleanup/dequant enqueue ownership",
+            module_source(modules, "cleanup/dequant enqueue"),
+        )
+        .required(&[
+            "decode_htj2k_codeblocks_cleanup_dequantize_multi_enqueue_with_resources_and_pool",
+            "let mut queued_resources = host_budget.try_vec_with_capacity(1)?;",
+            "finish_host_live_bytes: finish_budget.live_bytes()",
         ]),
         PatternCheck::new(
             "HTJ2K decode dequant completion ownership",

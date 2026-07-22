@@ -6,21 +6,60 @@ use super::{
     checked_area, DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand,
     J2kDirectCpuScratch,
 };
-use crate::error::{DecodeError, Result, ValidationError};
+use crate::error::{DecodeError, DecodingError, Result, ValidationError};
 use crate::j2c::{bitplane, ht_block_decode};
 use crate::{
     try_reserve_decode_elements, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, DEFAULT_MAX_DECODE_BYTES,
+    J2kDirectGrayscaleStep, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
+    DEFAULT_MAX_DECODE_BYTES,
 };
 use alloc::vec::Vec;
 use core::mem::size_of;
+
+mod referenced;
+pub(super) use self::referenced::{
+    max_referenced_classic_dimensions, max_referenced_ht_dimensions,
+    prepare_referenced_classic_scratch, prepare_referenced_classic_staged_scratch,
+    prepare_referenced_direct_scratch, prepare_referenced_htj2k_staged_scratch,
+};
 
 pub(super) fn prepare_direct_scratch(
     plan: &J2kDirectColorPlan,
     scratch: &mut J2kDirectCpuScratch,
 ) -> Result<DirectWorkspaceBudget> {
-    normalize_retained_scratch(plan, scratch)?;
-    if let Err(error) = validate_aggregate_plan(plan, scratch) {
+    prepare_component_scratch(
+        &plan.component_plans,
+        plan.retained_allocation_bytes()?,
+        0,
+        None,
+        None,
+        scratch,
+    )
+}
+
+fn prepare_component_scratch(
+    components: &[J2kDirectGrayscalePlan],
+    retained_plan_bytes: usize,
+    compressed_payload_bytes: usize,
+    retained_classic_workspace_dimensions: Option<(u32, u32)>,
+    retained_ht_workspace_dimensions: Option<(u32, u32)>,
+    scratch: &mut J2kDirectCpuScratch,
+) -> Result<DirectWorkspaceBudget> {
+    normalize_retained_scratch(
+        components,
+        compressed_payload_bytes,
+        retained_classic_workspace_dimensions.is_some(),
+        retained_ht_workspace_dimensions.is_some(),
+        scratch,
+    )?;
+    if let Err(error) = validate_aggregate_plan(
+        components,
+        retained_plan_bytes,
+        compressed_payload_bytes,
+        retained_classic_workspace_dimensions,
+        retained_ht_workspace_dimensions,
+        scratch,
+    ) {
         if !matches!(
             error,
             DecodeError::Validation(ValidationError::ImageTooLarge)
@@ -30,14 +69,34 @@ pub(super) fn prepare_direct_scratch(
         // Retention is optional. Retry from an empty owner so prior larger
         // plans cannot make the current logical request fail.
         scratch.clear();
-        validate_aggregate_plan(plan, scratch)?;
+        validate_aggregate_plan(
+            components,
+            retained_plan_bytes,
+            compressed_payload_bytes,
+            retained_classic_workspace_dimensions,
+            retained_ht_workspace_dimensions,
+            scratch,
+        )?;
     }
 
-    if let Err(error) = reserve_scratch(plan, scratch) {
+    if let Err(error) = reserve_scratch(
+        components,
+        compressed_payload_bytes,
+        retained_classic_workspace_dimensions,
+        retained_ht_workspace_dimensions,
+        scratch,
+    ) {
         scratch.clear();
         return Err(error);
     }
-    match validate_aggregate_plan(plan, scratch) {
+    match validate_aggregate_plan(
+        components,
+        retained_plan_bytes,
+        compressed_payload_bytes,
+        retained_classic_workspace_dimensions,
+        retained_ht_workspace_dimensions,
+        scratch,
+    ) {
         Ok(workspace_budget) => Ok(workspace_budget),
         Err(error) => {
             scratch.clear();
@@ -70,10 +129,13 @@ impl DirectWorkspaceBudget {
 }
 
 fn normalize_retained_scratch(
-    plan: &J2kDirectColorPlan,
+    components: &[J2kDirectGrayscalePlan],
+    compressed_payload_bytes: usize,
+    retain_classic_workspace: bool,
+    retain_ht_workspace: bool,
     scratch: &mut J2kDirectCpuScratch,
 ) -> Result<()> {
-    let component_count = plan.component_plans.len();
+    let component_count = components.len();
     normalize_outer_owner(&mut scratch.component_band_sets, component_count);
     normalize_outer_owner(&mut scratch.component_planes, component_count);
 
@@ -88,7 +150,7 @@ fn normalize_retained_scratch(
         DirectComponentPlane::default,
     );
 
-    for (component_idx, component_plan) in plan.component_plans.iter().enumerate() {
+    for (component_idx, component_plan) in components.iter().enumerate() {
         let band_count = component_band_count(component_plan)?;
         if let Some(component) = scratch.component_band_sets.get_mut(component_idx) {
             normalize_outer_owner(&mut component.bands, band_count);
@@ -113,6 +175,16 @@ fn normalize_retained_scratch(
             }
         }
     }
+    scratch.compressed_payload.clear();
+    if scratch.compressed_payload.capacity() < compressed_payload_bytes {
+        scratch.compressed_payload = Vec::new();
+    }
+    if !retain_classic_workspace {
+        scratch.classic_workspace = crate::J2kCodeBlockDecodeWorkspace::default();
+    }
+    if !retain_ht_workspace {
+        scratch.ht_workspace = crate::HtCodeBlockDecodeWorkspace::default();
+    }
     Ok(())
 }
 
@@ -135,12 +207,24 @@ fn fill_without_allocation<T>(
 }
 
 fn validate_aggregate_plan(
-    plan: &J2kDirectColorPlan,
+    components: &[J2kDirectGrayscalePlan],
+    retained_plan_bytes: usize,
+    compressed_payload_bytes: usize,
+    retained_classic_workspace_dimensions: Option<(u32, u32)>,
+    retained_ht_workspace_dimensions: Option<(u32, u32)>,
     scratch: &J2kDirectCpuScratch,
 ) -> Result<DirectWorkspaceBudget> {
     let mut budget = DirectAllocationBudget::default();
-    let temporary_workspace_bytes = include_plan_allocations(&mut budget, plan)?;
-    include_scratch_allocations(&mut budget, plan, scratch)?;
+    let temporary_workspace_bytes =
+        include_plan_allocations(&mut budget, components, retained_plan_bytes)?;
+    include_scratch_allocations(
+        &mut budget,
+        components,
+        compressed_payload_bytes,
+        retained_classic_workspace_dimensions,
+        retained_ht_workspace_dimensions,
+        scratch,
+    )?;
     let base_bytes = budget.bytes;
     budget.include_bytes(temporary_workspace_bytes)?;
     Ok(DirectWorkspaceBudget {
@@ -176,12 +260,13 @@ impl DirectAllocationBudget {
 
 fn include_plan_allocations(
     budget: &mut DirectAllocationBudget,
-    plan: &J2kDirectColorPlan,
+    components: &[J2kDirectGrayscalePlan],
+    retained_plan_bytes: usize,
 ) -> Result<usize> {
-    budget.include_bytes(plan.retained_allocation_bytes()?)?;
+    budget.include_bytes(retained_plan_bytes)?;
     let mut classic_dimensions = None;
     let mut ht_dimensions = None;
-    for component in &plan.component_plans {
+    for component in components {
         for step in &component.steps {
             match step {
                 J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
@@ -217,10 +302,13 @@ fn observe_max_dimensions(target: &mut Option<(u32, u32)>, width: u32, height: u
 
 fn include_scratch_allocations(
     budget: &mut DirectAllocationBudget,
-    plan: &J2kDirectColorPlan,
+    components: &[J2kDirectGrayscalePlan],
+    compressed_payload_bytes: usize,
+    retained_classic_workspace_dimensions: Option<(u32, u32)>,
+    retained_ht_workspace_dimensions: Option<(u32, u32)>,
     scratch: &J2kDirectCpuScratch,
 ) -> Result<()> {
-    let component_count = plan.component_plans.len();
+    let component_count = components.len();
     budget.include_capacity::<DirectComponentBandScratch>(
         scratch.component_band_sets.capacity().max(component_count),
     )?;
@@ -228,7 +316,7 @@ fn include_scratch_allocations(
         scratch.component_planes.capacity().max(component_count),
     )?;
 
-    for (component_idx, component_plan) in plan.component_plans.iter().enumerate() {
+    for (component_idx, component_plan) in components.iter().enumerate() {
         let band_count = component_band_count(component_plan)?;
         let component = scratch.component_band_sets.get(component_idx);
         budget.include_capacity::<DirectCpuBand>(
@@ -250,11 +338,35 @@ fn include_scratch_allocations(
             .map_or(0, |plane| plane.samples.capacity());
         budget.include_capacity::<f32>(retained_capacity.max(plane_len))?;
     }
+    budget.include_capacity::<u8>(
+        scratch
+            .compressed_payload
+            .capacity()
+            .max(compressed_payload_bytes),
+    )?;
+    let retained_classic_workspace_bytes = scratch.classic_workspace.allocated_bytes()?;
+    let target_classic_workspace_bytes = retained_classic_workspace_dimensions
+        .map_or(Ok(0), |(width, height)| {
+            bitplane::classic_decode_workspace_bytes(width, height)
+        })?;
+    budget.include_bytes(retained_classic_workspace_bytes.max(target_classic_workspace_bytes))?;
+    let retained_ht_workspace_bytes = scratch.ht_workspace.allocated_bytes()?;
+    let target_ht_workspace_bytes = retained_ht_workspace_dimensions
+        .map_or(Ok(0), |(width, height)| {
+            ht_block_decode::ht_decode_workspace_bytes(width, height)
+        })?;
+    budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))?;
     Ok(())
 }
 
-fn reserve_scratch(plan: &J2kDirectColorPlan, scratch: &mut J2kDirectCpuScratch) -> Result<()> {
-    let component_count = plan.component_plans.len();
+fn reserve_scratch(
+    components: &[J2kDirectGrayscalePlan],
+    compressed_payload_bytes: usize,
+    retained_classic_workspace_dimensions: Option<(u32, u32)>,
+    retained_ht_workspace_dimensions: Option<(u32, u32)>,
+    scratch: &mut J2kDirectCpuScratch,
+) -> Result<()> {
+    let component_count = components.len();
     try_reserve_decode_elements(&mut scratch.component_band_sets, component_count)?;
     try_reserve_decode_elements(&mut scratch.component_planes, component_count)?;
     while scratch.component_band_sets.len() < component_count {
@@ -268,7 +380,7 @@ fn reserve_scratch(plan: &J2kDirectColorPlan, scratch: &mut J2kDirectCpuScratch)
             .push(DirectComponentPlane::default());
     }
 
-    for (component_idx, component_plan) in plan.component_plans.iter().enumerate() {
+    for (component_idx, component_plan) in components.iter().enumerate() {
         let component = &mut scratch.component_band_sets[component_idx];
         let band_count = component_band_count(component_plan)?;
         try_reserve_decode_elements(&mut component.bands, band_count)?;
@@ -284,6 +396,13 @@ fn reserve_scratch(plan: &J2kDirectColorPlan, scratch: &mut J2kDirectCpuScratch)
             &mut scratch.component_planes[component_idx].samples,
             plane_len,
         )?;
+    }
+    try_reserve_decode_elements(&mut scratch.compressed_payload, compressed_payload_bytes)?;
+    if let Some((width, height)) = retained_classic_workspace_dimensions {
+        scratch.classic_workspace.prepare(width, height)?;
+    }
+    if let Some((width, height)) = retained_ht_workspace_dimensions {
+        scratch.ht_workspace.prepare(width, height)?;
     }
     Ok(())
 }

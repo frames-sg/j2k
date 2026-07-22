@@ -315,6 +315,10 @@ pub enum DirectPlanUnsupportedReason {
     ColorSingleTileCodestream,
     /// Color direct plans require three RGB components.
     ColorThreeComponentRgbCodestream,
+    /// RGBA direct plans require an RGB image with explicit alpha.
+    RgbaRgbImageWithAlpha,
+    /// RGBA direct plans require four components in semantic R, G, B, A order.
+    RgbaFourComponentRgbCodestream,
     /// A direct component plan index did not exist.
     ComponentIndexOutOfRange,
     /// Direct component plans require unit-sampled components.
@@ -513,6 +517,12 @@ const fn direct_plan_unsupported_what(reason: DirectPlanUnsupportedReason) -> &'
         }
         DirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream => {
             "direct color plan only supports three-component RGB codestreams"
+        }
+        DirectPlanUnsupportedReason::RgbaRgbImageWithAlpha => {
+            "direct RGBA plan only supports RGB images with explicit alpha"
+        }
+        DirectPlanUnsupportedReason::RgbaFourComponentRgbCodestream => {
+            "direct RGBA plan only supports four-component RGB-alpha codestreams"
         }
         DirectPlanUnsupportedReason::ComponentIndexOutOfRange => {
             "direct component plan index is out of range"

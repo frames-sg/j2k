@@ -100,7 +100,7 @@ fn cuda_host_device_mirrors_explicitly_occupy_existing_tail_padding() {
     let host_j2k = read("crates/j2k-cuda-runtime/src/j2k_decode/types.rs");
     let device_idwt = read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs");
     let device_store =
-        read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src/main.rs");
+        read("crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src/abi.rs");
 
     for (name, source, minimum_tail_fields) in [
         ("CUDA JPEG host ABI", host_jpeg.as_str(), 1usize),

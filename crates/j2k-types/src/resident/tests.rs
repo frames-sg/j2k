@@ -24,7 +24,7 @@ fn resident_input_accepts_part1_component_and_precision_boundaries() {
 }
 
 #[test]
-fn resident_tile_job_accessors_delegate_to_the_validated_input() {
+fn resident_tile_job_exposes_validated_input() {
     let input = J2kResidentEncodeInput::new(17, 9, 3, 12, true).expect("valid resident input");
     let job = J2kResidentHtj2kTileEncodeJob {
         input,
@@ -39,11 +39,11 @@ fn resident_tile_job_accessors_delegate_to_the_validated_input() {
         quantization_steps: &[(0, 0)],
     };
 
-    assert_eq!(job.width(), 17);
-    assert_eq!(job.height(), 9);
-    assert_eq!(job.num_components(), 3);
-    assert_eq!(job.bit_depth(), 12);
-    assert!(job.signed());
+    assert_eq!(job.input.width(), 17);
+    assert_eq!(job.input.height(), 9);
+    assert_eq!(job.input.num_components(), 3);
+    assert_eq!(job.input.bit_depth(), 12);
+    assert!(job.input.signed());
 }
 
 #[test]

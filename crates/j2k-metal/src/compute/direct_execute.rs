@@ -59,6 +59,8 @@ fn prepare_direct_color_plan_with_tier1_mode(
     Ok(PreparedDirectColorPlan {
         dimensions: plan.dimensions,
         bit_depths: plan.bit_depths,
+        alpha_bit_depth: None,
+        signed: false,
         mct: plan.mct,
         transform: plan.transform,
         component_plans,

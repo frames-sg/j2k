@@ -13,10 +13,10 @@ use j2k::{
     decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
     decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
     decode_tiles_scaled_into, encode_j2k_lossless, wrap_j2k_codestream, CpuDecodeParallelism,
-    DecoderContext, EncodeBackendPreference, J2kBlockCodingMode, J2kContext, J2kDecoder,
-    J2kEncodeValidation, J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    J2kScratchPool, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kContext, J2kDecoder, J2kEncodeValidation,
+    J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool,
+    TileBatchOptions, TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 use j2k_core::{tile_batch_worker_count, Downscale, PixelFormat, Rect};
 use j2k_test_support::{fnv1a64_hex, patterned_gray8, patterned_rgb8, wrap_jp2_codestream};

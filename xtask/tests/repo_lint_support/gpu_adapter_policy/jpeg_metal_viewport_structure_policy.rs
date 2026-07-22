@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::{assert_pattern_checks, repo_root, PatternCheck};
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, PatternCheck};
 
 struct ViewportSources {
     viewport: String,
