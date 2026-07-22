@@ -7,7 +7,7 @@ use std::{collections::BTreeSet, env};
 use crate::gpu_validation::ValidationMode;
 use crate::process::{self, cargo, CommandContext};
 
-const GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED";
+const METAL_GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME";
 const METAL_COMPILE_ENV: &[(&str, &str)] = &[("RUST_TEST_THREADS", "1")];
 const METAL_RUNTIME_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_METAL_RUNTIME", "1"),
@@ -25,17 +25,17 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
 ];
 
 const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
-    "compute::tests::cropped_region_ht_direct_plan_keeps_idwt_windows_bounded",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_compacts_coded_payloads",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi",
-    "compute::tests::cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work",
-    "compute::tests::distinct_prepared_ht_direct_plans_support_stacked_component_batch",
-    "compute::tests::grouped_ht_direct_plan_uses_one_group_coded_arena",
-    "compute::tests::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
-    "compute::tests::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
-    "compute::tests::prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder",
-    "compute::tests::prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
-    "compute::tests::repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::classic::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::classic::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
+    "compute::tests::grouping::distinct_prepared_ht_direct_plans_support_stacked_component_batch",
+    "compute::tests::grouping::grouped_ht_direct_plan_uses_one_group_coded_arena",
+    "compute::tests::grouping::prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder",
+    "compute::tests::grouping::prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::grouping::repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt",
+    "compute::tests::roi::cropped_region_ht_direct_plan_keeps_idwt_windows_bounded",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_compacts_coded_payloads",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi",
+    "compute::tests::roi::cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work",
     "direct::tests::classic_direct_plan_idwt_inputs_match_native_backend_job",
     "direct::tests::classic_direct_plan_pre_store_band_is_not_all_zero",
     "direct::tests::classic_direct_plan_store_plane_matches_native_decode",
@@ -89,7 +89,7 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         label: "Burn J2K Metal tensor integration",
         package: "j2k-ml",
         minimum_passed: 4,
-        required_test: "strict_metal_staged_decode_reports_route_and_pixels",
+        required_test: "sessions::persistent_metal_burn_decoder_writes_independent_ht_directly",
     },
     MetalTestSuite {
         label: "J2K public facade",
@@ -338,9 +338,9 @@ fn validate_exact_ignored_run(output: &str) -> Result<(), String> {
 }
 
 fn reject_skip_markers(output: &str, label: &str) -> Result<(), String> {
-    if output.contains(GPU_TEST_SKIP_MARKER) {
+    if output.contains(METAL_GPU_TEST_SKIP_MARKER) {
         Err(format!(
-            "{label} emitted {GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
+            "{label} emitted {METAL_GPU_TEST_SKIP_MARKER}; release Metal validation must fail rather than skip"
         ))
     } else {
         Ok(())

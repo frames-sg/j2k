@@ -15,6 +15,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
+mod decode_payload;
+pub use decode_payload::{
+    HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange,
+};
 mod limits;
 #[doc(hidden)]
 pub use limits::{MAX_JPEG2000_PART1_COMPONENTS, MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH};

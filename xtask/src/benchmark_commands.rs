@@ -39,6 +39,30 @@ fn parse_bench_lane(mut args: impl Iterator<Item = String>) -> Result<BenchmarkL
     BenchmarkLane::parse(&value)
 }
 
+pub(super) fn j2k_ml_batch_bench_metal() -> Result<(), String> {
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_metal",
+        "--features",
+        "cpu,metal",
+    ])
+}
+
+pub(super) fn j2k_ml_batch_bench_cuda() -> Result<(), String> {
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-ml",
+        "--bench",
+        "batch_decode_cuda",
+        "--features",
+        "cpu,cuda",
+    ])
+}
+
 fn compile_benchmark_args(benchmark: CompileBenchmark) -> Vec<&'static str> {
     let mut args = vec!["bench", "-p", benchmark.package];
     if let Some(bench) = benchmark.bench {

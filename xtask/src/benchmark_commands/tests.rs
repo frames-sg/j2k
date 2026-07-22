@@ -2,8 +2,9 @@
 
 use super::{
     bench_build, bench_report, best_version_line, compile_benchmark_args, j2k_bench_signoff,
-    one_line, parse_bench_lane, render_benchmark_report, split_semicolon_list, BenchmarkLane,
-    BenchmarkReport, COMPILE_BENCHMARKS,
+    j2k_ml_batch_bench_cuda, j2k_ml_batch_bench_metal, one_line, parse_bench_lane,
+    render_benchmark_report, split_semicolon_list, BenchmarkLane, BenchmarkReport,
+    COMPILE_BENCHMARKS,
 };
 
 #[cfg(unix)]
@@ -51,10 +52,32 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains(
         "bench -p j2k-transcode-metal --bench dct97 --features bench-internals --no-run|"
     ));
-    assert!(log.contains("bench -p j2k-ml --bench tensor_decode --features cpu --no-run|"));
+    assert!(log.contains("bench -p j2k-ml --bench batch_decode --features cpu --no-run|"));
+    assert!(
+        log.contains("bench -p j2k-ml --bench batch_decode_metal --features cpu,metal --no-run|")
+    );
+    assert!(log.contains("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 19);
+    assert_eq!(log.lines().count(), 21);
+}
+
+#[cfg(unix)]
+#[test]
+fn accelerator_batch_benchmark_commands_select_one_explicit_backend() {
+    let recording = RecordingProgram::new("j2k-ml-benchmark-command-test", "");
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    j2k_ml_batch_bench_metal().expect("Metal batch benchmark command");
+    j2k_ml_batch_bench_cuda().expect("CUDA batch benchmark command");
+
+    let log = recording.log();
+    let lines = log.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines[0].starts_with("bench -p j2k-ml --bench batch_decode_metal --features cpu,metal|")
+    );
+    assert!(lines[1].starts_with("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda|"));
 }
 
 #[cfg(unix)]
@@ -64,11 +87,21 @@ fn benchmark_build_lanes_never_compile_the_other_accelerator() {
         (
             "host",
             9,
-            "j2k-ml --bench tensor_decode --features cpu",
+            "j2k-ml --bench batch_decode --features cpu",
             "j2k-cuda",
         ),
-        ("cuda", 4, "j2k-cuda --bench htj2k_decode", "j2k-metal"),
-        ("metal", 2, "j2k-jpeg-metal", "j2k-cuda"),
+        (
+            "cuda",
+            5,
+            "j2k-ml --bench batch_decode_cuda --features cpu,cuda",
+            "j2k-metal",
+        ),
+        (
+            "metal",
+            3,
+            "j2k-ml --bench batch_decode_metal --features cpu,metal",
+            "j2k-cuda",
+        ),
     ] {
         let recording = RecordingProgram::new("benchmark-lane-test", "");
         let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());

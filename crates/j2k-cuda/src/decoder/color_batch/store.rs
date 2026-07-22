@@ -17,7 +17,9 @@ mod validation;
 use self::validation::bit_depth_addend;
 pub(super) use self::validation::validate_color_stores;
 use crate::allocation::checked_cuda_element_count;
-pub(super) use batch::{prepare_rgb8_mct_batch_store, rgb8_mct_batch_store_target};
+pub(super) use batch::{
+    prepare_rgb8_mct_batch_store, rgb8_mct_batch_store_target, CudaPreparedRgb8MctBatchStore,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct ColorStoreInputs<'a> {

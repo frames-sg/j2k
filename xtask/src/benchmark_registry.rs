@@ -150,7 +150,7 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
     ),
     compile(
         "j2k-ml",
-        Some("tensor_decode"),
+        Some("batch_decode"),
         Some("cpu"),
         BenchmarkLane::Host,
         &[],
@@ -184,6 +184,13 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
         CUDA_BENCH_ENV,
     ),
     compile(
+        "j2k-ml",
+        Some("batch_decode_cuda"),
+        Some("cpu,cuda"),
+        BenchmarkLane::Cuda,
+        CUDA_BENCH_ENV,
+    ),
+    compile(
         "j2k-jpeg-metal",
         None,
         None,
@@ -194,6 +201,13 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
         "j2k-transcode-metal",
         Some("dct97"),
         Some("bench-internals"),
+        BenchmarkLane::Metal,
+        METAL_BENCH_ENV,
+    ),
+    compile(
+        "j2k-ml",
+        Some("batch_decode_metal"),
+        Some("cpu,metal"),
         BenchmarkLane::Metal,
         METAL_BENCH_ENV,
     ),

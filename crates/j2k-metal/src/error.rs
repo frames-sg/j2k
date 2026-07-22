@@ -172,6 +172,23 @@ impl MetalKernelRetryClass {
 }
 
 impl Error {
+    /// Whether this failure invalidates retained Metal session state or an
+    /// operation-wide ownership boundary.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn session_is_unusable(&self) -> bool {
+        matches!(
+            self,
+            Self::BatchInfrastructure(_)
+                | Self::PreparedPlanCacheAllocation { .. }
+                | Self::PreparedPlanCacheInvariant { .. }
+                | Self::MetalUnavailable
+                | Self::MetalRuntime { .. }
+                | Self::MetalStatePoisoned { .. }
+                | Self::MetalStateInvariant { .. }
+        )
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) fn is_conservative_retry_candidate(&self, requested: MetalKernelRetryClass) -> bool {
         match self {
@@ -433,5 +450,27 @@ mod tests {
 
         assert!(matches!(error, Error::MetalUnavailable));
         assert!(error.is_unsupported());
+    }
+
+    #[test]
+    fn persistent_session_classification_is_owned_by_metal_error() {
+        assert!(Error::MetalUnavailable.session_is_unusable());
+        assert!(Error::MetalRuntime {
+            message: "test runtime failure".to_string(),
+        }
+        .session_is_unusable());
+        assert!(Error::MetalStateInvariant {
+            state: "test state",
+            reason: "test invariant",
+        }
+        .session_is_unusable());
+        assert!(!Error::UnsupportedMetalRequest {
+            reason: "test unsupported request",
+        }
+        .session_is_unusable());
+        assert!(!Error::MetalKernel {
+            message: "test group status".to_string(),
+        }
+        .session_is_unusable());
     }
 }

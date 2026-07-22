@@ -8,9 +8,11 @@ use crate::command_support::{
 use crate::process::cargo;
 
 mod package_gate;
+mod path_patches;
 mod release_integrity_policy;
 mod release_manifest;
 
+use path_patches::workspace_path_patch_provenance_paths;
 use release_integrity_policy::{
     validate_changelog_state, validate_patch_provenance, ReleaseIntegrityMode,
 };
@@ -300,11 +302,15 @@ fn validate_release_metadata(
     }
 
     if mode == ReleaseIntegrityMode::Publish {
-        let provenance_path = Path::new("third_party/block-0.1.6-patched/PATCH_PROVENANCE.md");
-        let provenance = fs::read_to_string(provenance_path)
-            .map_err(|err| format!("failed to read {}: {err}", provenance_path.display()))?;
-        if let Err(error) = validate_patch_provenance(&provenance) {
-            errors.push(format!("{}: {error}", provenance_path.display()));
+        let manifest_path = Path::new("Cargo.toml");
+        let manifest = fs::read_to_string(manifest_path)
+            .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+        for provenance_path in workspace_path_patch_provenance_paths(&manifest)? {
+            let provenance = fs::read_to_string(&provenance_path)
+                .map_err(|err| format!("failed to read {}: {err}", provenance_path.display()))?;
+            if let Err(error) = validate_patch_provenance(&provenance) {
+                errors.push(format!("{}: {error}", provenance_path.display()));
+            }
         }
     }
     Ok(())

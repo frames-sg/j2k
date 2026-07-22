@@ -62,34 +62,15 @@ impl CudaSurfaceStats {
 /// Borrowed view of a CUDA-resident surface.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaSurface<'a> {
-    #[cfg(feature = "cuda-runtime")]
-    buffer: &'a CudaDeviceBuffer,
-    #[cfg(feature = "cuda-runtime")]
-    offset: usize,
-    #[cfg(not(feature = "cuda-runtime"))]
+    device_ptr: u64,
     _marker: core::marker::PhantomData<&'a ()>,
     pub(crate) stats: CudaSurfaceStats,
 }
 
 impl CudaSurface<'_> {
     /// Raw CUDA device pointer value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internally validated surface range no longer fits in the
-    /// CUDA `u64` address space, which indicates a construction invariant bug.
     pub fn device_ptr(&self) -> u64 {
-        #[cfg(feature = "cuda-runtime")]
-        {
-            self.buffer
-                .device_ptr()
-                .checked_add(self.offset as u64)
-                .expect("validated CUDA surface range pointer must fit in u64")
-        }
-        #[cfg(not(feature = "cuda-runtime"))]
-        {
-            unreachable!("CudaSurface cannot be constructed without cuda-runtime support")
-        }
+        self.device_ptr
     }
 
     /// Execution counters for this surface.
@@ -168,7 +149,13 @@ impl Surface {
                 len,
             } => {
                 let byte_len = self.byte_len();
-                debug_assert_eq!(*len, byte_len);
+                if *len < byte_len {
+                    return Err(BufferError::InputTooSmall {
+                        required: byte_len,
+                        have: *len,
+                    }
+                    .into());
+                }
                 if let Some(len) =
                     tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
                 {
@@ -191,15 +178,19 @@ impl Surface {
         #[cfg(feature = "cuda-runtime")]
         match &self.storage {
             Storage::Cuda(buffer) => Some(CudaSurface {
-                buffer,
-                offset: 0,
+                device_ptr: buffer.device_ptr(),
+                _marker: core::marker::PhantomData,
                 stats: self.stats,
             }),
-            Storage::CudaRange { buffer, offset, .. } => Some(CudaSurface {
-                buffer,
-                offset: *offset,
-                stats: self.stats,
-            }),
+            Storage::CudaRange { buffer, offset, .. } => {
+                let offset = u64::try_from(*offset).ok()?;
+                let device_ptr = buffer.device_ptr().checked_add(offset)?;
+                Some(CudaSurface {
+                    device_ptr,
+                    _marker: core::marker::PhantomData,
+                    stats: self.stats,
+                })
+            }
             Storage::Host(_) => None,
         }
         #[cfg(not(feature = "cuda-runtime"))]

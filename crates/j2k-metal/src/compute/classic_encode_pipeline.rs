@@ -4,12 +4,13 @@ use metal::ComputePipelineState;
 
 use crate::profile_env::classic_selective_bypass_disabled;
 
-use super::{
-    J2kClassicEncodeBatchJob, MetalRuntime, J2K_CLASSIC_ENCODE_32_MAX_HEIGHT,
-    J2K_CLASSIC_ENCODE_32_MAX_WIDTH, J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES,
-    J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS, J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+use super::abi::{
+    J2kClassicEncodeBatchJob, J2K_CLASSIC_ENCODE_32_MAX_HEIGHT, J2K_CLASSIC_ENCODE_32_MAX_WIDTH,
+    J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES, J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS,
+    J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
     J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS, J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT,
 };
+use super::MetalRuntime;
 
 pub(super) fn classic_resident_style_flags_from_env() -> u32 {
     if classic_selective_bypass_disabled() {

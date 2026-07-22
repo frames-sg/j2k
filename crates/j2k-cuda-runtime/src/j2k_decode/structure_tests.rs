@@ -55,11 +55,36 @@ const MODULES: &[(&str, &str, usize)] = &[
         350,
     ),
     (
+        "j2k_decode/store/batch/external.rs",
+        include_str!("store/batch/external.rs"),
+        175,
+    ),
+    (
+        "j2k_decode/store/batch/tests.rs",
+        include_str!("store/batch/tests.rs"),
+        50,
+    ),
+    (
         "j2k_decode/store/destination.rs",
         include_str!("store/destination.rs"),
         125,
     ),
+    (
+        "j2k_decode/store/color_native_batch.rs",
+        include_str!("store/color_native_batch.rs"),
+        450,
+    ),
+    (
+        "j2k_decode/store/color_native_batch/plan.rs",
+        include_str!("store/color_native_batch/plan.rs"),
+        250,
+    ),
     ("j2k_decode/store/tests.rs", STORE_TESTS, 500),
+    (
+        "j2k_decode/store/tests/color_native.rs",
+        include_str!("store/tests/color_native.rs"),
+        125,
+    ),
     (
         "j2k_decode/store/tests/zero_init.rs",
         include_str!("store/tests/zero_init.rs"),
@@ -75,8 +100,23 @@ const MODULES: &[(&str, &str, usize)] = &[
         include_str!("store_launch.rs"),
         225,
     ),
+    (
+        "j2k_decode/store_launch/color_native.rs",
+        include_str!("store_launch/color_native.rs"),
+        75,
+    ),
+    (
+        "j2k_decode/store_launch/color_native_rgba.rs",
+        include_str!("store_launch/color_native_rgba.rs"),
+        75,
+    ),
     ("j2k_decode/trace.rs", include_str!("trace.rs"), 175),
-    ("j2k_decode/types.rs", include_str!("types.rs"), 375),
+    ("j2k_decode/types.rs", include_str!("types.rs"), 385),
+    (
+        "j2k_decode/types/color_native.rs",
+        include_str!("types/color_native.rs"),
+        125,
+    ),
     (
         "j2k_decode/validation.rs",
         include_str!("validation.rs"),
@@ -122,7 +162,9 @@ fn cuda_j2k_decode_uses_focused_real_modules() {
         "IDWT output allocation must have a public runtime preflight"
     );
     assert!(
-        STORE.contains("mod batch;") && STORE.contains("mod destination;"),
+        STORE.contains("mod batch;")
+            && STORE.contains("mod color_native_batch;")
+            && STORE.contains("mod destination;"),
         "j2k_decode/store.rs must delegate batch planning and destination validation"
     );
     assert!(
@@ -130,8 +172,12 @@ fn cuda_j2k_decode_uses_focused_real_modules() {
         "j2k_decode/store.rs must delegate store and MCT validation"
     );
     assert!(
-        STORE_TESTS.contains("mod zero_init;"),
-        "store tests must delegate zero-initialization coverage"
+        STORE_TESTS.contains("mod color_native;") && STORE_TESTS.contains("mod zero_init;"),
+        "store tests must delegate exact-color and zero-initialization coverage"
+    );
+    assert!(
+        include_str!("store/color_native_batch.rs").contains("mod plan;"),
+        "exact-native RGB store must delegate target planning and validation"
     );
     assert!(!ROOT.contains(&include_macro));
 

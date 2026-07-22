@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::path::Path;
+
 use super::{
-    require_primary_evidence, supplemental_evidence, validate_evidence_test_source,
-    CoverageExclusion, EvidenceClass, EvidenceTest, ExclusionMatcher,
+    require_primary_evidence, supplemental_evidence, validate_evidence_test_path,
+    validate_evidence_test_source, CoverageExclusion, EvidenceClass, EvidenceTest,
+    ExclusionMatcher,
 };
 
 mod matchers;
@@ -84,6 +87,20 @@ fn direct_and_inherited_cfg_require_supplemental_classification() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn external_module_evidence_inherits_parent_conditional_compilation() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let path = "crates/j2k-metal/tests/device.rs";
+    let name = "full_classic_grayscale_decode_to_metal_matches_host_decode";
+
+    validate_evidence_test_path(&root, path, name, EvidenceClass::Supplemental).unwrap();
+    let error = validate_evidence_test_path(&root, path, name, EvidenceClass::Primary).unwrap_err();
+    assert!(
+        error.contains("conditionally compiled supplemental"),
+        "{error}"
+    );
 }
 
 #[test]

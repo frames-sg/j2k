@@ -71,9 +71,10 @@ struct PreparedPlanCacheEntry<V> {
 /// Flat LRU prepared-plan cache with randomized digests and full-key validation.
 ///
 /// Digests are only lookup accelerators. Every hit compares the owned input and
-/// all semantic key fields. Host accounting includes allocator-returned key and
-/// entry-vector capacities plus each value's nested owners; device accounting
-/// uses each retained Metal buffer's reported length.
+/// all semantic key fields. Host accounting includes copied-key capacities or
+/// retained input `Arc` allocations, entry-vector capacity, and each value's
+/// nested owners; device accounting uses each retained Metal buffer's reported
+/// length.
 pub(crate) struct PreparedPlanCache<V, S = RandomState> {
     entries: Vec<PreparedPlanCacheEntry<V>>,
     digest_builder: S,
@@ -406,8 +407,7 @@ where
         self.device_bytes = 0;
     }
 
-    #[cfg(test)]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 

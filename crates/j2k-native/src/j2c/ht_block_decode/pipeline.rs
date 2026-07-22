@@ -10,8 +10,8 @@ use super::significance::{
 };
 use super::state::{
     resized_u16_scratch, resized_u32_scratch, zeroed_u16_scratch, HtBlockDecodeScratch,
-    HtDecodeObserver,
 };
+use super::stats::HtDecodeObserver;
 
 mod scratch;
 pub(crate) use self::scratch::ht_decode_workspace_bytes;

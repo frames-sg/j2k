@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_mct_status_error, hybrid_stage_signpost, new_command_buffer,
-    new_compute_command_encoder, size_of, with_runtime, zeroed_shared_buffer, Buffer,
-    CommandBufferRef, DirectStatusCheck, Error, J2kInverseMctJob, J2kInverseMctParams,
-    J2kMctStatus, J2kWaveletTransform, MTLSize, MetalRuntime, J2K_MCT_STATUS_OK,
-    SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, hybrid_stage_signpost,
+    new_command_buffer, new_compute_command_encoder, size_of, with_runtime, Buffer,
+    CommandBufferRef, Error, J2kInverseMctJob, J2kInverseMctParams, J2kWaveletTransform, MTLSize,
+    MetalRuntime, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
 };
 
 #[cfg(target_os = "macos")]
@@ -47,8 +45,6 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
         let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
         let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
-
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.inverse_mct);
@@ -60,7 +56,6 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             size_of::<J2kInverseMctParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.set_buffer(4, Some(&status_buffer), 0);
         let width = runtime
             .inverse_mct
             .thread_execution_width()
@@ -81,11 +76,6 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         encoder.end_encoding();
         commit_and_wait_metal(&command_buffer)?;
 
-        let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "inverse MCT status")?;
-        if status.code != J2K_MCT_STATUS_OK {
-            return Err(decode_mct_status_error(status));
-        }
-
         let plane0_host = checked_buffer_slice::<f32>(&plane0_buffer, len, "inverse MCT plane 0")?;
         let plane1_host = checked_buffer_slice::<f32>(&plane1_buffer, len, "inverse MCT plane 1")?;
         let plane2_host = checked_buffer_slice::<f32>(&plane2_buffer, len, "inverse MCT plane 2")?;
@@ -104,7 +94,7 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
     len: usize,
     transform: J2kWaveletTransform,
     addends: [f32; 3],
-) -> Result<DirectStatusCheck, Error> {
+) -> Result<(), Error> {
     if len == 0 {
         return Err(Error::MetalKernel {
             message: "J2K MetalDirect color MCT cannot run on an empty plane".to_string(),
@@ -124,8 +114,6 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
         _addend1: addends[1],
         _addend2: addends[2],
     };
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
-
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.inverse_mct);
@@ -137,7 +125,6 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
         size_of::<J2kInverseMctParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.set_buffer(4, Some(&status_buffer), 0);
     let width = runtime
         .inverse_mct
         .thread_execution_width()
@@ -157,5 +144,5 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
     );
     encoder.end_encoding();
 
-    Ok(DirectStatusCheck::Mct(status_buffer))
+    Ok(())
 }

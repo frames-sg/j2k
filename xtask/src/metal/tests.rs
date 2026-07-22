@@ -49,7 +49,7 @@ printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_l
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-ml "*)
-printf '%s\n' 'test strict_metal_staged_decode_reports_route_and_pixels ... ok'
+printf '%s\n' 'test sessions::persistent_metal_burn_decoder_writes_independent_ht_directly ... ok'
 printf '%s\n' 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k "*)
@@ -133,6 +133,15 @@ fn skip_marker_is_always_a_release_failure() {
     )
     .expect_err("skip marker must fail");
     assert!(err.contains("must fail rather than skip"));
+}
+
+#[test]
+fn unrelated_cuda_skip_marker_does_not_fail_metal_release_validation() {
+    reject_skip_markers(
+        "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_CUDA_RUNTIME context=CUDA-only test",
+        "Burn J2K Metal tensor integration",
+    )
+    .expect("a CUDA-only skip must not masquerade as a skipped Metal runtime test");
 }
 
 #[test]

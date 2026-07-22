@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod component;
+mod surface;
+
+use self::{
+    component::{finish_color_components, run_pending_color_idwt},
+    surface::{finalize_color_surface, FinalizeColorSurfaceRequest},
+};
 use super::{
-    cuda_error, dispatch_color_store, finalize_color_surface, finish_color_components, host_owners,
-    pooled_cuda_buffer, run_color_mct, run_pending_color_idwt, ColorStoreInputs,
-    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, Error, FinalizeColorSurfaceRequest,
-    FinishColorCudaResidentSurfaceRequest, Surface,
+    cuda_error, dispatch_color_store, host_owners, pooled_cuda_buffer, profile, run_color_mct,
+    ColorStoreInputs, CudaBufferPool, CudaComponentDecodeWork, CudaHtj2kColorDecodePlans,
+    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, Error, PixelFormat, Surface,
 };
 
 pub(super) fn finish_color_cuda_resident_surface_with_component_work(
@@ -49,7 +55,7 @@ pub(super) fn finish_color_cuda_resident_surface_with_component_work(
                 &prepared.components[1].store,
                 &prepared.components[2].store,
             ],
-            bit_depths: color.bit_depths,
+            bit_depths: color.rgb_bit_depths(),
         };
         let mct = run_color_mct(
             inputs,
@@ -96,4 +102,17 @@ pub(super) fn finish_color_cuda_resident_surface_with_component_work(
         pending_idwt_batch,
         completion_result,
     )
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(super) struct FinishColorCudaResidentSurfaceRequest<'a> {
+    pub(super) context: &'a j2k_cuda_runtime::CudaContext,
+    pub(super) pool: &'a CudaBufferPool,
+    pub(super) fmt: PixelFormat,
+    pub(super) color: CudaHtj2kColorDecodePlans,
+    pub(super) component_work: Vec<CudaComponentDecodeWork>,
+    pub(super) wall_started: Option<profile::ProfileInstant>,
+    pub(super) collect_stage_timings: bool,
+    pub(super) run_idwt: bool,
+    pub(super) emit_report: bool,
 }

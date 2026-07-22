@@ -512,7 +512,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_ht_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
 
-        let mut actual = vec![0.0f32; job.output_len()];
+        let mut actual = vec![13_579.0f32; job.output_len()];
         compute::decode_ht_cleanup_code_block(job.as_job(), &mut actual).expect("metal decode");
 
         assert_eq!(actual, expected);

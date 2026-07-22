@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use super::{assert_pattern_checks, repo_root, rust_sources, PatternCheck};
+use crate::repo_lint_support::{assert_pattern_checks, repo_root, rust_sources, PatternCheck};
 
 #[test]
 #[expect(

@@ -2,7 +2,11 @@
 
 use std::time::Instant;
 
+mod cleanup_dequant_enqueue;
+mod cleanup_enqueue;
 mod dequant;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     allocation::HostPhaseBudget,
@@ -24,7 +28,6 @@ use super::{
         htj2k_decode_multi_cleanup_dequant_kernel_for_jobs, htj2k_decode_multi_kernel_for_jobs,
         htj2k_kernel_jobs,
     },
-    queued::CudaQueuedHtj2kCleanup,
     status::{first_status_error, select_status_release_result},
     types::{
         htj2k_decode_kernel_tables, CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCleanupTarget,
@@ -35,125 +38,6 @@ use super::{
 };
 
 impl CudaContext {
-    /// Enqueue HTJ2K cleanup passes for multiple output buffers with one CUDA
-    /// dispatch. The returned value must be kept live until `finish` validates
-    /// the kernel statuses after the default stream has completed.
-    ///
-    /// # Safety
-    ///
-    /// Every target coefficient buffer must remain allocated and must not be
-    /// mutated or reused until the returned cleanup is finished or dropped.
-    /// Target allocations and each target's job write regions must be
-    /// pairwise disjoint; both conditions are validated before launch.
-    /// The decode payload and table resources must remain live for the same
-    /// duration. The resources, targets, and pool must belong to this context
-    /// (validated at runtime), and all pool clones must remain confined to this
-    /// context's default stream until that completion point.
-    #[doc(hidden)]
-    pub unsafe fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        targets: &[CudaHtj2kCleanupTarget<'_>],
-        pool: &CudaBufferPool,
-    ) -> Result<CudaQueuedHtj2kCleanup, CudaError> {
-        // SAFETY: this wrapper preserves the caller's target and pool lifetime
-        // requirements and contributes no additional caller-live host owners.
-        unsafe {
-            self.decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool_and_live_host_bytes(
-                resources,
-                targets,
-                pool,
-                0,
-            )
-        }
-    }
-
-    /// Enqueue HTJ2K cleanup while accounting caller-live host metadata.
-    ///
-    /// # Safety
-    ///
-    /// The target buffers, resources, and pool must satisfy the same lifetime,
-    /// aliasing, context, and stream-confinement requirements as
-    /// [`Self::decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool`].
-    #[doc(hidden)]
-    pub unsafe fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool_and_live_host_bytes(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        targets: &[CudaHtj2kCleanupTarget<'_>],
-        pool: &CudaBufferPool,
-        live_host_bytes: usize,
-    ) -> Result<CudaQueuedHtj2kCleanup, CudaError> {
-        validate_cleanup_context(self, resources, targets, pool)?;
-        let kernel_jobs = htj2k_cleanup_multi_kernel_jobs_with_live_host_bytes(
-            targets,
-            resources.payload_len,
-            live_host_bytes,
-        )?;
-        if kernel_jobs.is_empty() {
-            return Ok(CudaQueuedHtj2kCleanup {
-                context: self.clone(),
-                resources: Vec::new(),
-                status_buffer: None,
-                status_count: 0,
-                kernel_name: "j2k_htj2k_decode_codeblocks_multi",
-                execution: CudaExecutionStats::default(),
-                pool_reuse_guard: None,
-                finish_host_live_bytes: 0,
-            });
-        }
-        self.inner.set_current()?;
-        let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
-        let tables = htj2k_decode_kernel_tables(resources)?;
-
-        let mut host_budget = HostPhaseBudget::with_live_bytes(
-            "CUDA queued HTJ2K cleanup metadata",
-            live_host_bytes,
-        )?;
-        host_budget.account_vec(&kernel_jobs)?;
-        let mut queued_resources = host_budget.try_vec_with_capacity(1)?;
-        let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
-        queued_resources.push(jobs_buffer);
-        let mut finish_budget = HostPhaseBudget::with_live_bytes(
-            "CUDA queued HTJ2K cleanup retained metadata",
-            live_host_bytes,
-        )?;
-        finish_budget.account_vec(&queued_resources)?;
-        let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
-        let payload_buffer = resources.payload.buffer()?;
-        let jobs_device_buffer = pooled_device_buffer(&queued_resources[0])?;
-        let status_device_buffer = pooled_device_buffer(&status_buffer)?;
-        let pool_reuse_guard = pool.defer_reuse()?;
-        let launch_result =
-            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
-                kernel: decode_kernel,
-                payload: payload_buffer,
-                jobs: jobs_device_buffer,
-                tables,
-                statuses: status_device_buffer,
-                job_count: kernel_jobs.len(),
-                mode: CudaLaunchMode::Async,
-            });
-        if let Err(error) = launch_result {
-            return pool_reuse_guard.synchronize_then_error(error);
-        }
-
-        Ok(CudaQueuedHtj2kCleanup {
-            context: self.clone(),
-            resources: queued_resources,
-            status_buffer: Some(status_buffer),
-            status_count: kernel_jobs.len(),
-            kernel_name: decode_kernel_name,
-            execution: CudaExecutionStats {
-                kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: 1,
-                hardware_decode: false,
-            },
-            pool_reuse_guard: Some(pool_reuse_guard),
-            finish_host_live_bytes: finish_budget.live_bytes(),
-        })
-    }
-
     fn run_htj2k_cleanup_multi_kernel(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -185,6 +69,7 @@ impl CudaContext {
                 jobs: jobs_device_buffer,
                 tables,
                 statuses: status_device_buffer,
+                status_byte_offset: 0,
                 job_count: kernel_jobs.len(),
                 mode,
             });
@@ -502,23 +387,5 @@ impl CudaContext {
             })?;
         }
         Ok(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn ht_status_timing_excludes_pool_release() {
-        let source = include_str!("completion.rs");
-        let status_copy = source
-            .find("status_buffer.copy_to_host")
-            .expect("HT status copy");
-        let status_timing = source
-            .find("let status_d2h_us")
-            .expect("HT status timing result");
-        let pool_release = source
-            .find("let release_result = pending_pool_reuse")
-            .expect("HT pool release");
-        assert!(status_copy < status_timing && status_timing < pool_release);
     }
 }

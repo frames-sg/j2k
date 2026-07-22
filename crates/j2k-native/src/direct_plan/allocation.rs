@@ -5,8 +5,10 @@
 use core::mem::size_of;
 
 use crate::{
-    HtOwnedCodeBlockBatchJob, J2kCodeBlockSegment, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kOwnedCodeBlockBatchJob, Result, ValidationError,
+    HtCodeBlockPayloadRanges, HtOwnedCodeBlockBatchJob, J2kClassicCodeBlockPayload,
+    J2kCodeBlockSegment, J2kCodestreamRange, J2kDirectColorPlan, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectRgbaPlan, J2kOwnedCodeBlockBatchJob, J2kReferencedClassicPlan,
+    J2kReferencedHtj2kPlan, J2kReferencedTilePlan, Result, ValidationError,
     DEFAULT_MAX_DECODE_BYTES,
 };
 
@@ -65,13 +67,151 @@ impl J2kDirectColorPlan {
     /// native decode allocation ceiling.
     #[doc(hidden)]
     pub fn retained_allocation_bytes(&self) -> Result<usize> {
+        retained_color_component_plan_bytes(&self.component_plans, self.component_plans.capacity())
+    }
+}
+
+impl J2kDirectRgbaPlan {
+    /// Return the allocator capacities retained by this direct-plan owner graph.
+    ///
+    /// The root plan value itself is not included. Callers that place the root
+    /// in a separate heap allocation must account that allocation separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if nested capacity arithmetic overflows or exceeds the
+    /// native decode allocation ceiling.
+    #[doc(hidden)]
+    pub fn retained_allocation_bytes(&self) -> Result<usize> {
+        retained_color_component_plan_bytes(&self.component_plans, self.component_plans.capacity())
+    }
+}
+
+impl J2kReferencedHtj2kPlan {
+    /// Return allocator capacities retained by referenced geometry and payload ranges.
+    ///
+    /// The encoded payload bytes themselves remain caller-owned and are not counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if nested capacity arithmetic overflows or exceeds the
+    /// native decode allocation ceiling.
+    #[doc(hidden)]
+    pub fn retained_allocation_bytes(&self) -> Result<usize> {
         let mut budget = RetainedPlanBudget::default();
-        budget.include_capacity::<J2kDirectGrayscalePlan>(self.component_plans.capacity())?;
-        for component in &self.component_plans {
-            include_grayscale_plan(&mut budget, component)?;
+        match self {
+            Self::Grayscale {
+                tiles, payloads, ..
+            }
+            | Self::Color {
+                tiles, payloads, ..
+            }
+            | Self::Rgba {
+                tiles, payloads, ..
+            } => {
+                include_referenced_tiles(&mut budget, tiles, tiles.capacity())?;
+                budget.include_capacity::<HtCodeBlockPayloadRanges>(payloads.capacity())?;
+            }
         }
         Ok(budget.bytes)
     }
+}
+
+impl J2kReferencedClassicPlan {
+    /// Return allocator capacities retained by referenced geometry and payload fragments.
+    ///
+    /// The encoded payload bytes themselves remain caller-owned and are not counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if nested capacity arithmetic overflows or exceeds the
+    /// native decode allocation ceiling.
+    #[doc(hidden)]
+    pub fn retained_allocation_bytes(&self) -> Result<usize> {
+        let mut budget = RetainedPlanBudget::default();
+        match self {
+            Self::Grayscale {
+                tiles,
+                payloads,
+                ranges,
+                ..
+            }
+            | Self::Color {
+                tiles,
+                payloads,
+                ranges,
+                ..
+            }
+            | Self::Rgba {
+                tiles,
+                payloads,
+                ranges,
+                ..
+            } => {
+                include_referenced_tiles(&mut budget, tiles, tiles.capacity())?;
+                include_classic_references(&mut budget, payloads.capacity(), ranges.capacity())?;
+            }
+        }
+        Ok(budget.bytes)
+    }
+}
+
+fn include_referenced_tiles(
+    budget: &mut RetainedPlanBudget,
+    tiles: &[J2kReferencedTilePlan],
+    retained_capacity: usize,
+) -> Result<()> {
+    budget.include_capacity::<J2kReferencedTilePlan>(retained_capacity)?;
+    for tile in tiles {
+        if let Some(geometry) = tile.grayscale_geometry() {
+            include_grayscale_plan(budget, geometry)?;
+        } else if let Some(geometry) = tile.color_geometry() {
+            include_color_component_plans(
+                budget,
+                &geometry.component_plans,
+                geometry.component_plans.capacity(),
+            )?;
+        } else if let Some(geometry) = tile.rgba_geometry() {
+            include_color_component_plans(
+                budget,
+                &geometry.component_plans,
+                geometry.component_plans.capacity(),
+            )?;
+        } else {
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+    }
+    Ok(())
+}
+
+fn include_classic_references(
+    budget: &mut RetainedPlanBudget,
+    payload_capacity: usize,
+    range_capacity: usize,
+) -> Result<()> {
+    budget.include_capacity::<J2kClassicCodeBlockPayload>(payload_capacity)?;
+    budget.include_capacity::<J2kCodestreamRange>(range_capacity)
+}
+
+fn retained_color_component_plan_bytes(
+    components: &[J2kDirectGrayscalePlan],
+    retained_capacity: usize,
+) -> Result<usize> {
+    let mut budget = RetainedPlanBudget::default();
+    include_color_component_plans(&mut budget, components, retained_capacity)?;
+    Ok(budget.bytes)
+}
+
+fn include_color_component_plans(
+    budget: &mut RetainedPlanBudget,
+    components: &[J2kDirectGrayscalePlan],
+    retained_capacity: usize,
+) -> Result<()> {
+    budget.include_capacity::<J2kDirectGrayscalePlan>(retained_capacity)?;
+    for component in components {
+        include_grayscale_plan(budget, component)?;
+    }
+    Ok(())
 }
 
 fn include_grayscale_plan(

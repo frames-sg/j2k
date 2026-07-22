@@ -12,6 +12,10 @@ use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
 use core::mem::size_of;
 
+pub(super) struct Tier1WorkspaceAccounting {
+    retained_bytes: usize,
+}
+
 #[derive(Default)]
 struct Tier1Requirements {
     classic_width: u32,
@@ -98,9 +102,10 @@ pub(super) fn prepare_tier1_workspace(
     header: &Header<'_>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'_>,
-) -> Result<usize> {
+) -> Result<Tier1WorkspaceAccounting> {
     let requirements = collect_requirements(tile, header, storage)?;
     let planned_bytes = requirements.logical_bytes()?;
+    let retained_bytes = tile_ctx.tier1_capacity_bytes()?;
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
     budget.include_bytes(planned_bytes)?;
 
@@ -128,7 +133,7 @@ pub(super) fn prepare_tier1_workspace(
             .structural_workspace_bytes
             .checked_add(actual_bytes)
             .ok_or(ValidationError::ImageTooLarge)?;
-        Ok(actual_bytes)
+        Ok(Tier1WorkspaceAccounting { retained_bytes })
     })();
 
     if prepared.is_err() {
@@ -138,14 +143,17 @@ pub(super) fn prepare_tier1_workspace(
 }
 
 pub(super) fn release_tier1_workspace(
-    tile_ctx: &mut TileDecodeContext,
+    _tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'_>,
-    accounted_bytes: usize,
+    accounting: &Tier1WorkspaceAccounting,
 ) -> Result<()> {
-    tile_ctx.release_tier1_allocations();
+    // The active structural baseline already included the retained owner.
+    // Preparation temporarily charged the complete new owner so a Vec growth
+    // also accounts for the replacement peak. Keep the resulting owner live
+    // and remove only the now-duplicated retained capacity.
     storage.structural_workspace_bytes = storage
         .structural_workspace_bytes
-        .checked_sub(accounted_bytes)
+        .checked_sub(accounting.retained_bytes)
         .ok_or(ValidationError::ImageTooLarge)?;
     Ok(())
 }

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    dispatch_1d_pipeline, dispatch_ht_cleanup_batched_in_encoder,
-    dispatch_ht_cleanup_repeated_batched_in_command_buffer, new_shared_buffer, prepared_ht_buffer,
-    size_of, Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck, Error,
-    HtCodeBlockDecodeJob, HtRepeatedCleanupDispatch, J2kHtCleanupBatchJob, MetalRuntime,
-    PreparedHtSubBand, PreparedHtSubBandGroup,
+    default_metal_ht_chunk_limits, dispatch_1d_pipeline, encode_metal_ht_batches_in_encoder,
+    encode_repeated_metal_ht_batch_in_command_buffer, size_of, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, DirectStatusCheck, Error, HtBatchInput, HtCodeBlockDecodeJob,
+    J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 
 #[cfg(target_os = "macos")]
@@ -32,38 +31,21 @@ pub(in crate::compute) fn encode_repeated_ht_sub_band_to_buffer_in_command_buffe
     count: usize,
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    if count == 0 || job.jobs.is_empty() {
-        let empty = new_shared_buffer(&runtime.device, 1)?;
-        return Ok((
-            vec![empty.clone()],
-            DirectStatusCheck::Ht {
-                buffer: empty,
-                len: 0,
-            },
-        ));
-    }
-
-    let total_jobs = job
-        .jobs
-        .len()
-        .checked_mul(count)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K MetalDirect repeated job count overflow".to_string(),
-        })?;
-    let coded_buffer = prepared_ht_buffer(job.coded_buffer.as_ref(), "coded")?.clone();
-    let jobs_buffer = prepared_ht_buffer(job.jobs_buffer.as_ref(), "jobs")?.clone();
-    let status_check =
-        dispatch_ht_cleanup_repeated_batched_in_command_buffer(HtRepeatedCleanupDispatch {
-            runtime,
-            command_buffer,
-            coded_data: &coded_buffer,
-            jobs: &jobs_buffer,
-            base_job_count: job.jobs.len(),
-            total_job_count: total_jobs,
-            output_plane_len: job.width as usize * job.height as usize,
-            decoded: output,
-        })?;
-    Ok((vec![coded_buffer, jobs_buffer], status_check))
+    encode_repeated_metal_ht_batch_in_command_buffer(
+        runtime,
+        command_buffer,
+        HtBatchInput {
+            source_index: 0,
+            payload: job.payload_source.as_ht_payload_source(),
+            jobs: &job.jobs,
+            output_base: 0,
+            execution_owner: &job.execution_owner,
+        },
+        count,
+        job.width as usize * job.height as usize,
+        output,
+        default_metal_ht_chunk_limits(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -74,38 +56,21 @@ pub(in crate::compute) fn encode_repeated_ht_sub_band_group_to_buffer_in_command
     count: usize,
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    if count == 0 || group.jobs.is_empty() {
-        let empty = new_shared_buffer(&runtime.device, 1)?;
-        return Ok((
-            vec![empty.clone()],
-            DirectStatusCheck::Ht {
-                buffer: empty,
-                len: 0,
-            },
-        ));
-    }
-
-    let total_jobs = group
-        .jobs
-        .len()
-        .checked_mul(count)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K MetalDirect repeated grouped job count overflow".to_string(),
-        })?;
-    let coded_buffer = group.coded_arena.buffer.clone();
-    let jobs_buffer = group.jobs_buffer.clone();
-    let status_check =
-        dispatch_ht_cleanup_repeated_batched_in_command_buffer(HtRepeatedCleanupDispatch {
-            runtime,
-            command_buffer,
-            coded_data: &coded_buffer,
-            jobs: &jobs_buffer,
-            base_job_count: group.jobs.len(),
-            total_job_count: total_jobs,
-            output_plane_len: group.total_coefficients,
-            decoded: output,
-        })?;
-    Ok((vec![coded_buffer, jobs_buffer], status_check))
+    encode_repeated_metal_ht_batch_in_command_buffer(
+        runtime,
+        command_buffer,
+        HtBatchInput {
+            source_index: 0,
+            payload: group.payload_source.as_ht_payload_source(),
+            jobs: &group.jobs,
+            output_base: 0,
+            execution_owner: &group.execution_owner,
+        },
+        count,
+        group.total_coefficients,
+        output,
+        default_metal_ht_chunk_limits(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -115,35 +80,20 @@ pub(in crate::compute) fn encode_prepared_ht_sub_band_to_buffer_in_encoder(
     job: &PreparedHtSubBand,
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    if job.jobs.is_empty() {
-        dispatch_zero_u32_buffer_in_encoder(
-            runtime,
-            encoder,
-            output,
-            job.width as usize * job.height as usize,
-        )?;
-        let empty = new_shared_buffer(&runtime.device, 1)?;
-        return Ok((
-            vec![empty.clone()],
-            DirectStatusCheck::Ht {
-                buffer: empty,
-                len: 0,
-            },
-        ));
-    }
-
-    let coded_buffer = prepared_ht_buffer(job.coded_buffer.as_ref(), "coded")?.clone();
-    let jobs_buffer = prepared_ht_buffer(job.jobs_buffer.as_ref(), "jobs")?.clone();
-    let status_check = dispatch_ht_cleanup_batched_in_encoder(
+    encode_metal_ht_batches_in_encoder(
         runtime,
         encoder,
-        &coded_buffer,
-        &jobs_buffer,
-        job.jobs.len(),
+        &[HtBatchInput {
+            source_index: 0,
+            payload: job.payload_source.as_ht_payload_source(),
+            jobs: &job.jobs,
+            output_base: 0,
+            execution_owner: &job.execution_owner,
+        }],
         output,
         job.width as usize * job.height as usize,
-    )?;
-    Ok((vec![coded_buffer, jobs_buffer], status_check))
+        default_metal_ht_chunk_limits(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -153,30 +103,20 @@ pub(in crate::compute) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder
     group: &PreparedHtSubBandGroup,
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    if group.jobs.is_empty() {
-        dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, group.total_coefficients)?;
-        let empty = new_shared_buffer(&runtime.device, 1)?;
-        return Ok((
-            vec![empty.clone()],
-            DirectStatusCheck::Ht {
-                buffer: empty,
-                len: 0,
-            },
-        ));
-    }
-
-    let coded_buffer = group.coded_arena.buffer.clone();
-    let jobs_buffer = group.jobs_buffer.clone();
-    let status_check = dispatch_ht_cleanup_batched_in_encoder(
+    encode_metal_ht_batches_in_encoder(
         runtime,
         encoder,
-        &coded_buffer,
-        &jobs_buffer,
-        group.jobs.len(),
+        &[HtBatchInput {
+            source_index: 0,
+            payload: group.payload_source.as_ht_payload_source(),
+            jobs: &group.jobs,
+            output_base: 0,
+            execution_owner: &group.execution_owner,
+        }],
         output,
         group.total_coefficients,
-    )?;
-    Ok((vec![coded_buffer, jobs_buffer], status_check))
+        default_metal_ht_chunk_limits(),
+    )
 }
 
 #[cfg(target_os = "macos")]

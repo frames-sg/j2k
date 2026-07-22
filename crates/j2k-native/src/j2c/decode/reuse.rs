@@ -17,8 +17,9 @@ const CONTEXT_ALLOCATION_WHAT: &str = "native decoder context retained component
 
 #[derive(Clone, Copy)]
 pub(super) struct ReusedDecodeBaseline {
-    pub(super) parser_bytes: usize,
-    pub(super) retained_channel_bytes: usize,
+    pub(super) parser_live: usize,
+    pub(super) channel_capacity: usize,
+    pub(super) scratch_capacity: usize,
 }
 
 impl DecoderContext<'_> {
@@ -26,10 +27,17 @@ impl DecoderContext<'_> {
         &mut self,
         retained_image_bytes: usize,
     ) -> Result<ReusedDecodeBaseline> {
-        // Completed tile graphs and transient scratch are never reused across
-        // images. Component sample owners are: they dominate repeated packed
-        // decode cost and their exact capacities can be carried explicitly.
-        self.tile_decode_context.release_tile_scratch_allocations();
+        self.prepare_reused_decode_baseline_with_cap(retained_image_bytes, DEFAULT_MAX_DECODE_BYTES)
+    }
+
+    fn prepare_reused_decode_baseline_with_cap(
+        &mut self,
+        retained_image_bytes: usize,
+        cap: usize,
+    ) -> Result<ReusedDecodeBaseline> {
+        // Parsed graphs borrow the previous input and are never reused.
+        // Component, Tier-1, and IDWT owners are lifetime-free and their exact
+        // capacities can be carried explicitly across unrelated inputs.
         self.storage.release_all_allocations();
 
         let retained_channel_bytes = match self.tile_decode_context.retained_channel_bytes() {
@@ -40,29 +48,49 @@ impl DecoderContext<'_> {
             }
             Err(error) => return Err(error),
         };
-        match checked_combined_context_bytes(
-            retained_image_bytes,
-            retained_channel_bytes,
-            DEFAULT_MAX_DECODE_BYTES,
-        ) {
-            Ok(parser_bytes) => Ok(ReusedDecodeBaseline {
-                parser_bytes,
-                retained_channel_bytes,
+        let retained_scratch_bytes = self.tile_decode_context.retained_scratch_bytes()?;
+        let retained_workspace_bytes =
+            checked_combined_context_bytes(retained_channel_bytes, retained_scratch_bytes, cap)?;
+        match checked_combined_context_bytes(retained_image_bytes, retained_workspace_bytes, cap) {
+            Ok(parser_live) => Ok(ReusedDecodeBaseline {
+                parser_live,
+                channel_capacity: retained_channel_bytes,
+                scratch_capacity: retained_scratch_bytes,
             }),
+            Err(error) if retained_scratch_bytes != 0 => Err(error),
             Err(_) if retained_channel_bytes != 0 => {
                 // Reuse is optional. A stale cache must never make a decode
                 // fail when the same request fits with a fresh context.
                 self.tile_decode_context.release_channel_allocations();
                 Ok(ReusedDecodeBaseline {
-                    parser_bytes: checked_combined_context_bytes(
-                        retained_image_bytes,
-                        0,
-                        DEFAULT_MAX_DECODE_BYTES,
-                    )?,
-                    retained_channel_bytes: 0,
+                    parser_live: checked_combined_context_bytes(retained_image_bytes, 0, cap)?,
+                    channel_capacity: 0,
+                    scratch_capacity: 0,
                 })
             }
             Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn retry_without_retained_scratch_on_capacity<T>(
+        &mut self,
+        retained_scratch_bytes: usize,
+        first_result: Result<T>,
+        retry: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if retained_scratch_bytes == 0 {
+            return first_result;
+        }
+        match first_result {
+            Err(error) if is_capacity_error(&error) => {
+                // A retained cache is never allowed to turn a request that
+                // fits a fresh decoder into a resource-cap failure.
+                self.storage.release_all_allocations();
+                self.tile_decode_context.release_tile_scratch_allocations();
+                self.record_scratch_capacity_retry();
+                retry(self)
+            }
+            result => result,
         }
     }
 
@@ -424,6 +452,45 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn retained_scratch_exact_cap_and_scratch_free_retry_are_deterministic() {
+        let mut context = super::DecoderContext::default();
+        context
+            .tile_decode_context
+            .idwt_scratch_buffer
+            .try_reserve_exact(8)
+            .expect("reserve deterministic retained scratch");
+        let scratch_bytes = context
+            .tile_decode_context
+            .retained_scratch_bytes()
+            .expect("scratch capacity bytes");
+        assert!(scratch_bytes > 0);
+
+        let exact = context
+            .prepare_reused_decode_baseline_with_cap(0, scratch_bytes)
+            .expect("retained scratch fits exact cap");
+        assert_eq!(exact.parser_live, scratch_bytes);
+        assert_eq!(exact.scratch_capacity, scratch_bytes);
+        let first_result = context.prepare_reused_decode_baseline_with_cap(0, scratch_bytes - 1);
+        assert!(matches!(
+            first_result,
+            Err(DecodeError::AllocationTooLarge { .. })
+        ));
+
+        let retried = context
+            .retry_without_retained_scratch_on_capacity(scratch_bytes, first_result, |context| {
+                context.prepare_reused_decode_baseline_with_cap(0, 0)
+            })
+            .expect("scratch-free retry fits");
+        assert_eq!(retried.parser_live, 0);
+        assert_eq!(retried.scratch_capacity, 0);
+        assert_eq!(
+            context.tile_decode_context.idwt_capacity_bytes().unwrap(),
+            0
+        );
+        assert_eq!(context.workspace_stats().scratch_capacity_retries(), 1);
     }
 
     #[test]

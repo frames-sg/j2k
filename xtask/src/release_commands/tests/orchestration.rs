@@ -80,7 +80,7 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.7.4\"\n",
+        "[workspace.package]\nversion = \"0.7.4\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(

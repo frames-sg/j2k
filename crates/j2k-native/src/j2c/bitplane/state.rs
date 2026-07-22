@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use core::mem::size_of;
 
 use super::super::arithmetic_decoder::ArithmeticDecoderContext;
@@ -53,6 +53,14 @@ impl BitPlaneDecodeBuffers {
         include_capacity::<usize>(&mut bytes, self.segment_ranges.capacity())?;
         include_capacity::<u8>(&mut bytes, self.segment_coding_passes.capacity())?;
         Ok(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn combined_layers_owner_for_test(&self) -> (*const u8, usize) {
+        (
+            self.combined_layers.as_ptr(),
+            self.combined_layers.capacity(),
+        )
     }
 }
 
@@ -119,27 +127,38 @@ pub(crate) struct BitPlaneDecodeContext {
 
 impl Default for BitPlaneDecodeContext {
     fn default() -> Self {
-        Self {
-            coefficient_states: vec![],
-            significant_scan_masks: vec![],
-            zero_coding_scan_masks: vec![],
-            coefficients: vec![],
-            neighbor_significances: vec![],
-            width: 0,
-            padded_width: COEFFICIENTS_PADDING * 2,
-            height: 0,
-            style: CodeBlockStyle::default(),
-            bitplanes: 0,
-            max_coding_passes: 0,
-            strict: false,
-            sub_band_type: SubBandType::LowLow,
-            contexts: [ArithmeticDecoderContext::default(); 19],
-            current_bit_position: 0,
-        }
+        Self::empty()
     }
 }
 
 impl BitPlaneDecodeContext {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            coefficient_states: Vec::new(),
+            significant_scan_masks: Vec::new(),
+            zero_coding_scan_masks: Vec::new(),
+            coefficients: Vec::new(),
+            neighbor_significances: Vec::new(),
+            width: 0,
+            padded_width: COEFFICIENTS_PADDING * 2,
+            height: 0,
+            style: CodeBlockStyle {
+                selective_arithmetic_coding_bypass: false,
+                reset_context_probabilities: false,
+                termination_on_each_pass: false,
+                vertically_causal_context: false,
+                segmentation_symbols: false,
+                high_throughput_block_coding: false,
+            },
+            bitplanes: 0,
+            max_coding_passes: 0,
+            strict: false,
+            sub_band_type: SubBandType::LowLow,
+            contexts: [ArithmeticDecoderContext::empty(); 19],
+            current_bit_position: 0,
+        }
+    }
+
     pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
         workspace::reset_decode_buffers(self, width, height).map(|_| ())
     }
@@ -213,6 +232,11 @@ impl BitPlaneDecodeContext {
     #[cfg(test)]
     pub(crate) fn coefficient_capacity_for_test(&self) -> usize {
         self.coefficients.capacity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coefficient_ptr_for_test(&self) -> *const Coefficient {
+        self.coefficients.as_ptr()
     }
 
     /// Completely reset context so that it can be reused for a new code-block.

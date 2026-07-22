@@ -51,6 +51,9 @@ pub enum Error {
         /// Logical phase or owner graph.
         what: &'static str,
     },
+    /// Bounded HTJ2K GPU job planning rejected one source job.
+    #[error(transparent)]
+    HtJobChunkPlan(#[from] j2k_core::HtGpuJobChunkPlanError),
     /// Backend request is unsupported by this adapter.
     #[error("backend request {request:?} is not supported by j2k-cuda")]
     UnsupportedBackend {
@@ -75,6 +78,20 @@ pub enum Error {
         source: j2k_cuda_runtime::CudaError,
     },
     #[cfg(feature = "cuda-runtime")]
+    /// A classic JPEG 2000 or HTJ2K tier-1 descriptor failed during GPU execution.
+    #[error(
+        "CUDA tier-1 source {source_index} job {original_job_index} failed during device execution: {source}"
+    )]
+    CudaTier1JobFailed {
+        /// Original caller input index that owns the failed job.
+        source_index: usize,
+        /// Stable job index before pass-bucket ordering and chunk splitting.
+        original_job_index: usize,
+        /// Indexed CUDA kernel failure.
+        #[source]
+        source: j2k_cuda_runtime::CudaError,
+    },
+    #[cfg(feature = "cuda-runtime")]
     /// A CUDA operation failed and the required resource cleanup also failed.
     #[error("CUDA operation failed ({primary}); CUDA cleanup also failed ({cleanup})")]
     CudaCleanupFailed {
@@ -83,6 +100,42 @@ pub enum Error {
         /// Error returned while synchronizing or releasing queued resources.
         cleanup: Box<Error>,
     },
+}
+
+impl Error {
+    /// Whether this error can leave submitted CUDA work referencing an
+    /// external allocation whose completion was not established.
+    #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
+    pub fn completion_is_uncertain(&self) -> bool {
+        match self {
+            Self::CudaRuntime { source } | Self::CudaTier1JobFailed { source, .. } => {
+                source.completion_is_uncertain()
+            }
+            Self::CudaCleanupFailed { primary, cleanup } => {
+                primary.completion_is_uncertain() || cleanup.completion_is_uncertain()
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the persistent CUDA session cannot safely execute later groups.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn session_is_unusable(&self) -> bool {
+        match self {
+            Self::CudaUnavailable => true,
+            #[cfg(feature = "cuda-runtime")]
+            Self::CudaRuntime { source } | Self::CudaTier1JobFailed { source, .. } => {
+                source.session_is_unusable()
+            }
+            #[cfg(feature = "cuda-runtime")]
+            Self::CudaCleanupFailed { primary, cleanup } => {
+                primary.session_is_unusable() || cleanup.session_is_unusable()
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -111,9 +164,12 @@ impl AdapterErrorParts for Error {
             Self::Decode(_)
             | Self::NativeDecode { .. }
             | Self::HostAllocationFailed { .. }
-            | Self::HostAllocationTooLarge { .. } => AdapterErrorKind::Other,
+            | Self::HostAllocationTooLarge { .. }
+            | Self::HtJobChunkPlan(_) => AdapterErrorKind::Other,
             #[cfg(feature = "cuda-runtime")]
-            Self::CudaRuntime { .. } | Self::CudaCleanupFailed { .. } => AdapterErrorKind::Other,
+            Self::CudaRuntime { .. }
+            | Self::CudaTier1JobFailed { .. }
+            | Self::CudaCleanupFailed { .. } => AdapterErrorKind::Other,
         }
     }
 }
