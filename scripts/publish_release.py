@@ -235,11 +235,50 @@ class CratesIoApi:
 
 
 def package_checksums(
-    manifest: ReleaseManifest, version: str
+    manifest: ReleaseManifest, version: str, metadata: Mapping[str, Any]
 ) -> dict[str, str]:
+    raw_packages = metadata.get("packages")
+    if not isinstance(raw_packages, list):
+        raise PublishError("cargo metadata packages must be an array")
+    packages = {
+        _string(package.get("name"), "cargo metadata package.name"): package
+        for raw_package in raw_packages
+        for package in (_object(raw_package, "cargo metadata package"),)
+    }
+    root = ROOT.resolve()
+    patch_arguments: list[str] = []
+    for crate in manifest.ordered_crates:
+        package = packages.get(crate)
+        if package is None:
+            raise PublishError(f"cargo metadata is missing release package {crate}")
+        manifest_path = pathlib.Path(
+            _string(package.get("manifest_path"), f"{crate}.manifest_path")
+        ).resolve()
+        package_root = manifest_path.parent
+        try:
+            package_root.relative_to(root)
+        except ValueError:
+            raise PublishError(
+                f"release package {crate} is outside the workspace root"
+            ) from None
+        patch_arguments.extend(
+            [
+                "--config",
+                f"patch.crates-io.{crate}.path={json.dumps(str(package_root))}",
+            ]
+        )
+
     checksums: dict[str, str] = {}
     for crate in manifest.ordered_crates:
-        command = ["cargo", "package", "--locked", "--no-verify", "-p", crate]
+        command = [
+            "cargo",
+            "package",
+            "--locked",
+            "--no-verify",
+            "-p",
+            crate,
+            *patch_arguments,
+        ]
         result = subprocess.run(
             command, cwd=ROOT, check=False, capture_output=True, text=True
         )
@@ -457,8 +496,9 @@ def _allow_published_rerun() -> bool:
 
 def run(command: str, manifest_path: pathlib.Path) -> None:
     manifest = load_release_manifest(manifest_path)
-    version = validate_release_graph(manifest, cargo_metadata())
-    checksums = package_checksums(manifest, version)
+    metadata = cargo_metadata()
+    version = validate_release_graph(manifest, metadata)
+    checksums = package_checksums(manifest, version, metadata)
     if command == "preflight":
         print(
             f"packaged {len(checksums)} crates for {version}; release manifest is valid"

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
+from unittest import mock
 
 from scripts import publish_release
 
@@ -61,6 +64,55 @@ class ManifestTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(publish_release.PublishError, "publishable workspace crates"):
             publish_release.validate_release_graph(incomplete, metadata)
+
+
+class PackagingTests(unittest.TestCase):
+    def test_workspace_packages_resolve_unpublished_exact_dependencies_locally(self) -> None:
+        manifest = publish_release.ReleaseManifest(
+            ordered_crates=("base", "consumer"),
+            registry_independent=frozenset({"base"}),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            metadata = {
+                "packages": [
+                    {
+                        "name": crate,
+                        "manifest_path": str(root / "crates" / crate / "Cargo.toml"),
+                    }
+                    for crate in manifest.ordered_crates
+                ]
+            }
+            package_dir = root / "target" / "package"
+            package_dir.mkdir(parents=True)
+            for crate in manifest.ordered_crates:
+                (package_dir / f"{crate}-0.7.3.crate").write_bytes(crate.encode())
+
+            commands: list[list[str]] = []
+
+            def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                self.assertEqual(kwargs["cwd"], root)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                mock.patch.object(publish_release, "ROOT", root),
+                mock.patch.object(publish_release.subprocess, "run", side_effect=run),
+            ):
+                publish_release.package_checksums(manifest, "0.7.3", metadata)
+
+        expected_patches = {
+            f'patch.crates-io.{crate}.path="{root.resolve() / "crates" / crate}"'
+            for crate in manifest.ordered_crates
+        }
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            configs = {
+                command[index + 1]
+                for index, argument in enumerate(command)
+                if argument == "--config"
+            }
+            self.assertEqual(configs, expected_patches)
 
 
 class RegistryTests(unittest.TestCase):
