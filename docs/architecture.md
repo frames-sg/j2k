@@ -64,7 +64,7 @@ j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core
-j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal
+j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-metal-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-core, j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
@@ -91,19 +91,18 @@ runtime, CUDA Oxide module loading, and host launch orchestration for supported
 CUDA codec stages. Product CUDA codec kernels are generated from CUDA Oxide
 projects while Rust host code retains Driver API orchestration. `cuda-runtime`
 support is an implementation dependency, not proof of NVIDIA performance.
-The Burn bridge uses a uniquely borrowed CubeCL allocation and CUDA event
-dependencies to order framework allocation, codec writes, and later tensor
-consumption without a normal-path context synchronization.
+The Burn CUDA upload adapter waits for codec-owned resident output, copies its
+dense decoded pixels to host staging, and constructs the Burn tensor through
+the framework's ordinary public upload API.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
 pipeline loading, checked buffer access, and route-label helpers. It is the
 codec-side raw Objective-C resource-construction boundary: nil is checked
 before any codec resource handle is formed, and autoreleased command resources
 are retained into owned Rust handles before return. Codec-specific kernels stay
-in codec adapter crates. The `j2k-ml` Metal bridge is the separate audited raw-handle adoption boundary
-for retained wgpu HAL device, queue, and buffer pointers. It pairs wgpu and
-codec sessions on the same underlying Metal device and lends the retained
-Burn-owned `MTLBuffer` suballocation to the codec's validated final destination.
+in codec adapter crates. The `j2k-ml` Metal upload adapter reads the validated
+dense range from completed codec-owned resident storage into host staging and
+constructs the Burn tensor through the framework's ordinary public upload API.
 
 HTJ2K is the optimized batch priority; classic JPEG 2000 shares the public
 grouping, destination, and completion contracts and remains regression-covered.

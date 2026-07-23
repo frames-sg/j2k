@@ -192,10 +192,8 @@ fn coverage_source_analysis_regression_ownership_stays_explicit() {
         ]),
         PatternCheck::new("coverage cfg provenance regressions", &cfg_provenance)
             .required(&["fn cfg_active_changed_source_cannot_evade_coverage_gate()"]),
-        PatternCheck::new("coverage exclusion regressions", &exclusion_policy).required(&[
-            "fn exclusion_policy_maps_every_narrow_rule_to_existing_tests()",
-            "fn vendored_gpu_interop_exclusion_covers_only_pinned_patch_roots()",
-        ]),
+        PatternCheck::new("coverage exclusion regressions", &exclusion_policy)
+            .required(&["fn exclusion_policy_maps_every_narrow_rule_to_existing_tests()"]),
         PatternCheck::new("coverage source-analysis regressions", &source).required(&[
             "fn body_bearing_function_forms_have_item_and_body_spans()",
             "fn nested_inline_module_uses_its_real_module_directory()",

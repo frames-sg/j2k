@@ -147,7 +147,7 @@ fn metal_batch_api_and_benchmark_docs_match_the_implemented_contract() {
     assert!(!ml.contains("Criterion group names include `flex`"));
 
     assert!(architecture.contains("codec-side raw Objective-C resource-construction boundary"));
-    assert!(architecture.contains("separate audited raw-handle adoption boundary"));
+    assert!(architecture.contains("Metal upload adapter reads the validated"));
     assert!(!architecture.contains("sole raw Objective-C resource-construction boundary"));
 }
 

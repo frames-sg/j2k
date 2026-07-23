@@ -89,7 +89,8 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         label: "Burn J2K Metal tensor integration",
         package: "j2k-ml",
         minimum_passed: 4,
-        required_test: "sessions::persistent_metal_burn_decoder_writes_independent_ht_directly",
+        required_test:
+            "sessions::persistent_metal_burn_decoder_uploads_independent_ht_through_staging",
     },
     MetalTestSuite {
         label: "J2K public facade",

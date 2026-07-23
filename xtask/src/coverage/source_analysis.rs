@@ -32,15 +32,6 @@ use workspace::{
 
 pub(super) const GENERATED_DWT_DISPOSITION: &str = "generated-codec-math-fragment";
 pub(super) const VENDORED_BLOCK_DISPOSITION: &str = "vendored-block-ffi-binding";
-pub(super) const VENDORED_GPU_INTEROP_DISPOSITION: &str = "vendored-gpu-interop-patch";
-pub(super) const VENDORED_GPU_INTEROP_ROOTS: &[&str] = &[
-    "third_party/cubecl-cuda-0.10.0-patched/",
-    "third_party/cubecl-runtime-0.10.0-patched/",
-    "third_party/wgpu-29.0.4-patched/",
-    "third_party/wgpu-core-29.0.4-patched/",
-    "third_party/wgpu-hal-29.0.4-patched/",
-];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SourceRole {
     Production,

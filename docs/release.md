@@ -9,6 +9,7 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.7.6` | Planned `j2k-ml` adoption release with explicitly staged CUDA/Metal upload adapters; not staged or publishable until clean-consumer and hardware gates pass. | Not a release line. |
 | `0.7.5` | Frozen source-incompatible release candidate; not published or tagged until the exact-SHA gates and annotated tag complete. | Not yet a published release line. |
 | `0.7.3` | Latest publicly published crates and documentation. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
@@ -159,6 +160,21 @@ registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `cargo publish --dry-run`, including Cargo's package verification build. Manual
 publish-workflow runs remain dry-run-only: they validate the manifest and
 construct every local archive without receiving the crates.io token.
+
+After constructing `j2k-ml`, the gate creates a consumer outside the workspace
+and compiles the packaged source against registry CubeCL and wgpu crates. Linux
+checks `cpu`, `cuda`, and `cpu,cuda`; macOS checks `cpu`, `metal`, and
+`cpu,metal`, and the combined host feature set also builds documentation. The
+consumer imports and instantiates the corresponding public decoder APIs.
+Temporary `[patch.crates-io]` entries cover only unpublished J2K workspace
+crates; third-party overrides are forbidden. Run the focused form with:
+
+```bash
+cargo xtask j2k-ml-package-smoke
+```
+
+An accelerator failure in this consumer is a distribution blocker even when
+the same feature builds inside the repository through a workspace-root patch.
 
 Before publication, the hosted preflight verifies that the checkout `origin` is
 the exact workflow repository, no draft, prerelease, or published GitHub

@@ -3,7 +3,7 @@
 use burn_cuda::CudaDevice;
 use j2k::BatchDecodeOptions;
 use j2k_cuda::CudaBatchDecoder;
-use j2k_ml::CudaBurnDecoder;
+use j2k_ml::CudaUploadBurnDecoder;
 
 use crate::{
     cuda_telemetry::{
@@ -21,7 +21,7 @@ use crate::{
 
 pub(super) fn run(workload_specs: &[WorkloadSpec], input_mode: InputMode) {
     let mut telemetry = profile_codec_resident(workload_specs, input_mode);
-    telemetry.extend(profile_burn_direct(workload_specs, input_mode));
+    telemetry.extend(profile_burn_upload(workload_specs, input_mode));
     print_cuda_telemetry(&telemetry);
 }
 
@@ -83,7 +83,7 @@ fn profile_codec_resident(
     telemetry
 }
 
-fn profile_burn_direct(
+fn profile_burn_upload(
     workload_specs: &[WorkloadSpec],
     input_mode: InputMode,
 ) -> Vec<CudaTelemetryRow> {
@@ -93,15 +93,15 @@ fn profile_burn_direct(
 
     for &spec in workload_specs {
         let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = CudaBurnDecoder::new(device.clone(), options);
-        let mut prepared_decoder = CudaBurnDecoder::new(device.clone(), options);
+        let mut one_shot = CudaUploadBurnDecoder::new(device.clone(), options);
+        let mut prepared_decoder = CudaUploadBurnDecoder::new(device.clone(), options);
         for (request_name, request, output_pixels) in requests(workload.dimensions, true) {
             for &batch_size in LOW_BATCH_SIZES {
                 let inputs = workload.inputs(request, batch_size);
                 capture_burn_telemetry(
                     &mut telemetry,
                     CudaTelemetryCase::new(
-                        "burn_direct",
+                        "burn_upload",
                         "one_shot",
                         &workload,
                         request_name,
@@ -118,7 +118,7 @@ fn profile_burn_direct(
                 capture_burn_telemetry(
                     &mut telemetry,
                     CudaTelemetryCase::new(
-                        "burn_direct",
+                        "burn_upload",
                         "prepared",
                         &workload,
                         request_name,

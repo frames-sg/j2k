@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::consumer::{extract_packaged_crate, j2k_ml_consumer_checks, j2k_ml_consumer_manifest};
 use super::{package_gate_plan, PUBLISHABLE_PACKAGES, REGISTRY_INDEPENDENT_PACKAGES};
 
 #[cfg(unix)]
@@ -28,6 +33,7 @@ fn workspace_metadata(dependencies: &[(&str, &[&str])]) -> serde_json::Value {
             serde_json::json!({
                 "id": package,
                 "name": package,
+                "version": "0.7.5",
                 "manifest_path": format!("/workspace/{package}/Cargo.toml"),
                 "dependencies": package_dependencies,
             })
@@ -36,7 +42,35 @@ fn workspace_metadata(dependencies: &[(&str, &[&str])]) -> serde_json::Value {
     serde_json::json!({
         "workspace_members": PUBLISHABLE_PACKAGES,
         "packages": packages,
+        "target_directory": "/workspace/target",
     })
+}
+
+fn write_packaged_fixture(path: &Path) {
+    let file = fs::File::create(path).expect("create package fixture");
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    let contents = b"[package]\nname = \"j2k-ml\"\nversion = \"0.7.5\"\n";
+    let mut header = tar::Header::new_gnu();
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            "j2k-ml-0.7.5/Cargo.toml",
+            Cursor::new(contents),
+        )
+        .expect("append package fixture");
+    archive.finish().expect("finish package fixture");
+}
+
+fn test_root(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{label}-{}-{nonce}", std::process::id()))
 }
 
 #[test]
@@ -144,22 +178,102 @@ fn package_gate_ignores_registry_and_non_normal_dependencies() {
     assert!(native.patches.is_empty());
 }
 
+#[test]
+fn j2k_ml_consumer_matrix_matches_the_host_accelerator() {
+    assert_eq!(j2k_ml_consumer_checks("linux"), ["cpu", "cuda", "cpu,cuda"]);
+    assert_eq!(
+        j2k_ml_consumer_checks("macos"),
+        ["cpu", "metal", "cpu,metal"]
+    );
+    assert_eq!(j2k_ml_consumer_checks("windows"), ["cpu"]);
+}
+
+#[test]
+fn j2k_ml_consumer_manifest_patches_only_workspace_crates() {
+    let metadata = workspace_metadata(&[
+        ("j2k", &["j2k-core"]),
+        ("j2k-cuda", &["j2k", "j2k-cuda-runtime"]),
+        ("j2k-metal", &["j2k", "j2k-metal-support"]),
+        ("j2k-ml", &["j2k", "j2k-cuda", "j2k-metal"]),
+    ]);
+    let plan = package_gate_plan(&metadata).expect("package plan");
+    let ml = plan
+        .iter()
+        .find(|step| step.package == "j2k-ml")
+        .expect("j2k-ml step");
+
+    let manifest =
+        j2k_ml_consumer_manifest(ml, "/packaged/j2k-ml-0.7.5").expect("external consumer manifest");
+
+    assert!(manifest.contains("j2k-ml = { version = \"=0.7.5\""));
+    assert!(manifest.contains("j2k-ml = { path = \"/packaged/j2k-ml-0.7.5\" }"));
+    assert!(!manifest.contains("j2k-ml = { path = \"/workspace/j2k-ml\""));
+    assert!(manifest.contains("j2k-core = { path = \"/workspace/j2k-core\" }"));
+    assert!(manifest.contains("j2k-cuda = { path = \"/workspace/j2k-cuda\" }"));
+    assert!(manifest.contains("j2k-metal = { path = \"/workspace/j2k-metal\" }"));
+    for third_party in [
+        "cubecl-cuda",
+        "cubecl-runtime",
+        "wgpu",
+        "wgpu-core",
+        "wgpu-hal",
+    ] {
+        assert!(
+            !manifest.contains(&format!("{third_party} = {{ path =")),
+            "external consumer must resolve {third_party} from the registry"
+        );
+    }
+}
+
+#[test]
+fn packaged_consumer_extracts_the_crate_archive_instead_of_using_workspace_source() {
+    let root = test_root("j2k-ml-package-extract-test");
+    fs::create_dir_all(&root).expect("create package extraction test root");
+    let archive = root.join("j2k-ml-0.7.5.crate");
+    write_packaged_fixture(&archive);
+    let plan = package_gate_plan(&workspace_metadata(&[])).expect("package plan");
+    let step = plan
+        .iter()
+        .find(|step| step.package == "j2k-ml")
+        .expect("j2k-ml step");
+
+    let extracted =
+        extract_packaged_crate(&archive, &root.join("out"), step).expect("extract packaged crate");
+
+    assert_eq!(
+        fs::read_to_string(extracted.join("Cargo.toml")).expect("read extracted manifest"),
+        "[package]\nname = \"j2k-ml\"\nversion = \"0.7.5\"\n"
+    );
+    fs::remove_dir_all(root).expect("remove package extraction test root");
+}
+
 #[cfg(unix)]
 #[test]
 fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
-    let metadata = workspace_metadata(&[
+    let mut metadata = workspace_metadata(&[
         ("j2k-native", &["j2k-core"]),
         ("j2k", &["j2k-native"]),
         ("j2k-cli", &["j2k"]),
     ]);
+    let package_root = test_root("j2k-ml-package-gate-test");
+    let package_dir = package_root.join("package");
+    fs::create_dir_all(&package_dir).expect("create package gate target");
+    write_packaged_fixture(&package_dir.join("j2k-ml-0.7.5.crate"));
+    metadata["target_directory"] =
+        serde_json::Value::String(package_root.to_string_lossy().into_owned());
     let recording = RecordingProgram::new("package-gate-command-test", "");
     let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
 
     run(&metadata).expect("hermetic package gate");
+    fs::remove_dir_all(package_root).expect("remove package gate target");
 
     let log = recording.log();
     let lines = log.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), PUBLISHABLE_PACKAGES.len());
+    let consumer_checks = j2k_ml_consumer_checks(std::env::consts::OS);
+    assert_eq!(
+        lines.len(),
+        PUBLISHABLE_PACKAGES.len() + consumer_checks.len() + 2
+    );
     assert!(lines[0].starts_with("publish -p j2k-core --dry-run|"));
     assert!(lines[3].starts_with("publish -p j2k-codec-math --dry-run|"));
     let native = lines
@@ -177,4 +291,15 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
             "missing {dependency} patch in {cli}"
         );
     }
+    for features in consumer_checks {
+        assert!(lines.iter().any(|line| {
+            line.contains("check --no-default-features --features") && line.contains(features)
+        }));
+    }
+    assert!(lines
+        .iter()
+        .any(|line| { line.contains("doc --no-deps --no-default-features --features") }));
+    assert!(lines
+        .iter()
+        .any(|line| { line.contains("check --examples --no-default-features --features") }));
 }

@@ -27,11 +27,6 @@ members = [
 ]
 exclude = [
     "third_party/block-0.1.6-patched",
-    "third_party/cubecl-cuda-0.10.0-patched",
-    "third_party/cubecl-runtime-0.10.0-patched",
-    "third_party/wgpu-29.0.4-patched",
-    "third_party/wgpu-core-29.0.4-patched",
-    "third_party/wgpu-hal-29.0.4-patched",
 ]
 
 [workspace.package]
@@ -49,6 +44,7 @@ thiserror = { version = "2", default-features = false }
 proptest  = { version = "1" }
 criterion = { version = "0.8", default-features = false }
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
+tar = "0.4"
 zstd = { version = "0.13" }
 weezl = { version = "0.1.12" }
 libloading = "0.9"
@@ -87,21 +83,6 @@ burn-ir = { version = "0.21.0", default-features = false, features = ["std"] }
 # Rust hard error. Keep this patch minimal and remove it when `metal` publishes
 # a fixed dependency path.
 block = { path = "third_party/block-0.1.6-patched" }
-# Burn 0.21 / CubeCL 0.10 does not expose the owning CUDA stream required to
-# register event dependencies around an external codec write. These patches
-# add one hidden, binding-resolving stream hook; the raw token remains confined
-# to j2k-ml's guarded interop module.
-cubecl-cuda = { path = "third_party/cubecl-cuda-0.10.0-patched" }
-cubecl-runtime = { path = "third_party/cubecl-runtime-0.10.0-patched" }
-# Burn 0.21 uses wgpu 29, whose Metal HAL does not expose an ownership-safe
-# MTLBuffer/MTLDevice bridge and whose lazy buffer initialization tracker
-# cannot otherwise learn about completed external GPU writes. These local
-# patches add retained raw-handle accessors plus one guarded, range-scoped
-# initialization handoff used inside j2k-ml's external-write boundary.
-wgpu = { path = "third_party/wgpu-29.0.4-patched" }
-wgpu-core = { path = "third_party/wgpu-core-29.0.4-patched" }
-wgpu-hal = { path = "third_party/wgpu-hal-29.0.4-patched" }
-
 # Shared strict-lint policy for safe crates. Crates with genuinely different
 # needs (SIMD/FFI crates that use `unsafe`, crates with documented temporary
 # allow lists) keep their own [lints] tables until later cleanup phases

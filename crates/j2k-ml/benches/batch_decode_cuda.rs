@@ -5,7 +5,7 @@ use burn_cuda::{Cuda, CudaDevice};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch};
 use j2k_cuda::{CudaBatchDecodeResult, CudaBatchDecoder};
-use j2k_ml::{CpuBurnDecoder, CudaBurnDecoder};
+use j2k_ml::{CpuBurnDecoder, CudaUploadBurnDecoder};
 
 mod cuda_telemetry;
 #[path = "batch_decode_cuda/profile.rs"]
@@ -30,7 +30,7 @@ fn main() {
         ProcessMode::Criterion => {
             let mut criterion = Criterion::default().configure_from_args();
             bench_codec_resident(&mut criterion, &workload_specs, input_mode);
-            bench_burn_direct(&mut criterion, &workload_specs, input_mode);
+            bench_burn_upload(&mut criterion, &workload_specs, input_mode);
             criterion.final_summary();
         }
         ProcessMode::Profile => profile::run(&workload_specs, input_mode),
@@ -139,7 +139,7 @@ fn bench_prepared_codec(
     );
 }
 
-fn bench_burn_direct(
+fn bench_burn_upload(
     criterion: &mut Criterion,
     workload_specs: &[WorkloadSpec],
     input_mode: InputMode,
@@ -147,14 +147,14 @@ fn bench_burn_direct(
     let options = BatchDecodeOptions::default();
     let device = CudaDevice::default();
     let mut group = criterion.benchmark_group(format!(
-        "j2k_owned_batch_burn_direct_cuda/input_{}",
+        "j2k_owned_batch_burn_staged_cuda/input_{}",
         input_mode.label()
     ));
 
     for &spec in workload_specs {
         let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = CudaBurnDecoder::new(device.clone(), options);
-        let mut prepared_decoder = CudaBurnDecoder::new(device.clone(), options);
+        let mut one_shot = CudaUploadBurnDecoder::new(device.clone(), options);
+        let mut prepared_decoder = CudaUploadBurnDecoder::new(device.clone(), options);
         let mut staged = CpuBurnDecoder::<Cuda>::new(device.clone(), options);
         for (request_name, request, output_pixels) in requests(workload.dimensions, true) {
             for &batch_size in BATCH_SIZES {
@@ -218,7 +218,7 @@ fn bench_staged_burn(
 fn bench_one_shot_burn(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: BurnBenchCase<'_>,
-    decoder: &mut CudaBurnDecoder,
+    decoder: &mut CudaUploadBurnDecoder,
     device: &CudaDevice,
 ) {
     group.bench_with_input(
@@ -234,7 +234,7 @@ fn bench_one_shot_burn(
             bencher.iter(|| {
                 let completed_batch = decoder
                     .decode(std::hint::black_box(inputs.to_vec()))
-                    .expect("CUDA Burn-direct batch decode");
+                    .expect("CUDA Burn-upload batch decode");
                 let completed_batch = require_burn_success(completed_batch);
                 <Cuda as Backend>::sync(device)
                     .expect("synchronize CUDA Burn benchmark completion");
@@ -247,7 +247,7 @@ fn bench_one_shot_burn(
 fn bench_prepared_burn(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: BurnBenchCase<'_>,
-    decoder: &mut CudaBurnDecoder,
+    decoder: &mut CudaUploadBurnDecoder,
     device: &CudaDevice,
 ) {
     let prepared = decoder
@@ -267,7 +267,7 @@ fn bench_prepared_burn(
             bencher.iter(|| {
                 let completed_batch = decoder
                     .decode_prepared(std::hint::black_box(prepared))
-                    .expect("prepared CUDA Burn-direct batch decode");
+                    .expect("prepared CUDA Burn-upload batch decode");
                 let completed_batch = require_burn_success(completed_batch);
                 <Cuda as Backend>::sync(device)
                     .expect("synchronize prepared CUDA Burn benchmark completion");

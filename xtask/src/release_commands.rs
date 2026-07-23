@@ -678,5 +678,10 @@ pub(super) fn package() -> Result<(), String> {
     package_gate::run(&metadata)
 }
 
+pub(super) fn j2k_ml_package_smoke() -> Result<(), String> {
+    let metadata = cargo_metadata()?;
+    package_gate::run_j2k_ml_package_smoke(&metadata)
+}
+
 #[cfg(test)]
 mod tests;

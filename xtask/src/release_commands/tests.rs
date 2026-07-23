@@ -16,6 +16,8 @@ mod integrity;
 #[cfg(unix)]
 mod orchestration;
 #[cfg(unix)]
+mod package_fixture;
+#[cfg(unix)]
 mod path_patches;
 mod validation;
 

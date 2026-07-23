@@ -4,7 +4,7 @@ use burn_core::tensor::backend::Backend;
 use burn_wgpu::Wgpu;
 use j2k::{BatchDecodeOptions, BatchLayout};
 use j2k_metal::MetalBatchDecoder;
-use j2k_ml::{CpuBurnDecoder, MetalBurnDecoder};
+use j2k_ml::{CpuBurnDecoder, MetalUploadBurnDecoder};
 
 use crate::{
     metal_telemetry::{
@@ -22,7 +22,7 @@ use crate::{
 
 pub(super) fn run(workload_specs: &[WorkloadSpec], input_mode: InputMode) {
     let mut telemetry = profile_codec_resident(workload_specs, input_mode);
-    telemetry.extend(profile_burn_direct(workload_specs, input_mode));
+    telemetry.extend(profile_burn_upload(workload_specs, input_mode));
     print_metal_telemetry(&telemetry);
 }
 
@@ -91,7 +91,7 @@ fn profile_codec_resident(
     telemetry
 }
 
-fn profile_burn_direct(
+fn profile_burn_upload(
     workload_specs: &[WorkloadSpec],
     input_mode: InputMode,
 ) -> Vec<MetalTelemetryRow> {
@@ -100,9 +100,9 @@ fn profile_burn_direct(
 
     for &spec in workload_specs {
         let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = MetalBurnDecoder::system_default(options)
+        let mut one_shot = MetalUploadBurnDecoder::system_default(options)
             .expect("create paired Metal Burn profile session");
-        let mut prepared_decoder = MetalBurnDecoder::system_default(options)
+        let mut prepared_decoder = MetalUploadBurnDecoder::system_default(options)
             .expect("create prepared paired Metal Burn profile session");
         let device = one_shot.device().clone();
         let mut staged = CpuBurnDecoder::<Wgpu>::new(device.clone(), options);
@@ -133,7 +133,7 @@ fn profile_burn_direct(
                 capture_burn_telemetry(
                     &mut telemetry,
                     MetalTelemetryCase::new(
-                        "burn_direct",
+                        "burn_upload",
                         "one_shot",
                         &workload,
                         request_name,
@@ -151,7 +151,7 @@ fn profile_burn_direct(
                 capture_burn_telemetry(
                     &mut telemetry,
                     MetalTelemetryCase::new(
-                        "burn_direct",
+                        "burn_upload",
                         "prepared",
                         &workload,
                         request_name,

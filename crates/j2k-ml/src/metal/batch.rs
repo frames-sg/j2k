@@ -4,88 +4,63 @@
 use burn_core::tensor::backend::Backend;
 use burn_wgpu::{Wgpu, WgpuDevice};
 use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch, PreparedImage};
-#[cfg(target_os = "macos")]
-use j2k::{BatchGroupInfo, IndexedBatchError, NativeSampleType, PreparedBatchGroup};
 use j2k_metal::MetalBatchDecoder as CodecDecoder;
+#[cfg(target_os = "macos")]
+use j2k_metal::{MetalBatchDecodeResult, SubmittedMetalPreparedBatch};
 
 #[cfg(target_os = "macos")]
-use crate::batch_contract::{dtype, tensor_shape};
+use crate::BurnBatchGroupError;
 use crate::{BurnBatchDecode, BurnDecodeError};
-#[cfg(target_os = "macos")]
-use crate::{BurnBatchGroup, BurnBatchGroupError, BurnBatchTensor};
 
+/// Pending Metal codec decode whose completed pixels will be staged through
+/// host memory and uploaded with Burn's ordinary tensor API.
 #[cfg(target_os = "macos")]
-use super::interop::{
-    fill_batch_int_tensor, paired_metal_runtime, register_int_tensor, SubmittedBatchIntTensor,
-};
-#[cfg(target_os = "macos")]
-use j2k_metal::SubmittedMetalGroupDecodeInto;
-
-/// Pending Metal decode whose registered Burn tensors remain private until
-/// group-level command and codec-status validation succeeds.
-#[cfg(target_os = "macos")]
-#[must_use = "submitted Metal Burn batches must be waited or dropped"]
-pub struct SubmittedMetalBurnBatch {
-    groups: Vec<SubmittedMetalBurnGroup>,
-    errors: Vec<IndexedBatchError>,
-    group_errors: Vec<BurnBatchGroupError>,
+#[must_use = "submitted Metal upload batches must be waited or dropped"]
+pub struct SubmittedMetalUploadBurnBatch {
+    pending: SubmittedMetalPreparedBatch,
+    device: WgpuDevice,
 }
 
 #[cfg(target_os = "macos")]
-impl core::fmt::Debug for SubmittedMetalBurnBatch {
+impl core::fmt::Debug for SubmittedMetalUploadBurnBatch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SubmittedMetalBurnBatch")
-            .field("groups", &self.groups.len())
-            .field("errors", &self.errors)
-            .field("group_errors", &self.group_errors)
-            .finish_non_exhaustive()
+        f.debug_struct("SubmittedMetalUploadBurnBatch")
+            .field("pending", &self.pending)
+            .field("device", &self.device)
+            .finish()
     }
 }
 
 #[cfg(target_os = "macos")]
-impl SubmittedMetalBurnBatch {
-    /// Number of asynchronously submitted homogeneous groups.
+impl SubmittedMetalUploadBurnBatch {
+    /// Number of successfully submitted homogeneous codec groups.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.groups.len()
+        self.pending.len()
     }
 
-    /// Whether no accelerator work was submitted.
+    /// Whether no accelerator codec work was submitted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
+        self.pending.is_empty()
     }
 
-    /// Wait once per group, validate its batched status, and only then expose
-    /// ordinary rank-4 Burn tensors.
+    /// Wait for Metal codec completion, copy each completed group to host
+    /// staging, and upload it into an ordinary Burn wgpu tensor.
     pub fn wait(self) -> Result<BurnBatchDecode<Wgpu>, BurnDecodeError> {
-        let Self {
-            groups,
-            errors,
-            group_errors,
-        } = self;
-        let (groups, group_errors) =
-            crate::completion::finish_submitted_groups(groups, group_errors, |group| {
-                let source_indices = group.source_indices.clone();
-                (source_indices, group.wait())
-            })?;
-        Ok(BurnBatchDecode {
-            groups,
-            errors,
-            group_errors,
-        })
+        materialize(self.pending.wait()?, &self.device)
     }
 }
 
+/// Uninhabited pending Metal upload returned only for cross-platform API compatibility.
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
-/// Uninhabited pending Metal batch returned only for cross-platform API compatibility.
-pub struct SubmittedMetalBurnBatch {
+pub struct SubmittedMetalUploadBurnBatch {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
-impl SubmittedMetalBurnBatch {
+impl SubmittedMetalUploadBurnBatch {
     /// No Metal groups can be submitted on this host.
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -104,53 +79,19 @@ impl SubmittedMetalBurnBatch {
     }
 }
 
-#[cfg(target_os = "macos")]
-struct SubmittedMetalBurnGroup {
-    sample_type: NativeSampleType,
-    info: BatchGroupInfo,
-    source_indices: Vec<usize>,
-    allocation: SubmittedBatchIntTensor<SubmittedMetalGroupDecodeInto, 4>,
-}
-
-#[cfg(target_os = "macos")]
-impl SubmittedMetalBurnGroup {
-    fn wait(self) -> Result<BurnBatchGroup<Wgpu>, BurnDecodeError> {
-        let Self {
-            sample_type,
-            info,
-            source_indices,
-            allocation,
-        } = self;
-        let (cube, shape, dtype, device, pending) = allocation.into_parts();
-        let (decoded_rects, warnings) = pending.wait()?.into_parts();
-        let tensor = register_int_tensor(cube, shape, dtype, &device);
-        let tensor = match sample_type {
-            NativeSampleType::U8 => BurnBatchTensor::U8(tensor),
-            NativeSampleType::U16 => BurnBatchTensor::U16(tensor),
-            NativeSampleType::I16 => BurnBatchTensor::I16(tensor),
-            _ => return Err(BurnDecodeError::UnsupportedCodecContract),
-        };
-        Ok(BurnBatchGroup {
-            tensor,
-            info,
-            source_indices,
-            decoded_rects,
-            warnings,
-        })
-    }
-}
-
-/// Persistent Metal codec session writing directly into Burn-owned allocations.
-pub struct MetalBurnDecoder {
+/// Persistent Metal codec session followed by an explicit staged Burn upload.
+///
+/// JPEG 2000 decoding executes on Metal. Completed codec-owned device output is
+/// copied to host staging and then uploaded through [`burn_core::tensor::Tensor::from_data`].
+/// This type does not provide direct-destination or zero-copy behavior.
+pub struct MetalUploadBurnDecoder {
     codec: CodecDecoder,
     device: WgpuDevice,
-    #[cfg(target_os = "macos")]
-    consumer_queue: metal::CommandQueue,
 }
 
-impl core::fmt::Debug for MetalBurnDecoder {
+impl core::fmt::Debug for MetalUploadBurnDecoder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MetalBurnDecoder")
+        f.debug_struct("MetalUploadBurnDecoder")
             .field("codec", &self.codec)
             .field("device", &self.device)
             .field("options", &self.codec.options())
@@ -158,16 +99,13 @@ impl core::fmt::Debug for MetalBurnDecoder {
     }
 }
 
-impl MetalBurnDecoder {
-    /// Create paired J2K and Burn sessions from the exact same Metal device and
-    /// retain Burn's exact consumer command queue for implicit queue ordering.
+impl MetalUploadBurnDecoder {
+    /// Create a Metal codec session and target Burn's default wgpu device.
     #[cfg(target_os = "macos")]
     pub fn system_default(options: BatchDecodeOptions) -> Result<Self, BurnDecodeError> {
-        let (backend, device, consumer_queue) = paired_metal_runtime()?;
         Ok(Self {
-            codec: CodecDecoder::with_backend_session_and_options(backend, options),
-            device,
-            consumer_queue,
+            codec: CodecDecoder::system_default_with_options(options)?,
+            device: WgpuDevice::DefaultDevice,
         })
     }
 
@@ -177,13 +115,13 @@ impl MetalBurnDecoder {
         Err(unavailable())
     }
 
-    /// Borrow the retained codec session.
+    /// Borrow the persistent Metal codec session.
     #[must_use]
     pub const fn codec(&self) -> &CodecDecoder {
         &self.codec
     }
 
-    /// Burn wgpu device paired with the codec's underlying Metal device.
+    /// Borrow the Burn wgpu device receiving the staged upload.
     #[must_use]
     pub const fn device(&self) -> &WgpuDevice {
         &self.device
@@ -194,10 +132,7 @@ impl MetalBurnDecoder {
         Ok(self.codec.prepare(inputs)?)
     }
 
-    /// Regroup caller-supplied prepared images without reparsing encoded bytes.
-    ///
-    /// Source indices in the returned batch are positions in `images`; each
-    /// [`PreparedImage::source_index`] remains its original preparation index.
+    /// Regroup caller-supplied prepared images without reparsing codestream bytes.
     pub fn prepare_prepared_images(
         &self,
         images: Vec<PreparedImage>,
@@ -205,8 +140,7 @@ impl MetalBurnDecoder {
         Ok(self.codec.prepare_prepared_images(images)?)
     }
 
-    /// Prepare and synchronously finish one owned batch. Use [`Self::submit`]
-    /// to overlap caller work with GPU execution.
+    /// Decode on Metal, stage completed pixels through host memory, and upload to Burn.
     pub fn decode(
         &mut self,
         inputs: Vec<EncodedImage>,
@@ -214,15 +148,7 @@ impl MetalBurnDecoder {
         self.submit(inputs)?.wait()
     }
 
-    /// Finish a reusable codec preparation and return validated Burn tensors.
-    pub fn decode_prepared(
-        &mut self,
-        prepared: &PreparedBatch,
-    ) -> Result<BurnBatchDecode<Wgpu>, BurnDecodeError> {
-        self.submit_prepared(prepared)?.wait()
-    }
-
-    /// Regroup, decode, and materialize caller-supplied prepared images.
+    /// Regroup prepared images, decode on Metal, and perform the staged upload.
     pub fn decode_prepared_images(
         &mut self,
         images: Vec<PreparedImage>,
@@ -231,13 +157,21 @@ impl MetalBurnDecoder {
         self.decode_prepared(&prepared)
     }
 
-    /// Prepare and asynchronously submit one owned batch without exposing
-    /// partially written tensor storage.
+    /// Decode a reusable preparation on Metal and perform the staged upload.
+    pub fn decode_prepared(
+        &mut self,
+        prepared: &PreparedBatch,
+    ) -> Result<BurnBatchDecode<Wgpu>, BurnDecodeError> {
+        self.submit_prepared(prepared)?.wait()
+    }
+
+    /// Submit Metal codec work. The later [`SubmittedMetalUploadBurnBatch::wait`]
+    /// performs a synchronous device-to-host copy and ordinary Burn upload.
     #[cfg(target_os = "macos")]
     pub fn submit(
         &mut self,
         inputs: Vec<EncodedImage>,
-    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
         let prepared = self.prepare(inputs)?;
         self.submit_prepared(&prepared)
     }
@@ -247,41 +181,20 @@ impl MetalBurnDecoder {
     pub fn submit(
         &mut self,
         _inputs: Vec<EncodedImage>,
-    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
         Err(unavailable())
     }
 
-    /// Asynchronously submit a reusable preparation. Same-queue ordering is
-    /// implicit; a GPU event dependency is registered only when queues differ.
+    /// Submit a reusable preparation to codec-owned Metal output.
     #[cfg(target_os = "macos")]
     pub fn submit_prepared(
         &mut self,
         prepared: &PreparedBatch,
-    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
-        let mut groups = Vec::new();
-        groups
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BurnDecodeError::SizeOverflow)?;
-        let mut group_errors = Vec::new();
-        group_errors
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BurnDecodeError::SizeOverflow)?;
-        for group in prepared.groups() {
-            match self.submit_group(group) {
-                Ok(submitted) => groups.push(submitted),
-                Err(source) if crate::completion::burn_group_error_is_fatal(&source) => {
-                    return Err(source);
-                }
-                Err(source) => group_errors.push(BurnBatchGroupError::new(
-                    group.source_indices().to_vec(),
-                    source,
-                )),
-            }
-        }
-        Ok(SubmittedMetalBurnBatch {
-            groups,
-            errors: prepared.errors().to_vec(),
-            group_errors,
+    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
+        ensure_dtypes::<Wgpu>(prepared, &self.device)?;
+        Ok(SubmittedMetalUploadBurnBatch {
+            pending: self.codec.submit_prepared(prepared)?,
+            device: self.device.clone(),
         })
     }
 
@@ -290,38 +203,74 @@ impl MetalBurnDecoder {
     pub fn submit_prepared(
         &mut self,
         _prepared: &PreparedBatch,
-    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
         Err(unavailable())
     }
+}
 
-    #[cfg(target_os = "macos")]
-    fn submit_group(
-        &mut self,
-        group: &PreparedBatchGroup,
-    ) -> Result<SubmittedMetalBurnGroup, BurnDecodeError> {
-        let sample_type = group.info().sample_type;
-        let dtype = dtype(sample_type)?;
-        if !<Wgpu<f32, i32, u32> as Backend>::supports_dtype(&self.device, dtype) {
+#[cfg(target_os = "macos")]
+fn ensure_dtypes<B: Backend>(
+    prepared: &PreparedBatch,
+    device: &B::Device,
+) -> Result<(), BurnDecodeError> {
+    for group in prepared.groups() {
+        let dtype = crate::batch_contract::dtype(group.info().sample_type)?;
+        if !B::supports_dtype(device, dtype) {
             return Err(BurnDecodeError::UnsupportedDType { dtype });
         }
-        let shape = tensor_shape(group.source_indices().len(), group.info())?;
-        let device = self.device.clone();
-        let consumer_queue = self.consumer_queue.clone();
-        let allocation =
-            fill_batch_int_tensor(shape, dtype, group.info(), &device, |destination| {
-                Ok(self.codec.submit_prepared_group_into_for_consumer_queue(
-                    group,
-                    destination,
-                    &consumer_queue,
-                )?)
-            })?;
-        Ok(SubmittedMetalBurnGroup {
-            sample_type,
-            info: group.info().clone(),
-            source_indices: group.source_indices().to_vec(),
-            allocation,
-        })
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn materialize(
+    decoded: MetalBatchDecodeResult,
+    device: &WgpuDevice,
+) -> Result<BurnBatchDecode<Wgpu>, BurnDecodeError> {
+    let (codec_groups, errors, codec_group_errors) = decoded.into_parts();
+    let mut groups = Vec::new();
+    groups
+        .try_reserve_exact(codec_groups.len())
+        .map_err(|_| BurnDecodeError::SizeOverflow)?;
+    for group in codec_groups {
+        let resident = group
+            .resident_batch()
+            .ok_or(BurnDecodeError::UnsupportedCodecContract)?;
+        // SAFETY: codec completion was established before this immutable read,
+        // and `checked_buffer_read_vec` copies the validated resident range.
+        let bytes = unsafe {
+            j2k_metal_support::checked_buffer_read_vec::<u8>(
+                resident.metal_buffer(),
+                resident.byte_offset(),
+                resident.byte_len(),
+            )
+        }
+        .map_err(|source| BurnDecodeError::AcceleratorInterop {
+            backend: "Metal staged readback",
+            message: source.to_string(),
+        })?;
+        let (info, source_indices, decoded_rects, warnings, _surfaces) = group.into_parts();
+        groups.push(crate::staging::materialize(
+            info,
+            source_indices,
+            decoded_rects,
+            warnings,
+            bytes,
+            device,
+        )?);
+    }
+    let group_errors = codec_group_errors
+        .into_iter()
+        .map(|error| {
+            let (source_indices, source) = error.into_parts();
+            BurnBatchGroupError::new(source_indices, BurnDecodeError::Metal(source))
+        })
+        .collect();
+    Ok(BurnBatchDecode {
+        groups,
+        errors,
+        group_errors,
+    })
 }
 
 #[cfg(not(target_os = "macos"))]

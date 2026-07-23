@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use burn_cuda::CudaDevice;
 use j2k::{prepare_batch, BatchDecodeOptions, BatchItemError, DecodeSettings, EncodedImage};
-use j2k_ml::{BurnBatchTensor, BurnDecodeError, CudaBurnDecoder};
+use j2k_ml::{BurnBatchTensor, BurnDecodeError, CudaUploadBurnDecoder};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::{cuda_runtime_and_strict_oxide_gate, htj2k_gray8_large_fixture};
 
@@ -35,7 +35,8 @@ fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
 
 #[test]
 fn cuda_burn_decoder_construction_is_infallible_and_lazy() {
-    let constructor: fn(CudaDevice, BatchDecodeOptions) -> CudaBurnDecoder = CudaBurnDecoder::new;
+    let constructor: fn(CudaDevice, BatchDecodeOptions) -> CudaUploadBurnDecoder =
+        CudaUploadBurnDecoder::new;
     let decoder = constructor(CudaDevice::new(0), BatchDecodeOptions::default());
 
     assert_eq!(decoder.codec().session().submissions(), 0);
@@ -43,7 +44,7 @@ fn cuda_burn_decoder_construction_is_infallible_and_lazy() {
 
 #[test]
 fn empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializing_work() {
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
+    let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
 
     let prepared = decoder
         .prepare(Vec::<EncodedImage>::new())
@@ -73,7 +74,7 @@ fn cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_withou
     )
     .expect("prepare lenient CUDA Burn input");
     let image = prepared.groups()[0].images()[0].clone();
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
+    let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::new(0), BatchDecodeOptions::default());
 
     let regrouped = decoder
         .prepare_prepared_images(vec![image.clone()])
@@ -102,7 +103,8 @@ fn dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable() 
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder =
+        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
 
     let submitted = decoder
         .submit(vec![EncodedImage::full(Arc::clone(&encoded))])
@@ -125,12 +127,13 @@ fn dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable() 
 }
 
 #[test]
-fn burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA direct-write session soak") {
+fn staged_upload_session_reuses_events_and_codec_memory_for_one_thousand_batches() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA staged-upload session soak") {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder =
+        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![EncodedImage::full(encoded)])
         .expect("prepare reusable CUDA Burn batch");
@@ -139,7 +142,7 @@ fn burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches()
         drop(
             decoder
                 .decode_prepared(&prepared)
-                .expect("warm CUDA Burn direct-write session"),
+                .expect("warm CUDA Burn staged-write session"),
         );
     }
     let warm = decoder
@@ -153,7 +156,7 @@ fn burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches()
         drop(
             decoder
                 .decode_prepared(&prepared)
-                .expect("reuse CUDA Burn direct-write session"),
+                .expect("reuse CUDA Burn staged-write session"),
         );
     }
 
@@ -173,29 +176,31 @@ fn burn_direct_session_reuses_events_and_codec_memory_for_one_thousand_batches()
         after_runtime.status_device_to_host_operations
             - warm_runtime.status_device_to_host_operations,
         1_000,
-        "each Burn-direct group must use one status readback"
+        "each Burn-staged group must use one status readback"
     );
     assert_eq!(
         after_runtime.device_to_host_operations - warm_runtime.device_to_host_operations,
-        1_000,
-        "Burn-direct decode must not download decoded pixels"
+        2_000,
+        "each staged group performs one status readback and one pixel readback"
     );
     assert_eq!(
         after_runtime.device_to_host_bytes - warm_runtime.device_to_host_bytes,
         after_runtime.status_device_to_host_bytes - warm_runtime.status_device_to_host_bytes
+            + 1_000 * 8 * 8,
+        "staged upload must report the explicit decoded-pixel readback"
     );
     assert_eq!(
         after_runtime.event_driver_allocations, warm_runtime.event_driver_allocations,
-        "Burn stream-bridge events must stabilize after warmup"
+        "codec events must stabilize after warmup"
     );
     assert!(after_runtime.event_reuses > warm_runtime.event_reuses);
     assert_eq!(
         after_runtime.event_host_synchronizations, warm_runtime.event_host_synchronizations,
-        "Burn-direct completion must use the group status boundary"
+        "codec completion must use the group status boundary"
     );
     assert_eq!(
         after_runtime.context_host_synchronizations, warm_runtime.context_host_synchronizations,
-        "Burn-direct completion must not synchronize the whole context"
+        "staged completion must not synchronize the whole CUDA context"
     );
 }
 
@@ -205,7 +210,8 @@ fn cuda_burn_batch_continues_after_one_group_submit_failure() {
         return;
     }
     let valid_gray = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder =
+        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![
             EncodedImage::full(unsupported_classic_roi_rgb()),
@@ -227,6 +233,6 @@ fn cuda_burn_batch_continues_after_one_group_submit_failure() {
     assert_eq!(output.group_errors[0].source_indices(), &[0]);
     assert!(matches!(
         output.group_errors[0].source(),
-        BurnDecodeError::Cuda(j2k_cuda::CudaBatchError::GroupExecution { .. })
+        BurnDecodeError::CudaCodec(j2k_cuda::Error::UnsupportedCudaRequest { .. })
     ));
 }

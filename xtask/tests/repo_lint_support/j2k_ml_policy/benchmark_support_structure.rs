@@ -277,7 +277,7 @@ fn accelerator_profile_processes_have_backend_local_owners() {
             external_modules(&entry).contains("profile"),
             "{entry_path} must own its backend-local profile module"
         );
-        for function in ["profile_codec_resident", "profile_burn_direct"] {
+        for function in ["profile_codec_resident", "profile_burn_upload"] {
             assert!(
                 !entry_functions.contains(function),
                 "{entry_path} must keep profile-only {function} out of the Criterion entrypoint"
@@ -395,7 +395,7 @@ fn accelerator_benchmark_sessions_are_scoped_to_one_materialized_workload() {
         BTreeSet::from([
             "CpuBurnDecoder::new",
             "CudaBatchDecoder::with_options",
-            "CudaBurnDecoder::new",
+            "CudaUploadBurnDecoder::new",
         ]),
     );
     assert_sessions_follow_workload_materialization(
@@ -403,7 +403,7 @@ fn accelerator_benchmark_sessions_are_scoped_to_one_materialized_workload() {
         BTreeSet::from([
             "CpuBurnDecoder::new",
             "MetalBatchDecoder::system_default_with_options",
-            "MetalBurnDecoder::system_default",
+            "MetalUploadBurnDecoder::system_default",
         ]),
     );
 }

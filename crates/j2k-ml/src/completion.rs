@@ -45,18 +45,25 @@ pub(crate) fn burn_group_error_is_fatal(error: &BurnDecodeError) -> bool {
         BurnDecodeError::Infrastructure(_) | BurnDecodeError::AcceleratorInterop { .. } => true,
         #[cfg(feature = "cuda")]
         BurnDecodeError::Cuda(source) => source.session_is_unusable(),
+        #[cfg(feature = "cuda")]
+        BurnDecodeError::CudaTransfer(_) => true,
+        #[cfg(feature = "cuda")]
+        BurnDecodeError::CudaCodec(source) => source.session_is_unusable(),
         #[cfg(feature = "metal")]
         BurnDecodeError::Metal(source) => source.session_is_unusable(),
         BurnDecodeError::UnsupportedDType { .. }
         | BurnDecodeError::SampleTypeMismatch
         | BurnDecodeError::SizeOverflow
+        | BurnDecodeError::StagingSizeMismatch { .. }
         | BurnDecodeError::UnsupportedCodecContract => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{burn_group_error_is_fatal, finish_submitted_groups};
+    #[cfg(any(feature = "cuda", feature = "metal"))]
+    use super::burn_group_error_is_fatal;
+    use super::finish_submitted_groups;
     use crate::BurnDecodeError;
 
     #[test]

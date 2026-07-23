@@ -1,10 +1,14 @@
 //! Dependency-aware construction of publishable workspace packages.
 
+mod consumer;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::command_support::run_cargo;
 use crate::process::{cargo, run_command_owned, CommandContext};
+
+use consumer::{package_archive_path, run_j2k_ml_consumer_gate};
 
 use super::{
     package_name, str_set, workspace_package_records, PUBLISHABLE_PACKAGES,
@@ -14,6 +18,7 @@ use super::{
 #[derive(Debug)]
 struct PackageGateStep {
     package: &'static str,
+    version: String,
     registry_independent: bool,
     patches: Vec<(String, String)>,
 }
@@ -99,6 +104,11 @@ fn package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep
 
         plan.push(PackageGateStep {
             package,
+            version: package_by_name[package]
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("cargo metadata package `{package}` has no version"))?
+                .to_string(),
             registry_independent: independent.contains(package),
             patches,
         });
@@ -107,13 +117,31 @@ fn package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep
     Ok(plan)
 }
 
-fn run_staged_package(step: &PackageGateStep) -> Result<(), String> {
+pub(super) fn run_j2k_ml_package_smoke(metadata: &serde_json::Value) -> Result<(), String> {
+    let plan = package_gate_plan(metadata)?;
+    let step = plan
+        .iter()
+        .find(|step| step.package == "j2k-ml")
+        .ok_or_else(|| "package gate plan omitted `j2k-ml`".to_string())?;
+    run_staged_package(step, true)?;
+    run_j2k_ml_consumer_gate(step, &package_archive_path(metadata, step)?)
+}
+
+fn run_staged_package(step: &PackageGateStep, allow_dirty: bool) -> Result<(), String> {
     let mut args = vec![
         "package".to_string(),
         "-p".to_string(),
         step.package.to_string(),
         "--no-verify".to_string(),
     ];
+    if allow_dirty {
+        args.push("--allow-dirty".to_string());
+    }
+    append_patch_config_args(&mut args, step)?;
+    run_command_owned(cargo(), &args, CommandContext::new())
+}
+
+fn append_patch_config_args(args: &mut Vec<String>, step: &PackageGateStep) -> Result<(), String> {
     for (dependency, path) in &step.patches {
         args.push("--config".to_string());
         args.push(format!(
@@ -123,7 +151,7 @@ fn run_staged_package(step: &PackageGateStep) -> Result<(), String> {
             ))?
         ));
     }
-    run_command_owned(cargo(), &args, CommandContext::new())
+    Ok(())
 }
 
 pub(super) fn run(metadata: &serde_json::Value) -> Result<(), String> {
@@ -131,7 +159,10 @@ pub(super) fn run(metadata: &serde_json::Value) -> Result<(), String> {
         if step.registry_independent {
             run_cargo(&["publish", "-p", step.package, "--dry-run"])?;
         } else {
-            run_staged_package(&step)?;
+            run_staged_package(&step, false)?;
+        }
+        if step.package == "j2k-ml" {
+            run_j2k_ml_consumer_gate(&step, &package_archive_path(metadata, &step)?)?;
         }
     }
     Ok(())

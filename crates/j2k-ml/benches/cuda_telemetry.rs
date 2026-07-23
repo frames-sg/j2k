@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use burn_core::tensor::backend::Backend;
 use burn_cuda::Cuda;
 use j2k_cuda::{CudaBatchDecoder, CudaSessionDiagnostics};
-use j2k_ml::CudaBurnDecoder;
+use j2k_ml::CudaUploadBurnDecoder;
 
 use super::Workload;
 
@@ -76,8 +76,8 @@ pub(super) fn capture_codec_telemetry<T, E>(
 pub(super) fn capture_burn_telemetry<T, E>(
     telemetry: &mut Vec<CudaTelemetryRow>,
     case: CudaTelemetryCase,
-    decoder: &mut CudaBurnDecoder,
-    decode: impl FnOnce(&mut CudaBurnDecoder) -> Result<T, E>,
+    decoder: &mut CudaUploadBurnDecoder,
+    decode: impl FnOnce(&mut CudaUploadBurnDecoder) -> Result<T, E>,
 ) where
     E: core::fmt::Debug,
 {

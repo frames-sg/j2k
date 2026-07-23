@@ -14,14 +14,14 @@ use j2k::{
     J2kLosslessSamples, Rect, ReversibleTransform,
 };
 use j2k_core::Colorspace;
-use j2k_ml::{BurnBatchTensor, CudaBurnDecoder};
+use j2k_ml::{BurnBatchTensor, CudaUploadBurnDecoder};
 use j2k_test_support::{
     cuda_runtime_and_strict_oxide_gate, generated_htj2k_rgba_fixture, Htj2kRgbaAlpha,
     Htj2kRgbaFixture, Htj2kRgbaSampleProfile, Htj2kRgbaSamples,
 };
 
 #[test]
-fn direct_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts() {
+fn staged_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts() {
     if !cuda_runtime_and_strict_oxide_gate("j2k-ml exact RGBA CUDA batch") {
         return;
     }
@@ -81,7 +81,7 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
         EncodedImage::new(Arc::clone(encoded), request),
         EncodedImage::new(Arc::clone(encoded), request),
     ];
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
+    let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
     let prepared = decoder
         .prepare(inputs.clone())
         .unwrap_or_else(|error| panic!("prepare {codec} RGBA Burn batch: {error}"));
@@ -101,7 +101,7 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
         .unwrap_or_else(|error| panic!("CPU {codec} RGBA oracle: {error}"));
     let output = decoder
         .decode_prepared(&prepared)
-        .unwrap_or_else(|error| panic!("direct {codec} RGBA Burn decode: {error}"));
+        .unwrap_or_else(|error| panic!("staged {codec} RGBA Burn decode: {error}"));
     assert!(output.errors.is_empty(), "{codec} {layout:?} {request:?}");
     assert!(
         output.group_errors.is_empty(),

@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use j2k_metal::{MetalBatchDecoder, MetalBufferPoolsDiagnostics};
-use j2k_ml::MetalBurnDecoder;
+use j2k_ml::MetalUploadBurnDecoder;
 
 use super::Workload;
 
@@ -98,8 +98,8 @@ pub(super) fn capture_codec_telemetry<T, E>(
 pub(super) fn capture_burn_telemetry<T, E>(
     telemetry: &mut Vec<MetalTelemetryRow>,
     case: MetalTelemetryCase,
-    decoder: &mut MetalBurnDecoder,
-    decode: impl FnOnce(&mut MetalBurnDecoder) -> Result<T, E>,
+    decoder: &mut MetalUploadBurnDecoder,
+    decode: impl FnOnce(&mut MetalUploadBurnDecoder) -> Result<T, E>,
 ) where
     E: core::fmt::Debug,
 {

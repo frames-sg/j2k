@@ -49,7 +49,7 @@ printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_l
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-ml "*)
-printf '%s\n' 'test sessions::persistent_metal_burn_decoder_writes_independent_ht_directly ... ok'
+printf '%s\n' 'test sessions::persistent_metal_burn_decoder_uploads_independent_ht_through_staging ... ok'
 printf '%s\n' 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k "*)

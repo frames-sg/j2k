@@ -2,117 +2,63 @@
 
 use burn_core::tensor::backend::Backend;
 use burn_cuda::{Cuda, CudaDevice};
-use j2k::{
-    BatchDecodeOptions, EncodedImage, IndexedBatchError, NativeSampleType, PreparedBatch,
-    PreparedBatchGroup, PreparedImage,
-};
-use j2k_cuda::{CudaBatchDecoder as CodecDecoder, SubmittedCudaExternalBatch};
-
-use super::interop::{fill_batch_int_tensor, register_int_tensor, SubmittedBatchIntTensor};
-use crate::batch_contract::{dtype, tensor_shape};
-use crate::{
-    BurnBatchDecode, BurnBatchGroup, BurnBatchGroupError, BurnBatchTensor, BurnDecodeError,
+use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch, PreparedImage};
+use j2k_cuda::{
+    CudaBatchDecodeResult, CudaBatchDecoder as CodecDecoder, SubmittedCudaResidentBatch,
 };
 
-/// Pending CUDA decode whose output allocation is not exposed to Burn until
-/// group-level codec status validation succeeds.
-#[must_use = "submitted CUDA Burn batches must be waited or dropped"]
-pub struct SubmittedCudaBurnBatch {
-    groups: Vec<SubmittedCudaBurnGroup>,
-    errors: Vec<IndexedBatchError>,
-    group_errors: Vec<BurnBatchGroupError>,
+use crate::{BurnBatchDecode, BurnBatchGroupError, BurnDecodeError};
+
+/// Pending CUDA codec decode whose completed pixels will be staged through
+/// host memory and uploaded with Burn's ordinary tensor API.
+#[must_use = "submitted CUDA upload batches must be waited or dropped"]
+pub struct SubmittedCudaUploadBurnBatch {
+    pending: SubmittedCudaResidentBatch,
+    device: CudaDevice,
 }
 
-impl core::fmt::Debug for SubmittedCudaBurnBatch {
+impl core::fmt::Debug for SubmittedCudaUploadBurnBatch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SubmittedCudaBurnBatch")
-            .field("groups", &self.groups.len())
-            .field("errors", &self.errors)
-            .field("group_errors", &self.group_errors)
-            .finish_non_exhaustive()
+        f.debug_struct("SubmittedCudaUploadBurnBatch")
+            .field("pending", &self.pending)
+            .field("device", &self.device)
+            .finish()
     }
 }
 
-impl SubmittedCudaBurnBatch {
-    /// Number of asynchronously submitted homogeneous groups.
+impl SubmittedCudaUploadBurnBatch {
+    /// Number of successfully submitted homogeneous codec groups.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.groups.len()
+        self.pending.pending_group_count()
     }
 
-    /// Whether no accelerator work was submitted.
+    /// Whether no accelerator codec work was submitted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
+        self.len() == 0
     }
 
-    /// Wait once per group, validate its batched status, and only then expose
-    /// ordinary rank-4 Burn tensors.
+    /// Wait for CUDA codec completion, copy each completed group to host
+    /// staging, and upload it into an ordinary Burn CUDA tensor.
     pub fn wait(self) -> Result<BurnBatchDecode<Cuda>, BurnDecodeError> {
-        let Self {
-            groups,
-            errors,
-            group_errors,
-        } = self;
-        let (groups, group_errors) =
-            crate::completion::finish_submitted_groups(groups, group_errors, |group| {
-                let source_indices = group.source_indices.clone();
-                (source_indices, group.wait())
-            })?;
-        Ok(BurnBatchDecode {
-            groups,
-            errors,
-            group_errors,
-        })
+        materialize(self.pending.wait()?, &self.device)
     }
 }
 
-struct SubmittedCudaBurnGroup {
-    sample_type: NativeSampleType,
-    source_indices: Vec<usize>,
-    allocation: SubmittedBatchIntTensor<SubmittedCudaExternalBatch, 4>,
-}
-
-impl SubmittedCudaBurnGroup {
-    fn wait(self) -> Result<BurnBatchGroup<Cuda>, BurnDecodeError> {
-        let sample_type = self.sample_type;
-        let (cube, shape, dtype, device, pending) = self.allocation.into_parts();
-        let decoded = match pending.wait() {
-            Ok(decoded) => decoded,
-            Err(source) => {
-                if source.completion_is_uncertain() {
-                    std::mem::forget(cube);
-                }
-                return Err(BurnDecodeError::Cuda(source));
-            }
-        };
-        let tensor = register_int_tensor(cube, shape, dtype, &device);
-        let tensor = match sample_type {
-            NativeSampleType::U8 => BurnBatchTensor::U8(tensor),
-            NativeSampleType::U16 => BurnBatchTensor::U16(tensor),
-            NativeSampleType::I16 => BurnBatchTensor::I16(tensor),
-            _ => return Err(BurnDecodeError::UnsupportedCodecContract),
-        };
-        Ok(BurnBatchGroup {
-            tensor,
-            info: decoded.info().clone(),
-            source_indices: decoded.source_indices().to_vec(),
-            decoded_rects: decoded.decoded_rects().to_vec(),
-            warnings: decoded.warnings().to_vec(),
-        })
-    }
-}
-
-/// Persistent CUDA codec session writing directly into Burn-owned allocations.
+/// Persistent CUDA codec session followed by an explicit staged Burn upload.
+///
+/// JPEG 2000 decoding executes on CUDA. Completed codec-owned device output is
+/// copied to host staging and then uploaded through [`burn_core::tensor::Tensor::from_data`].
+/// This type does not provide direct-destination or zero-copy behavior.
 #[derive(Debug)]
-pub struct CudaBurnDecoder {
+pub struct CudaUploadBurnDecoder {
     codec: CodecDecoder,
     device: CudaDevice,
 }
 
-impl CudaBurnDecoder {
-    /// Create a decoder for one Burn CUDA device. The retained primary context
-    /// is initialized lazily when the first nonempty valid group is submitted.
+impl CudaUploadBurnDecoder {
+    /// Create a staged decoder for one Burn CUDA device.
     #[must_use]
     pub fn new(device: CudaDevice, options: BatchDecodeOptions) -> Self {
         Self {
@@ -121,13 +67,13 @@ impl CudaBurnDecoder {
         }
     }
 
-    /// Borrow the retained codec session.
+    /// Borrow the persistent CUDA codec session.
     #[must_use]
     pub const fn codec(&self) -> &CodecDecoder {
         &self.codec
     }
 
-    /// Burn CUDA device receiving decoded tensors.
+    /// Borrow the Burn CUDA device receiving the staged upload.
     #[must_use]
     pub const fn device(&self) -> &CudaDevice {
         &self.device
@@ -146,8 +92,7 @@ impl CudaBurnDecoder {
         Ok(self.codec.prepare_prepared_images(images)?)
     }
 
-    /// Prepare and synchronously finish one owned batch. Use [`Self::submit`]
-    /// to overlap caller work with GPU execution.
+    /// Decode on CUDA, stage completed pixels through host memory, and upload to Burn.
     pub fn decode(
         &mut self,
         inputs: Vec<EncodedImage>,
@@ -155,7 +100,7 @@ impl CudaBurnDecoder {
         self.submit(inputs)?.wait()
     }
 
-    /// Regroup and synchronously decode caller-supplied prepared images.
+    /// Regroup prepared images, decode on CUDA, and perform the staged upload.
     pub fn decode_prepared_images(
         &mut self,
         images: Vec<PreparedImage>,
@@ -164,7 +109,7 @@ impl CudaBurnDecoder {
         self.decode_prepared(&prepared)
     }
 
-    /// Finish a reusable codec preparation and return validated Burn tensors.
+    /// Decode a reusable preparation on CUDA and perform the staged upload.
     pub fn decode_prepared(
         &mut self,
         prepared: &PreparedBatch,
@@ -172,82 +117,74 @@ impl CudaBurnDecoder {
         self.submit_prepared(prepared)?.wait()
     }
 
-    /// Prepare and asynchronously submit one owned batch without exposing
-    /// partially written tensor storage.
+    /// Submit CUDA codec work. The later [`SubmittedCudaUploadBurnBatch::wait`]
+    /// performs a synchronous device-to-host copy and ordinary Burn upload.
     pub fn submit(
         &mut self,
         inputs: Vec<EncodedImage>,
-    ) -> Result<SubmittedCudaBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedCudaUploadBurnBatch, BurnDecodeError> {
         let prepared = self.prepare(inputs)?;
         self.submit_prepared(&prepared)
     }
 
-    /// Asynchronously submit a reusable preparation. The returned guard owns
-    /// every fresh Burn allocation and codec completion resource until
-    /// [`SubmittedCudaBurnBatch::wait`] validates the whole group.
+    /// Submit a reusable preparation to codec-owned CUDA output.
     pub fn submit_prepared(
         &mut self,
         prepared: &PreparedBatch,
-    ) -> Result<SubmittedCudaBurnBatch, BurnDecodeError> {
-        let mut groups = Vec::new();
-        groups
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BurnDecodeError::SizeOverflow)?;
-        let mut group_errors = Vec::new();
-        group_errors
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BurnDecodeError::SizeOverflow)?;
-        for group in prepared.groups() {
-            match self.submit_group(group) {
-                Ok(submitted) => groups.push(submitted),
-                Err(source) if crate::completion::burn_group_error_is_fatal(&source) => {
-                    return Err(source);
-                }
-                Err(source) => group_errors.push(BurnBatchGroupError::new(
-                    group.source_indices().to_vec(),
-                    source,
-                )),
-            }
-        }
-        Ok(SubmittedCudaBurnBatch {
-            groups,
-            errors: prepared.errors().to_vec(),
-            group_errors,
+    ) -> Result<SubmittedCudaUploadBurnBatch, BurnDecodeError> {
+        ensure_dtypes::<Cuda>(prepared, &self.device)?;
+        Ok(SubmittedCudaUploadBurnBatch {
+            pending: self.codec.submit_prepared(prepared)?,
+            device: self.device.clone(),
         })
     }
+}
 
-    fn submit_group(
-        &mut self,
-        group: &PreparedBatchGroup,
-    ) -> Result<SubmittedCudaBurnGroup, BurnDecodeError> {
-        let sample_type = group.info().sample_type;
-        let dtype = dtype(sample_type)?;
-        if !<Cuda<f32, i32> as Backend>::supports_dtype(&self.device, dtype) {
+fn ensure_dtypes<B: Backend>(
+    prepared: &PreparedBatch,
+    device: &B::Device,
+) -> Result<(), BurnDecodeError> {
+    for group in prepared.groups() {
+        let dtype = crate::batch_contract::dtype(group.info().sample_type)?;
+        if !B::supports_dtype(device, dtype) {
             return Err(BurnDecodeError::UnsupportedDType { dtype });
         }
-        let shape = tensor_shape(group.source_indices().len(), group.info())?;
-        let device = self.device.clone();
-        let context = self
-            .codec
-            .session_mut()
-            .context_for_device_interop(self.device.index)
-            .map_err(|error| BurnDecodeError::AcceleratorInterop {
-                backend: "CUDA",
-                message: error.to_string(),
-            })?;
-        let allocation = fill_batch_int_tensor(shape, dtype, &device, &context, |destination| {
-            // SAFETY: the interop owner keeps the unique Burn allocation live,
-            // establishes CubeCL-to-codec-to-CubeCL event ordering, and stores
-            // the returned completion guard ahead of that allocation.
-            Ok(unsafe { self.codec.submit_batch_into(group, destination) }?)
-        })?;
-        if allocation.payload().group().info().sample_type != sample_type {
-            return Err(BurnDecodeError::SampleTypeMismatch);
-        }
-        Ok(SubmittedCudaBurnGroup {
-            sample_type,
-            source_indices: group.source_indices().to_vec(),
-            allocation,
-        })
     }
+    Ok(())
+}
+
+fn materialize(
+    decoded: CudaBatchDecodeResult,
+    device: &CudaDevice,
+) -> Result<BurnBatchDecode<Cuda>, BurnDecodeError> {
+    let (codec_groups, errors, codec_group_errors) = decoded.into_parts();
+    let mut groups = Vec::new();
+    groups
+        .try_reserve_exact(codec_groups.len())
+        .map_err(|_| BurnDecodeError::SizeOverflow)?;
+    for group in codec_groups {
+        let (info, source_indices, decoded_rects, warnings, _surfaces, dense) = group.into_parts();
+        let mut bytes = vec![0; crate::staging::byte_len(source_indices.len(), &info)?];
+        dense.buffer().copy_to_host(&mut bytes)?;
+        groups.push(crate::staging::materialize(
+            info,
+            source_indices,
+            decoded_rects,
+            warnings,
+            bytes,
+            device,
+        )?);
+    }
+    let group_errors = codec_group_errors
+        .into_iter()
+        .map(|error| {
+            let (source_indices, source) = error.into_parts();
+            BurnBatchGroupError::new(source_indices, BurnDecodeError::CudaCodec(source))
+        })
+        .collect();
+    Ok(BurnBatchDecode {
+        groups,
+        errors,
+        group_errors,
+    })
 }

@@ -11,18 +11,19 @@ use j2k::{
     DecodeRequest, Downscale, EncodedImage, J2kBlockCodingMode, J2kEncodeValidation,
     J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
 };
-use j2k_ml::{BurnBatchTensor, CudaBurnDecoder};
+use j2k_ml::{BurnBatchTensor, CudaUploadBurnDecoder};
 use j2k_test_support::{
     cuda_runtime_and_strict_oxide_gate, htj2k_gray8_large_fixture, OpenJphBatchFixture,
 };
 
 #[test]
-fn direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA direct batch") {
+fn staged_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA staged batch") {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder =
+        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let prepared = decoder
         .prepare(vec![
             EncodedImage::full(Arc::clone(&encoded)),
@@ -47,7 +48,7 @@ fn direct_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
 }
 
 #[test]
-fn direct_cuda_preserves_native_u16_and_i16_samples() {
+fn staged_cuda_preserves_native_u16_and_i16_samples() {
     if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA native integer batches") {
         return;
     }
@@ -73,7 +74,7 @@ fn direct_cuda_preserves_native_u16_and_i16_samples() {
     ];
     for (encoded, dtype, expected) in cases {
         let mut decoder =
-            CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+            CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
         let burn_batch = decoder
             .decode(vec![EncodedImage::full(Arc::from(encoded))])
             .expect("decode native CUDA type");
@@ -106,7 +107,7 @@ fn direct_cuda_preserves_native_u16_and_i16_samples() {
 }
 
 #[test]
-fn direct_cuda_supports_roi_and_reduction_without_host_staging() {
+fn staged_cuda_supports_roi_and_reduction_with_explicit_host_staging() {
     if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA ROI reduction") {
         return;
     }
@@ -117,7 +118,8 @@ fn direct_cuda_supports_roi_and_reduction_without_host_staging() {
         w: 32,
         h: 24,
     };
-    let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder =
+        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let burn_batch = decoder
         .decode(vec![EncodedImage::new(
             encoded,
@@ -138,7 +140,7 @@ fn direct_cuda_supports_roi_and_reduction_without_host_staging() {
 }
 
 #[test]
-fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
+fn staged_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
     if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA exact RGB batches") {
         return;
     }
@@ -158,7 +160,7 @@ fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
             layout,
             ..BatchDecodeOptions::default()
         };
-        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
+        let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);
         for (encoded, expected_dtype) in &cases {
             let prepared = decoder
@@ -177,7 +179,7 @@ fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
 
             let burn_batch = decoder
                 .decode_prepared(&prepared)
-                .expect("decode exact RGB directly into Burn storage");
+                .expect("decode exact RGB through staged Burn upload");
             let group = burn_batch
                 .groups
                 .into_iter()
@@ -210,7 +212,7 @@ fn direct_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
 }
 
 #[test]
-fn direct_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
+fn staged_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
     if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA signed RGB batches") {
         return;
     }
@@ -255,7 +257,7 @@ fn direct_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
             layout,
             ..BatchDecodeOptions::default()
         };
-        let mut decoder = CudaBurnDecoder::new(CudaDevice::default(), options);
+        let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);
         for fixture in &fixtures {
             let encoded = Arc::<[u8]>::from(fixture.encoded);

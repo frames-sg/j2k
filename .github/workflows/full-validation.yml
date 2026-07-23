@@ -320,6 +320,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      - run: cargo xtask j2k-ml-package-smoke
       - run: cargo xtask metal-compile
 
   no-std:

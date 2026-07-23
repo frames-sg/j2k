@@ -11,10 +11,7 @@ use crate::process::{self, cargo, CommandContext};
 use super::ast::validate_source;
 use super::cfg_eval::CoverageCfgContext;
 use super::graph::ReachKind;
-use super::{
-    SourceRole, GENERATED_DWT_DISPOSITION, VENDORED_BLOCK_DISPOSITION,
-    VENDORED_GPU_INTEROP_DISPOSITION, VENDORED_GPU_INTEROP_ROOTS,
-};
+use super::{SourceRole, GENERATED_DWT_DISPOSITION, VENDORED_BLOCK_DISPOSITION};
 mod fuzz_manifests;
 #[cfg(test)]
 mod tests;
@@ -277,14 +274,6 @@ pub(super) fn classify_unreached_source(root: &Path, path: &str) -> Result<Sourc
     }
     if path == "third_party/block-0.1.6-patched/src/test_utils.rs" {
         return Ok(SourceRole::TestOnly);
-    }
-    if VENDORED_GPU_INTEROP_ROOTS
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-    {
-        return Ok(SourceRole::VendoredReviewed(
-            VENDORED_GPU_INTEROP_DISPOSITION,
-        ));
     }
     if path == "crates/j2k-test-support/fixtures/htj2k/openjph_batch/generate.rs" {
         return Ok(SourceRole::TestOnly);

@@ -179,7 +179,7 @@ fn assert_cuda_benchmark_evidence() {
             "session_pool_peak_retained_bytes_before",
             "session_pool_peak_retained_bytes_after",
             "codec_resident",
-            "burn_direct",
+            "j2k_owned_batch_burn_staged_cuda/input_{}",
         ],
     );
 }

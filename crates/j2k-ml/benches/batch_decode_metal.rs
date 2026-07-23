@@ -5,7 +5,7 @@ use burn_wgpu::{Wgpu, WgpuDevice};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage, PreparedBatch};
 use j2k_metal::{MetalBatchDecodeResult, MetalBatchDecoder};
-use j2k_ml::{CpuBurnDecoder, MetalBurnDecoder};
+use j2k_ml::{CpuBurnDecoder, MetalUploadBurnDecoder};
 
 #[path = "batch_decode_metal/instrumentation.rs"]
 mod instrumentation;
@@ -36,7 +36,7 @@ fn main() {
             ensure_criterion_instrumentation_disabled().unwrap_or_else(|error| panic!("{error}"));
             let mut criterion = Criterion::default().configure_from_args();
             bench_codec_resident(&mut criterion, &workload_specs, input_mode);
-            bench_burn_direct(&mut criterion, &workload_specs, input_mode);
+            bench_burn_upload(&mut criterion, &workload_specs, input_mode);
             criterion.final_summary();
         }
         #[cfg(target_os = "macos")]
@@ -175,21 +175,21 @@ fn bench_prepared_codec(
     );
 }
 
-fn bench_burn_direct(
+fn bench_burn_upload(
     criterion: &mut Criterion,
     workload_specs: &[WorkloadSpec],
     input_mode: InputMode,
 ) {
     let options = BatchDecodeOptions::default();
     let mut group = criterion.benchmark_group(format!(
-        "j2k_owned_batch_burn_direct_metal/input_{}",
+        "j2k_owned_batch_burn_staged_metal/input_{}",
         input_mode.label()
     ));
     for &spec in workload_specs {
         let workload = materialize_workload(spec, input_mode);
-        let mut one_shot = MetalBurnDecoder::system_default(options)
+        let mut one_shot = MetalUploadBurnDecoder::system_default(options)
             .expect("create paired Metal Burn benchmark session");
-        let mut prepared_decoder = MetalBurnDecoder::system_default(options)
+        let mut prepared_decoder = MetalUploadBurnDecoder::system_default(options)
             .expect("create prepared paired Metal Burn benchmark session");
         let one_shot_device = one_shot.device().clone();
         let mut staged = CpuBurnDecoder::<Wgpu>::new(one_shot_device.clone(), options);
@@ -270,7 +270,7 @@ fn bench_one_shot_burn(
     request_name: &str,
     batch_size: usize,
     inputs: &[EncodedImage],
-    decoder: &mut MetalBurnDecoder,
+    decoder: &mut MetalUploadBurnDecoder,
 ) {
     group.bench_with_input(
         BenchmarkId::new(
@@ -282,7 +282,7 @@ fn bench_one_shot_burn(
             bencher.iter(|| {
                 let batch_result = decoder
                     .decode(std::hint::black_box(inputs.to_vec()))
-                    .expect("Metal Burn-direct batch decode");
+                    .expect("Metal Burn-upload batch decode");
                 let batch_result = require_burn_success(batch_result);
                 std::hint::black_box(batch_result)
             });
@@ -296,7 +296,7 @@ fn bench_prepared_burn(
     request_name: &str,
     batch_size: usize,
     prepared: &PreparedBatch,
-    decoder: &mut MetalBurnDecoder,
+    decoder: &mut MetalUploadBurnDecoder,
 ) {
     group.bench_with_input(
         BenchmarkId::new(
@@ -308,7 +308,7 @@ fn bench_prepared_burn(
             bencher.iter(|| {
                 let batch_result = decoder
                     .decode_prepared(std::hint::black_box(prepared))
-                    .expect("prepared Metal Burn-direct batch decode");
+                    .expect("prepared Metal Burn-upload batch decode");
                 let batch_result = require_burn_success(batch_result);
                 std::hint::black_box(batch_result)
             });

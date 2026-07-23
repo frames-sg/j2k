@@ -61,30 +61,6 @@ fn cuda_simt_exclusion_covers_split_device_modules_only() {
 }
 
 #[test]
-fn vendored_gpu_interop_exclusion_covers_only_pinned_patch_roots() {
-    for path in [
-        "third_party/cubecl-cuda-0.10.0-patched/build.rs",
-        "third_party/cubecl-runtime-0.10.0-patched/src/client.rs",
-        "third_party/wgpu-29.0.4-patched/src/api/buffer.rs",
-        "third_party/wgpu-core-29.0.4-patched/src/device/global.rs",
-        "third_party/wgpu-hal-29.0.4-patched/src/metal/mod.rs",
-    ] {
-        assert_eq!(
-            matching_exclusion(path, 1, &[])
-                .unwrap()
-                .map(|rule| rule.id),
-            Some("vendored-gpu-interop-patch"),
-            "{path}"
-        );
-    }
-    assert!(
-        matching_exclusion("third_party/unreviewed-0.1.0-patched/src/lib.rs", 1, &[])
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
 fn exclusion_policy_maps_every_narrow_rule_to_existing_tests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     validate_exclusion_policy(&root).unwrap();

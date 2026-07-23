@@ -13,7 +13,7 @@ use j2k::{
     J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
 };
 use j2k_core::Colorspace;
-use j2k_ml::{BurnBatchTensor, BurnDecodeError, MetalBurnDecoder};
+use j2k_ml::{BurnBatchTensor, BurnDecodeError, MetalUploadBurnDecoder};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::{
     generated_htj2k_rgba_fixture, htj2k_rgb8_97_fixture, metal_runtime_gate,

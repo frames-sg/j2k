@@ -106,6 +106,12 @@ Runnable repository examples:
   ([crates/j2k-metal/examples/htj2k_encode_auto_report.rs](crates/j2k-metal/examples/htj2k_encode_auto_report.rs))
 - `cargo run -p j2k-metal --example resident_encode_buffer`
   ([crates/j2k-metal/examples/resident_encode_buffer.rs](crates/j2k-metal/examples/resident_encode_buffer.rs))
+- `cargo run -p j2k-ml --example training_batcher --features cpu`
+  ([crates/j2k-ml/examples/training_batcher.rs](crates/j2k-ml/examples/training_batcher.rs))
+- `cargo run -p j2k-ml --example cuda_upload --features cuda`
+  ([crates/j2k-ml/examples/cuda_upload.rs](crates/j2k-ml/examples/cuda_upload.rs))
+- `cargo run -p j2k-ml --example metal_upload --features metal`
+  ([crates/j2k-ml/examples/metal_upload.rs](crates/j2k-ml/examples/metal_upload.rs))
 - `cargo run -p j2k-tilecodec --example decompress`
   ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
 
@@ -149,10 +155,12 @@ adapter boundary is maintained in [docs/j2k-ml.md](docs/j2k-ml.md). Dated
 hardware validation and performance results live only in
 [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
-`j2k-ml` is only the thin Burn allocation and synchronization adapter over
-these codec sessions. Readers such as `wsi-rs` remain responsible for finding
-and supplying encoded image bytes. Codec support and correctness do not by
-themselves constitute a speedup claim.
+`j2k-ml` stages completed codec output through host memory and creates ordinary
+Burn tensors with public APIs. Its `CudaUploadBurnDecoder` and
+`MetalUploadBurnDecoder` still execute decoding on the named accelerator, but
+they do not claim a direct Burn destination or zero-copy handoff. Readers such
+as `wsi-rs` remain responsible for finding and supplying encoded image bytes.
+Codec support and correctness do not by themselves constitute a speedup claim.
 
 ## Which crate should I use?
 
@@ -259,7 +267,7 @@ Reference files:
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
   HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
 - [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
-  prepared reuse, and direct accelerator destination guarantees
+  prepared reuse, and explicit accelerator decode/upload adapters
 - [docs/release.md](docs/release.md) - release and package validation policy
 - [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
 - [CHANGELOG.md](CHANGELOG.md) - current release notes

@@ -1,21 +1,53 @@
 # Burn batch decoding with `j2k-ml`
 
 `j2k-ml` is an independently maintained integration for Burn 0.21. It is not
-an official Tracel or Burn crate. It is included in the `j2k` 0.7.5 release and
-follows the workspace's reviewed semver policy.
+an official Tracel or Burn crate. It follows the workspace's reviewed semver
+policy. The staged accelerator adapters use only released CubeCL, wgpu, and
+Burn APIs and remain subject to clean-consumer validation before publication.
 
 ## Ownership boundary
 
 `j2k-ml` is a thin framework adapter, not a second codec. The `j2k`,
 `j2k-native`, `j2k-cuda`, and `j2k-metal` crates own parsing, JPEG 2000 and
 HTJ2K decoding, preparation, homogeneous grouping, memory reuse, and device
-execution. `j2k-ml` only materializes a CPU codec group once or lends unique
-Burn-owned CUDA/Metal storage to the codec's external-destination API.
+execution. `j2k-ml` materializes CPU groups directly or stages completed
+accelerator output through host memory before an ordinary Burn tensor upload.
 
 Dataset assembly, DICOM parsing, labels, sampling, resizing, padding,
 prefetching, augmentation, float conversion, and normalization remain outside
 the codec and this adapter. Applications cast and normalize the returned
 integer tensors with ordinary Burn tensor operations.
+
+Burn's `DataLoader` selects application items and calls the application's
+`Batcher`. The codec then partitions those selected items into homogeneous
+decode groups. These are distinct batching responsibilities: `j2k-ml` does not
+choose samples or labels, and a codec group is not automatically a complete
+training batch.
+
+## Runnable examples
+
+The generic training example owns a persistent `CpuBurnDecoder` inside a
+mutex-protected Burn `Batcher`, handles decode failures as batch results,
+realigns labels through `source_indices`, and performs float normalization
+after decode:
+
+```bash
+cargo run -p j2k-ml --example training_batcher --features cpu
+```
+
+The accelerator examples return ordinary Burn integer tensors after an
+explicit decoded-pixel readback and upload:
+
+```bash
+cargo run -p j2k-ml --example cuda_upload --features cuda
+cargo run -p j2k-ml --example metal_upload --features metal
+```
+
+The CPU codec can target any compatible Burn backend through `TensorData`; a
+GPU target on that route includes a host-to-device upload. With the explicit
+`cuda` and `metal` features, codec execution occurs on that accelerator before
+the decoded pixels are read back and uploaded through the same ordinary Burn
+boundary.
 
 ## Batch contract
 
@@ -59,9 +91,10 @@ and premultiplied alpha are never combined into the same RGBA group, and the
 alpha interpretation remains available in `BatchGroupInfo`.
 
 New batch sessions use strict decoding by default. Lenient decoding is
-opt-in and reports warnings. An explicit CUDA or Metal route never stages
-through CPU memory or silently falls back; unsupported inputs and interop
-failures are structured errors.
+opt-in and reports warnings. An explicit CUDA or Metal route never substitutes
+CPU codec decoding, but its completed decoded pixels are deliberately staged
+through host memory. Unsupported inputs and transfer failures are structured
+errors.
 
 ## Persistent routes
 
@@ -75,30 +108,21 @@ plan, and CPU prepared decode consumes single- and multi-tile forms without
 reparsing. Inputs outside those retained-plan boundaries can remain
 metadata-only and continue through the broader CPU decoder.
 
-`CudaBurnDecoder` retains the codec CUDA session for one Burn CUDA device. It
-allocates the final Burn tensor first, validates the allocation's device,
-bounds, alignment, and unique mutable ownership, and submits the codec's final
-store directly into that allocation. CUDA events order CubeCL's stream and the
-codec stream without a normal-path CPU wait. The decoder retains in-flight
-codec resources until completion. Decoded pixels have no device-to-host
-transfer, intermediate dense decoded-pixel allocation, or final
-device-to-device copy.
+`CudaUploadBurnDecoder` retains the CUDA codec session and a Burn CUDA device.
+The codec first produces its ordinary codec-owned CUDA resident batch. After
+completion and status validation, the adapter performs one dense
+device-to-host pixel copy per homogeneous group and constructs the Burn tensor
+with `Tensor::from_data`, which performs the normal host-to-device upload.
 
-`MetalBurnDecoder::system_default` constructs the codec session and paired Burn
-`WgpuDevice` from the same underlying Metal device. The adapter retains the
-Burn-owned `MTLBuffer`, validates its suballocation layout and device identity,
-and passes it to `MetalImageDestination`. The codec writes the final native
-integer layout directly into that buffer before the tensor is registered with
-Burn. Decoded pixels are neither read back nor uploaded again.
+`MetalUploadBurnDecoder::system_default` retains a Metal codec session and
+targets Burn's default wgpu device. After the codec's resident Metal group
+completes, the adapter copies its validated dense byte range into host staging
+and constructs the Burn tensor through the same ordinary public API.
 
-Both GPU adapters retain scratch owners and destination access until one
-group-level completion boundary. Dropping pending work safely retires those
-resources and leaves the persistent session reusable; the normal path does not
-introduce a per-image or per-kernel device synchronization.
-
-The direct-write guarantee is specifically zero decoded-pixel host round trips,
-not a claim that compressed input or internal coefficient/scratch storage needs
-no transfer or allocation. Those internal codec resources remain allowed.
+Both adapters preserve codec submission guards and drop-safe session reuse.
+The `submit` methods overlap only codec work; `wait` includes completion,
+decoded-pixel readback, and Burn upload. These APIs make no direct-destination,
+zero-copy, or asynchronous cross-runtime handoff claim.
 
 ## Current exact accelerator boundary
 
@@ -119,13 +143,13 @@ The canonical `cargo xtask release-cuda` lane passes on the RTX 4070 runner.
 Its codec targets validate classic and HT Gray/RGB/RGBA `U8`/`U16`/`I16`, all
 four requests, both layouts, resident and external destinations, multi-tile
 regressions, asynchronous drop and session reuse, and a 2,000-operation soak.
-Its Burn targets validate the same dtype/request/layout boundary through direct
-tensor destinations, plus prepared regrouping, group isolation, drop-safe
-reuse, and a 1,000-batch soak. Reversible output is bit-exact; irreversible 9/7
-output agrees with the CPU oracle within one integer LSB. This establishes the
-support boundary, not a throughput advantage. An explicit CUDA request still
-fails rather than staging through CPU if runtime validation, device identity,
-or retained-plan validation does not succeed.
+Its Burn targets validate the same dtype/request/layout boundary through staged
+tensor uploads, plus prepared regrouping, group isolation, drop-safe reuse,
+and a 1,000-batch soak. Reversible output is bit-exact; irreversible 9/7 output
+agrees with the CPU oracle within one integer LSB. This establishes the support
+boundary, not a throughput advantage. An explicit CUDA request still fails
+rather than substituting CPU codec execution if runtime or retained-plan
+validation does not succeed.
 
 Focused Metal hardware cases collectively exercise classic and HT inputs,
 `U8`/`U16`/`I16`, Gray/RGB/RGBA, all four requests, both layouts, resident
@@ -189,9 +213,10 @@ Burn-materialized output separately, includes one-shot and prepared reuse, and
 covers HT-dominant unsigned and signed Gray12/Gray16 plus RGB8/RGB16 and
 RGBA8/RGBA16 workloads at batch sizes 1/8/32/64 with full, ROI, reduced, and
 ROI-and-reduced requests. The CUDA and Metal harnesses cover the same request
-and native-output matrix. Each accelerator harness also retains a
-`staged_cpu_upload_pixels` row so direct device decode can be compared with the
-supported persistent CPU-decode-and-upload path on the same Burn backend.
+and native-output matrix. Their accelerator rows measure accelerator codec
+decode followed by explicit decoded-pixel readback and Burn upload. The
+`staged_cpu_upload_pixels` row measures CPU codec decode followed by Burn
+upload on the same backend.
 Run the hardware matrices with `cargo xtask j2k-ml-bench-cuda` and
 `cargo xtask j2k-ml-bench-metal`. Decode rows report decoded spatial pixels per second;
 divide by the decoded pixels per image for images per second or by 1,000,000
@@ -209,10 +234,9 @@ stage timing, signposts, split-command profiling, or Xcode capture. Run a
 separate low-batch diagnostic process with
 `J2K_ML_BATCH_PROCESS_MODE=profile`; it covers only batches 1 and 8 and emits
 telemetry without running Criterion. Codec-resident iterations wait for codec
-completion. CUDA Burn-direct measurements retain their final consumer sync.
-Synchronous Metal Burn-direct decode has already completed and validated the
-codec work before returning, so it does not add a redundant `Wgpu::sync()`;
-the staged CPU-upload row retains that synchronization.
+completion. CUDA and Metal staged-adapter measurements include decoded-pixel
+readback, Burn upload, and the final consumer synchronization required by the
+harness.
 
 Publication status, dated machines, and local results are maintained in
 [`docs/benchmark-evidence.md`](benchmark-evidence.md); generated local fixtures
@@ -220,7 +244,7 @@ do not replace a pinned external adoption run. The CUDA harness emits
 codec-runtime H2D/D2H, kernel,
 runtime-owned allocation, live/high-water memory, pool, event, and host-wait
 counters in `cuda_telemetry_v2` rows for one completed probe per resident or
-Burn-direct case. Probe throughput and counter deltas describe the same
+Burn-upload case. Probe throughput and counter deltas describe the same
 completed decode and include the input mode. Criterion remains the separately
 sampled throughput result. Those counters explicitly exclude Burn/CubeCL allocation and consumer
 kernels. The high-water values are session-cumulative rather than per-case peak
@@ -236,6 +260,6 @@ The pre-timing Metal telemetry snapshot performs runtime and pipeline
 initialization before the timed interval. No decode is used as an unrecorded
 warmup. The first one-shot decode remains cold for prepared-plan and
 execution-arena caches, and the first prepared decode includes its
-immutable-arena upload. Both backends must record device-specific
-direct-versus-staged results before either route is described as faster than
-the portable or staged path.
+immutable-arena upload. Both backends must record new device-specific
+staged-adapter results before either accelerator adapter is described as
+faster than the portable path.

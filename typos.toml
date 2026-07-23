@@ -3,11 +3,6 @@ extend-exclude = [
     ".git",
     "target",
     "corpus/conformance",
-    "third_party/cubecl-cuda-0.10.0-patched",
-    "third_party/cubecl-runtime-0.10.0-patched",
-    "third_party/wgpu-29.0.4-patched",
-    "third_party/wgpu-core-29.0.4-patched",
-    "third_party/wgpu-hal-29.0.4-patched",
 ]
 
 [default]

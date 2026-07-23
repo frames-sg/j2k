@@ -3,9 +3,9 @@
 //! Thin Burn tensor adapter for the `j2k` owned batch codec.
 //!
 //! The codec crates own parsing, grouping, decoding, and accelerator execution.
-//! This crate only materializes CPU groups or lends unique Burn allocations to
-//! the CUDA and Metal external-destination APIs. Casting and normalization stay
-//! in ordinary Burn tensor operations after decode.
+//! This crate materializes CPU groups or stages completed CUDA and Metal codec
+//! output through host memory before an ordinary Burn upload. Casting and
+//! normalization stay in ordinary Burn tensor operations after decode.
 
 #![deny(missing_docs)]
 
@@ -18,8 +18,11 @@ use j2k::{BatchGroupInfo, IndexedBatchError, J2kDecodeWarning, Rect};
     all(feature = "metal", target_os = "macos")
 ))]
 mod batch_contract;
-#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
+#[cfg(test)]
 mod completion;
+mod error;
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
+mod staging;
 
 #[cfg(feature = "cpu")]
 pub mod cpu;
@@ -31,9 +34,42 @@ pub mod metal;
 #[cfg(feature = "cpu")]
 pub use cpu::CpuBurnDecoder;
 #[cfg(feature = "cuda")]
-pub use cuda::{CudaBurnDecoder, SubmittedCudaBurnBatch};
+pub use cuda::{CudaUploadBurnDecoder, SubmittedCudaUploadBurnBatch};
+pub use error::BurnDecodeError;
 #[cfg(feature = "metal")]
-pub use metal::{MetalBurnDecoder, SubmittedMetalBurnBatch};
+pub use metal::{MetalUploadBurnDecoder, SubmittedMetalUploadBurnBatch};
+
+/// Compatibility alias for [`CudaUploadBurnDecoder`].
+#[cfg(feature = "cuda")]
+#[deprecated(
+    since = "0.7.6",
+    note = "use CudaUploadBurnDecoder to make staging explicit"
+)]
+pub type CudaBurnDecoder = CudaUploadBurnDecoder;
+
+/// Compatibility alias for [`SubmittedCudaUploadBurnBatch`].
+#[cfg(feature = "cuda")]
+#[deprecated(
+    since = "0.7.6",
+    note = "use SubmittedCudaUploadBurnBatch to make staging explicit"
+)]
+pub type SubmittedCudaBurnBatch = SubmittedCudaUploadBurnBatch;
+
+/// Compatibility alias for [`MetalUploadBurnDecoder`].
+#[cfg(feature = "metal")]
+#[deprecated(
+    since = "0.7.6",
+    note = "use MetalUploadBurnDecoder to make staging explicit"
+)]
+pub type MetalBurnDecoder = MetalUploadBurnDecoder;
+
+/// Compatibility alias for [`SubmittedMetalUploadBurnBatch`].
+#[cfg(feature = "metal")]
+#[deprecated(
+    since = "0.7.6",
+    note = "use SubmittedMetalUploadBurnBatch to make staging explicit"
+)]
+pub type SubmittedMetalBurnBatch = SubmittedMetalUploadBurnBatch;
 
 /// Ordinary rank-4 Burn integer tensor tagged with its exact codec sample type.
 #[derive(Debug)]
@@ -129,43 +165,4 @@ pub struct BurnBatchDecode<B: Backend> {
     pub errors: Vec<IndexedBatchError>,
     /// Homogeneous groups discarded after adapter submission or completion failed.
     pub group_errors: Vec<BurnBatchGroupError>,
-}
-
-/// Failure at the codec-to-Burn ownership boundary.
-#[derive(Debug, thiserror::Error)]
-pub enum BurnDecodeError {
-    /// The codec could not allocate or schedule the requested batch.
-    #[error("JPEG 2000 batch infrastructure failed: {0}")]
-    Infrastructure(#[from] j2k::BatchInfrastructureError),
-    /// The selected Burn backend cannot represent the codec's exact integer type.
-    #[error("Burn backend does not support exact codec dtype {dtype:?}")]
-    UnsupportedDType {
-        /// Required Burn storage dtype.
-        dtype: burn_core::tensor::DType,
-    },
-    /// Codec group metadata and the returned native sample owner disagreed.
-    #[error("codec batch sample owner did not match its declared sample type")]
-    SampleTypeMismatch,
-    /// Tensor shape arithmetic overflowed the host index type.
-    #[error("Burn tensor shape overflow")]
-    SizeOverflow,
-    /// A newer codec contract cannot be represented by this adapter version.
-    #[error("unsupported codec batch layout or sample type")]
-    UnsupportedCodecContract,
-    /// CUDA rejected or could not complete one homogeneous codec group.
-    #[cfg(feature = "cuda")]
-    #[error(transparent)]
-    Cuda(#[from] j2k_cuda::CudaBatchError),
-    /// Metal rejected or could not complete one homogeneous codec group.
-    #[cfg(feature = "metal")]
-    #[error(transparent)]
-    Metal(#[from] j2k_metal::Error),
-    /// A framework allocation could not be handed to an accelerator safely.
-    #[error("{backend} tensor interop failed: {message}")]
-    AcceleratorInterop {
-        /// Accelerator runtime at the failing boundary.
-        backend: &'static str,
-        /// Actionable ownership, context, bounds, or ordering detail.
-        message: String,
-    },
 }

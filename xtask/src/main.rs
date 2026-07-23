@@ -53,7 +53,9 @@ use quality_commands::{
     ci, clippy, clippy_strict, deny, doc, downstream_smoke, fmt, fuzz_build, fuzz_run, machete,
     miri, nextest, no_std, repo_lint, test, typos, verify_unsafe_audit,
 };
-use release_commands::{package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES};
+use release_commands::{
+    j2k_ml_package_smoke, package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES,
+};
 use stable_api::CARGO_PUBLIC_API_VERSION;
 
 fn main() -> ExitCode {
@@ -128,6 +130,7 @@ fn run() -> Result<(), String> {
         "metal-compile" => metal::metal_compile(),
         "release-metal" => metal::release_metal(env::args().skip(2)),
         "coverage" => coverage::coverage(env::args().skip(2)),
+        "j2k-ml-package-smoke" => j2k_ml_package_smoke(),
         "package" => package(),
         "ci" => ci(),
         "help" | "-h" | "--help" => {
@@ -152,8 +155,8 @@ fn print_help() {
            typos         run typos\n\
            bench-build   compile benchmark targets [--lane host|cuda|metal|all]\n\
            bench-report  print or write a benchmark publication report\n\
-           j2k-ml-bench-metal benchmark Metal codec-resident and Burn-direct batch decode\n\
-           j2k-ml-bench-cuda benchmark CUDA codec-resident and Burn-direct batch decode\n\
+           j2k-ml-bench-metal benchmark Metal codec-resident and Burn-upload batch decode\n\
+           j2k-ml-bench-cuda benchmark CUDA codec-resident and Burn-upload batch decode\n\
            adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle [--features adoption]\n\
            adoption-curate stage inspectable external J2K fixtures and a pinned manifest [--features adoption]\n\
            adoption-manifest generate decode and encode fixture manifests for adoption benchmarks [--features adoption]\n\
@@ -183,6 +186,7 @@ fn print_help() {
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed Metal hardware validation on macOS [--mode quick|full]\n\
            coverage      enforce >=80% host-wide or accelerator critical-path coverage [host|metal|cuda] [--base REV]\n\
+           j2k-ml-package-smoke compile j2k-ml from an external consumer without third-party path patches\n\
            package       construct all staged packages from a clean worktree and publish-dry-run registry-independent crates"
     );
 }

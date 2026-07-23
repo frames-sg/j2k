@@ -5,6 +5,7 @@ use std::os::unix::fs::symlink;
 use super::{
     super::{package, release_integrity, PUBLISHABLE_PACKAGES},
     integrity::{complete_publishable_metadata, metadata_program},
+    package_fixture::packaged_metadata,
 };
 use crate::test_command::RecordingProgram;
 
@@ -103,11 +104,13 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
 
 #[test]
 fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
-    let cargo = metadata_program("release-package-cargo", &complete_publishable_metadata());
     if std::env::var_os(PACKAGE_CHILD_ENV).is_some() {
         package().expect("hermetic package command");
         return;
     }
+
+    let (metadata, package_target) = packaged_metadata();
+    let cargo = metadata_program("release-package-cargo", &metadata);
 
     let git = RecordingProgram::new("release-package-git", "");
     let program_dir = git.program().parent().expect("fake git parent");
@@ -125,6 +128,7 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
         .env("PATH", program_dir)
         .output()
         .expect("run package test from workspace root");
+    std::fs::remove_dir_all(package_target).expect("remove package fixture directory");
     assert!(
         output.status.success(),
         "workspace child failed:\nstdout:\n{}\nstderr:\n{}",
@@ -135,7 +139,14 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
     assert!(git.log().starts_with("status --porcelain|"));
     let cargo_log = cargo.log();
     let commands = cargo_log.lines().collect::<Vec<_>>();
-    assert_eq!(commands.len(), 1 + 2 * PUBLISHABLE_PACKAGES.len());
+    let consumer_commands = match std::env::consts::OS {
+        "linux" | "macos" => 5,
+        _ => 3,
+    };
+    assert_eq!(
+        commands.len(),
+        1 + 2 * PUBLISHABLE_PACKAGES.len() + consumer_commands
+    );
     assert!(commands[0].starts_with("metadata --locked --no-deps --format-version 1|"));
     assert!(commands[1].starts_with("package -p j2k-core --list|"));
     assert!(commands
@@ -144,4 +155,10 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
     assert!(commands
         .iter()
         .any(|line| line.starts_with("package -p j2k-cli --no-verify|")));
+    assert!(commands
+        .iter()
+        .any(|line| line.contains("check --examples --no-default-features --features")));
+    assert!(commands
+        .iter()
+        .any(|line| line.contains("doc --no-deps --no-default-features --features")));
 }

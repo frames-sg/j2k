@@ -43,7 +43,8 @@ fn independent_openjph_signed_rgb_is_exact_in_burn_for_all_requests_and_layouts(
             layout,
             ..BatchDecodeOptions::default()
         };
-        let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+        let mut decoder =
+            MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
         for fixture in &fixtures {
             let encoded = Arc::<[u8]>::from(fixture.encoded);
             for request in requests {
@@ -87,7 +88,7 @@ fn independent_openjph_signed_rgb_is_exact_in_burn_for_all_requests_and_layouts(
 }
 
 #[test]
-fn direct_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
+fn staged_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
     if !metal_runtime_gate("j2k-ml exact RGBA Metal batch") {
         return;
     }
@@ -118,11 +119,11 @@ fn direct_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
             assert_eq!(expected.groups().len(), 1);
 
             let mut decoder =
-                MetalBurnDecoder::system_default(options).expect("paired Metal session");
+                MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
             let prepared = decoder.prepare(inputs).expect("prepare RGBA Burn batch");
             let output = decoder
                 .decode_prepared(&prepared)
-                .expect("direct RGBA Burn decode");
+                .expect("staged RGBA Burn decode");
             assert!(output.errors.is_empty(), "{profile:?} {layout:?}");
             assert!(output.group_errors.is_empty(), "{profile:?} {layout:?}");
             assert_eq!(output.groups.len(), 1, "{profile:?} {layout:?}");
@@ -186,17 +187,17 @@ fn direct_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
 }
 
 #[test]
-fn direct_metal_batch_preserves_native_u16_samples() {
-    if !metal_runtime_gate("j2k-ml direct Metal U16 batch") {
+fn staged_metal_batch_preserves_native_u16_samples() {
+    if !metal_runtime_gate("j2k-ml staged Metal U16 batch") {
         return;
     }
     let samples = [0_u16, 1, 2048, 4095];
     let encoded = encode_gray12(&samples);
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
     let output = decoder
         .decode(vec![EncodedImage::full(Arc::from(encoded))])
-        .expect("direct Metal U16 decode");
+        .expect("staged Metal U16 decode");
 
     let BurnBatchTensor::U16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
         panic!("expected native U16 Metal tensor")
@@ -209,8 +210,8 @@ fn direct_metal_batch_preserves_native_u16_samples() {
 }
 
 #[test]
-fn direct_metal_batch_preserves_native_signed_i16_samples() {
-    if !metal_runtime_gate("j2k-ml direct Metal signed I16 batch") {
+fn staged_metal_batch_preserves_native_signed_i16_samples() {
+    if !metal_runtime_gate("j2k-ml staged Metal signed I16 batch") {
         return;
     }
     let samples = [-2048_i16, -1, 0, 2047];
@@ -224,10 +225,11 @@ fn direct_metal_batch_preserves_native_signed_i16_samples() {
         panic!("signed Gray12 CPU oracle must be I16")
     };
 
-    let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+    let mut decoder =
+        MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
     let output = decoder
         .decode(vec![EncodedImage::full(encoded)])
-        .expect("direct Metal signed Gray12 decode");
+        .expect("staged Metal signed Gray12 decode");
     let BurnBatchTensor::I16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
         panic!("expected native I16 Metal tensor")
     };

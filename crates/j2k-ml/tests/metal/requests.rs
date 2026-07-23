@@ -3,8 +3,8 @@
 use super::*;
 
 #[test]
-fn direct_metal_burn_region_reduced_matches_cpu_oracle() {
-    if !metal_runtime_gate("j2k-ml direct Metal ROI-reduced batch") {
+fn staged_metal_burn_region_reduced_matches_cpu_oracle() {
+    if !metal_runtime_gate("j2k-ml staged Metal ROI-reduced batch") {
         return;
     }
     let encoded = Arc::<[u8]>::from(openhtj2k_refinement_odd_fixture());
@@ -26,10 +26,11 @@ fn direct_metal_burn_region_reduced_matches_cpu_oracle() {
         panic!("odd OpenHT fixture must decode to U8")
     };
 
-    let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+    let mut decoder =
+        MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
     let output = decoder
         .decode(vec![EncodedImage::new(encoded, request)])
-        .expect("direct Metal ROI-reduced decode");
+        .expect("staged Metal ROI-reduced decode");
     let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
         panic!("expected native U8 Metal tensor")
     };
@@ -38,11 +39,11 @@ fn direct_metal_burn_region_reduced_matches_cpu_oracle() {
 }
 
 #[test]
-fn direct_metal_odd_u8_tensor_tails_are_not_zero_initialized() {
-    if !metal_runtime_gate("j2k-ml odd direct Metal tensor tails") {
+fn staged_metal_odd_u8_tensor_tails_are_not_zero_initialized() {
+    if !metal_runtime_gate("j2k-ml odd staged Metal tensor tails") {
         return;
     }
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
     for (width, height) in [(5_u32, 1_u32), (11, 3)] {
         let pixels = (0..width * height)
@@ -63,7 +64,7 @@ fn direct_metal_odd_u8_tensor_tails_are_not_zero_initialized() {
 }
 
 #[test]
-fn direct_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
+fn staged_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
     if !metal_runtime_gate("j2k-ml exact RGB U8 Metal batch") {
         return;
     }
@@ -94,14 +95,15 @@ fn direct_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
             panic!("six-bit RGB must use U8 batch storage")
         };
 
-        let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+        let mut decoder =
+            MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
         let prepared = decoder
             .prepare(inputs)
             .expect("prepare reusable RGB U8 batch");
         for _ in 0..2 {
             let output = decoder
                 .decode_prepared(&prepared)
-                .expect("direct exact RGB U8 Burn decode");
+                .expect("staged exact RGB U8 Burn decode");
             let group = output.groups.into_iter().next().expect("RGB U8 group");
             let BurnBatchTensor::U8(tensor) = group.tensor else {
                 panic!("expected native RGB U8 Metal tensor")
@@ -123,7 +125,7 @@ fn direct_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
 }
 
 #[test]
-fn direct_metal_burn_rgb_u16_is_exact_and_drop_safe() {
+fn staged_metal_burn_rgb_u16_is_exact_and_drop_safe() {
     if !metal_runtime_gate("j2k-ml exact RGB U16 Metal batch") {
         return;
     }
@@ -139,7 +141,8 @@ fn direct_metal_burn_rgb_u16_is_exact_and_drop_safe() {
         panic!("twelve-bit RGB must use U16 batch storage")
     };
 
-    let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+    let mut decoder =
+        MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
     let prepared = decoder
         .prepare(inputs)
         .expect("prepare reusable RGB U16 batch");
@@ -161,7 +164,7 @@ fn direct_metal_burn_rgb_u16_is_exact_and_drop_safe() {
 }
 
 #[test]
-fn direct_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
+fn staged_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
     if !metal_runtime_gate("j2k-ml exact classic RGB U16 Metal batch") {
         return;
     }
@@ -181,13 +184,14 @@ fn direct_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
             panic!("classic twelve-bit RGB must use U16 batch storage")
         };
 
-        let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+        let mut decoder =
+            MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
         let prepared = decoder
             .prepare(inputs)
             .expect("prepare classic RGB Burn batch");
         let output = decoder
             .decode_prepared(&prepared)
-            .expect("direct classic RGB Burn decode");
+            .expect("staged classic RGB Burn decode");
         assert!(output.errors.is_empty(), "{layout:?}");
         assert!(output.group_errors.is_empty(), "{layout:?}");
         let group = output.groups.into_iter().next().expect("classic RGB group");
@@ -202,7 +206,7 @@ fn direct_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
 }
 
 #[test]
-fn direct_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
+fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
     if !metal_runtime_gate("j2k-ml irreversible RGB U8 Metal batch") {
         return;
     }
@@ -220,10 +224,11 @@ fn direct_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
         panic!("irreversible RGB8 must use U8 batch storage")
     };
 
-    let mut decoder = MetalBurnDecoder::system_default(options).expect("paired Metal session");
+    let mut decoder =
+        MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
     let output = decoder
         .decode(inputs)
-        .expect("direct irreversible RGB Burn decode");
+        .expect("staged irreversible RGB Burn decode");
     let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
         panic!("expected native irreversible RGB U8 Metal tensor")
     };

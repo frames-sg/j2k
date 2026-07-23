@@ -8,9 +8,9 @@ fn repeated_default_decoders_reuse_one_initialized_burn_device() {
         return;
     }
 
-    let first = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let first = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("first paired J2K/Burn Metal session");
-    let second = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let second = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("second paired J2K/Burn Metal session");
 
     assert_eq!(
@@ -21,11 +21,11 @@ fn repeated_default_decoders_reuse_one_initialized_burn_device() {
 }
 
 #[test]
-fn persistent_metal_burn_decoder_writes_independent_ht_directly() {
-    if !metal_runtime_gate("j2k-ml direct Metal Burn batch") {
+fn persistent_metal_burn_decoder_uploads_independent_ht_through_staging() {
+    if !metal_runtime_gate("j2k-ml staged Metal Burn batch") {
         return;
     }
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
     let prepared = decoder
         .prepare(vec![
@@ -37,7 +37,7 @@ fn persistent_metal_burn_decoder_writes_independent_ht_directly() {
     for _ in 0..2 {
         let output = decoder
             .decode_prepared(&prepared)
-            .expect("direct Metal Burn decode");
+            .expect("staged Metal Burn decode");
         assert!(output.errors.is_empty());
         let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
             panic!("expected native U8 Metal tensor")
@@ -83,7 +83,7 @@ fn metal_burn_regroups_prepared_images_with_submission_indices_and_settings_erro
         .groups()[0]
         .images()[0]
         .clone();
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
 
     let regrouped = decoder
@@ -115,10 +115,10 @@ fn metal_burn_regroups_prepared_images_with_submission_indices_and_settings_erro
 
 #[test]
 fn dropped_pending_metal_burn_batch_retires_storage_and_decoder_reuses() {
-    if !metal_runtime_gate("j2k-ml dropped direct Metal Burn batch") {
+    if !metal_runtime_gate("j2k-ml dropped staged Metal Burn batch") {
         return;
     }
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
     let prepared = decoder
         .prepare(vec![EncodedImage::full(Arc::from(
@@ -149,7 +149,7 @@ fn metal_burn_batch_continues_after_one_group_submit_failure() {
         return;
     }
     let valid_gray = Arc::<[u8]>::from(openhtj2k_refinement_fixture());
-    let mut decoder = MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+    let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())
         .expect("paired J2K/Burn Metal session");
     let prepared = decoder
         .prepare(vec![

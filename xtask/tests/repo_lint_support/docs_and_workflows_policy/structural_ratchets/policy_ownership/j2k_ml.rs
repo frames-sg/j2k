@@ -37,7 +37,7 @@ fn j2k_ml_policy_keeps_domain_specific_children() {
             "j2k_ml_policy/adapter.rs",
             &[
                 "fn j2k_ml_is_a_thin_persistent_batch_adapter(",
-                "fn metal_burn_decoder_keeps_batch_options_in_the_codec_session_only(",
+                "fn metal_upload_burn_decoder_keeps_batch_options_in_the_codec_session_only(",
             ][..],
             125usize,
         ),
@@ -51,7 +51,7 @@ fn j2k_ml_policy_keeps_domain_specific_children() {
         ),
         (
             "j2k_ml_policy/interop.rs",
-            &["fn j2k_ml_accelerator_zero_copy_contracts_are_source_enforced("][..],
+            &["fn j2k_ml_accelerator_upload_contracts_are_source_enforced("][..],
             100usize,
         ),
         (
