@@ -243,16 +243,3 @@ fn required_region_from_int_rect(rect: IntRect) -> J2kRequiredBandRegion {
 fn int_rect_from_required_region(region: J2kRequiredBandRegion) -> IntRect {
     IntRect::from_ltrb(region.x0, region.y0, region.x1, region.y1)
 }
-
-pub(crate) fn idwt_band_coord(
-    output_origin: u32,
-    output_coord: u32,
-    band_origin: u32,
-    low: bool,
-) -> u32 {
-    band_origin.saturating_add(crate::idwt_band_index(
-        output_origin,
-        output_coord.saturating_sub(output_origin),
-        low,
-    ))
-}
