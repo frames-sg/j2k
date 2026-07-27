@@ -1599,3 +1599,103 @@ fn zero_dwt53(width: u32, height: u32) -> J2kForwardDwt53Output {
         }],
     }
 }
+
+#[test]
+fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_crop() {
+    // Reduced-resolution region decode on a multi-tile codestream: the
+    // output region lives in scaled image coordinates while tile rects
+    // stay on the reference grid. A tile-relevance test that ignores the
+    // resolution shrink factor skips tiles that still contribute samples,
+    // zeroing part of the output. Cover a grid with partial edge tiles,
+    // interior, straddling, and far-corner regions, at every downscale.
+    let (width, height) = (320_u32, 288_u32);
+    let pixels: Vec<u8> = (0..height)
+        .flat_map(|y| {
+            (0..width).flat_map(move |x| {
+                [
+                    (x % 251) as u8,
+                    (y % 241) as u8,
+                    ((x / 8 + y / 8) % 233) as u8,
+                ]
+            })
+        })
+        .collect();
+    let options = EncodeOptions {
+        tile_size: Some((128, 128)),
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&pixels, width, height, 3, 8, false, &options).expect("encode");
+    let fmt = PixelFormat::Rgb8;
+    let bpp = fmt.bytes_per_pixel();
+
+    for scale in [
+        Downscale::None,
+        Downscale::Half,
+        Downscale::Quarter,
+        Downscale::Eighth,
+    ] {
+        let denom = scale.denominator();
+        let (scaled_w, scaled_h) = (width.div_ceil(denom), height.div_ceil(denom));
+        let mut whole_decoder = J2kDecoder::new(&bytes).expect("whole decoder");
+        let whole_stride = scaled_w as usize * bpp;
+        let mut whole = vec![0_u8; whole_stride * scaled_h as usize];
+        whole_decoder
+            .decode_scaled_into(
+                &mut j2k::J2kScratchPool::new(),
+                &mut whole,
+                whole_stride,
+                fmt,
+                scale,
+            )
+            .expect("scaled whole decode");
+
+        for roi in [
+            // Interior of the top-left tile.
+            Rect {
+                x: 24,
+                y: 24,
+                w: 64,
+                h: 64,
+            },
+            // Straddles the first vertical and horizontal tile boundaries.
+            Rect {
+                x: 96,
+                y: 96,
+                w: 80,
+                h: 80,
+            },
+            // Reaches into the partial bottom-right edge tiles.
+            Rect {
+                x: 240,
+                y: 232,
+                w: 72,
+                h: 48,
+            },
+        ] {
+            let scaled_roi = roi.scaled_covering(scale);
+            let mut region_decoder = J2kDecoder::new(&bytes).expect("region decoder");
+            let region_stride = scaled_roi.w as usize * bpp;
+            let mut region = vec![0_u8; region_stride * scaled_roi.h as usize];
+            let outcome = region_decoder
+                .decode_region_scaled_into(
+                    &mut j2k::J2kScratchPool::new(),
+                    &mut region,
+                    region_stride,
+                    fmt,
+                    roi,
+                    scale,
+                )
+                .expect("scaled region decode");
+            assert_eq!(outcome.decoded, scaled_roi);
+            assert_eq!(
+                region,
+                crop_bytes(&whole, scaled_w as usize, bpp, scaled_roi),
+                "region {},{} {}x{} at 1/{denom} disagrees with scaled whole decode",
+                roi.x,
+                roi.y,
+                roi.w,
+                roi.h,
+            );
+        }
+    }
+}
