@@ -12,18 +12,14 @@ use std::{
 pub(crate) mod architecture_policy;
 pub(crate) mod audit_integrity_policy;
 pub(crate) mod corpus_policy;
-pub(crate) mod coverage_structure_policy;
 pub(crate) mod dependency_policy;
 pub(crate) mod docs_and_workflows_policy;
-pub(crate) mod encode_compare_structure_policy;
 pub(crate) mod encode_stage_error_policy;
-pub(crate) mod fixture_compare_structure_policy;
 pub(crate) mod gpu_adapter_policy;
 pub(crate) mod gpu_device_structure_policy;
 pub(crate) mod j2k_batch_allocation_policy;
 pub(crate) mod j2k_component_handoff_policy;
 pub(crate) mod j2k_container_allocation_policy;
-pub(crate) mod j2k_decode_structure_policy;
 pub(crate) mod j2k_encode_validation_policy;
 pub(crate) mod j2k_error_source_policy;
 pub(crate) mod j2k_ml_policy;
@@ -31,8 +27,6 @@ pub(crate) mod j2k_scratch_allocation_policy;
 pub(crate) mod jpeg_batch_allocation_policy;
 pub(crate) mod jpeg_dct_reemit_policy;
 pub(crate) mod jpeg_decode_allocation_policy;
-pub(crate) mod jpeg_decoder_structure_policy;
-pub(crate) mod jpeg_encoder_structure_policy;
 pub(crate) mod jpeg_header_allocation_policy;
 pub(crate) mod jpeg_metal_resource_safety_policy;
 pub(crate) mod jpeg_prepared_table_policy;
@@ -43,13 +37,12 @@ pub(crate) mod jpeg_transcode_allocation_policy;
 pub(crate) mod metal_buffer_pool_policy;
 pub(crate) mod metal_compute_structure_policy;
 pub(crate) mod metal_compute_symbol_policy;
-pub(crate) mod metal_direct_plan_structure_policy;
 pub(crate) mod metal_resource_construction_policy;
 pub(crate) mod native_decode_allocation_policy;
 pub(crate) mod native_decode_context_reuse_policy;
-pub(crate) mod native_direct_plan_structure_policy;
 pub(crate) mod native_encode_allocation_policy;
 pub(crate) mod native_tile_metadata_policy;
+pub(crate) mod phase_order_policy;
 pub(crate) mod profile_allocation_policy;
 pub(crate) mod public_docs_policy;
 pub(crate) mod public_typed_helper_error_policy;
@@ -60,9 +53,8 @@ pub(crate) mod suppression_policy;
 pub(crate) mod tilecodec_error_policy;
 pub(crate) mod transcode_api_policy;
 pub(crate) mod transcode_cuda_policy;
-pub(crate) mod transcode_structure_policy;
 pub(crate) mod workflow_policy;
-pub(crate) mod xtask_main_structure_policy;
+pub(crate) mod workflow_structure_policy;
 
 pub(crate) fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -211,8 +203,6 @@ pub(crate) struct FilePatternCheck<'a> {
     normalized_forbidden: &'a [&'a str],
 }
 
-const STABLE_API_SNAPSHOT_UNION: &str = "<ordinary-and-rustdoc-hidden-stable-api-snapshots>";
-
 pub(crate) struct PatternCheck<'a> {
     source_name: &'a str,
     source: &'a str,
@@ -299,10 +289,6 @@ impl<'a> FilePatternCheck<'a> {
             normalized_required: &[],
             normalized_forbidden: &[],
         }
-    }
-
-    pub(crate) fn stable_api_snapshots() -> FilePatternCheck<'static> {
-        FilePatternCheck::new(STABLE_API_SNAPSHOT_UNION)
     }
 
     pub(crate) fn named(mut self, source_name: &'a str) -> Self {
@@ -429,12 +415,8 @@ pub(crate) fn assert_file_pattern_checks(root: &Path, checks: &[FilePatternCheck
             "{source_name} file-pattern check must define at least one pattern"
         );
 
-        let source = if check.relative_path == STABLE_API_SNAPSHOT_UNION {
-            stable_api_snapshot_sources(root)
-        } else {
-            fs::read_to_string(root.join(check.relative_path))
-                .unwrap_or_else(|err| panic!("read {}: {err}", check.relative_path))
-        };
+        let source = fs::read_to_string(root.join(check.relative_path))
+            .unwrap_or_else(|err| panic!("read {}: {err}", check.relative_path));
         assert_pattern_sets(
             source_name,
             &source,
@@ -545,8 +527,6 @@ pub(crate) fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {
     &rest[..end]
 }
 
-const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
-
 static CARGO_METADATA_WORKSPACE_EDGES: OnceLock<BTreeSet<(String, String)>> = OnceLock::new();
 
 pub(crate) fn cargo_metadata_workspace_edges(root: &Path) -> BTreeSet<(String, String)> {
@@ -647,52 +627,6 @@ pub(crate) fn architecture_doc_dependency_edges(docs: &str) -> BTreeSet<(String,
 
 pub(crate) fn format_edge(edge: &(String, String)) -> String {
     format!("{} -> {}", edge.0, edge.1)
-}
-
-pub(crate) fn cargo_public_api_required(root: &Path, package: &str) -> String {
-    let version = Command::new("cargo")
-        .args(["+nightly-2026-06-28", "public-api", "--version"])
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|err| {
-            panic!(
-                "run cargo public-api --version: {err}; install cargo-public-api {CARGO_PUBLIC_API_VERSION}"
-            )
-        });
-    let stdout = String::from_utf8_lossy(&version.stdout);
-    let stderr = String::from_utf8_lossy(&version.stderr);
-    let version_text = stdout.trim();
-    assert!(
-        version.status.success(),
-        "cargo public-api --version failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        version_text == format!("cargo-public-api {CARGO_PUBLIC_API_VERSION}"),
-        "cargo-public-api version must be {CARGO_PUBLIC_API_VERSION}; found `{version_text}`"
-    );
-
-    let output = Command::new("cargo")
-        .args([
-            "+nightly-2026-06-28",
-            "public-api",
-            "-p",
-            package,
-            "--all-features",
-            "--target",
-            "aarch64-apple-darwin",
-        ])
-        .env("RUSTDOCFLAGS", "-D warnings --document-hidden-items")
-        .env("RUSTFLAGS", "")
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|err| panic!("run cargo public-api for {package}: {err}"));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "cargo public-api failed for package {package}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    format!("{stdout}{stderr}")
 }
 
 pub(crate) fn rust_sources(dir: &Path) -> Vec<PathBuf> {

@@ -2567,6 +2567,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-alloc-probe"
+version = "0.7.6"
+dependencies = [
+ "j2k-native",
+ "j2k-profile",
+ "proptest",
+ "rayon",
+]
+
+[[package]]
 name = "j2k-cli"
 version = "0.7.6"
 dependencies = [

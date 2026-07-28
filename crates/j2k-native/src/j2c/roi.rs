@@ -20,6 +20,8 @@ pub(crate) struct RoiPlan {
     final_windows: Vec<Option<IntRect>>,
 }
 
+crate::move_only::assert_move_only!(RoiPlan);
+
 impl RoiPlan {
     #[expect(
         clippy::similar_names,

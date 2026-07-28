@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/j2k",
+    "crates/j2k-alloc-probe",
     "crates/j2k-codec-math",
     "crates/j2k-core",
     "crates/j2k-compare",

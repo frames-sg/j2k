@@ -65,6 +65,8 @@ pub(crate) struct ComponentData {
     pub(crate) signed: bool,
 }
 
+crate::move_only::assert_move_only!(ComponentData);
+
 pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
     parse_with_retained_baseline(stream, settings, 0)
 }

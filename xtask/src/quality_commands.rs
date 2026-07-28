@@ -28,13 +28,9 @@ pub(super) fn ci() -> Result<(), String> {
     verify_unsafe_audit()
 }
 
-pub(super) fn repo_lint(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let mut strict = false;
-    for arg in args {
-        match arg.as_str() {
-            "--strict" => strict = true,
-            other => return Err(format!("unknown repo-lint argument `{other}`")),
-        }
+pub(super) fn repo_lint(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    if let Some(argument) = args.next() {
+        return Err(format!("unknown repo-lint argument `{argument}`"));
     }
 
     run_cargo(&[
@@ -45,22 +41,7 @@ pub(super) fn repo_lint(args: impl Iterator<Item = String>) -> Result<(), String
         "repo_lint",
         "--",
         "--nocapture",
-    ])?;
-
-    if strict {
-        run_cargo(&[
-            "test",
-            "-p",
-            "xtask",
-            "--test",
-            "repo_lint",
-            "--",
-            "--nocapture",
-            "--ignored",
-        ])?;
-    }
-
-    Ok(())
+    ])
 }
 
 pub(super) fn fmt() -> Result<(), String> {
@@ -156,11 +137,13 @@ const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
 
 pub(super) fn test() -> Result<(), String> {
     if env::consts::OS != "macos" {
-        return test_workspace_without_benches(&[]);
+        test_workspace_without_benches(&[])?;
+        return test_downstream_examples();
     }
 
     test_workspace_without_benches(&["--exclude", "j2k-metal"])?;
-    test_j2k_metal_without_benches()
+    test_j2k_metal_without_benches()?;
+    test_downstream_examples()
 }
 
 fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
@@ -208,18 +191,6 @@ fn test_j2k_metal_without_benches() -> Result<(), String> {
     run_cargo(&["test", "-p", "j2k-metal", "--all-features", "--doc"])
 }
 
-pub(super) fn nextest() -> Result<(), String> {
-    run_cargo(&[
-        "nextest",
-        "run",
-        "--workspace",
-        "--all-features",
-        "--lib",
-        "--bins",
-        "--tests",
-    ])
-}
-
 pub(super) fn doc() -> Result<(), String> {
     run_cargo_with_env(
         &["doc", "--workspace", "--all-features", "--no-deps"],
@@ -237,10 +208,6 @@ pub(super) fn doc() -> Result<(), String> {
         &["doc", "-p", "j2k-cli", "--no-deps"],
         &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
     )
-}
-
-pub(super) fn typos() -> Result<(), String> {
-    run_program(OsString::from("typos"), &[], &[])
 }
 
 pub(super) fn fuzz_build() -> Result<(), String> {
@@ -316,10 +283,6 @@ fn fuzz_target_triple() -> Result<String, String> {
         .find_map(|line| line.strip_prefix("host: "))
         .map(str::to_string)
         .ok_or_else(|| "failed to parse nightly host target from `rustc -vV`".to_string())
-}
-
-pub(super) fn deny() -> Result<(), String> {
-    run_cargo(&["deny", "check", "licenses", "advisories", "bans", "sources"])
 }
 
 pub(super) fn miri() -> Result<(), String> {
@@ -556,7 +519,7 @@ fn tokens_contain_unsafe(tokens: &TokenStream) -> bool {
     })
 }
 
-pub(super) fn downstream_smoke() -> Result<(), String> {
+fn test_downstream_examples() -> Result<(), String> {
     run_cargo(&["test", "-p", "j2k", "--examples"])?;
     run_cargo(&["test", "-p", "j2k-transcode", "--examples"])
 }

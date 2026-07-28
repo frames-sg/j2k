@@ -15,6 +15,8 @@ pub(super) struct ComponentRoiEncodePlan {
     pub(super) regions: Vec<ComponentRoiEncodeRegion>,
 }
 
+crate::move_only::assert_move_only!(ComponentRoiEncodePlan);
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ComponentRoiEncodeRegion {
     pub(super) x: u32,
