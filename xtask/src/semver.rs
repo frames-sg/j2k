@@ -28,8 +28,22 @@ const SEMVER_TOOLCHAIN: &str = "1.96";
 const SEMVER_BASELINE_VERSION: &str = "0.7.5";
 const SEMVER_BASELINE_TAG: &str = "v0.7.5";
 const SEMVER_BASELINE_COMMIT: &str = "a89abb6e7eba469c44b3735740712c2a85be0499";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.6.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.6.yml";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.8.0.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.8.0.yml";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BaselineTransition<'a> {
+    candidate_version: &'a str,
+    required_next_baseline_version: &'a str,
+    required_next_baseline_tag: &'a str,
+}
+
+const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> =
+    Some(BaselineTransition {
+        candidate_version: "0.8.0",
+        required_next_baseline_version: "0.8.0",
+        required_next_baseline_tag: "v0.8.0",
+    });
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
@@ -172,17 +186,22 @@ struct Options {
 
 pub(crate) fn semver(
     args: impl Iterator<Item = String>,
-    stable_packages: &[&str],
+    published_library_packages: &[&str],
     cargo_public_api_version: &str,
 ) -> Result<(), String> {
     let options = parse_options(args)?;
     require_macos()?;
     verify_tool_versions(cargo_public_api_version)?;
     verify_baseline_tag()?;
-    validate_package_partition(stable_packages)?;
+    validate_package_partition(published_library_packages)?;
 
     let versions = workspace_package_versions()?;
-    let candidate_version = common_candidate_version(stable_packages, &versions)?;
+    let candidate_version = common_candidate_version(published_library_packages, &versions)?;
+    validate_baseline_transition(
+        SEMVER_BASELINE_VERSION,
+        &candidate_version,
+        INTENTIONAL_BREAK_TRANSITION,
+    )?;
     let baseline = Version::parse(SEMVER_BASELINE_VERSION)?;
     let baseline_snapshot = baseline_api_snapshot(cargo_public_api_version)?;
     let baseline_apis = parse_api_snapshot(&baseline_snapshot)?;
@@ -205,15 +224,15 @@ pub(crate) fn semver(
     let snapshot_hidden_apis = parse_api_snapshot(&hidden_snapshot)?;
     validate_snapshot_scope(
         "candidate ordinary snapshot",
-        stable_packages,
+        published_library_packages,
         &snapshot_apis,
     )?;
     validate_snapshot_scope(
         "candidate rustdoc-hidden snapshot",
-        stable_packages,
+        published_library_packages,
         &snapshot_hidden_apis,
     )?;
-    let live_inventories = collect_package_apis(stable_packages)?;
+    let live_inventories = collect_package_apis(published_library_packages)?;
     let current_apis = live_inventories
         .iter()
         .map(|(package, inventory)| (package.clone(), inventory.ordinary.clone()))
@@ -222,12 +241,16 @@ pub(crate) fn semver(
         .iter()
         .map(|(package, inventory)| (package.clone(), inventory.hidden.clone()))
         .collect::<BTreeMap<_, _>>();
-    let stale_ordinary_packages = snapshot_drift(stable_packages, &snapshot_apis, &current_apis);
-    let stale_hidden_packages =
-        snapshot_drift(stable_packages, &snapshot_hidden_apis, &current_hidden_apis);
+    let stale_ordinary_packages =
+        snapshot_drift(published_library_packages, &snapshot_apis, &current_apis);
+    let stale_hidden_packages = snapshot_drift(
+        published_library_packages,
+        &snapshot_hidden_apis,
+        &current_hidden_apis,
+    );
 
     let diffs = build_package_diffs(
-        stable_packages,
+        published_library_packages,
         &versions,
         baseline,
         &baseline_apis,
@@ -237,7 +260,7 @@ pub(crate) fn semver(
 
     if !stale_ordinary_packages.is_empty() || !stale_hidden_packages.is_empty() {
         return Err(format!(
-            "committed stable API snapshots are stale; ordinary packages: \
+            "committed published-library API snapshots are stale; ordinary packages: \
              {stale_ordinary_packages:?}; rustdoc-hidden packages: {stale_hidden_packages:?}; \
              run `cargo xtask stable-api --write` and review both inventory diffs before \
              regenerating the semver report"
@@ -253,8 +276,47 @@ pub(crate) fn semver(
     Ok(())
 }
 
+fn validate_baseline_transition(
+    baseline_version: &str,
+    candidate_version: &str,
+    transition: Option<BaselineTransition<'_>>,
+) -> Result<(), String> {
+    let Some(transition) = transition else {
+        return Ok(());
+    };
+    if transition.required_next_baseline_version != transition.candidate_version {
+        return Err(format!(
+            "intentional-break transition candidate {} must equal its required next baseline \
+             version {}, so later 0.8.x checks cannot keep using the older baseline",
+            transition.candidate_version, transition.required_next_baseline_version
+        ));
+    }
+    let expected_tag = format!("v{}", transition.required_next_baseline_version);
+    if transition.required_next_baseline_tag != expected_tag {
+        return Err(format!(
+            "intentional-break transition requires next baseline tag `{expected_tag}`, found `{}`",
+            transition.required_next_baseline_tag
+        ));
+    }
+    let baseline = Version::parse(baseline_version)?;
+    let transition_candidate = Version::parse(transition.candidate_version)?;
+    computed_release_type(baseline, transition_candidate)?;
+    if candidate_version != transition.candidate_version {
+        return Err(format!(
+            "the active intentional-break transition permits only candidate {} against baseline \
+             {baseline_version}, found {candidate_version}; after publishing {}, rotate the \
+             semver baseline to {} and disable INTENTIONAL_BREAK_TRANSITION before preparing a \
+             later release",
+            transition.candidate_version,
+            transition.candidate_version,
+            transition.required_next_baseline_tag
+        ));
+    }
+    Ok(())
+}
+
 fn build_package_diffs(
-    stable_packages: &[&str],
+    published_library_packages: &[&str],
     versions: &BTreeMap<String, String>,
     baseline: Version,
     baseline_apis: &BTreeMap<String, BTreeSet<String>>,
@@ -265,16 +327,16 @@ fn build_package_diffs(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut diffs = Vec::with_capacity(stable_packages.len());
-    for package in stable_packages {
+    let mut diffs = Vec::with_capacity(published_library_packages.len());
+    for package in published_library_packages {
         let current = current_apis.get(*package).cloned().ok_or_else(|| {
-            format!("current public API snapshot is missing stable package `{package}`")
+            format!("current public API snapshot is missing published library `{package}`")
         })?;
-        let candidate = versions
-            .get(*package)
-            .ok_or_else(|| format!("workspace metadata is missing stable package `{package}`"))?;
+        let candidate = versions.get(*package).ok_or_else(|| {
+            format!("workspace metadata is missing published library `{package}`")
+        })?;
         let hidden = current_hidden_apis.get(*package).cloned().ok_or_else(|| {
-            format!("current rustdoc-hidden API inventory is missing stable package `{package}`")
+            format!("current rustdoc-hidden API inventory is missing published library `{package}`")
         })?;
         if baseline_set.contains(package) {
             let baseline_api = baseline_apis.get(*package).ok_or_else(|| {
@@ -405,10 +467,13 @@ fn require_version_token(output: &str, tool: &str, expected: &str) -> Result<(),
     }
 }
 
-fn validate_package_partition(stable_packages: &[&str]) -> Result<(), String> {
-    let stable = stable_packages.iter().copied().collect::<BTreeSet<_>>();
-    if stable.len() != stable_packages.len() {
-        return Err("STABLE_SEMVER_PACKAGES contains duplicates".to_string());
+fn validate_package_partition(published_library_packages: &[&str]) -> Result<(), String> {
+    let published = published_library_packages
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if published.len() != published_library_packages.len() {
+        return Err("published library package set contains duplicates".to_string());
     }
     let baseline = SEMVER_BASELINE_PACKAGES
         .iter()
@@ -428,13 +493,19 @@ fn validate_package_partition(stable_packages: &[&str]) -> Result<(), String> {
         ));
     }
     let configured = baseline.union(&new).copied().collect::<BTreeSet<_>>();
-    if configured == stable {
+    if configured == published {
         Ok(())
     } else {
-        let missing = stable.difference(&configured).copied().collect::<Vec<_>>();
-        let unexpected = configured.difference(&stable).copied().collect::<Vec<_>>();
+        let missing = published
+            .difference(&configured)
+            .copied()
+            .collect::<Vec<_>>();
+        let unexpected = configured
+            .difference(&published)
+            .copied()
+            .collect::<Vec<_>>();
         Err(format!(
-            "semver baseline/new package partition drifted; missing: {missing:?}; unexpected: {unexpected:?}"
+            "published-library semver baseline/new partition drifted; missing: {missing:?}; unexpected: {unexpected:?}"
         ))
     }
 }
@@ -464,26 +535,25 @@ fn workspace_package_versions() -> Result<BTreeMap<String, String>, String> {
 }
 
 fn common_candidate_version(
-    stable_packages: &[&str],
+    published_library_packages: &[&str],
     versions: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    let mut candidates = stable_packages
+    let mut candidates = published_library_packages
         .iter()
         .map(|package| {
-            versions
-                .get(*package)
-                .cloned()
-                .ok_or_else(|| format!("workspace metadata is missing stable package `{package}`"))
+            versions.get(*package).cloned().ok_or_else(|| {
+                format!("workspace metadata is missing published library `{package}`")
+            })
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
     if candidates.len() != 1 {
         return Err(format!(
-            "stable semver packages must share one candidate version, found {candidates:?}"
+            "published library packages must share one candidate version, found {candidates:?}"
         ));
     }
     candidates
         .pop_first()
-        .ok_or_else(|| "stable semver package list is empty".to_string())
+        .ok_or_else(|| "published library package list is empty".to_string())
 }
 
 fn baseline_api_snapshot(cargo_public_api_version: &str) -> Result<String, String> {
@@ -568,12 +638,15 @@ fn exact_metadata_line(lines: &[&str], prefix: &str, expected: &str) -> bool {
 }
 
 fn snapshot_drift(
-    stable_packages: &[&str],
+    published_library_packages: &[&str],
     snapshot_apis: &BTreeMap<String, BTreeSet<String>>,
     current_apis: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<String> {
-    let expected = stable_packages.iter().copied().collect::<BTreeSet<_>>();
-    let mut drift = stable_packages
+    let expected = published_library_packages
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut drift = published_library_packages
         .iter()
         .copied()
         .filter(|package| snapshot_apis.get(*package) != current_apis.get(*package))
@@ -713,6 +786,21 @@ fn render_report(
     )
     .unwrap();
     writeln!(&mut out, "- Candidate version: `{candidate_version}`").unwrap();
+    if let Some(transition) = INTENTIONAL_BREAK_TRANSITION {
+        writeln!(
+            &mut out,
+            "- Active intentional-break transition: only `{}` may compare against \
+             `{SEMVER_BASELINE_TAG}`",
+            transition.candidate_version
+        )
+        .unwrap();
+        writeln!(
+            &mut out,
+            "- Required next semver baseline: `{}` at version `{}` before any later candidate",
+            transition.required_next_baseline_tag, transition.required_next_baseline_version
+        )
+        .unwrap();
+    }
     writeln!(
         &mut out,
         "- Tool pins: Rust `{SEMVER_TOOLCHAIN}`, `cargo-semver-checks {CARGO_SEMVER_CHECKS_VERSION}`, `cargo-public-api {cargo_public_api_version}`, rustdoc `{PUBLIC_API_TOOLCHAIN}`, target `{PUBLIC_API_TARGET}`"

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless_components, EncodeBackendPreference, J2kBlockCodingMode, J2kCodec,
-    J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
-    J2kLosslessComponentSamples, J2kLosslessEncodeOptions, J2kRowDecodeOptions,
-    ReversibleTransform,
+    encode_j2k_lossless_components, DecodeSettings as FacadeDecodeSettings,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kCodec, J2kComponentPlane, J2kContext,
+    J2kDecodeWarning, J2kDecoder, J2kError, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
+    J2kLosslessEncodeOptions, J2kRowDecodeOptions, J2kView, ReversibleTransform,
 };
 use j2k_core::{
     BufferError, CodecContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
@@ -318,6 +318,81 @@ fn decode_gray8_jp2_roundtrips_reversible_pixels() {
         .decode_into(&mut out, 2, PixelFormat::Gray8)
         .expect("decode");
     assert_eq!(out, pixels);
+}
+
+#[test]
+fn explicit_lenient_mode_does_not_warn_for_a_valid_stream() {
+    let pixels = [3, 9, 27, 81];
+    let codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    let native = Image::new(&codestream, &DecodeSettings::lenient()).expect("native image");
+    assert!(!native.used_lenient_metadata_recovery());
+    let mut decoder = J2kDecoder::new_with_settings(&codestream, FacadeDecodeSettings::lenient())
+        .expect("lenient decoder");
+    let mut out = [0_u8; 4];
+    let outcome = decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .expect("decode");
+
+    assert_eq!(out, pixels);
+    assert!(outcome.warnings.is_empty());
+}
+
+#[test]
+fn strict_default_rejects_but_explicit_lenient_recovers_trailing_jp2_metadata() {
+    let pixels = [3, 9, 27, 81];
+    let codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    let mut jp2 = wrap_jp2_codestream(&codestream, 2, 2, 1, 8, 17);
+    jp2.extend_from_slice(&[0, 0, 0, 16, b'x', b'm', b'l', b' ']);
+
+    assert!(FacadeDecodeSettings::default().is_strict());
+    assert!(J2kView::parse(&jp2).is_err());
+    assert!(J2kDecoder::new(&jp2).is_err());
+    let native = Image::new(&jp2, &DecodeSettings::lenient()).expect("lenient native image");
+    assert!(native.used_lenient_metadata_recovery());
+
+    let view =
+        J2kView::parse_with_settings(&jp2, FacadeDecodeSettings::lenient()).expect("lenient view");
+    let mut decoder = J2kDecoder::from_view(view).expect("decoder from lenient view");
+    let mut out = [0_u8; 4];
+    let outcome = decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .expect("lenient recovery decode");
+
+    assert_eq!(out, pixels);
+    assert_eq!(
+        outcome.warnings,
+        vec![J2kDecodeWarning::LenientMetadataRecovery]
+    );
+
+    let mut scaled = [0_u8; 1];
+    let scaled_outcome = decoder
+        .decode_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut scaled,
+            1,
+            PixelFormat::Gray8,
+            Downscale::Half,
+        )
+        .expect("scaled lenient recovery decode");
+    assert_eq!(
+        scaled_outcome.warnings,
+        vec![J2kDecodeWarning::LenientMetadataRecovery]
+    );
+}
+
+#[test]
+fn lenient_container_policy_does_not_relax_truncated_codestream_validation() {
+    let pixels = [3, 9, 27, 81];
+    let mut codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    assert_eq!(codestream.pop(), Some(0xd9));
+    assert_eq!(codestream.pop(), Some(0xff));
+
+    let mut decoder = J2kDecoder::new_with_settings(&codestream, FacadeDecodeSettings::lenient())
+        .expect("main header remains inspectable");
+    let mut out = [0_u8; 4];
+    assert!(decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .is_err());
 }
 
 #[test]

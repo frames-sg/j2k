@@ -252,6 +252,7 @@ pub fn j2k::J2kDecoder<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::inspect_support(&'a [u8]) -> core::result::Result<j2k::J2kSupportInfo, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::new_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::set_cpu_decode_parallelism(&mut self, j2k::CpuDecodeParallelism)
 pub fn j2k::J2kFileBoxMetadata<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> Self
 pub fn j2k::J2kFileColorSpec<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> core::option::Option<Self>
@@ -296,6 +297,7 @@ pub fn j2k::J2kToHtj2kOptions::default() -> Self
 pub fn j2k::J2kView<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::J2kView<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::J2kView<'a>::parse(&'a [u8]) -> core::result::Result<Self, j2k::J2kError>
+pub fn j2k::J2kView<'a>::parse_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kView<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
 pub fn j2k::J2kView<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
 pub fn j2k::NativeBackendError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -473,7 +475,7 @@ pub j2k::J2kComponentMappingType::Palette::column: u8
 pub j2k::J2kComponentMappingType::Unknown
 pub j2k::J2kComponentMappingType::Unknown::column: u8
 pub j2k::J2kComponentMappingType::Unknown::value: u8
-pub j2k::J2kDecodeWarning::LenientDecodeMode
+pub j2k::J2kDecodeWarning::LenientMetadataRecovery
 pub j2k::J2kDecodedColorSpace::Cmyk
 pub j2k::J2kDecodedColorSpace::Gray
 pub j2k::J2kDecodedColorSpace::Icc
@@ -2532,7 +2534,9 @@ pub use j2k_jpeg_cuda::ScratchPool
 
 ```text
 #[non_exhaustive] pub enum j2k_cuda::CudaBatchError
+#[non_exhaustive] pub enum j2k_cuda::CudaEncodeFallbackReason
 #[non_exhaustive] pub enum j2k_cuda::Error
+impl core::default::Default for j2k_cuda::CudaLosslessEncoder
 impl core::error::Error for j2k_cuda::NativeBackendError
 impl core::fmt::Debug for j2k_cuda::CudaSession
 impl core::fmt::Debug for j2k_cuda::SubmittedCudaExternalBatch
@@ -2549,6 +2553,8 @@ impl j2k_cuda::CudaEncodeStageAccelerator
 impl j2k_cuda::CudaEncodeStageTimings
 impl j2k_cuda::CudaEncodedJ2k
 impl j2k_cuda::CudaExternalBatchGroup
+impl j2k_cuda::CudaLosslessEncodeResult
+impl j2k_cuda::CudaLosslessEncoder
 impl j2k_cuda::CudaResidentBatchBuffer
 impl j2k_cuda::CudaResidentCodestreamBuffer
 impl j2k_cuda::CudaSession
@@ -2568,6 +2574,11 @@ pub const fn j2k_cuda::CudaEncodeStageAccelerator::collected_stage_timings(&self
 pub const fn j2k_cuda::CudaEncodeStageTimings::saturating_add(self, Self) -> Self
 pub const fn j2k_cuda::CudaEncodeStageTimings::total_us(self) -> u128
 pub const fn j2k_cuda::CudaExternalBatchGroup::info(&self) -> &j2k::owned_batch::contracts::BatchGroupInfo
+pub const fn j2k_cuda::CudaLosslessEncodeResult::actual_backend(&self) -> j2k_core::backend::BackendKind
+pub const fn j2k_cuda::CudaLosslessEncodeResult::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
+pub const fn j2k_cuda::CudaLosslessEncodeResult::encoded(&self) -> &j2k::encode::contracts::EncodedJ2k
+pub const fn j2k_cuda::CudaLosslessEncodeResult::fallback_reason(&self) -> core::option::Option<j2k_cuda::CudaEncodeFallbackReason>
+pub const fn j2k_cuda::CudaLosslessEncodeResult::requested_backend(&self) -> j2k::encode::contracts::EncodeBackendPreference
 pub enum j2k_cuda::CudaExternalBatchTryFinish
 pub fn j2k_cuda::CudaBatchDecodeResult::errors(&self) -> &[j2k::owned_batch::errors::IndexedBatchError]
 pub fn j2k_cuda::CudaBatchDecodeResult::group_errors(&self) -> &[j2k_cuda::CudaBatchGroupError]
@@ -2611,6 +2622,11 @@ pub fn j2k_cuda::CudaExternalBatchGroup::decoded_rects(&self) -> &[j2k_core::typ
 pub fn j2k_cuda::CudaExternalBatchGroup::ranges(&self) -> &[j2k_cuda_runtime::memory::CudaDeviceBufferRange]
 pub fn j2k_cuda::CudaExternalBatchGroup::source_indices(&self) -> &[usize]
 pub fn j2k_cuda::CudaExternalBatchGroup::warnings(&self) -> &[alloc::vec::Vec<j2k::decode::J2kDecodeWarning>]
+pub fn j2k_cuda::CudaLosslessEncodeResult::into_encoded(self) -> j2k::encode::contracts::EncodedJ2k
+pub fn j2k_cuda::CudaLosslessEncoder::default() -> Self
+pub fn j2k_cuda::CudaLosslessEncoder::encode(&mut self, j2k::encode::samples::J2kLosslessSamples<'_>, &j2k::encode::contracts::J2kLosslessEncodeOptions) -> core::result::Result<j2k_cuda::CudaLosslessEncodeResult, j2k_cuda::Error>
+pub fn j2k_cuda::CudaLosslessEncoder::encode_strict_cuda(&mut self, j2k::encode::samples::J2kLosslessSamples<'_>, &j2k::encode::contracts::J2kLosslessEncodeOptions) -> core::result::Result<j2k_cuda::CudaLosslessEncodeResult, j2k_cuda::Error>
+pub fn j2k_cuda::CudaLosslessEncoder::new() -> Self
 pub fn j2k_cuda::CudaResidentBatchBuffer::buffer(&self) -> &j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub fn j2k_cuda::CudaResidentBatchBuffer::ranges(&self) -> &[j2k_cuda_runtime::memory::CudaDeviceBufferRange]
 pub fn j2k_cuda::CudaResidentCodestreamBuffer::buffer(&self) -> &j2k_cuda_runtime::memory::CudaDeviceBuffer
@@ -2669,6 +2685,8 @@ pub j2k_cuda::CudaDecodePoolSnapshot::deferred_bytes: usize
 pub j2k_cuda::CudaDecodePoolSnapshot::peak_cached_bytes: usize
 pub j2k_cuda::CudaDecodePoolSnapshot::peak_deferred_bytes: usize
 pub j2k_cuda::CudaDecodePoolSnapshot::reuse_holds: usize
+pub j2k_cuda::CudaEncodeFallbackReason::DeviceRouteIncomplete
+pub j2k_cuda::CudaEncodeFallbackReason::DeviceUnavailable
 pub j2k_cuda::CudaEncodeStageTimings::deinterleave_us: u128
 pub j2k_cuda::CudaEncodeStageTimings::dwt_us: u128
 pub j2k_cuda::CudaEncodeStageTimings::ht_encode_us: u128
@@ -2740,7 +2758,9 @@ pub struct j2k_cuda::CudaEncodedJ2k
 pub struct j2k_cuda::CudaEncodedJ2kMetadata
 pub struct j2k_cuda::CudaExternalBatchGroup
 pub struct j2k_cuda::CudaLosslessEncodeResidency
+pub struct j2k_cuda::CudaLosslessEncodeResult
 pub struct j2k_cuda::CudaLosslessEncodeTile<'a>
+pub struct j2k_cuda::CudaLosslessEncoder
 pub struct j2k_cuda::CudaResidentBatchBuffer
 pub struct j2k_cuda::CudaResidentCodestreamBuffer
 pub struct j2k_cuda::CudaSession

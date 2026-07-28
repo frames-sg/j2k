@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use super::{
     architecture_doc_dependency_edges, assert_file_pattern_checks, assert_pattern_checks,
-    cargo_metadata_workspace_edges, const_array_block, format_edge, repo_root, rust_sources,
-    stable_api_snapshot_sources, xtask_sources, FilePatternCheck, PatternCheck,
+    cargo_metadata_workspace_edges, format_edge, release_manifest_entries, repo_root, rust_sources,
+    stable_api_snapshot_sources, FilePatternCheck, PatternCheck,
 };
 
 #[test]
@@ -93,8 +93,10 @@ fn architecture_docs_classify_workspace_and_in_repo_tool_crates() {
 #[test]
 fn tooling_and_validation_crates_stay_unpublished() {
     let root = repo_root();
-    let xtask = xtask_sources(root);
-    let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
+    let publishable = release_manifest_entries(root)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<BTreeSet<_>>();
 
     assert_file_pattern_checks(
         root,
@@ -121,8 +123,8 @@ fn tooling_and_validation_crates_stay_unpublished() {
 
     for package in ["j2k-test-support", "j2k-transcode-test-support", "xtask"] {
         assert!(
-            !publishable.contains(&format!("\"{package}\"")),
-            "xtask publishable package gate must not include {package}"
+            !publishable.contains(package),
+            "release manifest must not include {package}"
         );
     }
 }

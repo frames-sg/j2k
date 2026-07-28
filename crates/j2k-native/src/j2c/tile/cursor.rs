@@ -116,10 +116,14 @@ impl<'data> TilePartCursor<'_, 'data> {
         let PacketLengthExpectation::Length(expected) = expected else {
             return Some(());
         };
-        let packet_start = packet_start?;
         let actual = match self {
-            Self::Merged { data, .. } => data.offset().checked_sub(packet_start)?,
-            Self::Separated { .. } => return Some(()),
+            Self::Merged { data, .. } => data.offset().checked_sub(packet_start?)?,
+            Self::Separated { .. } => {
+                // PLT entries still advance one-for-one when packet headers
+                // live in PPM/PPT, but there is no single interleaved range
+                // from which to validate the combined header-and-body length.
+                return Some(());
+            }
         };
         (actual == expected as usize).then_some(())
     }

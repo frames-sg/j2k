@@ -26,7 +26,7 @@ fn common_candidate_version_rejects_empty_missing_and_mixed_sets() {
         .contains("share one candidate version"));
     assert!(common_candidate_version(&["missing"], &versions)
         .expect_err("missing version")
-        .contains("missing stable package"));
+        .contains("missing published library"));
     assert!(common_candidate_version(&["alpha", "beta"], &versions)
         .expect_err("mixed versions")
         .contains("share one candidate version"));

@@ -8,8 +8,7 @@ use super::{
     PreparedBatchGroup, Surface, SurfaceResidency,
 };
 use super::{
-    BatchColor, BatchDecodeOptions, BatchGroupInfo, BatchLayout, Error, J2kDecodeWarning,
-    PixelFormat,
+    BatchColor, BatchGroupInfo, BatchLayout, Error, J2kDecodeWarning, PixelFormat, PreparedImage,
 };
 
 pub(super) fn group_pixel_format(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
@@ -162,14 +161,12 @@ pub(super) fn native_color_group_storage(
     )
 }
 
-pub(super) fn decode_warnings(
-    options: BatchDecodeOptions,
-    count: usize,
-) -> Vec<Vec<J2kDecodeWarning>> {
-    (0..count)
-        .map(|_| {
-            if options.settings.lenient_tolerance_enabled() {
-                vec![J2kDecodeWarning::LenientDecodeMode]
+pub(super) fn decode_warnings(images: &[PreparedImage]) -> Vec<Vec<J2kDecodeWarning>> {
+    images
+        .iter()
+        .map(|image| {
+            if image.used_lenient_metadata_recovery() {
+                vec![J2kDecodeWarning::LenientMetadataRecovery]
             } else {
                 Vec::new()
             }

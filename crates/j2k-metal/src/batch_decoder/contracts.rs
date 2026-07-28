@@ -2,13 +2,13 @@
 
 //! Shared Metal batch result and metadata contracts.
 
-#[cfg(target_os = "macos")]
-use super::{BatchDecodeOptions, Buffer, ResidentMetalImage};
 use super::{
     BatchGroupInfo, Error, IndexedBatchError, J2kDecodeWarning, PreparedBatchGroup, Rect, Surface,
 };
 #[cfg(any(test, target_os = "macos"))]
 use super::{BatchLayout, PixelFormat};
+#[cfg(target_os = "macos")]
+use super::{Buffer, ResidentMetalImage};
 
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn validate_group_contract(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
@@ -33,7 +33,7 @@ pub struct MetalBatchGroupCompletion {
 
 impl MetalBatchGroupCompletion {
     #[cfg(target_os = "macos")]
-    pub(super) fn from_prepared(group: &PreparedBatchGroup, options: BatchDecodeOptions) -> Self {
+    pub(super) fn from_prepared(group: &PreparedBatchGroup) -> Self {
         let decoded_rects = group
             .images()
             .iter()
@@ -42,9 +42,9 @@ impl MetalBatchGroupCompletion {
         let warnings = group
             .images()
             .iter()
-            .map(|_| {
-                if options.settings.lenient_tolerance_enabled() {
-                    vec![J2kDecodeWarning::LenientDecodeMode]
+            .map(|image| {
+                if image.used_lenient_metadata_recovery() {
+                    vec![J2kDecodeWarning::LenientMetadataRecovery]
                 } else {
                     Vec::new()
                 }

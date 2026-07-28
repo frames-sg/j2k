@@ -2,7 +2,16 @@
 
 This document records current workspace boundaries. It is not a roadmap.
 
-The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. Native decode settings retain a lenient default for compatibility, but `DecodeSettings::strict()` is the fail-closed constructor and public `j2k` decode outcomes surface `J2kDecodeWarning::LenientDecodeMode` when lenient tolerance is enabled. The living support boundary is maintained in [`docs/public-support.md`](public-support.md).
+The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`:
+CPU remains the portable baseline, and explicit CUDA or Metal
+requests are strict. Decode settings are strict by default. Explicit lenient
+settings are retained per image, never on shared `J2kContext`, and are limited
+to the JP2/JPH metadata recoveries documented by `DecodeSettings::lenient`.
+Codestream, bounds, overflow, allocation, and resource-limit validation remain
+strict in both modes. Decode outcomes surface
+`J2kDecodeWarning::LenientMetadataRecovery` only when a recovery actually
+occurred. The living support boundary is maintained in
+[`docs/public-support.md`](public-support.md).
 
 The codec support boundary is JPEG 2000 Part 1 codestreams, JP2 still-image
 files, HTJ2K Part 15 codestreams, and JPH still-image files. JPX / JPEG 2000

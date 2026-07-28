@@ -187,7 +187,7 @@ impl MetalBatchDecoder {
         Ok(SubmittedMetalGroupDecodeInto {
             submission,
             destination,
-            completion: MetalBatchGroupCompletion::from_prepared(group, group.options()),
+            completion: MetalBatchGroupCompletion::from_prepared(group),
         })
     }
 }

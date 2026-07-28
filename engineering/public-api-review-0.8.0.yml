@@ -1,15 +1,40 @@
-version: 2
+version: 3
 baseline_tag: v0.7.5
 baseline_version: 0.7.5
-candidate_version: "0.7.6"
+candidate_version: "0.8.0"
+break_ledger:
+  - id: strict-decode-default
+    kind: behavior
+    packages:
+      - j2k
+      - j2k-native
+    removed_items: []
+    summary: "Default decode settings and the one-shot view path are strict, and explicit leniency is limited to the documented JP2/JPH metadata recoveries rather than relaxing raw codestream or entropy validation."
+    migration: "Use DecodeSettings::lenient() per job, including through J2kView::parse_with_settings or J2kDecoder::new_with_settings, only for the documented JP2/JPH metadata recoveries; malformed raw codestream or entropy data must now be rejected or repaired."
+  - id: recovery-warning-semantics
+    kind: behavior
+    packages:
+      - j2k
+    removed_items: []
+    summary: "Lenient decoding now emits a warning only when an explicitly permitted metadata recovery was actually used."
+    migration: "Treat an empty warning list as no recovery having occurred; selecting DecodeSettings::lenient() by itself no longer produces a warning."
+  - id: rename-lenient-recovery-warning
+    kind: source
+    packages:
+      - j2k
+    removed_items:
+      - package: j2k
+        item: "pub j2k::J2kDecodeWarning::LenientDecodeMode"
+    summary: "The decode warning variant now describes actual lenient metadata recovery rather than configuration selection."
+    migration: "Replace matches on J2kDecodeWarning::LenientDecodeMode with J2kDecodeWarning::LenientMetadataRecovery and handle the warning only when recovery occurred."
 reviews:
   j2k:
-    removed_fingerprint: "none"
-    added_fingerprint: "none"
-    hidden_count: 103
-    hidden_fingerprint: "fnv1a64:2439f331dd8532b9"
-    rationale: "Reviewed the ordinary j2k inventory against v0.7.5; no public API item was added, removed, or changed."
-    hidden_rationale: "Reviewed the complete hidden j2k inventory, including adapter-view borrows, retained classic and HT plans, and native pixel-format validation; it is unchanged from v0.7.5."
+    removed_fingerprint: "fnv1a64:66f96e29b35dc974"
+    added_fingerprint: "fnv1a64:87ff4d4ed759e25b"
+    hidden_count: 104
+    hidden_fingerprint: "fnv1a64:4c828a7f3b5307a4"
+    rationale: "Reviewed the warning-variant rename and the additive J2kView and J2kDecoder settings constructors against v0.7.5. The source break is confined to the exact ledger item, while the new constructors make explicit lenient recovery available without mutable shared context policy."
+    hidden_rationale: "Reviewed the complete hidden j2k inventory, including the new prepared-image recovery-use query, adapter-view borrows, retained classic and HT plans, and native pixel-format validation."
   j2k-core:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -60,10 +85,10 @@ reviews:
     hidden_rationale: "Reviewed the complete hidden JPEG CUDA inventory, including session-bound execution, allocation accounting, and typed runtime failures; it is unchanged from v0.7.5."
   j2k-cuda:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:a160bbc72d2879f1"
     hidden_count: 181
     hidden_fingerprint: "fnv1a64:6bb25d5241c4e86a"
-    rationale: "Reviewed the ordinary j2k-cuda inventory against v0.7.5; no public API item was added, removed, or changed."
+    rationale: "Reviewed all eighteen additive j2k-cuda items. The concrete CudaLosslessEncoder accepts per-job backend preference, exposes a separate strict-CUDA method, returns an opaque result that distinguishes requested and actual execution plus fallback reason, resets cached accelerator state after failure, and requires exclusive mutable access while remaining movable between threads."
     hidden_rationale: "Reviewed the complete hidden J2K CUDA inventory, including completion uncertainty, session usability, device identity, event ordering, pool diagnostics, and guarded interop; it is unchanged from v0.7.5."
   j2k-transcode:
     removed_fingerprint: "none"
@@ -96,10 +121,10 @@ reviews:
   j2k-native:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 661
-    hidden_fingerprint: "fnv1a64:14c8dc9c142b3008"
+    hidden_count: 662
+    hidden_fingerprint: "fnv1a64:c6883b9e9225ad87"
     rationale: "Reviewed the ordinary j2k-native inventory against v0.7.5; no public API item was added, removed, or changed."
-    hidden_rationale: "Reviewed the complete hidden native inventory, including retained plans, payload descriptors, staged entropy and IDWT execution, decoded-plane borrows, and allocation metrics; it is unchanged from v0.7.5."
+    hidden_rationale: "Reviewed the complete hidden native inventory, including the new image recovery-use query, retained plans, payload descriptors, staged entropy and IDWT execution, decoded-plane borrows, and allocation metrics."
   j2k-types:
     removed_fingerprint: "none"
     added_fingerprint: "none"

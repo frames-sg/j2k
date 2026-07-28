@@ -157,7 +157,7 @@ fn assert_semver_fails_at_expected_boundary(output: &Output) {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected_error = if cfg!(target_os = "macos") {
-        "committed stable API snapshots are stale"
+        "committed published-library API snapshots are stale"
     } else {
         "semver/API review must run on macOS so Metal public APIs are included"
     };

@@ -92,8 +92,12 @@ impl MetalEncodedJ2k {
 
     /// Construct an encoded codestream from a caller-owned Metal allocation.
     ///
-    /// `codestream_range` identifies the valid bytes and `capacity` starts at
-    /// the same offset. Both ranges are validated against the allocation.
+    /// `codestream_range` is a half-open byte range
+    /// `start..end` indexing `codestream_buffer`; it identifies exactly the valid
+    /// codestream bytes. `capacity` also begins at `start`. Construction checks
+    /// `start <= end`, `end - start <= capacity`, that `start + capacity` does
+    /// not overflow, and that the complete capacity range is within the Metal
+    /// allocation.
     ///
     /// # Safety
     ///

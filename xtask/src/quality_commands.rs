@@ -13,7 +13,7 @@ use crate::command_support::{
     run_nightly_cargo_in_dir_owned, run_program, rust_sources,
 };
 use crate::panic_surface::panic_surface;
-use crate::release_commands::STABLE_DOC_LIBRARY_PACKAGES;
+use crate::release_commands::published_library_packages;
 
 const NO_STD_TARGET: &str = "aarch64-unknown-none";
 const NO_STD_CORE_PORTABLE_TARGET: &str = "wasm32-unknown-unknown";
@@ -197,9 +197,9 @@ pub(super) fn doc() -> Result<(), String> {
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
 
-    for package in STABLE_DOC_LIBRARY_PACKAGES {
+    for package in published_library_packages()? {
         run_cargo_with_env(
-            &["doc", "-p", package, "--lib", "--no-deps"],
+            &["doc", "-p", package.as_str(), "--lib", "--no-deps"],
             &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
         )?;
     }

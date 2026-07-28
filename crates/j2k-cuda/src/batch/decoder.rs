@@ -278,7 +278,7 @@ impl CudaBatchDecoder {
                 .iter()
                 .map(|image| image.plan().output_rect())
                 .collect(),
-            warnings: decode_warnings(group.options(), group.images().len()),
+            warnings: decode_warnings(group.images()),
             ranges: pending.ranges().to_vec(),
         };
         Ok(SubmittedCudaExternalBatch {

@@ -479,41 +479,57 @@ pub(crate) fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
 }
 
 pub(crate) fn publishable_crate_dirs(root: &Path) -> Vec<PathBuf> {
-    let xtask = xtask_sources(root);
-    const_array_values(&xtask, "PUBLISHABLE_PACKAGES")
+    release_manifest_entries(root)
         .into_iter()
-        .map(|package| {
-            let dir = root.join("crates").join(&package);
+        .map(|entry| {
+            let dir = root.join("crates").join(&entry.name);
             assert!(
                 dir.exists(),
-                "PUBLISHABLE_PACKAGES entry `{package}` must resolve to an existing crate dir"
+                "release manifest entry `{}` must resolve to an existing crate dir",
+                entry.name
             );
             dir
         })
         .collect()
 }
 
-pub(crate) fn const_array_values(source: &str, name: &str) -> Vec<String> {
-    let values = const_array_block(source, name)
-        .lines()
-        .filter_map(|line| {
-            let value = line.trim().trim_matches([',', '"']);
-            if value.is_empty()
-                || value.starts_with("const ")
-                || value.starts_with(']')
-                || value.starts_with('&')
-            {
-                None
-            } else {
-                Some(value.to_string())
-            }
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ReleaseManifestEntry {
+    pub(crate) name: String,
+    pub(crate) api_contract: String,
+}
+
+pub(crate) fn release_manifest_entries(root: &Path) -> Vec<ReleaseManifestEntry> {
+    let source =
+        fs::read_to_string(root.join("release-crates.json")).expect("read release manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&source).expect("parse release manifest");
+    assert_eq!(manifest["schema"], 2, "release manifest schema");
+    let crates = manifest["crates"]
+        .as_array()
+        .expect("release manifest crates array");
+    assert!(!crates.is_empty(), "release manifest must not be empty");
+    crates
+        .iter()
+        .map(|entry| {
+            let name = entry["name"]
+                .as_str()
+                .expect("release manifest crate name")
+                .to_string();
+            let api_contract = entry["api_contract"]
+                .as_str()
+                .expect("release manifest api_contract")
+                .to_string();
+            assert!(
+                matches!(
+                    api_contract.as_str(),
+                    "stable" | "experimental" | "implementation" | "binary"
+                ),
+                "unsupported API contract for {name}: {api_contract}"
+            );
+            ReleaseManifestEntry { name, api_contract }
         })
-        .collect::<Vec<_>>();
-    assert!(
-        !values.is_empty(),
-        "const array {name} must contain at least one parsed value"
-    );
-    values
+        .collect()
 }
 
 pub(crate) fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {

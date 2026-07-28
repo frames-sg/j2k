@@ -416,10 +416,12 @@ fn deinterleave_reference_has_only_checked_public_entrypoint() {
 }
 
 #[test]
-fn decode_strictness_policy_is_explicit_and_warns_on_lenient_default() {
+fn decode_strictness_policy_is_strict_by_default_and_warns_only_on_recovery() {
     let root = repo_root();
     let native = fs::read_to_string(root.join("crates/j2k-native/src/image.rs"))
         .expect("read native image module");
+    let facade_settings = fs::read_to_string(root.join("crates/j2k/src/decode/settings.rs"))
+        .expect("read facade decode settings");
     let facade_decode =
         fs::read_to_string(root.join("crates/j2k/src/decode.rs")).expect("read facade decode");
     let facade_view = read_source_files(
@@ -428,7 +430,12 @@ fn decode_strictness_policy_is_explicit_and_warns_on_lenient_default() {
     );
     let facade_batch = read_source_files(
         root,
-        &["crates/j2k/src/batch.rs", "crates/j2k/src/batch/direct.rs"],
+        &[
+            "crates/j2k/src/batch.rs",
+            "crates/j2k/src/batch/direct.rs",
+            "crates/j2k/src/owned_batch/prepared.rs",
+            "crates/j2k/src/owned_batch/cpu_execute.rs",
+        ],
     );
     let crate_readme =
         fs::read_to_string(root.join("crates/j2k/README.md")).expect("read j2k README");
@@ -440,29 +447,47 @@ fn decode_strictness_policy_is_explicit_and_warns_on_lenient_default() {
             "pub const fn lenient() -> Self",
             "pub const fn strict() -> Self",
             "pub const fn lenient_tolerance_enabled",
-            "Self::lenient()",
+            "Self::strict()",
+            "used_lenient_metadata_recovery",
+            "Raw codestream validation and entropy decoding remain strict",
         ]),
-        PatternCheck::new("j2k facade decode warnings", &facade_decode).required(&[
-            "pub enum J2kDecodeWarning",
-            "LenientDecodeMode",
-            "decode_warnings_for_settings",
-            "DecodeOutcome<J2kDecodeWarning>",
+        PatternCheck::new("facade DecodeSettings strict default", &facade_settings).required(&[
+            "pub const fn lenient() -> Self",
+            "pub const fn strict() -> Self",
+            "Self::strict()",
+            "resource-safety",
         ]),
+        PatternCheck::new("j2k facade decode warnings", &facade_decode)
+            .required(&[
+                "pub enum J2kDecodeWarning",
+                "LenientMetadataRecovery",
+                "decode_warnings_for_recovery",
+                "used_lenient_metadata_recovery",
+                "DecodeOutcome<J2kDecodeWarning>",
+            ])
+            .forbidden(&["LenientDecodeMode", "decode_warnings_for_settings"]),
         PatternCheck::new("j2k facade view warning propagation", &facade_view).required(&[
             "type Warning = J2kDecodeWarning",
-            "decode_warnings_for_settings(DecodeSettings::default())",
+            "pub fn parse_with_settings(",
+            "pub fn new_with_settings(",
+            "decode_warnings_for_image(image)",
         ]),
         PatternCheck::new("j2k facade batch warning propagation", &facade_batch).required(&[
             "DecodeOutcome<J2kDecodeWarning>",
-            "decode_warnings_for_settings(DecodeSettings::default())",
+            "used_lenient_metadata_recovery",
+            "decode_warnings_for_recovery(",
         ]),
         PatternCheck::new("j2k README decode strictness policy", &crate_readme).required(&[
-            "DecodeSettings::strict()",
-            "J2kDecodeWarning::LenientDecodeMode",
+            "are strict",
+            "Selecting lenient mode is configuration, not a warning",
+            "J2kDecodeWarning::LenientMetadataRecovery",
+            "resource-safety checks remain strict",
         ]),
         PatternCheck::new("architecture decode strictness policy", &architecture).required(&[
-            "DecodeSettings::strict()",
-            "J2kDecodeWarning::LenientDecodeMode",
+            "Decode settings are strict by default",
+            "never on shared `J2kContext`",
+            "J2kDecodeWarning::LenientMetadataRecovery",
+            "only when a recovery actually",
         ]),
     ]);
 }

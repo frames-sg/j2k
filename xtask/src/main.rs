@@ -54,7 +54,7 @@ use quality_commands::{
     test, verify_unsafe_audit,
 };
 use release_commands::{
-    j2k_ml_package_smoke, package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES,
+    j2k_ml_package_smoke, package, published_library_packages, release_cpu, release_integrity,
 };
 use stable_api::CARGO_PUBLIC_API_VERSION;
 
@@ -107,11 +107,11 @@ fn run() -> Result<(), String> {
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
         "stable-api" => stable_api(env::args().skip(2)),
-        "semver" => semver::semver(
-            env::args().skip(2),
-            STABLE_SEMVER_PACKAGES,
-            CARGO_PUBLIC_API_VERSION,
-        ),
+        "semver" => {
+            let packages = published_library_packages()?;
+            let package_refs = packages.iter().map(String::as_str).collect::<Vec<_>>();
+            semver::semver(env::args().skip(2), &package_refs, CARGO_PUBLIC_API_VERSION)
+        }
         "miri" => miri(),
         "machete" => machete(),
         "clone-audit" => clone_audit(env::args().skip(2)),

@@ -6,6 +6,16 @@ use crate::repo_lint_support::repo_root;
 
 const TEST_MODULES: &[(&str, usize, &[&str])] = &[
     (
+        "facade.rs",
+        125,
+        &[
+            "cuda_encoder_auto_reports_unavailable_fallback_and_reuses_after_success",
+            "cuda_encoder_cpu_only_reports_no_fallback",
+            "cuda_encoder_reuses_after_strict_route_failure",
+            "cuda_lossless_encoder_is_send",
+        ],
+    ),
+    (
         "htj2k.rs",
         300,
         &[
@@ -105,6 +115,7 @@ fn cuda_encode_tests_use_focused_real_modules_with_stable_inventory() {
     assert!(!encode.contains("#[cfg(test)]\nmod tests {") && !encode.contains("#[test]"));
     assert!(shell.lines().count() < 125, "CUDA encode test shell regrew");
     for module in [
+        "mod facade;",
         "mod htj2k;",
         "mod packetization;",
         "mod resident;",
@@ -148,7 +159,7 @@ fn cuda_encode_tests_use_focused_real_modules_with_stable_inventory() {
         test_count += expected_tests.len();
     }
     assert_eq!(
-        test_count, 43,
+        test_count, 47,
         "CUDA encode test inventory must remain exact"
     );
 }

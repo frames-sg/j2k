@@ -2,10 +2,10 @@
 
 use std::collections::BTreeSet;
 
+use super::release_manifest::{crates_io_publishable, release_manifest_contract};
 use super::{
-    has_docs_rs_metadata, has_lib_target, package_name, publish_false, release_cpu,
-    release_integrity, validate_package_gate_partition, validate_publish_script_source,
-    validate_publish_workflow_source, validate_release_docs_source,
+    has_docs_rs_metadata, has_lib_target, package_name, release_cpu, release_integrity,
+    validate_publish_script_source, validate_publish_workflow_source, validate_release_docs_source,
     validate_unpublished_dependencies, workspace_package_records,
 };
 
@@ -33,12 +33,12 @@ fn release_metadata_shape_helpers_fail_closed() {
         "metadata": {"docs": {"rs": {"all-features": true, "targets": []}}},
     });
     assert_eq!(package_name(&valid), Ok("j2k-core"));
-    assert!(publish_false(&valid));
+    assert!(!crates_io_publishable(&valid, "j2k-core").expect("valid publish field"));
     assert!(has_lib_target(&valid));
     assert!(has_docs_rs_metadata(&valid));
 
     assert!(package_name(&serde_json::json!({})).is_err());
-    assert!(!publish_false(&serde_json::json!({"publish": false})));
+    assert!(crates_io_publishable(&serde_json::json!({"publish": false}), "malformed").is_err());
     assert!(!has_lib_target(
         &serde_json::json!({"targets": [{"kind": "lib"}]})
     ));
@@ -146,9 +146,8 @@ fn unpublished_dependency_policy_distinguishes_publishable_dev_and_runtime_edges
 }
 
 #[test]
-fn checked_in_publish_workflow_script_docs_and_partitions_agree() {
+fn checked_in_publish_workflow_script_and_docs_agree_with_the_manifest() {
     let mut errors = Vec::new();
-    validate_package_gate_partition(&mut errors);
     validate_publish_workflow_source(
         include_str!("../../../.github/workflows/publish.yml"),
         &mut errors,
@@ -158,7 +157,13 @@ fn checked_in_publish_workflow_script_docs_and_partitions_agree() {
         include_str!("../../../scripts/publish-crate.sh"),
         &mut errors,
     );
-    validate_release_docs_source(include_str!("../../../docs/release.md"), &mut errors);
+    let manifest = release_manifest_contract().expect("checked-in release manifest");
+    let packages = manifest.ordered_crates().collect::<Vec<_>>();
+    validate_release_docs_source(
+        include_str!("../../../docs/release.md"),
+        &packages,
+        &mut errors,
+    );
 
     assert!(errors.is_empty(), "release contract drift: {errors:#?}");
 }
