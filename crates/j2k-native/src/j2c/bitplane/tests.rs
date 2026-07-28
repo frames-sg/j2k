@@ -417,6 +417,65 @@ fn scan_unit_masks_track_significance_and_current_bitplane_zero_coding() {
 }
 
 #[test]
+fn classic_selective_bypass_round_trips_padded_rgb8_cb_block() {
+    let pixels = (0..7 * 5 * 3)
+        .map(|index| u8::try_from((index * 41) & 0xff).expect("masked pixel fits u8"))
+        .collect::<Vec<_>>();
+    let mut coefficients = vec![0i32; 8 * 8];
+    for y in 0..5usize {
+        for x in 0..7usize {
+            let src = (y * 7 + x) * 3;
+            coefficients[y * 8 + x] = i32::from(pixels[src + 2]) - i32::from(pixels[src + 1]);
+        }
+    }
+    let style = CodeBlockStyle {
+        selective_arithmetic_coding_bypass: true,
+        ..CodeBlockStyle::default()
+    };
+    let encoded = bitplane_encode::encode_code_block_segments_with_style(
+        &coefficients,
+        8,
+        8,
+        SubBandType::LowLow,
+        9,
+        style,
+    );
+    let segments = encoded
+        .segments
+        .iter()
+        .map(|segment| J2kCodeBlockSegment {
+            data_offset: segment.data_offset,
+            data_length: segment.data_length,
+            start_coding_pass: segment.start_coding_pass,
+            end_coding_pass: segment.end_coding_pass,
+            use_arithmetic: segment.use_arithmetic,
+        })
+        .collect::<Vec<_>>();
+    let mut ctx = BitPlaneDecodeContext::default();
+
+    decode_code_block_segments_validated(
+        &encoded.data,
+        &segments,
+        8,
+        8,
+        encoded.num_zero_bitplanes,
+        encoded.num_coding_passes,
+        9,
+        SubBandType::LowLow,
+        &style,
+        true,
+        &mut ctx,
+    )
+    .expect("decode selective-bypass Cb code block");
+
+    let decoded = ctx
+        .coefficient_rows()
+        .flat_map(|row| row.iter().map(Coefficient::get))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, coefficients);
+}
+
+#[test]
 fn cleanup_candidate_mask_excludes_significant_and_zero_coded_coefficients() {
     let mut ctx = BitPlaneDecodeContext::default();
     let style = CodeBlockStyle::default();
