@@ -118,9 +118,8 @@ fn assert_inventory_contracts(
         PatternCheck::new("live semver inventory ratchet", semver)
             .required(&[
                 "SEMVER_TOOLCHAIN: &str = \"1.96\"",
-                "SEMVER_BASELINE_VERSION: &str = \"0.7.3\"",
-                "SEMVER_BASELINE_TAG: &str = \"v0.7.3\"",
-                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = \"0.7.5\"",
+                "SEMVER_BASELINE_VERSION: &str = \"0.7.5\"",
+                "SEMVER_BASELINE_TAG: &str = \"v0.7.5\"",
                 "SEMVER_BASELINE_TAG}:docs/stable-api-1.0.public-api.txt",
                 "collect_package_apis(stable_packages)?",
                 "SnapshotKind::Ordinary",
@@ -132,7 +131,10 @@ fn assert_inventory_contracts(
                 "[\"run\", SEMVER_TOOLCHAIN, \"cargo\"]",
                 "validate_snapshot_scope(",
             ])
-            .forbidden(&["unwrap_or_else(|_| \"1.96\".to_string())"]),
+            .forbidden(&[
+                "unwrap_or_else(|_| \"1.96\".to_string())",
+                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION",
+            ]),
         PatternCheck::new("semver review schema", semver_review).required(&[
             "API review config version must be 2",
             "hidden_count",
@@ -148,9 +150,8 @@ fn assert_inventory_contracts(
             "String::from_utf8(output.stdout)",
         ]),
         PatternCheck::new("stable API policy", policy).required(&[
-            "published 0.7.3 artifact recorded both ordinary and hidden-enabled passes",
-            "explicit, maintainer-approved source-compatibility exception",
-            "exception applies only to `0.7.5`",
+            "published 0.7.5 artifact recorded both ordinary and hidden-enabled passes",
+            "0.7.6 is checked as an ordinary compatible patch candidate",
             "complete hidden-inventory count and fingerprint",
             "Every semver invocation collects both live passes",
             "Nonempty hidden inventories also require a package-specific hidden rationale",
@@ -168,6 +169,8 @@ fn assert_stable_package_partition(xtask: &str, semver: &str, policy: &str) {
     let new = const_string_array_values(semver, "SEMVER_NEW_PACKAGES");
     assert!(!stable.is_empty());
     assert!(!baseline.is_empty());
+    assert!(new.is_empty());
+    assert!(baseline.contains("j2k-ml"));
     assert!(baseline.is_disjoint(&new));
     assert_eq!(
         baseline.union(&new).cloned().collect::<BTreeSet<_>>(),

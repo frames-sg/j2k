@@ -6,7 +6,9 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::consumer::{extract_packaged_crate, j2k_ml_consumer_checks, j2k_ml_consumer_manifest};
+use super::consumer::{
+    extract_packaged_crate, j2k_ml_consumer_checks, j2k_ml_consumer_manifest, CONSUMER_SOURCE,
+};
 use super::{package_gate_plan, PUBLISHABLE_PACKAGES, REGISTRY_INDEPENDENT_PACKAGES};
 
 #[cfg(unix)]
@@ -186,6 +188,21 @@ fn j2k_ml_consumer_matrix_matches_the_host_accelerator() {
         ["cpu", "metal", "cpu,metal"]
     );
     assert_eq!(j2k_ml_consumer_checks("windows"), ["cpu"]);
+}
+
+#[test]
+fn packaged_consumer_compiles_new_and_0_7_compatibility_decoder_names() {
+    for decoder in [
+        "CudaUploadBurnDecoder",
+        "MetalUploadBurnDecoder",
+        "CudaBurnDecoder",
+        "MetalBurnDecoder",
+    ] {
+        assert!(
+            CONSUMER_SOURCE.contains(decoder),
+            "packaged consumer must compile `{decoder}`"
+        );
+    }
 }
 
 #[test]

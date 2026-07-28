@@ -25,12 +25,11 @@ use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
 const SEMVER_TOOLCHAIN: &str = "1.96";
-const SEMVER_BASELINE_VERSION: &str = "0.7.3";
-const SEMVER_BASELINE_TAG: &str = "v0.7.3";
-const SEMVER_BASELINE_COMMIT: &str = "494eebc3ef20895d331da86221b1d8c4bd4cabf8";
-const SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = "0.7.5";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.5.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.5.yml";
+const SEMVER_BASELINE_VERSION: &str = "0.7.5";
+const SEMVER_BASELINE_TAG: &str = "v0.7.5";
+const SEMVER_BASELINE_COMMIT: &str = "a89abb6e7eba469c44b3735740712c2a85be0499";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.6.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.6.yml";
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
@@ -50,9 +49,10 @@ const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k-types",
     "j2k-cuda-runtime",
     "j2k-profile",
+    "j2k-ml",
 ];
 
-const SEMVER_NEW_PACKAGES: &[&str] = &["j2k-ml"];
+const SEMVER_NEW_PACKAGES: &[&str] = &[];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Version {
@@ -187,7 +187,7 @@ pub(crate) fn semver(
     let baseline_snapshot = baseline_api_snapshot(cargo_public_api_version)?;
     let baseline_apis = parse_api_snapshot(&baseline_snapshot)?;
     validate_snapshot_scope(
-        "published 0.7.3 ordinary snapshot",
+        "published 0.7.5 ordinary snapshot",
         SEMVER_BASELINE_PACKAGES,
         &baseline_apis,
     )?;
@@ -713,13 +713,6 @@ fn render_report(
     )
     .unwrap();
     writeln!(&mut out, "- Candidate version: `{candidate_version}`").unwrap();
-    if candidate_version == SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION {
-        writeln!(
-            &mut out,
-            "- Compatibility exception: `{candidate_version}` is an explicitly reviewed source-incompatible patch candidate; compatibility checks use `major` while package versions remain `{candidate_version}`."
-        )
-        .unwrap();
-    }
     writeln!(
         &mut out,
         "- Tool pins: Rust `{SEMVER_TOOLCHAIN}`, `cargo-semver-checks {CARGO_SEMVER_CHECKS_VERSION}`, `cargo-public-api {cargo_public_api_version}`, rustdoc `{PUBLIC_API_TOOLCHAIN}`, target `{PUBLIC_API_TARGET}`"

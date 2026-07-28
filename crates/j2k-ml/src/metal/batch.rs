@@ -16,15 +16,15 @@ use crate::{BurnBatchDecode, BurnDecodeError};
 /// host memory and uploaded with Burn's ordinary tensor API.
 #[cfg(target_os = "macos")]
 #[must_use = "submitted Metal upload batches must be waited or dropped"]
-pub struct SubmittedMetalUploadBurnBatch {
+pub struct SubmittedMetalBurnBatch {
     pending: SubmittedMetalPreparedBatch,
     device: WgpuDevice,
 }
 
 #[cfg(target_os = "macos")]
-impl core::fmt::Debug for SubmittedMetalUploadBurnBatch {
+impl core::fmt::Debug for SubmittedMetalBurnBatch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SubmittedMetalUploadBurnBatch")
+        f.debug_struct("SubmittedMetalBurnBatch")
             .field("pending", &self.pending)
             .field("device", &self.device)
             .finish()
@@ -32,7 +32,7 @@ impl core::fmt::Debug for SubmittedMetalUploadBurnBatch {
 }
 
 #[cfg(target_os = "macos")]
-impl SubmittedMetalUploadBurnBatch {
+impl SubmittedMetalBurnBatch {
     /// Number of successfully submitted homogeneous codec groups.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -55,12 +55,12 @@ impl SubmittedMetalUploadBurnBatch {
 /// Uninhabited pending Metal upload returned only for cross-platform API compatibility.
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
-pub struct SubmittedMetalUploadBurnBatch {
+pub struct SubmittedMetalBurnBatch {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
-impl SubmittedMetalUploadBurnBatch {
+impl SubmittedMetalBurnBatch {
     /// No Metal groups can be submitted on this host.
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -84,14 +84,14 @@ impl SubmittedMetalUploadBurnBatch {
 /// JPEG 2000 decoding executes on Metal. Completed codec-owned device output is
 /// copied to host staging and then uploaded through [`burn_core::tensor::Tensor::from_data`].
 /// This type does not provide direct-destination or zero-copy behavior.
-pub struct MetalUploadBurnDecoder {
+pub struct MetalBurnDecoder {
     codec: CodecDecoder,
     device: WgpuDevice,
 }
 
-impl core::fmt::Debug for MetalUploadBurnDecoder {
+impl core::fmt::Debug for MetalBurnDecoder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MetalUploadBurnDecoder")
+        f.debug_struct("MetalBurnDecoder")
             .field("codec", &self.codec)
             .field("device", &self.device)
             .field("options", &self.codec.options())
@@ -99,7 +99,7 @@ impl core::fmt::Debug for MetalUploadBurnDecoder {
     }
 }
 
-impl MetalUploadBurnDecoder {
+impl MetalBurnDecoder {
     /// Create a Metal codec session and target Burn's default wgpu device.
     #[cfg(target_os = "macos")]
     pub fn system_default(options: BatchDecodeOptions) -> Result<Self, BurnDecodeError> {
@@ -165,13 +165,13 @@ impl MetalUploadBurnDecoder {
         self.submit_prepared(prepared)?.wait()
     }
 
-    /// Submit Metal codec work. The later [`SubmittedMetalUploadBurnBatch::wait`]
+    /// Submit Metal codec work. The later [`SubmittedMetalBurnBatch::wait`]
     /// performs a synchronous device-to-host copy and ordinary Burn upload.
     #[cfg(target_os = "macos")]
     pub fn submit(
         &mut self,
         inputs: Vec<EncodedImage>,
-    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
         let prepared = self.prepare(inputs)?;
         self.submit_prepared(&prepared)
     }
@@ -181,7 +181,7 @@ impl MetalUploadBurnDecoder {
     pub fn submit(
         &mut self,
         _inputs: Vec<EncodedImage>,
-    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
         Err(unavailable())
     }
 
@@ -190,9 +190,9 @@ impl MetalUploadBurnDecoder {
     pub fn submit_prepared(
         &mut self,
         prepared: &PreparedBatch,
-    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
         ensure_dtypes::<Wgpu>(prepared, &self.device)?;
-        Ok(SubmittedMetalUploadBurnBatch {
+        Ok(SubmittedMetalBurnBatch {
             pending: self.codec.submit_prepared(prepared)?,
             device: self.device.clone(),
         })
@@ -203,7 +203,7 @@ impl MetalUploadBurnDecoder {
     pub fn submit_prepared(
         &mut self,
         _prepared: &PreparedBatch,
-    ) -> Result<SubmittedMetalUploadBurnBatch, BurnDecodeError> {
+    ) -> Result<SubmittedMetalBurnBatch, BurnDecodeError> {
         Err(unavailable())
     }
 }

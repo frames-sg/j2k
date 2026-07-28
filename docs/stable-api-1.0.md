@@ -25,7 +25,7 @@ This task must run on macOS with `cargo-public-api` `0.52.0` installed
 silently change with the runner host or floating nightly channel.
 
 The ordinary snapshot uses `RUSTDOCFLAGS=-D warnings` so its comparison with
-the published 0.7.3 snapshot keeps the same scope. A second pass adds
+the published 0.7.5 snapshot keeps the same scope. A second pass adds
 `--document-hidden-items` and records only the extra rustdoc-hidden items in
 the implementation snapshot. Rustdoc can rewrite equivalent re-export paths
 when hidden modules become visible, so the generator forms a conservative full
@@ -34,19 +34,19 @@ sorted difference from the ordinary pass. This guarantees that the combined
 inventory remains a superset of the ordinary contract while retaining rewritten
 path variants for review rather than silently dropping reachable API. An empty
 full cargo-public-api pass fails the gate; an empty per-package hidden-only
-difference is recorded truthfully. The 0.7.3 baseline comparison continues to
+difference is recorded truthfully. The 0.7.5 baseline comparison continues to
 use only the ordinary snapshot. Those
 adapters are implementation-facing, but they are still reachable Rust API and
 therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
 compatibility escape hatch.
 
-The published 0.7.3 artifact recorded both ordinary and hidden-enabled passes
-with the same generator, rustdoc, and target pins. The generated 0.7.5 semver
-report compares the ordinary candidate inventory with 0.7.3 and also records
+The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
+with the same generator, rustdoc, and target pins. The generated 0.7.6 semver
+report compares the ordinary candidate inventory with 0.7.5 and also records
 each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed
 companions, and requires exact ordinary added/removed fingerprints plus the
-hidden count/fingerprint in `engineering/public-api-review-0.7.5.yml`.
+hidden count/fingerprint in `engineering/public-api-review-0.7.6.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 Consequently, additions and removals remain blocked until the snapshots,
 report, and review evidence are updated together and their diffs are reviewed.
@@ -62,7 +62,7 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The staged comparison belongs in the generated
-[`0.7.5` reviewed API report](../engineering/reviewed-public-api-diff-0.7.5.md).
+[`0.7.6` reviewed API report](../engineering/reviewed-public-api-diff-0.7.6.md).
 It remains candidate evidence until source freeze and the exact-SHA local,
 hosted, Metal, and CUDA gates complete; it does not claim a release.
 
@@ -82,17 +82,19 @@ source compatibility with `0.6.x`.
 - Adapter and transcode crates are semver-gated published libraries, but their
   supported runtime shapes remain limited by feature gates, hardware
   availability, and `docs/public-support.md`.
-- `j2k-codec-math` is included in the published `0.7.3` semver baseline.
+- `j2k-codec-math` and `j2k-ml` are included in the published `0.7.5` semver
+  baseline.
 - Unpublished tooling: test support, comparators, and xtask automation helpers.
 
 Patch releases normally preserve the active `0.x` public contract. Version
 `0.7.5` is an explicit, maintainer-approved source-compatibility exception for
 removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
-exception applies only to `0.7.5`; it does not silently relax later patch
-releases. Before `1.0`, a minor release may intentionally change the contract
-under the same evidence requirements. Starting with `1.0`, stable crates follow
-the normal compatibility guarantees for the declared major version.
+exception applied only to `0.7.5`; 0.7.6 is checked as an ordinary compatible patch candidate
+against the published `v0.7.5` package and source baseline.
+Before `1.0`, a minor release may intentionally change the contract under the
+same evidence requirements. Starting with `1.0`, stable crates follow the
+normal compatibility guarantees for the declared major version.
 
 ## CLI contract
 

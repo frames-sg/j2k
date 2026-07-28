@@ -65,12 +65,14 @@ fn release_type_uses_cargo_pre_one_compatibility_rules() {
 }
 
 #[test]
-fn package_partition_lists_new_packages_explicitly() {
-    let mut stable = SEMVER_BASELINE_PACKAGES.to_vec();
-    stable.extend_from_slice(SEMVER_NEW_PACKAGES);
-    assert!(validate_package_partition(&stable).is_ok());
-    stable.pop();
-    assert!(validate_package_partition(&stable).is_err());
+fn package_partition_treats_every_published_package_as_baseline() {
+    assert!(SEMVER_NEW_PACKAGES.is_empty());
+    assert!(SEMVER_BASELINE_PACKAGES.contains(&"j2k-ml"));
+    assert!(validate_package_partition(SEMVER_BASELINE_PACKAGES).is_ok());
+
+    let mut incomplete = SEMVER_BASELINE_PACKAGES.to_vec();
+    incomplete.pop();
+    assert!(validate_package_partition(&incomplete).is_err());
 }
 
 #[test]
@@ -157,10 +159,10 @@ fn semver_checks_commands_use_the_pinned_rustup_toolchain() {
 }
 
 #[test]
-fn source_incompatible_patch_exception_is_scoped_to_0_7_5() {
-    let mut diff = PackageApiDiff {
+fn published_patch_candidate_uses_its_computed_release_type() {
+    let diff = PackageApiDiff {
         package: "alpha".to_string(),
-        candidate_version: "0.7.5".to_string(),
+        candidate_version: "0.7.6".to_string(),
         release_type: Some(ReleaseType::Minor),
         baseline_count: 1,
         candidate_count: 0,
@@ -170,8 +172,6 @@ fn source_incompatible_patch_exception_is_scoped_to_0_7_5() {
             .collect(),
         hidden: BTreeSet::new(),
     };
-    assert_eq!(semver_check_release_type(&diff), ReleaseType::Major);
-    diff.candidate_version = "0.7.6".to_string();
     assert_eq!(semver_check_release_type(&diff), ReleaseType::Minor);
 }
 
@@ -197,9 +197,9 @@ fn report_has_one_published_details_section_and_hidden_evidence() {
 fn parses_review_config_and_rejects_unknown_fields() {
     let source = "\
 version: 2
-baseline_tag: v0.7.3
-baseline_version: 0.7.3
-candidate_version: 0.7.4
+baseline_tag: v0.7.5
+baseline_version: 0.7.5
+candidate_version: 0.7.6
 reviews:
   alpha:
     removed_fingerprint: 'fnv1a64:1234'
@@ -211,7 +211,7 @@ reviews:
 ";
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source).unwrap();
     let parsed = parse_review_config(&value).unwrap();
-    assert_eq!(parsed.candidate_version, "0.7.4");
+    assert_eq!(parsed.candidate_version, "0.7.6");
     assert_eq!(parsed.reviews.len(), 1);
 
     let invalid = source.replacen("    rationale:", "    unknown: nope\n    rationale:", 1);

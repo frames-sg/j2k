@@ -25,6 +25,30 @@ Burn, or any other external project on behalf of this work. Keep all further
 work inside `frames-sg/j2k` unless the user explicitly authorizes an exact
 external action.
 
+## Current preparation evidence
+
+The following checks passed during local macOS preparation on 2026-07-24.
+They prove the staged design is buildable and functional, but they are not
+release evidence because they were not run from the final clean, versioned
+candidate SHA:
+
+- `cargo xtask j2k-ml-package-smoke`, including clean packaged-source
+  consumers for `cpu`, `metal`, and `cpu,metal`, packaged examples, and docs;
+- `cargo test -p j2k-ml --features cpu`;
+- strict `j2k-ml` Clippy and docs for `cpu,metal`;
+- `cargo xtask release-metal`;
+- repository lint, formatting, unsafe-audit, and command-orchestration tests.
+
+The compatible lockfile refresh occurred after the package smoke and full
+Metal gate. CPU tests, strict Clippy, repository lint, and formatting passed
+again afterward. Rerun the package smoke and full Metal gate from the final
+clean candidate SHA.
+
+The CUDA host remained on the published `v0.7.5` release commit during that
+preparation. Run the full CUDA gate only after the corrected source is
+committed and the same candidate SHA is available on that host. Do not treat a
+different checkout or an uncommitted source copy as exact-SHA release evidence.
+
 ## Release completion checklist
 
 1. Run the package smoke with registry-only third-party dependencies:
@@ -42,8 +66,8 @@ external action.
    content-distinct batches 1/8/32/64 for the staged accelerator adapters
    versus CPU-decode-and-upload. Record uncertainty, memory, and transfer
    counters without reusing old direct-route claims.
-4. Stage the release version only after all clean-consumer and hardware gates
-   pass from a clean candidate SHA.
+4. Keep the staged version under `Unreleased` until clean-consumer and hardware
+   gates pass; only then freeze a dated changelog and exact candidate SHA.
 5. After publication, create fresh consumers pinned to the exact published
    version and repeat CPU, CUDA, and Metal checks before any community notice.
 

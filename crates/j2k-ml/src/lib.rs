@@ -34,42 +34,15 @@ pub mod metal;
 #[cfg(feature = "cpu")]
 pub use cpu::CpuBurnDecoder;
 #[cfg(feature = "cuda")]
-pub use cuda::{CudaUploadBurnDecoder, SubmittedCudaUploadBurnBatch};
+pub use cuda::{
+    CudaBurnDecoder, CudaUploadBurnDecoder, SubmittedCudaBurnBatch, SubmittedCudaUploadBurnBatch,
+};
 pub use error::BurnDecodeError;
 #[cfg(feature = "metal")]
-pub use metal::{MetalUploadBurnDecoder, SubmittedMetalUploadBurnBatch};
-
-/// Compatibility alias for [`CudaUploadBurnDecoder`].
-#[cfg(feature = "cuda")]
-#[deprecated(
-    since = "0.7.6",
-    note = "use CudaUploadBurnDecoder to make staging explicit"
-)]
-pub type CudaBurnDecoder = CudaUploadBurnDecoder;
-
-/// Compatibility alias for [`SubmittedCudaUploadBurnBatch`].
-#[cfg(feature = "cuda")]
-#[deprecated(
-    since = "0.7.6",
-    note = "use SubmittedCudaUploadBurnBatch to make staging explicit"
-)]
-pub type SubmittedCudaBurnBatch = SubmittedCudaUploadBurnBatch;
-
-/// Compatibility alias for [`MetalUploadBurnDecoder`].
-#[cfg(feature = "metal")]
-#[deprecated(
-    since = "0.7.6",
-    note = "use MetalUploadBurnDecoder to make staging explicit"
-)]
-pub type MetalBurnDecoder = MetalUploadBurnDecoder;
-
-/// Compatibility alias for [`SubmittedMetalUploadBurnBatch`].
-#[cfg(feature = "metal")]
-#[deprecated(
-    since = "0.7.6",
-    note = "use SubmittedMetalUploadBurnBatch to make staging explicit"
-)]
-pub type SubmittedMetalBurnBatch = SubmittedMetalUploadBurnBatch;
+pub use metal::{
+    MetalBurnDecoder, MetalUploadBurnDecoder, SubmittedMetalBurnBatch,
+    SubmittedMetalUploadBurnBatch,
+};
 
 /// Ordinary rank-4 Burn integer tensor tagged with its exact codec sample type.
 #[derive(Debug)]

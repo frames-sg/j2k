@@ -25,7 +25,6 @@ cpu = []
 cuda = [
     "dep:burn-cuda",
     "dep:j2k-cuda",
-    "dep:j2k-cuda-runtime",
 ]
 metal = [
     "dep:burn-wgpu",
@@ -37,11 +36,10 @@ metal = [
 burn-core = { workspace = true }
 burn-cuda = { workspace = true, optional = true }
 burn-wgpu = { workspace = true, optional = true }
-j2k = { path = "../j2k", version = "=0.7.5" }
-j2k-cuda = { path = "../j2k-cuda", version = "=0.7.5", features = ["cuda-runtime"], optional = true }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.5", optional = true }
-j2k-metal = { path = "../j2k-metal", version = "=0.7.5", optional = true }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.7.5", optional = true }
+j2k = { path = "../j2k", version = "=0.7.6" }
+j2k-cuda = { path = "../j2k-cuda", version = "=0.7.6", features = ["cuda-runtime"], optional = true }
+j2k-metal = { path = "../j2k-metal", version = "=0.7.6", optional = true }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.7.6", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

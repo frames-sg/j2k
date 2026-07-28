@@ -1,6 +1,6 @@
 # Release Policy
 
-The `j2k` 0.7.3 public crate release is published and security-supported.
+The `j2k` 0.7.5 public crate release is published and security-supported.
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -9,36 +9,43 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.7.6` | Planned `j2k-ml` adoption release with explicitly staged CUDA/Metal upload adapters; not staged or publishable until clean-consumer and hardware gates pass. | Not a release line. |
-| `0.7.5` | Frozen source-incompatible release candidate; not published or tagged until the exact-SHA gates and annotated tag complete. | Not yet a published release line. |
-| `0.7.3` | Latest publicly published crates and documentation. | Supported. |
+| `0.7.6` | Staged `j2k-ml` repair candidate with explicit CUDA/Metal upload adapters; not publishable until clean-consumer, exact-SHA, benchmark, and hardware gates pass. | Not a release line. |
+| `0.7.5` | Published on crates.io from annotated tag `v0.7.5`. No GitHub Release object was created. The published `j2k-ml` CPU feature works; its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
+| `0.7.3` | Previous published release line. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
 | `0.7.1` | Previous published release line. | Supported. |
 | `0.7.0` | Previous published release line. | Supported. |
 | `0.6.x` | Previous published release line. | Supported for security fixes during the 0.7 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-Version `0.7.3` is published from annotated tag `v0.7.3`, which peels to the
-exact locally, hosted-CI, Metal, and CUDA verified release commit. GitHub Pages
-is served directly from `main/docs`; this post-release state is documentation,
-while the tag and crates.io records remain the publication evidence.
+Version `0.7.5` is published from annotated tag `v0.7.5`, which peels to commit
+`a89abb6e7eba469c44b3735740712c2a85be0499`. GitHub Pages is served directly
+from `main/docs`; this post-release state is documentation, while the tag and
+crates.io records remain the publication evidence.
 
-Version `0.7.3` retains the API contract introduced by `0.7.1`, which
-intentionally contracts parts of the published pre-1.0 `0.6.2`
-API. It does not claim source compatibility with `0.6.x`. The
+Version `0.7.5` is an explicitly reviewed source-compatibility exception to
+the normal patch policy. Its wrapper-removal migrations are recorded under
+the dated `0.7.5` heading in the [`CHANGELOG`](../CHANGELOG.md), and its reviewed
+API evidence is compared directly with the published `v0.7.3` baseline.
+
+The published `j2k-ml 0.7.5` `cuda` and `metal` features do not compile for a
+clean registry consumer because they reference CubeCL and wgpu interop methods
+that are absent from the selected registry releases. The `cpu` feature is
+unaffected. The staged `0.7.6` adapters instead perform accelerator codec
+decode, explicit decoded-pixel readback, and ordinary Burn tensor upload using
+released public APIs. Do not recommend the accelerator features or send the
+Burn community notice until exact-version clean consumers and both hardware
+gates pass for that release.
+
+Version `0.7.3` retained the API contract introduced by `0.7.1`, which
+intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
+not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
 [reviewed API report](../engineering/reviewed-public-api-diff-0.7.3.md)
 records the additions, removals, and changed signatures. That report was
 regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is
 regenerated and verified after that release's final source freeze.
-
-The `0.7.5` candidate is an explicit source-compatibility exception to
-the normal patch policy. Its wrapper-removal migrations are recorded under
-the dated `0.7.5` heading in the [`CHANGELOG`](../CHANGELOG.md), and its reviewed
-API evidence is compared directly with the published `v0.7.3` baseline. This
-candidate statement does not authorize publication or assert that the candidate
-has passed exact-SHA release gates.
 
 ## Candidate freeze and exact-SHA evidence
 

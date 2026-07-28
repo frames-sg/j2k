@@ -4,21 +4,13 @@
 
 mod batch;
 
-pub use batch::{CudaUploadBurnDecoder, SubmittedCudaUploadBurnBatch};
+pub use batch::{CudaBurnDecoder, SubmittedCudaBurnBatch};
 
-/// Compatibility alias for [`CudaUploadBurnDecoder`].
+/// Explicit name for [`CudaBurnDecoder`]'s staged host-memory upload behavior.
 ///
 /// This alias has the same explicitly staged behavior; it does not restore the
 /// former direct-destination implementation.
-#[deprecated(
-    since = "0.7.6",
-    note = "use CudaUploadBurnDecoder to make staging explicit"
-)]
-pub type CudaBurnDecoder = CudaUploadBurnDecoder;
+pub type CudaUploadBurnDecoder = CudaBurnDecoder;
 
-/// Compatibility alias for [`SubmittedCudaUploadBurnBatch`].
-#[deprecated(
-    since = "0.7.6",
-    note = "use SubmittedCudaUploadBurnBatch to make staging explicit"
-)]
-pub type SubmittedCudaBurnBatch = SubmittedCudaUploadBurnBatch;
+/// Explicit name for the staged upload represented by [`SubmittedCudaBurnBatch`].
+pub type SubmittedCudaUploadBurnBatch = SubmittedCudaBurnBatch;

@@ -3,8 +3,28 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+Staged workspace version: `0.7.6`.
+
+- Fixes the published `j2k-ml 0.7.5` `cuda` and `metal` clean-consumer
+  failures. The adapters now use accelerator codec decode, explicit
+  decoded-pixel readback, and ordinary Burn tensor upload through released
+  dependency APIs.
+- Adds `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` as explicit aliases
+  for staged host-memory upload behavior while preserving `CudaBurnDecoder`,
+  `MetalBurnDecoder`, and their inherent method paths unchanged.
+- Removes the private CubeCL and wgpu patch sources from the release graph.
+  This is not a direct-destination or zero-copy accelerator contract.
+
 ## [0.7.5] - 2026-07-22
 
+- Known release defect: the published `j2k-ml 0.7.5` `cuda` and `metal`
+  features depend on accelerator interop methods that are not present in the
+  registry CubeCL and wgpu releases selected by clean consumers. The `cpu`
+  feature is unaffected. Version `0.7.6` replaces those routes with explicitly
+  staged accelerator decode, decoded-pixel readback, and ordinary Burn tensor
+  upload using released public APIs.
 - Compatibility exception: this release is an explicitly source-incompatible
   `0.7.x` patch against the published `0.7.3` API. The reviewed compatibility
   evidence and migration notes cover the complete contracted surface.
