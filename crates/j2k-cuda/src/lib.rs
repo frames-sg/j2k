@@ -41,7 +41,8 @@ pub(crate) use direct_plan::{
 };
 pub use encode::{
     encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile,
-    CudaEncodeStageAccelerator, CudaEncodeStageTimings,
+    CudaEncodeFallbackReason, CudaEncodeStageAccelerator, CudaEncodeStageTimings,
+    CudaLosslessEncodeResult, CudaLosslessEncoder,
 };
 #[cfg(feature = "cuda-runtime")]
 pub use encode::{

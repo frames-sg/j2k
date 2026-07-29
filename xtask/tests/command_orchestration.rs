@@ -157,7 +157,7 @@ fn assert_semver_fails_at_expected_boundary(output: &Output) {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected_error = if cfg!(target_os = "macos") {
-        "committed stable API snapshots are stale"
+        "committed published-library API snapshots are stale"
     } else {
         "semver/API review must run on macOS so Metal public APIs are included"
     };
@@ -171,8 +171,16 @@ fn assert_semver_fails_at_expected_boundary(output: &Output) {
 fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
     let harness = Harness::new();
 
-    for task in ["typos", "miri", "machete", "no-std"] {
+    for task in ["miri", "machete", "no-std"] {
         assert_success(&harness.run(&[task]), task);
+    }
+    for task in ["nextest", "typos", "deny", "downstream-smoke"] {
+        let output = harness.run(&[task]);
+        assert!(!output.status.success(), "{task} must remain retired");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unknown task"),
+            "{task} must fail at the dispatcher boundary"
+        );
     }
     assert_success(
         &harness.run_with_env(
@@ -187,7 +195,6 @@ fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
     );
 
     let log = harness.log();
-    assert!(log.contains("typos \n"));
     assert!(log.contains("cargo-machete --with-metadata\n"));
     assert!(log.contains("rustup run nightly cargo miri test -p j2k-core"));
     assert!(log.contains("rustup target add aarch64-unknown-none"));

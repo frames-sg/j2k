@@ -5,16 +5,19 @@ use crate::repo_lint_support::{assert_pattern_checks, PatternCheck};
 
 #[test]
 fn j2k_ml_accelerator_upload_contracts_are_source_enforced() {
+    let cuda_module = read("crates/j2k-ml/src/cuda.rs");
     let cuda_batch = read("crates/j2k-ml/src/cuda/batch.rs");
+    let metal_module = read("crates/j2k-ml/src/metal.rs");
     let metal_batch = read("crates/j2k-ml/src/metal/batch.rs");
     let staging = read("crates/j2k-ml/src/staging.rs");
-    let cuda_upload = format!("{cuda_batch}\n{staging}");
-    let metal_upload = format!("{metal_batch}\n{staging}");
+    let cuda_upload = format!("{cuda_module}\n{cuda_batch}\n{staging}");
+    let metal_upload = format!("{metal_module}\n{metal_batch}\n{staging}");
 
     assert_pattern_checks(&[
         PatternCheck::new("CUDA staged upload", &cuda_upload)
             .required(&[
-                "pub struct CudaUploadBurnDecoder",
+                "pub struct CudaBurnDecoder",
+                "pub type CudaUploadBurnDecoder = CudaBurnDecoder",
                 "SubmittedCudaResidentBatch",
                 "copy_to_host(",
                 "Tensor::from_data(",
@@ -27,7 +30,8 @@ fn j2k_ml_accelerator_upload_contracts_are_source_enforced() {
             ]),
         PatternCheck::new("Metal staged upload", &metal_upload)
             .required(&[
-                "pub struct MetalUploadBurnDecoder",
+                "pub struct MetalBurnDecoder",
+                "pub type MetalUploadBurnDecoder = MetalBurnDecoder",
                 "SubmittedMetalPreparedBatch",
                 "Tensor::from_data(",
             ])

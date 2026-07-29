@@ -3,7 +3,8 @@
 use std::{collections::BTreeSet, fs};
 
 use crate::repo_lint_support::{
-    assert_pattern_checks, const_array_block, repo_root, workflow_job, xtask_sources, PatternCheck,
+    assert_pattern_checks, const_array_block, release_manifest_entries, repo_root, workflow_job,
+    PatternCheck,
 };
 
 #[test]
@@ -47,7 +48,6 @@ fn ci_stable_api_jobs_pin_inputs_and_never_write() {
 #[test]
 fn stable_api_and_semver_share_one_fail_closed_inventory_contract() {
     let root = repo_root();
-    let xtask = xtask_sources(root);
     let semver = fs::read_to_string(root.join("xtask/src/semver.rs")).expect("read semver xtask");
     let semver_review = fs::read_to_string(root.join("xtask/src/semver/review.rs"))
         .expect("read semver review policy");
@@ -72,7 +72,7 @@ fn stable_api_and_semver_share_one_fail_closed_inventory_contract() {
         &command_support,
         &policy,
     );
-    assert_stable_package_partition(&xtask, &semver, &policy);
+    assert_published_library_partition(root, &semver, &policy);
 }
 
 fn assert_inventory_contracts(
@@ -118,11 +118,14 @@ fn assert_inventory_contracts(
         PatternCheck::new("live semver inventory ratchet", semver)
             .required(&[
                 "SEMVER_TOOLCHAIN: &str = \"1.96\"",
-                "SEMVER_BASELINE_VERSION: &str = \"0.7.3\"",
-                "SEMVER_BASELINE_TAG: &str = \"v0.7.3\"",
-                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION: &str = \"0.7.5\"",
+                "SEMVER_BASELINE_VERSION: &str = \"0.7.5\"",
+                "SEMVER_BASELINE_TAG: &str = \"v0.7.5\"",
+                "INTENTIONAL_BREAK_TRANSITION",
+                "candidate_version: \"0.8.0\"",
+                "required_next_baseline_tag: \"v0.8.0\"",
+                "validate_baseline_transition(",
                 "SEMVER_BASELINE_TAG}:docs/stable-api-1.0.public-api.txt",
-                "collect_package_apis(stable_packages)?",
+                "collect_package_apis(published_library_packages)?",
                 "SnapshotKind::Ordinary",
                 "SnapshotKind::Hidden",
                 "stale_ordinary_packages",
@@ -132,9 +135,19 @@ fn assert_inventory_contracts(
                 "[\"run\", SEMVER_TOOLCHAIN, \"cargo\"]",
                 "validate_snapshot_scope(",
             ])
-            .forbidden(&["unwrap_or_else(|_| \"1.96\".to_string())"]),
+            .forbidden(&[
+                "unwrap_or_else(|_| \"1.96\".to_string())",
+                "SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION",
+            ]),
         PatternCheck::new("semver review schema", semver_review).required(&[
-            "API review config version must be 2",
+            "API review config version must be 3",
+            "break_ledger",
+            "BreakKind::Source",
+            "BreakKind::Behavior",
+            "removed_items",
+            "summary",
+            "migration",
+            "source-break ledger does not exactly cover",
             "hidden_count",
             "hidden_fingerprint",
             "hidden_rationale",
@@ -148,9 +161,11 @@ fn assert_inventory_contracts(
             "String::from_utf8(output.stdout)",
         ]),
         PatternCheck::new("stable API policy", policy).required(&[
-            "published 0.7.3 artifact recorded both ordinary and hidden-enabled passes",
-            "explicit, maintainer-approved source-compatibility exception",
-            "exception applies only to `0.7.5`",
+            "published 0.7.5 artifact recorded both ordinary and hidden-enabled passes",
+            "`0.8.0` is the only candidate permitted to compare against `v0.7.5`",
+            "rotate the semver baseline to the published `v0.8.0`",
+            "Source-break entries must enumerate every exact removed API item",
+            "Behavior-break entries carry the same summary and migration requirements",
             "complete hidden-inventory count and fingerprint",
             "Every semver invocation collects both live passes",
             "Nonempty hidden inventories also require a package-specific hidden rationale",
@@ -162,21 +177,40 @@ fn assert_inventory_contracts(
     ]);
 }
 
-fn assert_stable_package_partition(xtask: &str, semver: &str, policy: &str) {
-    let stable = const_string_array_values(xtask, "STABLE_SEMVER_PACKAGES");
+fn assert_published_library_partition(root: &std::path::Path, semver: &str, policy: &str) {
+    let entries = release_manifest_entries(root);
+    let published = entries
+        .iter()
+        .filter(|entry| entry.api_contract != "binary")
+        .map(|entry| entry.name.clone())
+        .collect::<BTreeSet<_>>();
+    let stable = entries
+        .iter()
+        .filter(|entry| entry.api_contract == "stable")
+        .map(|entry| entry.name.clone())
+        .collect::<BTreeSet<_>>();
     let baseline = const_string_array_values(semver, "SEMVER_BASELINE_PACKAGES");
     let new = const_string_array_values(semver, "SEMVER_NEW_PACKAGES");
-    assert!(!stable.is_empty());
+    assert_eq!(published.len(), 18);
+    assert_eq!(
+        stable,
+        ["j2k", "j2k-core", "j2k-jpeg", "j2k-tilecodec"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
     assert!(!baseline.is_empty());
+    assert!(new.is_empty());
+    assert!(baseline.contains("j2k-ml"));
     assert!(baseline.is_disjoint(&new));
     assert_eq!(
         baseline.union(&new).cloned().collect::<BTreeSet<_>>(),
-        stable
+        published
     );
-    for package in stable {
+    for package in published {
         assert!(
             policy.contains(&format!("`{package}`")),
-            "stable API policy must list `{package}`"
+            "published API policy must list `{package}`"
         );
     }
 }

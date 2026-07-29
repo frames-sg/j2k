@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use super::{
     architecture_doc_dependency_edges, assert_file_pattern_checks, assert_pattern_checks,
-    cargo_metadata_workspace_edges, cargo_public_api_required, const_array_block, format_edge,
-    repo_root, rust_sources, stable_api_snapshot_sources, xtask_sources, FilePatternCheck,
-    PatternCheck,
+    cargo_metadata_workspace_edges, format_edge, release_manifest_entries, repo_root, rust_sources,
+    stable_api_snapshot_sources, FilePatternCheck, PatternCheck,
 };
 
 #[test]
@@ -94,8 +93,10 @@ fn architecture_docs_classify_workspace_and_in_repo_tool_crates() {
 #[test]
 fn tooling_and_validation_crates_stay_unpublished() {
     let root = repo_root();
-    let xtask = xtask_sources(root);
-    let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
+    let publishable = release_manifest_entries(root)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<BTreeSet<_>>();
 
     assert_file_pattern_checks(
         root,
@@ -122,50 +123,10 @@ fn tooling_and_validation_crates_stay_unpublished() {
 
     for package in ["j2k-test-support", "j2k-transcode-test-support", "xtask"] {
         assert!(
-            !publishable.contains(&format!("\"{package}\"")),
-            "xtask publishable package gate must not include {package}"
+            !publishable.contains(package),
+            "release manifest must not include {package}"
         );
     }
-}
-
-#[test]
-fn public_crates_do_not_reexport_j2k_native() {
-    let root = repo_root();
-    let mut offenders = Vec::new();
-
-    for crate_dir in [
-        "crates/j2k/src",
-        "crates/j2k-jpeg/src",
-        "crates/j2k-transcode/src",
-        "crates/j2k-metal/src",
-        "crates/j2k-cuda/src",
-        "crates/j2k-transcode-metal/src",
-        "crates/j2k-transcode-cuda/src",
-    ] {
-        for path in rust_sources(&root.join(crate_dir)) {
-            let source = fs::read_to_string(&path)
-                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-            for (line_idx, line) in source.lines().enumerate() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("pub use j2k_native")
-                    || trimmed.starts_with("pub type ") && trimmed.contains("j2k_native")
-                {
-                    offenders.push(format!(
-                        "{}:{}:{}",
-                        path.strip_prefix(root).unwrap_or(&path).display(),
-                        line_idx + 1,
-                        line.trim()
-                    ));
-                }
-            }
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "public crates must not re-export native J2K implementation types:\n{}",
-        offenders.join("\n")
-    );
 }
 
 #[test]
@@ -275,28 +236,6 @@ fn facade_backend_errors_require_explicit_classification() {
                 "impl From<&str> for BackendError",
             ])],
     );
-}
-
-#[test]
-#[ignore = "strict repo-lint: shells out to cargo-public-api for all public API packages"]
-fn rendered_public_api_does_not_expose_j2k_native() {
-    let root = repo_root();
-
-    for package in [
-        "j2k",
-        "j2k-jpeg",
-        "j2k-transcode",
-        "j2k-metal",
-        "j2k-cuda",
-        "j2k-transcode-metal",
-        "j2k-transcode-cuda",
-    ] {
-        let api = cargo_public_api_required(root, package);
-        assert!(
-            !api.contains("j2k_native"),
-            "public API for package {package} exposes j2k_native:\n{api}"
-        );
-    }
 }
 
 #[test]

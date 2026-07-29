@@ -8,8 +8,8 @@ use j2k_native::{
     J2kDirectCpuScratch, J2kRect,
 };
 
-use crate::decode::{decode_warnings_for_settings, validate_buffer};
-use crate::{DecodeSettings, J2kError, TileRegionScaledDecodeJob};
+use crate::decode::{decode_warnings_for_recovery, validate_buffer};
+use crate::{J2kError, TileRegionScaledDecodeJob};
 
 use super::admission::{BatchAllocationBudget, BatchAllocationClaim};
 use super::allocation::GENERIC_WORKER_CLAIM_BYTES;
@@ -269,10 +269,7 @@ impl DirectColorRegionCache {
 }
 
 fn success_outcome(decoded: Rect) -> BatchOutcome {
-    BatchOutcome::new(
-        decoded,
-        decode_warnings_for_settings(DecodeSettings::default()),
-    )
+    BatchOutcome::new(decoded, decode_warnings_for_recovery(false))
 }
 
 fn is_direct_color_u8_format(fmt: PixelFormat) -> bool {

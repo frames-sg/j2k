@@ -2,12 +2,15 @@
 
 use std::{
     fmt::Write as _,
-    fs,
+    fs::{self, File},
+    io::Cursor,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
 };
+
+use flate2::{write::GzEncoder, Compression};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -28,29 +31,27 @@ impl Harness {
         fs::create_dir_all(&root).expect("create orchestration test directory");
         let cargo = root.join("cargo.sh");
         let log = root.join("cargo.log");
-        let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let metadata = prepare_metadata_fixture(&root);
         fs::write(
             &cargo,
             format!(
-                "#!/bin/sh\nprintf '%s|RUSTDOCFLAGS=%s|RUST_TEST_THREADS=%s\\n' \"$*\" \"${{RUSTDOCFLAGS-unset}}\" \"${{RUST_TEST_THREADS-unset}}\" >> '{}'\nif [ \"$1\" = metadata ]; then exec \"{}\" \"$@\"; fi\nif [ \"$1\" = clippy ]; then printf '%s\\n' '{{\"reason\":\"build-finished\",\"success\":true}}'; exit 0; fi\nif [ \"$1\" = test ]; then printf 'test result: ok. 100 passed; 0 failed;\\n'; exit 0; fi\nif [ \"$1\" = -V ]; then printf 'cargo 1.96.0\\n'; fi\n",
+                "#!/bin/sh\nprintf '%s|RUSTDOCFLAGS=%s|RUST_TEST_THREADS=%s\\n' \"$*\" \"${{RUSTDOCFLAGS-unset}}\" \"${{RUST_TEST_THREADS-unset}}\" >> '{}'\nif [ \"$1\" = metadata ]; then exec cat '{}'; fi\nif [ \"$1\" = clippy ]; then printf '%s\\n' '{{\"reason\":\"build-finished\",\"success\":true}}'; exit 0; fi\nif [ \"$1\" = test ]; then printf 'test result: ok. 100 passed; 0 failed;\\n'; exit 0; fi\nif [ \"$1\" = -V ]; then printf 'cargo 1.96.0\\n'; fi\n",
                 log.display(),
-                real_cargo
+                metadata.display()
             ),
         )
         .expect("write fake Cargo");
         make_executable(&cargo, "fake Cargo");
-        for tool in ["typos", "cargo-machete"] {
-            let program = root.join(tool);
-            fs::write(
-                &program,
-                format!(
-                    "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> '{}'\n",
-                    log.display()
-                ),
-            )
-            .expect("write fake external tool");
-            make_executable(&program, "fake external tool");
-        }
+        let cargo_machete = root.join("cargo-machete");
+        fs::write(
+            &cargo_machete,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .expect("write fake cargo-machete");
+        make_executable(&cargo_machete, "fake cargo-machete");
         let git = root.join("git");
         let baseline_snapshot = root.join("stable-api-0.7.3.public-api.txt");
         fs::write(&baseline_snapshot, synthetic_baseline_snapshot())
@@ -185,6 +186,76 @@ fn make_executable(path: &Path, label: &str) {
     let mut permissions = fs::metadata(path).expect(label).permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions).expect(label);
+}
+
+fn prepare_metadata_fixture(root: &Path) -> PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = Command::new(cargo)
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("capture workspace metadata for orchestration fixture");
+    assert!(
+        output.status.success(),
+        "workspace metadata fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut metadata =
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("parse cargo metadata");
+    let version = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|packages| {
+            packages.iter().find_map(|package| {
+                (package.get("name").and_then(serde_json::Value::as_str) == Some("j2k-ml"))
+                    .then(|| package.get("version").and_then(serde_json::Value::as_str))
+                    .flatten()
+            })
+        })
+        .expect("metadata includes j2k-ml")
+        .to_string();
+    let target = root.join("target");
+    metadata["target_directory"] = serde_json::Value::String(target.to_string_lossy().into_owned());
+    let metadata_path = root.join("metadata.json");
+    fs::write(
+        &metadata_path,
+        serde_json::to_vec(&metadata).expect("serialize metadata fixture"),
+    )
+    .expect("write metadata fixture");
+    write_packaged_fixture(
+        &target
+            .join("package")
+            .join(format!("j2k-ml-{version}.crate")),
+        &version,
+    );
+    metadata_path
+}
+
+fn write_packaged_fixture(path: &Path, version: &str) {
+    fs::create_dir_all(path.parent().expect("package fixture has parent"))
+        .expect("create package fixture directory");
+    let encoder = GzEncoder::new(
+        File::create(path).expect("create package fixture"),
+        Compression::default(),
+    );
+    let mut archive = tar::Builder::new(encoder);
+    let manifest = format!("[package]\nname = \"j2k-ml\"\nversion = \"{version}\"\n");
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(0o644);
+    header.set_size(u64::try_from(manifest.len()).expect("package manifest fixture fits in u64"));
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            format!("j2k-ml-{version}/Cargo.toml"),
+            Cursor::new(manifest),
+        )
+        .expect("append package manifest fixture");
+    archive
+        .into_inner()
+        .expect("finish package archive")
+        .finish()
+        .expect("finish compressed package fixture");
 }
 
 fn synthetic_baseline_snapshot() -> String {

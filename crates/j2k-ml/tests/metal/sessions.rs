@@ -3,6 +3,36 @@
 use super::*;
 
 #[test]
+fn compatibility_metal_decoder_names_keep_debug_and_submit_contract() {
+    if !metal_runtime_gate("j2k-ml 0.7 Metal decoder compatibility names") {
+        return;
+    }
+
+    let mut decoder = j2k_ml::MetalBurnDecoder::system_default(BatchDecodeOptions::default())
+        .expect("0.7-compatible J2K/Burn Metal session");
+    assert!(
+        format!("{decoder:?}").starts_with("MetalBurnDecoder"),
+        "the concrete 0.7 decoder name must remain visible in Debug output"
+    );
+
+    let submitted = decoder
+        .submit(vec![EncodedImage::full(Arc::from(
+            openhtj2k_refinement_fixture(),
+        ))])
+        .expect("submit through the 0.7-compatible decoder name");
+    assert!(
+        format!("{submitted:?}").starts_with("SubmittedMetalBurnBatch"),
+        "the concrete 0.7 submitted-batch name must remain visible in Debug output"
+    );
+    assert_eq!(submitted.len(), 1);
+
+    let output = submitted.wait().expect("finish compatibility-name batch");
+    assert!(output.errors.is_empty());
+    assert!(output.group_errors.is_empty());
+    assert_eq!(output.groups.len(), 1);
+}
+
+#[test]
 fn repeated_default_decoders_reuse_one_initialized_burn_device() {
     if !metal_runtime_gate("j2k-ml repeated paired Metal device") {
         return;

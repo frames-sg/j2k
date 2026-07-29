@@ -210,8 +210,10 @@ pub fn encode_j2k_lossless_typed_components(
 /// Encode interleaved samples with an optional device encode-stage accelerator.
 ///
 /// Accelerators return CPU fallback by reporting no dispatch. `Auto` accepts
-/// that fallback; `RequireDevice` requires at least one dispatch. Any
-/// accelerator error or codestream validation error is returned to the caller.
+/// that fallback and routes CPU-only sample precisions directly to the native
+/// encoder; `RequireDevice` requires every stage needed by the request. Any
+/// accelerator execution error or codestream validation error is returned to
+/// the caller without a second encode attempt.
 pub fn encode_j2k_lossless_with_accelerator(
     samples: J2kLosslessSamples<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -219,13 +221,16 @@ pub fn encode_j2k_lossless_with_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<EncodedJ2k, J2kError> {
     validate_lossless_high_bit_options(samples, options)?;
+    if options.backend == EncodeBackendPreference::CpuOnly {
+        return encode_j2k_lossless(samples, options);
+    }
     if samples.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+        if options.backend == EncodeBackendPreference::Auto {
+            return encode_j2k_lossless(samples, options);
+        }
         return Err(J2kError::Unsupported(Unsupported {
             what: "25-38 bit lossless encode currently uses the CPU classic reversible path only",
         }));
-    }
-    if options.backend == EncodeBackendPreference::CpuOnly {
-        return encode_j2k_lossless(samples, options);
     }
 
     let before = accelerator.dispatch_report();

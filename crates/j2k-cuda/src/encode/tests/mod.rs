@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod facade;
 mod htj2k;
 mod packetization;
 mod resident;
@@ -17,6 +18,8 @@ use super::packetization::{
 #[cfg(feature = "cuda-runtime")]
 use super::stage::cuda_dwt53_output_to_j2k;
 use super::stage::cuda_packetization_plan_fallback_reason;
+#[cfg(not(feature = "cuda-runtime"))]
+use super::CudaEncodeFallbackReason;
 #[cfg(feature = "cuda-runtime")]
 use super::{
     cuda_resident_input_error, encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report,
@@ -24,7 +27,7 @@ use super::{
 };
 use super::{
     encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile,
-    CudaEncodeStageAccelerator,
+    CudaEncodeStageAccelerator, CudaLosslessEncoder,
 };
 #[cfg(feature = "cuda-runtime")]
 use crate::CudaSession;
@@ -42,9 +45,9 @@ use j2k::{
     J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
     J2kPacketizationSubband, J2kQuantizeSubbandJob,
 };
-use j2k_core::CodecError;
 #[cfg(feature = "cuda-runtime")]
-use j2k_core::{BackendKind, PixelFormat};
+use j2k_core::PixelFormat;
+use j2k_core::{BackendKind, CodecError};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
     CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob,

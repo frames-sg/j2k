@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 use super::jp2::colr::{ColorSpace, ColorSpecificationBox, EnumeratedColorspace};
 use super::jp2::ImageBoxes;
 use crate::error::{bail, FormatError, MarkerError, Result};
-use crate::image::ImageSource;
+use crate::image::{ImageProperties, ImageSource};
 use crate::j2c::codestream::markers;
 use crate::reader::BitReader;
 use crate::{resolve_alpha_and_color_space, DecodeSettings, Image};
@@ -65,6 +65,8 @@ pub(crate) struct ComponentData {
     pub(crate) signed: bool,
 }
 
+crate::move_only::assert_move_only!(ComponentData);
+
 pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
     parse_with_retained_baseline(stream, settings, 0)
 }
@@ -74,8 +76,10 @@ pub(crate) fn parse_with_retained_baseline<'a>(
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
 ) -> Result<Image<'a>> {
+    let mut strict_settings = *settings;
+    strict_settings.strict = true;
     let parsed_codestream =
-        parse_raw_with_retained_baseline(stream, settings, retained_baseline_bytes)?;
+        parse_raw_with_retained_baseline(stream, &strict_settings, retained_baseline_bytes)?;
     let header = &parsed_codestream.header;
     // Raw codestreams do not carry JP2 channel definitions. Keep the
     // conventional grayscale/RGB assumptions for 1- and 3-component images,
@@ -101,29 +105,24 @@ pub(crate) fn parse_with_retained_baseline<'a>(
         retained_baseline_bytes,
     )?;
 
-    let (color_space, has_alpha) = resolve_alpha_and_color_space(
+    let (color_space, has_alpha, _) = resolve_alpha_and_color_space(
         &boxes,
         &parsed_codestream.header,
-        settings,
+        &strict_settings,
         retained_baseline_bytes,
     )?;
+    let properties = ImageProperties::new(boxes, *settings, color_space, has_alpha, false);
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
             ImageSource::new(stream, parsed_codestream.data),
             parsed_codestream.header,
-            boxes,
-            *settings,
-            color_space,
-            has_alpha,
+            properties,
         )
     } else {
         Image::from_parsed_parts_with_retained_baseline(
             ImageSource::new(stream, parsed_codestream.data),
             parsed_codestream.header,
-            boxes,
-            *settings,
-            color_space,
-            has_alpha,
+            properties,
             retained_baseline_bytes,
         )
     }

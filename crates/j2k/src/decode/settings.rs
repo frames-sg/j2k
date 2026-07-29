@@ -14,7 +14,13 @@ pub struct DecodeSettings {
 }
 
 impl DecodeSettings {
-    /// Compatibility policy that permits recoverable optional-metadata errors.
+    /// Compatibility policy for explicitly recoverable JP2/JPH metadata.
+    ///
+    /// Lenient mode may ignore malformed trailing boxes after required
+    /// metadata, ignore malformed optional `cdef` or `pclr` boxes, and infer
+    /// one undeclared alpha component. Raw codestream and entropy validation,
+    /// bounds and overflow checks, allocation limits, and all resource-safety
+    /// checks remain strict.
     #[must_use]
     pub const fn lenient() -> Self {
         Self { strict: false }
@@ -52,7 +58,7 @@ impl DecodeSettings {
 
 impl Default for DecodeSettings {
     fn default() -> Self {
-        Self::lenient()
+        Self::strict()
     }
 }
 
@@ -62,7 +68,8 @@ mod tests {
 
     #[test]
     fn facade_policy_preserves_strictness_and_internal_geometry() {
-        assert!(DecodeSettings::default().lenient_tolerance_enabled());
+        assert!(DecodeSettings::default().is_strict());
+        assert!(!DecodeSettings::default().lenient_tolerance_enabled());
         assert!(!DecodeSettings::lenient().is_strict());
         assert!(DecodeSettings::strict().is_strict());
 

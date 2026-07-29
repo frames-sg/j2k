@@ -156,6 +156,7 @@ mod direct_cpu;
 mod direct_plan;
 mod direct_roi;
 pub(crate) mod math;
+mod move_only;
 #[doc(hidden)]
 pub mod packet_math;
 pub(crate) mod profile;

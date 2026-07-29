@@ -123,7 +123,7 @@ fn benchmark_targets_are_not_test_targets() {
 }
 
 #[test]
-fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
+fn xtask_exposes_machete_and_strict_clippy_gates_without_retired_aliases() {
     let xtask = xtask_sources(repo_root());
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/full-validation.yml"))
         .expect("read full validation workflow");
@@ -135,19 +135,18 @@ fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
         .expect("xtask help section");
 
     assert_pattern_checks(&[
-        PatternCheck::new("xtask nextest/machete/strict clippy dispatch", &xtask).required(&[
-            "\"nextest\" =>",
-            "\"machete\" =>",
-            "\"clippy-strict\" =>",
-        ]),
-        PatternCheck::new("xtask nextest/machete/strict clippy help", help_section).required(&[
-            "nextest",
-            "machete",
-            "clippy-strict",
-        ]),
-        PatternCheck::new("xtask nextest/machete/strict clippy gates", &xtask).required(&[
-            "\"nextest\"",
-            "\"run\"",
+        PatternCheck::new("xtask machete/strict clippy dispatch", &xtask)
+            .required(&["\"machete\" =>", "\"clippy-strict\" =>"])
+            .forbidden(&[
+                "\"nextest\" =>",
+                "\"typos\" =>",
+                "\"deny\" =>",
+                "\"downstream-smoke\" =>",
+            ]),
+        PatternCheck::new("xtask machete/strict clippy help", help_section)
+            .required(&["machete", "clippy-strict"])
+            .forbidden(&["nextest", "typos", "downstream-smoke"]),
+        PatternCheck::new("xtask machete/strict clippy gates", &xtask).required(&[
             "\"cargo-machete\"",
             "\"--with-metadata\"",
             "\"--no-deps\"",

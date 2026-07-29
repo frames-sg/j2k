@@ -452,6 +452,8 @@ fn native_jp2_responsibilities_stay_split_and_focused() {
     let root = repo_root();
     let facade = read_source_files(root, &["crates/j2k-native/src/jp2/mod.rs"]);
     let container = read_source_files(root, &["crates/j2k-native/src/jp2/container.rs"]);
+    let container_header =
+        read_source_files(root, &["crates/j2k-native/src/jp2/container/header.rs"]);
     let metadata = read_source_files(root, &["crates/j2k-native/src/jp2/metadata.rs"]);
     let image_header = read_source_files(root, &["crates/j2k-native/src/jp2/image_header.rs"]);
     let validation = read_source_files(root, &["crates/j2k-native/src/jp2/validation.rs"]);
@@ -478,12 +480,25 @@ fn native_jp2_responsibilities_stay_split_and_focused() {
                 "pub fn extract_jp2_codestream_payload(",
                 "pub(crate) fn parse_with_retained_baseline(",
                 "fn parse_jp2_container_with_strict(",
-                "pub(super) fn parse_jp2_header_box(",
-                "fn count_color_specification_boxes(",
+                "mod header;",
+                "parse_jp2_header_box_tracked(",
+                "fn read_recoverable_metadata_box",
             ])
             .forbidden(&[
                 "pub struct Jp2FileMetadata",
                 "fn parse_component_descriptor(",
+                "fn count_color_specification_boxes(",
+                "fn validate_component_precision_metadata(",
+            ]),
+        PatternCheck::new("native JP2 header traversal ownership", &container_header)
+            .required(&[
+                "pub(in crate::jp2) fn parse_jp2_header_box(",
+                "pub(super) fn parse_jp2_header_box_tracked(",
+                "fn count_color_specification_boxes(",
+                "read_recoverable_metadata_box(",
+            ])
+            .forbidden(&[
+                "pub fn inspect_jp2_container(",
                 "fn validate_component_precision_metadata(",
             ]),
         PatternCheck::new("native JP2 metadata ownership", &metadata)
@@ -511,6 +526,10 @@ fn native_jp2_responsibilities_stay_split_and_focused() {
         ]),
     ]);
 
+    assert_jp2_module_line_limits(root);
+}
+
+fn assert_jp2_module_line_limits(root: &std::path::Path) {
     for (relative, max_lines) in [
         ("crates/j2k-native/src/jp2/mod.rs", 60),
         ("crates/j2k-native/src/jp2/allocation.rs", 200),
@@ -519,6 +538,7 @@ fn native_jp2_responsibilities_stay_split_and_focused() {
         ("crates/j2k-native/src/jp2/cmap.rs", 90),
         ("crates/j2k-native/src/jp2/colr.rs", 175),
         ("crates/j2k-native/src/jp2/container.rs", 425),
+        ("crates/j2k-native/src/jp2/container/header.rs", 175),
         ("crates/j2k-native/src/jp2/icc.rs", 100),
         ("crates/j2k-native/src/jp2/image_header.rs", 80),
         ("crates/j2k-native/src/jp2/metadata.rs", 500),

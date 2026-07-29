@@ -48,7 +48,7 @@ pub(super) fn j2k_ml_consumer_manifest(
     Ok(manifest)
 }
 
-const CONSUMER_SOURCE: &str = r#"use j2k::BatchDecodeOptions;
+pub(super) const CONSUMER_SOURCE: &str = r#"use j2k::BatchDecodeOptions;
 
 #[cfg(feature = "cpu")]
 fn check_cpu_api() {
@@ -64,11 +64,17 @@ fn check_cuda_api() {
         Default::default(),
         BatchDecodeOptions::default(),
     );
+    let _compat_decoder: j2k_ml::CudaBurnDecoder = j2k_ml::CudaBurnDecoder::new(
+        Default::default(),
+        BatchDecodeOptions::default(),
+    );
 }
 
 #[cfg(feature = "metal")]
 fn check_metal_api() {
     let _decoder = j2k_ml::MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default());
+    let _compat_decoder: Result<j2k_ml::MetalBurnDecoder, _> =
+        j2k_ml::MetalBurnDecoder::system_default(BatchDecodeOptions::default());
 }
 
 fn main() {

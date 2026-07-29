@@ -344,15 +344,14 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "cargo-machete@0.9.2",
             "cargo xtask machete",
         ]),
-        PatternCheck::new("CI normal and strict repository policy gate", repo_lint).required(&[
-            "runs-on: macos-latest",
-            "toolchain: nightly-2026-06-28",
-            "targets: aarch64-apple-darwin",
-            "cargo-public-api@0.52.0",
-            "cargo install cargo-public-api --version 0.52.0 --locked",
-            "Run normal and strict repository policy",
-            "cargo xtask repo-lint --strict",
-        ]),
+        PatternCheck::new("CI repository policy gate", repo_lint)
+            .required(&["runs-on: ubuntu-latest", "cargo xtask repo-lint"])
+            .forbidden(&[
+                "toolchain: nightly-2026-06-28",
+                "targets: aarch64-apple-darwin",
+                "cargo-public-api",
+                "repo-lint --strict",
+            ]),
         PatternCheck::new("xtask release-status dispatch", &xtask).required(&[
             "mod release_status;",
             "\"release-status\" => release_status::release_status(env::args().skip(2))",

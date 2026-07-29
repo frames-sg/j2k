@@ -66,10 +66,10 @@ fn j2k_batch_uses_one_authoritative_aggregate_plan() {
         PatternCheck::new("J2K allocation-free warning owner", &decode)
             .required(&[
                 "const _: [(); 0] = [(); core::mem::size_of::<J2kDecodeWarning>()];",
-                "warnings.push(J2kDecodeWarning::LenientDecodeMode)",
+                "warnings.push(J2kDecodeWarning::LenientMetadataRecovery)",
                 "decode_warning_owner_is_statically_allocation_free",
             ])
-            .forbidden(&["Vec::from([J2kDecodeWarning::LenientDecodeMode])"]),
+            .forbidden(&["Vec::from([J2kDecodeWarning::LenientMetadataRecovery])"]),
     ]);
 }
 

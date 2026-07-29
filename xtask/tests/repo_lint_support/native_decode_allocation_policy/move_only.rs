@@ -1,60 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Move-only native decode owners and allocation-free tile-part cursor ratchets.
+//! Allocation-free tile-part cursor ratchets.
 
 use super::read;
 use crate::repo_lint_support::{assert_pattern_checks, PatternCheck};
-
-fn assert_does_not_derive_clone(source: &str, declaration: &str) {
-    let declaration_offset = source
-        .find(declaration)
-        .unwrap_or_else(|| panic!("missing owner declaration `{declaration}`"));
-    let prefix = &source[..declaration_offset];
-    let derive_offset = prefix
-        .rfind("#[derive(")
-        .unwrap_or_else(|| panic!("missing derive for owner `{declaration}`"));
-    let derive = prefix[derive_offset..].lines().next().expect("derive line");
-    assert!(
-        !derive.contains("Clone"),
-        "{declaration} must remain move-only; found `{derive}`"
-    );
-}
-
-#[test]
-fn retained_native_decode_owner_graphs_remain_move_only() {
-    let roi = read("crates/j2k-native/src/j2c/roi.rs");
-    assert_does_not_derive_clone(&roi, "pub(crate) struct RoiPlan");
-
-    let math = read("crates/j2k-native/src/math.rs");
-    assert_does_not_derive_clone(&math, "pub(crate) struct SimdBuffer");
-
-    let component = read("crates/j2k-native/src/j2c/mod.rs");
-    assert_does_not_derive_clone(&component, "pub(crate) struct ComponentData");
-
-    let tile = read("crates/j2k-native/src/j2c/tile.rs");
-    for declaration in [
-        "pub(crate) struct Tile<'a>",
-        "pub(crate) struct MergedTilePart<'a>",
-        "pub(crate) struct SeparatedTilePart<'a>",
-        "pub(crate) enum TilePart<'a>",
-        "struct PacketLengthMetadata",
-    ] {
-        assert_does_not_derive_clone(&tile, declaration);
-    }
-
-    let model = read("crates/j2k-native/src/j2c/codestream/model.rs");
-    for declaration in [
-        "pub(crate) struct PpmMarkerData<'a>",
-        "pub(crate) struct PacketLengthMarker",
-        "pub(crate) struct ComponentInfo",
-        "pub(crate) struct QuantizationInfo",
-        "pub(crate) struct CodingStyleDefault",
-        "pub(crate) struct CodingStyleComponent",
-        "pub(crate) struct CodingStyleParameters",
-    ] {
-        assert_does_not_derive_clone(&model, declaration);
-    }
-}
 
 #[test]
 fn tile_part_decode_uses_a_borrowing_nonallocating_cursor() {

@@ -53,7 +53,7 @@ fn j2k_ml_is_a_thin_persistent_batch_adapter() {
             .forbidden(&["J2kDecoder::new", "decode_components_with_context"]),
         PatternCheck::new("CUDA session adapter", &cuda_batch)
             .required(&[
-                "pub struct CudaUploadBurnDecoder",
+                "pub struct CudaBurnDecoder",
                 "CudaBatchDecoder as CodecDecoder",
                 "decode_prepared",
                 "crate::staging::materialize",
@@ -64,14 +64,22 @@ fn j2k_ml_is_a_thin_persistent_batch_adapter() {
                 "J2kDecoder::new",
                 "decode_request_to_device_with_session",
             ]),
+        PatternCheck::new("CUDA upload compatibility aliases", &cuda_module).required(&[
+            "pub type CudaUploadBurnDecoder = CudaBurnDecoder",
+            "pub type SubmittedCudaUploadBurnBatch = SubmittedCudaBurnBatch",
+        ]),
         PatternCheck::new("Metal session adapter", &metal_batch)
             .required(&[
-                "pub struct MetalUploadBurnDecoder",
+                "pub struct MetalBurnDecoder",
                 "MetalBatchDecoder as CodecDecoder",
                 "decode_prepared",
                 "crate::staging::materialize",
             ])
             .forbidden(&["J2kDecoder::new", "decode_request_to_device_with_session"]),
+        PatternCheck::new("Metal upload compatibility aliases", &metal_module).required(&[
+            "pub type MetalUploadBurnDecoder = MetalBurnDecoder",
+            "pub type SubmittedMetalUploadBurnBatch = SubmittedMetalBurnBatch",
+        ]),
         PatternCheck::new("training policy stays outside j2k-ml", &all_adapter_sources).forbidden(
             &[
                 "FloatNormalization",
@@ -84,7 +92,7 @@ fn j2k_ml_is_a_thin_persistent_batch_adapter() {
             ],
         ),
         PatternCheck::new("shared staged tensor materialization", &staging)
-            .required(&["Tensor::from_data", "StagingSizeMismatch"]),
+            .required(&["Tensor::from_data", "backend: \"codec staging\""]),
     ]);
 }
 

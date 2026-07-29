@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fs;
-
-use serde_json::Value;
+use std::{collections::BTreeSet, fs};
 
 use super::{
     assert_contains_all, assert_file_pattern_checks, assert_pattern_checks,
-    cargo_metadata_workspace_edges, const_array_block, repo_root, xtask_sources, FilePatternCheck,
-    PatternCheck,
+    cargo_metadata_workspace_edges, release_manifest_entries, repo_root, xtask_sources,
+    FilePatternCheck, PatternCheck,
 };
 
 #[path = "../../src/release_commands/release_integrity_policy/markdown.rs"]
@@ -20,19 +18,13 @@ fn j2k_ml_is_a_publishable_release_crate() {
     let root = repo_root();
     let manifest =
         fs::read_to_string(root.join("crates/j2k-ml/Cargo.toml")).expect("read j2k-ml manifest");
-    let release_manifest = fs::read_to_string(root.join("release-crates.json"))
-        .expect("read ordered release manifest");
-    let release_manifest: Value =
-        serde_json::from_str(&release_manifest).expect("parse ordered release manifest");
-    let ordered_crates = release_manifest["ordered_crates"]
-        .as_array()
-        .expect("ordered_crates array")
-        .iter()
-        .map(|value| value.as_str().expect("crate name"))
+    let ordered_crates = release_manifest_entries(root)
+        .into_iter()
+        .map(|entry| entry.name)
         .collect::<Vec<_>>();
     let j2k_ml_index = ordered_crates
         .iter()
-        .position(|name| *name == "j2k-ml")
+        .position(|name| name == "j2k-ml")
         .expect("j2k-ml must be in the release manifest");
 
     assert!(
@@ -54,7 +46,7 @@ fn j2k_ml_is_a_publishable_release_crate() {
     for dependency in ["j2k", "j2k-cuda-runtime", "j2k-cuda", "j2k-metal"] {
         let dependency_index = ordered_crates
             .iter()
-            .position(|name| *name == dependency)
+            .position(|name| name == dependency)
             .unwrap_or_else(|| panic!("{dependency} must be in the release manifest"));
         assert!(
             dependency_index < j2k_ml_index,
@@ -68,8 +60,6 @@ fn crates_io_publish_policy_is_explicit() {
     let root = repo_root();
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
     let changelog = fs::read_to_string(root.join("CHANGELOG.md")).expect("read changelog");
-    let xtask = xtask_sources(root);
-    let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
     let publish_workflow = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
     let release_manifest = fs::read_to_string(root.join("release-crates.json"))
@@ -95,23 +85,29 @@ fn crates_io_publish_policy_is_explicit() {
     );
 
     assert_pattern_checks(&[
-        PatternCheck::new("xtask publishable package gate", publishable)
-            .required(&[
-                "\"j2k-core\"",
-                "\"j2k-cuda-runtime\"",
-                "\"j2k-profile\"",
-                "\"j2k-native\"",
-                "\"j2k-tilecodec\"",
-                "\"j2k-jpeg\"",
-                "\"j2k\"",
-                "\"j2k-jpeg-metal\"",
-                "\"j2k-jpeg-cuda\"",
-                "\"j2k-metal\"",
-                "\"j2k-cuda\"",
-                "\"j2k-ml\"",
-                "\"j2k-cli\"",
-            ])
-            .forbidden(&["\"j2k-compare\""]),
+        PatternCheck::new(
+            "release manifest package and API contracts",
+            &release_manifest,
+        )
+        .required(&[
+            "\"schema\": 2",
+            "\"crates\"",
+            "\"api_contract\"",
+            "\"j2k-core\"",
+            "\"j2k-cuda-runtime\"",
+            "\"j2k-profile\"",
+            "\"j2k-native\"",
+            "\"j2k-tilecodec\"",
+            "\"j2k-jpeg\"",
+            "\"j2k\"",
+            "\"j2k-jpeg-metal\"",
+            "\"j2k-jpeg-cuda\"",
+            "\"j2k-metal\"",
+            "\"j2k-cuda\"",
+            "\"j2k-ml\"",
+            "\"j2k-cli\"",
+        ])
+        .forbidden(&["\"j2k-compare\""]),
         PatternCheck::new("single-runner publish workflow", &publish_workflow)
             .required(&[
                 "preflight:",
@@ -123,7 +119,7 @@ fn crates_io_publish_policy_is_explicit() {
             ])
             .forbidden(&["publish-j2k-core:", "cargo publish --workspace", "sleep "]),
         PatternCheck::new("ordered release manifest", &release_manifest)
-            .required(&["\"ordered_crates\"", "\"j2k-core\"", "\"j2k-cli\""])
+            .required(&["\"crates\"", "\"j2k-core\"", "\"j2k-cli\""])
             .forbidden(&["j2k-compare"]),
         PatternCheck::new("checksum-aware release publisher", &publisher).required(&[
             "hashlib.sha256",
@@ -136,7 +132,7 @@ fn crates_io_publish_policy_is_explicit() {
 }
 
 #[test]
-fn release_docs_use_manifest_versions_for_publish_order() {
+fn release_docs_use_schema_two_manifest_and_workspace_versions() {
     let xtask = xtask_sources(repo_root());
 
     assert_file_pattern_checks(
@@ -144,7 +140,8 @@ fn release_docs_use_manifest_versions_for_publish_order() {
         &[FilePatternCheck::new("docs/release.md")
             .named("release docs")
             .required(&[
-                "manifest versions",
+                "Schema 2 records only ordered crate names",
+                "workspace.package.version",
                 "cargo metadata --locked --no-deps",
                 "block v0.1.6",
                 "metal v0.33.0",
@@ -342,7 +339,6 @@ fn j2k_compare_stays_unpublished_and_out_of_j2k_package_deps() {
 #[test]
 fn package_preflight_is_staged_dependency_aware() {
     let root = repo_root();
-    let xtask = xtask_sources(root);
     assert_package_gate_file_contracts(root);
     let package_gate = fs::read_to_string(root.join("xtask/src/release_commands/package_gate.rs"))
         .expect("read package-gate module");
@@ -350,30 +346,40 @@ fn package_preflight_is_staged_dependency_aware() {
         package_gate.lines().count() <= 175,
         "package-gate module must stay within its focused 175-line ownership ceiling"
     );
-    let publishable_packages =
-        const_array_entries(const_array_block(&xtask, "PUBLISHABLE_PACKAGES"));
-    let strict_packages = const_array_block(&xtask, "REGISTRY_INDEPENDENT_PACKAGES");
-    let staged_packages = const_array_block(&xtask, "STAGED_DEPENDENCY_PACKAGES");
+    let publishable_packages = release_manifest_entries(root)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    let workspace_edges = cargo_metadata_workspace_edges(root);
+    let staged_packages = workspace_edges
+        .iter()
+        .map(|(package, _)| package.clone())
+        .collect::<BTreeSet<_>>();
+    let strict_packages = publishable_packages
+        .iter()
+        .filter(|package| !staged_packages.contains(*package))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     for package in &publishable_packages {
-        let strict = strict_packages.contains(&format!("\"{package}\""));
-        let staged = staged_packages.contains(&format!("\"{package}\""));
+        let strict = strict_packages.contains(package);
+        let staged = staged_packages.contains(package);
         assert_ne!(
             strict, staged,
             "publishable package `{package}` must appear in exactly one package-gate partition"
         );
     }
-    assert_package_gate_dependency_order(root, &publishable_packages, strict_packages);
+    assert_package_gate_dependency_order(&publishable_packages, &strict_packages, &workspace_edges);
     assert!(
-        staged_packages.contains("\"j2k-cuda-runtime\""),
+        staged_packages.contains("j2k-cuda-runtime"),
         "j2k-cuda-runtime depends on staged j2k-core and must not run strict package verification before publication"
     );
     let codec_math = publishable_packages
         .iter()
-        .position(|package| *package == "j2k-codec-math")
+        .position(|package| package == "j2k-codec-math")
         .expect("j2k-codec-math publish position");
     let cuda_runtime = publishable_packages
         .iter()
-        .position(|package| *package == "j2k-cuda-runtime")
+        .position(|package| package == "j2k-cuda-runtime")
         .expect("j2k-cuda-runtime publish position");
     assert!(
         codec_math < cuda_runtime,
@@ -388,17 +394,18 @@ fn assert_package_gate_file_contracts(root: &std::path::Path) {
             FilePatternCheck::new("xtask/src/release_commands.rs")
                 .named("xtask package preflight")
                 .required(&[
-                    "PUBLISHABLE_PACKAGES",
-                    "REGISTRY_INDEPENDENT_PACKAGES",
-                    "STAGED_DEPENDENCY_PACKAGES",
                     "mod package_gate;",
-                    "package_gate::run(&metadata)",
+                    "release_manifest_contract()?",
+                    "package_gate::run(&metadata, &release_manifest)",
                     "\"--list\"",
                 ]),
             FilePatternCheck::new("xtask/src/release_commands/package_gate.rs")
                 .named("dependency-aware package construction")
                 .required(&[
-                    "package_gate_plan(metadata)?",
+                    "package_gate_plan(metadata, manifest)?",
+                    "validate_release_manifest_contract(manifest, &packages, &mut validation_errors)?",
+                    "release_dependencies_by_package(manifest, &packages)?",
+                    "registry_independent_packages(manifest, &packages)?",
                     "dependency_closure",
                     "processed.contains(dependency_name.as_str())",
                     "--config",
@@ -446,6 +453,19 @@ fn assert_package_gate_file_contracts(root: &std::path::Path) {
                     "cargo\", \"publish\", \"--locked",
                 ])
                 .forbidden(&["cargo publish --workspace"]),
+            FilePatternCheck::new("scripts/release_manifest.py")
+                .named("strict release manifest and graph validator")
+                .required(&[
+                    "object_pairs_hook=_reject_duplicate_fields",
+                    "if type(schema) is not int or schema != 2",
+                    "\"workspace_members\"",
+                    "return \"crates-io\" in registries",
+                    "must be workspace/path sourced",
+                    "expected_requirement = f\"={versions_by_package[dependency_name]}\"",
+                    "if kind == \"dev\"",
+                    "if positions[dependency_name] >= positions[crate]",
+                    "registry_independent",
+                ]),
             FilePatternCheck::new("scripts/crates_io_version.py")
                 .named("fail-closed crates.io version helper")
                 .required(&[
@@ -470,14 +490,13 @@ fn assert_package_gate_file_contracts(root: &std::path::Path) {
 }
 
 fn assert_package_gate_dependency_order(
-    root: &std::path::Path,
-    publishable_packages: &[&str],
-    strict_packages: &str,
+    publishable_packages: &[String],
+    strict_packages: &BTreeSet<String>,
+    workspace_edges: &BTreeSet<(String, String)>,
 ) {
-    let workspace_edges = cargo_metadata_workspace_edges(root);
-    for (package, dependency) in &workspace_edges {
+    for (package, dependency) in workspace_edges {
         assert!(
-            !strict_packages.contains(&format!("\"{package}\"")),
+            !strict_packages.contains(package),
             "strict package preflight must not include `{package}` while it depends on staged workspace crate `{dependency}`"
         );
         let package_position = publishable_packages
@@ -501,43 +520,45 @@ fn assert_package_gate_dependency_order(
     );
 }
 
-fn const_array_entries(block: &str) -> Vec<&str> {
-    block
-        .lines()
-        .map(|line| line.trim().trim_matches([',', '"']))
-        .filter(|entry| {
-            !entry.is_empty()
-                && !entry.starts_with("const ")
-                && !entry.starts_with(']')
-                && !entry.starts_with('&')
-        })
-        .collect()
-}
-
 #[test]
-fn release_manifest_covers_all_publishable_crates() {
+fn release_manifest_is_schema_two_and_drives_the_legacy_preflight() {
     let root = repo_root();
-    let xtask = xtask_sources(root);
     let release_manifest =
         fs::read_to_string(root.join("release-crates.json")).expect("read release manifest");
     let publish_script =
         fs::read_to_string(root.join("scripts/publish-crate.sh")).expect("read publish script");
-    let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
-    let publishable_packages: Vec<&str> = publishable
-        .lines()
-        .map(|line| line.trim().trim_matches([',', '"']))
-        .filter(|package| {
-            !package.is_empty()
-                && !package.starts_with("const ")
-                && !package.starts_with(']')
-                && !package.starts_with('&')
-        })
-        .collect();
+    let entries = release_manifest_entries(root);
+    let publishable_packages = entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<Vec<_>>();
 
+    assert_eq!(entries.len(), 19);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        entries.len(),
+        "release manifest crate names must be unique"
+    );
     assert_contains_all(
         "release manifest publishable package coverage",
         &release_manifest,
         &publishable_packages,
+    );
+    assert_contains_all(
+        "release manifest schema and tiers",
+        &release_manifest,
+        &[
+            "\"schema\": 2",
+            "\"crates\"",
+            "\"api_contract\": \"stable\"",
+            "\"api_contract\": \"experimental\"",
+            "\"api_contract\": \"implementation\"",
+            "\"api_contract\": \"binary\"",
+        ],
     );
     assert_contains_all(
         "legacy preflight consumes release manifest",

@@ -176,11 +176,11 @@ pub(super) struct MetalResidentGroupMetadata {
 
 #[cfg(target_os = "macos")]
 impl MetalResidentGroupMetadata {
-    pub(super) fn from_prepared(group: &PreparedBatchGroup, options: BatchDecodeOptions) -> Self {
+    pub(super) fn from_prepared(group: &PreparedBatchGroup, _options: BatchDecodeOptions) -> Self {
         let MetalBatchGroupCompletion {
             decoded_rects,
             warnings,
-        } = MetalBatchGroupCompletion::from_prepared(group, options);
+        } = MetalBatchGroupCompletion::from_prepared(group);
         Self {
             info: group.info().clone(),
             source_indices: group.source_indices().to_vec(),

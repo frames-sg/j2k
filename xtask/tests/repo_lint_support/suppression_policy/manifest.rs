@@ -8,6 +8,7 @@ use crate::repo_lint_support::{repo_root, repo_text_files};
 // Safety suppressions are an exact inventory. Removing one from a manifest must
 // remove it here too, so stale policy entries cannot silently re-authorize it.
 const REVIEWED_SAFETY_ALLOWS: &[(&str, &str, &str)] = &[
+    ("crates/j2k-alloc-probe/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-core/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-cuda-runtime/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-cuda/Cargo.toml", "rust", "unsafe_code"),

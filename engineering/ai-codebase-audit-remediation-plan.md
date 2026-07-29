@@ -87,8 +87,10 @@ one reopens review but does not predetermine a split.
 | `xtask/src/perf_guard.rs` | Benchmark snapshot/run/compare workflow | 813 before inline tests | One performance-evidence lifecycle | Snapshot schema v2, another runner, or 900 production lines |
 | `crates/j2k-test-support/src/jpeg_fixtures/builders.rs` | Explicit JPEG fixture construction | 3,478 test-support lines | Test data is intentionally explicit and excluded from production metrics | Repeated fixture bug fixes diverge or a reusable format owner emerges |
 
-The focused CUDA registry, classic decode, direct-plan, and `j2k-ml` modules
-remain covered by structural line and ownership ratchets.
+At the historical baseline, focused CUDA registry, classic decode,
+direct-plan, and `j2k-ml` modules were covered by structural line and ownership
+ratchets. Current repository-lint scope is defined in
+[`engineering/repo-lint-contract.md`](repo-lint-contract.md).
 
 ## Accepted clone register
 
@@ -155,14 +157,14 @@ pass.
 | `cargo xtask clippy-strict` | pass | pending — final frozen-source run |
 | `cargo xtask test` including macOS Metal tests | pass | pending — final frozen-source run |
 | `cargo xtask doc` | covered by baseline test doctests; standalone pending | pending — final frozen-source run |
-| `cargo xtask repo-lint --strict` | pass, 423 checks | pending — final frozen-source run |
+| `cargo xtask repo-lint` | pass, 423 checks | pending — final frozen-source run |
 | `cargo xtask unsafe-audit` | pass | pending — final frozen-source run |
 | `cargo xtask clone-audit` | pass, 1.96% | pending — final frozen-source run |
 | test/support clone audit | not yet implemented | pending — final frozen-source run |
 | `cargo xtask panic-surface` | pass | pending — final frozen-source run |
-| `cargo xtask typos` | pass | pending — final frozen-source run |
+| `crate-ci/typos` workflow gate | pass | pending — final frozen-source run |
 | `cargo xtask machete` | pass | pending — final frozen-source run |
-| `cargo xtask deny` | pass with reviewed warnings | pending — final frozen-source run |
+| `EmbarkStudios/cargo-deny-action` workflow gate | pass with reviewed warnings | pending — final frozen-source run |
 | `cargo xtask codec-math-codegen` | pass | pending — final frozen-source run |
 | `cargo xtask stable-api` | pass | pending — generated inventory is stale until final API freeze |
 | `cargo xtask semver` | pass | pending — final API freeze review |
