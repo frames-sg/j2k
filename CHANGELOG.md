@@ -3,9 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.8.0`.
+## [0.8.0] - 2026-07-29
 
 - Breaking: decoding is strict by default in `j2k` and `j2k-native`. Callers
   that intentionally accept the documented JP2/JPH optional-metadata

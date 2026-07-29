@@ -66,8 +66,9 @@ different checkout or an uncommitted source copy as exact-SHA release evidence.
    content-distinct batches 1/8/32/64 for the staged accelerator adapters
    versus CPU-decode-and-upload. Record uncertainty, memory, and transfer
    counters without reusing old direct-route claims.
-4. Keep the staged version under `Unreleased` until clean-consumer and hardware
-   gates pass; only then freeze a dated changelog and exact candidate SHA.
+4. Freeze the staged version under a dated changelog heading only after
+   clean-consumer and hardware gates pass; any later edit creates a new
+   candidate and requires those gates again.
 5. After publication, create fresh consumers pinned to the exact published
    version and repeat CPU, CUDA, and Metal checks before any community notice.
 
