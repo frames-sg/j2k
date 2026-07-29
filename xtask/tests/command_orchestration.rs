@@ -135,6 +135,11 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
     assert!(log.contains("package -p j2k-core --list|"));
     assert!(log.contains("publish -p j2k-core --dry-run|"));
     assert!(log.contains("package -p j2k-cli --no-verify"));
+    #[cfg(target_os = "macos")]
+    {
+        assert!(log.contains("git rev-parse v0.7.5^{commit}"));
+        assert!(log.contains("git show v0.7.5:docs/stable-api-1.0.public-api.txt"));
+    }
 }
 
 fn assert_stable_api_fails_at_expected_boundary(output: &Output, context: &str) {
