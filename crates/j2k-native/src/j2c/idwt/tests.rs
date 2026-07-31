@@ -345,7 +345,6 @@ fn irreversible_97_nonzero_origin_roi_matches_scalar_reference_within_eight_ulps
     let lh = [10.0, -11.5, 12.75];
     let hh = [-13.0, 14.25];
     let output_window = IntRect::from_ltrb(1, 0, 5, 3);
-    let decomposition_rect = IntRect::from_ltrb(0, 0, 5, 3);
     let mut output = vec![0.0; 12];
 
     interleave_samples_roi(
@@ -355,7 +354,6 @@ fn irreversible_97_nonzero_origin_roi_matches_scalar_reference_within_eight_ulps
         CoefficientSource::new(&hh, IntRect::from_ltrb(0, 0, 2, 1), 2),
         &mut output,
         output_window,
-        decomposition_rect,
     );
     filter_horizontal(&mut output, output_window, WaveletTransform::Irreversible97);
     filter_vertical(&mut output, output_window, WaveletTransform::Irreversible97);
