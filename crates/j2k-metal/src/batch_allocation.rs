@@ -12,11 +12,13 @@ pub(crate) use j2k_core::{
 
 use crate::Error;
 
+#[cfg(target_os = "macos")]
 pub(crate) fn try_vec<T>(capacity: usize, what: &'static str) -> Result<Vec<T>, Error> {
     let mut budget = BatchMetadataBudget::new(what);
     budget.try_vec(capacity, what).map_err(Error::from)
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn try_vec_from_array<T, const N: usize>(
     values: [T; N],
     what: &'static str,
@@ -26,6 +28,7 @@ pub(crate) fn try_vec_from_array<T, const N: usize>(
     Ok(owned)
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn try_clone_slice<T: Clone>(values: &[T], what: &'static str) -> Result<Vec<T>, Error> {
     let mut owned = try_vec(values.len(), what)?;
     owned.extend_from_slice(values);
