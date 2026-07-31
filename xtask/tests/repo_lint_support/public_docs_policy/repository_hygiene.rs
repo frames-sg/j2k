@@ -7,6 +7,26 @@ use super::super::{
     repo_text_files,
 };
 
+fn latest_release_version(root: &Path) -> String {
+    let output = Command::new("git")
+        .args(["tag", "--list", "v[0-9]*", "--sort=-v:refname"])
+        .current_dir(root)
+        .output()
+        .expect("list release tags");
+    assert!(
+        output.status.success(),
+        "list release tags: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tags = String::from_utf8(output.stdout).expect("release tags are UTF-8");
+    tags.lines()
+        .next()
+        .and_then(|tag| tag.strip_prefix('v'))
+        .filter(|version| !version.is_empty())
+        .expect("repository has a versioned release tag")
+        .to_owned()
+}
+
 fn is_git_ignored_untracked(root: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(root).unwrap_or(path);
     let status = Command::new("git")
@@ -98,4 +118,73 @@ fn referenced_shell_scripts_exist() {
         missing.is_empty(),
         "all referenced shell scripts must exist: {missing:?}"
     );
+}
+
+#[test]
+fn release_facing_docs_match_the_latest_release_tag() {
+    let root = repo_root();
+    let version = latest_release_version(root);
+    let minor_line = version
+        .rsplit_once('.')
+        .map(|(line, _)| format!("{line}.x"))
+        .expect("release version has a patch component");
+
+    let checks = [
+        (
+            "README.md",
+            format!("**Release status:** `{version}` is published and security-supported."),
+        ),
+        (
+            "SECURITY.md",
+            format!("| `{version}` | Latest published and security-supported release |"),
+        ),
+        (
+            "docs/release.md",
+            format!(
+                "The `j2k` {version} public crate release is published and security-supported."
+            ),
+        ),
+        (
+            "docs/stable-api-1.0.md",
+            format!("The currently published stable contract is the `{minor_line}` line."),
+        ),
+        (
+            "docs/env-vars.md",
+            format!("Stable: supported for the published v{minor_line} contract."),
+        ),
+        (
+            "engineering/burn-community-notice-draft.md",
+            format!("`j2k-ml {version}` is published on crates.io."),
+        ),
+        (
+            "engineering/j2k-ml-adoption-release.md",
+            format!("# `j2k-ml {version}` adoption follow-up"),
+        ),
+    ];
+    for (relative, expected) in checks {
+        let source = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|err| panic!("read {relative}: {err}"));
+        assert!(
+            source.contains(&expected),
+            "{relative} must describe latest release tag v{version} with `{expected}`"
+        );
+    }
+
+    for relative in [
+        "docs/index.html",
+        "docs/cuda-jpeg2000-rust/index.html",
+        "docs/gpu-jpeg2000-rust/index.html",
+        "docs/htj2k-rust/index.html",
+        "docs/metal-jpeg2000-rust/index.html",
+        "docs/rust-jpeg2000-codec/index.html",
+    ] {
+        let source = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|err| panic!("read {relative}: {err}"));
+        let expected =
+            format!("<strong>Release status:</strong> j2k {version} is published on crates.io");
+        assert!(
+            source.contains(&expected),
+            "{relative} must describe latest release tag v{version}"
+        );
+    }
 }

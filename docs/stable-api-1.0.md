@@ -41,8 +41,8 @@ therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
 compatibility escape hatch.
 
 The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
-with the same generator, rustdoc, and target pins. The generated 0.8.0 semver
-report compares the ordinary candidate inventory with 0.7.5 and also records
+with the same generator, rustdoc, and target pins. The published 0.8.0 semver
+report compares its ordinary inventory with 0.7.5 and also records
 each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
@@ -69,17 +69,17 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
-inventory. The staged comparison belongs in the generated
+inventory. The completed 0.7.5-to-0.8.0 comparison is in the generated
 [`0.8.0` reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md).
-It remains candidate evidence until source freeze and the exact-SHA local,
-hosted, Metal, and CUDA gates complete; it does not claim a release.
+That report became release evidence after source freeze and the exact-SHA
+local, hosted, Metal, and CUDA gates completed.
 
-The currently published stable contract is the `0.7.x` line. The staged `0.8.0`
-candidate intentionally changes the strict-decoding behavior and one warning
-variant under Cargo's pre-1.0 compatibility rules. It does not claim source or
-behavior compatibility with `0.7.x`; its exact breaks and migrations are in the
-review file. Version `0.7.0` similarly contracted parts of the pre-1.0 `0.6.2`
-API and did not claim source compatibility with `0.6.x`.
+The currently published stable contract is the `0.8.x` line. Version `0.8.0`
+intentionally changed the strict-decoding behavior and one warning variant
+under Cargo's pre-1.0 compatibility rules. It does not claim source or behavior
+compatibility with `0.7.x`; its exact breaks and migrations are in the review
+file. Version `0.7.0` similarly contracted parts of the pre-1.0 `0.6.2` API and
+did not claim source compatibility with `0.6.x`.
 
 ## Stability tiers
 
@@ -121,14 +121,14 @@ removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
 exception applied only to `0.7.5`.
 
-The active transition lock is equally narrow: `0.8.0` is the only candidate permitted to compare against `v0.7.5`
-as an intentional pre-1.0 break. It
-rejects `0.8.1` or any later candidate while that older baseline remains
-configured. After `0.8.0` is actually published, rotate the semver baseline to the published `v0.8.0`
-tag, version, and peeled commit, then disable the
-transition lock before preparing any `0.8.x` follow-up. That makes subsequent
-patch-line checks compare with the real 0.8 contract instead of continuing to
-receive permission for 0.7-to-0.8 breakage.
+The completed transition lock was intentionally narrow: `0.8.0` was the only
+candidate permitted to compare against `v0.7.5` as an intentional pre-1.0
+break. The checked-in release evidence retains that comparison, but it rejects
+`0.8.1` or any later candidate while the older baseline remains configured.
+Before preparing any follow-up, rotate the semver baseline to the published
+`v0.8.0` tag, version, and peeled commit, then disable the transition lock.
+Subsequent patch-line checks must compare with the real 0.8 contract instead
+of continuing to receive permission for 0.7-to-0.8 breakage.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.

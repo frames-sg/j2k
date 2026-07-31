@@ -1,6 +1,7 @@
 # Source-aware clone audits
 
-Release line: 0.7.3
+Audit baseline established for release 0.7.3; these ratchets remain the current
+clone-audit thresholds and do not describe the latest published release.
 
 Production baseline: 1.94% duplicated lines (5,791 lines, 211 exact
 clones, 1,388 jscpd sources). The enforced ceiling is 2.01%.
