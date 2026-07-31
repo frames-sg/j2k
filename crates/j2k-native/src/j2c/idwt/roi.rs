@@ -6,7 +6,6 @@ use super::super::build::{Decomposition, SubBand};
 use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
 use super::super::rect::IntRect;
-use super::super::roi;
 use super::horizontal::filter_horizontal;
 use super::model::{CoefficientSource, IDWTOutput};
 use super::vertical::filter_vertical;
@@ -130,7 +129,7 @@ fn apply_level_roi(
     try_resize_decode_elements(target, required_len, 0.0)?;
     *idwt_output_samples = idwt_output_samples.saturating_add(required_len);
 
-    interleave_samples_roi(ll, hl, lh, hh, target, output_window, decomposition.rect);
+    interleave_samples_roi(ll, hl, lh, hh, target, output_window);
     if output_window.width() > 0 && output_window.height() > 0 {
         filter_horizontal(target, output_window, transform);
         filter_vertical(target, output_window, transform);
@@ -145,34 +144,25 @@ pub(super) fn interleave_samples_roi(
     hh: CoefficientSource<'_>,
     output: &mut [f32],
     output_window: IntRect,
-    decomposition_rect: IntRect,
 ) {
+    // Interleaved output coordinate u reads band coordinate u / 2 on each
+    // axis: even u selects the low band (ceil(u / 2) == u / 2) and odd u the
+    // high band (floor(u / 2) == u / 2). Band coordinates are absolute
+    // (Formula B-15), and every source resolves them against its own rect in
+    // `get` — including windowed intermediate outputs whose rect origin lies
+    // inside the band plane, which must not be mistaken for a band origin.
     let width = output_window.width() as usize;
     for y in output_window.y0..output_window.y1 {
         let low_y = y % 2 == 0;
+        let band_y = y / 2;
         for x in output_window.x0..output_window.x1 {
             let low_x = x % 2 == 0;
-            let (source, band_x, band_y) = match (low_x, low_y) {
-                (true, true) => (
-                    ll,
-                    roi::idwt_band_coord(decomposition_rect.x0, x, ll.rect.x0, true),
-                    roi::idwt_band_coord(decomposition_rect.y0, y, ll.rect.y0, true),
-                ),
-                (false, true) => (
-                    hl,
-                    roi::idwt_band_coord(decomposition_rect.x0, x, hl.rect.x0, false),
-                    roi::idwt_band_coord(decomposition_rect.y0, y, hl.rect.y0, true),
-                ),
-                (true, false) => (
-                    lh,
-                    roi::idwt_band_coord(decomposition_rect.x0, x, lh.rect.x0, true),
-                    roi::idwt_band_coord(decomposition_rect.y0, y, lh.rect.y0, false),
-                ),
-                (false, false) => (
-                    hh,
-                    roi::idwt_band_coord(decomposition_rect.x0, x, hh.rect.x0, false),
-                    roi::idwt_band_coord(decomposition_rect.y0, y, hh.rect.y0, false),
-                ),
+            let band_x = x / 2;
+            let source = match (low_x, low_y) {
+                (true, true) => ll,
+                (false, true) => hl,
+                (true, false) => lh,
+                (false, false) => hh,
             };
             let dst = (y - output_window.y0) as usize * width + (x - output_window.x0) as usize;
             output[dst] = source.get(band_x, band_y);

@@ -70,7 +70,6 @@ pub(crate) fn apply_single_decomposition_idwt_job(
         direct_coefficient_source(job.hh),
         target,
         rect,
-        rect,
     );
     if rect.width() > 0 && rect.height() > 0 {
         let transform = wavelet_transform_from_public(job.transform);

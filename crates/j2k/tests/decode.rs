@@ -1674,3 +1674,95 @@ fn zero_dwt53(width: u32, height: u32) -> J2kForwardDwt53Output {
         }],
     }
 }
+
+fn masked_fixture_byte(value: u32) -> u8 {
+    u8::try_from(value & 0xff).expect("masked fixture byte fits u8")
+}
+
+fn encode_tiled_rgb_codestream(width: u32, height: u32, tile: (u32, u32)) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..height)
+        .flat_map(|y| {
+            (0..width).flat_map(move |x| {
+                [
+                    masked_fixture_byte(x),
+                    masked_fixture_byte(y),
+                    masked_fixture_byte(x / 8 + y / 8),
+                ]
+            })
+        })
+        .collect();
+    let options = EncodeOptions {
+        tile_size: Some(tile),
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, width, height, 3, 8, false, &options).expect("encode")
+}
+
+fn assert_region_decode_matches_whole_decode_crop(bytes: &[u8], dims: (u32, u32), roi: Rect) {
+    let fmt = PixelFormat::Rgb8;
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+    let mut full_decoder = J2kDecoder::new(bytes).expect("full decoder");
+    let full_stride = dims.0 as usize * bytes_per_pixel;
+    let mut full = vec![0_u8; full_stride * dims.1 as usize];
+    full_decoder
+        .decode_into(&mut full, full_stride, fmt)
+        .expect("full decode");
+
+    let mut region_decoder = J2kDecoder::new(bytes).expect("region decoder");
+    let region_stride = roi.w as usize * bytes_per_pixel;
+    let mut region = vec![0_u8; region_stride * roi.h as usize];
+    let outcome = region_decoder
+        .decode_region_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut region,
+            region_stride,
+            fmt,
+            roi,
+        )
+        .expect("region decode");
+    assert_eq!(outcome.decoded, roi);
+    assert_eq!(
+        region,
+        crop_u8(&full, dims.0 as usize, bytes_per_pixel, roi),
+        "region {},{} {}x{} disagrees with whole-image decode",
+        roi.x,
+        roi.y,
+        roi.w,
+        roi.h,
+    );
+}
+
+#[test]
+fn region_decode_inside_tiles_matches_whole_decode_crop() {
+    // Regions with margins on every side inside a tile chain the windowed
+    // region IDWT through intermediate windows that are not flush with the
+    // decomposition rectangles; their content shifted before the fix for
+    // the sub-band origin confusion (issue #62). Cover a grid with partial
+    // edge tiles and an exact grid, with interior, tile-origin-flush, and
+    // tile-boundary-straddling regions.
+    for dims in [(320, 288), (512, 512)] {
+        let bytes = encode_tiled_rgb_codestream(dims.0, dims.1, (256, 256));
+        for roi in [
+            Rect {
+                x: 100,
+                y: 100,
+                w: 100,
+                h: 100,
+            },
+            Rect {
+                x: 20,
+                y: 20,
+                w: 64,
+                h: 64,
+            },
+            Rect {
+                x: 200,
+                y: 150,
+                w: 80,
+                h: 100,
+            },
+        ] {
+            assert_region_decode_matches_whole_decode_crop(&bytes, dims, roi);
+        }
+    }
+}
