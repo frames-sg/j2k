@@ -37,8 +37,15 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
         log.contains("clippy -p xtask --test repo_lint --all-features -- -D warnings|"),
         "the test=false repo-lint target needs an explicit Clippy pass: {log}"
     );
-    assert!(log.contains("clippy -p j2k-native -p j2k --all-targets --all-features --no-deps"));
-    assert!(log.contains("-W clippy::pedantic -W clippy::nursery -D warnings"));
+    assert!(log.contains(
+        "clippy -p j2k-native -p j2k --lib --all-features --no-deps -- \
+         -W clippy::pedantic -W clippy::nursery -D warnings"
+    ));
+    assert!(log.contains(
+        "clippy -p j2k-native -p j2k --bins --examples --tests --benches --all-features \
+         --no-deps -- -W clippy::pedantic -W clippy::nursery -D warnings"
+    ));
+    assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros|"));
     assert!(log.contains("test --workspace --all-features --lib --bins --tests"));
     assert!(log.contains("--exclude j2k-alloc-probe"));
     assert!(log.contains("test -p j2k-alloc-probe|"));

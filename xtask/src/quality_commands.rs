@@ -88,15 +88,45 @@ pub(super) fn clippy() -> Result<(), String> {
 }
 
 pub(super) fn clippy_strict() -> Result<(), String> {
-    let mut args = vec![
+    let mut library_args = vec![
         "clippy",
         "-p",
         "j2k-native",
         "-p",
         "j2k",
-        "--all-targets",
+        "--lib",
         "--all-features",
         "--no-deps",
+    ];
+    append_strict_clippy_lints(&mut library_args);
+    run_cargo(&library_args)?;
+
+    let mut non_library_args = vec![
+        "clippy",
+        "-p",
+        "j2k-native",
+        "-p",
+        "j2k",
+        "--bins",
+        "--examples",
+        "--tests",
+        "--benches",
+        "--all-features",
+        "--no-deps",
+    ];
+    append_strict_clippy_lints(&mut non_library_args);
+    non_library_args.extend([
+        "-A",
+        "clippy::disallowed_methods",
+        "-A",
+        "clippy::disallowed_macros",
+    ]);
+
+    run_cargo(&non_library_args)
+}
+
+fn append_strict_clippy_lints(args: &mut Vec<&'static str>) {
+    args.extend([
         "--",
         "-W",
         "clippy::pedantic",
@@ -104,15 +134,13 @@ pub(super) fn clippy_strict() -> Result<(), String> {
         "clippy::nursery",
         "-D",
         "warnings",
-    ];
+    ]);
 
     // Keep the strict gate useful as a ratchet: enable pedantic/nursery, but
     // baseline high-noise codec-math lints so new lint classes still fail.
     for lint in STRICT_CLIPPY_BASELINE_ALLOWED_LINTS {
         args.extend(["-A", lint]);
     }
-
-    run_cargo(&args)
 }
 
 const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[

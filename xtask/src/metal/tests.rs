@@ -77,8 +77,10 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     }
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 11);
-    assert!(log.contains("clippy --all-targets --all-features"));
+    assert_eq!(log.lines().count(), 12);
+    assert!(log.contains("clippy --lib --all-features"));
+    assert!(log.contains("clippy --bins --examples --tests --benches --all-features"));
+    assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros"));
     assert!(log.contains("test --release --all-features --lib --bins --tests"));
     assert!(log.contains("test --release --all-features --doc"));
     assert!(log.contains("--ignored --list"));
@@ -98,9 +100,12 @@ fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
     run_release_metal(ValidationMode::Quick).expect("quick Metal command plan");
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 9);
+    assert_eq!(log.lines().count(), 10);
     assert!(log.lines().all(|line| line.contains("--profile gpu-quick")));
-    assert_eq!(log.matches("clippy --profile gpu-quick").count(), 1);
+    assert_eq!(log.matches("clippy --profile gpu-quick").count(), 2);
+    assert!(log.contains("clippy --profile gpu-quick --lib"));
+    assert!(log.contains("clippy --profile gpu-quick --bins --examples --tests --benches"));
+    assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros"));
     assert!(!log.contains("--all-features"));
     assert!(!log.contains("cuda"));
     assert!(log.contains("--features j2k-ml/metal"));

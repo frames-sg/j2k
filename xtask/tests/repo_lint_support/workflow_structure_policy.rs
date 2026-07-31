@@ -138,6 +138,37 @@ fn the_secret_scan_redacts_findings_and_scans_full_history() {
 }
 
 #[test]
+fn stable_api_job_fetches_release_tags() {
+    let full_validation = workflow("full-validation.yml");
+    let root = value_mapping(&full_validation.document, &full_validation.file_name);
+    let stable_api = jobs(root, &full_validation.file_name)
+        .get(Value::String("stable-api".to_owned()))
+        .and_then(Value::as_mapping)
+        .expect("stable-api job");
+    let steps = mapping_get(stable_api, "steps")
+        .and_then(Value::as_sequence)
+        .expect("stable-api steps");
+    let checkout = steps
+        .iter()
+        .filter_map(Value::as_mapping)
+        .find(|step| {
+            mapping_get(step, "uses")
+                .and_then(Value::as_str)
+                .is_some_and(|reference| reference.starts_with("actions/checkout@"))
+        })
+        .expect("stable-api checkout step");
+    let fetches_full_history = mapping_get(checkout, "with")
+        .and_then(Value::as_mapping)
+        .and_then(|with| mapping_get(with, "fetch-depth"))
+        .is_some_and(is_numeric_zero);
+
+    assert!(
+        fetches_full_history,
+        "stable-api checkout must fetch release tags used by repo-lint and stable-api"
+    );
+}
+
+#[test]
 fn manual_publish_dispatch_is_dry_run_only() {
     let publish = workflow("publish.yml");
     let root = value_mapping(&publish.document, &publish.file_name);

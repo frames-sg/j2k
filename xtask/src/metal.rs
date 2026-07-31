@@ -114,10 +114,22 @@ pub(crate) fn metal_compile() -> Result<(), String> {
 }
 
 fn run_metal_compile() -> Result<(), String> {
-    let mut clippy_args = vec!["clippy", "--all-targets", "--all-features"];
-    append_packages(&mut clippy_args);
-    clippy_args.extend_from_slice(&["--", "-D", "warnings"]);
-    process::run_command(cargo(), &clippy_args, CommandContext::new())?;
+    let mut library_clippy_args = vec!["clippy", "--lib", "--all-features"];
+    append_packages(&mut library_clippy_args);
+    library_clippy_args.extend_from_slice(&["--", "-D", "warnings"]);
+    process::run_command(cargo(), &library_clippy_args, CommandContext::new())?;
+
+    let mut non_library_clippy_args = vec![
+        "clippy",
+        "--bins",
+        "--examples",
+        "--tests",
+        "--benches",
+        "--all-features",
+    ];
+    append_packages(&mut non_library_clippy_args);
+    append_non_library_clippy_flags(&mut non_library_clippy_args);
+    process::run_command(cargo(), &non_library_clippy_args, CommandContext::new())?;
 
     let mut test_args = vec![
         "test",
@@ -147,12 +159,19 @@ pub(crate) fn release_metal(args: impl Iterator<Item = String>) -> Result<(), St
 
 fn run_release_metal(mode: ValidationMode) -> Result<(), String> {
     if mode == ValidationMode::Quick {
-        let output = run_cargo_captured(
-            &quick_clippy_args(),
-            METAL_RUNTIME_ENV,
-            "quick Metal production-feature Clippy",
-        )?;
-        reject_skip_markers(&output, "quick Metal production-feature Clippy")?;
+        for (args, label) in [
+            (
+                quick_clippy_args(false),
+                "quick Metal production library Clippy",
+            ),
+            (
+                quick_clippy_args(true),
+                "quick Metal non-library target Clippy",
+            ),
+        ] {
+            let output = run_cargo_captured(&args, METAL_RUNTIME_ENV, label)?;
+            reject_skip_markers(&output, label)?;
+        }
     }
     validate_required_ignored_inventory(mode)?;
 
@@ -188,12 +207,33 @@ fn run_release_metal(mode: ValidationMode) -> Result<(), String> {
     validate_exact_ignored_run(&output)
 }
 
-fn quick_clippy_args() -> Vec<&'static str> {
-    let mut args = vec!["clippy", "--profile", "gpu-quick", "--all-targets"];
+fn quick_clippy_args(non_library_targets: bool) -> Vec<&'static str> {
+    let mut args = vec!["clippy", "--profile", "gpu-quick"];
+    if non_library_targets {
+        args.extend_from_slice(&["--bins", "--examples", "--tests", "--benches"]);
+    } else {
+        args.push("--lib");
+    }
     append_packages(&mut args);
     args.extend_from_slice(&["--features", "j2k-ml/metal"]);
-    args.extend_from_slice(&["--", "-D", "warnings"]);
+    if non_library_targets {
+        append_non_library_clippy_flags(&mut args);
+    } else {
+        args.extend_from_slice(&["--", "-D", "warnings"]);
+    }
     args
+}
+
+fn append_non_library_clippy_flags(args: &mut Vec<&'static str>) {
+    args.extend_from_slice(&[
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::disallowed_methods",
+        "-A",
+        "clippy::disallowed_macros",
+    ]);
 }
 
 fn runtime_suite_args(package: &str, mode: ValidationMode) -> Vec<&str> {
