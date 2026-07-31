@@ -1,13 +1,54 @@
 use alloc::vec::Vec;
 
 use super::build::Decomposition;
-use super::codestream::{Header, WaveletTransform};
+use super::codestream::{Header, SizeData, WaveletTransform};
 use super::decode::{DecompositionStorage, OutputRegion};
 use super::rect::IntRect;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use crate::{
     idwt_required_input_window_for_rects, try_resize_decode_elements, J2kRequiredBandRegion, Result,
 };
+
+/// Whether a reference-grid tile can contribute to a decoded output region.
+///
+/// The output region is expressed in final image coordinates. Tile bounds are
+/// projected into the same component- and resolution-shrunk grid with outward
+/// rounding, which may retain a boundary tile but never drops a contributor.
+pub(crate) fn tile_intersects_output_region(
+    tile_rect: IntRect,
+    size_data: &SizeData,
+    output_region: OutputRegion,
+) -> bool {
+    let x_shrink = size_data
+        .x_shrink_factor
+        .saturating_mul(size_data.x_resolution_shrink_factor)
+        .max(1);
+    let y_shrink = size_data
+        .y_shrink_factor
+        .saturating_mul(size_data.y_resolution_shrink_factor)
+        .max(1);
+    let x_offset = size_data.image_area_x_offset.div_ceil(x_shrink);
+    let y_offset = size_data.image_area_y_offset.div_ceil(y_shrink);
+    let region = IntRect::from_ltrb(
+        output_region.x.saturating_add(x_offset),
+        output_region.y.saturating_add(y_offset),
+        output_region
+            .x
+            .saturating_add(output_region.width)
+            .saturating_add(x_offset),
+        output_region
+            .y
+            .saturating_add(output_region.height)
+            .saturating_add(y_offset),
+    );
+    let tile_rect = IntRect::from_ltrb(
+        tile_rect.x0 / x_shrink,
+        tile_rect.y0 / y_shrink,
+        tile_rect.x1.div_ceil(x_shrink),
+        tile_rect.y1.div_ceil(y_shrink),
+    );
+    tile_rect.intersects(region)
+}
 
 #[derive(Debug)]
 #[expect(
@@ -244,4 +285,84 @@ fn required_region_from_int_rect(rect: IntRect) -> J2kRequiredBandRegion {
 
 fn int_rect_from_required_region(region: J2kRequiredBandRegion) -> IntRect {
     IntRect::from_ltrb(region.x0, region.y0, region.x1, region.y1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tile_intersects_output_region, IntRect, OutputRegion, SizeData};
+    use crate::j2c::codestream::ComponentSizeInfo;
+
+    fn size_data(
+        image_offset: (u32, u32),
+        component_shrink: (u32, u32),
+        resolution_shrink: (u32, u32),
+    ) -> SizeData {
+        SizeData {
+            reference_grid_width: 515,
+            reference_grid_height: 389,
+            image_area_x_offset: image_offset.0,
+            image_area_y_offset: image_offset.1,
+            tile_width: 128,
+            tile_height: 128,
+            tile_x_offset: 1,
+            tile_y_offset: 1,
+            component_sizes: vec![ComponentSizeInfo {
+                precision: 8,
+                signed: false,
+                horizontal_resolution: 1,
+                vertical_resolution: 1,
+            }],
+            x_shrink_factor: component_shrink.0,
+            y_shrink_factor: component_shrink.1,
+            x_resolution_shrink_factor: resolution_shrink.0,
+            y_resolution_shrink_factor: resolution_shrink.1,
+        }
+    }
+
+    #[test]
+    fn tile_intersection_handles_nonzero_image_and_tile_origins() {
+        let size_data = size_data((3, 5), (1, 1), (4, 2));
+        let first_tile = IntRect::from_ltrb(3, 5, 129, 129);
+        let next_tile = IntRect::from_ltrb(129, 5, 257, 129);
+        let top_left = OutputRegion {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+
+        assert!(tile_intersects_output_region(
+            first_tile, &size_data, top_left
+        ));
+        assert!(!tile_intersects_output_region(
+            next_tile, &size_data, top_left
+        ));
+    }
+
+    #[test]
+    fn tile_intersection_combines_component_and_resolution_shrink() {
+        let size_data = size_data((3, 5), (2, 2), (2, 4));
+        let tile = IntRect::from_ltrb(129, 129, 257, 257);
+
+        assert!(tile_intersects_output_region(
+            tile,
+            &size_data,
+            OutputRegion {
+                x: 31,
+                y: 15,
+                width: 2,
+                height: 2,
+            }
+        ));
+        assert!(!tile_intersects_output_region(
+            tile,
+            &size_data,
+            OutputRegion {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            }
+        ));
+    }
 }
