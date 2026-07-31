@@ -10,6 +10,7 @@ use super::{
     PayloadRangeOwner, ResolutionTile, Result, Tile, ValidationError, Vec,
 };
 use crate::j2c::decode::TileDecompositions;
+use crate::j2c::roi::output_region_rect;
 
 pub(super) mod sub_band;
 use self::sub_band::build_grayscale_sub_band_step;
@@ -285,18 +286,11 @@ fn direct_store_geometry(
         width: header.size_data.image_width(),
         height: header.size_data.image_height(),
     });
-    let x_offset = header
-        .size_data
-        .image_area_x_offset
-        .div_ceil(header.size_data.x_shrink_factor);
-    let y_offset = header
-        .size_data
-        .image_area_y_offset
-        .div_ceil(header.size_data.y_shrink_factor);
-    let region_x0 = output_region.x.saturating_add(x_offset);
-    let region_y0 = output_region.y.saturating_add(y_offset);
-    let region_x1 = region_x0.saturating_add(output_region.width);
-    let region_y1 = region_y0.saturating_add(output_region.height);
+    let region = output_region_rect(&header.size_data, output_region);
+    let region_x0 = region.x0;
+    let region_y0 = region.y0;
+    let region_x1 = region.x1;
+    let region_y1 = region.y1;
     let copy_x0 = input_rect.x0.max(resolution_rect.x0).max(region_x0);
     let copy_y0 = input_rect.y0.max(resolution_rect.y0).max(region_y0);
     let copy_x1 = input_rect.x1.min(resolution_rect.x1).min(region_x1);

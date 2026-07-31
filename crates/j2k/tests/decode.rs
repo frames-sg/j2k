@@ -69,6 +69,30 @@ fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
     bytes[siz_offset + 40 + component * 3] = ssiz;
 }
 
+fn translate_siz_grid(bytes: &mut [u8], offset: (u32, u32)) {
+    let siz_offset = bytes
+        .windows(2)
+        .position(|marker| marker == [0xff, 0x51])
+        .expect("SIZ marker");
+    for (field_offset, delta) in [
+        (6, offset.0),
+        (10, offset.1),
+        (14, offset.0),
+        (18, offset.1),
+        (30, offset.0),
+        (34, offset.1),
+    ] {
+        let field = &mut bytes[siz_offset + field_offset..siz_offset + field_offset + 4];
+        let value = u32::from_be_bytes(field.try_into().expect("four-byte SIZ field"));
+        field.copy_from_slice(
+            &value
+                .checked_add(delta)
+                .expect("translated SIZ field")
+                .to_be_bytes(),
+        );
+    }
+}
+
 fn unsigned_29_bytes(sample: u32) -> [u8; 4] {
     [
         (sample & 0xff) as u8,
@@ -1846,6 +1870,74 @@ fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_cro
             );
         }
     }
+}
+
+#[test]
+fn scaled_region_decode_with_nonzero_grid_origin_matches_scaled_whole_decode_crop() {
+    let (width, height) = (512_u32, 512_u32);
+    let original = encode_tiled_rgb_codestream(width, height, (128, 128));
+    let mut bytes = original.clone();
+    // Translating every SIZ image and tile-grid coordinate by one whole tile
+    // preserves the tile-local payloads while exercising a nonzero origin.
+    translate_siz_grid(&mut bytes, (128, 128));
+
+    let scale = Downscale::Quarter;
+    let scaled_width = width.div_ceil(scale.denominator());
+    let roi = Rect {
+        x: 0,
+        y: 0,
+        w: 128,
+        h: 128,
+    };
+    let scaled_roi = roi.scaled_covering(scale);
+    let fmt = PixelFormat::Rgb8;
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+
+    let mut whole_decoder = J2kDecoder::new(&bytes).expect("whole decoder");
+    let whole_stride = scaled_width as usize * bytes_per_pixel;
+    let mut whole = vec![0_u8; whole_stride * height.div_ceil(scale.denominator()) as usize];
+    whole_decoder
+        .decode_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut whole,
+            whole_stride,
+            fmt,
+            scale,
+        )
+        .expect("scaled whole decode");
+
+    let mut original_decoder = J2kDecoder::new(&original).expect("original decoder");
+    let mut original_whole = vec![0_u8; whole.len()];
+    original_decoder
+        .decode_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut original_whole,
+            whole_stride,
+            fmt,
+            scale,
+        )
+        .expect("original scaled whole decode");
+    assert_eq!(whole, original_whole);
+
+    let mut region_decoder = J2kDecoder::new(&bytes).expect("region decoder");
+    let region_stride = scaled_roi.w as usize * bytes_per_pixel;
+    let mut region = vec![0_u8; region_stride * scaled_roi.h as usize];
+    let outcome = region_decoder
+        .decode_region_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut region,
+            region_stride,
+            fmt,
+            roi,
+            scale,
+        )
+        .expect("scaled region decode");
+
+    assert_eq!(outcome.decoded, scaled_roi);
+    assert_eq!(
+        region,
+        crop_bytes(&whole, scaled_width as usize, bytes_per_pixel, scaled_roi)
+    );
 }
 
 #[test]

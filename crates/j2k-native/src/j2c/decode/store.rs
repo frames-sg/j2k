@@ -4,6 +4,7 @@ use super::{
     bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
+use crate::j2c::roi::{output_grid_offset, output_region_rect};
 
 pub(super) fn apply_sign_shift_after_mct(
     tile_ctx: &mut TileDecodeContext,
@@ -68,10 +69,7 @@ pub(super) fn store<'a>(
         component_info.size_info.vertical_resolution,
     );
 
-    let (image_x_offset, image_y_offset) = (
-        header.size_data.image_area_x_offset,
-        header.size_data.image_area_y_offset,
-    );
+    let (image_x_offset, image_y_offset) = output_grid_offset(&header.size_data);
 
     if let Some(output_region) = tile_ctx.output_region {
         store_region(
@@ -173,14 +171,7 @@ pub(super) fn store<'a>(
         let x_shrink_factor = header.size_data.x_shrink_factor;
         let y_shrink_factor = header.size_data.y_shrink_factor;
 
-        let x_offset = header
-            .size_data
-            .image_area_x_offset
-            .div_ceil(x_shrink_factor);
-        let y_offset = header
-            .size_data
-            .image_area_y_offset
-            .div_ceil(y_shrink_factor);
+        let (x_offset, y_offset) = output_grid_offset(&header.size_data);
 
         // Otherwise, copy sample by sample.
         for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
@@ -219,10 +210,6 @@ pub(super) fn store<'a>(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 fn store_i64<'a>(
     tile: &'a Tile<'a>,
     header: &Header<'_>,
@@ -260,10 +247,7 @@ fn store_i64<'a>(
         component_info.size_info.vertical_resolution,
     );
 
-    let (image_x_offset, image_y_offset) = (
-        header.size_data.image_area_x_offset,
-        header.size_data.image_area_y_offset,
-    );
+    let (image_x_offset, image_y_offset) = output_grid_offset(&header.size_data);
 
     if scale_x == 1 && scale_y == 1 {
         let source_x = image_x_offset.saturating_sub(idwt_output.rect.x0);
@@ -308,14 +292,7 @@ fn store_i64<'a>(
         let x_shrink_factor = header.size_data.x_shrink_factor;
         let y_shrink_factor = header.size_data.y_shrink_factor;
 
-        let x_offset = header
-            .size_data
-            .image_area_x_offset
-            .div_ceil(x_shrink_factor);
-        let y_offset = header
-            .size_data
-            .image_area_y_offset
-            .div_ceil(y_shrink_factor);
+        let (x_offset, y_offset) = output_grid_offset(&header.size_data);
 
         for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
             let relative_y = (y - component_tile.rect.y0) as usize;
@@ -413,23 +390,17 @@ fn store_region<'a>(
     let image_height = header.size_data.image_height();
     let x_shrink_factor = header.size_data.x_shrink_factor;
     let y_shrink_factor = header.size_data.y_shrink_factor;
-    let x_offset = header
-        .size_data
-        .image_area_x_offset
-        .div_ceil(x_shrink_factor);
-    let y_offset = header
-        .size_data
-        .image_area_y_offset
-        .div_ceil(y_shrink_factor);
+    let (x_offset, y_offset) = output_grid_offset(&header.size_data);
     let region_x1 = output_region.x + output_region.width;
     let region_y1 = output_region.y + output_region.height;
     let output_width = output_region.width as usize;
 
     if scale_x == 1 && scale_y == 1 {
-        let region_rect_x0 = output_region.x + x_offset;
-        let region_rect_y0 = output_region.y + y_offset;
-        let region_rect_x1 = region_x1 + x_offset;
-        let region_rect_y1 = region_y1 + y_offset;
+        let region_rect = output_region_rect(&header.size_data, output_region);
+        let region_rect_x0 = region_rect.x0;
+        let region_rect_y0 = region_rect.y0;
+        let region_rect_x1 = region_rect.x1;
+        let region_rect_y1 = region_rect.y1;
         let copy_x0 = idwt_output
             .rect
             .x0
