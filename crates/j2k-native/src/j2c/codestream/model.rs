@@ -415,14 +415,14 @@ impl SizeData {
         Ok((self.reference_grid_height - self.image_area_y_offset).div_ceil(shrink_factor))
     }
 
-    fn checked_x_shrink_factor(&self) -> Result<u32> {
+    pub(crate) fn checked_x_shrink_factor(&self) -> Result<u32> {
         self.x_shrink_factor
             .checked_mul(self.x_resolution_shrink_factor)
             .filter(|factor| *factor != 0)
             .ok_or(ValidationError::InvalidDimensions.into())
     }
 
-    fn checked_y_shrink_factor(&self) -> Result<u32> {
+    pub(crate) fn checked_y_shrink_factor(&self) -> Result<u32> {
         self.y_shrink_factor
             .checked_mul(self.y_resolution_shrink_factor)
             .filter(|factor| *factor != 0)

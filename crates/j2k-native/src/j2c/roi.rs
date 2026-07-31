@@ -27,20 +27,7 @@ pub(crate) fn tile_intersects_output_region(
         .y_shrink_factor
         .saturating_mul(size_data.y_resolution_shrink_factor)
         .max(1);
-    let x_offset = size_data.image_area_x_offset.div_ceil(x_shrink);
-    let y_offset = size_data.image_area_y_offset.div_ceil(y_shrink);
-    let region = IntRect::from_ltrb(
-        output_region.x.saturating_add(x_offset),
-        output_region.y.saturating_add(y_offset),
-        output_region
-            .x
-            .saturating_add(output_region.width)
-            .saturating_add(x_offset),
-        output_region
-            .y
-            .saturating_add(output_region.height)
-            .saturating_add(y_offset),
-    );
+    let region = output_region_rect(size_data, output_region);
     let tile_rect = IntRect::from_ltrb(
         tile_rect.x0 / x_shrink,
         tile_rect.y0 / y_shrink,
@@ -48,6 +35,33 @@ pub(crate) fn tile_intersects_output_region(
         tile_rect.y1.div_ceil(y_shrink),
     );
     tile_rect.intersects(region)
+}
+
+pub(crate) fn output_region_rect(size_data: &SizeData, output_region: OutputRegion) -> IntRect {
+    let (x_offset, y_offset) = output_grid_offset(size_data);
+    let x0 = output_region.x.saturating_add(x_offset);
+    let y0 = output_region.y.saturating_add(y_offset);
+    IntRect::from_ltrb(
+        x0,
+        y0,
+        x0.saturating_add(output_region.width),
+        y0.saturating_add(output_region.height),
+    )
+}
+
+/// Return the image-area origin in the final component- and
+/// resolution-shrunk output grid.
+pub(crate) fn output_grid_offset(size_data: &SizeData) -> (u32, u32) {
+    let x_shrink_factor = size_data
+        .checked_x_shrink_factor()
+        .expect("validated JPEG 2000 horizontal shrink factors");
+    let y_shrink_factor = size_data
+        .checked_y_shrink_factor()
+        .expect("validated JPEG 2000 vertical shrink factors");
+    (
+        size_data.image_area_x_offset.div_ceil(x_shrink_factor),
+        size_data.image_area_y_offset.div_ceil(y_shrink_factor),
+    )
 }
 
 #[derive(Debug)]
@@ -64,10 +78,6 @@ pub(crate) struct RoiPlan {
 crate::move_only::assert_move_only!(RoiPlan);
 
 impl RoiPlan {
-    #[expect(
-        clippy::similar_names,
-        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
-    )]
     pub(crate) fn build(
         tile: &Tile<'_>,
         header: &Header<'_>,
@@ -100,22 +110,7 @@ impl RoiPlan {
                 component_info.num_resolution_levels() - 1 - header.skipped_resolution_levels,
             );
 
-            let x_offset = header
-                .size_data
-                .image_area_x_offset
-                .div_ceil(header.size_data.x_shrink_factor);
-            let y_offset = header
-                .size_data
-                .image_area_y_offset
-                .div_ceil(header.size_data.y_shrink_factor);
-            let region_x1 = output_region.x.saturating_add(output_region.width);
-            let region_y1 = output_region.y.saturating_add(output_region.height);
-            let region = IntRect::from_ltrb(
-                output_region.x.saturating_add(x_offset),
-                output_region.y.saturating_add(y_offset),
-                region_x1.saturating_add(x_offset),
-                region_y1.saturating_add(y_offset),
-            );
+            let region = output_region_rect(&header.size_data, output_region);
             let final_window = resolution_tile.rect.intersect(region);
             if final_window.is_empty() {
                 continue;
