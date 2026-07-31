@@ -441,3 +441,13 @@ impl SizeData {
         self.reference_grid_height - self.image_area_y_offset
     }
 }
+
+crate::move_only::assert_move_only!(
+    PpmMarkerData<'static>,
+    PacketLengthMarker,
+    ComponentInfo,
+    QuantizationInfo,
+    CodingStyleDefault,
+    CodingStyleComponent,
+    CodingStyleParameters,
+);

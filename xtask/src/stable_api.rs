@@ -61,6 +61,7 @@ pub(super) fn collect_package_apis(
     for package in packages {
         eprintln!("collecting ordinary and rustdoc-hidden public API for `{package}`");
         let inventory = collect_package_api(package)?;
+        validate_native_backend_boundary(package, &inventory)?;
         if inventories
             .insert((*package).to_string(), inventory)
             .is_some()
@@ -74,6 +75,34 @@ pub(super) fn collect_package_apis(
         return Err("public API package list is empty".to_string());
     }
     Ok(inventories)
+}
+
+fn validate_native_backend_boundary(
+    package: &str,
+    inventory: &PackageApiInventory,
+) -> Result<(), String> {
+    if package == "j2k-native" {
+        return Ok(());
+    }
+
+    let ordinary = inventory
+        .ordinary
+        .iter()
+        .filter(|line| line.contains("j2k_native"))
+        .collect::<Vec<_>>();
+    let hidden = inventory
+        .hidden
+        .iter()
+        .filter(|line| line.contains("j2k_native"))
+        .collect::<Vec<_>>();
+    if ordinary.is_empty() && hidden.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "public API for package `{package}` exposes the private native backend; \
+         ordinary items: {ordinary:#?}; rustdoc-hidden items: {hidden:#?}"
+    ))
 }
 
 pub(super) fn validate_public_api_environment() -> Result<(), String> {
@@ -213,11 +242,14 @@ fn public_api_line_set(output: &str) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         public_api_cargo_args, public_api_line_set, split_hidden_api,
-        validate_cargo_public_api_version_output, validate_public_api_environment_entries,
-        validate_public_api_environment_keys, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
-        PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET, PUBLIC_API_TOOLCHAIN,
+        validate_cargo_public_api_version_output, validate_native_backend_boundary,
+        validate_public_api_environment_entries, validate_public_api_environment_keys,
+        PackageApiInventory, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT,
+        PUBLIC_API_TARGET, PUBLIC_API_TOOLCHAIN,
     };
 
     #[test]
@@ -286,6 +318,38 @@ mod tests {
                 "pub struct demo::adapter::HiddenPlan",
             ]
         );
+    }
+
+    #[test]
+    fn non_native_packages_cannot_expose_native_backend_types() {
+        let clean = PackageApiInventory {
+            ordinary: public_api_line_set("pub fn j2k::decode(&[u8]) -> j2k::Image\n"),
+            hidden: BTreeSet::new(),
+        };
+        assert!(validate_native_backend_boundary("j2k", &clean).is_ok());
+        assert!(validate_native_backend_boundary("j2k-native", &clean).is_ok());
+
+        let ordinary_leak = PackageApiInventory {
+            ordinary: public_api_line_set("pub fn j2k::decode(&[u8]) -> j2k_native::RawBitmap\n"),
+            hidden: BTreeSet::new(),
+        };
+        let error = validate_native_backend_boundary("j2k", &ordinary_leak)
+            .expect_err("ordinary native type leak");
+        assert!(error.contains("ordinary"));
+        assert!(error.contains("j2k_native::RawBitmap"));
+        validate_native_backend_boundary("j2k-jpeg-cuda", &ordinary_leak)
+            .expect_err("new packages must not bypass the native boundary");
+
+        let hidden_leak = PackageApiInventory {
+            ordinary: public_api_line_set("pub struct j2k_metal::Decoder\n"),
+            hidden: public_api_line_set(
+                "pub fn j2k_metal::Decoder::native() -> j2k_native::Image\n",
+            ),
+        };
+        let error = validate_native_backend_boundary("j2k-metal", &hidden_leak)
+            .expect_err("hidden native type leak");
+        assert!(error.contains("rustdoc-hidden"));
+        assert!(error.contains("j2k_native::Image"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use super::cleanup::{
     cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
@@ -11,6 +11,7 @@ use super::significance::{
 };
 use super::validation::validate_combined_decode;
 use crate::error::{bail, DecodingError, Result};
+use crate::{try_reserve_decode_elements, try_resize_decode_elements};
 
 pub(crate) struct HtSigPropBenchmarkState {
     refinement_data: Vec<u8>,
@@ -66,7 +67,8 @@ pub(crate) fn prepare_sigprop_benchmark_state(
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     let sstr = cleanup_symbol_stride(width);
     let quad_rows = height.div_ceil(2) as usize;
-    let mut cleanup = vec![0u16; sstr * (quad_rows + 1)];
+    let mut cleanup = Vec::new();
+    try_resize_decode_elements(&mut cleanup, sstr * (quad_rows + 1), 0u16)?;
     decode_cleanup_symbols(
         segments.cleanup,
         lcup,
@@ -80,14 +82,21 @@ pub(crate) fn prepare_sigprop_benchmark_state(
 
     let mstr = sigma_stride(width);
     let sigma_rows = height.div_ceil(4) as usize + 1;
-    let mut sigma = vec![0u16; sigma_rows * mstr];
+    let mut sigma = Vec::new();
+    try_resize_decode_elements(&mut sigma, sigma_rows * mstr, 0u16)?;
     build_sigma_from_cleanup_phase(&cleanup, &mut sigma, width, height, sstr, mstr)
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
 
+    let mut refinement_data = Vec::new();
+    try_reserve_decode_elements(&mut refinement_data, segments.refinement.len())?;
+    refinement_data.extend_from_slice(segments.refinement);
+    let mut prev_row_sig = Vec::new();
+    try_resize_decode_elements(&mut prev_row_sig, width.div_ceil(4) as usize + 8, 0u16)?;
+
     Ok(HtSigPropBenchmarkState {
-        refinement_data: segments.refinement.to_vec(),
+        refinement_data,
         sigma,
-        prev_row_sig: vec![0u16; width.div_ceil(4) as usize + 8],
+        prev_row_sig,
         width,
         height,
         stride,

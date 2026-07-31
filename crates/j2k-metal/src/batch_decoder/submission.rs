@@ -176,17 +176,27 @@ pub(super) struct MetalResidentGroupMetadata {
 
 #[cfg(target_os = "macos")]
 impl MetalResidentGroupMetadata {
-    pub(super) fn from_prepared(group: &PreparedBatchGroup, options: BatchDecodeOptions) -> Self {
+    pub(super) fn from_prepared(
+        group: &PreparedBatchGroup,
+        options: BatchDecodeOptions,
+    ) -> Result<Self, Error> {
         let MetalBatchGroupCompletion {
             decoded_rects,
             warnings,
-        } = MetalBatchGroupCompletion::from_prepared(group, options);
-        Self {
+        } = MetalBatchGroupCompletion::from_prepared(group, options)?;
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident group metadata");
+        let mut source_indices = budget.try_vec(
+            group.source_indices().len(),
+            "J2K Metal resident source indices",
+        )?;
+        source_indices.extend_from_slice(group.source_indices());
+        Ok(Self {
             info: group.info().clone(),
-            source_indices: group.source_indices().to_vec(),
+            source_indices,
             decoded_rects,
             warnings,
-        }
+        })
     }
 }
 

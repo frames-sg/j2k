@@ -165,14 +165,16 @@ pub(super) fn native_color_group_storage(
 pub(super) fn decode_warnings(
     options: BatchDecodeOptions,
     count: usize,
-) -> Vec<Vec<J2kDecodeWarning>> {
-    (0..count)
-        .map(|_| {
-            if options.settings.lenient_tolerance_enabled() {
-                vec![J2kDecodeWarning::LenientDecodeMode]
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
+) -> Result<Vec<Vec<J2kDecodeWarning>>, Error> {
+    let mut budget = crate::allocation::HostPhaseBudget::new("CUDA batch decode warnings");
+    let mut warnings = budget.try_vec_with_capacity(count)?;
+    for _ in 0..count {
+        let mut image_warnings = budget
+            .try_vec_with_capacity(usize::from(options.settings.lenient_tolerance_enabled()))?;
+        if options.settings.lenient_tolerance_enabled() {
+            image_warnings.push(J2kDecodeWarning::LenientDecodeMode);
+        }
+        warnings.push(image_warnings);
+    }
+    Ok(warnings)
 }

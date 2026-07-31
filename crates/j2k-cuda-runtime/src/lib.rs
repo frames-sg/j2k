@@ -5,7 +5,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
-
 macro_rules! cuda_kernel_params {
     ($($arg:ident),+ $(,)?) => {
         [$(cuda_kernel_param(&mut $arg)),+]

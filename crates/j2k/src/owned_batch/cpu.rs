@@ -9,6 +9,7 @@ use super::{
     IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType, NonZeroUsize, PreparedBatch,
     PreparedImage, Rect, Vec, MAX_GENERIC_BATCH_WORKERS,
 };
+use crate::batch::allocation::try_vec_with_capacity;
 
 /// Native-width contiguous samples returned by the CPU batch decoder.
 #[derive(Debug, PartialEq, Eq)]
@@ -332,8 +333,21 @@ impl CpuBatchDecoder {
             .workers
             .get_mut()
             .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
-        let mut groups = Vec::new();
-        let mut errors = prepared.errors.to_vec();
+        let input_count = prepared
+            .groups()
+            .iter()
+            .try_fold(prepared.errors().len(), |count, group| {
+                count.checked_add(group.images().len())
+            })
+            .ok_or(BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K owned batch result metadata",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })?;
+        let mut groups =
+            try_vec_with_capacity(prepared.groups().len(), "J2K owned batch result groups")?;
+        let mut errors = try_vec_with_capacity(input_count, "J2K owned batch indexed errors")?;
+        errors.extend_from_slice(prepared.errors());
         for group in prepared.groups() {
             if let Some(decoded) = decode_cpu_group(
                 workers,

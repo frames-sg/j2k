@@ -119,9 +119,6 @@ override it.
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
 | `J2K_BENCH_INPUTS` | Path-list of JPEG inputs for JPEG and Metal benchmark/report harnesses. | Harness-specific generated fixtures | Benchmark |
-| `J2K_BENCH_INPUT_SOURCE` | Input-source label recorded by `cargo xtask bench-report`. | Falls back to `J2K_BENCH_INPUTS`, otherwise `not recorded` | Benchmark |
-| `J2K_BENCH_COMMAND` | Command label recorded by `cargo xtask bench-report`. | `not recorded` | Benchmark |
-| `J2K_BENCH_SKIPPED_ROWS` | Semicolon-separated skipped-row reasons recorded by `cargo xtask bench-report`. | Empty | Benchmark |
 | `J2K_REPORT_ITERS` | Iteration count for custom report-style JPEG benchmarks. | Harness default | Benchmark |
 | `J2K_ALLOC_REPORT` | Enables allocation report output in the CPU JPEG encode benchmark. | Disabled | Benchmark |
 | `J2K_FORCE_FULL_FRAME` | Forces benchmark classification to full-frame mode. | Auto classification | Benchmark |
@@ -138,7 +135,6 @@ override it.
 | `J2K_GPU_BENCH_RESTART_INTERVAL` | Restart interval for generated GPU JPEG upload benchmark fixtures. | Harness default | Benchmark |
 | `J2K_GPU_BENCH_SUBSAMPLING` | Generated GPU JPEG benchmark subsampling, accepted values depend on the harness. | Harness default | Benchmark |
 | `J2K_CUDA_BENCH_SUBSAMPLING` | CUDA-specific generated JPEG benchmark subsampling; falls back with `J2K_GPU_BENCH_SUBSAMPLING`. | Harness default | Benchmark |
-| `J2K_COMPARE_THREADS` | Thread count for J2K comparator signoff and benchmark reports. | Comparator default or `not set` in reports | Benchmark |
 | `J2K_FIXTURE_COMPARE_REPEATS` | Repeat count for `jp2k_fixture_compare`. | Tool default | Benchmark |
 | `J2K_FIXTURE_COMPARE_MODE` | Benchmark mode for `jp2k_fixture_compare`: `portable-native` for native comparable rows, `portable-emulated` for task-equivalent rows with `decode_method` labels, or `capability` for feature coverage with explicit skips. | `portable-native` | Benchmark |
 | `J2K_FIXTURE_COMPARE_BATCH_SIZES` | Backward-compatible comma-separated batch sizes for `jp2k_fixture_compare`; when set, it applies to both per-fixture rows and mixed external rows. Prefer the case/mixed split below for full adoption runs. | Not set | Benchmark |

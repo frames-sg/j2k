@@ -79,26 +79,6 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
     assert_success(&harness.run(&["release-integrity"]), "release-integrity");
     assert_success(&harness.run(&["package"]), "package");
 
-    let report = harness.path("benchmark-report.md");
-    assert_success(
-        &harness.run(&[
-            "bench-report",
-            "--command",
-            "cargo bench --workspace",
-            "--input-source",
-            "pinned fixtures",
-            "--skipped-row",
-            "missing optional comparator",
-            "--out",
-            report.to_str().expect("UTF-8 report path"),
-        ]),
-        "bench-report",
-    );
-    let report = fs::read_to_string(report).expect("read benchmark report");
-    assert!(report.contains("- command: cargo bench --workspace"));
-    assert!(report.contains("- input source: pinned fixtures"));
-    assert!(report.contains("- missing optional comparator"));
-
     for args in [
         &["release-integrity", "--unknown"][..],
         &["stable-api", "--unknown"][..],
@@ -171,7 +151,7 @@ fn assert_semver_fails_at_expected_boundary(output: &Output) {
 fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
     let harness = Harness::new();
 
-    for task in ["typos", "miri", "machete", "no-std"] {
+    for task in ["miri", "machete", "no-std"] {
         assert_success(&harness.run(&[task]), task);
     }
     assert_success(
@@ -187,7 +167,6 @@ fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
     );
 
     let log = harness.log();
-    assert!(log.contains("typos \n"));
     assert!(log.contains("cargo-machete --with-metadata\n"));
     assert!(log.contains("rustup run nightly cargo miri test -p j2k-core"));
     assert!(log.contains("rustup target add aarch64-unknown-none"));

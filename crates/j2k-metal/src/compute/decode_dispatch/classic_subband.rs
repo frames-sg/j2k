@@ -156,7 +156,10 @@ fn empty_repeated_classic_execution(
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     let empty = new_shared_buffer(&runtime.device, 1)?;
     Ok((
-        vec![empty.clone()],
+        crate::batch_allocation::try_vec_from_array(
+            [empty.clone()],
+            "J2K Metal empty classic retained buffer",
+        )?,
         DirectStatusCheck::Classic {
             buffer: empty,
             len: 0,
@@ -222,11 +225,14 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
         scratch_buffers.push(states_scratch);
     }
     Ok((
-        vec![
-            batch.coded_buffer.clone(),
-            batch.jobs_buffer.clone(),
-            batch.segments_buffer.clone(),
-        ],
+        crate::batch_allocation::try_vec_from_array(
+            [
+                batch.coded_buffer.clone(),
+                batch.jobs_buffer.clone(),
+                batch.segments_buffer.clone(),
+            ],
+            "J2K Metal repeated classic retained buffers",
+        )?,
         status_check,
     ))
 }
@@ -286,7 +292,10 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
         )?;
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty classic retained buffer",
+            )?,
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
@@ -327,7 +336,9 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
         },
         None,
     )?;
-    let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
+    let mut retained_buffers =
+        crate::batch_allocation::try_vec(4, "J2K Metal classic subband retained buffers")?;
+    retained_buffers.extend([coded_buffer, jobs_buffer, segments_buffer]);
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
         retained_buffers.push(states_scratch);
@@ -347,7 +358,10 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
         dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, group.total_coefficients)?;
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty classic retained buffer",
+            )?,
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
@@ -383,7 +397,9 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
         },
         None,
     )?;
-    let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
+    let mut retained_buffers =
+        crate::batch_allocation::try_vec(4, "J2K Metal classic group retained buffers")?;
+    retained_buffers.extend([coded_buffer, jobs_buffer, segments_buffer]);
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
         retained_buffers.push(states_scratch);

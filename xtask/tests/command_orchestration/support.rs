@@ -3,6 +3,7 @@
 use std::{
     fmt::Write as _,
     fs,
+    io::Cursor,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -16,6 +17,7 @@ pub(crate) struct Harness {
     cargo: PathBuf,
     log: PathBuf,
     path: String,
+    target: PathBuf,
 }
 
 impl Harness {
@@ -28,6 +30,8 @@ impl Harness {
         fs::create_dir_all(&root).expect("create orchestration test directory");
         let cargo = root.join("cargo.sh");
         let log = root.join("cargo.log");
+        let target = root.join("target");
+        write_j2k_ml_package_fixture(&target);
         let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
         fs::write(
             &cargo,
@@ -39,18 +43,16 @@ impl Harness {
         )
         .expect("write fake Cargo");
         make_executable(&cargo, "fake Cargo");
-        for tool in ["typos", "cargo-machete"] {
-            let program = root.join(tool);
-            fs::write(
-                &program,
-                format!(
-                    "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> '{}'\n",
-                    log.display()
-                ),
-            )
-            .expect("write fake external tool");
-            make_executable(&program, "fake external tool");
-        }
+        let program = root.join("cargo-machete");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .expect("write fake external tool");
+        make_executable(&program, "fake external tool");
         let git = root.join("git");
         let baseline_snapshot = root.join("stable-api-0.7.3.public-api.txt");
         fs::write(&baseline_snapshot, synthetic_baseline_snapshot())
@@ -97,6 +99,7 @@ impl Harness {
             cargo,
             log,
             path,
+            target,
         }
     }
 
@@ -118,6 +121,7 @@ impl Harness {
             .args(args)
             .current_dir(directory)
             .env("CARGO", &self.cargo)
+            .env("CARGO_TARGET_DIR", &self.target)
             .env("PATH", &self.path);
         for key in [
             "CARGO_BUILD_TARGET",
@@ -185,6 +189,35 @@ fn make_executable(path: &Path, label: &str) {
     let mut permissions = fs::metadata(path).expect(label).permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions).expect(label);
+}
+
+fn write_j2k_ml_package_fixture(target: &Path) {
+    let workspace_manifest =
+        fs::read_to_string(workspace_root().join("Cargo.toml")).expect("read workspace manifest");
+    let manifest =
+        toml::from_str::<toml::Value>(&workspace_manifest).expect("parse workspace manifest");
+    let version = manifest["workspace"]["package"]["version"]
+        .as_str()
+        .expect("workspace package version");
+    let package_dir = target.join("package");
+    fs::create_dir_all(&package_dir).expect("create package fixture directory");
+    let file = fs::File::create(package_dir.join(format!("j2k-ml-{version}.crate")))
+        .expect("create package fixture");
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    let contents = format!("[package]\nname = \"j2k-ml\"\nversion = \"{version}\"\n");
+    let mut header = tar::Header::new_gnu();
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            format!("j2k-ml-{version}/Cargo.toml"),
+            Cursor::new(contents),
+        )
+        .expect("append package fixture");
+    archive.finish().expect("finish package fixture");
 }
 
 fn synthetic_baseline_snapshot() -> String {

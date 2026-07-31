@@ -155,14 +155,14 @@ pass.
 | `cargo xtask clippy-strict` | pass | pending — final frozen-source run |
 | `cargo xtask test` including macOS Metal tests | pass | pending — final frozen-source run |
 | `cargo xtask doc` | covered by baseline test doctests; standalone pending | pending — final frozen-source run |
-| `cargo xtask repo-lint --strict` | pass, 423 checks | pending — final frozen-source run |
+| `cargo xtask repo-lint` | pass, 423 checks | pending — final frozen-source run |
 | `cargo xtask unsafe-audit` | pass | pending — final frozen-source run |
 | `cargo xtask clone-audit` | pass, 1.96% | pending — final frozen-source run |
 | test/support clone audit | not yet implemented | pending — final frozen-source run |
 | `cargo xtask panic-surface` | pass | pending — final frozen-source run |
-| `cargo xtask typos` | pass | pending — final frozen-source run |
+| `crate-ci/typos` workflow gate | pass | pending — final frozen-source run |
 | `cargo xtask machete` | pass | pending — final frozen-source run |
-| `cargo xtask deny` | pass with reviewed warnings | pending — final frozen-source run |
+| `EmbarkStudios/cargo-deny-action` workflow gate | pass with reviewed warnings | pending — final frozen-source run |
 | `cargo xtask codec-math-codegen` | pass | pending — final frozen-source run |
 | `cargo xtask stable-api` | pass | pending — generated inventory is stale until final API freeze |
 | `cargo xtask semver` | pass | pending — final API freeze review |

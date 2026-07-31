@@ -25,6 +25,29 @@ Burn, or any other external project on behalf of this work. Keep all further
 work inside `frames-sg/j2k` unless the user explicitly authorizes an exact
 external action.
 
+## Current preparation evidence
+
+The following checks passed during local macOS preparation on 2026-07-24.
+They prove the staged design is buildable and functional, but they are not
+release evidence because the tree is not a clean, versioned candidate SHA:
+
+- `cargo xtask j2k-ml-package-smoke`, including clean packaged-source
+  consumers for `cpu`, `metal`, and `cpu,metal`, packaged examples, and docs;
+- `cargo test -p j2k-ml --features cpu`;
+- strict `j2k-ml` Clippy and docs for `cpu,metal`;
+- `cargo xtask release-metal`;
+- repository lint, formatting, unsafe-audit, and command-orchestration tests.
+
+The compatible lockfile refresh occurred after the package smoke and full
+Metal gate. CPU tests, strict Clippy, repository lint, and formatting passed
+again afterward. Rerun the package smoke and full Metal gate from the final
+clean candidate SHA.
+
+The CUDA host checkout remains on the published `v0.7.5` release commit. Run
+the full CUDA gate only after the corrected source is committed and the same
+candidate SHA is available on that host. Do not treat a different checkout or
+an uncommitted source copy as exact-SHA release evidence.
+
 ## Release completion checklist
 
 1. Run the package smoke with registry-only third-party dependencies:

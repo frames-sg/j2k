@@ -33,27 +33,30 @@ pub struct MetalBatchGroupCompletion {
 
 impl MetalBatchGroupCompletion {
     #[cfg(target_os = "macos")]
-    pub(super) fn from_prepared(group: &PreparedBatchGroup, options: BatchDecodeOptions) -> Self {
-        let decoded_rects = group
-            .images()
-            .iter()
-            .map(|image| image.plan().output_rect())
-            .collect();
-        let warnings = group
-            .images()
-            .iter()
-            .map(|_| {
-                if options.settings.lenient_tolerance_enabled() {
-                    vec![J2kDecodeWarning::LenientDecodeMode]
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
-        Self {
+    pub(super) fn from_prepared(
+        group: &PreparedBatchGroup,
+        options: BatchDecodeOptions,
+    ) -> Result<Self, Error> {
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("J2K Metal group completion");
+        let mut decoded_rects =
+            budget.try_vec(group.images().len(), "J2K Metal completed rectangles")?;
+        let mut warnings =
+            budget.try_vec(group.images().len(), "J2K Metal completed warning owners")?;
+        for image in group.images() {
+            decoded_rects.push(image.plan().output_rect());
+            let warning_count = usize::from(options.settings.lenient_tolerance_enabled());
+            let mut image_warnings =
+                budget.try_vec(warning_count, "J2K Metal completed image warnings")?;
+            if warning_count != 0 {
+                image_warnings.push(J2kDecodeWarning::LenientDecodeMode);
+            }
+            warnings.push(image_warnings);
+        }
+        Ok(Self {
             decoded_rects,
             warnings,
-        }
+        })
     }
 
     /// Actual decoded source rectangle for every completed destination item.
@@ -180,6 +183,10 @@ pub struct MetalBatchGroupError {
 }
 
 impl MetalBatchGroupError {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "error construction preserves its infallible public signature while retaining affected source indices"
+    )]
     pub(super) fn new(group: &PreparedBatchGroup, source: Error) -> Self {
         Self {
             source_indices: group.source_indices().to_vec(),

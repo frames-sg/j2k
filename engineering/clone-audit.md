@@ -2,11 +2,11 @@
 
 Release line: 0.7.3
 
-Production baseline: 1.96% duplicated lines (5,254 lines, 192 exact
-clones, 1,193 jscpd sources). The enforced ceiling is 2.01%.
+Production baseline: 1.94% duplicated lines (5,791 lines, 211 exact
+clones, 1,388 jscpd sources). The enforced ceiling is 2.01%.
 
-Test/support baseline: 4.09% duplicated lines (7,300 lines, 198 exact
-clones, 905 jscpd sources). The enforced ceiling is 4.14%.
+Test/support baseline: 3.98% duplicated lines (7,840 lines, 217 exact
+clones, 1,049 jscpd sources). The enforced ceiling is 3.99%.
 
 ## Canonical command
 

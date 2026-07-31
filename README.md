@@ -8,7 +8,10 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.7.3` is published and security-supported. See the
+**Release status:** `0.7.5` is published and security-supported. The published
+`j2k-ml 0.7.5` CPU feature works, but its CUDA and Metal features have a known
+clean-consumer packaging defect; use the planned staged-upload `0.7.6` release
+for those adapters after it passes the documented release gates. See the
 [release notes](CHANGELOG.md) and [release policy](docs/release.md).
 
 **Safe public Rust APIs, audited unsafe boundaries, and vendor-independent JPEG 2000 / HTJ2K.**

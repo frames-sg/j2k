@@ -398,7 +398,10 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
     } else {
         scratch_buffers
     };
-    Ok(active_buffers[..component_count].to_vec())
+    crate::batch_allocation::try_clone_slice(
+        &active_buffers[..component_count],
+        "J2K Metal active DWT buffer handles",
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -570,7 +573,10 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
         scratch_buffers
     };
     Ok(ForwardDwt53SplitProfile {
-        active: active_buffers[..component_count].to_vec(),
+        active: crate::batch_allocation::try_clone_slice(
+            &active_buffers[..component_count],
+            "J2K Metal split DWT active buffer handles",
+        )?,
         vertical_command_buffers,
         horizontal_command_buffers,
     })

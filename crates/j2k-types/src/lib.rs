@@ -9,7 +9,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
 #![forbid(missing_docs)]
-
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -22,6 +21,7 @@ pub use decode_payload::{
 mod limits;
 #[doc(hidden)]
 pub use limits::{MAX_JPEG2000_PART1_COMPONENTS, MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH};
+mod move_only;
 mod resident;
 #[doc(hidden)]
 pub use resident::{
@@ -1113,3 +1113,33 @@ pub struct PreencodedHtj2k97CompactCodeBlock {
     /// Number of missing most-significant bitplanes.
     pub num_zero_bitplanes: u8,
 }
+
+move_only::assert_move_only!(
+    EncodedJ2kCodeBlock,
+    EncodedHtJ2kCodeBlock,
+    J2kPacketizationSubband<'static>,
+    J2kPacketizationResolution<'static>,
+    J2kForwardDwt53Output,
+    J2kForwardDwt53Level,
+    J2kForwardDwt97Output,
+    J2kForwardDwt97Level,
+    PrecomputedHtj2k53Component,
+    PrecomputedHtj2k53Image,
+    PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image,
+    PrequantizedHtj2k97Image,
+    PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock,
+    PreencodedHtj2k97Image,
+    PreencodedHtj2k97Component,
+    PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband,
+    PreencodedHtj2k97CodeBlock,
+    PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactResolution,
+    PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97CompactCodeBlock,
+);

@@ -140,6 +140,7 @@ mod htj2k97_codeblock_oracle;
 mod jpeg_to_htj2k;
 #[doc(hidden)]
 pub mod metrics;
+mod move_only;
 mod pipeline_map;
 mod resident;
 mod reversible53;
@@ -188,6 +189,12 @@ pub struct Dwt97TwoDimensional<T> {
     /// Height of vertically high-pass bands.
     pub high_height: usize,
 }
+
+move_only::assert_move_only!(
+    ReversibleDwt53FirstLevel,
+    Dwt53TwoDimensional<f64>,
+    Dwt97TwoDimensional<f64>,
+);
 
 pub use dct53_2d::{dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear};
 pub use dct97_2d::dct8x8_blocks_then_dwt97_float;

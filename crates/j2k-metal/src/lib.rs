@@ -9,7 +9,6 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
-
 mod batch;
 mod batch_allocation;
 mod batch_decoder;

@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [0.7.5] - 2026-07-22
 
+- Known release defect: the published `j2k-ml 0.7.5` `cuda` and `metal`
+  features depend on accelerator interop methods that are not present in the
+  registry CubeCL and wgpu releases selected by clean consumers. The `cpu`
+  feature is unaffected. The planned `0.7.6` fix replaces those routes with
+  explicitly staged accelerator decode, decoded-pixel readback, and ordinary
+  Burn tensor upload using released public APIs.
 - Compatibility exception: this release is an explicitly source-incompatible
   `0.7.x` patch against the published `0.7.3` API. The reviewed compatibility
   evidence and migration notes cover the complete contracted surface.

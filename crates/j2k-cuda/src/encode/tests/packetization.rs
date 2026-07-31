@@ -7,44 +7,73 @@ use super::{
     J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
 };
 
-#[test]
-fn cuda_packetization_flatten_accepts_cleanup_only_single_block_packet() {
-    let payload = [0x12, 0x34, 0x56, 0x78];
-    let code_block = J2kPacketizationCodeBlock {
-        data: &payload,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 1,
-        num_zero_bitplanes: 2,
+fn ht_block(
+    data: &[u8],
+    cleanup_length: u32,
+    refinement_length: u32,
+    coding_passes: u8,
+    zero_bitplanes: u8,
+) -> J2kPacketizationCodeBlock<'_> {
+    J2kPacketizationCodeBlock {
+        data,
+        ht_cleanup_length: cleanup_length,
+        ht_refinement_length: refinement_length,
+        num_coding_passes: coding_passes,
+        num_zero_bitplanes: zero_bitplanes,
         previously_included: false,
         l_block: 3,
         block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let subband = J2kPacketizationSubband {
-        code_blocks: vec![code_block],
-        num_cbs_x: 1,
-        num_cbs_y: 1,
-    };
-    let resolution = J2kPacketizationResolution {
-        subbands: vec![subband],
-    };
-    let descriptor = J2kPacketizationPacketDescriptor {
-        packet_index: 0,
+    }
+}
+
+fn resolution(
+    code_blocks: Vec<J2kPacketizationCodeBlock<'_>>,
+    num_cbs_x: u32,
+    num_cbs_y: u32,
+) -> J2kPacketizationResolution<'_> {
+    J2kPacketizationResolution {
+        subbands: vec![J2kPacketizationSubband {
+            code_blocks,
+            num_cbs_x,
+            num_cbs_y,
+        }],
+    }
+}
+
+const fn packet_descriptor(packet_index: u32, layer: u8) -> J2kPacketizationPacketDescriptor {
+    J2kPacketizationPacketDescriptor {
+        packet_index,
         state_index: 0,
-        layer: 0,
+        layer,
         resolution: 0,
         component: 0,
         precinct: 0,
-    };
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 1,
-        num_layers: 1,
+    }
+}
+
+fn packetization_job<'a>(
+    packet_descriptors: &'a [J2kPacketizationPacketDescriptor],
+    resolutions: &'a [J2kPacketizationResolution<'a>],
+    num_layers: u8,
+    code_block_count: u32,
+) -> J2kPacketizationEncodeJob<'a> {
+    J2kPacketizationEncodeJob {
+        resolution_count: u32::try_from(resolutions.len()).expect("test resolution count fits u32"),
+        num_layers,
         num_components: 1,
-        code_block_count: 1,
+        code_block_count,
         progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &[descriptor],
-        resolutions: &[resolution],
-    };
+        packet_descriptors,
+        resolutions,
+    }
+}
+
+#[test]
+fn cuda_packetization_flatten_accepts_cleanup_only_single_block_packet() {
+    let payload = [0x12, 0x34, 0x56, 0x78];
+    let descriptors = [packet_descriptor(0, 0)];
+    let resolutions = [resolution(vec![ht_block(&payload, 0, 0, 1, 2)], 1, 1)];
+    let job = packetization_job(&descriptors, &resolutions, 1, 1);
 
     let plan = flatten_cuda_htj2k_packetization_job(job).expect("supported CUDA packetization");
 
@@ -77,42 +106,19 @@ fn cuda_packetization_flatten_accepts_cleanup_only_multi_block_packet() {
     let code_blocks = payloads
         .iter()
         .enumerate()
-        .map(|(idx, payload)| J2kPacketizationCodeBlock {
-            data: payload.as_slice(),
-            ht_cleanup_length: 0,
-            ht_refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: u8::try_from(idx + 1).expect("test zbp fits in u8"),
-            previously_included: false,
-            l_block: 3,
-            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+        .map(|(idx, payload)| {
+            ht_block(
+                payload,
+                0,
+                0,
+                1,
+                u8::try_from(idx + 1).expect("test zbp fits in u8"),
+            )
         })
         .collect();
-    let subband = J2kPacketizationSubband {
-        code_blocks,
-        num_cbs_x: 2,
-        num_cbs_y: 2,
-    };
-    let resolution = J2kPacketizationResolution {
-        subbands: vec![subband],
-    };
-    let descriptor = J2kPacketizationPacketDescriptor {
-        packet_index: 0,
-        state_index: 0,
-        layer: 0,
-        resolution: 0,
-        component: 0,
-        precinct: 0,
-    };
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 1,
-        num_layers: 1,
-        num_components: 1,
-        code_block_count: 4,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &[descriptor],
-        resolutions: &[resolution],
-    };
+    let descriptors = [packet_descriptor(0, 0)];
+    let resolutions = [resolution(code_blocks, 2, 2)];
+    let job = packetization_job(&descriptors, &resolutions, 1, 4);
 
     let plan = flatten_cuda_htj2k_packetization_job(job).expect("multi-block CUDA packetization");
 
@@ -137,41 +143,9 @@ fn cuda_packetization_flatten_accepts_cleanup_only_multi_block_packet() {
 #[test]
 fn cuda_packetization_flatten_accepts_ht_refinement_pass_packet() {
     let payload = [0x12, 0x34, 0x56, 0x78, 0x9a];
-    let code_block = J2kPacketizationCodeBlock {
-        data: &payload,
-        ht_cleanup_length: 3,
-        ht_refinement_length: 2,
-        num_coding_passes: 3,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let subband = J2kPacketizationSubband {
-        code_blocks: vec![code_block],
-        num_cbs_x: 1,
-        num_cbs_y: 1,
-    };
-    let resolution = J2kPacketizationResolution {
-        subbands: vec![subband],
-    };
-    let descriptor = J2kPacketizationPacketDescriptor {
-        packet_index: 0,
-        state_index: 0,
-        layer: 0,
-        resolution: 0,
-        component: 0,
-        precinct: 0,
-    };
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 1,
-        num_layers: 1,
-        num_components: 1,
-        code_block_count: 1,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &[descriptor],
-        resolutions: &[resolution],
-    };
+    let descriptors = [packet_descriptor(0, 0)];
+    let resolutions = [resolution(vec![ht_block(&payload, 3, 2, 3, 2)], 1, 1)];
+    let job = packetization_job(&descriptors, &resolutions, 1, 1);
 
     let plan = flatten_cuda_htj2k_packetization_job(job).expect("HT refinement packetization");
 
@@ -187,16 +161,7 @@ fn cuda_packetization_flatten_accepts_ht_refinement_pass_packet() {
 #[test]
 fn cuda_packetization_rejects_overflowing_ht_refinement_lengths() {
     let payload = [0x12];
-    let code_block = J2kPacketizationCodeBlock {
-        data: &payload,
-        ht_cleanup_length: u32::MAX,
-        ht_refinement_length: 1,
-        num_coding_passes: 3,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
+    let code_block = ht_block(&payload, u32::MAX, 1, 3, 2);
 
     let err = cuda_ht_segment_lengths(&code_block)
         .expect_err("overflowing CUDA HT segment lengths rejected");
@@ -212,41 +177,9 @@ fn cuda_packetization_rejects_overflowing_ht_refinement_lengths() {
 #[test]
 fn cuda_packetization_flatten_rejects_out_of_range_ht_pass_count() {
     let payload = [0u8; 1];
-    let code_block = J2kPacketizationCodeBlock {
-        data: &payload,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 165,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let subband = J2kPacketizationSubband {
-        code_blocks: vec![code_block],
-        num_cbs_x: 1,
-        num_cbs_y: 1,
-    };
-    let resolution = J2kPacketizationResolution {
-        subbands: vec![subband],
-    };
-    let descriptor = J2kPacketizationPacketDescriptor {
-        packet_index: 0,
-        state_index: 0,
-        layer: 0,
-        resolution: 0,
-        component: 0,
-        precinct: 0,
-    };
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 1,
-        num_layers: 1,
-        num_components: 1,
-        code_block_count: 1,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &[descriptor],
-        resolutions: &[resolution],
-    };
+    let descriptors = [packet_descriptor(0, 0)];
+    let resolutions = [resolution(vec![ht_block(&payload, 0, 0, 165, 2)], 1, 1)];
+    let job = packetization_job(&descriptors, &resolutions, 1, 1);
 
     let err = flatten_cuda_htj2k_packetization_job(job)
         .expect_err("invalid HT pass count must be rejected before CUDA launch");
@@ -263,68 +196,11 @@ fn cuda_packetization_flatten_rejects_out_of_range_ht_pass_count() {
 fn cuda_packetization_flatten_accepts_previously_included_second_layer_packet() {
     let first_payload = [0x11u8; 20];
     let second_payload = [0x22u8; 5];
-    let first_block = J2kPacketizationCodeBlock {
-        data: &first_payload,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 1,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let second_block = J2kPacketizationCodeBlock {
-        data: &second_payload,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 1,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let first_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![first_block],
-            num_cbs_x: 1,
-            num_cbs_y: 1,
-        }],
-    };
-    let second_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![second_block],
-            num_cbs_x: 1,
-            num_cbs_y: 1,
-        }],
-    };
-    let descriptors = [
-        J2kPacketizationPacketDescriptor {
-            packet_index: 0,
-            state_index: 0,
-            layer: 0,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-        J2kPacketizationPacketDescriptor {
-            packet_index: 1,
-            state_index: 0,
-            layer: 1,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-    ];
+    let first_resolution = resolution(vec![ht_block(&first_payload, 0, 0, 1, 2)], 1, 1);
+    let second_resolution = resolution(vec![ht_block(&second_payload, 0, 0, 1, 2)], 1, 1);
+    let descriptors = [packet_descriptor(0, 0), packet_descriptor(1, 1)];
     let resolutions = [first_resolution, second_resolution];
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 2,
-        num_layers: 2,
-        num_components: 1,
-        code_block_count: 2,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &descriptors,
-        resolutions: &resolutions,
-    };
+    let job = packetization_job(&descriptors, &resolutions, 2, 2);
 
     let plan = flatten_cuda_htj2k_packetization_job(job).expect("stateful CUDA packetization plan");
 
@@ -350,68 +226,11 @@ fn cuda_packetization_flatten_accepts_previously_included_second_layer_packet() 
 #[test]
 fn cuda_packetization_flatten_accepts_deferred_first_inclusion_second_layer_packet() {
     let payload = [0x44u8; 5];
-    let first_block = J2kPacketizationCodeBlock {
-        data: &[],
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 0,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let second_block = J2kPacketizationCodeBlock {
-        data: &payload,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        num_coding_passes: 1,
-        num_zero_bitplanes: 2,
-        previously_included: false,
-        l_block: 3,
-        block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-    };
-    let first_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![first_block],
-            num_cbs_x: 1,
-            num_cbs_y: 1,
-        }],
-    };
-    let second_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![second_block],
-            num_cbs_x: 1,
-            num_cbs_y: 1,
-        }],
-    };
-    let descriptors = [
-        J2kPacketizationPacketDescriptor {
-            packet_index: 0,
-            state_index: 0,
-            layer: 0,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-        J2kPacketizationPacketDescriptor {
-            packet_index: 1,
-            state_index: 0,
-            layer: 1,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-    ];
+    let first_resolution = resolution(vec![ht_block(&[], 0, 0, 0, 2)], 1, 1);
+    let second_resolution = resolution(vec![ht_block(&payload, 0, 0, 1, 2)], 1, 1);
+    let descriptors = [packet_descriptor(0, 0), packet_descriptor(1, 1)];
     let resolutions = [first_resolution, second_resolution];
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 2,
-        num_layers: 2,
-        num_components: 1,
-        code_block_count: 2,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &descriptors,
-        resolutions: &resolutions,
-    };
+    let job = packetization_job(&descriptors, &resolutions, 2, 2);
 
     let plan = flatten_cuda_htj2k_packetization_job(job).expect("deferred first inclusion plan");
 
@@ -427,97 +246,28 @@ fn cuda_packetization_flatten_accepts_deferred_first_inclusion_second_layer_pack
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "multi-packet deferred-inclusion fixture is one byte-structure regression"
-)]
 fn cuda_packetization_flatten_accepts_deferred_first_inclusion_after_non_empty_packet() {
     let first_payload = [0x11u8; 3];
     let second_payload = [0x22u8; 5];
-    let first_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![
-                J2kPacketizationCodeBlock {
-                    data: &first_payload,
-                    ht_cleanup_length: 0,
-                    ht_refinement_length: 0,
-                    num_coding_passes: 1,
-                    num_zero_bitplanes: 2,
-                    previously_included: false,
-                    l_block: 3,
-                    block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-                },
-                J2kPacketizationCodeBlock {
-                    data: &[],
-                    ht_cleanup_length: 0,
-                    ht_refinement_length: 0,
-                    num_coding_passes: 0,
-                    num_zero_bitplanes: 2,
-                    previously_included: false,
-                    l_block: 3,
-                    block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-                },
-            ],
-            num_cbs_x: 2,
-            num_cbs_y: 1,
-        }],
-    };
-    let second_resolution = J2kPacketizationResolution {
-        subbands: vec![J2kPacketizationSubband {
-            code_blocks: vec![
-                J2kPacketizationCodeBlock {
-                    data: &[],
-                    ht_cleanup_length: 0,
-                    ht_refinement_length: 0,
-                    num_coding_passes: 0,
-                    num_zero_bitplanes: 2,
-                    previously_included: false,
-                    l_block: 3,
-                    block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-                },
-                J2kPacketizationCodeBlock {
-                    data: &second_payload,
-                    ht_cleanup_length: 0,
-                    ht_refinement_length: 0,
-                    num_coding_passes: 1,
-                    num_zero_bitplanes: 2,
-                    previously_included: false,
-                    l_block: 3,
-                    block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-                },
-            ],
-            num_cbs_x: 2,
-            num_cbs_y: 1,
-        }],
-    };
-    let descriptors = [
-        J2kPacketizationPacketDescriptor {
-            packet_index: 0,
-            state_index: 0,
-            layer: 0,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-        J2kPacketizationPacketDescriptor {
-            packet_index: 1,
-            state_index: 0,
-            layer: 1,
-            resolution: 0,
-            component: 0,
-            precinct: 0,
-        },
-    ];
+    let first_resolution = resolution(
+        vec![
+            ht_block(&first_payload, 0, 0, 1, 2),
+            ht_block(&[], 0, 0, 0, 2),
+        ],
+        2,
+        1,
+    );
+    let second_resolution = resolution(
+        vec![
+            ht_block(&[], 0, 0, 0, 2),
+            ht_block(&second_payload, 0, 0, 1, 2),
+        ],
+        2,
+        1,
+    );
+    let descriptors = [packet_descriptor(0, 0), packet_descriptor(1, 1)];
     let resolutions = [first_resolution, second_resolution];
-    let job = J2kPacketizationEncodeJob {
-        resolution_count: 2,
-        num_layers: 2,
-        num_components: 1,
-        code_block_count: 4,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &descriptors,
-        resolutions: &resolutions,
-    };
+    let job = packetization_job(&descriptors, &resolutions, 2, 4);
 
     let plan = flatten_cuda_htj2k_packetization_job(job)
         .expect("persistent tag-tree state is flattened for CUDA packetization");

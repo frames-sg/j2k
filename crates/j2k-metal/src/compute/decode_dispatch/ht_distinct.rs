@@ -30,7 +30,10 @@ pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_encoder(
     let Some(first) = sub_bands.first() else {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty HT retained buffer",
+            )?,
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
@@ -86,7 +89,10 @@ pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_encode
     let Some(first) = groups.first() else {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty HT retained buffer",
+            )?,
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,

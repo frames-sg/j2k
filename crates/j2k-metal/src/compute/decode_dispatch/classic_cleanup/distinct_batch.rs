@@ -43,7 +43,10 @@ pub(in crate::compute) fn encode_distinct_classic_sub_bands_to_buffer_in_encoder
     let Some(first) = sub_bands.first() else {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty classic retained buffer",
+            )?,
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
@@ -100,7 +103,10 @@ pub(in crate::compute) fn encode_distinct_classic_sub_band_groups_to_buffer_in_e
     let Some(first) = groups.first() else {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty classic retained buffer",
+            )?,
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
@@ -249,7 +255,10 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
     if jobs.is_empty() {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty classic retained buffer",
+            )?,
             DirectStatusCheck::Classic {
                 buffer: empty,
                 len: 0,
@@ -284,7 +293,9 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
         },
         Some(source_indices),
     )?;
-    let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
+    let mut retained_buffers =
+        crate::batch_allocation::try_vec(4, "J2K Metal distinct classic retained buffers")?;
+    retained_buffers.extend([coded_buffer, jobs_buffer, segments_buffer]);
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
         retained_buffers.push(states_scratch);

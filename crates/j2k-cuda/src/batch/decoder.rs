@@ -192,6 +192,10 @@ impl CudaBatchDecoder {
     /// cannot be proven, the external allocation must be quarantined rather
     /// than freed or reused.
     #[cfg(feature = "cuda-runtime")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "external submission keeps routing, safety-critical destination ownership, and fallible metadata capture in one boundary"
+    )]
     pub unsafe fn submit_batch_into(
         &mut self,
         group: &PreparedBatchGroup,
@@ -270,16 +274,30 @@ impl CudaBatchDecoder {
                 },
             ));
         };
+        let mut metadata_budget =
+            crate::allocation::HostPhaseBudget::new("CUDA external batch result metadata");
+        let source_indices = metadata_budget
+            .try_clone_slice(group.source_indices())
+            .map_err(|source| CudaBatchError::group(group, source))?;
+        let decoded_rects = metadata_budget
+            .try_collect_exact(
+                group
+                    .images()
+                    .iter()
+                    .map(|image| image.plan().output_rect()),
+            )
+            .map_err(|source| CudaBatchError::group(group, source))?;
+        let warnings = decode_warnings(group.options(), group.images().len())
+            .map_err(|source| CudaBatchError::group(group, source))?;
+        let ranges = metadata_budget
+            .try_clone_slice(pending.ranges())
+            .map_err(|source| CudaBatchError::group(group, source))?;
         let external_group = CudaExternalBatchGroup {
             info: group.info().clone(),
-            source_indices: group.source_indices().to_vec(),
-            decoded_rects: group
-                .images()
-                .iter()
-                .map(|image| image.plan().output_rect())
-                .collect(),
-            warnings: decode_warnings(group.options(), group.images().len()),
-            ranges: pending.ranges().to_vec(),
+            source_indices,
+            decoded_rects,
+            warnings,
+            ranges,
         };
         Ok(SubmittedCudaExternalBatch {
             group: external_group,

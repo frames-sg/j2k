@@ -126,6 +126,10 @@ pub struct TranscodePipelineMap {
 impl TranscodePipelineMap {
     /// Build a pipeline map from an existing timing report.
     #[must_use]
+    #[allow(
+        clippy::disallowed_macros,
+        reason = "the infallible diagnostic report API returns a codec-fixed six-stage Vec"
+    )]
     pub fn from_timings(timings: &TranscodeTimingReport) -> Self {
         Self {
             stages: vec![

@@ -133,7 +133,7 @@ fn auto_route_prefers_cpu_host_for_region_scaled_even_with_restart_packets() {
                 },
                 scale: Downscale::Quarter,
             },
-            test_fast_packets(None, None, Some(&packet)),
+            JpegFastPackets::new(None, None, Some(&packet)),
         ),
         routing::RouteDecision::CpuHost
     );

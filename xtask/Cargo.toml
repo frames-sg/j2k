@@ -39,3 +39,11 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+
+# `repo_lint` is the repository policy gate, owned by `cargo xtask repo-lint`.
+# Keeping this target out of broad `--tests` sweeps avoids rerunning it in every
+# workspace test matrix cell; `--test repo_lint` still selects it explicitly.
+[[test]]
+name = "repo_lint"
+path = "tests/repo_lint.rs"
+test = false

@@ -135,7 +135,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
         surface: Surface::from_metal_buffer(out_buffer, (roi.w, roi.h), fmt)?,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -287,7 +287,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -446,7 +446,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
         surface: Surface::from_metal_buffer(out_buffer, (scaled_roi.w, scaled_roi.h), fmt)?,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -542,7 +542,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,

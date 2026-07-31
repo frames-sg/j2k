@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::super::build::SubBand;
@@ -40,8 +39,8 @@ pub(crate) struct IDWTOutput {
 impl Default for IDWTOutput {
     fn default() -> Self {
         Self {
-            coefficients: vec![],
-            coefficients_i64: vec![],
+            coefficients: Vec::new(),
+            coefficients_i64: Vec::new(),
             rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
         }
     }

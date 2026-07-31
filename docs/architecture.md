@@ -28,6 +28,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |
+| `j2k-alloc-probe` | dev helper | Serial process-wide allocation measurement for real codec and formatting boundaries. |
 | `j2k-compare` | tooling | Comparator tooling. |
 | `xtask` | workspace tool | Repository automation under `xtask/`. |
 

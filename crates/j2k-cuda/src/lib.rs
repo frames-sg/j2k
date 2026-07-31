@@ -10,7 +10,6 @@
 
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
-
 mod allocation;
 mod batch;
 mod codec;

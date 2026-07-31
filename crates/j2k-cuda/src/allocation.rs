@@ -90,6 +90,21 @@ impl HostPhaseBudget {
         Ok(values)
     }
 
+    pub(crate) fn try_clone_slice<T: Clone>(&mut self, source: &[T]) -> Result<Vec<T>, Error> {
+        let mut values = self.try_vec_with_capacity(source.len())?;
+        values.extend_from_slice(source);
+        Ok(values)
+    }
+
+    pub(crate) fn try_collect_exact<T, I>(&mut self, iter: I) -> Result<Vec<T>, Error>
+    where
+        I: ExactSizeIterator<Item = T>,
+    {
+        let mut values = self.try_vec_with_capacity(iter.len())?;
+        values.extend(iter);
+        Ok(values)
+    }
+
     #[cfg(feature = "cuda-runtime")]
     pub(crate) fn try_collect_results_exact<T, I>(&mut self, iter: I) -> Result<Vec<T>, Error>
     where
