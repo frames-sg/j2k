@@ -12,6 +12,7 @@ use super::{
     Result, RoiPlan, SubBand, SubBandDecodeParameters, Tile, ValidationError, Vec,
 };
 use crate::j2c::rect::IntRect;
+use crate::j2c::roi::tile_intersects_output_region;
 use crate::{
     HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange, J2kDirectRgbaPlan,
     J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedPayloadRecordSpan,
@@ -269,27 +270,11 @@ fn tile_intersects_output(
         .first()
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     validate_unit_sampled_component(component_info)?;
-    let component_tile = ComponentTile::new(tile, component_info);
-    let resolution_tile = ResolutionTile::new(
-        component_tile,
-        component_info.num_resolution_levels() - 1 - header.skipped_resolution_levels,
-    );
-    let x_offset = header
-        .size_data
-        .image_area_x_offset
-        .div_ceil(header.size_data.x_shrink_factor);
-    let y_offset = header
-        .size_data
-        .image_area_y_offset
-        .div_ceil(header.size_data.y_shrink_factor);
-    let request_left = output_region.x.saturating_add(x_offset);
-    let request_top = output_region.y.saturating_add(y_offset);
-    let request_right = request_left.saturating_add(output_region.width);
-    let request_bottom = request_top.saturating_add(output_region.height);
-    Ok(resolution_tile.rect.x0 < request_right
-        && request_left < resolution_tile.rect.x1
-        && resolution_tile.rect.y0 < request_bottom
-        && request_top < resolution_tile.rect.y1)
+    Ok(tile_intersects_output_region(
+        tile.rect,
+        &header.size_data,
+        output_region,
+    ))
 }
 
 fn payload_record_span(

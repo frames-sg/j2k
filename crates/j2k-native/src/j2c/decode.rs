@@ -13,7 +13,7 @@ use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransfo
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
 use super::progression::{progression_iterator, ProgressionData};
-use super::roi::RoiPlan;
+use super::roi::{tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
@@ -170,6 +170,13 @@ fn decode<'a>(
             tile.rect.width(),
             tile.rect.height(),
         );
+
+        if let Some(output_region) = tile_ctx.output_region {
+            if !tile_intersects_output_region(tile.rect, &header.size_data, output_region) {
+                ltrace!("tile {} outside output region, skipped", tile.idx);
+                continue;
+            }
+        }
 
         decode_tile(
             tile,

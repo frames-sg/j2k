@@ -1766,3 +1766,151 @@ fn region_decode_inside_tiles_matches_whole_decode_crop() {
         }
     }
 }
+
+#[test]
+fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_crop() {
+    // Reduced-resolution region decode on a multi-tile codestream: the
+    // output region lives in scaled image coordinates while tile rects
+    // stay on the reference grid. Cover a grid with partial edge tiles,
+    // interior, straddling, and far-corner regions at every downscale.
+    let (width, height) = (320_u32, 288_u32);
+    let bytes = encode_tiled_rgb_codestream(width, height, (128, 128));
+    let fmt = PixelFormat::Rgb8;
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+
+    for scale in [
+        Downscale::None,
+        Downscale::Half,
+        Downscale::Quarter,
+        Downscale::Eighth,
+    ] {
+        let denominator = scale.denominator();
+        let (scaled_width, scaled_height) =
+            (width.div_ceil(denominator), height.div_ceil(denominator));
+        let mut whole_decoder = J2kDecoder::new(&bytes).expect("whole decoder");
+        let whole_stride = scaled_width as usize * bytes_per_pixel;
+        let mut whole = vec![0_u8; whole_stride * scaled_height as usize];
+        whole_decoder
+            .decode_scaled_into(
+                &mut j2k::J2kScratchPool::new(),
+                &mut whole,
+                whole_stride,
+                fmt,
+                scale,
+            )
+            .expect("scaled whole decode");
+
+        for roi in [
+            Rect {
+                x: 24,
+                y: 24,
+                w: 64,
+                h: 64,
+            },
+            Rect {
+                x: 96,
+                y: 96,
+                w: 80,
+                h: 80,
+            },
+            Rect {
+                x: 240,
+                y: 232,
+                w: 72,
+                h: 48,
+            },
+        ] {
+            let scaled_roi = roi.scaled_covering(scale);
+            let mut region_decoder = J2kDecoder::new(&bytes).expect("region decoder");
+            let region_stride = scaled_roi.w as usize * bytes_per_pixel;
+            let mut region = vec![0_u8; region_stride * scaled_roi.h as usize];
+            let outcome = region_decoder
+                .decode_region_scaled_into(
+                    &mut j2k::J2kScratchPool::new(),
+                    &mut region,
+                    region_stride,
+                    fmt,
+                    roi,
+                    scale,
+                )
+                .expect("scaled region decode");
+            assert_eq!(outcome.decoded, scaled_roi);
+            assert_eq!(
+                region,
+                crop_bytes(&whole, scaled_width as usize, bytes_per_pixel, scaled_roi),
+                "region {},{} {}x{} at 1/{denominator} disagrees with scaled whole decode",
+                roi.x,
+                roi.y,
+                roi.w,
+                roi.h,
+            );
+        }
+    }
+}
+
+#[test]
+fn region_decode_on_subsampled_codestream_matches_whole_decode_crop() {
+    let (width, height) = (96_u32, 80_u32);
+    let luma = (0..height)
+        .flat_map(|y| (0..width).map(move |x| masked_fixture_byte(x + y * 3)))
+        .collect::<Vec<_>>();
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let chroma_blue = (0..chroma_height)
+        .flat_map(|y| (0..chroma_width).map(move |x| masked_fixture_byte(64 + x * 2 + y * 5)))
+        .collect::<Vec<_>>();
+    let chroma_red = (0..chroma_height)
+        .flat_map(|y| (0..chroma_width).map(move |x| masked_fixture_byte(192 + x * 3 + y * 2)))
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma_blue,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma_red,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples = J2kLosslessComponentSamples::new(&planes, width, height, 8, false)
+        .expect("subsampled component samples");
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("subsampled encode");
+
+    for roi in [
+        Rect {
+            x: 8,
+            y: 6,
+            w: 16,
+            h: 18,
+        },
+        Rect {
+            x: 28,
+            y: 24,
+            w: 24,
+            h: 24,
+        },
+        Rect {
+            x: 68,
+            y: 52,
+            w: 20,
+            h: 20,
+        },
+    ] {
+        assert_region_decode_matches_whole_decode_crop(&encoded.codestream, (width, height), roi);
+    }
+}
