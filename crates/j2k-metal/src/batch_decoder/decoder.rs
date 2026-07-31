@@ -166,6 +166,11 @@ impl MetalBatchDecoder {
                 prepared.groups().len(),
                 "J2K persistent Metal prepared group execution failures",
             )?;
+            let mut errors = budget.try_vec(
+                prepared.errors().len(),
+                "J2K persistent Metal prepared indexed errors",
+            )?;
+            errors.extend_from_slice(prepared.errors());
             for group in prepared.groups() {
                 match self.decode_prepared_group_with_options(group, prepared.options()) {
                     Ok(decoded) => groups.push(decoded),
@@ -175,7 +180,7 @@ impl MetalBatchDecoder {
             }
             Ok(MetalBatchDecodeResult {
                 groups,
-                errors: prepared.errors().to_vec(),
+                errors,
                 group_errors,
             })
         }

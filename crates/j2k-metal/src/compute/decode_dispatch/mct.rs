@@ -82,7 +82,10 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         plane0.copy_from_slice(&plane0_host);
         plane1.copy_from_slice(&plane1_host);
         plane2.copy_from_slice(&plane2_host);
-        Ok(vec![plane0_buffer, plane1_buffer, plane2_buffer])
+        crate::batch_allocation::try_vec_from_array(
+            [plane0_buffer, plane1_buffer, plane2_buffer],
+            "J2K Metal inverse MCT retained buffers",
+        )
     })
 }
 

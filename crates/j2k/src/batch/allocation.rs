@@ -130,7 +130,7 @@ pub(super) fn actual_warning_owner_bytes(
     Ok(bytes)
 }
 
-pub(super) fn try_vec_with_capacity<T>(
+pub(crate) fn try_vec_with_capacity<T>(
     capacity: usize,
     what: &'static str,
 ) -> Result<Vec<T>, BatchInfrastructureError> {

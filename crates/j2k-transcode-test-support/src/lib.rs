@@ -8,6 +8,7 @@ pub mod corpus_validation;
 pub mod dct53_1d;
 pub mod dct53_multilevel;
 mod dwt_diff;
+mod move_only;
 
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, Dwt97TwoDimensional,

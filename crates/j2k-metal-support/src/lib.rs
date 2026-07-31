@@ -4,7 +4,6 @@
 //! adapter crates.
 
 #![warn(unreachable_pub)]
-
 mod error;
 mod route;
 mod submission_queue;

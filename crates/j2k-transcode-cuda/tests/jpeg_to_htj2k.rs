@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+
 //
 // End-to-end pipeline parity: drive the full JPEG -> HTJ2K transcode through the
 // CUDA accelerator with the fused 9/7 code-block path active (supports_*

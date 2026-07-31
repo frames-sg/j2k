@@ -340,6 +340,10 @@ mod tests {
             .expect("capture cleanup job");
 
         let mut job = capture.first.expect("captured cleanup job");
+        job.missing_bit_planes = job
+            .missing_bit_planes
+            .checked_sub(1)
+            .expect("synthetic refinement job needs a second actual bitplane");
         job.data.push(0);
         job.refinement_length = 1;
         job.number_of_coding_passes = number_of_coding_passes;

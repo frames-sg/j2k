@@ -284,6 +284,10 @@ pub(crate) fn append_step_sizes_with_irreversible_profile(
     clippy::cast_possible_truncation,
     reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
 )]
+#[allow(
+    clippy::disallowed_macros,
+    reason = "the infallible scalar parity API preserves its established Vec-returning contract"
+)]
 pub(crate) fn quantize_subband(
     coefficients: &[f32],
     step_size: &QuantStepSize,

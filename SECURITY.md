@@ -4,15 +4,17 @@
 
 | Version | Status |
 | --- | --- |
-| `0.7.3` | Latest published and security-supported release |
+| `0.8.0` | Latest published and security-supported release |
+| `0.7.5` | Previous published release line; security-supported, except for the documented `j2k-ml` CUDA and Metal packaging defect |
+| `0.7.3` | Previous published release line; security-supported |
 | `0.7.2` | Previous published release line; security-supported |
 | `0.7.1` | Previous published release line; security-supported |
 | `0.7.0` | Previous published release line; security-supported |
-| `0.6.x` | Supported for security fixes during the 0.7 transition |
+| `0.6.x` | Supported for security fixes during the pre-1.0 transition |
 | Earlier than `0.6` | Unsupported |
 
-Security fixes are developed on the staged workspace line and backported to the
-published supported line when applicable. See
+Security fixes are developed on the current workspace line and backported to
+older supported lines when applicable. See
 [`docs/release.md`](docs/release.md) for the publication state.
 
 ## Reporting vulnerabilities

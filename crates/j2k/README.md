@@ -28,12 +28,22 @@ backend.
 
 ## Decode strictness
 
-`j2k_native::DecodeSettings::default()` remains lenient for compatibility.
-Lenient mode may tolerate recoverable optional container metadata problems that
-`DecodeSettings::strict()` rejects. Public `j2k` decode outcomes report
-`J2kDecodeWarning::LenientDecodeMode` when the retained lenient default is used;
-callers that need fail-closed validation should construct native images with
-`DecodeSettings::strict()` or treat that warning as nonpublishable input.
+`j2k::DecodeSettings::default()` and
+`j2k_native::DecodeSettings::default()` are strict. The one-shot
+`J2kView::parse` and `J2kDecoder::new` paths use that default.
+
+Compatibility callers may opt one image into `DecodeSettings::lenient()` with
+`J2kView::parse_with_settings` or `J2kDecoder::new_with_settings`. Lenient mode
+is deliberately narrow. It may ignore a malformed trailing top-level box after
+the required JP2/JPH header and codestream, ignore a malformed trailing child
+box after `ihdr` and `colr`, ignore malformed optional `cdef` or `pclr`
+metadata while preserving an earlier complete value, or infer one undeclared
+alpha component. Raw codestream and entropy validation, bounds and overflow
+checks, allocation limits, and all resource-safety checks remain strict.
+
+Selecting lenient mode is configuration, not a warning. A successful decode
+reports `J2kDecodeWarning::LenientMetadataRecovery` only when parsing actually
+used one of those recoveries.
 
 ## Links
 

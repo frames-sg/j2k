@@ -15,7 +15,7 @@ pub(crate) fn image(
 }
 
 pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {
-    let image = image(bytes, DecodeSettings::default(), None)?;
+    let image = image(bytes, DecodeSettings::strict(), None)?;
     Ok(inspect_info_from_image(&image))
 }
 

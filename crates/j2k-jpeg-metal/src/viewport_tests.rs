@@ -93,6 +93,75 @@ fn quadrant_tiles() -> [ViewportTile; 4] {
     ]
 }
 
+fn quadrant_workload() -> ViewportWorkload {
+    ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: quadrant_tiles().to_vec(),
+    }
+}
+
+fn sparse_workload() -> ViewportWorkload {
+    ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn quarter_scaled_crop_workload() -> ViewportWorkload {
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
@@ -258,11 +327,7 @@ fn cpu_viewport_misaligned_scaled_tile_matches_direct_decode() {
 fn cpu_contiguous_viewport_region_matches_direct_decode() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut pool = ScratchPool::new();
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     let actual = decode_viewport_region_cpu(&decoder, &mut pool, PixelFormat::Rgb8, &workload, 0)
         .expect("cpu viewport region");
@@ -284,40 +349,7 @@ fn cpu_contiguous_viewport_region_matches_direct_decode() {
 
 #[test]
 fn gapped_tiles_are_not_contiguous() {
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: vec![
-            ViewportTile {
-                source_roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-            },
-            ViewportTile {
-                source_roi: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-            },
-        ],
-    };
+    let workload = sparse_workload();
 
     assert!(!is_contiguous_viewport_workload(&workload));
     assert_eq!(
@@ -328,11 +360,7 @@ fn gapped_tiles_are_not_contiguous() {
 
 #[test]
 fn cpu_auto_strategy_prefers_contiguous_when_available() {
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     assert!(is_contiguous_viewport_workload(&workload));
     assert_eq!(
@@ -345,11 +373,7 @@ fn cpu_auto_strategy_prefers_contiguous_when_available() {
 #[test]
 fn reusable_metal_viewport_strategy_reports_direct_contiguous_workload() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     assert_eq!(
         choose_resizable_metal_viewport_strategy(&decoder, &workload)
@@ -362,40 +386,7 @@ fn reusable_metal_viewport_strategy_reports_direct_contiguous_workload() {
 #[test]
 fn reusable_metal_viewport_strategy_reports_sparse_composition_workload() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: vec![
-            ViewportTile {
-                source_roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-            },
-            ViewportTile {
-                source_roi: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-            },
-        ],
-    };
+    let workload = sparse_workload();
 
     assert_eq!(
         choose_resizable_metal_viewport_strategy(&decoder, &workload)
@@ -503,40 +494,7 @@ fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: vec![
-            ViewportTile {
-                source_roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-            },
-            ViewportTile {
-                source_roi: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-            },
-        ],
-    };
+    let workload = sparse_workload();
     assert!(!is_contiguous_viewport_workload(&workload));
     let expected = compose_viewport_cpu(
         &decoder,
@@ -584,40 +542,7 @@ fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: vec![
-            ViewportTile {
-                source_roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-            },
-            ViewportTile {
-                source_roi: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-            },
-        ],
-    };
+    let workload = sparse_workload();
     assert!(!is_contiguous_viewport_workload(&workload));
     let expected = compose_viewport_cpu(
         &decoder,
@@ -662,11 +587,7 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut hybrid_pool = ScratchPool::new();
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     let expected =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
@@ -692,26 +613,7 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
-    let roi = Rect {
-        x: 1,
-        y: 2,
-        w: 10,
-        h: 9,
-    };
-    let scaled = roi.scaled_covering(Downscale::Quarter);
-    let workload = ViewportWorkload {
-        scale: Downscale::Quarter,
-        viewport_dims: (scaled.w, scaled.h),
-        tiles: vec![ViewportTile {
-            source_roi: roi,
-            dest: Rect {
-                x: 0,
-                y: 0,
-                w: scaled.w,
-                h: scaled.h,
-            },
-        }],
-    };
+    let workload = quarter_scaled_crop_workload();
     let expected =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
@@ -750,26 +652,7 @@ fn contiguous_viewport_region_resizes_reusable_metal_textures() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let roi = Rect {
-        x: 1,
-        y: 2,
-        w: 10,
-        h: 9,
-    };
-    let scaled = roi.scaled_covering(Downscale::Quarter);
-    let workload = ViewportWorkload {
-        scale: Downscale::Quarter,
-        viewport_dims: (scaled.w, scaled.h),
-        tiles: vec![ViewportTile {
-            source_roi: roi,
-            dest: Rect {
-                x: 0,
-                y: 0,
-                w: scaled.w,
-                h: scaled.h,
-            },
-        }],
-    };
+    let workload = quarter_scaled_crop_workload();
     let expected_rgb =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
@@ -811,26 +694,7 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
-    let roi = Rect {
-        x: 1,
-        y: 2,
-        w: 10,
-        h: 9,
-    };
-    let scaled = roi.scaled_covering(Downscale::Quarter);
-    let workload = ViewportWorkload {
-        scale: Downscale::Quarter,
-        viewport_dims: (scaled.w, scaled.h),
-        tiles: vec![ViewportTile {
-            source_roi: roi,
-            dest: Rect {
-                x: 0,
-                y: 0,
-                w: scaled.w,
-                h: scaled.h,
-            },
-        }],
-    };
+    let workload = quarter_scaled_crop_workload();
     assert!(is_contiguous_viewport_workload(&workload));
     let expected =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
@@ -873,26 +737,7 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let roi = Rect {
-        x: 1,
-        y: 2,
-        w: 10,
-        h: 9,
-    };
-    let scaled = roi.scaled_covering(Downscale::Quarter);
-    let workload = ViewportWorkload {
-        scale: Downscale::Quarter,
-        viewport_dims: (scaled.w, scaled.h),
-        tiles: vec![ViewportTile {
-            source_roi: roi,
-            dest: Rect {
-                x: 0,
-                y: 0,
-                w: scaled.w,
-                h: scaled.h,
-            },
-        }],
-    };
+    let workload = quarter_scaled_crop_workload();
     assert!(is_contiguous_viewport_workload(&workload));
     let expected_rgb =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
@@ -935,26 +780,7 @@ fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let roi = Rect {
-        x: 1,
-        y: 2,
-        w: 10,
-        h: 9,
-    };
-    let scaled = roi.scaled_covering(Downscale::Quarter);
-    let workload = ViewportWorkload {
-        scale: Downscale::Quarter,
-        viewport_dims: (scaled.w, scaled.h),
-        tiles: vec![ViewportTile {
-            source_roi: roi,
-            dest: Rect {
-                x: 0,
-                y: 0,
-                w: scaled.w,
-                h: scaled.h,
-            },
-        }],
-    };
+    let workload = quarter_scaled_crop_workload();
     assert!(is_contiguous_viewport_workload(&workload));
     let expected_rgb =
         decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
@@ -997,40 +823,7 @@ fn sparse_viewport_composition_resizes_reusable_metal_texture_output() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: vec![
-            ViewportTile {
-                source_roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 8,
-                    h: 8,
-                },
-            },
-            ViewportTile {
-                source_roi: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-                dest: Rect {
-                    x: 8,
-                    y: 8,
-                    w: 8,
-                    h: 8,
-                },
-            },
-        ],
-    };
+    let workload = sparse_workload();
     assert!(!is_contiguous_viewport_workload(&workload));
     let expected_rgb = compose_viewport_cpu(
         &decoder,
@@ -1072,11 +865,7 @@ fn auto_viewport_surface_path_prefers_cpu_for_small_contiguous_workloads() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut direct_pool = ScratchPool::new();
     let mut auto_pool = ScratchPool::new();
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     let expected = decode_viewport_region_cpu_to_surface(&decoder, &mut direct_pool, &workload, 0)
         .expect("cpu viewport surface");
@@ -1095,11 +884,7 @@ fn auto_viewport_surface_path_prefers_cpu_for_small_contiguous_workloads() {
 fn non_macos_auto_viewport_surface_returns_cpu_surface() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut pool = ScratchPool::new();
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     let surface = decode_viewport_to_surface(&decoder, &mut pool, &workload, BackendRequest::Auto)
         .expect("auto viewport surface");
@@ -1115,11 +900,7 @@ fn non_macos_auto_viewport_surface_returns_cpu_surface() {
 fn non_macos_explicit_metal_viewport_surface_is_unavailable() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut pool = ScratchPool::new();
-    let workload = ViewportWorkload {
-        scale: Downscale::None,
-        viewport_dims: (16, 16),
-        tiles: quadrant_tiles().to_vec(),
-    };
+    let workload = quadrant_workload();
 
     let result = decode_viewport_to_surface(&decoder, &mut pool, &workload, BackendRequest::Metal);
     assert!(matches!(result, Err(crate::Error::MetalUnavailable)));

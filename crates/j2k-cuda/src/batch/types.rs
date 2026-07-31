@@ -30,6 +30,10 @@ pub enum CudaBatchError {
 }
 
 impl CudaBatchError {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "error construction preserves its infallible public signature while retaining affected source indices"
+    )]
     pub(super) fn group(group: &PreparedBatchGroup, source: Error) -> Self {
         Self::GroupExecution {
             source_indices: group.source_indices().to_vec(),
@@ -103,6 +107,10 @@ pub struct CudaBatchGroupError {
 
 impl CudaBatchGroupError {
     #[cfg(feature = "cuda-runtime")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "error construction preserves its infallible public signature while retaining affected source indices"
+    )]
     pub(super) fn new(group: &PreparedBatchGroup, source: Error) -> Self {
         Self {
             source_indices: group.source_indices().to_vec(),

@@ -1,0 +1,15 @@
+# Fast local diagnostics for allocations that bypass the codec's fallible
+# allocation mechanisms. Behavioral allocation budgets remain owned by
+# `j2k-alloc-probe`; this list is intentionally small and uses stable standard
+# library def-paths only.
+disallowed-methods = [
+    { path = "std::vec::Vec::with_capacity", reason = "use BudgetedVec or a fallible try_reserve-based allocation path" },
+    { path = "std::vec::Vec::reserve", reason = "use BudgetedVec or propagate try_reserve failure" },
+    { path = "std::vec::Vec::reserve_exact", reason = "use BudgetedVec or propagate try_reserve_exact failure" },
+    { path = "std::string::String::with_capacity", reason = "reserve fallibly and propagate allocation failure" },
+    { path = "slice::to_vec", reason = "copy through a fallible, budgeted allocation path" },
+]
+
+disallowed-macros = [
+    { path = "std::vec", reason = "construct vectors through a fallible, budgeted allocation path" },
+]

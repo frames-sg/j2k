@@ -1,5 +1,4 @@
 #![cfg(target_os = "macos")]
-
 use j2k_core::{
     BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect,

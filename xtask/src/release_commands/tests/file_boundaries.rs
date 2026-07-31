@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::super::release_manifest::parse_release_manifest_source;
 use super::super::{
     validate_publish_script, validate_publish_workflow, validate_release_docs,
     validate_release_metadata, ReleaseIntegrityMode,
@@ -14,7 +15,12 @@ fn missing_release_contract_files_fail_with_path_context() {
         let error = match case.as_str() {
             "workflow" => validate_publish_workflow(&mut Vec::new()),
             "script" => validate_publish_script(&mut Vec::new()),
-            "docs" => validate_release_docs(&mut Vec::new()),
+            "docs" => {
+                let manifest =
+                    parse_release_manifest_source(include_str!("../../../../release-crates.json"))
+                        .expect("checked-in release manifest");
+                validate_release_docs(&manifest, &mut Vec::new())
+            }
             "changelog" => validate_release_metadata(
                 "0.7.0",
                 ReleaseIntegrityMode::PreCandidate,

@@ -235,7 +235,10 @@ pub(super) fn lossy_quality_layer_byte_targets(
         return Ok(Vec::new());
     }
 
-    let mut targets = Vec::with_capacity(options.quality_layers.len());
+    let mut targets = super::allocation::try_vec(
+        options.quality_layers.len(),
+        "J2K lossy quality-layer targets",
+    )?;
     for layer in &options.quality_layers {
         match layer.target {
             J2kRateTarget::Bytes(bytes) => targets.push(bytes),

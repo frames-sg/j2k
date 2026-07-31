@@ -574,7 +574,13 @@ pub(super) fn extract_forward_dwt53_output(
     mut shapes: Vec<J2kForwardDwt53Level>,
 ) -> Result<J2kForwardDwt53Output, Error> {
     let full_width_usize = full_width as usize;
-    let mut ll = Vec::with_capacity((ll_width as usize) * (ll_height as usize));
+    let ll_len = crate::batch_allocation::checked_count_product(
+        ll_width as usize,
+        ll_height as usize,
+        "J2K Metal forward DWT 5/3 LL coefficients",
+    )?;
+    let mut ll =
+        crate::batch_allocation::try_vec(ll_len, "J2K Metal forward DWT 5/3 LL coefficients")?;
     for y in 0..ll_height as usize {
         let row_start = y
             .checked_mul(full_width_usize)
@@ -642,7 +648,8 @@ pub(super) fn extract_forward_dwt97_output(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal forward DWT LL dimensions overflow".to_string(),
         })?;
-    let mut ll = Vec::with_capacity(ll_len);
+    let mut ll =
+        crate::batch_allocation::try_vec(ll_len, "J2K Metal forward DWT 9/7 LL coefficients")?;
     for y in 0..ll_height_usize {
         let row_start = y
             .checked_mul(full_width_usize)
@@ -707,7 +714,13 @@ pub(super) fn extract_subband(
     width: u32,
     height: u32,
 ) -> Result<Vec<f32>, Error> {
-    let mut out = Vec::with_capacity((width as usize) * (height as usize));
+    let output_len = crate::batch_allocation::checked_count_product(
+        width as usize,
+        height as usize,
+        "J2K Metal forward DWT subband coefficients",
+    )?;
+    let mut out =
+        crate::batch_allocation::try_vec(output_len, "J2K Metal forward DWT subband coefficients")?;
     for y in 0..height as usize {
         let row_start = (y0 as usize)
             .checked_add(y)

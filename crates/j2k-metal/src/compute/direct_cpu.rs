@@ -164,7 +164,11 @@ fn decode_prepared_classic_jobs_on_cpu_with_scratch_impl<const PROFILE: bool>(
         let start = job.output_offset as usize;
         let segment_window = prepared_classic_segment_window(segments, job)?;
         scratch.segments.clear();
-        scratch.segments.reserve(segment_window.len());
+        crate::batch_allocation::try_reserve_to(
+            &mut scratch.segments,
+            segment_window.len(),
+            "J2K MetalDirect CPU classic segments",
+        )?;
         for segment in segment_window {
             scratch.segments.push(prepared_classic_segment(segment)?);
         }

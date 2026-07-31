@@ -9,7 +9,6 @@
 //! a clear unsupported or unavailable error.
 
 #![warn(unreachable_pub)]
-
 mod allocation;
 mod batch;
 mod codec;

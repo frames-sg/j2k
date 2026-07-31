@@ -195,13 +195,7 @@ mod batch_contract_tests {
                 .map(|image| image.plan().output_rect())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(
-            completion.warnings(),
-            [
-                vec![J2kDecodeWarning::LenientDecodeMode],
-                vec![J2kDecodeWarning::LenientDecodeMode],
-            ]
-        );
+        assert_eq!(completion.warnings(), [Vec::new(), Vec::new()]);
 
         // The synchronous convenience API must use the same coalesced graph,
         // not the legacy per-image destination loop.

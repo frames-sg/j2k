@@ -112,6 +112,10 @@ pub fn is_contiguous_viewport_workload(workload: &ViewportWorkload) -> bool {
 }
 
 /// Suggest a fixed-size centered viewport workload for an image.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "this infallible UI-planning helper returns a fixed twelve-tile Vec and has no error channel"
+)]
 pub fn suggest_viewport_workload(dimensions: (u32, u32)) -> Option<ViewportWorkload> {
     let scales = [
         Downscale::Eighth,

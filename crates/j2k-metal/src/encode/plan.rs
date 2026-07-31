@@ -188,8 +188,11 @@ fn lossless_dwt_level_plans(
     width: u32,
     height: u32,
     num_decomposition_levels: u8,
-) -> Vec<LosslessDwtLevelPlan> {
-    let mut levels = Vec::with_capacity(usize::from(num_decomposition_levels));
+) -> Result<Vec<LosslessDwtLevelPlan>, crate::Error> {
+    let mut levels = crate::batch_allocation::try_vec(
+        usize::from(num_decomposition_levels),
+        "J2K Metal resident encode DWT level plans",
+    )?;
     let mut current_width = width;
     let mut current_height = height;
     for _ in 0..num_decomposition_levels {
@@ -206,7 +209,7 @@ fn lossless_dwt_level_plans(
         current_width = low_width;
         current_height = low_height;
     }
-    levels
+    Ok(levels)
 }
 
 #[expect(
@@ -250,7 +253,7 @@ pub(super) fn lossless_device_encode_plan(
     let mut component_resolutions = Vec::<Vec<LosslessResolutionPlan>>::new();
     for component in 0..components {
         let mut component_packets = Vec::new();
-        let dwt_levels = lossless_dwt_level_plans(width, height, num_decomposition_levels);
+        let dwt_levels = lossless_dwt_level_plans(width, height, num_decomposition_levels)?;
         let mut base_packet = LosslessResolutionPlan {
             subbands: Vec::new(),
         };
@@ -353,8 +356,15 @@ pub(super) fn lossless_device_encode_plan(
     }
 
     let resolution_count = component_resolutions.first().map_or(0usize, Vec::len);
-    let mut resolutions =
-        Vec::with_capacity(resolution_count.saturating_mul(usize::from(components)));
+    let resolution_capacity = resolution_count
+        .checked_mul(usize::from(components))
+        .ok_or_else(|| crate::Error::MetalKernel {
+            message: "J2K Metal resident encode resolution count overflow".to_string(),
+        })?;
+    let mut resolutions = crate::batch_allocation::try_vec(
+        resolution_capacity,
+        "J2K Metal resident encode resolution plans",
+    )?;
     for resolution in 0..resolution_count {
         for component in &mut component_resolutions {
             resolutions.push(std::mem::take(&mut component[resolution]));
