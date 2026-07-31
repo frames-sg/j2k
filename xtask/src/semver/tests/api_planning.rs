@@ -26,7 +26,7 @@ fn common_candidate_version_rejects_empty_missing_and_mixed_sets() {
         .contains("share one candidate version"));
     assert!(common_candidate_version(&["missing"], &versions)
         .expect_err("missing version")
-        .contains("missing stable package"));
+        .contains("missing published library"));
     assert!(common_candidate_version(&["alpha", "beta"], &versions)
         .expect_err("mixed versions")
         .contains("share one candidate version"));
@@ -89,7 +89,7 @@ fn package_diff_planning_distinguishes_published_and_new_packages() {
     assert!(diffs[1].removed.is_empty());
 
     let report = render_report("0.7.4", &diffs, "0.52.0");
-    assert!(report.contains("## New packages without a 0.7.3 registry baseline"));
+    assert!(report.contains("## New packages without a 0.7.5 registry baseline"));
     assert!(report.contains("- `j2k-future` `0.7.4`: 1 ordinary public API items"));
     assert!(report.contains("### `j2k`"));
     assert!(report.contains("```text\nremoved\n```"));

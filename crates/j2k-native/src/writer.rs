@@ -51,6 +51,10 @@ impl BitAccumulator {
     )]
     fn flush(&mut self) -> Option<u8> {
         if self.bits_in_buffer == 0 {
+            if self.last_byte_was_ff {
+                self.last_byte_was_ff = false;
+                return Some(0);
+            }
             return None;
         }
         let limit = if self.last_byte_was_ff { 7 } else { 8 };
@@ -305,6 +309,14 @@ mod tests {
         assert_eq!(data[0], 0xFF);
         // After 0xFF, the 7 bits are written with a leading 0 (stuffed bit)
         assert_eq!(data[1], 0b101_0101);
+    }
+
+    #[test]
+    fn test_trailing_ff_is_followed_by_stuffed_zero_byte() {
+        let mut w = BitWriter::new();
+        w.write_bits(0xFF, 8);
+
+        assert_eq!(w.finish(), vec![0xFF, 0x00]);
     }
 
     #[test]

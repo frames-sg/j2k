@@ -29,7 +29,8 @@ external action.
 
 The following checks passed during local macOS preparation on 2026-07-24.
 They prove the staged design is buildable and functional, but they are not
-release evidence because the tree is not a clean, versioned candidate SHA:
+release evidence because they were not run from the final clean, versioned
+candidate SHA:
 
 - `cargo xtask j2k-ml-package-smoke`, including clean packaged-source
   consumers for `cpu`, `metal`, and `cpu,metal`, packaged examples, and docs;
@@ -43,10 +44,10 @@ Metal gate. CPU tests, strict Clippy, repository lint, and formatting passed
 again afterward. Rerun the package smoke and full Metal gate from the final
 clean candidate SHA.
 
-The CUDA host checkout remains on the published `v0.7.5` release commit. Run
-the full CUDA gate only after the corrected source is committed and the same
-candidate SHA is available on that host. Do not treat a different checkout or
-an uncommitted source copy as exact-SHA release evidence.
+The CUDA host remained on the published `v0.7.5` release commit during that
+preparation. Run the full CUDA gate only after the corrected source is
+committed and the same candidate SHA is available on that host. Do not treat a
+different checkout or an uncommitted source copy as exact-SHA release evidence.
 
 ## Release completion checklist
 
@@ -65,8 +66,9 @@ an uncommitted source copy as exact-SHA release evidence.
    content-distinct batches 1/8/32/64 for the staged accelerator adapters
    versus CPU-decode-and-upload. Record uncertainty, memory, and transfer
    counters without reusing old direct-route claims.
-4. Stage the release version only after all clean-consumer and hardware gates
-   pass from a clean candidate SHA.
+4. Freeze the staged version under a dated changelog heading only after
+   clean-consumer and hardware gates pass; any later edit creates a new
+   candidate and requires those gates again.
 5. After publication, create fresh consumers pinned to the exact published
    version and repeat CPU, CUDA, and Metal checks before any community notice.
 

@@ -3,14 +3,47 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.8.0] - 2026-07-29
+
+- Breaking: decoding is strict by default in `j2k` and `j2k-native`. Callers
+  that intentionally accept the documented JP2/JPH optional-metadata
+  recoveries must select `DecodeSettings::lenient()` per job; raw codestream,
+  entropy, bounds, overflow, allocation, and resource-safety checks remain
+  strict in both modes.
+- Breaking: lenient decoding now warns only when a permitted recovery was
+  actually used. `J2kDecodeWarning::LenientDecodeMode` is renamed to
+  `J2kDecodeWarning::LenientMetadataRecovery`. New
+  `J2kView::parse_with_settings` and `J2kDecoder::new_with_settings`
+  constructors keep this policy local to one input.
+- Adds `CudaLosslessEncoder`, a reusable, exclusively borrowed lossless-encode
+  façade with explicit `Auto`, CPU-only, and strict-CUDA routing. Its opaque
+  result reports requested and actual execution plus any unavailable-device or
+  incomplete-route fallback; execution errors are returned without a hidden
+  full CPU retry, and the encoder can be reused after failure.
+- Routes 25–38-bit `Auto` lossless encode requests to the supported CPU path
+  while preserving `RequireDevice` failure semantics.
+- Defines stable, experimental, implementation, and binary API tiers in the
+  ordered release manifest, and makes the `0.7.5`→`0.8.0` semver transition
+  fail closed with an exact source- and behavior-break ledger. A later `0.8.x`
+  candidate must use a published `v0.8.0` baseline.
+- Fixes the published `j2k-ml 0.7.5` `cuda` and `metal` clean-consumer
+  failures. The adapters now use accelerator codec decode, explicit
+  decoded-pixel readback, and ordinary Burn tensor upload through released
+  dependency APIs.
+- Adds `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` as explicit aliases
+  for staged host-memory upload behavior while preserving `CudaBurnDecoder`,
+  `MetalBurnDecoder`, and their inherent method paths unchanged.
+- Removes the private CubeCL and wgpu patch sources from the release graph.
+  This is not a direct-destination or zero-copy accelerator contract.
+
 ## [0.7.5] - 2026-07-22
 
 - Known release defect: the published `j2k-ml 0.7.5` `cuda` and `metal`
   features depend on accelerator interop methods that are not present in the
   registry CubeCL and wgpu releases selected by clean consumers. The `cpu`
-  feature is unaffected. The planned `0.7.6` fix replaces those routes with
-  explicitly staged accelerator decode, decoded-pixel readback, and ordinary
-  Burn tensor upload using released public APIs.
+  feature is unaffected. Version `0.8.0` replaces those routes with explicitly
+  staged accelerator decode, decoded-pixel readback, and ordinary Burn tensor
+  upload using released public APIs.
 - Compatibility exception: this release is an explicitly source-incompatible
   `0.7.x` patch against the published `0.7.3` API. The reviewed compatibility
   evidence and migration notes cover the complete contracted surface.

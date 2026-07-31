@@ -2,7 +2,16 @@
 
 This document records current workspace boundaries. It is not a roadmap.
 
-The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. Native decode settings retain a lenient default for compatibility, but `DecodeSettings::strict()` is the fail-closed constructor and public `j2k` decode outcomes surface `J2kDecodeWarning::LenientDecodeMode` when lenient tolerance is enabled. The living support boundary is maintained in [`docs/public-support.md`](public-support.md).
+The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`:
+CPU remains the portable baseline, and explicit CUDA or Metal
+requests are strict. Decode settings are strict by default. Explicit lenient
+settings are retained per image, never on shared `J2kContext`, and are limited
+to the JP2/JPH metadata recoveries documented by `DecodeSettings::lenient`.
+Codestream, bounds, overflow, allocation, and resource-limit validation remain
+strict in both modes. Decode outcomes surface
+`J2kDecodeWarning::LenientMetadataRecovery` only when a recovery actually
+occurred. The living support boundary is maintained in
+[`docs/public-support.md`](public-support.md).
 
 The codec support boundary is JPEG 2000 Part 1 codestreams, JP2 still-image
 files, HTJ2K Part 15 codestreams, and JPH still-image files. JPX / JPEG 2000
@@ -28,7 +37,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |
-| `j2k-alloc-probe` | dev helper | Serial process-wide allocation measurement for real codec and formatting boundaries. |
+| `j2k-alloc-probe` | dev helper | Serial process-wide measurement of successful allocation calls and gross requested bytes at real codec boundaries. |
 | `j2k-compare` | tooling | Comparator tooling. |
 | `xtask` | workspace tool | Repository automation under `xtask/`. |
 
@@ -65,7 +74,7 @@ j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core
-j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-metal-support
+j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-core, j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode

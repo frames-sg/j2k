@@ -1,12 +1,14 @@
 use std::fmt::Write as _;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
+use std::{collections::BTreeMap, collections::BTreeSet};
 
 mod transaction;
 
 use transaction::write_generated_pair_transactionally;
 
-use crate::release_commands::STABLE_DOC_LIBRARY_PACKAGES;
+use crate::release_commands::published_library_packages;
 use crate::stable_api::{
     collect_package_apis, verify_cargo_public_api_version, CARGO_PUBLIC_API_VERSION,
     HIDDEN_API_SNAPSHOT, ORDINARY_RUSTDOCFLAGS, PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET,
@@ -216,7 +218,19 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
         );
     }
     verify_cargo_public_api_version()?;
-    let inventories = collect_package_apis(STABLE_DOC_LIBRARY_PACKAGES)?;
+    let packages = published_library_packages()?;
+    let package_refs = packages.iter().map(String::as_str).collect::<Vec<_>>();
+    let inventories = collect_package_apis(&package_refs)?;
+    let committed_snapshot = match fs::read_to_string(PUBLIC_API_SNAPSHOT) {
+        Ok(source) => source,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(format!(
+                "failed to read {PUBLIC_API_SNAPSHOT} for inventory presentation order: {error}"
+            ));
+        }
+    };
+    let render_order = inventory_render_order(&packages, &committed_snapshot)?;
     let tool_version = format!("cargo-public-api {CARGO_PUBLIC_API_VERSION}");
 
     let mut public_out = String::new();
@@ -268,8 +282,8 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
     )
     .unwrap();
 
-    for package in STABLE_DOC_LIBRARY_PACKAGES {
-        let inventory = inventories.get(*package).ok_or_else(|| {
+    for package in render_order {
+        let inventory = inventories.get(package).ok_or_else(|| {
             format!("collected public API inventory is missing package `{package}`")
         })?;
 
@@ -299,6 +313,41 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
     ))
 }
 
+fn inventory_render_order<'a>(
+    packages: &'a [String],
+    committed_snapshot: &str,
+) -> Result<Vec<&'a str>, String> {
+    let by_name = packages
+        .iter()
+        .map(|package| (package.as_str(), package.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut ordered = Vec::with_capacity(packages.len());
+    for line in committed_snapshot.lines() {
+        let Some(name) = line
+            .strip_prefix("## `")
+            .and_then(|line| line.strip_suffix('`'))
+        else {
+            continue;
+        };
+        let Some(package) = by_name.get(name) else {
+            continue;
+        };
+        if !seen.insert(name.to_string()) {
+            return Err(format!(
+                "{PUBLIC_API_SNAPSHOT} contains duplicate package heading `{name}`"
+            ));
+        }
+        ordered.push(*package);
+    }
+    for package in packages {
+        if seen.insert(package.clone()) {
+            ordered.push(package.as_str());
+        }
+    }
+    Ok(ordered)
+}
+
 fn finalize_text_snapshot(snapshot: &str) -> String {
     let content = snapshot.trim_end_matches('\n');
     if content.is_empty() {
@@ -312,7 +361,7 @@ fn print_stable_api_help() {
     println!(
         "usage: cargo xtask stable-api [--write]\n\n\
          Without --write, checks the ordinary and rustdoc-hidden API snapshots \
-         against cargo-public-api output for all 1.0-stable library crates. \
+         against cargo-public-api output for every published library crate. \
          With --write, refreshes both snapshots. This task must run on macOS \
          so target-gated Metal APIs are included."
     );

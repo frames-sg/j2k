@@ -13,7 +13,7 @@ use crate::command_support::{
     run_nightly_cargo_in_dir_owned, run_program, rust_sources,
 };
 use crate::panic_surface::panic_surface;
-use crate::release_commands::STABLE_DOC_LIBRARY_PACKAGES;
+use crate::release_commands::published_library_packages;
 
 const NO_STD_TARGET: &str = "aarch64-unknown-none";
 const NO_STD_CORE_PORTABLE_TARGET: &str = "wasm32-unknown-unknown";
@@ -165,12 +165,14 @@ const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
 pub(super) fn test() -> Result<(), String> {
     if env::consts::OS != "macos" {
         test_workspace_without_benches(&[])?;
-        return test_alloc_probe();
+        test_alloc_probe()?;
+        return test_downstream_examples();
     }
 
     test_workspace_without_benches(&["--exclude", "j2k-metal"])?;
     test_alloc_probe()?;
-    test_j2k_metal_without_benches()
+    test_j2k_metal_without_benches()?;
+    test_downstream_examples()
 }
 
 fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
@@ -230,9 +232,9 @@ pub(super) fn doc() -> Result<(), String> {
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
 
-    for package in STABLE_DOC_LIBRARY_PACKAGES {
+    for package in published_library_packages()? {
         run_cargo_with_env(
-            &["doc", "-p", package, "--lib", "--no-deps"],
+            &["doc", "-p", package.as_str(), "--lib", "--no-deps"],
             &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
         )?;
     }
@@ -550,6 +552,11 @@ fn tokens_contain_unsafe(tokens: &TokenStream) -> bool {
         TokenTree::Ident(ident) => ident == "unsafe",
         TokenTree::Literal(_) | TokenTree::Punct(_) => false,
     })
+}
+
+fn test_downstream_examples() -> Result<(), String> {
+    run_cargo(&["test", "-p", "j2k", "--examples"])?;
+    run_cargo(&["test", "-p", "j2k-transcode", "--examples"])
 }
 
 #[cfg(test)]

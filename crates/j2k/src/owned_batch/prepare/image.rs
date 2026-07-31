@@ -6,8 +6,8 @@ use super::super::{
     extract_j2k_codestream_payload, parse_image_info, Arc, BatchAlpha, BatchCodecRoute, BatchColor,
     BatchDecodeOptions, BatchErrorStage, BatchExecutionShape, BatchGroupInfo, BatchItemError,
     BatchLayout, BatchWaveletTransform, BatchWorker, Colorspace, CompressedTransferSyntax,
-    DecodeSettings, DeviceDecodePlan, Downscale, EncodedImage, J2kCodestreamRange, J2kError,
-    J2kSupportInfo, NativeSampleType, NonRepresentableReason, PreparationDepth, PrepareImageResult,
+    DeviceDecodePlan, Downscale, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo,
+    NativeSampleType, NonRepresentableReason, PreparationDepth, PrepareImageResult,
     PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
 };
 
@@ -37,15 +37,26 @@ pub(super) fn prepare_image(
         offset: codestream.codestream_offset(),
         length: codestream.codestream().len(),
     };
+    let target_resolution = (plan.scale() != Downscale::None).then_some((
+        plan.source_dims().0.div_ceil(plan.scale().denominator()),
+        plan.source_dims().1.div_ceil(plan.scale().denominator()),
+    ));
+    let native_settings = options.settings.to_native(target_resolution);
+    let native_image =
+        j2k_native::Image::new(&input.bytes, &native_settings).map_err(|source| {
+            BatchItemError::Codec {
+                stage: BatchErrorStage::Prepare,
+                source: Arc::new(J2kError::from_native_decode_error(source)),
+            }
+        })?;
+    let used_lenient_metadata_recovery = native_image.used_lenient_metadata_recovery();
     let codec_plan = match info.route {
         BatchCodecRoute::Classic => {
-            prepare_classic_offset_plan(&input, &info, plan, options.settings, worker)?
+            prepare_classic_offset_plan(&native_image, &info, plan, worker)?
                 .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Classic)
         }
-        BatchCodecRoute::Htj2k => {
-            prepare_htj2k_offset_plan(&input, &info, plan, options.settings, worker)?
-                .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k)
-        }
+        BatchCodecRoute::Htj2k => prepare_htj2k_offset_plan(&native_image, &info, plan, worker)?
+            .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
     };
     reconcile_codec_plan_metadata(&mut info, &codec_plan)?;
     let preparation_depth = codec_plan.preparation_depth();
@@ -56,6 +67,7 @@ pub(super) fn prepare_image(
             request: input.request,
             source_index,
             decode_settings: options.settings,
+            used_lenient_metadata_recovery,
             support: Arc::new(support),
             plan,
             codestream_range,
@@ -82,10 +94,9 @@ pub(super) fn batch_execution_shape(
 }
 
 fn prepare_classic_offset_plan(
-    input: &EncodedImage,
+    image: &j2k_native::Image<'_>,
     info: &BatchGroupInfo,
     plan: DeviceDecodePlan,
-    decode_settings: DecodeSettings,
     worker: &mut BatchWorker,
 ) -> Result<Option<PreparedClassicPlan>, BatchItemError> {
     if info.route != BatchCodecRoute::Classic
@@ -96,19 +107,8 @@ fn prepare_classic_offset_plan(
     {
         return Ok(None);
     }
-    let target_resolution = (plan.scale() != Downscale::None).then_some((
-        plan.source_dims().0.div_ceil(plan.scale().denominator()),
-        plan.source_dims().1.div_ceil(plan.scale().denominator()),
-    ));
-    let native_settings = decode_settings.to_native(target_resolution);
-    let image = j2k_native::Image::new(&input.bytes, &native_settings).map_err(|source| {
-        BatchItemError::Codec {
-            stage: BatchErrorStage::Prepare,
-            source: Arc::new(J2kError::from_native_decode_error(source)),
-        }
-    })?;
     let output = plan.output_rect();
-    match worker.build_prepared_classic_plan(&image, (output.x, output.y, output.w, output.h)) {
+    match worker.build_prepared_classic_plan(image, (output.x, output.y, output.w, output.h)) {
         Ok(plan) => Ok(Some(PreparedClassicPlan::from_native(plan))),
         Err(j2k_native::DecodeError::Decoding(
             j2k_native::DecodingError::DirectPlanUnsupported(_)
@@ -122,10 +122,9 @@ fn prepare_classic_offset_plan(
 }
 
 fn prepare_htj2k_offset_plan(
-    input: &EncodedImage,
+    image: &j2k_native::Image<'_>,
     info: &BatchGroupInfo,
     plan: DeviceDecodePlan,
-    decode_settings: DecodeSettings,
     worker: &mut BatchWorker,
 ) -> Result<Option<PreparedHtj2kPlan>, BatchItemError> {
     if info.route != BatchCodecRoute::Htj2k
@@ -136,19 +135,8 @@ fn prepare_htj2k_offset_plan(
     {
         return Ok(None);
     }
-    let target_resolution = (plan.scale() != Downscale::None).then_some((
-        plan.source_dims().0.div_ceil(plan.scale().denominator()),
-        plan.source_dims().1.div_ceil(plan.scale().denominator()),
-    ));
-    let native_settings = decode_settings.to_native(target_resolution);
-    let image = j2k_native::Image::new(&input.bytes, &native_settings).map_err(|source| {
-        BatchItemError::Codec {
-            stage: BatchErrorStage::Prepare,
-            source: Arc::new(J2kError::from_native_decode_error(source)),
-        }
-    })?;
     let output = plan.output_rect();
-    match worker.build_prepared_htj2k_plan(&image, (output.x, output.y, output.w, output.h)) {
+    match worker.build_prepared_htj2k_plan(image, (output.x, output.y, output.w, output.h)) {
         Ok(plan) => Ok(Some(PreparedHtj2kPlan::from_native(plan))),
         Err(j2k_native::DecodeError::Decoding(
             j2k_native::DecodingError::DirectPlanUnsupported(_),

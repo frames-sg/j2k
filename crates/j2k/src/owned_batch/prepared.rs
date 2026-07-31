@@ -40,6 +40,7 @@ pub(super) struct PreparedImageInner {
     pub(super) request: DecodeRequest,
     pub(super) source_index: usize,
     pub(super) decode_settings: DecodeSettings,
+    pub(super) used_lenient_metadata_recovery: bool,
     pub(super) support: Arc<J2kSupportInfo>,
     pub(super) plan: DeviceDecodePlan,
     pub(super) codestream_range: J2kCodestreamRange,
@@ -69,6 +70,13 @@ impl PreparedImage {
     #[must_use]
     pub fn decode_settings(&self) -> DecodeSettings {
         self.inner.decode_settings
+    }
+
+    /// Whether preparation used an explicitly documented lenient metadata recovery.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn used_lenient_metadata_recovery(&self) -> bool {
+        self.inner.used_lenient_metadata_recovery
     }
 
     /// Parsed codestream and wrapper metadata.

@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 j2k-native = { path = "../j2k-native" }
 j2k-profile = { path = "../j2k-profile" }
+proptest = { workspace = true }
 rayon = { workspace = true }
 
 [[test]]

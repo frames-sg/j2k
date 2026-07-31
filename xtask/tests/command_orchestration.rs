@@ -115,6 +115,11 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
     assert!(log.contains("package -p j2k-core --list|"));
     assert!(log.contains("publish -p j2k-core --dry-run|"));
     assert!(log.contains("package -p j2k-cli --no-verify"));
+    #[cfg(target_os = "macos")]
+    {
+        assert!(log.contains("git rev-parse v0.7.5^{commit}"));
+        assert!(log.contains("git show v0.7.5:docs/stable-api-1.0.public-api.txt"));
+    }
 }
 
 fn assert_stable_api_fails_at_expected_boundary(output: &Output, context: &str) {
@@ -137,7 +142,7 @@ fn assert_semver_fails_at_expected_boundary(output: &Output) {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected_error = if cfg!(target_os = "macos") {
-        "committed stable API snapshots are stale"
+        "committed published-library API snapshots are stale"
     } else {
         "semver/API review must run on macOS so Metal public APIs are included"
     };
@@ -153,6 +158,14 @@ fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
 
     for task in ["miri", "machete", "no-std"] {
         assert_success(&harness.run(&[task]), task);
+    }
+    for task in ["nextest", "typos", "deny", "downstream-smoke"] {
+        let output = harness.run(&[task]);
+        assert!(!output.status.success(), "{task} must remain retired");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unknown task"),
+            "{task} must fail at the dispatcher boundary"
+        );
     }
     assert_success(
         &harness.run_with_env(

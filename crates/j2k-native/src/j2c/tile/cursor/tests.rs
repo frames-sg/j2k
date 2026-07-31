@@ -68,3 +68,24 @@ fn plt_length_cursor_validates_each_packet_and_resets_for_reuse() {
     assert_eq!(mismatched.body().read_bytes(2), Some(data.as_slice()));
     assert_eq!(mismatched.validate_packet_length(packet_start), None);
 }
+
+#[test]
+fn separated_packet_headers_consume_plt_entries_without_merged_offsets() {
+    let header = [0_u8];
+    let body = [0x11_u8, 0x22];
+    let tile_part = TilePart::Separated(SeparatedTilePart {
+        headers: vec![BitReader::new(&header)],
+        body: BitReader::new(&body),
+        packet_lengths: PacketLengthMetadata::new(true, vec![2]),
+    });
+    let mut cursor = tile_part.cursor().expect("separated cursor");
+
+    assert_eq!(cursor.packet_start_offset(), None);
+    assert_eq!(cursor.body().read_bytes(2), Some(body.as_slice()));
+    cursor
+        .validate_packet_length(None)
+        .expect("separated headers do not expose one merged packet offset");
+    cursor
+        .validate_all_packet_lengths_consumed()
+        .expect("the separated PLT entry was consumed");
+}

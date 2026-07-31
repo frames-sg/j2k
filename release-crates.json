@@ -1,30 +1,81 @@
 {
-  "schema": 1,
-  "ordered_crates": [
-    "j2k-core",
-    "j2k-profile",
-    "j2k-types",
-    "j2k-codec-math",
-    "j2k-cuda-runtime",
-    "j2k-metal-support",
-    "j2k-native",
-    "j2k-jpeg",
-    "j2k-tilecodec",
-    "j2k",
-    "j2k-transcode",
-    "j2k-transcode-cuda",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-transcode-metal",
-    "j2k-jpeg-cuda",
-    "j2k-cuda",
-    "j2k-ml",
-    "j2k-cli"
-  ],
-  "registry_independent": [
-    "j2k-core",
-    "j2k-profile",
-    "j2k-types",
-    "j2k-codec-math"
+  "schema": 2,
+  "crates": [
+    {
+      "name": "j2k-core",
+      "api_contract": "stable"
+    },
+    {
+      "name": "j2k-profile",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-types",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-codec-math",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-cuda-runtime",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-metal-support",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-native",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-jpeg",
+      "api_contract": "stable"
+    },
+    {
+      "name": "j2k-tilecodec",
+      "api_contract": "stable"
+    },
+    {
+      "name": "j2k",
+      "api_contract": "stable"
+    },
+    {
+      "name": "j2k-transcode",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-transcode-cuda",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-jpeg-metal",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-metal",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-transcode-metal",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-jpeg-cuda",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-cuda",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-ml",
+      "api_contract": "experimental"
+    },
+    {
+      "name": "j2k-cli",
+      "api_contract": "binary"
+    }
   ]
 }

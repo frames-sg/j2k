@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::hint::black_box;
-use std::panic::catch_unwind;
-use std::sync::OnceLock;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{mpsc, OnceLock};
 
 use j2k_alloc_probe::{assert_allocations, measure, Budget};
 use j2k_native::{
@@ -12,32 +12,88 @@ use j2k_native::{
     HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, Image, J2kForwardDwt97Output,
     PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
 };
+use proptest::{
+    collection::vec,
+    prop_assert, prop_assert_eq,
+    test_runner::{Config, TestRunner},
+};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 const KIB: u64 = 1024;
 static PROBE_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 fn main() {
-    harness_counts_allocation_and_deallocation();
-    harness_counts_reallocation_and_shrink();
-    harness_selftest_catches_budget_violation();
-    peak_budget_allows_released_zeroed_allocation();
-    panicking_measurement_releases_global_meter();
-    warmed_scalar_decode_workspace_reuses_without_allocating();
-    profile_row_formatting_is_single_allocation();
-
     probe_pool().broadcast(|_| {});
-    warmed_decoder_context_has_bounded_transients();
-    precomputed_encode_obeys_ledger_boundary_and_allocator_budget();
+
+    let cases: &[(&str, fn())] = &[
+        (
+            "harness_counts_allocation_and_deallocation",
+            harness_counts_allocation_and_deallocation,
+        ),
+        ("harness_counts_reallocation", harness_counts_reallocation),
+        (
+            "preexisting_deallocation_cannot_credit_budget",
+            preexisting_deallocation_cannot_credit_budget,
+        ),
+        (
+            "preexisting_frees_never_hide_requested_bytes",
+            preexisting_frees_never_hide_requested_bytes,
+        ),
+        (
+            "concurrent_measurement_is_rejected_without_resetting_counters",
+            concurrent_measurement_is_rejected_without_resetting_counters,
+        ),
+        (
+            "panicking_measurement_releases_global_meter",
+            panicking_measurement_releases_global_meter,
+        ),
+        (
+            "warmed_scalar_decode_workspace_reuses_without_allocating",
+            warmed_scalar_decode_workspace_reuses_without_allocating,
+        ),
+        (
+            "warmed_decoder_context_has_bounded_transients",
+            warmed_decoder_context_has_bounded_transients,
+        ),
+        (
+            "profile_row_formatting_is_single_allocation",
+            profile_row_formatting_is_single_allocation,
+        ),
+        (
+            "precomputed_encode_obeys_ledger_and_allocator_budgets",
+            precomputed_encode_obeys_ledger_and_allocator_budgets,
+        ),
+    ];
+
+    let mut failures = 0_u32;
+    for (name, case) in cases {
+        print!("test {name} ... ");
+        let result = catch_unwind(AssertUnwindSafe(case));
+        if result.is_ok() {
+            println!("ok");
+        } else {
+            failures += 1;
+            println!("FAILED");
+        }
+    }
+
+    println!(
+        "test result: {}. {} passed; {} failed",
+        if failures == 0 { "ok" } else { "FAILED" },
+        cases.len() - usize::try_from(failures).expect("failure count fits usize"),
+        failures
+    );
+    if failures != 0 {
+        std::process::exit(1);
+    }
 }
 
 fn harness_counts_allocation_and_deallocation() {
     let (allocation, retained) = measure(|| black_box(Box::new([0_u8; 4096])));
     assert_eq!(retained.allocations, 1);
     assert_eq!(retained.reallocations, 0);
-    assert!(retained.allocated_bytes >= 4096);
-    assert!(retained.peak_live_bytes >= 4096);
-    assert!(retained.retained_bytes >= 4096);
+    assert_eq!(retained.deallocations, 0);
+    assert!(retained.requested_bytes >= 4096);
     drop(allocation);
 
     let ((), released) = measure(|| {
@@ -45,11 +101,11 @@ fn harness_counts_allocation_and_deallocation() {
     });
     assert_eq!(released.allocations, 1);
     assert_eq!(released.reallocations, 0);
-    assert!(released.peak_live_bytes >= 4096);
-    assert_eq!(released.retained_bytes, 0);
+    assert_eq!(released.deallocations, 1);
+    assert!(released.requested_bytes >= 4096);
 }
 
-fn harness_counts_reallocation_and_shrink() {
+fn harness_counts_reallocation() {
     let ((), stats) = measure(|| {
         let mut bytes = Vec::new();
         bytes
@@ -59,50 +115,110 @@ fn harness_counts_reallocation_and_shrink() {
         bytes
             .try_reserve_exact(4096)
             .expect("growth allocation must succeed");
-        bytes.shrink_to_fit();
         black_box(&bytes);
     });
 
     assert_eq!(stats.allocations, 1);
     assert!(stats.reallocations >= 1);
-    assert!(stats.peak_live_bytes >= 4096);
-    assert_eq!(stats.retained_bytes, 0);
+    assert!(stats.deallocations >= 1);
+    assert!(stats.requested_bytes >= 4096);
 }
 
-fn harness_selftest_catches_budget_violation() {
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let violation = catch_unwind(|| {
-        let allocation = assert_allocations("planted violation", Budget::zero(), || {
-            black_box(Box::new([7_u8; 128]))
-        });
-        drop(allocation);
+fn preexisting_deallocation_cannot_credit_budget() {
+    let preexisting = black_box(Box::new([0_u8; 8192]));
+    let violation = without_panic_output(|| {
+        catch_unwind(|| {
+            let replacement = assert_allocations(
+                "replacement after pre-existing free",
+                Budget::total_bytes(2047),
+                || {
+                    drop(preexisting);
+                    black_box(Box::new([1_u8; 2048]))
+                },
+            );
+            drop(replacement);
+        })
     });
-    std::panic::set_hook(original_hook);
     assert!(
         violation.is_err(),
-        "the planted allocation escaped the probe"
+        "a pre-existing free incorrectly credited the byte budget"
     );
 }
 
-fn peak_budget_allows_released_zeroed_allocation() {
-    assert_allocations("released zeroed allocation", Budget::peak(8 * KIB), || {
-        let bytes = vec![0_u8; 4096];
-        black_box(&bytes);
-        drop(bytes);
+fn preexisting_frees_never_hide_requested_bytes() {
+    let mut runner = TestRunner::new(Config {
+        cases: 128,
+        failure_persistence: None,
+        ..Config::default()
     });
+    runner
+        .run(
+            &(1_usize..8192, vec(1_usize..8192, 1..48)),
+            |(preexisting_size, requested_sizes)| {
+                let preexisting = vec![0_u8; preexisting_size].into_boxed_slice();
+                let expected_bytes = requested_sizes.iter().try_fold(0_u64, |total, &size| {
+                    total.checked_add(u64::try_from(size).unwrap_or(u64::MAX))
+                });
+                let expected_bytes = expected_bytes.unwrap_or(u64::MAX);
+
+                let ((), stats) = measure(|| {
+                    drop(preexisting);
+                    for size in &requested_sizes {
+                        let allocation = vec![0_u8; *size].into_boxed_slice();
+                        black_box(&allocation);
+                        drop(allocation);
+                    }
+                });
+
+                prop_assert!(stats.requested_bytes >= expected_bytes);
+                prop_assert!(stats.allocations >= requested_sizes.len() as u64);
+                prop_assert_eq!(stats.reallocations, 0);
+                Ok(())
+            },
+        )
+        .expect("allocation trace property");
+}
+
+fn concurrent_measurement_is_rejected_without_resetting_counters() {
+    let (entered_sender, entered_receiver) = mpsc::sync_channel(0);
+    let (release_sender, release_receiver) = mpsc::sync_channel(0);
+    let first = std::thread::spawn(move || {
+        measure(|| {
+            let marker = black_box(Box::new([3_u8; 16 * 1024]));
+            entered_sender
+                .send(())
+                .expect("announce active measurement");
+            release_receiver.recv().expect("release active measurement");
+            marker
+        })
+    });
+    entered_receiver
+        .recv()
+        .expect("first measurement became active");
+
+    let second = without_panic_output(|| catch_unwind(|| measure(|| ())));
+    assert!(second.is_err(), "concurrent measurement must be rejected");
+
+    release_sender
+        .send(())
+        .expect("release first measurement after rejected contender");
+    let (allocation, stats) = first.join().expect("first measurement thread");
+    assert!(stats.allocations >= 1);
+    assert!(
+        stats.requested_bytes >= 16 * KIB,
+        "rejected contender reset the active measurement: {stats:?}"
+    );
+    drop(allocation);
 }
 
 fn panicking_measurement_releases_global_meter() {
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let panic = catch_unwind(|| measure(|| panic!("planted measured panic")));
-    std::panic::set_hook(original_hook);
+    let panic = without_panic_output(|| catch_unwind(|| measure(|| panic!("planted panic"))));
     assert!(panic.is_err(), "measured panic must propagate");
 
     let ((), stats) = measure(|| ());
     assert_eq!(stats.allocations, 0);
-    assert_eq!(stats.retained_bytes, 0);
+    assert_eq!(stats.reallocations, 0);
+    assert_eq!(stats.requested_bytes, 0);
 }
 
 fn warmed_scalar_decode_workspace_reuses_without_allocating() {
@@ -167,7 +283,7 @@ fn warmed_decoder_context_has_bounded_transients() {
         .expect("warm decoder context");
     assert_allocations(
         "warm DecoderContext reuse",
-        Budget::peak_retaining(8 * KIB, 2 * KIB).with_max_allocations(64),
+        Budget::total_bytes(64 * KIB).with_max_calls(64),
         || pool.install(|| image.decode_into(&mut output, &mut context)),
     )
     .expect("decode with warm context");
@@ -182,14 +298,14 @@ fn profile_row_formatting_is_single_allocation() {
 
     let row = assert_allocations(
         "profile row formatting",
-        Budget::peak_retaining(KIB, KIB).with_max_allocations(1),
+        Budget::total_bytes(KIB).with_max_calls(1),
         || j2k_profile::format_profile_key_value_fields(&fields),
     )
     .expect("format profile fields");
     assert_eq!(row, " route=scalar result=success");
 }
 
-fn precomputed_encode_obeys_ledger_boundary_and_allocator_budget() {
+fn precomputed_encode_obeys_ledger_and_allocator_budgets() {
     let image = precomputed_image();
     let options = precomputed_options();
     let pool = probe_pool();
@@ -201,7 +317,7 @@ fn precomputed_encode_obeys_ledger_boundary_and_allocator_budget() {
 
     let encoded = assert_allocations(
         "precomputed HTJ2K encode",
-        Budget::peak_retaining(256 * KIB, 64 * KIB).with_max_allocations(256),
+        Budget::total_bytes(512 * KIB).with_max_calls(256),
         || encode_precomputed_at_cap(pool, &image, &options, exact_cap),
     )
     .expect("exact ledger cap must encode");
@@ -214,22 +330,6 @@ fn precomputed_encode_obeys_ledger_boundary_and_allocator_budget() {
         EncodeError::AllocationTooLarge { cap, requested, .. }
             if cap == exact_cap - 1 && requested > cap
     ));
-
-    let (measured, stats) =
-        measure(|| encode_precomputed_at_cap(pool, &image, &options, exact_cap));
-    measured.expect("measured encode at exact cap");
-    assert!(stats.allocations > 0);
-    assert!(stats.peak_live_bytes > 0);
-    let ledger_cap = u64::try_from(exact_cap).unwrap_or(u64::MAX);
-    assert!(
-        stats.peak_live_bytes <= ledger_cap,
-        "host allocation ledger undercounted observed peak live bytes: \
-         exact_cap={exact_cap}, stats={stats:?}"
-    );
-    assert!(
-        stats.peak_live_bytes <= 256 * KIB,
-        "actual encode peak escaped cross-platform headroom: {stats:?}"
-    );
 }
 
 fn minimum_successful_cap(
@@ -320,4 +420,12 @@ fn probe_pool() -> &'static ThreadPool {
             .build()
             .expect("build fixed two-thread probe pool")
     })
+}
+
+fn without_panic_output<R>(operation: impl FnOnce() -> R) -> R {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = operation();
+    std::panic::set_hook(original_hook);
+    result
 }

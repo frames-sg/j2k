@@ -2,13 +2,13 @@
 
 //! Shared Metal batch result and metadata contracts.
 
-#[cfg(target_os = "macos")]
-use super::{BatchDecodeOptions, Buffer, ResidentMetalImage};
 use super::{
     BatchGroupInfo, Error, IndexedBatchError, J2kDecodeWarning, PreparedBatchGroup, Rect, Surface,
 };
 #[cfg(any(test, target_os = "macos"))]
 use super::{BatchLayout, PixelFormat};
+#[cfg(target_os = "macos")]
+use super::{Buffer, ResidentMetalImage};
 
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn validate_group_contract(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
@@ -33,10 +33,7 @@ pub struct MetalBatchGroupCompletion {
 
 impl MetalBatchGroupCompletion {
     #[cfg(target_os = "macos")]
-    pub(super) fn from_prepared(
-        group: &PreparedBatchGroup,
-        options: BatchDecodeOptions,
-    ) -> Result<Self, Error> {
+    pub(super) fn from_prepared(group: &PreparedBatchGroup) -> Result<Self, Error> {
         let mut budget =
             crate::batch_allocation::BatchMetadataBudget::new("J2K Metal group completion");
         let mut decoded_rects =
@@ -45,11 +42,10 @@ impl MetalBatchGroupCompletion {
             budget.try_vec(group.images().len(), "J2K Metal completed warning owners")?;
         for image in group.images() {
             decoded_rects.push(image.plan().output_rect());
-            let warning_count = usize::from(options.settings.lenient_tolerance_enabled());
-            let mut image_warnings =
-                budget.try_vec(warning_count, "J2K Metal completed image warnings")?;
-            if warning_count != 0 {
-                image_warnings.push(J2kDecodeWarning::LenientDecodeMode);
+            let mut image_warnings = Vec::new();
+            if image.used_lenient_metadata_recovery() {
+                // `J2kDecodeWarning` is a ZST, so this push does not allocate.
+                image_warnings.push(J2kDecodeWarning::LenientMetadataRecovery);
             }
             warnings.push(image_warnings);
         }

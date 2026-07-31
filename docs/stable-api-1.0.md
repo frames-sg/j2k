@@ -25,7 +25,7 @@ This task must run on macOS with `cargo-public-api` `0.52.0` installed
 silently change with the runner host or floating nightly channel.
 
 The ordinary snapshot uses `RUSTDOCFLAGS=-D warnings` so its comparison with
-the published 0.7.3 snapshot keeps the same scope. A second pass adds
+the published 0.7.5 snapshot keeps the same scope. A second pass adds
 `--document-hidden-items` and records only the extra rustdoc-hidden items in
 the implementation snapshot. Rustdoc can rewrite equivalent re-export paths
 when hidden modules become visible, so the generator forms a conservative full
@@ -34,22 +34,30 @@ sorted difference from the ordinary pass. This guarantees that the combined
 inventory remains a superset of the ordinary contract while retaining rewritten
 path variants for review rather than silently dropping reachable API. An empty
 full cargo-public-api pass fails the gate; an empty per-package hidden-only
-difference is recorded truthfully. The 0.7.3 baseline comparison continues to
+difference is recorded truthfully. The 0.7.5 baseline comparison continues to
 use only the ordinary snapshot. Those
 adapters are implementation-facing, but they are still reachable Rust API and
 therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
 compatibility escape hatch.
 
-The published 0.7.3 artifact recorded both ordinary and hidden-enabled passes
-with the same generator, rustdoc, and target pins. The generated 0.7.5 semver
-report compares the ordinary candidate inventory with 0.7.3 and also records
+The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
+with the same generator, rustdoc, and target pins. The generated 0.8.0 semver
+report compares the ordinary candidate inventory with 0.7.5 and also records
 each package's complete hidden-inventory count and fingerprint.
-Every semver invocation collects both live passes, compares both committed
-companions, and requires exact ordinary added/removed fingerprints plus the
-hidden count/fingerprint in `engineering/public-api-review-0.7.5.yml`.
+Every semver invocation collects both live passes, compares both committed companions, and
+requires exact ordinary added/removed fingerprints plus the hidden
+count/fingerprint in `engineering/public-api-review-0.8.0.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
-Consequently, additions and removals remain blocked until the snapshots,
-report, and review evidence are updated together and their diffs are reviewed.
+
+The review file also contains the reviewed 0.7.5-to-0.8.0 break ledger.
+Source-break entries must enumerate every exact removed API item, package,
+summary, and migration. Validation requires that inventory to equal the
+generated removed-item set: an omitted, duplicate, unknown, or stale item fails
+the gate. Behavior-break entries carry the same summary and migration requirements
+but contain no removed items, because their observable changes
+cannot be inferred from a Rust signature diff. Consequently, additions,
+removals, hidden reachability, and declared behavior breaks are reviewed
+together rather than treating a pre-1.0 version bump as sufficient evidence.
 
 The two snapshot files are staged, synchronized, and committed as one
 rollback-capable transaction. API generation rejects ambient compiler,
@@ -62,37 +70,70 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The staged comparison belongs in the generated
-[`0.7.5` reviewed API report](../engineering/reviewed-public-api-diff-0.7.5.md).
+[`0.8.0` reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md).
 It remains candidate evidence until source freeze and the exact-SHA local,
 hosted, Metal, and CUDA gates complete; it does not claim a release.
 
-The published stable contract is the `0.7.x` line. Version `0.7.0`
-intentionally contracts parts of the pre-1.0 `0.6.2` API and does not claim
-source compatibility with `0.6.x`.
+The currently published stable contract is the `0.7.x` line. The staged `0.8.0`
+candidate intentionally changes the strict-decoding behavior and one warning
+variant under Cargo's pre-1.0 compatibility rules. It does not claim source or
+behavior compatibility with `0.7.x`; its exact breaks and migrations are in the
+review file. Version `0.7.0` similarly contracted parts of the pre-1.0 `0.6.2`
+API and did not claim source compatibility with `0.6.x`.
 
 ## Stability tiers
 
-- Primary stable user-facing codec APIs: `j2k`, `j2k-core`, `j2k-jpeg`,
-  and `j2k-tilecodec`.
-- Semver-gated published libraries: `j2k`, `j2k-core`, `j2k-jpeg`,
-  `j2k-tilecodec`, `j2k-jpeg-metal`, `j2k-metal`,
-  `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode`, `j2k-transcode-cuda`,
-  `j2k-metal-support`, `j2k-transcode-metal`, `j2k-native`, `j2k-types`,
-  `j2k-cuda-runtime`, `j2k-profile`, `j2k-codec-math`, and `j2k-ml`.
-- Adapter and transcode crates are semver-gated published libraries, but their
-  supported runtime shapes remain limited by feature gates, hardware
-  availability, and `docs/public-support.md`.
-- `j2k-codec-math` is included in the published `0.7.3` semver baseline.
-- Unpublished tooling: test support, comparators, and xtask automation helpers.
+`release-crates.json` assigns exactly one `api_contract` to every published
+crate. The tier changes the support promise; it does not remove ordinary Rust
+visibility or make a public item exempt from patch-release review.
+
+All 18 published libraries are built with missing-docs enforcement, recorded in
+both the ordinary and rustdoc-hidden inventories, and checked for patch
+compatibility. A public `#[doc(hidden)]` item remains callable Rust API and is
+not private merely because rustdoc omits it. Use actual module or item privacy
+for internals whenever possible.
+
+- `stable`: `j2k`, `j2k-core`, `j2k-jpeg`, and `j2k-tilecodec`. These are the
+  supported general-purpose consumer APIs. Their documented contracts are the
+  long-term compatibility promise and should grow conservatively.
+- `experimental`: `j2k-native`, `j2k-cuda`, `j2k-metal`, `j2k-jpeg-cuda`,
+  `j2k-jpeg-metal`, `j2k-transcode`, `j2k-transcode-cuda`,
+  `j2k-transcode-metal`, and `j2k-ml`. Patch releases preserve their public
+  APIs. A pre-1.0 minor release may change them only with an explicit reviewed
+  break ledger and migration guidance. Their runtime support remains limited
+  by feature gates, hardware availability, and `docs/public-support.md`.
+- `implementation`: `j2k-codec-math`, `j2k-profile`, `j2k-types`,
+  `j2k-cuda-runtime`, and `j2k-metal-support`. These are published sibling-crate
+  interfaces, not supported general-purpose extension APIs. They still receive
+  documentation, inventory, and patch-compatibility checks because downstream
+  Rust code can call them. A pre-1.0 minor release may revise them with the same
+  reviewed break evidence.
+- `binary`: `j2k-cli`. Its command, output, and exit-status behavior is governed
+  by the CLI contract below rather than a Rust library inventory.
+
+`j2k-codec-math` and `j2k-ml` are included in the published `0.7.5` semver
+baseline. Test support, comparators, and xtask automation helpers remain
+unpublished and receive no public API compatibility promise.
 
 Patch releases normally preserve the active `0.x` public contract. Version
 `0.7.5` is an explicit, maintainer-approved source-compatibility exception for
 removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
-exception applies only to `0.7.5`; it does not silently relax later patch
-releases. Before `1.0`, a minor release may intentionally change the contract
-under the same evidence requirements. Starting with `1.0`, stable crates follow
-the normal compatibility guarantees for the declared major version.
+exception applied only to `0.7.5`.
+
+The active transition lock is equally narrow: `0.8.0` is the only candidate permitted to compare against `v0.7.5`
+as an intentional pre-1.0 break. It
+rejects `0.8.1` or any later candidate while that older baseline remains
+configured. After `0.8.0` is actually published, rotate the semver baseline to the published `v0.8.0`
+tag, version, and peeled commit, then disable the
+transition lock before preparing any `0.8.x` follow-up. That makes subsequent
+patch-line checks compare with the real 0.8 contract instead of continuing to
+receive permission for 0.7-to-0.8 breakage.
+
+Before `1.0`, a minor release may intentionally change the contract only under
+the same generated evidence, explicit break-ledger, and migration requirements.
+Starting with `1.0`, stable crates follow the normal compatibility guarantees
+for the declared major version.
 
 ## CLI contract
 

@@ -2,67 +2,20 @@
 
 //! Structural GitHub Actions policy with workflow YAML as the source of truth.
 
+mod github_expression;
+mod yaml;
+
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::{Component, PathBuf};
-use std::sync::OnceLock;
 
-use serde_yaml_ng::{Mapping, Value};
+use serde_yaml_ng::Value;
 
+use self::github_expression::{untrusted_event_run_tokens, value_contains_secret_reference};
+use self::yaml::{
+    display_key, is_numeric_zero, jobs, mapping_get, string_set, value_mapping, visit_mappings,
+    workflow, workflows,
+};
 use super::repo_root;
-
-#[derive(Debug)]
-struct Workflow {
-    file_name: String,
-    document: Value,
-}
-
-fn workflows() -> &'static [Workflow] {
-    static WORKFLOWS: OnceLock<Vec<Workflow>> = OnceLock::new();
-    WORKFLOWS.get_or_init(|| {
-        let directory = repo_root().join(".github/workflows");
-        let mut paths = fs::read_dir(&directory)
-            .expect("read workflow directory")
-            .map(|entry| entry.expect("read workflow entry").path())
-            .filter(|path| {
-                matches!(
-                    path.extension().and_then(|extension| extension.to_str()),
-                    Some("yml" | "yaml")
-                )
-            })
-            .collect::<Vec<_>>();
-        paths.sort();
-        assert!(!paths.is_empty(), "no GitHub Actions workflows found");
-
-        paths
-            .into_iter()
-            .map(|path| {
-                let source = fs::read_to_string(&path)
-                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-                let document = serde_yaml_ng::from_str(&source)
-                    .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_else(|| {
-                        panic!("workflow path has no UTF-8 name: {}", path.display())
-                    })
-                    .to_owned();
-                Workflow {
-                    file_name,
-                    document,
-                }
-            })
-            .collect()
-    })
-}
-
-fn workflow(file_name: &str) -> &'static Workflow {
-    workflows()
-        .iter()
-        .find(|workflow| workflow.file_name == file_name)
-        .unwrap_or_else(|| panic!("missing workflow {file_name}"))
-}
 
 #[test]
 fn every_action_reference_is_pinned_to_a_forty_hex_sha() {
@@ -298,8 +251,8 @@ fn every_required_pr_gate_is_listed_in_the_aggregate_job_needs() {
 #[test]
 fn local_reusable_workflow_references_resolve_to_files_in_this_repo() {
     let mut violations = Vec::new();
-    for source_workflow in workflows() {
-        visit_mappings(&source_workflow.document, &mut |mapping| {
+    for workflow in workflows() {
+        visit_mappings(&workflow.document, &mut |mapping| {
             let Some(reference) = mapping_get(mapping, "uses").and_then(Value::as_str) else {
                 return;
             };
@@ -312,28 +265,19 @@ fn local_reusable_workflow_references_resolve_to_files_in_this_repo() {
                 .components()
                 .any(|component| matches!(component, Component::ParentDir))
             {
-                violations.push(format!(
-                    "{}: path escape {reference}",
-                    source_workflow.file_name
-                ));
+                violations.push(format!("{}: path escape {reference}", workflow.file_name));
                 return;
             }
             let target = repo_root().join(&path);
             if !target.is_file() {
-                violations.push(format!(
-                    "{}: missing {reference}",
-                    source_workflow.file_name
-                ));
+                violations.push(format!("{}: missing {reference}", workflow.file_name));
                 return;
             }
             let Some(target_name) = target.file_name().and_then(|name| name.to_str()) else {
-                violations.push(format!(
-                    "{}: non-UTF-8 {reference}",
-                    source_workflow.file_name
-                ));
+                violations.push(format!("{}: non-UTF-8 {reference}", workflow.file_name));
                 return;
             };
-            let target_workflow = workflow(target_name);
+            let target_workflow = yaml::workflow(target_name);
             let target_root = value_mapping(&target_workflow.document, &target_workflow.file_name);
             let callable = mapping_get(target_root, "on")
                 .and_then(Value::as_mapping)
@@ -341,7 +285,7 @@ fn local_reusable_workflow_references_resolve_to_files_in_this_repo() {
             if !callable {
                 violations.push(format!(
                     "{}: target is not reusable {reference}",
-                    source_workflow.file_name
+                    workflow.file_name
                 ));
             }
         });
@@ -351,205 +295,4 @@ fn local_reusable_workflow_references_resolve_to_files_in_this_repo() {
         "local reusable workflow references must resolve in-repo:\n{}",
         violations.join("\n")
     );
-}
-
-fn value_mapping<'a>(value: &'a Value, label: &str) -> &'a Mapping {
-    value
-        .as_mapping()
-        .unwrap_or_else(|| panic!("{label} must contain a YAML mapping"))
-}
-
-fn jobs<'a>(root: &'a Mapping, label: &str) -> &'a Mapping {
-    mapping_get(root, "jobs")
-        .and_then(Value::as_mapping)
-        .unwrap_or_else(|| panic!("{label} must contain a jobs mapping"))
-}
-
-fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
-    mapping.get(Value::String(key.to_owned())).or_else(|| {
-        (key == "on")
-            .then(|| mapping.get(Value::Bool(true)))
-            .flatten()
-    })
-}
-
-fn visit_mappings(value: &Value, visitor: &mut impl FnMut(&Mapping)) {
-    match value {
-        Value::Mapping(mapping) => {
-            visitor(mapping);
-            for (key, value) in mapping {
-                visit_mappings(key, visitor);
-                visit_mappings(value, visitor);
-            }
-        }
-        Value::Sequence(values) => {
-            for value in values {
-                visit_mappings(value, visitor);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn value_contains_secret_reference(value: &Value) -> bool {
-    match value {
-        Value::String(text) => github_expression_tokens(text)
-            .iter()
-            .any(|token| token == "secrets" || token.starts_with("secrets.")),
-        Value::Sequence(values) => values.iter().any(value_contains_secret_reference),
-        Value::Mapping(mapping) => mapping.iter().any(|(key, value)| {
-            value_contains_secret_reference(key) || value_contains_secret_reference(value)
-        }),
-        _ => false,
-    }
-}
-
-fn string_set(value: &Value, label: &str) -> BTreeSet<String> {
-    match value {
-        Value::String(value) => [value.clone()].into_iter().collect(),
-        Value::Sequence(values) => values
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .unwrap_or_else(|| panic!("{label} entries must be strings"))
-                    .to_owned()
-            })
-            .collect(),
-        _ => panic!("{label} must be a string or sequence"),
-    }
-}
-
-fn is_numeric_zero(value: &Value) -> bool {
-    value.as_u64() == Some(0) || value.as_i64() == Some(0) || value.as_str() == Some("0")
-}
-
-fn display_key(value: &Value) -> String {
-    value
-        .as_str()
-        .map_or_else(|| format!("{value:?}"), str::to_owned)
-}
-
-fn is_untrusted_event_run_token(token: &str) -> bool {
-    token == "github.head_ref"
-        || (token.starts_with("github.event.")
-            && [".title", ".body", ".head.ref"]
-                .iter()
-                .any(|suffix| token.ends_with(suffix)))
-}
-
-fn untrusted_event_run_tokens(script: &str) -> BTreeSet<String> {
-    github_expression_tokens(script)
-        .into_iter()
-        .filter(|token| is_untrusted_event_run_token(token))
-        .collect()
-}
-
-fn github_expression_tokens(text: &str) -> BTreeSet<String> {
-    let compact = text
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let canonical = compact
-        .replace("['", ".")
-        .replace("']", "")
-        .replace("[\"", ".")
-        .replace("\"]", "");
-
-    let mut tokens = BTreeSet::new();
-    let mut remaining = canonical.as_str();
-    while let Some(start) = remaining.find("${{") {
-        let expression = &remaining[start + 3..];
-        let (expression, next) = expression.find("}}").map_or((expression, None), |end| {
-            (&expression[..end], Some(&expression[end + 2..]))
-        });
-        tokens.extend(
-            expression
-                .split(|character: char| {
-                    !(character.is_ascii_alphanumeric() || character == '_' || character == '.')
-                })
-                .filter(|token| !token.is_empty())
-                .map(str::to_owned),
-        );
-        let Some(next) = next else {
-            break;
-        };
-        remaining = next;
-    }
-    tokens
-}
-
-#[test]
-fn untrusted_event_run_tokens_cover_event_families_without_rejecting_commit_shas() {
-    for token in [
-        "github.event.pull_request.title",
-        "github.event.issue.body",
-        "github.event.discussion.title",
-        "github.event.pull_request.head.ref",
-        "github.head_ref",
-    ] {
-        assert!(is_untrusted_event_run_token(token), "{token}");
-    }
-    for token in [
-        "github.event.pull_request.head.sha",
-        "github.event.pull_request.base.sha",
-        "github.event.before",
-        "github.event_name",
-    ] {
-        assert!(!is_untrusted_event_run_token(token), "{token}");
-    }
-}
-
-#[test]
-fn untrusted_event_run_tokens_normalize_bracket_and_dotted_property_access() {
-    for script in [
-        "echo '${{ github.event.issue.title }}'",
-        "echo '${{ github ['event'] ['discussion'] ['body'] }}'",
-        "echo '${{ github[\"event\"].pull_request['head'][\"ref\"] }}'",
-        "echo '${{ github ['head_ref'] }}'",
-    ] {
-        assert!(
-            !untrusted_event_run_tokens(script).is_empty(),
-            "expected untrusted reference in {script}"
-        );
-    }
-
-    for script in [
-        "echo '${{ github.event.pull_request.head.sha }}'",
-        "echo '${{ github ['event'] ['pull_request'] ['base'] ['sha'] }}'",
-        "echo '${{ github.event.before }}'",
-    ] {
-        assert!(
-            untrusted_event_run_tokens(script).is_empty(),
-            "unexpected untrusted reference in {script}"
-        );
-    }
-}
-
-#[test]
-fn secret_reference_detection_normalizes_bracket_and_dotted_property_access() {
-    for reference in [
-        "${{ secrets.CARGO_TOKEN }}",
-        "${{ secrets ['CARGO_TOKEN'] }}",
-        "${{ toJson(secrets) }}",
-    ] {
-        let value = Value::Sequence(vec![Value::String(reference.to_owned())]);
-        assert!(
-            value_contains_secret_reference(&value),
-            "expected secret reference in {reference}"
-        );
-    }
-
-    for reference in [
-        "${{ env.CARGO_TOKEN }}",
-        "${{ vars.CARGO_TOKEN }}",
-        "documentation mentioning secrets.CARGO_TOKEN outside an expression",
-    ] {
-        let value = Value::String(reference.to_owned());
-        assert!(
-            !value_contains_secret_reference(&value),
-            "unexpected secret reference in {reference}"
-        );
-    }
 }

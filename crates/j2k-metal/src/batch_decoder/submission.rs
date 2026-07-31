@@ -178,12 +178,12 @@ pub(super) struct MetalResidentGroupMetadata {
 impl MetalResidentGroupMetadata {
     pub(super) fn from_prepared(
         group: &PreparedBatchGroup,
-        options: BatchDecodeOptions,
+        _options: BatchDecodeOptions,
     ) -> Result<Self, Error> {
         let MetalBatchGroupCompletion {
             decoded_rects,
             warnings,
-        } = MetalBatchGroupCompletion::from_prepared(group, options)?;
+        } = MetalBatchGroupCompletion::from_prepared(group)?;
         let mut budget =
             crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident group metadata");
         let mut source_indices = budget.try_vec(

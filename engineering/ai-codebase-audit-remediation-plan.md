@@ -87,8 +87,10 @@ one reopens review but does not predetermine a split.
 | `xtask/src/perf_guard.rs` | Benchmark snapshot/run/compare workflow | 813 before inline tests | One performance-evidence lifecycle | Snapshot schema v2, another runner, or 900 production lines |
 | `crates/j2k-test-support/src/jpeg_fixtures/builders.rs` | Explicit JPEG fixture construction | 3,478 test-support lines | Test data is intentionally explicit and excluded from production metrics | Repeated fixture bug fixes diverge or a reusable format owner emerges |
 
-The focused CUDA registry, classic decode, direct-plan, and `j2k-ml` modules
-remain covered by structural line and ownership ratchets.
+At the historical baseline, focused CUDA registry, classic decode,
+direct-plan, and `j2k-ml` modules were covered by structural line and ownership
+ratchets. Current repository-lint scope is defined in
+[`engineering/repo-lint-contract.md`](repo-lint-contract.md).
 
 ## Accepted clone register
 

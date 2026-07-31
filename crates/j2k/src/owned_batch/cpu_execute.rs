@@ -8,7 +8,7 @@ use super::cpu_materialize::{
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_settings, run_retained_chunks, Arc, BatchDecodeOptions, BatchErrorStage,
+    decode_warnings_for_recovery, run_retained_chunks, Arc, BatchDecodeOptions, BatchErrorStage,
     BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
     CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
     IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
@@ -133,7 +133,9 @@ pub(super) fn decode_cpu_group(
     for &slot in &successful_slots {
         source_indices.push(group.source_indices[slot]);
         decoded_rects.push(group.images[slot].plan().output_rect());
-        warnings.push(decode_warnings_for_settings(options.settings));
+        warnings.push(decode_warnings_for_recovery(
+            group.images[slot].used_lenient_metadata_recovery(),
+        ));
     }
     Ok(Some(CpuBatchGroup::new(
         group.info.clone(),

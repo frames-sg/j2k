@@ -32,7 +32,7 @@ impl ResidentGroupMetadata {
                     .iter()
                     .map(|image| image.plan().output_rect()),
             )?,
-            warnings: decode_warnings(group.options(), group.images().len())?,
+            warnings: decode_warnings(group.images())?,
         })
     }
 

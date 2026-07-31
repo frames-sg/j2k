@@ -287,7 +287,7 @@ impl CudaBatchDecoder {
                     .map(|image| image.plan().output_rect()),
             )
             .map_err(|source| CudaBatchError::group(group, source))?;
-        let warnings = decode_warnings(group.options(), group.images().len())
+        let warnings = decode_warnings(group.images())
             .map_err(|source| CudaBatchError::group(group, source))?;
         let ranges = metadata_budget
             .try_clone_slice(pending.ranges())

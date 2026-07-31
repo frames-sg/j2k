@@ -6,8 +6,13 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::consumer::{extract_packaged_crate, j2k_ml_consumer_checks, j2k_ml_consumer_manifest};
-use super::{package_gate_plan, PUBLISHABLE_PACKAGES, REGISTRY_INDEPENDENT_PACKAGES};
+use super::consumer::{
+    extract_packaged_crate, j2k_ml_consumer_checks, j2k_ml_consumer_manifest, CONSUMER_SOURCE,
+};
+use super::{package_gate_plan, PackageGateStep};
+use crate::release_commands::release_manifest::{
+    parse_release_manifest_source, ReleaseManifestContract,
+};
 
 #[cfg(unix)]
 use super::run;
@@ -15,35 +20,67 @@ use super::run;
 use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
 fn workspace_metadata(dependencies: &[(&str, &[&str])]) -> serde_json::Value {
+    let manifest = release_manifest();
+    let publishable = manifest.ordered_crates().collect::<Vec<_>>();
     let dependencies = dependencies
         .iter()
         .map(|(package, dependencies)| (*package, *dependencies))
         .collect::<BTreeMap<_, _>>();
-    let packages = PUBLISHABLE_PACKAGES
+    let packages = publishable
         .iter()
         .map(|package| {
+            let default_dependencies = if matches!(
+                *package,
+                "j2k-core" | "j2k-profile" | "j2k-types" | "j2k-codec-math"
+            ) {
+                &[][..]
+            } else {
+                &["j2k-core"][..]
+            };
             let package_dependencies = dependencies
                 .get(package)
-                .into_iter()
-                .flat_map(|dependencies| dependencies.iter())
+                .copied()
+                .unwrap_or(default_dependencies)
+                .iter()
                 .map(|dependency| {
-                    serde_json::json!({"name": dependency, "kind": null, "source": null})
+                    serde_json::json!({
+                        "name": dependency,
+                        "kind": null,
+                        "path": format!("/workspace/{dependency}"),
+                        "req": "=0.7.5",
+                        "source": null
+                    })
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({
                 "id": package,
                 "name": package,
                 "version": "0.7.5",
+                "publish": null,
                 "manifest_path": format!("/workspace/{package}/Cargo.toml"),
                 "dependencies": package_dependencies,
+                "targets": if *package == "j2k-cli" {
+                    vec![serde_json::json!({"kind": ["bin"]})]
+                } else {
+                    vec![serde_json::json!({"kind": ["lib"]})]
+                },
             })
         })
         .collect::<Vec<_>>();
     serde_json::json!({
-        "workspace_members": PUBLISHABLE_PACKAGES,
+        "workspace_members": publishable,
         "packages": packages,
         "target_directory": "/workspace/target",
     })
+}
+
+fn release_manifest() -> ReleaseManifestContract {
+    parse_release_manifest_source(include_str!("../../../../release-crates.json"))
+        .expect("checked-in release manifest")
+}
+
+fn test_package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep>, String> {
+    package_gate_plan(metadata, &release_manifest())
 }
 
 fn write_packaged_fixture(path: &Path) {
@@ -81,16 +118,20 @@ fn package_gate_plan_is_ordered_and_includes_transitive_unpublished_patches() {
         ("j2k-cli", &["j2k"]),
     ]);
 
-    let plan = package_gate_plan(&metadata).expect("dependency-aware package plan");
+    let plan = test_package_gate_plan(&metadata).expect("dependency-aware package plan");
+    let manifest = release_manifest();
 
     assert_eq!(
-        plan.iter().map(|step| step.package).collect::<Vec<_>>(),
-        PUBLISHABLE_PACKAGES
+        plan.iter()
+            .map(|step| step.package.as_str())
+            .collect::<Vec<_>>(),
+        manifest.ordered_crates().collect::<Vec<_>>()
     );
+    let registry_independent = ["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
     for step in &plan {
         assert_eq!(
             step.registry_independent,
-            REGISTRY_INDEPENDENT_PACKAGES.contains(&step.package)
+            registry_independent.contains(&step.package.as_str())
         );
     }
     let cli = plan
@@ -117,25 +158,69 @@ fn package_gate_plan_rejects_missing_or_malformed_publishable_records() {
         .as_array_mut()
         .expect("members")
         .retain(|member| member != "j2k-core");
-    let error = package_gate_plan(&missing).expect_err("missing publishable package");
-    assert!(error.contains("`j2k-core` is absent"));
+    let error = test_package_gate_plan(&missing).expect_err("missing publishable package");
+    assert!(
+        error.contains("must contain every publishable workspace crate exactly once"),
+        "unexpected: {error}"
+    );
 
     let mut malformed = workspace_metadata(&[]);
     malformed["packages"][0]
         .as_object_mut()
         .expect("package")
         .remove("dependencies");
-    let error = package_gate_plan(&malformed).expect_err("missing dependency array");
-    assert!(error.contains("has no dependency array"));
+    let error = test_package_gate_plan(&malformed).expect_err("missing dependency array");
+    assert!(
+        error.contains("has no dependencies array"),
+        "unexpected: {error}"
+    );
 }
 
 #[test]
 fn package_gate_plan_rejects_forward_dependency_before_any_packaging() {
     let metadata = workspace_metadata(&[("j2k-core", &["j2k"])]);
 
-    let error = package_gate_plan(&metadata).expect_err("forward dependency order");
+    let error = test_package_gate_plan(&metadata).expect_err("forward dependency order");
 
-    assert!(error.contains("processes `j2k-core` before unpublished workspace dependency `j2k`"));
+    assert!(
+        error.contains("places `j2k-core` before dependency `j2k`"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
+fn package_gate_includes_build_optional_and_target_specific_release_edges() {
+    let mut metadata = workspace_metadata(&[]);
+    let runtime = metadata["packages"]
+        .as_array_mut()
+        .expect("packages")
+        .iter_mut()
+        .find(|package| package["name"] == "j2k-cuda-runtime")
+        .expect("CUDA runtime package");
+    runtime["dependencies"] = serde_json::json!([{
+        "name": "j2k-codec-math",
+        "kind": "build",
+        "optional": true,
+        "target": "cfg(target_os = \"linux\")",
+        "path": "/workspace/j2k-codec-math",
+        "req": "=0.7.5",
+        "source": null
+    }]);
+
+    let plan = test_package_gate_plan(&metadata).expect("build dependency plan");
+    let runtime = plan
+        .iter()
+        .find(|step| step.package == "j2k-cuda-runtime")
+        .expect("CUDA runtime plan");
+
+    assert!(!runtime.registry_independent);
+    assert_eq!(
+        runtime.patches,
+        [(
+            "j2k-codec-math".to_string(),
+            "/workspace/j2k-codec-math".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -151,13 +236,16 @@ fn package_gate_plan_requires_manifest_paths_for_patch_dependencies() {
         .expect("core record")
         .remove("manifest_path");
 
-    let error = package_gate_plan(&metadata).expect_err("missing dependency manifest path");
+    let error = test_package_gate_plan(&metadata).expect_err("missing dependency manifest path");
 
-    assert!(error.contains("`j2k-core` has no manifest path"));
+    assert!(
+        error.contains("`j2k-core` has no string manifest_path"),
+        "unexpected: {error}"
+    );
 }
 
 #[test]
-fn package_gate_ignores_registry_and_non_normal_dependencies() {
+fn package_gate_ignores_dev_dependencies_and_rejects_registry_sibling_edges() {
     let mut metadata = workspace_metadata(&[]);
     let native = metadata["packages"]
         .as_array_mut()
@@ -166,16 +254,68 @@ fn package_gate_ignores_registry_and_non_normal_dependencies() {
         .find(|package| package["name"] == "j2k-native")
         .expect("native package");
     native["dependencies"] = serde_json::json!([
-        {"name": "j2k-core", "kind": "dev", "source": null},
-        {"name": "j2k-core", "kind": null, "source": "registry+https://example.invalid"}
+        {
+            "name": "j2k-core",
+            "kind": "dev",
+            "path": "/workspace/j2k-core",
+            "req": "=0.7.5",
+            "source": null
+        },
+        {
+            "name": "external",
+            "kind": null,
+            "path": null,
+            "req": "1",
+            "source": "registry+https://example.invalid"
+        }
     ]);
 
-    let plan = package_gate_plan(&metadata).expect("ignored non-patch dependencies");
+    let plan = test_package_gate_plan(&metadata).expect("ignored non-release dependencies");
     let native = plan
         .iter()
         .find(|step| step.package == "j2k-native")
         .expect("native step");
     assert!(native.patches.is_empty());
+
+    let native = metadata["packages"]
+        .as_array_mut()
+        .expect("packages")
+        .iter_mut()
+        .find(|package| package["name"] == "j2k-native")
+        .expect("native package");
+    native["dependencies"][1]["name"] = serde_json::json!("j2k-core");
+    let error =
+        test_package_gate_plan(&metadata).expect_err("registry sibling dependency must reject");
+    assert!(
+        error.contains("workspace/path sourced"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
+fn package_gate_validates_exact_dev_dependencies_before_planning() {
+    let mut metadata = workspace_metadata(&[]);
+    let native = metadata["packages"]
+        .as_array_mut()
+        .expect("packages")
+        .iter_mut()
+        .find(|package| package["name"] == "j2k-native")
+        .expect("native package");
+    native["dependencies"] = serde_json::json!([{
+        "name": "j2k-core",
+        "kind": "dev",
+        "path": "/workspace/j2k-core",
+        "req": "^0.7.5",
+        "source": null
+    }]);
+
+    let error = test_package_gate_plan(&metadata)
+        .expect_err("package planning must enforce exact dev dependencies");
+
+    assert!(
+        error.contains("exact release requirement"),
+        "unexpected: {error}"
+    );
 }
 
 #[test]
@@ -189,6 +329,21 @@ fn j2k_ml_consumer_matrix_matches_the_host_accelerator() {
 }
 
 #[test]
+fn packaged_consumer_compiles_new_and_0_7_compatibility_decoder_names() {
+    for decoder in [
+        "CudaUploadBurnDecoder",
+        "MetalUploadBurnDecoder",
+        "CudaBurnDecoder",
+        "MetalBurnDecoder",
+    ] {
+        assert!(
+            CONSUMER_SOURCE.contains(decoder),
+            "packaged consumer must compile `{decoder}`"
+        );
+    }
+}
+
+#[test]
 fn j2k_ml_consumer_manifest_patches_only_workspace_crates() {
     let metadata = workspace_metadata(&[
         ("j2k", &["j2k-core"]),
@@ -196,7 +351,7 @@ fn j2k_ml_consumer_manifest_patches_only_workspace_crates() {
         ("j2k-metal", &["j2k", "j2k-metal-support"]),
         ("j2k-ml", &["j2k", "j2k-cuda", "j2k-metal"]),
     ]);
-    let plan = package_gate_plan(&metadata).expect("package plan");
+    let plan = test_package_gate_plan(&metadata).expect("package plan");
     let ml = plan
         .iter()
         .find(|step| step.package == "j2k-ml")
@@ -231,7 +386,7 @@ fn packaged_consumer_extracts_the_crate_archive_instead_of_using_workspace_sourc
     fs::create_dir_all(&root).expect("create package extraction test root");
     let archive = root.join("j2k-ml-0.7.5.crate");
     write_packaged_fixture(&archive);
-    let plan = package_gate_plan(&workspace_metadata(&[])).expect("package plan");
+    let plan = test_package_gate_plan(&workspace_metadata(&[])).expect("package plan");
     let step = plan
         .iter()
         .find(|step| step.package == "j2k-ml")
@@ -264,7 +419,8 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
     let recording = RecordingProgram::new("package-gate-command-test", "");
     let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
 
-    run(&metadata).expect("hermetic package gate");
+    let manifest = release_manifest();
+    run(&metadata, &manifest).expect("hermetic package gate");
     fs::remove_dir_all(package_root).expect("remove package gate target");
 
     let log = recording.log();
@@ -272,7 +428,7 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
     let consumer_checks = j2k_ml_consumer_checks(std::env::consts::OS);
     assert_eq!(
         lines.len(),
-        PUBLISHABLE_PACKAGES.len() + consumer_checks.len() + 2
+        manifest.ordered_crates().len() + consumer_checks.len() + 2
     );
     assert!(lines[0].starts_with("publish -p j2k-core --dry-run|"));
     assert!(lines[3].starts_with("publish -p j2k-codec-math --dry-run|"));

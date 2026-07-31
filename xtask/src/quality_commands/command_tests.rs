@@ -49,14 +49,20 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
     );
     assert!(log.contains("check --manifest-path crates/j2k/fuzz/Cargo.toml"));
     assert!(log.contains("check --manifest-path crates/j2k-transcode/fuzz/Cargo.toml"));
+    assert!(log.contains("test -p j2k --examples"));
+    assert!(log.contains("test -p j2k-transcode --examples"));
     assert!(log.contains("test -p xtask --test repo_lint -- --nocapture"));
 }
 
 #[test]
 fn repo_lint_rejects_retired_strict_and_unknown_arguments_before_any_command() {
+    let recording = RecordingProgram::new("repo-lint-argument-test", "");
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
     for argument in ["--strict", "--unknown"] {
         let error = repo_lint([argument.to_string()].into_iter())
             .expect_err("unsupported repo-lint argument");
         assert!(error.contains("unknown repo-lint argument"));
     }
+    assert!(!recording.was_invoked());
 }

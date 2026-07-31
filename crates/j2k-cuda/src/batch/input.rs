@@ -8,8 +8,7 @@ use super::{
     PreparedBatchGroup, Surface, SurfaceResidency,
 };
 use super::{
-    BatchColor, BatchDecodeOptions, BatchGroupInfo, BatchLayout, Error, J2kDecodeWarning,
-    PixelFormat,
+    BatchColor, BatchGroupInfo, BatchLayout, Error, J2kDecodeWarning, PixelFormat, PreparedImage,
 };
 
 pub(super) fn group_pixel_format(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
@@ -163,16 +162,15 @@ pub(super) fn native_color_group_storage(
 }
 
 pub(super) fn decode_warnings(
-    options: BatchDecodeOptions,
-    count: usize,
+    images: &[PreparedImage],
 ) -> Result<Vec<Vec<J2kDecodeWarning>>, Error> {
     let mut budget = crate::allocation::HostPhaseBudget::new("CUDA batch decode warnings");
-    let mut warnings = budget.try_vec_with_capacity(count)?;
-    for _ in 0..count {
-        let mut image_warnings = budget
-            .try_vec_with_capacity(usize::from(options.settings.lenient_tolerance_enabled()))?;
-        if options.settings.lenient_tolerance_enabled() {
-            image_warnings.push(J2kDecodeWarning::LenientDecodeMode);
+    let mut warnings = budget.try_vec_with_capacity(images.len())?;
+    for image in images {
+        let mut image_warnings = Vec::new();
+        if image.used_lenient_metadata_recovery() {
+            // `J2kDecodeWarning` is a ZST, so this push does not allocate.
+            image_warnings.push(J2kDecodeWarning::LenientMetadataRecovery);
         }
         warnings.push(image_warnings);
     }

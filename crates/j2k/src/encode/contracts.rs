@@ -51,7 +51,11 @@ macro_rules! define_encoded_j2k {
 /// Backend preference for JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EncodeBackendPreference {
-    /// Pick the fastest safe backend exposed by the caller, falling back to CPU.
+    /// Pick the fastest safe backend exposed by the caller.
+    ///
+    /// An accelerator may decline an unavailable or unsupported stage and let
+    /// the CPU complete the request. Accelerator execution errors are returned
+    /// instead of silently retrying the entire encode on the CPU.
     #[default]
     Auto,
     /// Require the pure Rust CPU encoder.
