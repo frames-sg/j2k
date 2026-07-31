@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless_components, EncodeBackendPreference, J2kBlockCodingMode, J2kCodec,
-    J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
-    J2kLosslessComponentSamples, J2kLosslessEncodeOptions, J2kRowDecodeOptions,
-    ReversibleTransform,
+    encode_j2k_lossless_components, DecodeSettings as FacadeDecodeSettings,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kCodec, J2kComponentPlane, J2kContext,
+    J2kDecodeWarning, J2kDecoder, J2kError, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
+    J2kLosslessEncodeOptions, J2kRowDecodeOptions, J2kView, ReversibleTransform,
 };
 use j2k_core::{
     BufferError, CodecContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
@@ -318,6 +318,81 @@ fn decode_gray8_jp2_roundtrips_reversible_pixels() {
         .decode_into(&mut out, 2, PixelFormat::Gray8)
         .expect("decode");
     assert_eq!(out, pixels);
+}
+
+#[test]
+fn explicit_lenient_mode_does_not_warn_for_a_valid_stream() {
+    let pixels = [3, 9, 27, 81];
+    let codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    let native = Image::new(&codestream, &DecodeSettings::lenient()).expect("native image");
+    assert!(!native.used_lenient_metadata_recovery());
+    let mut decoder = J2kDecoder::new_with_settings(&codestream, FacadeDecodeSettings::lenient())
+        .expect("lenient decoder");
+    let mut out = [0_u8; 4];
+    let outcome = decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .expect("decode");
+
+    assert_eq!(out, pixels);
+    assert!(outcome.warnings.is_empty());
+}
+
+#[test]
+fn strict_default_rejects_but_explicit_lenient_recovers_trailing_jp2_metadata() {
+    let pixels = [3, 9, 27, 81];
+    let codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    let mut jp2 = wrap_jp2_codestream(&codestream, 2, 2, 1, 8, 17);
+    jp2.extend_from_slice(&[0, 0, 0, 16, b'x', b'm', b'l', b' ']);
+
+    assert!(FacadeDecodeSettings::default().is_strict());
+    assert!(J2kView::parse(&jp2).is_err());
+    assert!(J2kDecoder::new(&jp2).is_err());
+    let native = Image::new(&jp2, &DecodeSettings::lenient()).expect("lenient native image");
+    assert!(native.used_lenient_metadata_recovery());
+
+    let view =
+        J2kView::parse_with_settings(&jp2, FacadeDecodeSettings::lenient()).expect("lenient view");
+    let mut decoder = J2kDecoder::from_view(view).expect("decoder from lenient view");
+    let mut out = [0_u8; 4];
+    let outcome = decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .expect("lenient recovery decode");
+
+    assert_eq!(out, pixels);
+    assert_eq!(
+        outcome.warnings,
+        vec![J2kDecodeWarning::LenientMetadataRecovery]
+    );
+
+    let mut scaled = [0_u8; 1];
+    let scaled_outcome = decoder
+        .decode_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut scaled,
+            1,
+            PixelFormat::Gray8,
+            Downscale::Half,
+        )
+        .expect("scaled lenient recovery decode");
+    assert_eq!(
+        scaled_outcome.warnings,
+        vec![J2kDecodeWarning::LenientMetadataRecovery]
+    );
+}
+
+#[test]
+fn lenient_container_policy_does_not_relax_truncated_codestream_validation() {
+    let pixels = [3, 9, 27, 81];
+    let mut codestream = encode_codestream(&pixels, 2, 2, 1, 8, true);
+    assert_eq!(codestream.pop(), Some(0xd9));
+    assert_eq!(codestream.pop(), Some(0xff));
+
+    let mut decoder = J2kDecoder::new_with_settings(&codestream, FacadeDecodeSettings::lenient())
+        .expect("main header remains inspectable");
+    let mut out = [0_u8; 4];
+    assert!(decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .is_err());
 }
 
 #[test]
@@ -1600,33 +1675,108 @@ fn zero_dwt53(width: u32, height: u32) -> J2kForwardDwt53Output {
     }
 }
 
-#[test]
-fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_crop() {
-    // Reduced-resolution region decode on a multi-tile codestream: the
-    // output region lives in scaled image coordinates while tile rects
-    // stay on the reference grid. A tile-relevance test that ignores the
-    // resolution shrink factor skips tiles that still contribute samples,
-    // zeroing part of the output. Cover a grid with partial edge tiles,
-    // interior, straddling, and far-corner regions, at every downscale.
-    let (width, height) = (320_u32, 288_u32);
+fn masked_fixture_byte(value: u32) -> u8 {
+    u8::try_from(value & 0xff).expect("masked fixture byte fits u8")
+}
+
+fn encode_tiled_rgb_codestream(width: u32, height: u32, tile: (u32, u32)) -> Vec<u8> {
     let pixels: Vec<u8> = (0..height)
         .flat_map(|y| {
             (0..width).flat_map(move |x| {
                 [
-                    (x % 251) as u8,
-                    (y % 241) as u8,
-                    ((x / 8 + y / 8) % 233) as u8,
+                    masked_fixture_byte(x),
+                    masked_fixture_byte(y),
+                    masked_fixture_byte(x / 8 + y / 8),
                 ]
             })
         })
         .collect();
     let options = EncodeOptions {
-        tile_size: Some((128, 128)),
+        tile_size: Some(tile),
         ..EncodeOptions::default()
     };
-    let bytes = encode(&pixels, width, height, 3, 8, false, &options).expect("encode");
+    encode(&pixels, width, height, 3, 8, false, &options).expect("encode")
+}
+
+fn assert_region_decode_matches_whole_decode_crop(bytes: &[u8], dims: (u32, u32), roi: Rect) {
     let fmt = PixelFormat::Rgb8;
-    let bpp = fmt.bytes_per_pixel();
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+    let mut full_decoder = J2kDecoder::new(bytes).expect("full decoder");
+    let full_stride = dims.0 as usize * bytes_per_pixel;
+    let mut full = vec![0_u8; full_stride * dims.1 as usize];
+    full_decoder
+        .decode_into(&mut full, full_stride, fmt)
+        .expect("full decode");
+
+    let mut region_decoder = J2kDecoder::new(bytes).expect("region decoder");
+    let region_stride = roi.w as usize * bytes_per_pixel;
+    let mut region = vec![0_u8; region_stride * roi.h as usize];
+    let outcome = region_decoder
+        .decode_region_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut region,
+            region_stride,
+            fmt,
+            roi,
+        )
+        .expect("region decode");
+    assert_eq!(outcome.decoded, roi);
+    assert_eq!(
+        region,
+        crop_u8(&full, dims.0 as usize, bytes_per_pixel, roi),
+        "region {},{} {}x{} disagrees with whole-image decode",
+        roi.x,
+        roi.y,
+        roi.w,
+        roi.h,
+    );
+}
+
+#[test]
+fn region_decode_inside_tiles_matches_whole_decode_crop() {
+    // Regions with margins on every side inside a tile chain the windowed
+    // region IDWT through intermediate windows that are not flush with the
+    // decomposition rectangles; their content shifted before the fix for
+    // the sub-band origin confusion (issue #62). Cover a grid with partial
+    // edge tiles and an exact grid, with interior, tile-origin-flush, and
+    // tile-boundary-straddling regions.
+    for dims in [(320, 288), (512, 512)] {
+        let bytes = encode_tiled_rgb_codestream(dims.0, dims.1, (256, 256));
+        for roi in [
+            Rect {
+                x: 100,
+                y: 100,
+                w: 100,
+                h: 100,
+            },
+            Rect {
+                x: 20,
+                y: 20,
+                w: 64,
+                h: 64,
+            },
+            Rect {
+                x: 200,
+                y: 150,
+                w: 80,
+                h: 100,
+            },
+        ] {
+            assert_region_decode_matches_whole_decode_crop(&bytes, dims, roi);
+        }
+    }
+}
+
+#[test]
+fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_crop() {
+    // Reduced-resolution region decode on a multi-tile codestream: the
+    // output region lives in scaled image coordinates while tile rects
+    // stay on the reference grid. Cover a grid with partial edge tiles,
+    // interior, straddling, and far-corner regions at every downscale.
+    let (width, height) = (320_u32, 288_u32);
+    let bytes = encode_tiled_rgb_codestream(width, height, (128, 128));
+    let fmt = PixelFormat::Rgb8;
+    let bytes_per_pixel = fmt.bytes_per_pixel();
 
     for scale in [
         Downscale::None,
@@ -1634,11 +1784,14 @@ fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_cro
         Downscale::Quarter,
         Downscale::Eighth,
     ] {
-        let denom = scale.denominator();
-        let (scaled_w, scaled_h) = (width.div_ceil(denom), height.div_ceil(denom));
+        let denominator = scale.denominator();
+        let (scaled_width, scaled_height) = (
+            width.div_ceil(denominator),
+            height.div_ceil(denominator),
+        );
         let mut whole_decoder = J2kDecoder::new(&bytes).expect("whole decoder");
-        let whole_stride = scaled_w as usize * bpp;
-        let mut whole = vec![0_u8; whole_stride * scaled_h as usize];
+        let whole_stride = scaled_width as usize * bytes_per_pixel;
+        let mut whole = vec![0_u8; whole_stride * scaled_height as usize];
         whole_decoder
             .decode_scaled_into(
                 &mut j2k::J2kScratchPool::new(),
@@ -1650,21 +1803,18 @@ fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_cro
             .expect("scaled whole decode");
 
         for roi in [
-            // Interior of the top-left tile.
             Rect {
                 x: 24,
                 y: 24,
                 w: 64,
                 h: 64,
             },
-            // Straddles the first vertical and horizontal tile boundaries.
             Rect {
                 x: 96,
                 y: 96,
                 w: 80,
                 h: 80,
             },
-            // Reaches into the partial bottom-right edge tiles.
             Rect {
                 x: 240,
                 y: 232,
@@ -1674,7 +1824,7 @@ fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_cro
         ] {
             let scaled_roi = roi.scaled_covering(scale);
             let mut region_decoder = J2kDecoder::new(&bytes).expect("region decoder");
-            let region_stride = scaled_roi.w as usize * bpp;
+            let region_stride = scaled_roi.w as usize * bytes_per_pixel;
             let mut region = vec![0_u8; region_stride * scaled_roi.h as usize];
             let outcome = region_decoder
                 .decode_region_scaled_into(
@@ -1689,8 +1839,13 @@ fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_cro
             assert_eq!(outcome.decoded, scaled_roi);
             assert_eq!(
                 region,
-                crop_bytes(&whole, scaled_w as usize, bpp, scaled_roi),
-                "region {},{} {}x{} at 1/{denom} disagrees with scaled whole decode",
+                crop_bytes(
+                    &whole,
+                    scaled_width as usize,
+                    bytes_per_pixel,
+                    scaled_roi,
+                ),
+                "region {},{} {}x{} at 1/{denominator} disagrees with scaled whole decode",
                 roi.x,
                 roi.y,
                 roi.w,

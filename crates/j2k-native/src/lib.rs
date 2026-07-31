@@ -66,7 +66,6 @@ The crate is `no_std` compatible but requires an allocator to be available.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![forbid(unsafe_code)]
 #![forbid(missing_docs)]
-
 extern crate alloc;
 
 #[cfg(test)]
@@ -156,6 +155,7 @@ mod direct_cpu;
 mod direct_plan;
 mod direct_roi;
 pub(crate) mod math;
+mod move_only;
 #[doc(hidden)]
 pub mod packet_math;
 pub(crate) mod profile;

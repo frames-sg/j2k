@@ -63,311 +63,30 @@ mod reusable_output;
 #[cfg(target_os = "macos")]
 mod textures;
 
-// Shims over the collapsed batch API so every legacy entry shape
-// (source x op x target) keeps device coverage.
 #[cfg(target_os = "macos")]
-fn decode_rgb8_batch_into_metal_buffer_with_session(
-    inputs: &[&[u8]],
-    output: &MetalBatchOutputBuffer,
+fn decode_rgb8_buffer_batch_with_session(
+    source: Rgb8MetalBatchSource<'_, '_>,
+    op: Rgb8MetalBatchOp,
+    target: MetalBufferBatchTarget<'_>,
     session: &MetalBackendSession,
 ) -> Result<Vec<Result<Surface, Error>>, Error> {
     Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::Full,
-        },
-        MetalBufferBatchTarget::Reusable(output),
+        Rgb8MetalBatchRequest { source, op },
+        target,
         session,
     )
 }
 
 #[cfg(target_os = "macos")]
-fn decode_rgb8_batch_into_metal_textures_with_session(
-    inputs: &[&[u8]],
-    output: &MetalBatchTextureOutput,
+fn decode_rgb8_texture_batch_with_session(
+    source: Rgb8MetalBatchSource<'_, '_>,
+    op: Rgb8MetalBatchOp,
+    target: MetalTextureBatchTarget<'_>,
     session: &MetalBackendSession,
 ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
     Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::Full,
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_batch_into_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    output: &MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Full,
-        },
-        MetalBufferBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_batch_into_metal_textures_with_session(
-    decoders: &[&Decoder<'_>],
-    output: &MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Full,
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    output: &mut MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Full,
-        },
-        MetalBufferBatchTarget::Resizable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_scaled_batch_into_metal_buffer_with_session(
-    inputs: &[&[u8]],
-    scale: Downscale,
-    output: &MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalBufferBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_scaled_batch_into_metal_textures_with_session(
-    inputs: &[&[u8]],
-    scale: Downscale,
-    output: &MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_scaled_batch_into_resizable_metal_textures_with_session(
-    inputs: &[&[u8]],
-    scale: Downscale,
-    output: &mut MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalTextureBatchTarget::Resizable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_scaled_batch_into_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    scale: Downscale,
-    output: &MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalBufferBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_scaled_batch_into_metal_textures_with_session(
-    decoders: &[&Decoder<'_>],
-    scale: Downscale,
-    output: &MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_scaled_batch_into_resizable_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    scale: Downscale,
-    output: &mut MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalBufferBatchTarget::Resizable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_scaled_batch_into_resizable_metal_textures_with_session(
-    decoders: &[&Decoder<'_>],
-    scale: Downscale,
-    output: &mut MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::Scaled(scale),
-        },
-        MetalTextureBatchTarget::Resizable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
-    inputs: &[&[u8]],
-    roi: Rect,
-    scale: Downscale,
-    output: &MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalBufferBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-    inputs: &[&[u8]],
-    roi: Rect,
-    scale: Downscale,
-    output: &MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Bytes(inputs),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_region_scaled_batch_into_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    roi: Rect,
-    scale: Downscale,
-    output: &MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalBufferBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_region_scaled_batch_into_metal_textures_with_session(
-    decoders: &[&Decoder<'_>],
-    roi: Rect,
-    scale: Downscale,
-    output: &MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalTextureBatchTarget::Reusable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_buffer_with_session(
-    decoders: &[&Decoder<'_>],
-    roi: Rect,
-    scale: Downscale,
-    output: &mut MetalBatchOutputBuffer,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_buffer_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalBufferBatchTarget::Resizable(output),
-        session,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_textures_with_session(
-    decoders: &[&Decoder<'_>],
-    roi: Rect,
-    scale: Downscale,
-    output: &mut MetalBatchTextureOutput,
-    session: &MetalBackendSession,
-) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
-    Codec::decode_rgb8_batch_into_textures_with_session(
-        Rgb8MetalBatchRequest {
-            source: Rgb8MetalBatchSource::Decoders(decoders),
-            op: Rgb8MetalBatchOp::RegionScaled { roi, scale },
-        },
-        MetalTextureBatchTarget::Resizable(output),
+        Rgb8MetalBatchRequest { source, op },
+        target,
         session,
     )
 }
@@ -395,10 +114,7 @@ fn assert_reusable_rgba_texture_tiles(
     }
 }
 
-use j2k_jpeg::adapter::{
-    build_fast420_packet, build_fast444_packet, JpegFast420PacketV1, JpegFast422PacketV1,
-    JpegFast444PacketV1,
-};
+use j2k_jpeg::adapter::{build_fast420_packet, build_fast444_packet};
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::{build_fast422_packet, build_gray_packet, JpegHuffmanTable};
 #[cfg(target_os = "macos")]
@@ -433,14 +149,6 @@ fn metal_runtime_failures_are_not_unsupported_errors() {
     }
 }
 
-fn test_fast_packets<'a>(
-    fast444: Option<&'a JpegFast444PacketV1>,
-    fast422: Option<&'a JpegFast422PacketV1>,
-    fast420: Option<&'a JpegFast420PacketV1>,
-) -> JpegFastPackets<'a> {
-    JpegFastPackets::new(fast444, fast422, fast420)
-}
-
 #[test]
 fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
     let decoder_420 = CpuDecoder::new(BASELINE_420).expect("420 decoder");
@@ -451,7 +159,7 @@ fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Full,
-            test_fast_packets(None, None, Some(&packet_420)),
+            JpegFastPackets::new(None, None, Some(&packet_420)),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -464,7 +172,7 @@ fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Scaled(Downscale::Quarter),
-            test_fast_packets(Some(&packet_444), None, None),
+            JpegFastPackets::new(Some(&packet_444), None, None),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -481,7 +189,7 @@ fn auto_route_keeps_small_single_restart_packets_on_cpu_host() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Full,
-            test_fast_packets(None, None, Some(&packet))
+            JpegFastPackets::new(None, None, Some(&packet))
         ),
         routing::RouteDecision::CpuHost
     );
@@ -496,7 +204,7 @@ fn auto_route_keeps_small_single_restart_packets_on_cpu_host() {
                 w: 16,
                 h: 16,
             }),
-            test_fast_packets(None, None, Some(&packet)),
+            JpegFastPackets::new(None, None, Some(&packet)),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -779,8 +487,13 @@ fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
-    let surfaces = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("decode into reusable output");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable output");
 
     assert_eq!(surfaces.len(), 2);
     assert_eq!(output.tile_capacity(), 2);
@@ -821,9 +534,10 @@ fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
-    let surfaces = decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
-        &decoders,
-        &mut output,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Resizable(&mut output),
         &session,
     )
     .expect("decode cached decoder batch into resizable reusable output");
@@ -864,9 +578,13 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
-    let surfaces =
-        decode_rgb8_decoder_batch_into_metal_buffer_with_session(&decoders, &output, &session)
-            .expect("decode cached decoder batch into fixed reusable output");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode cached decoder batch into fixed reusable output");
 
     assert_eq!(surfaces.len(), 2);
     assert_eq!(output.dimensions(), (16, 16));
@@ -900,9 +618,10 @@ fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_buffer() 
     let second = Decoder::new(BASELINE_444).expect("second decoder");
     let decoders = [&first, &second];
 
-    let Err(err) = decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
-        &decoders,
-        &mut output,
+    let Err(err) = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Resizable(&mut output),
         &session,
     ) else {
         panic!("mixed output dimensions should be rejected");
@@ -956,9 +675,10 @@ fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_buffer() {
     let second = Decoder::new(&fast444.data).expect("second decoder");
     let decoders = [&first, &second];
 
-    let Err(err) = decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
-        &decoders,
-        &mut output,
+    let Err(err) = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Resizable(&mut output),
         &session,
     ) else {
         panic!("mixed sampling should be rejected");
@@ -1163,8 +883,13 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
-    let surfaces = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("decode into reusable output");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable output");
 
     assert_eq!(surfaces.len(), 2);
     for (index, result) in surfaces.into_iter().enumerate() {
@@ -1322,8 +1047,13 @@ fn assert_table_mixed_full_buffer_groups_resident(
     assert_ne!(expected_tiles[0], expected_tiles[2]);
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
-    let surfaces = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("decode table-mixed full tiles into reusable output buffer");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode table-mixed full tiles into reusable output buffer");
 
     assert_eq!(surfaces.len(), 3);
     for (index, surface) in surfaces.into_iter().enumerate() {
@@ -1376,9 +1106,13 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
         .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
-    let surfaces =
-        decode_rgb8_scaled_batch_into_metal_buffer_with_session(&inputs, scale, &output, &session)
-            .expect("decode scaled into reusable output");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode scaled into reusable output");
 
     assert_eq!(surfaces.len(), 2);
     for (index, result) in surfaces.into_iter().enumerate() {
@@ -1415,10 +1149,10 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
         .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
-    let surfaces = decode_rgb8_decoder_scaled_batch_into_resizable_metal_buffer_with_session(
-        &decoders,
-        scale,
-        &mut output,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalBufferBatchTarget::Resizable(&mut output),
         &session,
     )
     .expect("decode cached decoder scaled batch into resizable reusable output");
@@ -1460,8 +1194,11 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
-    let surfaces = decode_rgb8_decoder_scaled_batch_into_metal_buffer_with_session(
-        &decoders, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode cached decoder scaled batch into fixed reusable output");
 
@@ -1516,8 +1253,11 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
         ))
         .expect("cpu region scaled decode");
 
-    let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
-        &inputs, roi, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode region scaled into reusable output");
 
@@ -1632,15 +1372,13 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
         ))
         .expect("cpu region scaled decode");
 
-    let surfaces =
-        decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_buffer_with_session(
-            &decoders,
-            roi,
-            scale,
-            &mut output,
-            &session,
-        )
-        .expect("decode cached decoder batch into resizable reusable output");
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Resizable(&mut output),
+        &session,
+    )
+    .expect("decode cached decoder batch into resizable reusable output");
 
     assert_eq!(output.dimensions(), (scaled.w, scaled.h));
     assert_eq!(output.tile_capacity(), 2);
@@ -1695,8 +1433,11 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         ))
         .expect("cpu region scaled decode");
 
-    let surfaces = decode_rgb8_decoder_region_scaled_batch_into_metal_buffer_with_session(
-        &decoders, roi, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode cached decoder region-scaled batch into fixed reusable output");
 
@@ -1771,8 +1512,11 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
         ))
         .expect("cpu region-scaled decode");
 
-    let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
-        &inputs, roi, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode restart-coded region-scaled tiles into reusable output buffer");
 
@@ -1856,8 +1600,11 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
         ))
         .expect("cpu region-scaled decode");
 
-    let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
-        &inputs, roi, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode restart-coded region-scaled tiles into reusable output buffer");
 
@@ -2052,8 +1799,11 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
     assert_ne!(expected_tiles[0], expected_tiles[2]);
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
-    let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
-        &inputs, roi, scale, &output, &session,
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode table-mixed region-scaled tiles into reusable output buffer");
 
@@ -2140,8 +1890,11 @@ fn rgb8_fast444_region_scaled_batch_decode_can_write_into_reusable_metal_texture
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode region scaled into reusable textures");
 
@@ -2310,8 +2063,13 @@ fn warm_session_reuses_private_intermediate_buffers_for_reusable_output_batches(
     let inputs = [BASELINE_420, BASELINE_420];
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let first = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("first decode");
+    let first = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("first decode");
     for surface in first {
         assert_eq!(
             surface.expect("surface").residency(),
@@ -2320,8 +2078,13 @@ fn warm_session_reuses_private_intermediate_buffers_for_reusable_output_batches(
     }
     let allocations_after_first = compute::jpeg_private_buffer_allocations_for_test();
 
-    let second = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("second decode");
+    let second = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("second decode");
     for surface in second {
         assert_eq!(
             surface.expect("surface").residency(),
@@ -2353,12 +2116,22 @@ fn warm_session_reuses_shared_upload_buffers_for_reusable_output_batches() {
     let inputs = [BASELINE_420, BASELINE_420];
 
     compute::reset_jpeg_shared_buffer_allocations_for_test();
-    decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("first decode");
+    decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("first decode");
     let allocations_after_first = compute::jpeg_shared_buffer_allocations_for_test();
 
-    decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
-        .expect("second decode");
+    decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalBufferBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("second decode");
 
     assert!(
         allocations_after_first > 0,

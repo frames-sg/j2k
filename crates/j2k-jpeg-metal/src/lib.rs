@@ -8,7 +8,6 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
-
 #[cfg(target_os = "macos")]
 mod abi;
 mod batch;

@@ -23,7 +23,7 @@ pub(super) struct BatchedDecodeItem {
     pub(super) surface: Surface,
     pub(super) status_buffer: Buffer,
     pub(super) decode_threads: u32,
-    pub(super) _decode_resources: Vec<Buffer>,
+    pub(super) _decode_resources: [Buffer; 7],
 }
 
 #[derive(Default)]

@@ -181,6 +181,28 @@ fn regrouping_prepared_images_reports_settings_mismatches_at_submission_indices(
 }
 
 #[test]
+fn valid_lenient_batch_does_not_report_a_recovery_warning() {
+    let options = BatchDecodeOptions {
+        settings: DecodeSettings::lenient(),
+        ..BatchDecodeOptions::default()
+    };
+    let prepared = prepare_batch(
+        vec![EncodedImage::full(Arc::from(htj2k_gray8_fixture(3, 2)))],
+        options,
+    )
+    .expect("prepare valid lenient image");
+    let mut decoder = CpuBatchDecoder::new(options);
+
+    let output = decoder
+        .decode_prepared(&prepared)
+        .expect("decode valid lenient image");
+
+    assert!(output.errors().is_empty());
+    assert_eq!(output.groups().len(), 1);
+    assert_eq!(output.groups()[0].warnings(), &[Vec::new()]);
+}
+
+#[test]
 fn cpu_session_reuses_multitile_classic_prepared_workspace_across_decodes() {
     let options = BatchDecodeOptions {
         workers: NonZeroUsize::new(1),

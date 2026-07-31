@@ -2,7 +2,9 @@
 
 Audit date: 2026-07-14
 
-Audited workspace: `0.7.1` release candidate
+Historical audit snapshot: `0.7.1` release candidate. This version identifies
+the audited source and is not the current release status; current support is
+tracked in [`release.md`](release.md).
 
 ## Decision
 
@@ -111,7 +113,7 @@ enum after the fact.
 
 ## Release blockers for an end-to-end pathology claim
 
-These are not blockers for publishing a codec-focused `0.7.1`, but they are
+These were not blockers for publishing the codec-focused `0.7.1`, but they are
 blockers for claiming that this repository alone implements a complete digital
 pathology workflow:
 

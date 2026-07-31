@@ -781,6 +781,8 @@ pub(crate) struct SimdBuffer<const N: usize> {
     original_len: usize,
 }
 
+crate::move_only::assert_move_only!(SimdBuffer<8>);
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SimdBufferAllocationError;
 

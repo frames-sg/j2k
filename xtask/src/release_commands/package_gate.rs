@@ -10,59 +10,43 @@ use crate::process::{cargo, run_command_owned, CommandContext};
 
 use consumer::{package_archive_path, run_j2k_ml_consumer_gate};
 
-use super::{
-    package_name, str_set, workspace_package_records, PUBLISHABLE_PACKAGES,
-    REGISTRY_INDEPENDENT_PACKAGES,
+use super::release_manifest::{
+    registry_independent_packages, release_dependencies_by_package,
+    validate_release_manifest_contract, ReleaseManifestContract,
 };
+use super::{package_name, workspace_package_records};
 
 #[derive(Debug)]
 struct PackageGateStep {
-    package: &'static str,
+    package: String,
     version: String,
     registry_independent: bool,
     patches: Vec<(String, String)>,
 }
 
-fn package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep>, String> {
+fn package_gate_plan(
+    metadata: &serde_json::Value,
+    manifest: &ReleaseManifestContract,
+) -> Result<Vec<PackageGateStep>, String> {
     let packages = workspace_package_records(metadata)?;
+    let mut validation_errors = Vec::new();
+    validate_release_manifest_contract(manifest, &packages, &mut validation_errors)?;
+    if !validation_errors.is_empty() {
+        return Err(format!(
+            "release manifest violations:\n- {}",
+            validation_errors.join("\n- ")
+        ));
+    }
     let package_by_name = packages
-        .into_iter()
+        .iter()
         .map(|package| Ok((package_name(package)?.to_string(), package)))
         .collect::<Result<BTreeMap<_, _>, String>>()?;
-    let publishable = str_set(PUBLISHABLE_PACKAGES);
-    let independent = str_set(REGISTRY_INDEPENDENT_PACKAGES);
-    let dependencies_by_package = PUBLISHABLE_PACKAGES
-        .iter()
-        .map(|&package| {
-            let record = package_by_name.get(package).ok_or_else(|| {
-                format!("publishable package `{package}` is absent from cargo metadata")
-            })?;
-            let dependencies = record
-                .get("dependencies")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    format!("cargo metadata package `{package}` has no dependency array")
-                })?
-                .iter()
-                .filter(|dependency| {
-                    dependency
-                        .get("kind")
-                        .is_none_or(serde_json::Value::is_null)
-                        && dependency
-                            .get("source")
-                            .is_none_or(serde_json::Value::is_null)
-                })
-                .filter_map(|dependency| dependency.get("name")?.as_str())
-                .filter(|dependency| publishable.contains(*dependency))
-                .map(ToString::to_string)
-                .collect::<BTreeSet<_>>();
-            Ok((package.to_string(), dependencies))
-        })
-        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let dependencies_by_package = release_dependencies_by_package(manifest, &packages)?;
+    let independent = registry_independent_packages(manifest, &packages)?;
     let mut processed = BTreeSet::new();
-    let mut plan = Vec::with_capacity(PUBLISHABLE_PACKAGES.len());
+    let mut plan = Vec::with_capacity(manifest.ordered_crates().len());
 
-    for &package in PUBLISHABLE_PACKAGES {
+    for package in manifest.ordered_crates() {
         let mut pending = dependencies_by_package
             .get(package)
             .cloned()
@@ -103,8 +87,12 @@ fn package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep
         }
 
         plan.push(PackageGateStep {
-            package,
-            version: package_by_name[package]
+            package: package.to_string(),
+            version: package_by_name
+                .get(package)
+                .ok_or_else(|| {
+                    format!("publishable package `{package}` is absent from cargo metadata")
+                })?
                 .get("version")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("cargo metadata package `{package}` has no version"))?
@@ -117,8 +105,11 @@ fn package_gate_plan(metadata: &serde_json::Value) -> Result<Vec<PackageGateStep
     Ok(plan)
 }
 
-pub(super) fn run_j2k_ml_package_smoke(metadata: &serde_json::Value) -> Result<(), String> {
-    let plan = package_gate_plan(metadata)?;
+pub(super) fn run_j2k_ml_package_smoke(
+    metadata: &serde_json::Value,
+    manifest: &ReleaseManifestContract,
+) -> Result<(), String> {
+    let plan = package_gate_plan(metadata, manifest)?;
     let step = plan
         .iter()
         .find(|step| step.package == "j2k-ml")
@@ -131,7 +122,7 @@ fn run_staged_package(step: &PackageGateStep, allow_dirty: bool) -> Result<(), S
     let mut args = vec![
         "package".to_string(),
         "-p".to_string(),
-        step.package.to_string(),
+        step.package.clone(),
         "--no-verify".to_string(),
     ];
     if allow_dirty {
@@ -154,10 +145,13 @@ fn append_patch_config_args(args: &mut Vec<String>, step: &PackageGateStep) -> R
     Ok(())
 }
 
-pub(super) fn run(metadata: &serde_json::Value) -> Result<(), String> {
-    for step in package_gate_plan(metadata)? {
+pub(super) fn run(
+    metadata: &serde_json::Value,
+    manifest: &ReleaseManifestContract,
+) -> Result<(), String> {
+    for step in package_gate_plan(metadata, manifest)? {
         if step.registry_independent {
-            run_cargo(&["publish", "-p", step.package, "--dry-run"])?;
+            run_cargo(&["publish", "-p", step.package.as_str(), "--dry-run"])?;
         } else {
             run_staged_package(&step, false)?;
         }

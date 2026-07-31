@@ -2,6 +2,11 @@
 
 //! Hidden helpers used by Criterion benches.
 
+#![allow(
+    clippy::disallowed_macros,
+    reason = "benchmark-only buffers are outside codec runtime allocation budgets"
+)]
+
 use crate::backend::scalar;
 use crate::backend::{Backend, Rgb420ChromaRows, Rgb420RowPair};
 use crate::color::upsample::upsample_h2v2_fancy_rows;

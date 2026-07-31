@@ -20,7 +20,10 @@ pub(super) fn allocate_cpu_surface(
         DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         "j2k Metal CPU fallback surface",
     )?;
-    Ok((vec![0u8; len], stride))
+    Ok((
+        crate::batch_allocation::try_vec_filled(len, 0u8, "J2K Metal CPU fallback surface")?,
+        stride,
+    ))
 }
 
 pub(super) fn upload_surface(

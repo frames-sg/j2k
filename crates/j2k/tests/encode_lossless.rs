@@ -2166,6 +2166,46 @@ fn accelerator_facade_auto_falls_back_when_no_stage_dispatches() {
 }
 
 #[test]
+fn accelerator_facade_auto_uses_cpu_for_cpu_only_sample_precision() {
+    #[derive(Default)]
+    struct NoDispatchAccelerator;
+
+    impl J2kEncodeStageAccelerator for NoDispatchAccelerator {}
+
+    let values = [
+        0_u32,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        (1_u32 << 28) + 17,
+        (1_u32 << 28) - 1,
+        1_u32 << 28,
+        (1_u32 << 29) - 1,
+    ];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 29, false).unwrap();
+    let mut accelerator = NoDispatchAccelerator;
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &auto_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(0)),
+        BackendKind::Cuda,
+        &mut accelerator,
+    )
+    .expect("Auto must use the supported CPU path for 29-bit samples");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
+    assert_eq!(decode_native(&encoded.codestream).data, pixels);
+}
+
+#[test]
 fn accelerator_facade_preserves_native_stage_error() {
     struct FailingDeinterleaveAccelerator;
 

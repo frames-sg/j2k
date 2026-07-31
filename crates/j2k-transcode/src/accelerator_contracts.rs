@@ -132,6 +132,11 @@ pub struct PreencodedHtj2k97CompactBatchGroups {
     pub groups: Vec<Vec<PreencodedHtj2k97CompactComponent>>,
 }
 
+crate::move_only::assert_move_only!(
+    PreencodedHtj2k97CompactBatch,
+    PreencodedHtj2k97CompactBatchGroups,
+);
+
 /// Encode parameters needed to quantize 9/7 output directly into HTJ2K
 /// code-block coefficient layout.
 #[derive(Debug, Clone, Copy, PartialEq)]

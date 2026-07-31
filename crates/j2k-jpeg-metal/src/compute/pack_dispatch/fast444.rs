@@ -105,7 +105,7 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -196,7 +196,7 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -326,7 +326,7 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,
@@ -412,7 +412,7 @@ pub(in crate::compute) fn encode_fast444_batch_item(
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
-        _decode_resources: vec![
+        _decode_resources: [
             y_plane,
             cb_plane,
             cr_plane,

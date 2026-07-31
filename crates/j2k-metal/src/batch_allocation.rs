@@ -10,6 +10,37 @@ pub(crate) use j2k_core::{
     BatchAllocationBudget as BatchMetadataBudget, BatchAllocationRequest as BatchMetadataRequest,
 };
 
+use crate::Error;
+
+pub(crate) fn try_vec<T>(capacity: usize, what: &'static str) -> Result<Vec<T>, Error> {
+    let mut budget = BatchMetadataBudget::new(what);
+    budget.try_vec(capacity, what).map_err(Error::from)
+}
+
+pub(crate) fn try_vec_from_array<T, const N: usize>(
+    values: [T; N],
+    what: &'static str,
+) -> Result<Vec<T>, Error> {
+    let mut owned = try_vec(N, what)?;
+    owned.extend(values);
+    Ok(owned)
+}
+
+pub(crate) fn try_clone_slice<T: Clone>(values: &[T], what: &'static str) -> Result<Vec<T>, Error> {
+    let mut owned = try_vec(values.len(), what)?;
+    owned.extend_from_slice(values);
+    Ok(owned)
+}
+
+pub(crate) fn try_vec_filled<T: Clone>(
+    len: usize,
+    value: T,
+    what: &'static str,
+) -> Result<Vec<T>, Error> {
+    let mut budget = BatchMetadataBudget::new(what);
+    budget.try_filled(len, value, what).map_err(Error::from)
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::size_of;

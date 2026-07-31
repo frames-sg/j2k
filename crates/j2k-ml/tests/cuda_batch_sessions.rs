@@ -231,8 +231,17 @@ fn cuda_burn_batch_continues_after_one_group_submit_failure() {
     assert_eq!(output.groups[0].source_indices, [1]);
     assert_eq!(output.group_errors.len(), 1);
     assert_eq!(output.group_errors[0].source_indices(), &[0]);
+    let BurnDecodeError::Cuda(j2k_cuda::CudaBatchError::GroupExecution {
+        source_indices,
+        source,
+        ..
+    }) = output.group_errors[0].source()
+    else {
+        panic!("group-local CUDA failure must use the published batch error contract");
+    };
+    assert_eq!(source_indices, &[0]);
     assert!(matches!(
-        output.group_errors[0].source(),
-        BurnDecodeError::CudaCodec(j2k_cuda::Error::UnsupportedCudaRequest { .. })
+        source.as_ref(),
+        j2k_cuda::Error::UnsupportedCudaRequest { .. }
     ));
 }

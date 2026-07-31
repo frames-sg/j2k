@@ -2,8 +2,9 @@
 
 use std::os::unix::fs::symlink;
 
+use super::super::release_manifest::parse_release_manifest_source;
 use super::{
-    super::{package, release_integrity, PUBLISHABLE_PACKAGES},
+    super::{package, release_integrity},
     integrity::{complete_publishable_metadata, metadata_program},
     package_fixture::packaged_metadata,
 };
@@ -73,6 +74,10 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
             include_str!("../../../../scripts/publish_release.py"),
         ),
         (
+            "scripts/release_manifest.py",
+            include_str!("../../../../scripts/release_manifest.py"),
+        ),
+        (
             "release-crates.json",
             include_str!("../../../../release-crates.json"),
         ),
@@ -81,12 +86,12 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.7.5\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
+        "[workspace.package]\nversion = \"0.8.0\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.7.5] - 2026-07-22\n",
+        "# Changelog\n\n## [0.8.0] - 2026-07-27\n",
     )
     .expect("write finalized changelog fixture");
     std::fs::write(
@@ -139,13 +144,18 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
     assert!(git.log().starts_with("status --porcelain|"));
     let cargo_log = cargo.log();
     let commands = cargo_log.lines().collect::<Vec<_>>();
+    let publishable_count =
+        parse_release_manifest_source(include_str!("../../../../release-crates.json"))
+            .expect("checked-in release manifest")
+            .ordered_crates()
+            .len();
     let consumer_commands = match std::env::consts::OS {
         "linux" | "macos" => 5,
         _ => 3,
     };
     assert_eq!(
         commands.len(),
-        1 + 2 * PUBLISHABLE_PACKAGES.len() + consumer_commands
+        1 + 2 * publishable_count + consumer_commands
     );
     assert!(commands[0].starts_with("metadata --locked --no-deps --format-version 1|"));
     assert!(commands[1].starts_with("package -p j2k-core --list|"));
@@ -154,7 +164,7 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
         .any(|line| line.starts_with("publish -p j2k-core --dry-run|")));
     assert!(commands
         .iter()
-        .any(|line| line.starts_with("package -p j2k-cli --no-verify|")));
+        .any(|line| line.starts_with("package -p j2k-cli --no-verify")));
     assert!(commands
         .iter()
         .any(|line| line.contains("check --examples --no-default-features --features")));

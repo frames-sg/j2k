@@ -19,6 +19,29 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
+if __package__:
+    from .release_manifest import (
+        CRATE_PATTERN,
+        ManifestError,
+        ReleaseManifest,
+        cargo_metadata as _cargo_metadata,
+        load_release_manifest as _load_release_manifest,
+        object_value as _object,
+        string_value as _string,
+        validate_release_graph as _validate_release_graph,
+    )
+else:
+    from release_manifest import (
+        CRATE_PATTERN,
+        ManifestError,
+        ReleaseManifest,
+        cargo_metadata as _cargo_metadata,
+        load_release_manifest as _load_release_manifest,
+        object_value as _object,
+        string_value as _string,
+        validate_release_graph as _validate_release_graph,
+    )
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "release-crates.json"
@@ -26,22 +49,13 @@ CRATES_IO_API_URL = "https://crates.io/api/v1"
 MAX_RESPONSE_BYTES = 1_048_576
 REQUEST_TIMEOUT_SECONDS = 15
 RETRY_DELAYS_SECONDS = (5, 15, 30)
-CRATE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
-
-class PublishError(RuntimeError):
-    """Release state could not be validated or publication could not continue."""
+PublishError = ManifestError
 
 
 class TransientPublishError(PublishError):
     """A bounded retry may recover a registry or transport operation."""
-
-
-@dataclass(frozen=True)
-class ReleaseManifest:
-    ordered_crates: tuple[str, ...]
-    registry_independent: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -50,121 +64,25 @@ class RegistryRecord:
     checksum: str | None
 
 
-def _object(value: Any, context: str) -> Mapping[str, Any]:
-    if not isinstance(value, dict):
-        raise PublishError(f"{context} must be an object")
-    return value
-
-
-def _string(value: Any, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise PublishError(f"{context} must be a non-empty string")
-    return value
-
-
 def load_release_manifest(path: pathlib.Path = DEFAULT_MANIFEST) -> ReleaseManifest:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise PublishError(f"could not read release manifest {path}: {error}") from None
-
-    root = _object(payload, "release manifest")
-    if root.get("schema") != 1:
-        raise PublishError("release manifest schema must be exactly 1")
-    raw_order = root.get("ordered_crates")
-    raw_independent = root.get("registry_independent")
-    if not isinstance(raw_order, list) or not raw_order:
-        raise PublishError("release manifest ordered_crates must be a non-empty array")
-    if not isinstance(raw_independent, list):
-        raise PublishError("release manifest registry_independent must be an array")
-
-    ordered = tuple(_string(value, "release crate") for value in raw_order)
-    independent = frozenset(
-        _string(value, "registry-independent crate") for value in raw_independent
-    )
-    if any(not CRATE_PATTERN.fullmatch(crate) for crate in ordered):
-        raise PublishError("release manifest contains a malformed crate name")
-    if len(set(ordered)) != len(ordered):
-        raise PublishError("release manifest contains duplicate crates")
-    if not independent.issubset(ordered):
-        raise PublishError("registry-independent crates must be in ordered_crates")
-    independent_prefix = frozenset(ordered[: len(independent)])
-    if independent != independent_prefix:
-        raise PublishError("registry-independent crates must form the manifest prefix")
-    return ReleaseManifest(ordered, independent)
+    return _load_release_manifest(path)
 
 
 def cargo_metadata() -> Mapping[str, Any]:
-    result = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise PublishError(f"cargo metadata failed:\n{result.stderr.strip()}")
-    try:
-        return _object(json.loads(result.stdout), "cargo metadata")
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PublishError(f"cargo metadata returned invalid JSON: {error}") from None
+    return _cargo_metadata(ROOT)
 
 
 def validate_release_graph(
     manifest: ReleaseManifest, metadata: Mapping[str, Any]
 ) -> str:
-    raw_packages = metadata.get("packages")
-    if not isinstance(raw_packages, list):
-        raise PublishError("cargo metadata packages must be an array")
+    return _validate_release_graph(manifest, metadata).version
 
-    packages: dict[str, Mapping[str, Any]] = {}
-    for raw_package in raw_packages:
-        package = _object(raw_package, "cargo metadata package")
-        name = _string(package.get("name"), "cargo metadata package.name")
-        if name in packages:
-            raise PublishError(f"cargo metadata contains duplicate package {name}")
-        packages[name] = package
 
-    publishable = {
-        name for name, package in packages.items() if package.get("publish") != []
-    }
-    ordered_set = set(manifest.ordered_crates)
-    if publishable != ordered_set:
-        missing = sorted(publishable - ordered_set)
-        extra = sorted(ordered_set - publishable)
-        raise PublishError(
-            "release manifest must contain all publishable workspace crates exactly once; "
-            f"missing={missing}, extra={extra}"
-        )
-
-    versions = {
-        _string(packages[name].get("version"), f"{name}.version")
-        for name in manifest.ordered_crates
-    }
-    if len(versions) != 1:
-        raise PublishError(
-            "publishable workspace crates must all have the same release version"
-        )
-
-    positions = {crate: index for index, crate in enumerate(manifest.ordered_crates)}
-    for crate in manifest.ordered_crates:
-        raw_dependencies = packages[crate].get("dependencies")
-        if not isinstance(raw_dependencies, list):
-            raise PublishError(f"cargo metadata dependencies for {crate} must be an array")
-        for raw_dependency in raw_dependencies:
-            dependency = _object(raw_dependency, f"{crate} dependency")
-            if dependency.get("kind") == "dev":
-                continue
-            dependency_name = _string(
-                dependency.get("name"), f"{crate} dependency.name"
-            )
-            if dependency_name not in positions:
-                continue
-            if positions[dependency_name] >= positions[crate]:
-                raise PublishError(
-                    f"release crate {crate} appears before dependency {dependency_name}"
-                )
-    return versions.pop()
+def registry_independent_crates(
+    manifest: ReleaseManifest, metadata: Mapping[str, Any]
+) -> tuple[str, ...]:
+    independent = _validate_release_graph(manifest, metadata).registry_independent
+    return tuple(crate for crate in manifest.ordered_crates if crate in independent)
 
 
 class CratesIoApi:
@@ -566,15 +484,10 @@ def main() -> int:
             if args.field is None:
                 raise PublishError("manifest command requires --field")
             manifest = load_release_manifest(args.manifest.resolve())
-            selected = (
-                manifest.ordered_crates
-                if args.field == "ordered-crates"
-                else tuple(
-                    crate
-                    for crate in manifest.ordered_crates
-                    if crate in manifest.registry_independent
-                )
-            )
+            if args.field == "ordered-crates":
+                selected = manifest.ordered_crates
+            else:
+                selected = registry_independent_crates(manifest, cargo_metadata())
             print("\n".join(selected))
             return 0
         if args.field is not None:

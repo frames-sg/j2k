@@ -4,21 +4,13 @@
 
 mod batch;
 
-pub use batch::{MetalUploadBurnDecoder, SubmittedMetalUploadBurnBatch};
+pub use batch::{MetalBurnDecoder, SubmittedMetalBurnBatch};
 
-/// Compatibility alias for [`MetalUploadBurnDecoder`].
+/// Explicit name for [`MetalBurnDecoder`]'s staged host-memory upload behavior.
 ///
 /// This alias has the same explicitly staged behavior; it does not restore the
 /// former direct-destination implementation.
-#[deprecated(
-    since = "0.7.6",
-    note = "use MetalUploadBurnDecoder to make staging explicit"
-)]
-pub type MetalBurnDecoder = MetalUploadBurnDecoder;
+pub type MetalUploadBurnDecoder = MetalBurnDecoder;
 
-/// Compatibility alias for [`SubmittedMetalUploadBurnBatch`].
-#[deprecated(
-    since = "0.7.6",
-    note = "use SubmittedMetalUploadBurnBatch to make staging explicit"
-)]
-pub type SubmittedMetalBurnBatch = SubmittedMetalUploadBurnBatch;
+/// Explicit name for the staged upload represented by [`SubmittedMetalBurnBatch`].
+pub type SubmittedMetalUploadBurnBatch = SubmittedMetalBurnBatch;

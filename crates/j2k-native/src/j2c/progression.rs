@@ -4,7 +4,6 @@
 //! (`layer_num`, resolution, component, precinct) in a specific order that
 //! determines in which order the data appears in the codestream.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::tile::{ComponentTile, ResolutionTile, Tile};
@@ -129,7 +128,8 @@ pub(crate) fn progression_iterator<'a>(
         return progression_iterator_for_order(tile.progression_order, IteratorInput::new(tile));
     }
 
-    let mut iterators = Vec::with_capacity(tile.progression_changes.len());
+    let mut iterators = Vec::new();
+    crate::try_reserve_decode_elements(&mut iterators, tile.progression_changes.len())?;
     for change in &tile.progression_changes {
         let iter_input = IteratorInput::try_new_with_custom_bounds(
             tile,
@@ -322,7 +322,7 @@ fn position_progression_common(
     input: IteratorInput<'_>,
     sort: impl FnMut(&PrecinctStore, &PrecinctStore) -> Ordering,
 ) -> Option<impl Iterator<Item = ProgressionData> + '_> {
-    let mut elements = vec![];
+    let mut elements = Vec::new();
 
     for (component_idx, component) in input
         .tile

@@ -90,8 +90,9 @@ JP2 channel definitions are part of the grouping key. In particular, straight
 and premultiplied alpha are never combined into the same RGBA group, and the
 alpha interpretation remains available in `BatchGroupInfo`.
 
-New batch sessions use strict decoding by default. Lenient decoding is
-opt-in and reports warnings. An explicit CUDA or Metal route never substitutes
+New batch sessions use strict decoding by default. Lenient decoding is opt-in,
+and reports a warning only when one of its documented JP2/JPH metadata
+recoveries was actually used. An explicit CUDA or Metal route never substitutes
 CPU codec decoding, but its completed decoded pixels are deliberately staged
 through host memory. Unsupported inputs and transfer failures are structured
 errors.

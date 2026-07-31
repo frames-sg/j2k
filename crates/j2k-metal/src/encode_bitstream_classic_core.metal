@@ -247,6 +247,9 @@ inline void j2k_raw_writer_write_bit(thread J2kRawBitWriter &writer, uint bit) {
 
 inline void j2k_raw_writer_finish(thread J2kRawBitWriter &writer) {
     if (writer.bits_in_buffer == 0u) {
+        if (writer.last_byte_was_ff != 0u) {
+            j2k_raw_writer_push(writer, uchar(0u));
+        }
         return;
     }
     const uint limit = writer.last_byte_was_ff != 0u ? 7u : 8u;

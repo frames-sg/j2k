@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    codec_math_codegen, compact_f32, finalize_text_snapshot,
+    codec_math_codegen, compact_f32, finalize_text_snapshot, inventory_render_order,
     render_codec_math_dwt97_metal_fragment, render_codec_math_dwt97_rust_fragment, stable_api,
 };
 
@@ -10,6 +10,22 @@ fn text_snapshots_end_with_exactly_one_newline() {
     assert_eq!(finalize_text_snapshot("content\n\n"), "content\n");
     assert_eq!(finalize_text_snapshot("content"), "content\n");
     assert_eq!(finalize_text_snapshot(""), "");
+}
+
+#[test]
+fn inventory_rendering_preserves_committed_presentation_order_without_owning_scope() {
+    let packages = vec!["base".to_string(), "new".to_string(), "adapter".to_string()];
+    let committed = "# Snapshot\n\n## `adapter`\n\n## `base`\n\n## `binary`\n";
+
+    assert_eq!(
+        inventory_render_order(&packages, committed).expect("render order"),
+        ["adapter", "base", "new"]
+    );
+
+    let duplicate = "## `base`\n## `base`\n";
+    let error = inventory_render_order(&packages, duplicate)
+        .expect_err("duplicate committed package heading rejects");
+    assert!(error.contains("duplicate"));
 }
 
 #[test]

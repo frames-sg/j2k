@@ -70,7 +70,10 @@ fn prepare_batch_item_dwt(
     scratch_buffers: &[Buffer],
 ) -> Result<BatchDwtPreparation, Error> {
     let component_count = usize::from(job.component_count);
-    let mut active_planes = Vec::with_capacity(component_count);
+    let mut metadata_budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal batch DWT preparation");
+    let mut active_planes =
+        metadata_budget.try_vec(component_count, "J2K Metal active DWT plane handles")?;
     let mut vertical_command_buffers = Vec::new();
     let mut horizontal_command_buffers = Vec::new();
 
@@ -177,8 +180,13 @@ pub(in crate::compute) fn prepare_lossless_batch_item(
     if !shared_recyclable_private_buffers.is_empty() {
         recyclable_private_buffers.append(shared_recyclable_private_buffers);
     }
-    let mut plane_buffers = Vec::with_capacity(3);
-    let mut scratch_buffers = Vec::with_capacity(usize::from(job.component_count));
+    let mut buffer_budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal lossless buffer handles");
+    let mut plane_buffers = buffer_budget.try_vec(3, "J2K Metal lossless input plane handles")?;
+    let mut scratch_buffers = buffer_budget.try_vec(
+        usize::from(job.component_count),
+        "J2K Metal lossless scratch plane handles",
+    )?;
     for _ in 0..3 {
         plane_buffers.push(take_recyclable_private_buffer(
             runtime,

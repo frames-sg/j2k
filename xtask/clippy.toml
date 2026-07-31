@@ -1,0 +1,3 @@
+# Repository tooling is outside codec runtime allocation budgets.
+disallowed-methods = []
+disallowed-macros = []

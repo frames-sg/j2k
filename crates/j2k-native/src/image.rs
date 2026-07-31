@@ -42,20 +42,31 @@ pub struct DecodeSettings {
     pub resolve_palette_indices: bool,
     /// Whether strict mode should be enabled when decoding.
     ///
-    /// The default is lenient for compatibility with older releases. Lenient
-    /// mode may tolerate malformed optional container metadata that strict mode
-    /// rejects. Use [`DecodeSettings::strict`] for fail-closed validation of
-    /// public or adversarial inputs.
+    /// The default is strict. Lenient mode is limited to the recoveries listed
+    /// on [`DecodeSettings::lenient`]; it never relaxes codestream, bounds,
+    /// overflow, allocation, or resource-limit validation.
     pub strict: bool,
     /// A hint for the target resolution that the image should be decoded at.
     pub target_resolution: Option<(u32, u32)>,
 }
 
 impl DecodeSettings {
-    /// Compatibility decode settings.
+    /// Compatibility settings for explicitly recoverable JP2/JPH metadata.
     ///
-    /// Lenient mode keeps the historical behavior of accepting recoverable
-    /// optional metadata problems where possible.
+    /// Lenient mode may:
+    ///
+    /// - ignore a malformed trailing top-level box after the required image
+    ///   header and codestream boxes were parsed;
+    /// - ignore a malformed trailing child box after the required `ihdr` and
+    ///   `colr` boxes were parsed;
+    /// - ignore a malformed optional `cdef` or `pclr` box, preserving any
+    ///   earlier complete value; and
+    /// - infer an undeclared alpha channel when an otherwise consistent JP2
+    ///   color declaration has exactly one extra codestream component.
+    ///
+    /// Raw codestream validation and entropy decoding remain strict. Bounds,
+    /// integer-overflow, allocation, and resource-limit checks are identical
+    /// in both modes.
     #[must_use]
     pub const fn lenient() -> Self {
         Self {
@@ -85,7 +96,7 @@ impl DecodeSettings {
 
 impl Default for DecodeSettings {
     fn default() -> Self {
-        Self::lenient()
+        Self::strict()
     }
 }
 
@@ -103,6 +114,9 @@ pub struct Image<'a> {
     pub(crate) boxes: ImageBoxes,
     /// Settings that should be applied during decoding.
     pub(crate) settings: DecodeSettings,
+    /// Whether parsing used one of the explicitly documented lenient
+    /// container-metadata recoveries.
+    pub(crate) used_lenient_metadata_recovery: bool,
     /// Whether the image has an alpha channel.
     pub(crate) has_alpha: bool,
     /// The color space of the image.
@@ -124,35 +138,54 @@ impl<'a> ImageSource<'a> {
     }
 }
 
-impl<'a> Image<'a> {
-    pub(crate) fn from_parsed_parts(
-        source: ImageSource<'a>,
-        header: Header<'a>,
+pub(crate) struct ImageProperties {
+    boxes: ImageBoxes,
+    settings: DecodeSettings,
+    color_space: ColorSpace,
+    has_alpha: bool,
+    used_lenient_metadata_recovery: bool,
+}
+
+impl ImageProperties {
+    pub(crate) const fn new(
         boxes: ImageBoxes,
         settings: DecodeSettings,
         color_space: ColorSpace,
         has_alpha: bool,
-    ) -> Result<Self> {
-        Self::from_parsed_parts_with_retained_baseline(
-            source,
-            header,
+        used_lenient_metadata_recovery: bool,
+    ) -> Self {
+        Self {
             boxes,
             settings,
             color_space,
             has_alpha,
-            0,
-        )
+            used_lenient_metadata_recovery,
+        }
+    }
+}
+
+impl<'a> Image<'a> {
+    pub(crate) fn from_parsed_parts(
+        source: ImageSource<'a>,
+        header: Header<'a>,
+        properties: ImageProperties,
+    ) -> Result<Self> {
+        Self::from_parsed_parts_with_retained_baseline(source, header, properties, 0)
     }
 
     pub(crate) fn from_parsed_parts_with_retained_baseline(
         source: ImageSource<'a>,
         header: Header<'a>,
-        boxes: ImageBoxes,
-        settings: DecodeSettings,
-        color_space: ColorSpace,
-        has_alpha: bool,
+        properties: ImageProperties,
         retained_baseline_bytes: usize,
     ) -> Result<Self> {
+        let ImageProperties {
+            boxes,
+            settings,
+            color_space,
+            has_alpha,
+            used_lenient_metadata_recovery,
+        } = properties;
         let metadata_bytes = retained_metadata_bytes(&header, &boxes, &color_space)?;
         allocation::combine_retained_bytes(retained_baseline_bytes, metadata_bytes)?;
         Ok(Self {
@@ -161,6 +194,7 @@ impl<'a> Image<'a> {
             header,
             boxes,
             settings,
+            used_lenient_metadata_recovery,
             has_alpha,
             color_space,
         })
@@ -179,6 +213,13 @@ impl<'a> Image<'a> {
     #[doc(hidden)]
     pub fn retained_allocation_bytes(&self) -> Result<usize> {
         self.retained_metadata_bytes()
+    }
+
+    /// Whether parsing used an explicitly documented lenient metadata recovery.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn used_lenient_metadata_recovery(&self) -> bool {
+        self.used_lenient_metadata_recovery
     }
 
     /// Try to create a new JPEG2000 image from the given data.

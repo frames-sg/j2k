@@ -42,7 +42,7 @@ mod stable_api;
 mod test_command;
 
 use benchmark_commands::{
-    bench_build, bench_report, j2k_bench_signoff, j2k_ml_batch_bench_cuda, j2k_ml_batch_bench_metal,
+    bench_build, j2k_bench_signoff, j2k_ml_batch_bench_cuda, j2k_ml_batch_bench_metal,
 };
 use clone_audit::clone_audit;
 use codegen_commands::{codec_math_codegen, stable_api};
@@ -50,11 +50,11 @@ use codegen_commands::{codec_math_codegen, stable_api};
 use command_support::passed_test_count;
 use panic_surface::panic_surface;
 use quality_commands::{
-    ci, clippy, clippy_strict, deny, doc, downstream_smoke, fmt, fuzz_build, fuzz_run, machete,
-    miri, nextest, no_std, repo_lint, test, typos, verify_unsafe_audit,
+    ci, clippy, clippy_strict, doc, fmt, fuzz_build, fuzz_run, machete, miri, no_std, repo_lint,
+    test, verify_unsafe_audit,
 };
 use release_commands::{
-    j2k_ml_package_smoke, package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES,
+    j2k_ml_package_smoke, package, published_library_packages, release_cpu, release_integrity,
 };
 use stable_api::CARGO_PUBLIC_API_VERSION;
 
@@ -75,11 +75,8 @@ fn run() -> Result<(), String> {
         "clippy" => clippy(),
         "clippy-strict" => clippy_strict(),
         "test" => test(),
-        "nextest" => nextest(),
         "doc" | "docs" => doc(),
-        "typos" => typos(),
         "bench-build" => bench_build(env::args().skip(2)),
-        "bench-report" => bench_report(env::args().skip(2)),
         "j2k-ml-bench-metal" => j2k_ml_batch_bench_metal(),
         "j2k-ml-bench-cuda" => j2k_ml_batch_bench_cuda(),
         #[cfg(feature = "adoption")]
@@ -109,19 +106,17 @@ fn run() -> Result<(), String> {
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
         "stable-api" => stable_api(env::args().skip(2)),
-        "semver" => semver::semver(
-            env::args().skip(2),
-            STABLE_SEMVER_PACKAGES,
-            CARGO_PUBLIC_API_VERSION,
-        ),
-        "deny" => deny(),
+        "semver" => {
+            let packages = published_library_packages()?;
+            let package_refs = packages.iter().map(String::as_str).collect::<Vec<_>>();
+            semver::semver(env::args().skip(2), &package_refs, CARGO_PUBLIC_API_VERSION)
+        }
         "miri" => miri(),
         "machete" => machete(),
         "clone-audit" => clone_audit(env::args().skip(2)),
         "panic-surface" => panic_surface(),
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
-        "downstream-smoke" => downstream_smoke(),
         "repo-lint" => repo_lint(env::args().skip(2)),
         "release-integrity" => release_integrity(env::args().skip(2)),
         "release-status" => release_status::release_status(env::args().skip(2)),
@@ -150,11 +145,8 @@ fn print_help() {
            clippy        run clippy with warnings denied\n\
            clippy-strict run stricter J2K clippy gates\n\
            test          run workspace tests\n\
-           nextest       run workspace tests with cargo-nextest\n\
            doc           build workspace docs with warnings denied\n\
-           typos         run typos\n\
            bench-build   compile benchmark targets [--lane host|cuda|metal|all]\n\
-           bench-report  print or write a benchmark publication report\n\
            j2k-ml-bench-metal benchmark Metal codec-resident and Burn-upload batch decode\n\
            j2k-ml-bench-cuda benchmark CUDA codec-resident and Burn-upload batch decode\n\
            adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle [--features adoption]\n\
@@ -170,15 +162,13 @@ fn print_help() {
            fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
            semver        verify computed release types and reviewed API diff [--write-report]\n\
-           deny          run cargo-deny\n\
            miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\
            clone-audit   stage source-aware production Rust and run pinned jscpd\n\
            panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
-           downstream-smoke run facade and transcode examples used by integration docs\n\
-           repo-lint     run repository policy checks owned by xtask [--strict]\n\
+           repo-lint     run repository policy checks owned by xtask\n\
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
            release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
            release-cpu   run release-mode CPU codec tests\n\

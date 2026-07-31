@@ -54,9 +54,17 @@ fn staged_cuda_preserves_native_u16_and_i16_samples() {
     }
     let unsigned = [0_u16, 1, 2048, 4095];
     let signed = [-2048_i16, -1, 0, 2047];
+    let unsigned_bytes = unsigned
+        .into_iter()
+        .flat_map(u16::to_ne_bytes)
+        .collect::<Vec<_>>();
+    let signed_bytes = signed
+        .into_iter()
+        .flat_map(i16::to_ne_bytes)
+        .collect::<Vec<_>>();
     let cases = [
         (
-            encode_gray(&unsigned, 12, false),
+            encode_gray(&unsigned_bytes, 12, false),
             DType::U16,
             unsigned
                 .iter()
@@ -64,7 +72,7 @@ fn staged_cuda_preserves_native_u16_and_i16_samples() {
                 .collect::<Vec<_>>(),
         ),
         (
-            encode_gray(&signed, 12, true),
+            encode_gray(&signed_bytes, 12, true),
             DType::I16,
             signed
                 .iter()
@@ -150,9 +158,14 @@ fn staged_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
     let rgb12 = (0_u32..4 * 4 * 3)
         .map(|value| ((value * 977 + 31) & 0x0fff) as u16)
         .collect::<Vec<_>>();
+    let rgb12_bytes = rgb12
+        .iter()
+        .copied()
+        .flat_map(u16::to_ne_bytes)
+        .collect::<Vec<_>>();
     let cases = [
         (encode_rgb(&rgb7, 7), DType::U8),
-        (encode_rgb(&rgb12, 12), DType::U16),
+        (encode_rgb(&rgb12_bytes, 12), DType::U16),
     ];
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
@@ -329,11 +342,7 @@ fn openjph_i16_oracle(fixture: &OpenJphBatchFixture) -> Vec<i16> {
     }
 }
 
-fn encode_gray<T: Copy>(samples: &[T], precision: u8, signed: bool) -> Vec<u8> {
-    let byte_len = std::mem::size_of_val(samples);
-    // SAFETY: plain integer fixtures are copied immediately into the encoder;
-    // their native little-endian representation is the codec's input format.
-    let bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_len) };
+fn encode_gray(bytes: &[u8], precision: u8, signed: bool) -> Vec<u8> {
     let samples = J2kLosslessSamples::new(bytes, 2, 2, 1, precision, signed)
         .expect("valid native integer samples");
     encode_j2k_lossless(
@@ -346,11 +355,7 @@ fn encode_gray<T: Copy>(samples: &[T], precision: u8, signed: bool) -> Vec<u8> {
     .codestream
 }
 
-fn encode_rgb<T: Copy>(samples: &[T], precision: u8) -> Vec<u8> {
-    let byte_len = std::mem::size_of_val(samples);
-    // SAFETY: plain integer fixtures are copied immediately into the encoder;
-    // their native little-endian representation is the codec's input format.
-    let bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_len) };
+fn encode_rgb(bytes: &[u8], precision: u8) -> Vec<u8> {
     let samples = J2kLosslessSamples::new(bytes, 4, 4, 3, precision, false)
         .expect("valid RGB native integer samples");
     encode_j2k_lossless(

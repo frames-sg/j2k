@@ -43,7 +43,10 @@ pub(in crate::compute) fn encode_metal_ht_batches_in_encoder(
     if prepared.job_count() == 0 {
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty HT retained buffer",
+            )?,
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
@@ -153,7 +156,10 @@ pub(in crate::compute) fn encode_repeated_metal_ht_batch_in_command_buffer(
         encoder.end_encoding();
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
-            vec![empty.clone()],
+            crate::batch_allocation::try_vec_from_array(
+                [empty.clone()],
+                "J2K Metal empty HT retained buffer",
+            )?,
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,

@@ -156,26 +156,6 @@ pub(crate) fn command_output_os(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) fn command_output_allow_failure(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = command_output(OsString::from(program), args, CommandContext::new())?;
-    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if text.is_empty() {
-        text = stderr;
-    } else if !stderr.is_empty() {
-        text.push('\n');
-        text.push_str(&stderr);
-    }
-    if text.is_empty() {
-        Err(format!(
-            "`{program}` exited with {} and no output",
-            output.status
-        ))
-    } else {
-        Ok(text)
-    }
-}
-
 fn configured_command(program: &OsStr, args: &[&str], context: CommandContext<'_>) -> Command {
     let mut command = Command::new(program);
     command.args(args);

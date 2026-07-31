@@ -210,12 +210,18 @@ fn cuda_encode_htj2k_resident_components_body(
                 CudaTileSubbandKind::LowLow,
                 &mut stats,
             )?;
-            // These inner vectors have codec-fixed cardinalities: one
-            // resolution containing one LL subband. The image-derived outer
-            // component collection is reserved fallibly above.
-            let packets = vec![CudaEncodedHtj2kResolution {
-                subbands: vec![subband],
-            }];
+            let mut subbands = crate::allocation::try_vec_with_capacity(
+                1,
+                "j2k CUDA HTJ2K LL subband descriptors",
+            )
+            .map_err(htj2k_allocation_error)?;
+            subbands.push(subband);
+            let mut packets = crate::allocation::try_vec_with_capacity(
+                1,
+                "j2k CUDA HTJ2K LL resolution descriptors",
+            )
+            .map_err(htj2k_allocation_error)?;
+            packets.push(CudaEncodedHtj2kResolution { subbands });
             account_encoded_resolution_owners(
                 &mut component_host_budget,
                 &packets,
@@ -337,10 +343,11 @@ fn cuda_encode_dwt_component_packets(
     }
     let (ll_width, ll_height) = ll_dimensions;
     let full_width = levels.first().map_or(ll_width, |level| level.width);
-    // Deliberately codec-bounded: validated decomposition levels fit the J2K
-    // level ceiling, and each resolution below owns exactly one or three
-    // subband descriptors. Image/code-block-sized vectors are fallible.
-    let mut packets = Vec::with_capacity(levels.len().saturating_add(1));
+    let mut packets = crate::allocation::try_vec_with_capacity(
+        levels.len().saturating_add(1),
+        "j2k CUDA HTJ2K resolution descriptors",
+    )
+    .map_err(htj2k_allocation_error)?;
 
     let ll_subband = cuda_encode_tile_subband_region(
         runtime,
@@ -357,8 +364,12 @@ fn cuda_encode_dwt_component_packets(
         CudaTileSubbandKind::LowLow,
         stats,
     )?;
+    let mut ll_subbands =
+        crate::allocation::try_vec_with_capacity(1, "j2k CUDA HTJ2K LL subband descriptors")
+            .map_err(htj2k_allocation_error)?;
+    ll_subbands.push(ll_subband);
     packets.push(CudaEncodedHtj2kResolution {
-        subbands: vec![ll_subband],
+        subbands: ll_subbands,
     });
 
     for (level_idx, level) in levels.iter().rev().enumerate() {
@@ -410,9 +421,11 @@ fn cuda_encode_dwt_component_packets(
             CudaTileSubbandKind::HighHigh,
             stats,
         )?;
-        packets.push(CudaEncodedHtj2kResolution {
-            subbands: vec![hl, lh, hh],
-        });
+        let mut subbands =
+            crate::allocation::try_vec_with_capacity(3, "j2k CUDA HTJ2K high subband descriptors")
+                .map_err(htj2k_allocation_error)?;
+        subbands.extend([hl, lh, hh]);
+        packets.push(CudaEncodedHtj2kResolution { subbands });
     }
 
     Ok(packets)

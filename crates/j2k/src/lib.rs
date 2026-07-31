@@ -9,7 +9,6 @@
 //! integration live in the `j2k-cuda` and `j2k-metal` crates.
 
 #![deny(missing_docs)]
-
 extern crate alloc;
 
 mod backend;

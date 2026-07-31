@@ -2,21 +2,22 @@
 
 //! JP2/JPH container traversal and native decode parse orchestration.
 
+mod header;
+
 use crate::error::{bail, FormatError, Result};
-use crate::image::ImageSource;
+use crate::image::{ImageProperties, ImageSource};
 use crate::reader::BitReader;
 use crate::{resolve_alpha_and_color_space, DecodeSettings, Image};
 
+#[cfg(test)]
+pub(super) use self::header::parse_jp2_header_box;
+use self::header::parse_jp2_header_box_tracked;
 use super::allocation;
-use super::cdef;
-use super::cmap::{self, ComponentMappingBox, ComponentMappingEntry, ComponentMappingType};
-use super::colr;
-use super::image_header::{parse_bits_per_component, parse_image_header};
+use super::cmap::{ComponentMappingBox, ComponentMappingEntry, ComponentMappingType};
 use super::metadata::{
     public_image_header, public_metadata_from_boxes, ImageBoxes, Jp2FileMetadata,
     Jp2ImageHeaderMetadata,
 };
-use super::pclr;
 use super::r#box::{self, FILE_TYPE, JP2_SIGNATURE};
 use super::validation::{
     validate_codestream_file_kind, validate_component_precision_metadata,
@@ -52,6 +53,7 @@ struct ParsedJp2Container<'a> {
     codestream_offset: usize,
     codestream: &'a [u8],
     boxes: ImageBoxes,
+    used_lenient_metadata_recovery: bool,
 }
 const JP2_SIGNATURE_PAYLOAD: [u8; 4] = [0x0D, 0x0A, 0x87, 0x0A];
 
@@ -136,9 +138,11 @@ pub(crate) fn parse_with_retained_baseline(
         retained_baseline_bytes,
         "retained JP2 parse owners",
     )?;
+    let mut codestream_settings = settings;
+    codestream_settings.strict = true;
     let parsed_codestream = crate::j2c::parse_raw_with_retained_baseline(
         container.codestream,
-        &settings,
+        &codestream_settings,
         retained_box_bytes,
     )?;
     validate_codestream_file_kind(container.file_kind, &parsed_codestream.header)?;
@@ -171,29 +175,32 @@ pub(crate) fn parse_with_retained_baseline(
         image_boxes.component_mapping = Some(ComponentMappingBox { entries: mappings });
     }
 
-    let (color_space, has_alpha) = resolve_alpha_and_color_space(
+    let (color_space, has_alpha, recovered_alpha_metadata) = resolve_alpha_and_color_space(
         &image_boxes,
         &parsed_codestream.header,
         &settings,
         retained_baseline_bytes,
     )?;
+    let used_lenient_metadata_recovery =
+        container.used_lenient_metadata_recovery || recovered_alpha_metadata;
+    let properties = ImageProperties::new(
+        image_boxes,
+        settings,
+        color_space,
+        has_alpha,
+        used_lenient_metadata_recovery,
+    );
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
             ImageSource::new(data, parsed_codestream.data),
             parsed_codestream.header,
-            image_boxes,
-            settings,
-            color_space,
-            has_alpha,
+            properties,
         )
     } else {
         Image::from_parsed_parts_with_retained_baseline(
             ImageSource::new(data, parsed_codestream.data),
             parsed_codestream.header,
-            image_boxes,
-            settings,
-            color_space,
-            has_alpha,
+            properties,
             retained_baseline_bytes,
         )
     }
@@ -235,11 +242,15 @@ fn parse_jp2_container_with_strict_and_retained_baseline(
 
     let mut image_boxes = None;
     let mut codestream = None;
+    let mut used_lenient_metadata_recovery = false;
     while !reader.at_end() {
-        let current_box = match r#box::read_checked(&mut reader) {
-            Ok(current_box) => current_box,
-            Err(error) if strict => return Err(error),
-            Err(_) => break,
+        let Some(current_box) = read_recoverable_metadata_box(
+            &mut reader,
+            strict,
+            &mut used_lenient_metadata_recovery,
+        )?
+        else {
+            break;
         };
 
         match current_box.box_type {
@@ -247,11 +258,13 @@ fn parse_jp2_container_with_strict_and_retained_baseline(
                 if image_boxes.is_some() || codestream.is_some() {
                     bail!(FormatError::InvalidBox);
                 }
-                image_boxes = Some(parse_jp2_header_box(
+                let parsed_header = parse_jp2_header_box_tracked(
                     current_box.data,
                     strict,
                     retained_baseline_bytes,
-                )?);
+                )?;
+                used_lenient_metadata_recovery |= parsed_header.used_lenient_metadata_recovery;
+                image_boxes = Some(parsed_header.boxes);
             }
             r#box::CONTIGUOUS_CODESTREAM => {
                 if image_boxes.is_none() || codestream.is_some() {
@@ -271,99 +284,23 @@ fn parse_jp2_container_with_strict_and_retained_baseline(
         codestream_offset,
         codestream,
         boxes,
+        used_lenient_metadata_recovery,
     })
 }
 
-pub(super) fn parse_jp2_header_box(
-    data: &[u8],
+fn read_recoverable_metadata_box<'a>(
+    reader: &mut BitReader<'a>,
     strict: bool,
-    retained_baseline_bytes: usize,
-) -> Result<ImageBoxes> {
-    let color_spec_count = count_color_specification_boxes(data, strict)?;
-    let mut budget = allocation::Jp2AllocationBudget::from_live_bytes(retained_baseline_bytes)?;
-    let mut boxes = ImageBoxes {
-        color_specifications: budget.try_vec(color_spec_count, "JP2 COLR metadata")?,
-        ..ImageBoxes::default()
-    };
-    let mut saw_image_header = false;
-    let mut reader = BitReader::new(data);
-
-    while !reader.at_end() {
-        let child_box = match r#box::read_checked(&mut reader) {
-            Ok(child_box) => child_box,
-            Err(error) if strict => return Err(error),
-            Err(_) => break,
-        };
-        match child_box.box_type {
-            r#box::IMAGE_HEADER => {
-                if saw_image_header {
-                    bail!(FormatError::InvalidBox);
-                }
-                boxes.image_header = Some(parse_image_header(child_box.data)?);
-                saw_image_header = true;
-            }
-            r#box::BITS_PER_COMPONENT => {
-                let parsed = parse_bits_per_component(child_box.data, &mut budget)?;
-                let replaced = core::mem::replace(&mut boxes.bits_per_component, parsed);
-                budget.release_vec(&replaced)?;
-            }
-            r#box::CHANNEL_DEFINITION => {
-                let mut attempt = budget;
-                match cdef::parse(&mut boxes, child_box.data, &mut attempt) {
-                    Ok(()) => budget = attempt,
-                    Err(crate::DecodeError::Format(_)) if !strict => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            r#box::COLOUR_SPECIFICATION => {
-                colr::parse(&mut boxes, child_box.data, &mut budget)?;
-            }
-            r#box::PALETTE => {
-                let mut attempt = budget;
-                match pclr::parse(&mut boxes, child_box.data, &mut attempt) {
-                    Ok(()) => budget = attempt,
-                    Err(crate::DecodeError::Format(_)) if !strict => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            r#box::COMPONENT_MAPPING => {
-                cmap::parse(&mut boxes, child_box.data, &mut budget)?;
-            }
-            _ => {
-                ldebug!("ignoring header box 0x{:08X}", child_box.box_type);
-            }
+    used_lenient_metadata_recovery: &mut bool,
+) -> Result<Option<r#box::Jp2Box<'a>>> {
+    match r#box::read_checked(reader) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(error) if strict => Err(error),
+        Err(_) => {
+            *used_lenient_metadata_recovery = true;
+            Ok(None)
         }
     }
-
-    if !saw_image_header {
-        bail!(FormatError::MissingRequiredBox("ihdr"));
-    }
-    if boxes.primary_color_specification().is_none() {
-        bail!(FormatError::MissingRequiredBox("colr"));
-    }
-    Ok(boxes)
-}
-
-fn count_color_specification_boxes(data: &[u8], strict: bool) -> Result<usize> {
-    let mut count = 0_usize;
-    let mut reader = BitReader::new(data);
-    while !reader.at_end() {
-        let child_box = match r#box::read_checked(&mut reader) {
-            Ok(child_box) => child_box,
-            Err(error) if strict => return Err(error),
-            Err(_) => break,
-        };
-        if child_box.box_type == r#box::COLOUR_SPECIFICATION {
-            count = count
-                .checked_add(1)
-                .ok_or(crate::DecodeError::AllocationTooLarge {
-                    what: "JP2 COLR metadata",
-                    requested: usize::MAX,
-                    cap: crate::DEFAULT_MAX_DECODE_BYTES,
-                })?;
-        }
-    }
-    Ok(count)
 }
 
 fn classify_file_type(payload: &[u8]) -> Result<Jp2FileKind> {

@@ -92,6 +92,14 @@ struct PacketLengthMetadata {
     lengths: Vec<u32>,
 }
 
+crate::move_only::assert_move_only!(
+    Tile<'static>,
+    MergedTilePart<'static>,
+    SeparatedTilePart<'static>,
+    TilePart<'static>,
+    PacketLengthMetadata,
+);
+
 impl PacketLengthMetadata {
     fn new(present: bool, lengths: Vec<u32>) -> Self {
         Self { present, lengths }

@@ -20,17 +20,20 @@ struct ResidentGroupMetadata {
 }
 
 impl ResidentGroupMetadata {
-    fn from_prepared(group: &PreparedBatchGroup) -> Self {
-        Self {
+    fn from_prepared(group: &PreparedBatchGroup) -> Result<Self, Error> {
+        let mut budget =
+            crate::allocation::HostPhaseBudget::new("CUDA resident batch result metadata");
+        Ok(Self {
             info: group.info().clone(),
-            source_indices: group.source_indices().to_vec(),
-            decoded_rects: group
-                .images()
-                .iter()
-                .map(|image| image.plan().output_rect())
-                .collect(),
-            warnings: decode_warnings(group.options(), group.images().len()),
-        }
+            source_indices: budget.try_clone_slice(group.source_indices())?,
+            decoded_rects: budget.try_collect_exact(
+                group
+                    .images()
+                    .iter()
+                    .map(|image| image.plan().output_rect()),
+            )?,
+            warnings: decode_warnings(group.images())?,
+        })
     }
 
     fn finish(
@@ -231,7 +234,20 @@ impl CudaBatchDecoder {
         }
         Ok(SubmittedCudaResidentBatch {
             pending,
-            errors: prepared.errors().to_vec(),
+            errors: {
+                let mut errors = Vec::new();
+                errors
+                    .try_reserve_exact(prepared.errors().len())
+                    .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+                        what: "submitted CUDA resident indexed errors",
+                        bytes: prepared
+                            .errors()
+                            .len()
+                            .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
+                    })?;
+                errors.extend_from_slice(prepared.errors());
+                errors
+            },
             group_errors,
         })
     }
@@ -279,7 +295,7 @@ impl CudaBatchDecoder {
             });
         };
         Ok(SubmittedResidentGroup {
-            metadata: ResidentGroupMetadata::from_prepared(group),
+            metadata: ResidentGroupMetadata::from_prepared(group)?,
             pending,
         })
     }

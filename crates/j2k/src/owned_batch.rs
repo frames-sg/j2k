@@ -17,10 +17,10 @@ use crate::{
         scheduler::run_retained_chunks,
         worker::BatchWorker,
     },
-    decode::decode_warnings_for_settings,
+    decode::decode_warnings_for_recovery,
     parse::{extract_j2k_codestream_payload, parse_image_info},
-    CpuDecodeParallelism, DecodeSettings, DeviceDecodePlan, J2kDecodeWarning, J2kError,
-    J2kSupportInfo, TileBatchOptions,
+    CpuDecodeParallelism, DeviceDecodePlan, J2kDecodeWarning, J2kError, J2kSupportInfo,
+    TileBatchOptions,
 };
 
 mod contracts;

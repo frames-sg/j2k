@@ -4,7 +4,7 @@ use crate::{
     backend::{image as backend_image, inspect_info, inspect_info_from_image, Image},
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        decode_warnings_for_settings, validate_buffer, validate_region, J2kDecodeOutcome,
+        decode_warnings_for_image, validate_buffer, validate_region, J2kDecodeOutcome,
         J2kDecodedComponents, J2kDecodedNativeComponents,
     },
     parse::{parse_image_info, parse_info},
@@ -28,6 +28,7 @@ pub struct J2kView<'a> {
     info: Info,
     support_info: Option<J2kSupportInfo>,
     image: Option<Image<'a>>,
+    settings: DecodeSettings,
     passthrough: Option<(CompressedTransferSyntax, CompressedPayloadKind)>,
 }
 
@@ -38,21 +39,45 @@ impl<'a> J2kView<'a> {
     /// Returns [`J2kError`] when the input is not a supported JP2/J2C/HTJ2K
     /// stream or when backend inspection rejects the codestream.
     pub fn parse(input: &'a [u8]) -> Result<Self, J2kError> {
+        Self::parse_with_settings(input, DecodeSettings::default())
+    }
+
+    /// Parse container/codestream metadata with a per-image validation policy.
+    ///
+    /// [`DecodeSettings::default`] is strict. Explicit lenient mode is limited
+    /// to the JP2/JPH metadata recoveries documented by
+    /// [`DecodeSettings::lenient`].
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the input is unsupported or malformed outside
+    /// the selected policy's documented recovery boundary.
+    pub fn parse_with_settings(
+        input: &'a [u8],
+        settings: DecodeSettings,
+    ) -> Result<Self, J2kError> {
+        let image = backend_image(input, settings, None)?;
         let (info, support_info, passthrough) = match parse_image_info(input) {
             Ok(parsed) => {
                 let support_info = parsed.into_support_info();
                 let passthrough = Some((support_info.transfer_syntax, support_info.payload_kind));
                 (support_info.info.clone(), Some(support_info), passthrough)
             }
-            Err(error) if should_retry_with_backend(&error) => (inspect_info(input)?, None, None),
+            Err(error)
+                if should_fallback_to_backend_after_parse_error(
+                    &error,
+                    image.used_lenient_metadata_recovery(),
+                ) =>
+            {
+                (inspect_info_from_image(&image), None, None)
+            }
             Err(error) => return Err(error),
         };
-        let image = Some(backend_image(input, DecodeSettings::default(), None)?);
         Ok(Self {
             bytes: input,
             info,
             support_info,
-            image,
+            image: Some(image),
+            settings,
             passthrough,
         })
     }
@@ -90,6 +115,7 @@ pub struct J2kDecoder<'a> {
     bytes: &'a [u8],
     info: Info,
     image: Option<Image<'a>>,
+    settings: DecodeSettings,
     native_context: j2k_native::DecoderContext<'a>,
 }
 
@@ -135,6 +161,18 @@ impl<'a> J2kDecoder<'a> {
         Self::from_view(J2kView::parse(input)?)
     }
 
+    /// Create a decoder with a per-image validation policy.
+    ///
+    /// The policy is retained by this decoder and reused by full-resolution,
+    /// region, and scaled decode jobs. It does not mutate [`crate::J2kContext`]
+    /// or leak into another decoder.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] for unsupported or malformed input.
+    pub fn new_with_settings(input: &'a [u8], settings: DecodeSettings) -> Result<Self, J2kError> {
+        Self::from_view(J2kView::parse_with_settings(input, settings)?)
+    }
+
     /// Create a decoder from a previously parsed [`J2kView`].
     ///
     /// # Errors
@@ -144,6 +182,7 @@ impl<'a> J2kDecoder<'a> {
             bytes: view.bytes,
             info: view.info,
             image: view.image,
+            settings: view.settings,
             native_context: j2k_native::DecoderContext::default(),
         })
     }
@@ -296,7 +335,7 @@ impl<'a> J2kDecoder<'a> {
         decode_image_into_with_native_context(image, native_context, out, stride, fmt)?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(self.info.dimensions),
-            decode_warnings_for_settings(DecodeSettings::default()),
+            decode_warnings_for_image(image),
         ))
     }
 
@@ -336,7 +375,7 @@ impl<'a> J2kDecoder<'a> {
         decode_image_region_into_with_native_context(image, native_context, out, stride, fmt, roi)?;
         Ok(j2k_core::DecodeOutcome::new(
             roi,
-            decode_warnings_for_settings(DecodeSettings::default()),
+            decode_warnings_for_image(image),
         ))
     }
 
@@ -359,9 +398,12 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        let settings = DecodeSettings::default();
-        let warnings = decode_warnings_for_settings(settings);
-        let image = backend_image(self.bytes, settings, Some(self.scaled_target_dims(scale)))?;
+        let image = backend_image(
+            self.bytes,
+            self.settings,
+            Some(self.scaled_target_dims(scale)),
+        )?;
+        let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
         let mut native_context = self.scaled_decode_native_context();
@@ -396,9 +438,12 @@ impl<'a> J2kDecoder<'a> {
         validate_region(roi, self.info.dimensions)?;
         let scaled_roi = roi.scaled_covering(scale);
         validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-        let settings = DecodeSettings::default();
-        let warnings = decode_warnings_for_settings(settings);
-        let image = backend_image(self.bytes, settings, Some(self.scaled_target_dims(scale)))?;
+        let image = backend_image(
+            self.bytes,
+            self.settings,
+            Some(self.scaled_target_dims(scale)),
+        )?;
+        let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;
         let mut native_context = self.scaled_decode_native_context();
@@ -415,7 +460,7 @@ impl<'a> J2kDecoder<'a> {
 
     fn ensure_image(&mut self) -> Result<(), J2kError> {
         if self.image.is_none() {
-            self.image = Some(backend_image(self.bytes, DecodeSettings::default(), None)?);
+            self.image = Some(backend_image(self.bytes, self.settings, None)?);
             if self.info.tile_layout.is_none() {
                 self.info = inspect_info_from_image(self.cached_image()?);
             }
@@ -474,33 +519,12 @@ fn should_retry_with_backend(error: &J2kError) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn scaled_decode_native_context_preserves_configured_parallelism() {
-        let mut decoder = J2kDecoder {
-            bytes: &[],
-            info: Info {
-                dimensions: (1, 1),
-                components: 1,
-                colorspace: j2k_core::Colorspace::SGray,
-                bit_depth: 8,
-                tile_layout: None,
-                coded_unit_layout: None,
-                restart_interval: None,
-                resolution_levels: 1,
-            },
-            image: None,
-            native_context: j2k_native::DecoderContext::default(),
-        };
-        decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
-
-        let native_context = decoder.scaled_decode_native_context();
-
-        assert_eq!(
-            native_context.cpu_decode_parallelism(),
-            CpuDecodeParallelism::Serial.to_native()
-        );
-    }
+fn should_fallback_to_backend_after_parse_error(
+    error: &J2kError,
+    used_lenient_metadata_recovery: bool,
+) -> bool {
+    should_retry_with_backend(error) || used_lenient_metadata_recovery
 }
+
+#[cfg(test)]
+mod tests;

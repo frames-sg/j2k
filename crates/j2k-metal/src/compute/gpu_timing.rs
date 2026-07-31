@@ -23,20 +23,24 @@ pub(super) fn completed_command_buffers_gpu_duration_and_elapsed_window(
     let mut total = Duration::ZERO;
     let mut min_start = f64::INFINITY;
     let mut max_end = f64::NEG_INFINITY;
-    let mut seen = Vec::with_capacity(retained.len().saturating_add(1));
-    for command_buffer in retained {
+    for (index, command_buffer) in retained.iter().enumerate() {
         let ptr = command_buffer.as_ptr();
-        if seen.contains(&ptr) {
+        if retained[..index]
+            .iter()
+            .any(|previous| previous.as_ptr() == ptr)
+        {
             continue;
         }
-        seen.push(ptr);
         let (start, end) = completed_command_buffer_gpu_times(command_buffer)?;
         total = total.saturating_add(Duration::from_secs_f64(end - start));
         min_start = min_start.min(start);
         max_end = max_end.max(end);
     }
     let final_ptr = final_buffer.as_ptr();
-    if !seen.contains(&final_ptr) {
+    if !retained
+        .iter()
+        .any(|command_buffer| command_buffer.as_ptr() == final_ptr)
+    {
         let (start, end) = completed_command_buffer_gpu_times(final_buffer)?;
         total = total.saturating_add(Duration::from_secs_f64(end - start));
         min_start = min_start.min(start);

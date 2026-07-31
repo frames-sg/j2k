@@ -28,6 +28,8 @@ pub struct Dwt53MultiLevel<T> {
     pub final_ll_height: usize,
 }
 
+crate::move_only::assert_move_only!(Dwt53MultiLevel<f64>);
+
 impl Dwt53MultiLevel<f64> {
     /// Maximum absolute coefficient difference across matching levels.
     #[must_use]

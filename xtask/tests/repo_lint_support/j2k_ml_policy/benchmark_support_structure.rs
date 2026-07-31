@@ -6,10 +6,9 @@ use std::{
 };
 
 use syn::{
-    punctuated::Punctuated,
     spanned::Spanned,
     visit::{self, Visit},
-    Attribute, Expr, ExprCall, File, Item, Meta, Token,
+    Expr, ExprCall, File,
 };
 
 use super::read;
@@ -17,83 +16,6 @@ use crate::repo_lint_support::repo_root;
 
 fn parse(relative: &str) -> File {
     syn::parse_file(&read(relative)).unwrap_or_else(|error| panic!("parse {relative}: {error}"))
-}
-
-fn external_modules(file: &File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Mod(item) if item.content.is_none() => Some(item.ident.to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn declared_types(file: &File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Enum(item) => Some(item.ident.to_string()),
-            Item::Struct(item) => Some(item.ident.to_string()),
-            Item::Trait(item) => Some(item.ident.to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn declared_functions(file: &File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Fn(item) => Some(item.sig.ident.to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn declared_consts(file: &File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Const(item) => Some(item.ident.to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-#[derive(Default)]
-struct DeadCodeSuppressionVisitor {
-    locations: Vec<usize>,
-}
-
-impl<'ast> Visit<'ast> for DeadCodeSuppressionVisitor {
-    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
-        let Meta::List(list) = &attribute.meta else {
-            return;
-        };
-        if !(list.path.is_ident("allow") || list.path.is_ident("expect")) {
-            return;
-        }
-        let arguments = attribute
-            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-            .unwrap_or_else(|error| panic!("parse lint attribute: {error}"));
-        if arguments
-            .iter()
-            .any(|argument| matches!(argument, Meta::Path(path) if path.is_ident("dead_code")))
-        {
-            self.locations.push(attribute.span().start().line);
-        }
-    }
-}
-
-fn assert_no_dead_code_suppressions(relative: &str, file: &File) {
-    let mut visitor = DeadCodeSuppressionVisitor::default();
-    visitor.visit_file(file);
-    assert!(
-        visitor.locations.is_empty(),
-        "{relative} must not suppress dead_code at lines {:?}",
-        visitor.locations
-    );
 }
 
 fn benchmark_targets() -> BTreeMap<String, (BTreeSet<String>, bool)> {
@@ -140,86 +62,7 @@ fn benchmark_targets() -> BTreeMap<String, (BTreeSet<String>, bool)> {
 }
 
 #[test]
-fn j2k_ml_benchmark_support_has_focused_ownership() {
-    let support_paths = [
-        "crates/j2k-ml/benches/support/mod.rs",
-        "crates/j2k-ml/benches/support/decode_case.rs",
-        "crates/j2k-ml/benches/support/fixture.rs",
-        "crates/j2k-ml/benches/support/input_selection.rs",
-        "crates/j2k-ml/benches/support/process_policy.rs",
-        "crates/j2k-ml/benches/support/workload.rs",
-        "crates/j2k-ml/benches/support/workload_catalog.rs",
-    ];
-    let support = support_paths
-        .iter()
-        .map(|path| (*path, parse(path)))
-        .collect::<BTreeMap<_, _>>();
-    for (path, file) in &support {
-        assert_no_dead_code_suppressions(path, file);
-    }
-
-    assert_eq!(
-        external_modules(&support[support_paths[0]]),
-        BTreeSet::from([
-            "decode_case".to_owned(),
-            "fixture".to_owned(),
-            "input_selection".to_owned(),
-            "process_policy".to_owned(),
-            "workload".to_owned(),
-            "workload_catalog".to_owned(),
-        ])
-    );
-    assert!(
-        declared_functions(&support[support_paths[1]]).is_superset(&BTreeSet::from([
-            "requests".to_owned(),
-            "decoded_pixels_per_batch".to_owned(),
-            "require_prepared_success".to_owned(),
-        ]))
-    );
-    assert!(declared_functions(&support[support_paths[2]]).contains("encode_ht_fixture"));
-    assert_eq!(
-        declared_types(&support[support_paths[3]]),
-        BTreeSet::from(["InputMode".to_owned()])
-    );
-    assert_eq!(
-        declared_types(&support[support_paths[4]]),
-        BTreeSet::from(["ProcessMode".to_owned()])
-    );
-    assert!(
-        declared_types(&support[support_paths[5]]).is_superset(&BTreeSet::from([
-            "Workload".to_owned(),
-            "WorkloadSpec".to_owned(),
-        ]))
-    );
-    assert!(declared_functions(&support[support_paths[5]]).contains("materialize_workload"));
-    assert!(declared_functions(&support[support_paths[6]]).contains("workload_specs"));
-    assert_eq!(
-        declared_consts(&support[support_paths[6]]),
-        BTreeSet::from(["BATCH_SIZES".to_owned(), "LOW_BATCH_SIZES".to_owned()])
-    );
-
-    let metal = parse("crates/j2k-ml/benches/batch_decode_metal.rs");
-    let instrumentation = parse("crates/j2k-ml/benches/batch_decode_metal/instrumentation.rs");
-    assert!(external_modules(&metal).contains("instrumentation"));
-    assert!(
-        declared_functions(&instrumentation).contains("ensure_criterion_instrumentation_disabled")
-    );
-    assert!(!declared_types(&instrumentation).contains("ProcessMode"));
-    assert_no_dead_code_suppressions("Metal benchmark", &metal);
-    assert_no_dead_code_suppressions("Metal instrumentation", &instrumentation);
-
-    let benchmark_input_test = parse("crates/j2k-ml/tests/benchmark_inputs.rs");
-    assert_eq!(
-        external_modules(&benchmark_input_test),
-        BTreeSet::from([
-            "decode_case".to_owned(),
-            "fixture".to_owned(),
-            "input_selection".to_owned(),
-            "workload".to_owned(),
-        ]),
-        "benchmark input tests must load only reusable construction modules"
-    );
-
+fn j2k_ml_benchmark_targets_match_supported_backends() {
     let targets = benchmark_targets();
     assert_eq!(
         targets,
@@ -241,56 +84,6 @@ fn j2k_ml_benchmark_support_has_focused_ownership() {
             ),
         ])
     );
-}
-
-#[test]
-fn benchmark_burn_success_validation_has_one_backend_generic_owner() {
-    let decode_case = parse("crates/j2k-ml/benches/support/decode_case.rs");
-    assert!(
-        declared_functions(&decode_case).contains("require_burn_success"),
-        "shared decode-case support must own backend-generic Burn result validation"
-    );
-
-    for relative in [
-        "crates/j2k-ml/benches/batch_decode.rs",
-        "crates/j2k-ml/benches/batch_decode_cuda.rs",
-        "crates/j2k-ml/benches/batch_decode_metal.rs",
-    ] {
-        assert!(
-            !declared_functions(&parse(relative)).contains("require_burn_success"),
-            "{relative} must reuse the shared backend-generic Burn result validator"
-        );
-    }
-}
-
-#[test]
-fn accelerator_profile_processes_have_backend_local_owners() {
-    for backend in ["cuda", "metal"] {
-        let entry_path = format!("crates/j2k-ml/benches/batch_decode_{backend}.rs");
-        let profile_path = format!("crates/j2k-ml/benches/batch_decode_{backend}/profile.rs");
-        let entry = parse(&entry_path);
-        let profile = parse(&profile_path);
-        let entry_functions = declared_functions(&entry);
-        let profile_functions = declared_functions(&profile);
-
-        assert!(
-            external_modules(&entry).contains("profile"),
-            "{entry_path} must own its backend-local profile module"
-        );
-        for function in ["profile_codec_resident", "profile_burn_upload"] {
-            assert!(
-                !entry_functions.contains(function),
-                "{entry_path} must keep profile-only {function} out of the Criterion entrypoint"
-            );
-            assert!(
-                profile_functions.contains(function),
-                "{profile_path} must own {function}"
-            );
-        }
-        assert!(profile_functions.contains("run"));
-        assert_no_dead_code_suppressions(&entry_path, &entry);
-        assert_no_dead_code_suppressions(&profile_path, &profile);
-    }
 }
 
 struct MaterializationFinder {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+
 //
 // Tolerance parity: CUDA irreversible 9/7 DCT->wavelet transcode vs the
 //j2k-transcode scalar float oracle. Mirrors j2k-transcode-metal's

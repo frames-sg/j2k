@@ -45,8 +45,15 @@ pub(crate) fn prepare_lossless_device_code_blocks(
     }
 
     with_runtime_for_session(session, |runtime| {
-        let mut plane_buffers = Vec::with_capacity(3);
-        let mut scratch_buffers = Vec::with_capacity(usize::from(job.component_count));
+        let mut buffer_budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal lossless single buffer handles",
+        );
+        let mut plane_buffers =
+            buffer_budget.try_vec(3, "J2K Metal lossless input plane handles")?;
+        let mut scratch_buffers = buffer_budget.try_vec(
+            usize::from(job.component_count),
+            "J2K Metal lossless scratch plane handles",
+        )?;
         for _ in 0..3 {
             plane_buffers.push(new_private_buffer(&runtime.device, sizes.plane_bytes)?);
         }
@@ -89,7 +96,10 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             )?;
         }
 
-        let mut active_planes = Vec::with_capacity(usize::from(job.component_count));
+        let mut active_planes = buffer_budget.try_vec(
+            usize::from(job.component_count).max(3),
+            "J2K Metal lossless active plane handles",
+        )?;
         for component in 0..usize::from(job.component_count) {
             if job.num_decomposition_levels == 0 {
                 active_planes.push(plane_buffers[component].clone());

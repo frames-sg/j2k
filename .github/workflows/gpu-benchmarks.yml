@@ -62,13 +62,13 @@ jobs:
       J2K_REQUIRE_CUDA_RUNTIME: "1"
       J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: benchmark-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
           cache-bin: false
@@ -144,7 +144,7 @@ jobs:
           cmp target/gpu-benchmark/device-before.txt target/gpu-benchmark/device-after.txt
       - name: Upload CUDA benchmark evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cuda-${{ inputs.suite }}-${{ github.sha }}
           path: |
@@ -163,13 +163,13 @@ jobs:
       J2K_REQUIRE_METAL_BENCH: "1"
       J2K_REQUIRE_METAL_RUNTIME: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: benchmark-metal-${{ runner.os }}-${{ runner.arch }}-1.96
           cache-bin: false
@@ -239,7 +239,7 @@ jobs:
           cmp target/gpu-benchmark/device-before.json target/gpu-benchmark/device-after.json
       - name: Upload Metal benchmark evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: metal-${{ inputs.suite }}-${{ github.sha }}
           path: |

@@ -22,9 +22,9 @@ pub use settings::DecodeSettings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum J2kDecodeWarning {
-    /// Decode used lenient settings, so recoverable malformed optional metadata
-    /// may be tolerated instead of rejected as it would be in strict mode.
-    LenientDecodeMode,
+    /// Parsing used one of [`DecodeSettings::lenient`]'s documented JP2/JPH
+    /// metadata recoveries.
+    LenientMetadataRecovery,
 }
 
 // A successful batch can produce at most one warning. Keep that owner
@@ -35,21 +35,27 @@ const _: [(); 0] = [(); core::mem::size_of::<J2kDecodeWarning>()];
 impl fmt::Display for J2kDecodeWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LenientDecodeMode => f.write_str("lenient decode mode enabled"),
+            Self::LenientMetadataRecovery => f.write_str("lenient JP2/JPH metadata recovery used"),
         }
     }
 }
 
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<J2kDecodeWarning>;
 
-pub(crate) fn decode_warnings_for_settings(settings: DecodeSettings) -> Vec<J2kDecodeWarning> {
+pub(crate) fn decode_warnings_for_recovery(
+    used_lenient_metadata_recovery: bool,
+) -> Vec<J2kDecodeWarning> {
     let mut warnings = Vec::new();
-    if settings.lenient_tolerance_enabled() {
+    if used_lenient_metadata_recovery {
         // `J2kDecodeWarning` is statically constrained to a ZST above, so this
         // push cannot enter the allocator.
-        warnings.push(J2kDecodeWarning::LenientDecodeMode);
+        warnings.push(J2kDecodeWarning::LenientMetadataRecovery);
     }
     warnings
+}
+
+pub(crate) fn decode_warnings_for_image(image: &Image<'_>) -> Vec<J2kDecodeWarning> {
+    decode_warnings_for_recovery(image.used_lenient_metadata_recovery())
 }
 
 pub(crate) fn decode_image_into_with_native_context<'a>(
@@ -161,22 +167,21 @@ pub(crate) fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kErro
 
 #[cfg(test)]
 mod tests {
-    use super::DecodeSettings;
-    use super::{decode_warnings_for_settings, J2kDecodeWarning};
+    use super::{decode_warnings_for_recovery, J2kDecodeWarning};
 
     #[test]
-    fn decode_warnings_report_lenient_decode_mode() {
+    fn decode_warnings_only_report_an_actual_lenient_recovery() {
+        assert!(decode_warnings_for_recovery(false).is_empty());
         assert_eq!(
-            decode_warnings_for_settings(DecodeSettings::default()),
-            vec![J2kDecodeWarning::LenientDecodeMode]
+            decode_warnings_for_recovery(true),
+            vec![J2kDecodeWarning::LenientMetadataRecovery]
         );
-        assert!(decode_warnings_for_settings(DecodeSettings::strict()).is_empty());
     }
 
     #[test]
     fn decode_warning_owner_is_statically_allocation_free() {
         assert_eq!(core::mem::size_of::<J2kDecodeWarning>(), 0);
-        let warnings = decode_warnings_for_settings(DecodeSettings::default());
+        let warnings = decode_warnings_for_recovery(true);
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             warnings

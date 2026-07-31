@@ -2,6 +2,8 @@
 
 //! Deterministic collection of the ordinary and rustdoc-hidden public API.
 
+mod native_boundary;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -61,6 +63,7 @@ pub(super) fn collect_package_apis(
     for package in packages {
         eprintln!("collecting ordinary and rustdoc-hidden public API for `{package}`");
         let inventory = collect_package_api(package)?;
+        native_boundary::validate(package, &inventory)?;
         if inventories
             .insert((*package).to_string(), inventory)
             .is_some()

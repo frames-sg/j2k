@@ -17,19 +17,11 @@ publishable_output="$(
     --manifest "$release_manifest" \
     --field ordered-crates
 )"
-registry_independent_output="$(
-  python3 "${script_dir}/publish_release.py" manifest \
-    --manifest "$release_manifest" \
-    --field registry-independent
-)"
 publishable_crates=()
 while IFS= read -r crate; do
   [[ -n "$crate" ]] && publishable_crates+=("$crate")
 done <<< "$publishable_output"
 registry_independent_crates=()
-while IFS= read -r crate; do
-  [[ -n "$crate" ]] && registry_independent_crates+=("$crate")
-done <<< "$registry_independent_output"
 
 workspace_version() {
   awk '
@@ -378,6 +370,16 @@ crate="$requested"
 require_publishable_crate "$crate"
 
 if [[ "$dry_run" == "true" ]]; then
+  registry_independent_output="$(
+    python3 "${script_dir}/publish_release.py" manifest \
+      --manifest "$release_manifest" \
+      --field registry-independent
+  )"
+  while IFS= read -r independent_crate; do
+    [[ -n "$independent_crate" ]] \
+      && registry_independent_crates+=("$independent_crate")
+  done <<< "$registry_independent_output"
+
   if ! is_registry_independent_crate "$crate"; then
     echo "${crate}: constructing package without registry verification because its workspace dependencies are staged for publication"
     cargo package -p "$crate" --no-verify

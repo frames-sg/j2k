@@ -2324,7 +2324,8 @@ fn try_deinterleave_reference_rejects_invalid_geometry() {
 
 #[test]
 fn decode_settings_constructors_make_strictness_explicit() {
-    assert!(DecodeSettings::default().lenient_tolerance_enabled());
+    assert!(DecodeSettings::default().strict);
+    assert!(!DecodeSettings::default().lenient_tolerance_enabled());
     assert!(DecodeSettings::lenient().lenient_tolerance_enabled());
     assert!(!DecodeSettings::strict().lenient_tolerance_enabled());
     assert!(DecodeSettings::strict().strict);

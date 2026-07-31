@@ -72,7 +72,7 @@ impl MetalBatchDecoder {
             };
         self.record_submission();
         Ok(SubmittedMetalResidentGroup {
-            metadata: MetalResidentGroupMetadata::from_prepared(group, options),
+            metadata: MetalResidentGroupMetadata::from_prepared(group, options)?,
             submission,
             destination: allocation.destination,
             output: allocation.output,

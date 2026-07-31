@@ -8,12 +8,13 @@ use super::cpu_materialize::{
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_settings, run_retained_chunks, Arc, BatchDecodeOptions, BatchErrorStage,
+    decode_warnings_for_recovery, run_retained_chunks, Arc, BatchDecodeOptions, BatchErrorStage,
     BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
     CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
     IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
     TileBatchOptions, Vec,
 };
+use crate::batch::allocation::try_vec_with_capacity;
 
 #[expect(
     clippy::too_many_lines,
@@ -123,18 +124,19 @@ pub(super) fn decode_cpu_group(
     if successful_slots.is_empty() {
         return Ok(None);
     }
-    let source_indices = successful_slots
-        .iter()
-        .map(|&slot| group.source_indices[slot])
-        .collect();
-    let decoded_rects = successful_slots
-        .iter()
-        .map(|&slot| group.images[slot].plan().output_rect())
-        .collect();
-    let warnings = successful_slots
-        .iter()
-        .map(|_| decode_warnings_for_settings(options.settings))
-        .collect();
+    let successful_count = successful_slots.len();
+    let mut source_indices =
+        try_vec_with_capacity(successful_count, "J2K owned batch source indices")?;
+    let mut decoded_rects =
+        try_vec_with_capacity(successful_count, "J2K owned batch decoded rectangles")?;
+    let mut warnings = try_vec_with_capacity(successful_count, "J2K owned batch warnings")?;
+    for &slot in &successful_slots {
+        source_indices.push(group.source_indices[slot]);
+        decoded_rects.push(group.images[slot].plan().output_rect());
+        warnings.push(decode_warnings_for_recovery(
+            group.images[slot].used_lenient_metadata_recovery(),
+        ));
+    }
     Ok(Some(CpuBatchGroup::new(
         group.info.clone(),
         source_indices,
@@ -177,18 +179,20 @@ fn run_typed_group<T: Copy + Send>(
     convert: fn(f32, u8) -> T,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<(Vec<usize>, usize), BatchInfrastructureError> {
-    let mut jobs = group
+    let mut jobs = try_vec_with_capacity(group.images.len(), "J2K owned batch decode jobs")?;
+    for (slot, (image, output)) in group
         .images
         .iter()
         .zip(output.chunks_exact_mut(samples_per_image))
         .enumerate()
-        .map(|(slot, (image, output))| CpuTypedDecodeJob {
+    {
+        jobs.push(CpuTypedDecodeJob {
             slot,
             image,
             output,
-        })
-        .collect::<Vec<_>>();
-    let mut results = Vec::with_capacity(jobs.len());
+        });
+    }
+    let mut results = try_vec_with_capacity(jobs.len(), "J2K owned batch decode result slots")?;
     results.resize_with(jobs.len(), || None);
     if let Some(flattened) = flattened_payloads {
         run_staged_typed_group(
@@ -228,7 +232,10 @@ fn run_typed_group<T: Copy + Send>(
         )?;
     }
 
-    let mut successful_slots = Vec::with_capacity(group.images.len());
+    let mut successful_slots = try_vec_with_capacity(
+        group.images.len(),
+        "J2K owned batch successful result slots",
+    )?;
     for (slot_index, (source_index, result)) in group
         .source_indices
         .iter()

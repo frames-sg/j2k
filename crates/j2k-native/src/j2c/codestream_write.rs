@@ -78,6 +78,8 @@ pub(crate) struct EncodeParams {
     pub(crate) precinct_exponents: Vec<(u8, u8)>,
 }
 
+crate::move_only::assert_move_only!(EncodeParams);
+
 impl Default for EncodeParams {
     fn default() -> Self {
         Self {

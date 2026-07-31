@@ -4,10 +4,7 @@ use std::ffi::OsString;
 
 use crate::process::{self, CommandContext};
 
-use super::{
-    semver_cargo_args, PackageApiDiff, ReleaseType, SEMVER_BASELINE_VERSION,
-    SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION,
-};
+use super::{semver_cargo_args, PackageApiDiff, ReleaseType, SEMVER_BASELINE_VERSION};
 
 pub(super) fn run_semver_checks(diffs: &[PackageApiDiff]) -> Result<(), String> {
     for diff in diffs.iter().filter(|diff| diff.release_type.is_some()) {
@@ -35,9 +32,5 @@ pub(super) fn semver_check_args(diff: &PackageApiDiff) -> Vec<String> {
 }
 
 pub(super) fn semver_check_release_type(diff: &PackageApiDiff) -> ReleaseType {
-    if diff.candidate_version == SOURCE_INCOMPATIBLE_PATCH_EXCEPTION_VERSION {
-        ReleaseType::Major
-    } else {
-        diff.release_type.expect("published diff release type")
-    }
+    diff.release_type.expect("published diff release type")
 }

@@ -24,8 +24,10 @@ use crate::{runtime::cuda_error, session::CudaSession};
 
 mod api;
 pub use self::api::{encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile};
+mod facade;
 #[cfg(feature = "cuda-runtime")]
 use self::api::{reject_non_cuda_encode_backend, strict_cuda_encode_options};
+pub use self::facade::{CudaEncodeFallbackReason, CudaLosslessEncodeResult, CudaLosslessEncoder};
 #[cfg(feature = "cuda-runtime")]
 mod resident;
 #[cfg(feature = "cuda-runtime")]

@@ -6,7 +6,7 @@ use std::path::Path;
 use super::{REPORT_RELATIVE, TEST_REPORT_RELATIVE};
 
 pub(super) const DUPLICATED_LINE_THRESHOLD: f64 = 2.01;
-pub(super) const TEST_DUPLICATED_LINE_THRESHOLD: f64 = 4.14;
+pub(super) const TEST_DUPLICATED_LINE_THRESHOLD: f64 = 3.99;
 
 pub(super) fn validate_clone_config(path: &Path) -> Result<(), String> {
     validate_config(

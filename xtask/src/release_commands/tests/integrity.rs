@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::{release_integrity, PUBLISHABLE_PACKAGES};
+use super::super::release_integrity;
+use super::super::release_manifest::parse_release_manifest_source;
 use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
 const WORKSPACE_CHILD_ENV: &str = "XTASK_TEST_RELEASE_INTEGRITY_WORKSPACE_CHILD";
@@ -31,6 +32,9 @@ pub(super) fn metadata_program(label: &str, metadata: &serde_json::Value) -> Rec
 }
 
 pub(super) fn complete_publishable_metadata() -> serde_json::Value {
+    let manifest = parse_release_manifest_source(include_str!("../../../../release-crates.json"))
+        .expect("checked-in release manifest");
+    let publishable = manifest.ordered_crates().collect::<Vec<_>>();
     let workspace_version = include_str!("../../../../Cargo.toml")
         .lines()
         .find_map(|line| {
@@ -39,13 +43,27 @@ pub(super) fn complete_publishable_metadata() -> serde_json::Value {
                 .and_then(|rest| rest.split('"').nth(1))
         })
         .expect("workspace package version");
-    let packages = PUBLISHABLE_PACKAGES
+    let packages = publishable
         .iter()
         .map(|name| {
             let targets = if *name == "j2k-cli" {
-                Vec::new()
+                vec![serde_json::json!({"kind": ["bin"]})]
             } else {
                 vec![serde_json::json!({"kind": ["lib"]})]
+            };
+            let dependencies = if matches!(
+                *name,
+                "j2k-core" | "j2k-profile" | "j2k-types" | "j2k-codec-math"
+            ) {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({
+                    "name": "j2k-core",
+                    "kind": null,
+                    "path": "/workspace/j2k-core",
+                    "req": format!("={workspace_version}"),
+                    "source": null,
+                })]
             };
             serde_json::json!({
                 "id": name,
@@ -53,7 +71,8 @@ pub(super) fn complete_publishable_metadata() -> serde_json::Value {
                 "version": workspace_version,
                 "publish": null,
                 "readme": "README.md",
-                "dependencies": [],
+                "manifest_path": format!("/workspace/{name}/Cargo.toml"),
+                "dependencies": dependencies,
                 "targets": targets,
                 "metadata": {
                     "docs": {"rs": {"all-features": true, "targets": []}}
@@ -62,7 +81,7 @@ pub(super) fn complete_publishable_metadata() -> serde_json::Value {
         })
         .collect::<Vec<_>>();
     serde_json::json!({
-        "workspace_members": PUBLISHABLE_PACKAGES,
+        "workspace_members": publishable,
         "packages": packages,
     })
 }
@@ -97,6 +116,9 @@ fn release_integrity_aggregates_invalid_package_metadata_without_publishing() {
                 "id": "core",
                 "name": "j2k-core",
                 "publish": [],
+                "manifest_path": "/workspace/j2k-core/Cargo.toml",
+                "dependencies": [],
+                "targets": [{"kind": ["lib"]}],
             },
             {
                 "id": "internal",
@@ -114,6 +136,7 @@ fn release_integrity_aggregates_invalid_package_metadata_without_publishing() {
                 "publish": null,
                 "version": "9.9.9",
                 "readme": null,
+                "manifest_path": "/workspace/j2k-native/Cargo.toml",
                 "dependencies": [],
                 "targets": [],
                 "metadata": {},
@@ -133,13 +156,13 @@ fn release_integrity_aggregates_invalid_package_metadata_without_publishing() {
         .expect_err("invalid package metadata must fail release integrity");
 
     for expected in [
-        "`j2k-core` is listed as publishable but has `publish = false`",
-        "`outsider` is neither in PUBLISHABLE_PACKAGES nor explicitly `publish = false`",
+        "`j2k-core` is listed in release-crates.json but is not eligible for crates.io publication",
+        "`outsider` is eligible for crates.io publication but missing from release-crates.json",
         "`j2k-native` version 9.9.9 does not match workspace version",
         "`j2k-native` is publishable but has no package README",
         "`j2k-native` is publishable but missing [package.metadata.docs.rs]",
         "`j2k-native` is publishable but has no library target",
-        "`j2k-profile` is listed in PUBLISHABLE_PACKAGES but is not a workspace member",
+        "`j2k-profile` is listed in release-crates.json but is not a workspace member",
     ] {
         assert!(error.contains(expected), "missing `{expected}` in {error}");
     }

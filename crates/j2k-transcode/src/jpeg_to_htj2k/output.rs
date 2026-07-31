@@ -11,6 +11,8 @@ pub struct EncodedTranscode {
     pub report: TranscodeReport,
 }
 
+crate::move_only::assert_move_only!(EncodedTranscode);
+
 /// One JPEG tile input for batch transcode.
 #[derive(Debug, Clone, Copy)]
 pub struct JpegTileBatchInput<'a> {

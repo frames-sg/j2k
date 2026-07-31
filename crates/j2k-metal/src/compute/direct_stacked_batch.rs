@@ -85,7 +85,9 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
         });
     }
 
-    let mut planes = Vec::with_capacity(3);
+    let mut plane_budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect component planes");
+    let mut planes = plane_budget.try_vec(3, "J2K MetalDirect component plane handles")?;
     for component_plan in &plan.component_plans {
         planes.push(encode_prepared_direct_component_plane_in_command_buffer(
             DirectComponentPlaneRequest {
@@ -225,7 +227,11 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
         None
     };
 
-    let mut stacked_planes = Vec::with_capacity(3);
+    let mut plane_budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect stacked component planes",
+    );
+    let mut stacked_planes =
+        plane_budget.try_vec(3, "J2K MetalDirect stacked component plane handles")?;
     for (component_idx, component_plan_refs) in preflight.component_plan_refs.iter().enumerate() {
         let plane =
             encode_stacked_direct_component_plane_batch(StackedDirectComponentPlaneBatchRequest {

@@ -18,50 +18,10 @@ use release_integrity_policy::{
 };
 #[cfg(test)]
 use release_manifest::parse_release_manifest_source;
-use release_manifest::{release_manifest_contract, validate_release_manifest_contract};
-
-const PUBLISHABLE_PACKAGES: &[&str] = &[
-    "j2k-core",
-    "j2k-profile",
-    "j2k-types",
-    "j2k-codec-math",
-    "j2k-cuda-runtime",
-    "j2k-metal-support",
-    "j2k-native",
-    "j2k-jpeg",
-    "j2k-tilecodec",
-    "j2k",
-    "j2k-transcode",
-    "j2k-transcode-cuda",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-transcode-metal",
-    "j2k-jpeg-cuda",
-    "j2k-cuda",
-    "j2k-ml",
-    "j2k-cli",
-];
-
-const REGISTRY_INDEPENDENT_PACKAGES: &[&str] =
-    &["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
-
-const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
-    "j2k-cuda-runtime",
-    "j2k-metal-support",
-    "j2k-native",
-    "j2k-jpeg",
-    "j2k-tilecodec",
-    "j2k",
-    "j2k-transcode",
-    "j2k-transcode-cuda",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-transcode-metal",
-    "j2k-jpeg-cuda",
-    "j2k-cuda",
-    "j2k-ml",
-    "j2k-cli",
-];
+use release_manifest::{
+    crates_io_publishable, release_manifest_contract, validate_release_manifest_contract,
+    ReleaseManifestContract,
+};
 
 const CPU_RELEASE_PACKAGES: &[&str] = &[
     "j2k-core",
@@ -74,67 +34,21 @@ const CPU_RELEASE_PACKAGES: &[&str] = &[
     "j2k-cli",
 ];
 
-pub(super) const STABLE_SEMVER_PACKAGES: &[&str] = &[
-    "j2k",
-    "j2k-core",
-    "j2k-codec-math",
-    "j2k-jpeg",
-    "j2k-tilecodec",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-jpeg-cuda",
-    "j2k-cuda",
-    "j2k-transcode",
-    "j2k-transcode-cuda",
-    "j2k-metal-support",
-    "j2k-transcode-metal",
-    "j2k-native",
-    "j2k-types",
-    "j2k-cuda-runtime",
-    "j2k-profile",
-    "j2k-ml",
-];
+pub(super) fn published_library_packages() -> Result<Vec<String>, String> {
+    Ok(release_manifest_contract()?
+        .library_packages()
+        .map(ToString::to_string)
+        .collect())
+}
 
-pub(super) const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
-    "j2k",
-    "j2k-core",
-    "j2k-codec-math",
-    "j2k-jpeg",
-    "j2k-tilecodec",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-jpeg-cuda",
-    "j2k-cuda",
-    "j2k-transcode",
-    "j2k-transcode-cuda",
-    "j2k-metal-support",
-    "j2k-transcode-metal",
-    "j2k-native",
-    "j2k-types",
-    "j2k-cuda-runtime",
-    "j2k-profile",
-    "j2k-ml",
-];
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "release integrity evaluates the complete package policy before reporting aggregated failures"
-)]
 pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mode = ReleaseIntegrityMode::parse(args)?;
     let metadata = cargo_metadata()?;
     let workspace_version = workspace_version()?;
     let release_manifest = release_manifest_contract()?;
-    let publishable_set = release_manifest
-        .ordered_crates
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let docs_set = str_set(STABLE_DOC_LIBRARY_PACKAGES);
-    let semver_set = str_set(STABLE_SEMVER_PACKAGES);
+    let publishable_set = release_manifest.ordered_crates().collect::<BTreeSet<_>>();
+    let library_set = release_manifest.library_packages().collect::<BTreeSet<_>>();
     let mut errors = Vec::new();
-
-    validate_package_gate_partition(&mut errors);
 
     let workspace_packages = workspace_package_records(&metadata)?;
     validate_release_manifest_contract(&release_manifest, &workspace_packages, &mut errors)?;
@@ -143,25 +57,32 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
     let unpublished_members = workspace_packages
         .iter()
         .copied()
-        .filter(|package| publish_false(package))
-        .map(package_name)
-        .collect::<Result<BTreeSet<_>, _>>()?;
+        .map(|package| {
+            let name = package_name(package)?;
+            Ok((name, crates_io_publishable(package, name)?))
+        })
+        .filter_map(|result| match result {
+            Ok((name, false)) => Some(Ok(name)),
+            Ok((_, true)) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<BTreeSet<_>, String>>()?;
 
     for package in workspace_packages {
         let name = package_name(package)?;
         workspace_names.insert(name.to_string());
         let listed_publishable = publishable_set.contains(name);
-        let explicitly_unpublished = publish_false(package);
+        let crates_io_eligible = crates_io_publishable(package, name)?;
 
-        if listed_publishable && explicitly_unpublished {
+        if listed_publishable && !crates_io_eligible {
             errors.push(format!(
-                "`{name}` is listed as publishable but has `publish = false`"
+                "`{name}` is listed in release-crates.json but is not eligible for crates.io publication"
             ));
             continue;
         }
-        if !listed_publishable && !explicitly_unpublished {
+        if !listed_publishable && crates_io_eligible {
             errors.push(format!(
-                "`{name}` is neither in PUBLISHABLE_PACKAGES nor explicitly `publish = false`"
+                "`{name}` is eligible for crates.io publication but missing from release-crates.json"
             ));
             continue;
         }
@@ -193,14 +114,9 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
             ));
         }
         if has_lib_target(package) {
-            if !docs_set.contains(name) {
+            if !library_set.contains(name) {
                 errors.push(format!(
-                    "`{name}` has a library target but is missing from STABLE_DOC_LIBRARY_PACKAGES"
-                ));
-            }
-            if !semver_set.contains(name) {
-                errors.push(format!(
-                    "`{name}` has a library target but is missing from STABLE_SEMVER_PACKAGES"
+                    "`{name}` has a library target but release-crates.json does not assign a library API contract"
                 ));
             }
         } else if name != "j2k-cli" {
@@ -210,31 +126,17 @@ pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<()
         }
     }
 
-    for package in &release_manifest.ordered_crates {
+    for package in release_manifest.ordered_crates() {
         if !workspace_names.contains(package) {
             errors.push(format!(
-                "`{package}` is listed in PUBLISHABLE_PACKAGES but is not a workspace member"
-            ));
-        }
-    }
-    for package in STABLE_DOC_LIBRARY_PACKAGES {
-        if !publishable_set.contains(package) {
-            errors.push(format!(
-                "`{package}` is in STABLE_DOC_LIBRARY_PACKAGES but is not publishable"
-            ));
-        }
-    }
-    for package in STABLE_SEMVER_PACKAGES {
-        if !publishable_set.contains(package) {
-            errors.push(format!(
-                "`{package}` is in STABLE_SEMVER_PACKAGES but is not publishable"
+                "`{package}` is listed in release-crates.json but is not a workspace member"
             ));
         }
     }
 
     validate_publish_workflow(&mut errors)?;
     validate_publish_script(&mut errors)?;
-    validate_release_docs(&mut errors)?;
+    validate_release_docs(&release_manifest, &mut errors)?;
     validate_release_metadata(&workspace_version, mode, &mut errors)?;
 
     if errors.is_empty() {
@@ -385,13 +287,6 @@ fn package_name(package: &serde_json::Value) -> Result<&str, String> {
         .get("name")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "cargo metadata package missing name".to_string())
-}
-
-fn publish_false(package: &serde_json::Value) -> bool {
-    package
-        .get("publish")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(Vec::is_empty)
 }
 
 fn has_lib_target(package: &serde_json::Value) -> bool {
@@ -548,7 +443,38 @@ fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
             publisher_path.display()
         ));
     }
+
+    let manifest_validator_path = Path::new("scripts/release_manifest.py");
+    let manifest_validator = fs::read_to_string(manifest_validator_path).map_err(|err| {
+        format!(
+            "failed to read {}: {err}",
+            manifest_validator_path.display()
+        )
+    })?;
+    validate_python_release_manifest_source(&manifest_validator, errors);
     Ok(())
+}
+
+fn validate_python_release_manifest_source(script: &str, errors: &mut Vec<String>) {
+    let script_path = Path::new("scripts/release_manifest.py");
+    for required in [
+        "object_pairs_hook=_reject_duplicate_fields",
+        "if type(schema) is not int or schema != 2",
+        "\"workspace_members\"",
+        "return \"crates-io\" in registries",
+        "must be workspace/path sourced",
+        "expected_requirement = f\"={versions_by_package[dependency_name]}\"",
+        "if kind == \"dev\"",
+        "if positions[dependency_name] >= positions[crate]",
+        "registry_independent",
+    ] {
+        if !script.contains(required) {
+            errors.push(format!(
+                "{} does not enforce release-manifest check `{required}`",
+                script_path.display()
+            ));
+        }
+    }
 }
 
 fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) {
@@ -589,17 +515,25 @@ fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) {
     }
 }
 
-fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
+fn validate_release_docs(
+    manifest: &ReleaseManifestContract,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
     let release_doc_path = Path::new("docs/release.md");
     let release_doc = fs::read_to_string(release_doc_path)
         .map_err(|err| format!("failed to read {}: {err}", release_doc_path.display()))?;
-    validate_release_docs_source(&release_doc, errors);
+    let packages = manifest.ordered_crates().collect::<Vec<_>>();
+    validate_release_docs_source(&release_doc, &packages, errors);
     Ok(())
 }
 
-fn validate_release_docs_source(release_doc: &str, errors: &mut Vec<String>) {
+fn validate_release_docs_source(
+    release_doc: &str,
+    publishable_packages: &[&str],
+    errors: &mut Vec<String>,
+) {
     let release_doc_path = Path::new("docs/release.md");
-    for package in PUBLISHABLE_PACKAGES {
+    for package in publishable_packages {
         if !release_doc.contains(&format!("`{package}`")) {
             errors.push(format!(
                 "{} does not document publishable crate `{package}`",
@@ -625,41 +559,6 @@ fn validate_release_docs_source(release_doc: &str, errors: &mut Vec<String>) {
     }
 }
 
-fn str_set(values: &[&'static str]) -> BTreeSet<&'static str> {
-    values.iter().copied().collect()
-}
-
-fn validate_package_gate_partition(errors: &mut Vec<String>) {
-    let publishable = str_set(PUBLISHABLE_PACKAGES);
-    let independent = str_set(REGISTRY_INDEPENDENT_PACKAGES);
-    let staged = str_set(STAGED_DEPENDENCY_PACKAGES);
-    let partitioned = independent.union(&staged).copied().collect::<BTreeSet<_>>();
-
-    if independent.len() != REGISTRY_INDEPENDENT_PACKAGES.len() {
-        errors.push("REGISTRY_INDEPENDENT_PACKAGES contains duplicates".to_string());
-    }
-    if staged.len() != STAGED_DEPENDENCY_PACKAGES.len() {
-        errors.push("STAGED_DEPENDENCY_PACKAGES contains duplicates".to_string());
-    }
-    for package in independent.intersection(&staged) {
-        errors.push(format!(
-            "`{package}` appears in both package-gate partitions"
-        ));
-    }
-    for package in publishable.difference(&partitioned) {
-        errors.push(format!(
-            "publishable package `{package}` is missing from the package-gate partitions"
-        ));
-    }
-    for package in &partitioned {
-        if !publishable.contains(package) {
-            errors.push(format!(
-                "package-gate partition contains non-publishable package `{package}`"
-            ));
-        }
-    }
-}
-
 pub(super) fn release_cpu() -> Result<(), String> {
     let mut args = vec!["test", "--release"];
     for package in CPU_RELEASE_PACKAGES {
@@ -672,15 +571,17 @@ pub(super) fn release_cpu() -> Result<(), String> {
 pub(super) fn package() -> Result<(), String> {
     ensure_clean_worktree()?;
     let metadata = cargo_metadata()?;
-    for package in PUBLISHABLE_PACKAGES {
+    let release_manifest = release_manifest_contract()?;
+    for package in release_manifest.ordered_crates() {
         run_cargo(&["package", "-p", package, "--list"])?;
     }
-    package_gate::run(&metadata)
+    package_gate::run(&metadata, &release_manifest)
 }
 
 pub(super) fn j2k_ml_package_smoke() -> Result<(), String> {
     let metadata = cargo_metadata()?;
-    package_gate::run_j2k_ml_package_smoke(&metadata)
+    let release_manifest = release_manifest_contract()?;
+    package_gate::run_j2k_ml_package_smoke(&metadata, &release_manifest)
 }
 
 #[cfg(test)]

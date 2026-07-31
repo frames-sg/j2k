@@ -37,7 +37,6 @@ fn supported_j2k_env_vars_are_documented() {
     for path in repo_text_files(root) {
         if is_archived_handoff(&path)
             || path.ends_with("docs/env-vars.md")
-            || path.ends_with("engineering/ai-codebase-audit-remediation-plan.md")
             || is_repo_lint_test_source(root, &path)
         {
             continue;

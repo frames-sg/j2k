@@ -88,6 +88,8 @@ pub struct CudaEncodeStageAccelerator {
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     encode_resources: Option<Arc<CudaHtj2kEncodeResources>>,
+    #[cfg(feature = "cuda-runtime")]
+    device_unavailable_observed: bool,
     #[cfg_attr(
         not(feature = "cuda-runtime"),
         expect(dead_code, reason = "profiling state is used only by the CUDA runtime")
@@ -130,6 +132,24 @@ pub struct CudaEncodeStageAccelerator {
 }
 
 impl CudaEncodeStageAccelerator {
+    pub(super) fn begin_encode_attempt(&mut self) {
+        #[cfg(feature = "cuda-runtime")]
+        {
+            self.device_unavailable_observed = false;
+        }
+    }
+
+    pub(super) const fn device_unavailable_observed(&self) -> bool {
+        #[cfg(feature = "cuda-runtime")]
+        {
+            self.device_unavailable_observed
+        }
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            true
+        }
+    }
+
     /// Create an encode-stage accelerator with optional CUDA stage timing collection.
     #[must_use]
     #[doc(hidden)]
@@ -221,6 +241,7 @@ impl CudaEncodeStageAccelerator {
             match CudaContext::system_default() {
                 Ok(context) => self.context = Some(context),
                 Err(error) if !cuda_runtime_required() && error.is_unavailable() => {
+                    self.device_unavailable_observed = true;
                     return Ok(None);
                 }
                 Err(error) => {

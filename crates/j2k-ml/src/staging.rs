@@ -34,9 +34,12 @@ pub(crate) fn materialize<B: Backend>(
     let shape = tensor_shape(source_indices.len(), &info)?;
     let expected = byte_len(source_indices.len(), &info)?;
     if bytes.len() != expected {
-        return Err(BurnDecodeError::StagingSizeMismatch {
-            expected,
-            actual: bytes.len(),
+        return Err(BurnDecodeError::AcceleratorInterop {
+            backend: "codec staging",
+            message: format!(
+                "staged codec output has {} bytes; expected {expected}",
+                bytes.len()
+            ),
         });
     }
     let tensor = match info.sample_type {
@@ -77,17 +80,24 @@ pub(crate) fn materialize<B: Backend>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+    use burn_flex::{Flex, FlexDevice};
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    use burn_ndarray::NdArrayDevice::Cpu as FlexDevice;
     use j2k::{
         BatchAlpha, BatchCodecRoute, BatchColor, BatchLayout, BatchWaveletTransform,
         CompressedPayloadKind, CompressedTransferSyntax,
     };
     use j2k_core::Colorspace;
 
-    use super::byte_len;
+    use super::{byte_len, materialize};
+    use crate::BurnDecodeError;
 
-    #[test]
-    fn staged_byte_length_tracks_native_width_and_layout() {
-        let info = j2k::BatchGroupInfo {
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    type Flex = burn_ndarray::NdArray<f32, i64, i8>;
+
+    fn test_info() -> j2k::BatchGroupInfo {
+        j2k::BatchGroupInfo {
             dimensions: (3, 2),
             sample_type: j2k::NativeSampleType::U16,
             precision: 12,
@@ -100,7 +110,29 @@ mod tests {
             colorspace: Colorspace::SRgb,
             transfer_syntax: CompressedTransferSyntax::HtJpeg2000Lossless,
             payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
+        }
+    }
+
+    #[test]
+    fn staged_byte_length_tracks_native_width_and_layout() {
+        assert_eq!(byte_len(4, &test_info()).unwrap(), 4 * 3 * 2 * 3 * 2);
+    }
+
+    #[test]
+    fn staged_size_mismatch_uses_the_existing_interop_error_contract() {
+        let result = materialize::<Flex>(
+            test_info(),
+            vec![0],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![0; 35],
+            &FlexDevice,
+        );
+
+        let Err(BurnDecodeError::AcceleratorInterop { backend, message }) = result else {
+            panic!("size mismatch must use the patch-compatible interop variant");
         };
-        assert_eq!(byte_len(4, &info).unwrap(), 4 * 3 * 2 * 3 * 2);
+        assert_eq!(backend, "codec staging");
+        assert_eq!(message, "staged codec output has 35 bytes; expected 36");
     }
 }

@@ -134,14 +134,6 @@ pub(super) fn run_program_in_dir_owned_with_program(
     )
 }
 
-pub(super) fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
-    command_output_os(OsString::from(program), args)
-}
-
-pub(super) fn command_output_allow_failure(program: &str, args: &[&str]) -> Result<String, String> {
-    process::command_output_allow_failure(program, args)
-}
-
 pub(super) fn command_output_os(program: OsString, args: &[&str]) -> Result<String, String> {
     process::command_output_os(program, args)
 }

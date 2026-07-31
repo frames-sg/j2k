@@ -1,0 +1,3 @@
+# The probe deliberately allocates in order to measure and self-test failures.
+disallowed-methods = []
+disallowed-macros = []

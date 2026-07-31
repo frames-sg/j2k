@@ -1,5 +1,4 @@
 #![cfg(target_os = "macos")]
-
 use std::sync::Arc;
 
 use j2k::{

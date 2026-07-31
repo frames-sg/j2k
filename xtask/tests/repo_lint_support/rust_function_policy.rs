@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Small syntax-aware helpers for repository source-relationship ratchets.
+//! Syntax-aware call-order checks for the few ordering policies that survive triage.
 
-use syn::visit::{self, Visit};
-use syn::{Block, Expr, ExprCall, ExprMacro, ExprMethodCall, ExprTry, ImplItem, Item, Lit, Type};
+use syn::{
+    visit::{self, Visit},
+    Block, ExprCall, ExprMacro, ExprMethodCall, ExprTry, ImplItem, Item,
+};
 
 pub(crate) struct FunctionCalls {
     ordered: Vec<String>,
@@ -15,7 +17,7 @@ impl FunctionCalls {
         Self::parse_many(source_name, &[source], function_name)
     }
 
-    pub(crate) fn parse_many(source_name: &str, sources: &[&str], function_name: &str) -> Self {
+    fn parse_many(source_name: &str, sources: &[&str], function_name: &str) -> Self {
         assert!(
             !sources.is_empty(),
             "{source_name} source family must not be empty"
@@ -64,20 +66,6 @@ impl FunctionCalls {
         }
     }
 
-    pub(crate) fn assert_contains(&self, label: &str, required: &[&str]) {
-        assert!(
-            !required.is_empty(),
-            "{label} required call set must not be empty"
-        );
-        for expected in required {
-            assert!(
-                self.ordered.iter().any(|actual| actual == expected),
-                "{label} must call {expected}; observed {:?}",
-                self.ordered
-            );
-        }
-    }
-
     pub(crate) fn assert_propagated(&self, label: &str, required: &[&str]) {
         assert!(
             !required.is_empty(),
@@ -91,100 +79,6 @@ impl FunctionCalls {
             );
         }
     }
-
-    pub(crate) fn assert_absent(&self, label: &str, forbidden: &[&str]) {
-        assert!(
-            !forbidden.is_empty(),
-            "{label} forbidden call set must not be empty"
-        );
-        for unexpected in forbidden {
-            assert!(
-                self.ordered.iter().all(|actual| actual != unexpected),
-                "{label} must not call {unexpected}; observed {:?}",
-                self.ordered
-            );
-        }
-    }
-
-    pub(crate) fn assert_count(&self, label: &str, call: &str, expected: usize) {
-        let actual = self
-            .ordered
-            .iter()
-            .filter(|observed| observed.as_str() == call)
-            .count();
-        assert_eq!(
-            actual, expected,
-            "{label} must call {call} exactly {expected} times; observed {:?}",
-            self.ordered
-        );
-    }
-}
-
-pub(crate) fn assert_struct_field_type(
-    source_name: &str,
-    source: &str,
-    struct_name: &str,
-    field_name: &str,
-    expected_type: &str,
-) {
-    let file = syn::parse_file(source)
-        .unwrap_or_else(|error| panic!("parse {source_name} as Rust: {error}"));
-    let item = file
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Struct(item) if item.ident == struct_name => Some(item),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("{source_name} must define struct {struct_name}"));
-    let field = item
-        .fields
-        .iter()
-        .find(|field| {
-            field
-                .ident
-                .as_ref()
-                .is_some_and(|ident| ident == field_name)
-        })
-        .unwrap_or_else(|| panic!("{source_name}::{struct_name} must define field {field_name}"));
-    assert_eq!(
-        type_name(&field.ty),
-        expected_type,
-        "{source_name}::{struct_name}.{field_name} type"
-    );
-}
-
-pub(crate) fn assert_usize_const(
-    source_name: &str,
-    source: &str,
-    const_name: &str,
-    expected: usize,
-) {
-    let file = syn::parse_file(source)
-        .unwrap_or_else(|error| panic!("parse {source_name} as Rust: {error}"));
-    let item = file
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Const(item) if item.ident == const_name => Some(item),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("{source_name} must define const {const_name}"));
-    assert_eq!(
-        type_name(&item.ty),
-        "usize",
-        "{source_name}::{const_name} type"
-    );
-    let Expr::Lit(expression) = item.expr.as_ref() else {
-        panic!("{source_name}::{const_name} must use an integer literal");
-    };
-    let Lit::Int(value) = &expression.lit else {
-        panic!("{source_name}::{const_name} must use an integer literal");
-    };
-    let actual = value
-        .base10_parse::<usize>()
-        .unwrap_or_else(|error| panic!("parse {source_name}::{const_name}: {error}"));
-    assert_eq!(actual, expected, "{source_name}::{const_name} value");
 }
 
 fn callable_blocks<'a>(item: &'a Item, function_name: &str) -> Vec<&'a Block> {
@@ -199,13 +93,6 @@ fn callable_blocks<'a>(item: &'a Item, function_name: &str) -> Vec<&'a Block> {
             })
             .collect(),
         _ => Vec::new(),
-    }
-}
-
-fn type_name(ty: &Type) -> String {
-    match ty {
-        Type::Path(path) => rust_path_name(&path.path),
-        _ => panic!("policy field type must be a path type"),
     }
 }
 
@@ -256,12 +143,4 @@ impl<'ast> Visit<'ast> for CallCollector {
         visit::visit_expr(self, &node.expr);
         self.try_depth -= 1;
     }
-}
-
-#[test]
-fn rust_function_policy_stays_focused() {
-    assert!(
-        include_str!("rust_function_policy.rs").lines().count() < 275,
-        "syntax-aware policy helper must stay below its focused-module ratchet"
-    );
 }

@@ -48,6 +48,7 @@ pub fn j2k::J2kScratchPool::bytes_allocated(&self) -> usize
 pub fn j2k::J2kScratchPool::reset(&mut self)
 pub fn j2k::PreparedClassicPlan::adapter_view(&self) -> &(dyn core::any::Any + core::marker::Send + core::marker::Sync)
 pub fn j2k::PreparedHtj2kPlan::adapter_view(&self) -> &(dyn core::any::Any + core::marker::Send + core::marker::Sync)
+pub fn j2k::PreparedImage::used_lenient_metadata_recovery(&self) -> bool
 pub fn j2k::decode_tile_into_in_context(&[u8], &mut j2k::J2kContext, &mut j2k::J2kScratchPool, j2k::TileDecodeOutput<'_>) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::decode_tile_region_into_in_context(&[u8], &mut j2k::J2kContext, &mut j2k::J2kScratchPool, j2k::TileDecodeOutput<'_>, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::decode_tile_region_scaled_into_in_context(&[u8], &mut j2k::J2kContext, &mut j2k::J2kScratchPool, j2k::TileDecodeOutput<'_>, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
@@ -2203,6 +2204,7 @@ impl j2k_native::J2kRequiredBandRegion
 impl j2k_native::Reversible53CoefficientImage
 impl j2k_native::packet_math::HtSegmentLengthError
 impl<'a> j2k_native::J2kDirectDecodedPlane<'a>
+pub const fn j2k_native::Image<'a>::used_lenient_metadata_recovery(&self) -> bool
 pub const fn j2k_native::J2kDirectCpuScratch::new() -> Self
 pub const fn j2k_native::J2kDirectDecodedComponents<'_>::component_count(&self) -> usize
 pub const fn j2k_native::J2kDirectDecodedComponents<'_>::dimensions(&self) -> (u32, u32)

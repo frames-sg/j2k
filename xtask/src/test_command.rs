@@ -48,6 +48,10 @@ impl RecordingProgram {
     pub(crate) fn log(&self) -> String {
         fs::read_to_string(&self.log).expect("read recording-program log")
     }
+
+    pub(crate) fn was_invoked(&self) -> bool {
+        self.log.exists()
+    }
 }
 
 impl Drop for RecordingProgram {

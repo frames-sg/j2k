@@ -25,7 +25,7 @@ pub(crate) fn resolve_alpha_and_color_space(
     header: &Header<'_>,
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
-) -> Result<(ColorSpace, bool)> {
+) -> Result<(ColorSpace, bool, bool)> {
     let mut num_components = header.component_infos.len();
 
     // Override number of components with what is actually in the palette box
@@ -64,6 +64,7 @@ pub(crate) fn resolve_alpha_and_color_space(
     };
 
     let actual_num_components = header.component_infos.len();
+    let mut used_lenient_metadata_recovery = false;
 
     // Validate the number of channels.
     if boxes.palette.is_none()
@@ -76,6 +77,7 @@ pub(crate) fn resolve_alpha_and_color_space(
             // See OPENJPEG test case orb-blue10-lin-j2k. Assume that we have an
             // alpha channel in this case.
             has_alpha = true;
+            used_lenient_metadata_recovery = true;
         } else {
             // Color space is invalid, attempt to repair.
             if actual_num_components == 1 || (actual_num_components == 2 && has_alpha) {
@@ -97,7 +99,7 @@ pub(crate) fn resolve_alpha_and_color_space(
         }
     }
 
-    Ok((color_space, has_alpha))
+    Ok((color_space, has_alpha, used_lenient_metadata_recovery))
 }
 
 /// The color space of the image.

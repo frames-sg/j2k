@@ -61,10 +61,10 @@ jobs:
       J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
       - name: Fingerprint CUDA cache environment
@@ -74,7 +74,7 @@ jobs:
             nvcc --version
           } | sha256sum | awk '{print "J2K_GPU_CACHE_ENV=cuda-" $1}' \
             >> "${GITHUB_ENV}"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: gpu-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
           key: profiles-gpu-quick-release-v1
@@ -111,10 +111,10 @@ jobs:
       J2K_REQUIRE_METAL_RUNTIME: "1"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
           components: clippy
@@ -125,7 +125,7 @@ jobs:
             xcrun metal --version
           } | shasum -a 256 | awk '{print "J2K_GPU_CACHE_ENV=metal-" $1}' \
             >> "${GITHUB_ENV}"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: gpu-metal-${{ runner.os }}-${{ runner.arch }}-1.96
           key: profiles-gpu-quick-release-v1
@@ -160,10 +160,10 @@ jobs:
       J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
           components: clippy
@@ -174,7 +174,7 @@ jobs:
             nvcc --version
           } | sha256sum | awk '{print "J2K_GPU_CACHE_ENV=cuda-" $1}' \
             >> "${GITHUB_ENV}"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: gpu-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
           key: profiles-gpu-quick-release-v1
@@ -207,7 +207,7 @@ jobs:
         run: cargo xtask bench-build --lane cuda
       - name: Upload CUDA coverage evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: j2k-cuda-full-coverage-${{ github.sha }}
           path: |
@@ -226,10 +226,10 @@ jobs:
       J2K_REQUIRE_METAL_RUNTIME: "1"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
           components: clippy
@@ -240,7 +240,7 @@ jobs:
             xcrun metal --version
           } | shasum -a 256 | awk '{print "J2K_GPU_CACHE_ENV=metal-" $1}' \
             >> "${GITHUB_ENV}"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           shared-key: gpu-metal-${{ runner.os }}-${{ runner.arch }}-1.96
           key: profiles-gpu-quick-release-v1
@@ -269,7 +269,7 @@ jobs:
         run: cargo xtask bench-build --lane metal
       - name: Upload Metal coverage evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: j2k-metal-full-coverage-${{ github.sha }}
           path: |

@@ -23,8 +23,13 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     assert_eq!(tiles.len(), 2);
     assert_eq!(output.tile_capacity(), 2);
@@ -95,9 +100,13 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_textures() {
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles =
-        decode_rgb8_decoder_batch_into_metal_textures_with_session(&decoders, &output, &session)
-            .expect("decode cached decoder batch into fixed reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode cached decoder batch into fixed reusable textures");
 
     assert_eq!(tiles.len(), 2);
     assert_eq!(output.dimensions(), (16, 16));
@@ -216,8 +225,11 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_scaled_batch_into_metal_textures_with_session(
-        &inputs, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode scaled into reusable textures");
 
@@ -256,10 +268,10 @@ fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_scaled_batch_into_resizable_metal_textures_with_session(
-        &inputs,
-        scale,
-        &mut output,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalTextureBatchTarget::Resizable(&mut output),
         &session,
     )
     .expect("decode scaled into resizable reusable textures");
@@ -300,10 +312,10 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_textures() {
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_decoder_scaled_batch_into_resizable_metal_textures_with_session(
-        &decoders,
-        scale,
-        &mut output,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalTextureBatchTarget::Resizable(&mut output),
         &session,
     )
     .expect("decode cached decoder scaled batch into resizable reusable textures");
@@ -344,8 +356,11 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_textures() {
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_decoder_scaled_batch_into_metal_textures_with_session(
-        &decoders, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::Scaled(scale),
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode cached decoder scaled batch into fixed reusable textures");
 
@@ -399,8 +414,11 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode region scaled into reusable textures");
 
@@ -571,8 +589,11 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
     assert_ne!(expected_tiles[0], expected_tiles[2]);
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode table-mixed fast422 region-scaled tiles into reusable textures");
 
@@ -741,8 +762,11 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
     assert_ne!(expected_tiles[0], expected_tiles[2]);
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode table-mixed fast444 region-scaled tiles into reusable textures");
 
@@ -793,8 +817,11 @@ fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_texture
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode region scaled into reusable textures");
 
@@ -851,11 +878,10 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_textures_with_session(
-        &decoders,
-        roi,
-        scale,
-        &mut output,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Resizable(&mut output),
         &session,
     )
     .expect("decode cached decoder batch into resizable reusable textures");
@@ -912,8 +938,11 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_decoder_region_scaled_batch_into_metal_textures_with_session(
-        &decoders, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoders),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode cached decoder region-scaled batch into fixed reusable textures");
 
@@ -987,8 +1016,11 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_texture
         .expect("cpu region-scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode restart-coded region-scaled tiles into reusable textures");
 
@@ -1071,8 +1103,11 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
         .expect("cpu region-scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode restart-coded region-scaled tiles into reusable textures");
 
@@ -1260,8 +1295,11 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
     assert_ne!(expected_tiles[0], expected_tiles[2]);
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
-    let tiles = decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
-        &inputs, roi, scale, &output, &session,
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::RegionScaled { roi, scale },
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
     )
     .expect("decode table-mixed fast420 region-scaled tiles into reusable textures");
 
@@ -1295,8 +1333,13 @@ fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     assert_eq!(tiles.len(), 2);
     assert_eq!(output.tile_capacity(), 2);
@@ -1332,8 +1375,13 @@ fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     assert_eq!(tiles.len(), 2);
     assert_eq!(output.tile_capacity(), 2);
@@ -1374,8 +1422,13 @@ fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
         let inputs = [input, input];
 
         compute::reset_jpeg_private_buffer_allocations_for_test();
-        let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-            .expect("decode into reusable textures");
+        let tiles = decode_rgb8_texture_batch_with_session(
+            Rgb8MetalBatchSource::Bytes(&inputs),
+            Rgb8MetalBatchOp::Full,
+            MetalTextureBatchTarget::Reusable(&output),
+            &session,
+        )
+        .expect("decode into reusable textures");
         assert_eq!(tiles.len(), 2);
         for tile in tiles {
             assert_eq!(
@@ -1408,8 +1461,13 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, (8, 8), &expected_tiles);
@@ -1534,8 +1592,13 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode table-mixed fast444 tiles into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode table-mixed fast444 tiles into reusable textures");
 
     assert_eq!(tiles.len(), 3);
     for (index, tile) in tiles.into_iter().enumerate() {
@@ -1573,8 +1636,13 @@ fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, (16, 8), &expected_tiles);
@@ -1617,8 +1685,13 @@ fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_tex
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -1745,8 +1818,13 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode table-mixed fast422 tiles into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode table-mixed fast422 tiles into reusable textures");
 
     assert_eq!(tiles.len(), 3);
     for (index, tile) in tiles.into_iter().enumerate() {
@@ -1784,8 +1862,13 @@ fn rgb8_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     assert_eq!(tiles.len(), 2);
     for (index, tile) in tiles.into_iter().enumerate() {
@@ -1840,8 +1923,13 @@ fn rgb8_wide_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -1884,8 +1972,13 @@ fn rgb8_multi_row_fast420_texture_batch_decode_fuses_directly_into_reusable_meta
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -1928,8 +2021,13 @@ fn rgb8_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_met
         let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
         compute::reset_jpeg_private_buffer_allocations_for_test();
-        let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-            .expect("decode into reusable textures");
+        let tiles = decode_rgb8_texture_batch_with_session(
+            Rgb8MetalBatchSource::Bytes(&inputs),
+            Rgb8MetalBatchOp::Full,
+            MetalTextureBatchTarget::Reusable(&output),
+            &session,
+        )
+        .expect("decode into reusable textures");
 
         let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
         assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -1974,8 +2072,13 @@ fn rgb8_chunked_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reus
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -2018,8 +2121,13 @@ fn rgb8_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode into reusable textures");
 
     let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
@@ -2098,8 +2206,13 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusab
     assert_ne!(expected_tiles[0], expected_tiles[1]);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode distinct restart tiles into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode distinct restart tiles into reusable textures");
 
     assert_eq!(tiles.len(), 2);
     for (index, tile) in tiles.into_iter().enumerate() {
@@ -2235,8 +2348,13 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
     assert_ne!(expected_tiles[1], expected_tiles[2]);
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
-    let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
-        .expect("decode table-mixed restart tiles into reusable textures");
+    let tiles = decode_rgb8_texture_batch_with_session(
+        Rgb8MetalBatchSource::Bytes(&inputs),
+        Rgb8MetalBatchOp::Full,
+        MetalTextureBatchTarget::Reusable(&output),
+        &session,
+    )
+    .expect("decode table-mixed restart tiles into reusable textures");
 
     assert_eq!(tiles.len(), 3);
     for (index, tile) in tiles.into_iter().enumerate() {

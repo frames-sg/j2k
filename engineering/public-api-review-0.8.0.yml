@@ -1,0 +1,154 @@
+version: 3
+baseline_tag: v0.7.5
+baseline_version: 0.7.5
+candidate_version: "0.8.0"
+break_ledger:
+  - id: strict-decode-default
+    kind: behavior
+    packages:
+      - j2k
+      - j2k-native
+    removed_items: []
+    summary: "Default decode settings and the one-shot view path are strict, and explicit leniency is limited to the documented JP2/JPH metadata recoveries rather than relaxing raw codestream or entropy validation."
+    migration: "Use DecodeSettings::lenient() per job, including through J2kView::parse_with_settings or J2kDecoder::new_with_settings, only for the documented JP2/JPH metadata recoveries; malformed raw codestream or entropy data must now be rejected or repaired."
+  - id: recovery-warning-semantics
+    kind: behavior
+    packages:
+      - j2k
+    removed_items: []
+    summary: "Lenient decoding now emits a warning only when an explicitly permitted metadata recovery was actually used."
+    migration: "Treat an empty warning list as no recovery having occurred; selecting DecodeSettings::lenient() by itself no longer produces a warning."
+  - id: rename-lenient-recovery-warning
+    kind: source
+    packages:
+      - j2k
+    removed_items:
+      - package: j2k
+        item: "pub j2k::J2kDecodeWarning::LenientDecodeMode"
+    summary: "The decode warning variant now describes actual lenient metadata recovery rather than configuration selection."
+    migration: "Replace matches on J2kDecodeWarning::LenientDecodeMode with J2kDecodeWarning::LenientMetadataRecovery and handle the warning only when recovery occurred."
+reviews:
+  j2k:
+    removed_fingerprint: "fnv1a64:66f96e29b35dc974"
+    added_fingerprint: "fnv1a64:87ff4d4ed759e25b"
+    hidden_count: 104
+    hidden_fingerprint: "fnv1a64:4c828a7f3b5307a4"
+    rationale: "Reviewed the warning-variant rename and the additive J2kView and J2kDecoder settings constructors against v0.7.5. The source break is confined to the exact ledger item, while the new constructors make explicit lenient recovery available without mutable shared context policy."
+    hidden_rationale: "Reviewed the complete hidden j2k inventory, including the new prepared-image recovery-use query, adapter-view borrows, retained classic and HT plans, and native pixel-format validation."
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 189
+    hidden_fingerprint: "fnv1a64:b87aa26da547e491"
+    rationale: "Reviewed the ordinary j2k-core inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-core inventory, including bounded GPU job planning, pass buckets, source-preserving entries, and typed limit errors; it is unchanged from v0.7.5."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete j2k-codec-math inventory against v0.7.5; no ordinary or hidden public API item changed."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 550
+    hidden_fingerprint: "fnv1a64:d2bd76732f32e066"
+    rationale: "Reviewed the ordinary j2k-jpeg inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-jpeg inventory, including codec context, batch, decode, and typed error boundaries; it is unchanged from v0.7.5."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the ordinary j2k-tilecodec inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-tilecodec inventory, including codec, scratch, and source-preserving error boundaries; it is unchanged from v0.7.5."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:8c83730972447ab6"
+    rationale: "Reviewed the ordinary j2k-jpeg-metal inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG Metal inventory, including resident-image ownership, session lifetime, and typed Metal failures; it is unchanged from v0.7.5."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 299
+    hidden_fingerprint: "fnv1a64:a496e2469837d3a8"
+    rationale: "Reviewed the ordinary j2k-metal inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden J2K Metal inventory, including submission ownership, exact queue identity, event ordering, session usability, and typed failures; it is unchanged from v0.7.5."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 124
+    hidden_fingerprint: "fnv1a64:0b31ccb3e7974bc4"
+    rationale: "Reviewed the ordinary j2k-jpeg-cuda inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG CUDA inventory, including session-bound execution, allocation accounting, and typed runtime failures; it is unchanged from v0.7.5."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:a160bbc72d2879f1"
+    hidden_count: 181
+    hidden_fingerprint: "fnv1a64:6bb25d5241c4e86a"
+    rationale: "Reviewed all eighteen additive j2k-cuda items. The concrete CudaLosslessEncoder accepts per-job backend preference, exposes a separate strict-CUDA method, returns an opaque result that distinguishes requested and actual execution plus fallback reason, resets cached accelerator state after failure, and requires exclusive mutable access while remaining movable between threads."
+    hidden_rationale: "Reviewed the complete hidden J2K CUDA inventory, including completion uncertainty, session usability, device identity, event ordering, pool diagnostics, and guarded interop; it is unchanged from v0.7.5."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 455
+    hidden_fingerprint: "fnv1a64:fdd61f6fdda4a9ab"
+    rationale: "Reviewed the ordinary j2k-transcode inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-transcode inventory, including transforms, packetization, resident handoff, accounting, and source-preserving errors; it is unchanged from v0.7.5."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 17
+    hidden_fingerprint: "fnv1a64:3e3e69d35c4a62a5"
+    rationale: "Reviewed the ordinary j2k-transcode-cuda inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA transcode inventory, including accelerator routing, resident handoff, allocation caps, and source-preserving runtime errors; it is unchanged from v0.7.5."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:671e50d4d121b419"
+    rationale: "Reviewed the ordinary j2k-metal-support inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden Metal support inventory, including checked allocation, command, completion, buffer ownership, and audited unsafe boundaries; it is unchanged from v0.7.5."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:5bf8a22a33753a2d"
+    rationale: "Reviewed the ordinary j2k-transcode-metal inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden Metal transcode inventory, including transforms, buffers, code blocks, resident handoff, fallback, and typed source chains; it is unchanged from v0.7.5."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 662
+    hidden_fingerprint: "fnv1a64:c6883b9e9225ad87"
+    rationale: "Reviewed the ordinary j2k-native inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden native inventory, including the new image recovery-use query, retained plans, payload descriptors, staged entropy and IDWT execution, decoded-plane borrows, and allocation metrics."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 54
+    hidden_fingerprint: "fnv1a64:4b30413a7bfffeb5"
+    rationale: "Reviewed the ordinary j2k-types inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-types inventory, including borrowed codestream payload descriptors and resident-job access; it is unchanged from v0.7.5."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 1089
+    hidden_fingerprint: "fnv1a64:d33ffdcb13c73dd5"
+    rationale: "Reviewed the ordinary j2k-cuda-runtime inventory against v0.7.5; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA runtime inventory, including queued owners, group status, native store ABIs, guarded writes, stream ordering, diagnostics, and drop-safe completion; it is unchanged from v0.7.5."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the ordinary j2k-profile inventory against v0.7.5; its documented surface remains the crate module root only."
+    hidden_rationale: "Reviewed the complete hidden profiling inventory, including bounded capture, move-only ownership, fallible controls, and callable profiling surfaces; it is unchanged from v0.7.5."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:fa307c9021bb7e35"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed all eight additive j2k-ml items. CudaBurnDecoder, MetalBurnDecoder, and their submitted-batch types remain the concrete structs with unchanged inherent method paths and unchanged exhaustive error contract. The new CudaUploadBurnDecoder, MetalUploadBurnDecoder, SubmittedCudaUploadBurnBatch, and SubmittedMetalUploadBurnBatch names are aliases at root and module scope. CUDA codec failures retain the published nested typed batch-error chain; staged transfer diagnostics use the published AcceleratorInterop variant. The staged adapters make no direct-destination or zero-copy claim."

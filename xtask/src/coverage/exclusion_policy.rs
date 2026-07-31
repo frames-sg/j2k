@@ -64,7 +64,7 @@ const GENERATED_DWT_EVIDENCE: &[EvidenceTest] = &[
 const VENDORED_BLOCK_EVIDENCE: &[EvidenceTest] = &[
     primary_evidence(
         "xtask/tests/repo_lint_support/dependency_policy.rs",
-        "patched_block_dependency_has_pinned_provenance_and_documented_abi_delta",
+        "all_workspace_path_patches_have_pinned_provenance_and_local_digests",
     ),
     supplemental_evidence(
         "crates/j2k-metal-support/src/tests.rs",

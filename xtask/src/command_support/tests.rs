@@ -8,9 +8,8 @@ use std::{
 };
 
 use super::{
-    command_output, command_output_allow_failure, command_output_os_detailed_with_env,
-    passed_test_count, run_cargo_test_with_pass_floor, run_program,
-    run_program_in_dir_owned_with_program, rust_sources, use_test_cargo_program,
+    command_output_os_detailed_with_env, passed_test_count, run_cargo_test_with_pass_floor,
+    run_program, run_program_in_dir_owned_with_program, rust_sources, use_test_cargo_program,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -143,23 +142,7 @@ exit "${EXIT_CODE-0}"
 }
 
 #[test]
-fn output_helpers_and_test_summary_parser_keep_distinct_failure_contracts() {
-    let root = temp_dir("output-helpers");
-    let program = root.join("output.sh");
-    executable(
-        &program,
-        r#"#!/bin/sh
-printf 'stdout text\n'
-printf 'stderr text\n' >&2
-exit "${EXIT_CODE-0}"
-"#,
-    );
-    let program = program.to_str().expect("UTF-8 program");
-    assert_eq!(command_output(program, &[]), Ok("stdout text".to_string()));
-    assert_eq!(
-        command_output_allow_failure(program, &[]),
-        Ok("stdout text\nstderr text".to_string())
-    );
+fn test_summary_parser_ignores_failed_and_malformed_summaries() {
     assert_eq!(
         passed_test_count(
             "noise\ntest result: ok. 2 passed; 0 failed\ntest result: FAILED. 9 passed\ntest result: ok. nope passed\ntest result: ok. 3 passed"
