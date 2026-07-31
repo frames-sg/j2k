@@ -13,8 +13,7 @@ use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransfo
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
 use super::progression::{progression_iterator, ProgressionData};
-use super::rect::IntRect;
-use super::roi::RoiPlan;
+use super::roi::{tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
@@ -173,7 +172,7 @@ fn decode<'a>(
         );
 
         if let Some(output_region) = tile_ctx.output_region {
-            if !tile_intersects_output_region(tile, header, output_region) {
+            if !tile_intersects_output_region(tile.rect, &header.size_data, output_region) {
                 ltrace!("tile {} outside output region, skipped", tile.idx);
                 continue;
             }
@@ -213,58 +212,6 @@ fn decode<'a>(
     storage.release_all_allocations();
 
     Ok(())
-}
-
-/// Whether `tile` can contribute any sample to `output_region`.
-///
-/// The region is mapped onto the reference grid exactly as
-/// [`RoiPlan::build`] does (image-area offset in shrunk-grid units); the
-/// tile rect is mapped into the same shrunk grid with outward rounding, so
-/// any rounding disagreement keeps a boundary tile decoded rather than
-/// skipping it. Tiles that fail this test have an empty intersection with
-/// the region at every resolution level and contribute nothing to the
-/// stored output, so the caller can skip their decomposition build,
-/// segment parse, and code-block work entirely.
-fn tile_intersects_output_region(
-    tile: &Tile<'_>,
-    header: &Header<'_>,
-    output_region: OutputRegion,
-) -> bool {
-    let size_data = &header.size_data;
-    // The output region lives in final image coordinates: the reference
-    // grid shrunk by both the component subsampling factor and the
-    // reduced-resolution factor. Saturating keeps crafted headers safe;
-    // the max(1) guard keeps the division defined (a zero factor is
-    // rejected by header validation before decode).
-    let x_shrink = size_data
-        .x_shrink_factor
-        .saturating_mul(size_data.x_resolution_shrink_factor)
-        .max(1);
-    let y_shrink = size_data
-        .y_shrink_factor
-        .saturating_mul(size_data.y_resolution_shrink_factor)
-        .max(1);
-    let x_offset = size_data.image_area_x_offset.div_ceil(x_shrink);
-    let y_offset = size_data.image_area_y_offset.div_ceil(y_shrink);
-    let region = IntRect::from_ltrb(
-        output_region.x.saturating_add(x_offset),
-        output_region.y.saturating_add(y_offset),
-        output_region
-            .x
-            .saturating_add(output_region.width)
-            .saturating_add(x_offset),
-        output_region
-            .y
-            .saturating_add(output_region.height)
-            .saturating_add(y_offset),
-    );
-    let tile_rect = IntRect::from_ltrb(
-        tile.rect.x0 / x_shrink,
-        tile.rect.y0 / y_shrink,
-        tile.rect.x1.div_ceil(x_shrink),
-        tile.rect.y1.div_ceil(y_shrink),
-    );
-    tile_rect.intersects(region)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
