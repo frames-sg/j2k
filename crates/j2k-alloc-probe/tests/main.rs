@@ -23,8 +23,8 @@ const KIB: u64 = 1024;
 static PROBE_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 fn main() {
-    probe_pool().broadcast(|_| {});
-
+    // Keep the Rayon pool uninitialized while exact allocator self-tests run.
+    // The process-wide meter intentionally records unrelated worker activity.
     let cases: &[(&str, fn())] = &[
         (
             "harness_counts_allocation_and_deallocation",
@@ -89,7 +89,9 @@ fn main() {
 }
 
 fn harness_counts_allocation_and_deallocation() {
-    let (allocation, retained) = measure(|| black_box(Box::new([0_u8; 4096])));
+    // Allocate the backing storage directly. In debug builds, constructing a
+    // large array inside `Box::new` can use an additional temporary allocation.
+    let (allocation, retained) = measure(|| black_box(Box::<[u8]>::new_uninit_slice(4096)));
     assert_eq!(retained.allocations, 1);
     assert_eq!(retained.reallocations, 0);
     assert_eq!(retained.deallocations, 0);
@@ -97,7 +99,7 @@ fn harness_counts_allocation_and_deallocation() {
     drop(allocation);
 
     let ((), released) = measure(|| {
-        drop(black_box(Box::new([0_u8; 4096])));
+        drop(black_box(Box::<[u8]>::new_uninit_slice(4096)));
     });
     assert_eq!(released.allocations, 1);
     assert_eq!(released.reallocations, 0);
