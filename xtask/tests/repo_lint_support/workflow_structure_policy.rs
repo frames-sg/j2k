@@ -169,6 +169,37 @@ fn stable_api_job_fetches_release_tags() {
 }
 
 #[test]
+fn rust_quality_job_fetches_release_tags() {
+    let ci = workflow("ci.yml");
+    let root = value_mapping(&ci.document, &ci.file_name);
+    let rust_quality = jobs(root, &ci.file_name)
+        .get(Value::String("rust-quality".to_owned()))
+        .and_then(Value::as_mapping)
+        .expect("rust-quality job");
+    let steps = mapping_get(rust_quality, "steps")
+        .and_then(Value::as_sequence)
+        .expect("rust-quality steps");
+    let checkout = steps
+        .iter()
+        .filter_map(Value::as_mapping)
+        .find(|step| {
+            mapping_get(step, "uses")
+                .and_then(Value::as_str)
+                .is_some_and(|reference| reference.starts_with("actions/checkout@"))
+        })
+        .expect("rust-quality checkout step");
+    let fetches_full_history = mapping_get(checkout, "with")
+        .and_then(Value::as_mapping)
+        .and_then(|with| mapping_get(with, "fetch-depth"))
+        .is_some_and(is_numeric_zero);
+
+    assert!(
+        fetches_full_history,
+        "rust-quality checkout must fetch release tags used by repo-lint"
+    );
+}
+
+#[test]
 fn manual_publish_dispatch_is_dry_run_only() {
     let publish = workflow("publish.yml");
     let root = value_mapping(&publish.document, &publish.file_name);
