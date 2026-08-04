@@ -229,9 +229,39 @@ impl<'a> Image<'a> {
     /// Returns an error when the input signature, container, or codestream is invalid.
     pub fn new(data: &'a [u8], settings: &DecodeSettings) -> Result<Self> {
         if data.starts_with(JP2_MAGIC) {
-            jp2::parse(data, *settings)
+            jp2::parse(data, *settings, None)
         } else if data.starts_with(CODESTREAM_MAGIC) {
-            j2c::parse(data, settings)
+            j2c::parse(data, settings, None)
+        } else {
+            err!(FormatError::InvalidSignature)
+        }
+    }
+
+    /// Parse an image at an exact JPEG 2000 resolution reduction level.
+    ///
+    /// This low-level adapter exists for the `j2k` facade. A reduction of zero
+    /// preserves full resolution; each additional level halves both axes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a target-resolution hint is also configured, the
+    /// reduction is not representable, the codestream has too few resolution
+    /// levels, or the input is invalid.
+    #[doc(hidden)]
+    pub fn new_with_reduction(
+        data: &'a [u8],
+        settings: &DecodeSettings,
+        reduction_levels: u8,
+    ) -> Result<Self> {
+        if settings.target_resolution.is_some() {
+            return err!(DecodingError::UnsupportedFeature(
+                "exact reduction cannot be combined with a target-resolution hint",
+            ));
+        }
+        if data.starts_with(JP2_MAGIC) {
+            jp2::parse(data, *settings, Some(reduction_levels))
+        } else if data.starts_with(CODESTREAM_MAGIC) {
+            j2c::parse(data, settings, Some(reduction_levels))
         } else {
             err!(FormatError::InvalidSignature)
         }
@@ -256,9 +286,9 @@ impl<'a> Image<'a> {
             return Self::new(data, settings);
         }
         if data.starts_with(JP2_MAGIC) {
-            jp2::parse_with_retained_baseline(data, *settings, retained_baseline_bytes)
+            jp2::parse_with_retained_baseline(data, *settings, retained_baseline_bytes, None)
         } else if data.starts_with(CODESTREAM_MAGIC) {
-            j2c::parse_with_retained_baseline(data, settings, retained_baseline_bytes)
+            j2c::parse_with_retained_baseline(data, settings, retained_baseline_bytes, None)
         } else {
             err!(FormatError::InvalidSignature)
         }

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    backend::{image as backend_image, inspect_info, inspect_info_from_image, Image},
+    backend::{
+        image as backend_image, image_with_reduction as backend_image_with_reduction, inspect_info,
+        inspect_info_from_image, Image,
+    },
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
         decode_warnings_for_image, validate_buffer, validate_region, J2kDecodeOutcome,
@@ -16,6 +19,7 @@ use j2k_core::{
     PixelFormat, Rect,
 };
 
+mod deep_scale;
 mod rows;
 mod traits;
 

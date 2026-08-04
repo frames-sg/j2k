@@ -130,7 +130,7 @@ fn direct_packet_owners_match_single_tile_marker_serialization() {
 
     let mut reader = BitReader::new(&codestream);
     assert_eq!(reader.read_marker().expect("SOC marker"), markers::SOC);
-    let header = read_header(&mut reader, &DecodeSettings::default(), 0)
+    let header = read_header(&mut reader, &DecodeSettings::default(), 0, None)
         .expect("serialized single-tile header");
     assert_eq!(header.plm_packet_lengths, packetized.packet_lengths);
     assert_eq!(header.ppm_packets.len(), packetized.packet_headers.len());
