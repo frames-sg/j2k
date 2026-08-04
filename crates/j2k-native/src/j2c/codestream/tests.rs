@@ -162,8 +162,12 @@ fn incomplete_packet_length_varint_is_rejected() {
 
 #[test]
 fn public_marker_function_signatures_stay_stable() {
-    let _: for<'a> fn(&mut BitReader<'a>, &DecodeSettings, usize) -> Result<Header<'a>> =
-        read_header;
+    let _: for<'a> fn(
+        &mut BitReader<'a>,
+        &DecodeSettings,
+        usize,
+        Option<u8>,
+    ) -> Result<Header<'a>> = read_header;
     let _: fn(&mut BitReader<'_>) -> Result<CodingStyleDefault> = cod_marker;
     let _: fn(&mut BitReader<'_>, u16) -> Result<(u16, CodingStyleComponent)> = coc_marker;
     let _: fn(&mut BitReader<'_>) -> Result<QuantizationInfo> = qcd_marker;

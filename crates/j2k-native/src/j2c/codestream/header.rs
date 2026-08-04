@@ -35,6 +35,7 @@ pub(crate) fn read_header<'a>(
     reader: &mut BitReader<'a>,
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
 ) -> Result<Header<'a>> {
     if reader.read_marker()? != markers::SIZ {
         bail!(MarkerError::Expected("SIZ"));
@@ -214,27 +215,38 @@ pub(crate) fn read_header<'a>(
         .map(super::model::ComponentInfo::num_resolution_levels)
         .min()
         .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let skipped_resolution_levels =
-        if let Some((target_width, target_height)) = settings.target_resolution {
-            if target_width == 0 || target_height == 0 {
-                bail!(ValidationError::InvalidDimensions);
-            }
-            let width_log =
-                skipped_levels_to_reach_target(size_data.checked_image_width()?, target_width);
-            let height_log =
-                skipped_levels_to_reach_target(size_data.checked_image_height()?, target_height);
-
-            width_log.min(height_log)
-        } else {
-            0
+    let max_skipped_resolution_levels = min_num_resolution_levels
+        .checked_sub(1)
+        .ok_or(ValidationError::InvalidComponentMetadata)?;
+    let skipped_resolution_levels = if let Some(requested) = exact_reduction_levels {
+        if requested > max_skipped_resolution_levels {
+            bail!(DecodingError::UnsupportedFeature(
+                "requested reduction exceeds the codestream resolution ladder",
+            ));
         }
-        .min(min_num_resolution_levels - 1);
+        requested
+    } else if let Some((target_width, target_height)) = settings.target_resolution {
+        if target_width == 0 || target_height == 0 {
+            bail!(ValidationError::InvalidDimensions);
+        }
+        let width_log =
+            skipped_levels_to_reach_target(size_data.checked_image_width()?, target_width);
+        let height_log =
+            skipped_levels_to_reach_target(size_data.checked_image_height()?, target_height);
+
+        width_log.min(height_log).min(max_skipped_resolution_levels)
+    } else {
+        0
+    };
 
     // If the user defined a maximum resolution level that is lower than the
     // maximum available one, the final image needs to be shrunk further.
-    let resolution_shrink_factor = 1u32
-        .checked_shl(u32::from(skipped_resolution_levels))
-        .ok_or(ValidationError::InvalidDimensions)?;
+    let Some(resolution_shrink_factor) = 1u32.checked_shl(u32::from(skipped_resolution_levels))
+    else {
+        bail!(DecodingError::UnsupportedFeature(
+            "requested reduction exceeds supported image geometry",
+        ));
+    };
     size_data.x_resolution_shrink_factor = size_data
         .x_resolution_shrink_factor
         .checked_mul(resolution_shrink_factor)
