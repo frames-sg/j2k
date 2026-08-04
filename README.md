@@ -117,6 +117,13 @@ Runnable repository examples:
 - `cargo run -p j2k-tilecodec --example decompress`
   ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
 
+JPEG 2000 callers that need reduced regions below the shared
+`Downscale::Eighth` ceiling can use
+`J2kDecoder::decode_region_scaled_pow2_into`. The level is an exact count of
+power-of-two halvings; requests beyond any component's codestream resolution
+ladder return an unsupported error instead of silently decoding at another
+scale.
+
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
 and benchmark evidence. Single-frame HTJ2K host-output encode stays CPU by

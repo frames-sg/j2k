@@ -2270,6 +2270,7 @@ pub fn j2k_native::Image<'a>::decode_native_with_retained_capacity(&self, usize)
 pub fn j2k_native::Image<'a>::decode_region_components_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients(&self) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
+pub fn j2k_native::Image<'a>::new_with_reduction(&'a [u8], &j2k_native::DecodeSettings, u8) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::new_with_retained_baseline(&'a [u8], &j2k_native::DecodeSettings, usize) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool

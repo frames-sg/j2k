@@ -26,6 +26,35 @@ fn gray_fixture() -> (Vec<u8>, Vec<u8>) {
     (samples, encoded)
 }
 
+fn insert_main_header_coc(
+    mut codestream: Vec<u8>,
+    component: u8,
+    decomposition_levels: u8,
+) -> Vec<u8> {
+    let cod_offset = codestream
+        .windows(2)
+        .position(|marker| marker == [0xff, 0x52])
+        .expect("COD marker");
+    let cod_length = u16::from_be_bytes(
+        codestream[cod_offset + 2..cod_offset + 4]
+            .try_into()
+            .expect("COD length"),
+    ) as usize;
+    let cod_end = cod_offset + 2 + cod_length;
+    let coding_style = codestream[cod_offset + 4];
+    let mut component_parameters = codestream[cod_offset + 9..cod_end].to_vec();
+    component_parameters[0] = decomposition_levels;
+
+    let coc_segment_length = u16::try_from(4 + component_parameters.len()).expect("COC length");
+    let mut coc = vec![0xff, 0x53];
+    coc.extend_from_slice(&coc_segment_length.to_be_bytes());
+    coc.push(component);
+    coc.push(coding_style);
+    coc.extend_from_slice(&component_parameters);
+    codestream.splice(cod_end..cod_end, coc);
+    codestream
+}
+
 fn expected_crop(samples: &[u8], roi: (u32, u32, u32, u32)) -> Vec<u8> {
     let (x, y, width, height) = roi;
     let mut cropped = Vec::new();
@@ -171,4 +200,55 @@ fn retained_baseline_zero_and_nonzero_paths_preserve_parse_metadata() {
         ordinary.color_space().num_channels(),
         retained.color_space().num_channels()
     );
+}
+
+#[test]
+fn exact_reduction_rejects_a_shorter_component_coc_ladder() {
+    let pixels = vec![17_u8; 64 * 64 * 3];
+    let encoded = encode(
+        &pixels,
+        64,
+        64,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 4,
+            reversible: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("RGB fixture encodes");
+    let encoded = insert_main_header_coc(encoded, 1, 2);
+
+    let Err(error) = Image::new_with_reduction(&encoded, &DecodeSettings::strict(), 3) else {
+        panic!("component COC must cap exact reduction");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::Decoding(DecodingError::UnsupportedFeature(
+            "requested reduction exceeds the codestream resolution ladder"
+        ))
+    ));
+}
+
+#[test]
+fn exact_reduction_rejects_a_target_resolution_hint() {
+    let (_, encoded) = gray_fixture();
+    let settings = DecodeSettings {
+        target_resolution: Some((1, 1)),
+        ..DecodeSettings::strict()
+    };
+
+    let Err(error) = Image::new_with_reduction(&encoded, &settings, 0) else {
+        panic!("two resolution policies must not be combined");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::Decoding(DecodingError::UnsupportedFeature(
+            "exact reduction cannot be combined with a target-resolution hint"
+        ))
+    ));
 }

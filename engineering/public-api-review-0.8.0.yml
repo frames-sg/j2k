@@ -30,10 +30,10 @@ break_ledger:
 reviews:
   j2k:
     removed_fingerprint: "fnv1a64:66f96e29b35dc974"
-    added_fingerprint: "fnv1a64:87ff4d4ed759e25b"
+    added_fingerprint: "fnv1a64:af14d7bd483fd32d"
     hidden_count: 104
     hidden_fingerprint: "fnv1a64:4c828a7f3b5307a4"
-    rationale: "Reviewed the warning-variant rename and the additive J2kView and J2kDecoder settings constructors against v0.7.5. The source break is confined to the exact ledger item, while the new constructors make explicit lenient recovery available without mutable shared context policy."
+    rationale: "Reviewed the warning-variant rename and the additive settings constructors and exact power-of-two region reduction method against v0.7.5. The source break is confined to the exact ledger item; the constructors expose explicit lenient recovery, and the reduction method exposes deeper codestream resolution levels without changing the existing scale APIs."
     hidden_rationale: "Reviewed the complete hidden j2k inventory, including the new prepared-image recovery-use query, adapter-view borrows, retained classic and HT plans, and native pixel-format validation."
   j2k-core:
     removed_fingerprint: "none"
@@ -121,10 +121,10 @@ reviews:
   j2k-native:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 662
-    hidden_fingerprint: "fnv1a64:c6883b9e9225ad87"
+    hidden_count: 663
+    hidden_fingerprint: "fnv1a64:722e2b73b10d9585"
     rationale: "Reviewed the ordinary j2k-native inventory against v0.7.5; no public API item was added, removed, or changed."
-    hidden_rationale: "Reviewed the complete hidden native inventory, including the new image recovery-use query, retained plans, payload descriptors, staged entropy and IDWT execution, decoded-plane borrows, and allocation metrics."
+    hidden_rationale: "Reviewed the complete hidden native inventory, including the exact-reduction facade bridge, image recovery-use query, retained plans, payload descriptors, staged entropy and IDWT execution, decoded-plane borrows, and allocation metrics."
   j2k-types:
     removed_fingerprint: "none"
     added_fingerprint: "none"

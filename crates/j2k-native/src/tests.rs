@@ -984,6 +984,7 @@ fn retained_container_metadata_rejects_header_parse_before_decode_growth() {
         &bytes,
         &DecodeSettings::default(),
         DEFAULT_MAX_DECODE_BYTES,
+        None,
     ) else {
         panic!("a full retained-container baseline must leave no room for the header");
     };

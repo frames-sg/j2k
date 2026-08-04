@@ -14,6 +14,15 @@ pub(crate) fn image(
         .map_err(J2kError::from_native_decode_error)
 }
 
+pub(crate) fn image_with_reduction(
+    bytes: &[u8],
+    settings: DecodeSettings,
+    reduction_levels: u8,
+) -> Result<Image<'_>, J2kError> {
+    Image::new_with_reduction(bytes, &settings.to_native(None), reduction_levels)
+        .map_err(J2kError::from_native_decode_error)
+}
+
 pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {
     let image = image(bytes, DecodeSettings::strict(), None)?;
     Ok(inspect_info_from_image(&image))
