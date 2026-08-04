@@ -284,10 +284,10 @@ pub(super) fn idwt_input_windows_from_slices(
     hh: &DirectBandSlice,
 ) -> PreparedIdwtInputWindows {
     PreparedIdwtInputWindows {
-        ll: BandRequiredRegion::full(ll.window.width(), ll.window.height()),
-        hl: BandRequiredRegion::full(hl.window.width(), hl.window.height()),
-        lh: BandRequiredRegion::full(lh.window.width(), lh.window.height()),
-        hh: BandRequiredRegion::full(hh.window.width(), hh.window.height()),
+        ll: ll.window,
+        hl: hl.window,
+        lh: lh.window,
+        hh: hh.window,
     }
 }
 

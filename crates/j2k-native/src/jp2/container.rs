@@ -114,14 +114,19 @@ pub fn extract_jp2_codestream_payload(data: &[u8]) -> Result<(Jp2FileKind, usize
     bail!(FormatError::MissingCodestream);
 }
 
-pub(crate) fn parse(data: &[u8], settings: DecodeSettings) -> Result<Image<'_>> {
-    parse_with_retained_baseline(data, settings, 0)
+pub(crate) fn parse(
+    data: &[u8],
+    settings: DecodeSettings,
+    exact_reduction_levels: Option<u8>,
+) -> Result<Image<'_>> {
+    parse_with_retained_baseline(data, settings, 0, exact_reduction_levels)
 }
 
 pub(crate) fn parse_with_retained_baseline(
     data: &[u8],
     mut settings: DecodeSettings,
     retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
 ) -> Result<Image<'_>> {
     let container = parse_jp2_container_with_strict_and_retained_baseline(
         data,
@@ -144,6 +149,7 @@ pub(crate) fn parse_with_retained_baseline(
         container.codestream,
         &codestream_settings,
         retained_box_bytes,
+        exact_reduction_levels,
     )?;
     validate_codestream_file_kind(container.file_kind, &parsed_codestream.header)?;
     validate_image_header_matches_codestream(&image_boxes, &parsed_codestream.header)?;

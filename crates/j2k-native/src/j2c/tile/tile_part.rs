@@ -228,6 +228,16 @@ pub(super) fn parse_tile_part<'a>(
         }
     }
 
+    if tile
+        .component_infos
+        .iter()
+        .any(|component| component.num_resolution_levels() <= main_header.skipped_resolution_levels)
+    {
+        bail!(DecodingError::UnsupportedFeature(
+            "tile coding style has fewer levels than the requested reduction",
+        ));
+    }
+
     let Some(remaining_bytes) = data_len.checked_sub(reader.offset() - start) else {
         return if main_header.strict {
             err!(TileError::Invalid)

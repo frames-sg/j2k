@@ -67,19 +67,28 @@ pub(crate) struct ComponentData {
 
 crate::move_only::assert_move_only!(ComponentData);
 
-pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
-    parse_with_retained_baseline(stream, settings, 0)
+pub(crate) fn parse<'a>(
+    stream: &'a [u8],
+    settings: &DecodeSettings,
+    exact_reduction_levels: Option<u8>,
+) -> Result<Image<'a>> {
+    parse_with_retained_baseline(stream, settings, 0, exact_reduction_levels)
 }
 
 pub(crate) fn parse_with_retained_baseline<'a>(
     stream: &'a [u8],
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
 ) -> Result<Image<'a>> {
     let mut strict_settings = *settings;
     strict_settings.strict = true;
-    let parsed_codestream =
-        parse_raw_with_retained_baseline(stream, &strict_settings, retained_baseline_bytes)?;
+    let parsed_codestream = parse_raw_with_retained_baseline(
+        stream,
+        &strict_settings,
+        retained_baseline_bytes,
+        exact_reduction_levels,
+    )?;
     let header = &parsed_codestream.header;
     // Raw codestreams do not carry JP2 channel definitions. Keep the
     // conventional grayscale/RGB assumptions for 1- and 3-component images,
@@ -133,13 +142,14 @@ pub(crate) fn parse_raw<'a>(
     stream: &'a [u8],
     settings: &DecodeSettings,
 ) -> Result<ParsedCodestream<'a>> {
-    parse_raw_with_retained_baseline(stream, settings, 0)
+    parse_raw_with_retained_baseline(stream, settings, 0, None)
 }
 
 pub(crate) fn parse_raw_with_retained_baseline<'a>(
     stream: &'a [u8],
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
 ) -> Result<ParsedCodestream<'a>> {
     let mut reader = BitReader::new(stream);
 
@@ -148,7 +158,12 @@ pub(crate) fn parse_raw_with_retained_baseline<'a>(
         bail!(MarkerError::Expected("SOC"));
     }
 
-    let header = codestream::read_header(&mut reader, settings, retained_baseline_bytes)?;
+    let header = codestream::read_header(
+        &mut reader,
+        settings,
+        retained_baseline_bytes,
+        exact_reduction_levels,
+    )?;
     let code_stream_data = reader.tail().ok_or(FormatError::MissingCodestream)?;
 
     Ok(ParsedCodestream {

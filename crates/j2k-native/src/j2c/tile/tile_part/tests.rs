@@ -107,5 +107,6 @@ pub(super) fn tile_part_bytes(
     bytes
 }
 
+mod reduction;
 mod sot;
 mod transaction;

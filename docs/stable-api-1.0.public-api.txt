@@ -235,6 +235,7 @@ pub fn j2k::J2kDecodedNativeComponents::color_space(&self) -> &j2k::J2kDecodedCo
 pub fn j2k::J2kDecodedNativeComponents::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kDecodedNativeComponents::has_alpha(&self) -> bool
 pub fn j2k::J2kDecodedNativeComponents::planes(&self) -> &[j2k::J2kNativeComponentPlane]
+pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u16_bounded<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u8_bounded<R: j2k_core::row_sink::RowSink<u8>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
 pub fn j2k::J2kDecoder<'a>::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
