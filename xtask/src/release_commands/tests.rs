@@ -195,6 +195,42 @@ fn checked_in_publish_workflow_script_and_docs_agree_with_the_manifest() {
 }
 
 #[test]
+fn publish_workflow_requires_all_exact_sha_t803_lanes() {
+    let workflow = include_str!("../../../.github/workflows/publish.yml")
+        .replace("--t803-scope all", "--t803-scope cpu")
+        .replace("t803 verify --scope all", "t803 verify --scope cpu")
+        .replace(
+            "            --report \"target/t803/release-evidence/j2k-t803-cuda-linux-x86_64-${candidate_sha}/cuda.json\" \\\n",
+            "",
+        )
+        .replace(
+            "            --report \"target/t803/release-evidence/j2k-t803-metal-macos-aarch64-${candidate_sha}/metal.json\"\n",
+            "",
+        );
+    let mut errors = Vec::new();
+    validate_publish_workflow_source(&workflow, &mut errors).expect("parse publish workflow");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("--t803-scope all")),
+        "CPU-only publication evidence was accepted: {errors:#?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("j2k-t803-cuda-linux-x86_64")),
+        "missing CUDA report was accepted: {errors:#?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("j2k-t803-metal-macos-aarch64")),
+        "missing Metal report was accepted: {errors:#?}"
+    );
+}
+
+#[test]
 fn publish_workflow_rejects_checkout_that_can_peel_an_annotated_tag() {
     let workflow = include_str!("../../../.github/workflows/publish.yml").replacen(
         "          ref: ${{ github.ref }}\n",

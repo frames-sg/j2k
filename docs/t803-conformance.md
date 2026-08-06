@@ -1,22 +1,31 @@
 # ISO/IEC 15444-4 / ITU-T T.803 Conformance
 
-Status: **candidate/pending**
+Status: **0.8.1 release-scoped**
 
-Formal claim: **not made**
+Formal decoder claim:
+
+- `j2k` CPU IUT: **Profile-1 Cclass-1 compliant; Profile-1 Cclass-1HF
+  compliant; Annex G JP2 reader compliant.**
+- `j2k-cuda` adapter IUT: **Profile-1 Cclass-1 compliant and Profile-1
+  Cclass-1HF compliant as an adapter IUT**, with every CPU, CUDA, hybrid, and
+  transfer stage disclosed per case.
+- `j2k-metal` adapter IUT: **Profile-1 Cclass-1 compliant and Profile-1
+  Cclass-1HF compliant as an adapter IUT**, with every CPU, Metal, hybrid, and
+  transfer stage disclosed per case.
 
 The implemented harness targets ISO/IEC 15444-4:2024 / ITU-T T.803 v3. Part 4
 defines JPEG 2000 conformance-testing procedures and reference comparisons; it
-is not another codestream syntax or a performance benchmark. The current
-published release predates this evidence, and `main` remains candidate work
-until every required exact-SHA lane passes.
+is not another codestream syntax or a performance benchmark. These claims are
+limited to release `0.8.1` and require the attached reports to identify the
+same immutable release SHA as the annotated tag.
 
-## Intended decoder scope
+## Claimed decoder scope
 
-| IUT | Intended wording after release signoff | Route boundary |
+| IUT | Release wording | Route boundary |
 | --- | --- | --- |
-| `j2k` CPU | Profile-1 Cclass-1; Profile-1 Cclass-1HF; Annex G JP2 reader | CPU implementation under test. |
-| `j2k-cuda` | Profile-1 Cclass-1 adapter IUT; Profile-1 Cclass-1HF adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, CUDA, or not used. |
-| `j2k-metal` | Profile-1 Cclass-1 adapter IUT; Profile-1 Cclass-1HF adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, Metal, or not used. |
+| `j2k` CPU | Profile-1 Cclass-1 compliant; Profile-1 Cclass-1HF compliant; Annex G JP2 reader compliant | CPU implementation under test. |
+| `j2k-cuda` | Profile-1 Cclass-1 compliant adapter IUT; Profile-1 Cclass-1HF compliant adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, CUDA, or not used. |
+| `j2k-metal` | Profile-1 Cclass-1 compliant adapter IUT; Profile-1 Cclass-1HF compliant adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, Metal, or not used. |
 
 CPU assistance is permitted for the adapter IUTs. Any such route is labelled
 `hybrid`; it is not described as device-native. Annex G JP2 color and component
@@ -24,23 +33,23 @@ normalization currently runs through disclosed CPU stages for the GPU adapters.
 JPX / Part 2 is outside this scope, except for JP2-compatible JPX input required
 by Annex G.
 
-The project does not use a generic “full Part 1 compliant” label. A future
-claim must use the exact Profile/Cclass wording above and be tied to the
-published reports for one immutable candidate SHA.
+The project does not use a generic “full Part 1 compliant” label. The exact
+Profile/Cclass wording above is tied to the published reports for one immutable
+release SHA.
 
-## Current development result
+## Release result
 
-The current macOS arm64 and Linux x86-64 CPU development diagnostics each pass
-all 90 selected decoder/JP2 cases with zero skips. Both real-hardware adapter
-diagnostics record **0/90 device-native, 48/90 hybrid, and 42/90 CPU-routed
-cases**: CUDA on an NVIDIA GeForce RTX 4070 SUPER and Metal on an Apple M4 Pro.
-All selected outputs are within their applicable bounds, but neither adapter
-result is device-native conformance evidence. The CPU Annex D/F encoder matrix
-passes 28 of 28 cases. The CUDA and Metal matrices each pass 25 of 25; CUDA
-records 24 hybrid encoder routes and one CPU-routed case, while Metal records
-23 hybrid routes and two CPU-routed cases. These dirty-worktree development
-reports are not exact-SHA release artifacts and do not establish a formal
-claim. A Windows x86-64 CPU report is still required for CPU claim eligibility.
+The macOS arm64, Linux x86-64, and Windows x86-64 CPU reports each pass all 90
+selected decoder/JP2 cases with zero skips. Both real-hardware adapter reports
+record **0/90 device-native, 48/90 hybrid, and 42/90 CPU-routed cases**: CUDA
+on an NVIDIA GeForce RTX 4070 SUPER and Metal on an Apple M4 Pro. All selected
+outputs are within their applicable bounds, but neither adapter result is
+device-native conformance evidence.
+
+The CPU Annex D/F encoder matrix passes 28 of 28 cases. The CUDA and Metal
+matrices each pass 25 of 25; CUDA records 24 hybrid encoder routes and one
+CPU-routed case, while Metal records 23 hybrid routes and two CPU-routed cases.
+These encoder results are informative evidence, not the formal decoder claim.
 
 The former `c1-c0p0-13` failure was an IUT harness defect. The codestream has
 257 components and enables the reversible component transform. T.803 B.2.5
@@ -102,8 +111,10 @@ cargo xtask t803 verify --scope metal --candidate-sha "$RC_SHA" \
   --report path/to/metal.json
 ```
 
-`--scope all` verifies all five reports together for a coordinated release but
-is not a prerequisite for an independently earned CPU or adapter result.
+`--scope all` verifies all five reports together. Release `0.8.1` uses that
+coordinated scope in the tag-publish workflow; independently, an unavailable
+adapter invalidates only its own adapter claim and does not erase a complete
+CPU result.
 
 All 90 selected decoder/JP2 cases must be present with no skips, every report
 must pass, source and corpus hashes must match, and the IUT/platform/route

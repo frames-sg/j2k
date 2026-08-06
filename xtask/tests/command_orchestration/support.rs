@@ -53,14 +53,14 @@ impl Harness {
         .expect("write fake cargo-machete");
         make_executable(&cargo_machete, "fake cargo-machete");
         let git = root.join("git");
-        let baseline_snapshot = root.join("stable-api-0.7.5.public-api.txt");
+        let baseline_snapshot = root.join("stable-api-baseline.public-api.txt");
         fs::write(&baseline_snapshot, synthetic_baseline_snapshot())
             .expect("write synthetic baseline API snapshot");
         let real_git = find_program("git");
         fs::write(
             &git,
             format!(
-                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.7.5^{{commit}}' ]; then printf '%s\\n' 'a89abb6e7eba469c44b3735740712c2a85be0499'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.7.5:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nif [ \"$1\" = rev-parse ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release revision: %s\\n' \"$2\" >&2; exit 97; fi\nif [ \"$1\" = show ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release object: %s\\n' \"$2\" >&2; exit 97; fi\nexec \"{}\" \"$@\"\n",
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.8.0^{{commit}}' ]; then printf '%s\\n' '53e0ad3d4f75f492af55413e0dab5a5834bd09c6'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.8.0:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nif [ \"$1\" = rev-parse ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release revision: %s\\n' \"$2\" >&2; exit 97; fi\nif [ \"$1\" = show ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release object: %s\\n' \"$2\" >&2; exit 97; fi\nexec \"{}\" \"$@\"\n",
                 log.display(),
                 baseline_snapshot.display(),
                 real_git.display()

@@ -76,6 +76,7 @@ override it.
 | `J2K_REQUIRE_KAKADU` | Makes optional Kakadu fixture/encoder comparator rows fail instead of skip when `kdu_expand` or `kdu_compress` is unavailable. Intended only for proprietary CLI/file-output context rows. | Skip unavailable Kakadu path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
+| `J2K_CUDA_LOSSY_PARITY_PNM` | Path to an external RGB PNM fixture used by required CUDA irreversible color-transform, DWT 9/7, and lossy encode parity tests. | Optional generated fixture unless the release runner supplies a file | Test/CI |
 | `J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE` | Requires CUDA JPEG hardware decode coverage in relevant CUDA tests/benches. | Hardware decode may skip | Test/CI |
 | `J2K_REQUIRE_METAL_RUNTIME` | Runs runtime-only Metal tests and makes them require a usable Metal runtime instead of default-skipping. | Skip runtime-only Metal paths | Test/CI |
 | `J2K_REQUIRE_CUDA_BENCH` | Makes CUDA benchmark probes fail instead of skip when CUDA is unavailable or does not dispatch. | Skip unavailable CUDA benchmark paths | Benchmark |

@@ -86,12 +86,12 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.8.0\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
+        "[workspace.package]\nversion = \"0.8.1\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.8.0] - 2026-07-27\n",
+        "# Changelog\n\n## [0.8.1] - 2026-08-06\n",
     )
     .expect("write finalized changelog fixture");
     std::fs::write(

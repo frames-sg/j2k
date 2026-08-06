@@ -206,7 +206,7 @@ fn published_candidate_uses_its_computed_release_type() {
 }
 
 #[test]
-fn report_has_one_published_details_section_and_hidden_evidence() {
+fn report_has_one_published_details_section_and_rotated_baseline() {
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
         candidate_version: "0.7.0".to_string(),
@@ -221,16 +221,17 @@ fn report_has_one_published_details_section_and_hidden_evidence() {
     assert_eq!(report.matches("## Published-package details").count(), 1);
     assert!(report.contains("Rustdoc-hidden candidate items: 1"));
     assert!(report.contains("Full hidden-inventory fingerprint: `fnv1a64:"));
-    assert!(report.contains("Required next semver baseline: `v0.8.0`"));
+    assert!(report.contains("Baseline registry version: `0.8.0`"));
+    assert!(!report.contains("Active intentional-break transition"));
 }
 
 #[test]
 fn parses_review_config_and_rejects_unknown_fields() {
     let source = "\
 version: 3
-baseline_tag: v0.7.5
-baseline_version: 0.7.5
-candidate_version: 0.8.0
+baseline_tag: v0.8.0
+baseline_version: 0.8.0
+candidate_version: 0.8.1
 break_ledger:
   - id: strict-decode-default
     kind: behavior
@@ -257,7 +258,7 @@ reviews:
 ";
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source).unwrap();
     let parsed = parse_review_config(&value).unwrap();
-    assert_eq!(parsed.candidate_version, "0.8.0");
+    assert_eq!(parsed.candidate_version, "0.8.1");
     assert_eq!(parsed.break_ledger.len(), 2);
     assert_eq!(parsed.break_ledger[0].kind, BreakKind::Behavior);
     assert_eq!(parsed.break_ledger[1].kind, BreakKind::Source);
