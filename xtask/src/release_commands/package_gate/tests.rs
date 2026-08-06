@@ -489,12 +489,20 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
     let log = recording.log();
     let lines = log.lines().collect::<Vec<_>>();
     let consumer_checks = j2k_ml_consumer_checks(std::env::consts::OS);
+    let registry_independent = ["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
     assert_eq!(
         lines.len(),
-        manifest.ordered_crates().len() + consumer_checks.len() + 5
+        manifest.ordered_crates().len() + registry_independent.len() + consumer_checks.len() + 5
     );
     assert!(lines[0].starts_with("publish -p j2k-core --dry-run|"));
-    assert!(lines[3].starts_with("publish -p j2k-codec-math --dry-run|"));
+    for package in registry_independent {
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with(&format!("publish -p {package} --dry-run|"))));
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with(&format!("package -p {package} --no-verify|"))));
+    }
     let native = lines
         .iter()
         .find(|line| line.starts_with("package -p j2k-native --no-verify"))

@@ -156,9 +156,11 @@ pub(super) fn run(
     for step in &plan {
         if step.registry_independent {
             run_cargo(&["publish", "-p", step.package.as_str(), "--dry-run"])?;
-        } else {
-            run_staged_package(step, false)?;
         }
+        // `cargo publish --dry-run` removes its package archive after verification.
+        // Stage every crate so the clean-consumer checks below inspect this run's
+        // exact package contents instead of relying on a stale archive.
+        run_staged_package(step, false)?;
         if step.package == "j2k-ml" {
             run_j2k_ml_consumer_gate(step, &package_archive_path(metadata, step)?)?;
         }
