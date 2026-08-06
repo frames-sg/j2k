@@ -3,6 +3,38 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.8.1] - 2026-08-06
+
+- Adds release-scoped ISO/IEC 15444-4:2024 / ITU-T T.803 v3 decoder evidence.
+  The CPU IUT is Profile-1 Cclass-1 compliant, Profile-1 Cclass-1HF compliant,
+  and Annex G JP2 reader compliant across all 90 selected cases with zero skips
+  on macOS arm64, Linux x86-64, and Windows x86-64.
+- Publishes separate CUDA and Metal adapter-IUT results for the same selected
+  codestream classes. Each headline is 0/90 device-native, 48/90 hybrid, and
+  42/90 CPU-routed; reports disclose parsing, Tier-1, dequantization, IDWT,
+  MCT, color/output, and transfer execution per case.
+- Adds exact codestream-resolution decoding through
+  `decode_native_components_at_reduction` and explicit Annex G normalization
+  through `decode_srgb8`, including Gray/RGB/RGBA layouts, component mapping,
+  palettes, CDEF ordering, subsampling, enumerated color spaces, and restricted
+  ICC conversion.
+- Fixes Part 1 decoder conformance defects in irreversible midpoint
+  reconstruction, ROI handling, packet/header parsing, progression and tile-part
+  handling, component transforms, and JP2 validation without vector-specific
+  exceptions or relaxed tolerances.
+- Adds deterministic Annex D/F encoder ICS matrices. The CPU matrix passes
+  28/28 cases and the CUDA and Metal matrices pass 25/25 through the pinned
+  T.804 OpenJPEG decoder; this is informative encoder evidence, not the formal
+  decoder claim.
+- Independently verifies `p0_13.j2k` before harness normalization: the
+  production decoder and OpenJPEG match all 257 native components exactly.
+- Promotes only benchmark-qualified fixed `Auto` hybrid cells after identical
+  output, at least 10% median improvement, and non-overlapping Criterion 95%
+  confidence intervals. Explicit CUDA and Metal requests remain strict.
+- Makes tag publication verify all three CPU reports plus the CUDA and Metal
+  reports for the exact release SHA, and rotates the public API compatibility
+  baseline to the published `v0.8.0` release.
+
 ## [0.8.0] - 2026-07-29
 
 - Breaking: decoding is strict by default in `j2k` and `j2k-native`. Callers

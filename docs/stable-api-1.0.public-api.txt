@@ -26,6 +26,7 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::J2kDecodedColorSpace
 #[non_exhaustive] pub enum j2k::J2kError
 #[non_exhaustive] pub enum j2k::J2kFileColorSpec<'a>
+#[non_exhaustive] pub enum j2k::J2kSrgb8Layout
 #[non_exhaustive] pub enum j2k::NonRepresentableReason
 #[non_exhaustive] pub enum j2k::PreparationDepth
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
@@ -67,6 +68,7 @@ impl j2k::J2kNativeComponentPlane
 impl j2k::J2kQualityLayer
 impl j2k::J2kRowDecodeOptions
 impl j2k::J2kScratchPool
+impl j2k::J2kSrgb8Image
 impl j2k::J2kSupportInfo
 impl j2k::J2kToHtj2kOptions
 impl j2k::PreparedBatch
@@ -150,6 +152,8 @@ pub const fn j2k::J2kRowDecodeOptions::new(u32) -> Self
 pub const fn j2k::J2kRowDecodeOptions::new_with_max_stripe_bytes(u32, usize) -> Self
 pub const fn j2k::J2kRowDecodeOptions::with_max_stripe_bytes(self, usize) -> Self
 pub const fn j2k::J2kScratchPool::new() -> Self
+pub const fn j2k::J2kSrgb8Image::dimensions(&self) -> (u32, u32)
+pub const fn j2k::J2kSrgb8Image::layout(&self) -> j2k::J2kSrgb8Layout
 pub const fn j2k::J2kToHtj2kOptions::new(j2k_core::passthrough::CompressedPayloadKind, j2k::J2kProgressionOrder, j2k::J2kEncodeValidation) -> Self
 pub const fn j2k::PreparedBatch::options(&self) -> j2k::BatchDecodeOptions
 pub const fn j2k::PreparedBatchGroup::options(&self) -> j2k::BatchDecodeOptions
@@ -235,9 +239,11 @@ pub fn j2k::J2kDecodedNativeComponents::color_space(&self) -> &j2k::J2kDecodedCo
 pub fn j2k::J2kDecodedNativeComponents::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kDecodedNativeComponents::has_alpha(&self) -> bool
 pub fn j2k::J2kDecodedNativeComponents::planes(&self) -> &[j2k::J2kNativeComponentPlane]
+pub fn j2k::J2kDecoder<'_>::decode_native_components_at_reduction(&mut self, u8) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u16_bounded<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u8_bounded<R: j2k_core::row_sink::RowSink<u8>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
+pub fn j2k::J2kDecoder<'_>::decode_srgb8(&mut self) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
 pub fn j2k::J2kDecoder<'a>::decode_components(&mut self) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
@@ -290,6 +296,8 @@ pub fn j2k::J2kNativeComponentPlane::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kNativeComponentPlane::sampling(&self) -> (u8, u8)
 pub fn j2k::J2kNativeComponentPlane::signed(&self) -> bool
 pub fn j2k::J2kRowDecodeOptions::default() -> Self
+pub fn j2k::J2kSrgb8Image::data(&self) -> &[u8]
+pub fn j2k::J2kSrgb8Image::into_data(self) -> alloc::vec::Vec<u8>
 pub fn j2k::J2kSupportInfo::component_count(&self) -> u16
 pub fn j2k::J2kSupportInfo::has_component_subsampling(&self) -> bool
 pub fn j2k::J2kSupportInfo::has_mixed_bit_depths(&self) -> bool
@@ -507,6 +515,7 @@ pub j2k::J2kError::InvalidBox::offset: usize
 pub j2k::J2kError::InvalidBox::what: &'static str
 pub j2k::J2kError::InvalidCod
 pub j2k::J2kError::InvalidCod::what: &'static str
+pub j2k::J2kError::InvalidIccProfile
 pub j2k::J2kError::InvalidMarker
 pub j2k::J2kError::InvalidMarker::marker: u8
 pub j2k::J2kError::InvalidMarker::offset: usize
@@ -650,6 +659,9 @@ pub j2k::J2kRoiRegion::shift: u8
 pub j2k::J2kRoiRegion::width: u32
 pub j2k::J2kRoiRegion::x: u32
 pub j2k::J2kRoiRegion::y: u32
+pub j2k::J2kSrgb8Layout::Gray
+pub j2k::J2kSrgb8Layout::Rgb
+pub j2k::J2kSrgb8Layout::Rgba
 pub j2k::J2kSupportInfo::components: alloc::vec::Vec<j2k::J2kComponentInfo>
 pub j2k::J2kSupportInfo::file_metadata: core::option::Option<j2k::J2kFileMetadata>
 pub j2k::J2kSupportInfo::info: j2k_core::types::Info
@@ -729,6 +741,7 @@ pub struct j2k::J2kQualityLayer
 pub struct j2k::J2kRoiRegion
 pub struct j2k::J2kRowDecodeOptions
 pub struct j2k::J2kScratchPool
+pub struct j2k::J2kSrgb8Image
 pub struct j2k::J2kSupportInfo
 pub struct j2k::J2kToHtj2kReport
 pub struct j2k::J2kView<'a>
@@ -1277,6 +1290,7 @@ pub unsafe trait j2k_core::accelerator::GpuAbi: core::marker::Copy + 'static
 impl core::fmt::Display for j2k_codec_math::jpeg::CanonicalHuffmanError
 impl j2k_codec_math::dwt::Dwt53LinearRow
 impl j2k_codec_math::dwt::Dwt53LinearTap
+pub const fn j2k_codec_math::classic::irreversible_midpoint_bit(u64, u32, u32) -> core::option::Option<u32>
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::sample_index(self) -> usize
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
@@ -3970,6 +3984,7 @@ pub fn j2k_types::IrreversibleQuantizationSubbandScales::default() -> Self
 pub fn j2k_types::J2kEncodeDispatchReport::any(self) -> bool
 pub fn j2k_types::J2kEncodeDispatchReport::saturating_delta(self, Self) -> Self
 pub fn j2k_types::J2kEncodeDispatchReport::total(self) -> usize
+pub fn j2k_types::J2kEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::J2kEncodeStageResult<()>
 pub fn j2k_types::J2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
@@ -4029,6 +4044,11 @@ pub j2k_types::J2kDeinterleaveToF32Job::num_components: u16
 pub j2k_types::J2kDeinterleaveToF32Job::num_pixels: usize
 pub j2k_types::J2kDeinterleaveToF32Job::pixels: &'a [u8]
 pub j2k_types::J2kDeinterleaveToF32Job::signed: bool
+pub j2k_types::J2kEncodeContext::bit_depth: u8
+pub j2k_types::J2kEncodeContext::num_components: u16
+pub j2k_types::J2kEncodeContext::num_pixels: usize
+pub j2k_types::J2kEncodeContext::reversible: bool
+pub j2k_types::J2kEncodeContext::signed: bool
 pub j2k_types::J2kEncodeDispatchReport::deinterleave: usize
 pub j2k_types::J2kEncodeDispatchReport::forward_dwt53: usize
 pub j2k_types::J2kEncodeDispatchReport::forward_dwt97: usize
@@ -4265,6 +4285,7 @@ pub struct j2k_types::J2kCodeBlockSegment
 pub struct j2k_types::J2kCodeBlockStyle
 pub struct j2k_types::J2kCodestreamRange
 pub struct j2k_types::J2kDeinterleaveToF32Job<'a>
+pub struct j2k_types::J2kEncodeContext
 pub struct j2k_types::J2kEncodeDispatchReport
 pub struct j2k_types::J2kForwardDwt53Job<'a>
 pub struct j2k_types::J2kForwardDwt53Level

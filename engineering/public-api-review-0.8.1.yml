@@ -1,0 +1,130 @@
+version: 3
+baseline_tag: v0.8.0
+baseline_version: 0.8.0
+candidate_version: "0.8.1"
+break_ledger: []
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 189
+    hidden_fingerprint: "fnv1a64:b87aa26da547e491"
+    rationale: "Reviewed the complete ordinary j2k-core surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-core inventory; its decode contracts, planning types, validation boundaries, and typed failures are unchanged from v0.8.0."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the complete ordinary j2k-profile surface against v0.8.0; its documented surface remains the crate module root only."
+    hidden_rationale: "Reviewed the complete hidden profiling inventory; capture ownership, controls, and callable profiling surfaces are unchanged from v0.8.0."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:dfa9d35be523f07f"
+    hidden_count: 55
+    hidden_fingerprint: "fnv1a64:e1a4e67c2f8431a4"
+    rationale: "Reviewed the additive J2kEncodeContext fields and begin_encode hook against v0.8.0. They supply validated per-operation shape and coding information before stage dispatch; the hook has a source-compatible default implementation and removes no existing contract."
+    hidden_rationale: "Reviewed the complete hidden j2k-types inventory, including the matching CPU-only begin_encode implementation; no hidden item was removed or changed incompatibly."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:ba8bc063b9c0e287"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the additive irreversible_midpoint_bit helper. It exposes the shared checked half-bin position calculation used by scalar and accelerator classic JPEG 2000 decoding and returns None for empty or inconsistent state."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 1091
+    hidden_fingerprint: "fnv1a64:29aed9f592c03b03"
+    rationale: "Reviewed the complete ordinary j2k-cuda-runtime surface against v0.8.0; no ordinary public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA runtime inventory, including the added classic-code-block midpoint and ROI fields that preserve scalar/device differential semantics; no hidden item was removed."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:671e50d4d121b419"
+    rationale: "Reviewed the complete ordinary j2k-metal-support surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden Metal support inventory; checked allocation, command, completion, buffer ownership, and audited unsafe boundaries are unchanged from v0.8.0."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 670
+    hidden_fingerprint: "fnv1a64:140051aa454ad8e5"
+    rationale: "Reviewed the complete ordinary j2k-native surface against v0.8.0; no ordinary public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the added hidden exact-reduction, ICC-profile access, midpoint reconstruction, ROI, and sub-band planning surfaces. They support the production decoder and adapter parity paths without removing or changing the existing hidden contracts."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 550
+    hidden_fingerprint: "fnv1a64:d2bd76732f32e066"
+    rationale: "Reviewed the complete ordinary j2k-jpeg surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG inventory, including codec context, batch, decode, and typed error boundaries; it is unchanged from v0.8.0."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the complete ordinary j2k-tilecodec surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-tilecodec inventory, including codec, scratch, and source-preserving error boundaries; it is unchanged from v0.8.0."
+  j2k:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:8f65112e24e99498"
+    hidden_count: 105
+    hidden_fingerprint: "fnv1a64:439bc4b61c1ec5b3"
+    rationale: "Reviewed all fourteen additive j2k items against v0.8.0. The exact-reduction APIs decode through the codestream resolution ladder; J2kSrgb8Image provides owned Gray, RGB, or RGBA output with explicit ICC failures and private storage accessors; no existing API is removed or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k inventory, including the added J2kEncodeContext re-export used by accelerator stage adapters; retained plans, validation, and typed error boundaries remain compatible with v0.8.0."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 455
+    hidden_fingerprint: "fnv1a64:fdd61f6fdda4a9ab"
+    rationale: "Reviewed the complete ordinary j2k-transcode surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden transcode inventory, including transforms, packetization, resident handoff, accounting, and source-preserving errors; it is unchanged from v0.8.0."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 17
+    hidden_fingerprint: "fnv1a64:3e3e69d35c4a62a5"
+    rationale: "Reviewed the complete ordinary j2k-transcode-cuda surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA transcode inventory, including routing, resident handoff, allocation caps, and source-preserving failures; it is unchanged from v0.8.0."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:8c83730972447ab6"
+    rationale: "Reviewed the complete ordinary j2k-jpeg-metal surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG Metal inventory, including resident-image ownership, session lifetime, and typed Metal failures; it is unchanged from v0.8.0."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 301
+    hidden_fingerprint: "fnv1a64:c6b5bbbede58c77e"
+    rationale: "Reviewed the complete ordinary j2k-metal surface against v0.8.0; no ordinary public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the added hidden per-encode context hook and host-output benchmark constructor. They select and report an encode route without changing the existing public Metal adapter contract."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:5bf8a22a33753a2d"
+    rationale: "Reviewed the complete ordinary j2k-transcode-metal surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden Metal transcode inventory, including transforms, buffers, code blocks, resident handoff, fallback, and typed source chains; it is unchanged from v0.8.0."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 124
+    hidden_fingerprint: "fnv1a64:0b31ccb3e7974bc4"
+    rationale: "Reviewed the complete ordinary j2k-jpeg-cuda surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG CUDA inventory, including session-bound execution, allocation accounting, and typed runtime failures; it is unchanged from v0.8.0."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 181
+    hidden_fingerprint: "fnv1a64:6bb25d5241c4e86a"
+    rationale: "Reviewed the complete ordinary j2k-cuda surface against v0.8.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden J2K CUDA inventory, including completion uncertainty, session usability, device identity, event ordering, pool diagnostics, and guarded interop; it is unchanged from v0.8.0."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete j2k-ml ordinary and hidden inventories against v0.8.0; no public API item was added, removed, or changed."

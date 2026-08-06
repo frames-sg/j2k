@@ -72,7 +72,7 @@ j2k-jpeg-cuda -> j2k-core, j2k-cuda-runtime, j2k-jpeg, j2k-profile
 j2k-jpeg-metal -> j2k-core, j2k-jpeg, j2k-metal-support, j2k-profile
 j2k-tilecodec -> j2k-core
 j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
-j2k-t803 -> j2k, j2k-codec-math, j2k-compare, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-metal
+j2k-t803 -> j2k, j2k-codec-math, j2k-compare, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-native
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core

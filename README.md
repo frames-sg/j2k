@@ -25,17 +25,21 @@ Region and reduced-resolution decoding plus retained tiled batch plans avoid
 whole-image work for slide-scale and other large-image readers; those are codec
 capabilities, not domain-specific APIs.
 
-ISO/IEC 15444-4:2024 / ITU-T T.803 v3 work is **candidate/pending**; neither
-the published release nor `main` makes a formal conformance claim. Current
-macOS arm64 and Linux x86-64 CPU development reports each pass all 90 selected
-decoder and Annex G JP2 cases with zero skips. The real-hardware adapter
-development reports are **CUDA: 0/90 device-native, 48/90 hybrid, 42/90
-CPU-routed** and **Metal: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**.
-All selected outputs are within the applicable bounds, but neither result is a
-device-native conformance result. Release wording remains gated on deterministic
-exact-SHA reports for each claimed CPU or adapter lane. The intended scope,
-per-stage route disclosure, encoder evidence, and report verification rules are in
-[docs/t803-conformance.md](docs/t803-conformance.md).
+Formal decoder claim for `0.8.1`: the `j2k` CPU IUT is ISO/IEC 15444-4:2024 /
+ITU-T T.803 v3 **Profile-1 Cclass-1 compliant**,
+**Profile-1 Cclass-1HF compliant**, and **Annex G JP2 reader compliant**.
+Exact-SHA macOS arm64,
+Linux x86-64, and Windows x86-64 reports each contain all 90 selected cases
+with zero skips and outputs within the applicable peak-error and MSE bounds.
+
+The real-hardware adapter-IUT headlines are **CUDA: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**
+and **Metal: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**. Both pass
+the selected Profile-1 Cclass-1 and Cclass-1HF
+cases, but neither is a device-native conformance result. Every parser,
+Tier-1, transform, color/output, and transfer stage is disclosed per case. The
+exact scope, evidence rules, report inventory, and informative encoder results
+are in [docs/t803-conformance.md](docs/t803-conformance.md). T.803 does not
+establish robustness, security, adoption, or performance.
 
 Speed matters, but it is not the reason this project exists. The strategic
 gap is a memory-safety-oriented Rust codec with a portable CPU baseline,

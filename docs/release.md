@@ -1,6 +1,9 @@
 # Release Policy
 
 The `j2k` 0.8.0 public crate release is published and security-supported.
+Version `0.8.1` is the prepared release candidate and carries the
+release-scoped T.803 decoder evidence described in
+[`T.803 conformance`](t803-conformance.md).
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -9,7 +12,8 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.8.0` | Published on crates.io from annotated tag `v0.8.0` after clean-consumer, exact-SHA, benchmark, CUDA, and Metal gates passed. | Latest supported release. |
+| `0.8.1` | Prepared candidate; publication is allowed only from annotated tag `v0.8.1` after all exact-SHA CPU, CUDA, Metal, package, and release-integrity gates pass. | Becomes the latest supported release when published. |
+| `0.8.0` | Published on crates.io from annotated tag `v0.8.0`. | Latest supported release. |
 | `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
 | `0.7.3` | Previous published release line. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
@@ -18,12 +22,17 @@ evidence.
 | `0.6.x` | Previous published release line. | Supported for security fixes during the pre-1.0 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-Version `0.8.0` is published from annotated tag `v0.8.0`, which peels to commit
+Version `0.8.1` is published only from annotated tag `v0.8.1`. The tag must
+peel to the exact candidate SHA recorded by all three CPU T.803 reports and the
+CUDA and Metal adapter reports. The tag-triggered workflow verifies those five
+report contents before publishing any crate; the GitHub release attachments,
+tag, workflow runs, and crates.io records are the publication evidence.
+
+Version `0.8.0` was published from annotated tag `v0.8.0`, which peels to commit
 `53e0ad3d4f75f492af55413e0dab5a5834bd09c6`. The
 [tag-triggered publish workflow](https://github.com/frames-sg/j2k/actions/runs/30425822681)
 validated all 19 registry targets and published the release to crates.io.
-GitHub Pages is served directly from `main/docs`; the tag, workflow run, and
-crates.io records are the publication evidence.
+GitHub Pages is served directly from `main/docs`.
 
 Version `0.7.5` is an explicitly reviewed source-compatibility exception to
 the normal patch policy. Its wrapper-removal migrations are recorded under
@@ -39,7 +48,7 @@ released public APIs. Do not recommend the defective 0.7.5 accelerator
 features. Any Burn community notice still requires the post-publication
 exact-version consumer and benchmark evidence listed in the notice draft.
 
-Version `0.8.0` is intentionally source- and behavior-incompatible
+Version `0.8.0` was intentionally source- and behavior-incompatible
 with `0.7.5`: decode entry points become strict by default, explicit leniency
 is limited to the documented JP2/JPH metadata recoveries, warnings report
 actual recovery rather than lenient configuration, and
@@ -48,11 +57,14 @@ actual recovery rather than lenient configuration, and
 [reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md) records
 the release's generated signature diff, and the adjacent
 [review configuration](../engineering/public-api-review-0.8.0.yml) contains the
-exact source- and behavior-break ledger with migrations. The semver gate allows
-only the completed `0.8.0` transition to compare against `v0.7.5`. The baseline
-version, tag, and peeled commit must rotate to published `v0.8.0`, and the
-one-time transition allowance must be removed, before any later candidate is
-prepared.
+exact source- and behavior-break ledger with migrations.
+
+Version `0.8.1` compares directly with published `v0.8.0`. Its
+[reviewed API report](../engineering/reviewed-public-api-diff-0.8.1.md) and
+[review configuration](../engineering/public-api-review-0.8.1.yml) record an
+additive-only public surface: exact-resolution and sRGB/ICC decode APIs,
+encode-stage context, and the shared irreversible midpoint calculation. The
+one-time `0.7.5` to `0.8.0` transition allowance has been removed.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
@@ -108,7 +120,7 @@ have completed:
 
 ```bash
 test "$(git rev-parse origin/main)" = "$RC_SHA"
-cargo xtask release-status --sha "$RC_SHA" --scope cpu
+cargo xtask release-status --sha "$RC_SHA" --scope all
 ```
 
 Any tracked edit creates a new candidate: commit it, choose a new `RC_SHA`, and

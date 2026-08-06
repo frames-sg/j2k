@@ -25,11 +25,11 @@ use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
 const SEMVER_TOOLCHAIN: &str = "1.96";
-const SEMVER_BASELINE_VERSION: &str = "0.7.5";
-const SEMVER_BASELINE_TAG: &str = "v0.7.5";
-const SEMVER_BASELINE_COMMIT: &str = "a89abb6e7eba469c44b3735740712c2a85be0499";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.8.0.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.8.0.yml";
+const SEMVER_BASELINE_VERSION: &str = "0.8.0";
+const SEMVER_BASELINE_TAG: &str = "v0.8.0";
+const SEMVER_BASELINE_COMMIT: &str = "53e0ad3d4f75f492af55413e0dab5a5834bd09c6";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.8.1.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.8.1.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {
@@ -38,12 +38,7 @@ struct BaselineTransition<'a> {
     required_next_baseline_tag: &'a str,
 }
 
-const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> =
-    Some(BaselineTransition {
-        candidate_version: "0.8.0",
-        required_next_baseline_version: "0.8.0",
-        required_next_baseline_tag: "v0.8.0",
-    });
+const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> = None;
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
@@ -206,7 +201,7 @@ pub(crate) fn semver(
     let baseline_snapshot = baseline_api_snapshot(cargo_public_api_version)?;
     let baseline_apis = parse_api_snapshot(&baseline_snapshot)?;
     validate_snapshot_scope(
-        "published 0.7.5 ordinary snapshot",
+        "published baseline ordinary snapshot",
         SEMVER_BASELINE_PACKAGES,
         &baseline_apis,
     )?;

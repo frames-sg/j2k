@@ -41,15 +41,18 @@ therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
 compatibility escape hatch.
 
 The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
-with the same generator, rustdoc, and target pins. The published 0.8.0 semver
-report compares its ordinary inventory with 0.7.5 and also records
-each package's complete hidden-inventory count and fingerprint.
+with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
+report compares its ordinary inventory with 0.7.5. The 0.8.1 report compares
+the candidate directly with published 0.8.0. Both reports also record each
+package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
-count/fingerprint in `engineering/public-api-review-0.8.0.yml`.
+count/fingerprint in `engineering/public-api-review-0.8.1.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
-The review file also contains the reviewed 0.7.5-to-0.8.0 break ledger.
+The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
+0.8.1 review file has no break-ledger entries because its generated diff is
+additive only.
 Source-break entries must enumerate every exact removed API item, package,
 summary, and migration. Validation requires that inventory to equal the
 generated removed-item set: an omitted, duplicate, unknown, or stale item fails
@@ -72,14 +75,18 @@ contract expectations. Manual prose in this file must not duplicate that
 inventory. The completed 0.7.5-to-0.8.0 comparison is in the generated
 [`0.8.0` reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md).
 That report became release evidence after source freeze and the exact-SHA
-local, hosted, Metal, and CUDA gates completed.
+local, hosted, Metal, and CUDA gates completed. The current comparison is in
+the generated
+[`0.8.1` reviewed API report](../engineering/reviewed-public-api-diff-0.8.1.md).
 
 The currently published stable contract is the `0.8.x` line. Version `0.8.0`
 intentionally changed the strict-decoding behavior and one warning variant
 under Cargo's pre-1.0 compatibility rules. It does not claim source or behavior
 compatibility with `0.7.x`; its exact breaks and migrations are in the review
-file. Version `0.7.0` similarly contracted parts of the pre-1.0 `0.6.2` API and
-did not claim source compatibility with `0.6.x`.
+file. Version `0.8.1` adds exact-resolution and sRGB/ICC decode APIs plus
+encode-stage context without removing or changing a 0.8.0 item. Version
+`0.7.0` similarly contracted parts of the pre-1.0 `0.6.2` API and did not claim
+source compatibility with `0.6.x`.
 
 ## Stability tiers
 
@@ -123,12 +130,11 @@ exception applied only to `0.7.5`.
 
 The completed transition lock was intentionally narrow: `0.8.0` was the only
 candidate permitted to compare against `v0.7.5` as an intentional pre-1.0
-break. The checked-in release evidence retains that comparison, but it rejects
-`0.8.1` or any later candidate while the older baseline remains configured.
-Before preparing any follow-up, rotate the semver baseline to the published
-`v0.8.0` tag, version, and peeled commit, then disable the transition lock.
-Subsequent patch-line checks must compare with the real 0.8 contract instead
-of continuing to receive permission for 0.7-to-0.8 breakage.
+break. The checked-in historical evidence retains that comparison. The active
+baseline is now published `v0.8.0` at its pinned peeled commit, and the one-time
+transition lock is disabled. The 0.8.1 and later patch-line checks therefore
+compare with the real 0.8 contract instead of inheriting permission for
+0.7-to-0.8 breakage.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.
