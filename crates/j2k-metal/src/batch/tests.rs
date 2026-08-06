@@ -6,8 +6,9 @@ use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 
 use crate::{Error, MetalSession};
 
+use super::execute::complete_repeated_device_failure;
 #[cfg(target_os = "macos")]
-use super::execute::{complete_repeated_device_failure, process_batch};
+use super::execute::process_batch;
 #[cfg(target_os = "macos")]
 use super::heuristics::GroupedRequests;
 use super::heuristics::{

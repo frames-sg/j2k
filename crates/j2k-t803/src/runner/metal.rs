@@ -18,6 +18,7 @@ use crate::{ExecutionLocation, PlatformIdentity};
 #[cfg(target_os = "macos")]
 use super::{cases, encoder, execute};
 
+#[cfg(target_os = "macos")]
 const METAL_CLAIM: &str = "Profile-1 Cclass-1 adapter IUT; Profile-1 Cclass-1HF adapter IUT; Annex G JP2 reader via j2k CPU stages (candidate evidence)";
 
 #[cfg(target_os = "macos")]

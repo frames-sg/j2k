@@ -7,8 +7,10 @@ use super::stage_accelerator::{
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
+#[cfg(target_os = "macos")]
+use j2k::encode_j2k_lossless;
 use j2k::{
-    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
+    encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(target_os = "macos")]
