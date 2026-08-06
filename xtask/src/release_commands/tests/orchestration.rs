@@ -153,15 +153,21 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
         "linux" | "macos" => 8,
         _ => 6,
     };
+    let registry_independent = ["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
     assert_eq!(
         commands.len(),
-        1 + 2 * publishable_count + consumer_commands
+        1 + 2 * publishable_count + registry_independent.len() + consumer_commands
     );
     assert!(commands[0].starts_with("metadata --locked --no-deps --format-version 1|"));
     assert!(commands[1].starts_with("package -p j2k-core --list|"));
-    assert!(commands
-        .iter()
-        .any(|line| line.starts_with("publish -p j2k-core --dry-run|")));
+    for package in registry_independent {
+        assert!(commands
+            .iter()
+            .any(|line| line.starts_with(&format!("publish -p {package} --dry-run|"))));
+        assert!(commands
+            .iter()
+            .any(|line| line.starts_with(&format!("package -p {package} --no-verify|"))));
+    }
     assert!(commands
         .iter()
         .any(|line| line.starts_with("package -p j2k-cli --no-verify")));
