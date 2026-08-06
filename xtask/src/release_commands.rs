@@ -343,6 +343,12 @@ fn validate_publish_workflow_source(
         "--ci-workflow full-validation.yml",
         "--cuda-job \"CUDA full release validation\"",
         "--metal-job \"Metal full release validation\"",
+        "--t803-out-dir target/t803/release-evidence",
+        "--t803-scope cpu",
+        "cargo xtask t803 verify --scope cpu --candidate-sha",
+        "j2k-t803-cpu-linux-x86_64-${candidate_sha}/cpu.json",
+        "j2k-t803-cpu-macos-aarch64-${candidate_sha}/cpu.json",
+        "j2k-t803-cpu-windows-x86_64-${candidate_sha}/cpu.json",
         "cargo xtask release-integrity --publish",
         "scripts/publish-crate.sh --preflight-all",
         "python3 scripts/publish_release.py preflight",
@@ -576,6 +582,40 @@ pub(super) fn package() -> Result<(), String> {
         run_cargo(&["package", "-p", package, "--list"])?;
     }
     package_gate::run(&metadata, &release_manifest)
+}
+
+pub(super) fn package_consumer_smoke(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut target = "all".to_string();
+    let mut cuda_runtime = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--target" => {
+                target = args
+                    .next()
+                    .ok_or_else(|| "--target requires core, cuda, metal, or all".to_string())?;
+            }
+            "--cuda-runtime" => cuda_runtime = true,
+            _ => return Err(package_consumer_usage()),
+        }
+    }
+    let consumers = match target.as_str() {
+        "core" => &["j2k"][..],
+        "cuda" => &["j2k", "j2k-cuda"][..],
+        "metal" => &["j2k", "j2k-metal"][..],
+        "all" => &["j2k", "j2k-cuda", "j2k-metal"][..],
+        _ => return Err(package_consumer_usage()),
+    };
+    if cuda_runtime && !consumers.contains(&"j2k-cuda") {
+        return Err("--cuda-runtime requires --target cuda or all".to_string());
+    }
+    let metadata = cargo_metadata()?;
+    let release_manifest = release_manifest_contract()?;
+    package_gate::run_core_package_smoke(&metadata, &release_manifest, consumers, cuda_runtime)
+}
+
+fn package_consumer_usage() -> String {
+    "usage: cargo xtask package-consumer-smoke [--target core|cuda|metal|all] [--cuda-runtime]"
+        .to_string()
 }
 
 pub(super) fn j2k_ml_package_smoke() -> Result<(), String> {

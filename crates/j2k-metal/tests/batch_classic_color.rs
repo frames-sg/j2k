@@ -155,7 +155,6 @@ fn assert_classic_rgb_layout(
         layout,
         ..BatchDecodeOptions::default()
     };
-    let max_lsb_diff = u8::from(matches!(profile, ClassicRgbProfile::U8Irreversible97));
     let inputs = requests
         .iter()
         .copied()
@@ -230,7 +229,7 @@ fn assert_classic_rgb_layout(
             j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, output_bytes)
                 .expect("classic RGB output samples")
         };
-        assert_native_samples(&actual, expected_group.samples(), max_lsb_diff);
+        assert_native_samples(&actual, expected_group.samples(), 0);
     }
 }
 

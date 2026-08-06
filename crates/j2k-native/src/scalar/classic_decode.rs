@@ -54,6 +54,25 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
     output: &mut [f32],
     workspace: &mut J2kCodeBlockDecodeWorkspace,
 ) -> Result<()> {
+    decode_j2k_code_block_scalar_with_workspace_inner(job, output, workspace, false)
+}
+
+/// Adapter scalar classic J2K decoder helper using irreversible midpoint reconstruction.
+#[doc(hidden)]
+pub fn decode_j2k_code_block_scalar_with_workspace_midpoint(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+) -> Result<()> {
+    decode_j2k_code_block_scalar_with_workspace_inner(job, output, workspace, true)
+}
+
+fn decode_j2k_code_block_scalar_with_workspace_inner(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+    irreversible_midpoint: bool,
+) -> Result<()> {
     let layout =
         checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let style = internal_j2k_code_block_style(job.style);
@@ -78,7 +97,13 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
         &mut workspace.bit_plane_decode_context,
     )?;
 
-    write_j2k_code_block_output(&workspace.bit_plane_decode_context, job, layout, output);
+    write_j2k_code_block_output(
+        &workspace.bit_plane_decode_context,
+        job,
+        layout,
+        output,
+        irreversible_midpoint,
+    );
 
     Ok(())
 }
@@ -119,6 +144,7 @@ fn write_j2k_code_block_output(
     job: J2kCodeBlockDecodeJob<'_>,
     layout: CodeBlockOutputLayout,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) {
     for (row_idx, coeff_row) in decode_context
         .coefficient_rows()
@@ -128,8 +154,16 @@ fn write_j2k_code_block_output(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + layout.stride];
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            let coefficient = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift);
-            *sample = coefficient as f32 * job.dequantization_step;
+            let coefficient = if irreversible_midpoint {
+                decode_context.reconstruct_irreversible_midpoint(
+                    *coefficient,
+                    job.number_of_coding_passes,
+                    job.roi_shift,
+                )
+            } else {
+                apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift) as f32
+            };
+            *sample = coefficient * job.dequantization_step;
         }
     }
 }
@@ -185,6 +219,31 @@ pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
     workspace: &mut J2kCodeBlockDecodeWorkspace,
     profile: &mut J2kCodeBlockDecodeProfile,
 ) -> Result<()> {
+    decode_j2k_code_block_scalar_with_workspace_profiled_inner(
+        job, output, workspace, profile, false,
+    )
+}
+
+/// Profiled scalar classic J2K decode using irreversible midpoint reconstruction.
+#[doc(hidden)]
+pub fn decode_j2k_code_block_scalar_with_workspace_midpoint_profiled(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+    profile: &mut J2kCodeBlockDecodeProfile,
+) -> Result<()> {
+    decode_j2k_code_block_scalar_with_workspace_profiled_inner(
+        job, output, workspace, profile, true,
+    )
+}
+
+fn decode_j2k_code_block_scalar_with_workspace_profiled_inner(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+    profile: &mut J2kCodeBlockDecodeProfile,
+    irreversible_midpoint: bool,
+) -> Result<()> {
     let layout =
         checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let style = internal_j2k_code_block_style(job.style);
@@ -214,7 +273,13 @@ pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
     profile.add_native_stats(stats);
 
     let output_convert_started = profile::profile_now(true);
-    write_j2k_code_block_output(&workspace.bit_plane_decode_context, job, layout, output);
+    write_j2k_code_block_output(
+        &workspace.bit_plane_decode_context,
+        job,
+        layout,
+        output,
+        irreversible_midpoint,
+    );
     profile.output_convert_us += profile::elapsed_us(output_convert_started);
 
     Ok(())

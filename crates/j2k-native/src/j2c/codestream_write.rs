@@ -454,7 +454,8 @@ fn write_rgn_markers(out: &mut Vec<u8>, params: &EncodeParams) {
         write_marker(out, markers::RGN);
         if params.num_components < 257 {
             out.extend_from_slice(&5u16.to_be_bytes());
-            out.push(u8::try_from(component_index).expect("component index fits in Crgn byte"));
+            // This branch limits the loop to one-byte Crgn component indices.
+            out.push(component_index.to_be_bytes()[1]);
         } else {
             out.extend_from_slice(&6u16.to_be_bytes());
             out.extend_from_slice(&component_index.to_be_bytes());
@@ -865,10 +866,16 @@ mod tests {
         assert_eq!(marker_length(&out, offsets[0]), u16::MAX);
         assert_eq!(out[offsets[0] + 4], 0);
         assert_eq!(out[offsets[1] + 4], 1);
-        assert_eq!(marker_length(&out, offsets[1]), 12);
+        assert_eq!(marker_length(&out, offsets[1]), 8);
         assert_eq!(
-            &out[offsets[1] + 5..offsets[1] + 14],
-            &[0, 1, 0x22, 0, 4, 0x33, 0x33, 0x33, 0x33]
+            &out[offsets[0] + 5..offsets[0] + 9],
+            &u32::try_from(PPM_PACKET_HEADER_LIMIT + 5)
+                .unwrap()
+                .to_be_bytes()
+        );
+        assert_eq!(
+            &out[offsets[1] + 5..offsets[1] + 10],
+            &[0x22, 0x33, 0x33, 0x33, 0x33]
         );
     }
 

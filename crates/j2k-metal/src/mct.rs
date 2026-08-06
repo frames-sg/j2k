@@ -204,6 +204,51 @@ mod tests {
     }
 
     #[test]
+    fn metal_mct_decoder_matches_native_region_for_openjpeg_irreversible_rgb() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let image = Image::new(
+            j2k_test_support::OPENJPEG_IRREVERSIBLE_RGB8_8X8,
+            &DecodeSettings::default(),
+        )
+        .expect("image");
+        let roi = (2, 2, 4, 4);
+        let mut expected_context = DecoderContext::default();
+        let expected = image
+            .decode_region_components_with_ht_decoder(
+                &mut expected_context,
+                roi,
+                &mut CpuOnlyCodeBlockDecoder,
+            )
+            .expect("native region decode");
+
+        let mut hooked_context = DecoderContext::default();
+        let mut decoder = MetalMctDecoder::default();
+        let actual = image
+            .decode_region_components_with_ht_decoder(&mut hooked_context, roi, &mut decoder)
+            .expect("Metal MCT region decode");
+
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        for (component, (actual_plane, expected_plane)) in
+            actual.planes().iter().zip(expected.planes()).enumerate()
+        {
+            assert_eq!(
+                actual_plane.samples(),
+                expected_plane.samples(),
+                "Metal MCT component {component} must match native region decode"
+            );
+        }
+        #[cfg(target_os = "macos")]
+        assert!(
+            decoder.kernel_dispatches() > 0,
+            "OpenJPEG RGB region must exercise the Metal MCT kernel"
+        );
+    }
+
+    #[test]
     fn metal_mct_decoder_captures_final_rgb_planes_matching_host_output() {
         #[cfg(target_os = "macos")]
         if !should_run_metal_runtime() {

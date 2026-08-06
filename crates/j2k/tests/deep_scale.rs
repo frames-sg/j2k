@@ -248,3 +248,63 @@ fn deep_scaled_decode_preserves_lenient_recovery_warning() {
         vec![J2kDecodeWarning::LenientMetadataRecovery]
     );
 }
+
+#[test]
+fn native_components_at_reduction_match_the_packed_production_path() {
+    let bytes = encode_rgb_fixture(65, 33, 4, None);
+    let mut decoder = J2kDecoder::new(&bytes).expect("native component decoder");
+
+    let native = decoder
+        .decode_native_components_at_reduction(3)
+        .expect("native 1/8 decode");
+
+    assert_eq!(native.dimensions(), (9, 5));
+    assert_eq!(native.planes().len(), 3);
+    assert!(native.planes().iter().all(|plane| {
+        plane.dimensions() == (9, 5)
+            && plane.bit_depth() == 8
+            && !plane.signed()
+            && plane.bytes_per_sample() == 1
+    }));
+
+    let mut packed = vec![0_u8; 9 * 5 * 3];
+    let mut packed_decoder = J2kDecoder::new(&bytes).expect("packed decoder");
+    packed_decoder
+        .decode_region_scaled_pow2_into(
+            &mut J2kScratchPool::new(),
+            &mut packed,
+            9 * 3,
+            PixelFormat::Rgb8,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 65,
+                h: 33,
+            },
+            3,
+        )
+        .expect("packed 1/8 decode");
+    let interleaved = (0..45)
+        .flat_map(|index| native.planes().iter().map(move |plane| plane.data()[index]))
+        .collect::<Vec<_>>();
+    assert_eq!(interleaved, packed);
+}
+
+#[test]
+fn native_component_reduction_zero_delegates_and_excess_levels_fail() {
+    let bytes = encode_rgb_fixture(32, 17, 3, None);
+    let mut full_decoder = J2kDecoder::new(&bytes).expect("full decoder");
+    let full = full_decoder
+        .decode_native_components()
+        .expect("full native decode");
+    let mut zero_decoder = J2kDecoder::new(&bytes).expect("zero-level decoder");
+    let zero = zero_decoder
+        .decode_native_components_at_reduction(0)
+        .expect("zero-level native decode");
+    assert_eq!(zero, full);
+
+    let error = zero_decoder
+        .decode_native_components_at_reduction(4)
+        .expect_err("reduction beyond the wavelet ladder must fail");
+    assert!(matches!(error, J2kError::Unsupported(_)));
+}

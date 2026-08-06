@@ -81,6 +81,16 @@ Both offline candidate gates run from that clean commit. A failure or any
 tracked correction invalidates `RC_SHA`; commit the correction, choose a new
 candidate SHA, and rerun the local and exact-SHA evidence.
 
+ISO/IEC 15444-4:2024 / ITU-T T.803 v3 claim eligibility is scoped independently.
+CPU wording requires exact-SHA reports from Linux x86-64, macOS arm64, and
+Windows x86-64. CUDA and Metal adapter wording each requires that adapter's own
+exact-SHA real-hardware report. Every report in the selected scope must contain
+all selected cases with no skips. An unavailable adapter blocks only its own
+claim; it does not invalidate or suppress a complete CPU result. The optional
+`--scope all` verifier is a coordinated-release convenience, not the definition
+of CPU compliance. Current status is recorded in
+[`docs/t803-conformance.md`](t803-conformance.md).
+
 During remediation, the changelog keeps a real `## [Unreleased]` heading and a
 structured staged-version line. As the final release-preparation edit before
 candidate freeze, replace that heading with `## [<workspace-version>] - YYYY-MM-DD` using the
@@ -98,7 +108,7 @@ have completed:
 
 ```bash
 test "$(git rev-parse origin/main)" = "$RC_SHA"
-cargo xtask release-status --sha "$RC_SHA"
+cargo xtask release-status --sha "$RC_SHA" --scope cpu
 ```
 
 Any tracked edit creates a new candidate: commit it, choose a new `RC_SHA`, and
@@ -272,8 +282,8 @@ integrity mode so it cannot bypass those source and metadata checks.
 
 The public-support gate verifies that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
 JPH, known-limitation, and publication-gate rows remain synchronized with tests
-and the conformance manifest before a release can claim full scoped codec
-support.
+and their support inventory. That implementation boundary does not substitute
+for the T.803 exact-reference gate or authorize a conformance claim.
 
 ## Required gates
 
@@ -295,6 +305,16 @@ After the candidate is frozen and committed, hosted CI must pass for exactly
 - bounded fuzz run
 - coverage via `cargo xtask coverage`
 - hosted macOS Metal compilation and pure tests via `cargo xtask metal-compile`
+- exact-reference T.803 CPU reports on Linux x86-64, macOS arm64, and Windows
+  x86-64 when the release declares CPU Profile/Cclass wording, with all selected
+  cases present and passing
+- an exact-reference CUDA or Metal adapter-IUT report from real hardware when
+  the release declares wording for that adapter, with CPU/device/hybrid stages
+  disclosed per case; compilation alone is never adapter conformance evidence
+- packaged clean-consumer checks for `j2k`, `j2k-cuda`, and `j2k-metal`
+- route-parity tests for every fixed `Auto` decision; any newly promoted hybrid
+  threshold additionally requires verified external Criterion evidence and its
+  artifact hash
 
 Changed-line coverage records production Rust across CPU and accelerator
 crates. The host lane enforces 80% across all changed production Rust and an

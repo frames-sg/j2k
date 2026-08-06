@@ -327,7 +327,7 @@ use self::direct_execute::{
 mod decode_cleanup;
 #[cfg(target_os = "macos")]
 pub(crate) use self::decode_cleanup::{
-    decode_classic_cleanup_code_block, decode_classic_cleanup_sub_band,
+    decode_classic_cleanup_code_block_with_midpoint, decode_classic_cleanup_sub_band_with_midpoint,
     decode_ht_cleanup_code_block, decode_ht_cleanup_sub_band,
 };
 #[cfg(target_os = "macos")]

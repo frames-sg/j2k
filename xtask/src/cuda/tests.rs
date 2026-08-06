@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    clippy_suite_args, exact_suite_args, listed_rust_tests, passed_rust_tests,
-    reject_cuda_skip_markers, require_cuda_host, runtime_suite_args, successful_test_summaries,
-    validate_complete_test_run, validate_cuda_device_probe, validate_exact_named_run,
-    CUDA_CLIPPY_SUITES, CUDA_RUNTIME_SUITES, EXACT_CUDA_SUITES, HTJ2K_ENCODE_PARITY_TESTS,
-    ML_CUDA_TESTS, TRANSCODE_PARITY_TESTS,
+    clippy_non_library_suite_args, clippy_suite_args, exact_suite_args, listed_rust_tests,
+    passed_rust_tests, reject_cuda_skip_markers, require_cuda_host, runtime_suite_args,
+    successful_test_summaries, validate_complete_test_run, validate_cuda_device_probe,
+    validate_exact_named_run, CUDA_CLIPPY_SUITES, CUDA_RUNTIME_SUITES, EXACT_CUDA_SUITES,
+    HTJ2K_ENCODE_PARITY_TESTS, ML_CUDA_TESTS, TRANSCODE_PARITY_TESTS,
 };
 use crate::gpu_validation::ValidationMode;
 
@@ -70,13 +70,31 @@ fn release_commands_name_packages_features_and_non_benchmark_test_targets() {
     }
 
     for suite in CUDA_CLIPPY_SUITES {
-        let args = clippy_suite_args(suite);
-        assert!(args.windows(2).any(|pair| pair == ["-p", suite.package]));
-        assert!(args
+        let library_args = clippy_suite_args(suite);
+        assert!(library_args
+            .windows(2)
+            .any(|pair| pair == ["-p", suite.package]));
+        assert!(library_args
             .windows(2)
             .any(|pair| pair == ["--features", suite.features]));
-        assert!(args.contains(&"--all-targets"));
-        assert!(args.ends_with(&["--", "-D", "warnings"]));
+        assert!(library_args.contains(&"--lib"));
+        assert!(!library_args.contains(&"--all-targets"));
+        assert!(library_args.ends_with(&["--", "-D", "warnings"]));
+
+        let non_library_args = clippy_non_library_suite_args(suite);
+        for target in ["--bins", "--examples", "--tests", "--benches"] {
+            assert!(non_library_args.contains(&target));
+        }
+        assert!(!non_library_args.contains(&"--all-targets"));
+        assert!(non_library_args.ends_with(&[
+            "--",
+            "-D",
+            "warnings",
+            "-A",
+            "clippy::disallowed_methods",
+            "-A",
+            "clippy::disallowed_macros",
+        ]));
     }
 }
 
@@ -245,7 +263,10 @@ fn cuda_release_executes_the_complete_hermetic_command_plan() {
         .expect("platform-independent CUDA release plan");
 
     let log = cargo.log();
-    assert_eq!(log.lines().count(), expected_runs * 19);
+    let commands_per_run =
+        CUDA_CLIPPY_SUITES.len() * 2 + CUDA_RUNTIME_SUITES.len() + EXACT_CUDA_SUITES.len() * 2;
+    assert_eq!(commands_per_run, 26);
+    assert_eq!(log.lines().count(), expected_runs * commands_per_run);
     assert!(log.lines().all(|line| line.contains("RUST_TEST_THREADS=1")));
     assert_eq!(device.log().lines().count(), expected_runs);
 }

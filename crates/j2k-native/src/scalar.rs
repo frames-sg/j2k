@@ -18,6 +18,8 @@ use self::classic_decode::{checked_code_block_output_layout, CodeBlockOutputLayo
 pub use self::classic_decode::{
     decode_j2k_code_block_scalar, decode_j2k_code_block_scalar_profiled,
     decode_j2k_code_block_scalar_with_workspace,
+    decode_j2k_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace_midpoint_profiled,
     decode_j2k_code_block_scalar_with_workspace_profiled, decode_j2k_sub_band_scalar,
     J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace,
 };

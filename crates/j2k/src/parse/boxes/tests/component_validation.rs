@@ -2,10 +2,7 @@
 
 use j2k_core::TileLayout;
 
-use super::super::{
-    resolved_component_at, resolved_component_count, resolved_component_source,
-    validate_component_metadata, validate_ihdr_matches_codestream, Jp2ImageHeader,
-};
+use super::super::{validate_component_metadata, validate_ihdr_matches_codestream, Jp2ImageHeader};
 use crate::parse::ParsedSiz;
 use crate::{
     J2kComponentInfo, J2kComponentMapping, J2kComponentMappingType, J2kError, J2kFileMetadata,
@@ -82,64 +79,47 @@ fn image_header_validation_rejects_only_dimension_mismatches() {
 }
 
 #[test]
-fn component_resolution_prefers_valid_mappings_then_palette_then_codestream() {
-    let siz = siz(vec![component(8, false), component(12, true)]);
+fn palette_channels_do_not_replace_ihdr_codestream_component_metadata() {
+    let siz = siz(vec![component(8, false)]);
     let mut metadata = metadata();
-    let source = resolved_component_source(&metadata, &siz);
-    assert_eq!(resolved_component_count(source, &metadata, &siz), 2);
-    assert_eq!(
-        resolved_component_at(source, &metadata, &siz, 1),
-        Some(component(12, true))
-    );
-
     metadata.palette = Some(J2kPaletteMetadata {
-        columns: vec![J2kPaletteColumn {
-            bit_depth: 6,
-            signed: false,
-        }],
+        columns: vec![
+            J2kPaletteColumn {
+                bit_depth: 6,
+                signed: false,
+            },
+            J2kPaletteColumn {
+                bit_depth: 7,
+                signed: false,
+            },
+            J2kPaletteColumn {
+                bit_depth: 8,
+                signed: false,
+            },
+        ],
         entries: Vec::new(),
     });
-    let source = resolved_component_source(&metadata, &siz);
-    assert_eq!(resolved_component_count(source, &metadata, &siz), 1);
-    assert_eq!(
-        resolved_component_at(source, &metadata, &siz, 0),
-        Some(component(6, false))
-    );
-
-    metadata.component_mappings = vec![
-        J2kComponentMapping {
-            component_index: 1,
-            mapping_type: J2kComponentMappingType::Direct,
-        },
-        J2kComponentMapping {
+    metadata.component_mappings = (0..3)
+        .map(|column| J2kComponentMapping {
             component_index: 0,
-            mapping_type: J2kComponentMappingType::Palette { column: 0 },
-        },
-    ];
-    let source = resolved_component_source(&metadata, &siz);
-    assert_eq!(resolved_component_count(source, &metadata, &siz), 2);
-    assert_eq!(
-        resolved_component_at(source, &metadata, &siz, 0),
-        Some(component(12, true))
-    );
-    assert_eq!(
-        resolved_component_at(source, &metadata, &siz, 1),
-        Some(component(6, false))
-    );
+            mapping_type: J2kComponentMappingType::Palette { column },
+        })
+        .collect();
 
-    metadata.component_mappings[0].mapping_type = J2kComponentMappingType::Unknown {
-        value: 9,
-        column: 0,
-    };
-    let fallback = resolved_component_source(&metadata, &siz);
-    assert_eq!(
-        resolved_component_at(fallback, &metadata, &siz, 0),
-        Some(component(8, false))
+    assert!(
+        validate_component_metadata(header(1, Some(component(8, false))), &metadata, &siz,).is_ok()
     );
+    assert!(matches!(
+        validate_component_metadata(header(3, Some(component(8, false))), &metadata, &siz),
+        Err(J2kError::InvalidBox {
+            what: "ihdr component count must match codestream components",
+            ..
+        })
+    ));
 }
 
 #[test]
-fn explicit_ihdr_precision_must_match_every_resolved_component_and_forbids_bpcc() {
+fn explicit_ihdr_precision_must_match_every_codestream_component_and_forbids_bpcc() {
     let uniform = siz(vec![component(8, false), component(8, false)]);
     let empty = metadata();
     assert!(
@@ -150,7 +130,7 @@ fn explicit_ihdr_precision_must_match_every_resolved_component_and_forbids_bpcc(
     assert!(matches!(
         validate_component_metadata(header(2, Some(component(8, false))), &empty, &mixed),
         Err(J2kError::InvalidBox {
-            what: "ihdr bpc must match resolved JP2 image component precision",
+            what: "ihdr bpc must match codestream component precision",
             ..
         })
     ));
@@ -186,7 +166,7 @@ fn variable_precision_requires_complete_matching_bpcc_metadata() {
     assert!(matches!(
         validate_component_metadata(header(2, None), &metadata, &siz),
         Err(J2kError::InvalidBox {
-            what: "bpcc entries must match resolved JP2 image component precision",
+            what: "bpcc entries must match codestream component precision",
             ..
         })
     ));
@@ -194,7 +174,7 @@ fn variable_precision_requires_complete_matching_bpcc_metadata() {
     assert!(matches!(
         validate_component_metadata(header(3, None), &metadata, &siz),
         Err(J2kError::InvalidBox {
-            what: "ihdr component count must match resolved JP2 image components",
+            what: "ihdr component count must match codestream components",
             ..
         })
     ));

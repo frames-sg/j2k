@@ -53,6 +53,12 @@ pub(crate) fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
 }
 
 #[inline(always)]
+pub(crate) fn sign_extend_u32(raw: u32, bit_depth: u32) -> i32 {
+    let shift = 32 - bit_depth;
+    ((raw << shift) as i32) >> shift
+}
+
+#[inline(always)]
 pub(crate) fn floor_f32(value: f32) -> f32 {
     // f32::floor routes through libdevice in cuda-oxide, which emits NVVM IR
     // instead of the PTX loaded by this runtime path.

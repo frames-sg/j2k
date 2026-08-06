@@ -39,6 +39,92 @@ fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_lossy_host_output_thresholds_match_verified_external_cells() {
+    let context = |num_pixels, num_components, reversible, bit_depth, signed| J2kEncodeContext {
+        num_pixels,
+        num_components,
+        bit_depth,
+        signed,
+        reversible,
+    };
+
+    assert!(!auto_host_output_should_dispatch(context(
+        640 * 480,
+        1,
+        false,
+        8,
+        false
+    )));
+    assert!(!auto_host_output_should_dispatch(context(
+        3323 * 891,
+        1,
+        false,
+        8,
+        false
+    )));
+    assert!(!auto_host_output_should_dispatch(context(
+        3323 * 891,
+        1,
+        true,
+        8,
+        false
+    )));
+
+    assert!(!auto_host_output_should_dispatch(context(
+        640 * 480,
+        3,
+        false,
+        8,
+        false
+    )));
+    assert!(auto_host_output_should_dispatch(context(
+        2592 * 1944,
+        3,
+        false,
+        8,
+        false
+    )));
+    assert!(!auto_host_output_should_dispatch(context(
+        2592 * 1944,
+        4,
+        false,
+        8,
+        false
+    )));
+    assert!(!auto_host_output_should_dispatch(context(
+        2592 * 1944,
+        3,
+        false,
+        16,
+        false
+    )));
+    assert!(!auto_host_output_should_dispatch(context(
+        2592 * 1944,
+        3,
+        false,
+        8,
+        true
+    )));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn host_output_evidence_route_uses_only_supported_component_counts() {
+    let context = |num_components| J2kEncodeContext {
+        num_pixels: 64 * 64,
+        num_components,
+        bit_depth: 8,
+        signed: false,
+        reversible: true,
+    };
+
+    assert!(host_output_evidence_should_dispatch(context(1)));
+    assert!(host_output_evidence_should_dispatch(context(4)));
+    assert!(!host_output_evidence_should_dispatch(context(5)));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|i| u8::try_from((i * 17) & 0xff).expect("masked pixel fits u8"))
@@ -69,7 +155,52 @@ fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_classic_large_host_output_dispatches_benchmark_gated_prep_stages_only() {
+fn host_output_benchmark_route_forces_small_prep_stages_only() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let width = 64u32;
+    let height = 64u32;
+    let pixels = (0..width * height)
+        .map(|index| u8::try_from((index * 17 + index / 5) & 0xff).expect("masked pixel fits u8"))
+        .collect::<Vec<_>>();
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::Auto,
+        block_coding_mode: J2kBlockCodingMode::Classic,
+        max_decomposition_levels: Some(3),
+        validation: J2kEncodeValidation::External,
+    };
+    let expected = encode_j2k_lossless(
+        J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).expect("valid CPU samples"),
+        &lossless_options! {
+            backend: EncodeBackendPreference::CpuOnly,
+            block_coding_mode: J2kBlockCodingMode::Classic,
+            max_decomposition_levels: Some(3),
+            validation: J2kEncodeValidation::External,
+        },
+    )
+    .expect("CPU lossless encode");
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output_benchmark();
+    let actual = encode_j2k_lossless_with_accelerator(
+        J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).expect("valid hybrid samples"),
+        &options,
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("benchmark host-output encode");
+
+    assert_eq!(actual.codestream, expected.codestream);
+    assert_eq!(actual.dispatch_report.deinterleave, 1);
+    assert_eq!(actual.dispatch_report.forward_dwt53, 1);
+    assert!(actual.dispatch_report.quantize_subband > 0);
+    assert_eq!(actual.dispatch_report.tier1_code_block, 0);
+    assert_eq!(actual.dispatch_report.packetization, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_classic_large_lossless_host_output_stays_cpu_without_metal_dispatches() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -94,12 +225,12 @@ fn auto_classic_large_host_output_dispatches_benchmark_gated_prep_stages_only() 
         BackendKind::Metal,
         &mut accelerator,
     )
-    .expect("benchmark-gated Auto host-output encode");
+    .expect("Auto lossless host-output encode");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
-    assert_eq!(accelerator.deinterleave_dispatches(), 1);
-    assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
-    assert!(accelerator.quantize_subband_dispatches() > 0);
+    assert_eq!(accelerator.deinterleave_dispatches(), 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
+    assert_eq!(accelerator.quantize_subband_dispatches(), 0);
     assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
 }

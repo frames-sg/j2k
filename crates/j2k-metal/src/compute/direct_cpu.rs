@@ -6,6 +6,8 @@ use j2k_native::{
     decode_ht_code_block_scalar_with_workspace,
     decode_ht_code_block_scalar_with_workspace_profiled,
     decode_j2k_code_block_scalar_with_workspace,
+    decode_j2k_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace_midpoint_profiled,
     decode_j2k_code_block_scalar_with_workspace_profiled, HtCodeBlockDecodeJob,
     HtCodeBlockDecodeProfile, HtCodeBlockDecodeWorkspace, J2kCodeBlockDecodeJob,
     J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace, J2kCodeBlockSegment, J2kCodeBlockStyle,
@@ -192,23 +194,23 @@ fn decode_prepared_classic_jobs_on_cpu_with_scratch_impl<const PROFILE: bool>(
         if PROFILE {
             let decode_started = Instant::now();
             let mut profile = J2kCodeBlockDecodeProfile::default();
-            decode_j2k_code_block_scalar_with_workspace_profiled(
-                decode_job,
-                output_window,
-                &mut scratch.decode,
-                &mut profile,
-            )
-            .map_err(native_decode_error)?;
+            let decode = if job.irreversible_midpoint != 0 {
+                decode_j2k_code_block_scalar_with_workspace_midpoint_profiled
+            } else {
+                decode_j2k_code_block_scalar_with_workspace_profiled
+            };
+            decode(decode_job, output_window, &mut scratch.decode, &mut profile)
+                .map_err(native_decode_error)?;
             profile_counters
                 .expect("profile counters required for profiled classic decode")
                 .record_classic_block_decode(decode_started, &profile);
         } else {
-            decode_j2k_code_block_scalar_with_workspace(
-                decode_job,
-                output_window,
-                &mut scratch.decode,
-            )
-            .map_err(native_decode_error)?;
+            let decode = if job.irreversible_midpoint != 0 {
+                decode_j2k_code_block_scalar_with_workspace_midpoint
+            } else {
+                decode_j2k_code_block_scalar_with_workspace
+            };
+            decode(decode_job, output_window, &mut scratch.decode).map_err(native_decode_error)?;
         }
     }
     Ok(())

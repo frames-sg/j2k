@@ -20,7 +20,7 @@ mod kernels {
         },
         helpers::{
             floor_f32, load_f32, load_f32_u64, load_job, load_u8, load_u32, store_f32,
-            store_f32_u64, store_i32, store_u8, store_u32,
+            sign_extend_u32, store_f32_u64, store_i32, store_u8, store_u32,
         },
         packetization::{
             j2k_packet_build_header_serial, j2k_packet_copy_body_cooperative, j2k_packet_status,
@@ -53,21 +53,16 @@ mod kernels {
         let mut component = 0_u32;
         while component < num_components {
             let sample_base = pixel_base + component as u64 * bytes_per_sample as u64;
-            let sample = if bit_depth <= 8 {
-                let raw = load_u8(pixels, sample_base);
-                if is_signed != 0 {
-                    (raw as i8) as f32
-                } else {
-                    raw as f32 - unsigned_offset
-                }
+            let raw = if bit_depth <= 8 {
+                load_u8(pixels, sample_base) as u32
             } else {
-                let raw = load_u8(pixels, sample_base) as u16
-                    | ((load_u8(pixels, sample_base + 1) as u16) << 8);
-                if is_signed != 0 {
-                    (raw as i16) as f32
-                } else {
-                    raw as f32 - unsigned_offset
-                }
+                load_u8(pixels, sample_base) as u32
+                    | ((load_u8(pixels, sample_base + 1) as u32) << 8)
+            };
+            let sample = if is_signed != 0 {
+                sign_extend_u32(raw, bit_depth) as f32
+            } else {
+                raw as f32 - unsigned_offset
             };
             store_f32_u64(components, component as u64 * num_pixels + idx, sample);
             component += 1;
@@ -105,21 +100,16 @@ mod kernels {
         let mut component = 0_u32;
         while component < num_components {
             let sample_base = pixel_base + component as u64 * bytes_per_sample as u64;
-            let sample = if bit_depth <= 8 {
-                let raw = load_u8(pixels, sample_base);
-                if is_signed != 0 {
-                    (raw as i8) as f32
-                } else {
-                    raw as f32 - unsigned_offset
-                }
+            let raw = if bit_depth <= 8 {
+                load_u8(pixels, sample_base) as u32
             } else {
-                let raw = load_u8(pixels, sample_base) as u16
-                    | ((load_u8(pixels, sample_base + 1) as u16) << 8);
-                if is_signed != 0 {
-                    (raw as i16) as f32
-                } else {
-                    raw as f32 - unsigned_offset
-                }
+                load_u8(pixels, sample_base) as u32
+                    | ((load_u8(pixels, sample_base + 1) as u32) << 8)
+            };
+            let sample = if is_signed != 0 {
+                sign_extend_u32(raw, bit_depth) as f32
+            } else {
+                raw as f32 - unsigned_offset
             };
             store_f32_u64(components, component as u64 * num_pixels + idx, sample);
             component += 1;

@@ -6,9 +6,7 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendRequest, PixelFormat};
 #[cfg(target_os = "macos")]
-use j2k_native::{
-    DecodeSettings as NativeDecodeSettings, Image as NativeImage, J2kDirectGrayscalePlan,
-};
+use j2k_native::{DecodeSettings as NativeDecodeSettings, Image as NativeImage};
 #[cfg(target_os = "macos")]
 use metal::Device;
 
@@ -119,11 +117,6 @@ macro_rules! define_ensure_prepared_direct_plan {
         }
     };
 }
-
-#[cfg(target_os = "macos")]
-const AUTO_REPEATED_GRAYSCALE_MIN_DIM: u32 = 512;
-#[cfg(target_os = "macos")]
-const AUTO_REPEATED_GRAYSCALE_MIN_COUNT: usize = 16;
 
 impl J2kDecoder<'_> {
     #[cfg(target_os = "macos")]
@@ -272,7 +265,7 @@ impl J2kDecoder<'_> {
     }
 
     #[cfg(target_os = "macos")]
-    fn decode_repeated_grayscale_cpu_to_surfaces(
+    fn decode_repeated_cpu_to_surfaces(
         &mut self,
         fmt: PixelFormat,
         count: usize,
@@ -285,20 +278,6 @@ impl J2kDecoder<'_> {
             surfaces.push(self.decode_to_cpu_surface(fmt)?);
         }
         Ok(surfaces)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn should_auto_use_direct_for_repeated(
-        plan: &J2kDirectGrayscalePlan,
-        fmt: PixelFormat,
-        count: usize,
-    ) -> bool {
-        if !matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) || count == 0 {
-            return false;
-        }
-
-        let max_dim = plan.dimensions.0.max(plan.dimensions.1);
-        max_dim >= AUTO_REPEATED_GRAYSCALE_MIN_DIM && count >= AUTO_REPEATED_GRAYSCALE_MIN_COUNT
     }
 
     #[cfg(target_os = "macos")]
@@ -408,14 +387,15 @@ impl J2kDecoder<'_> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        if !matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
-            return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
-        }
         let dims = self.inner.info().dimensions;
-        if dims.0.max(dims.1) < AUTO_REPEATED_GRAYSCALE_MIN_DIM
-            || count < AUTO_REPEATED_GRAYSCALE_MIN_COUNT
-        {
-            return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
+        let Some(transfer_syntax) = j2k::J2kDecoder::inspect_support(self.bytes)
+            .ok()
+            .map(|support| support.transfer_syntax)
+        else {
+            return self.decode_repeated_cpu_to_surfaces(fmt, count);
+        };
+        if !crate::routing::auto_repeated_decode_uses_metal(dims, fmt, count, transfer_syntax) {
+            return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }
         let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
         if self.native_prepared_direct_gray_plan.is_some()
@@ -434,7 +414,7 @@ impl J2kDecoder<'_> {
                 )));
             };
             let Ok(plan) = image.build_direct_grayscale_plan_with_context(native_context) else {
-                return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
+                return self.decode_repeated_cpu_to_surfaces(fmt, count);
             };
             let plan = Arc::new(plan);
             let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(
@@ -444,16 +424,41 @@ impl J2kDecoder<'_> {
             self.native_prepared_direct_gray_plan = Some(prepared);
             self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
         }
-        let Some(plan) = self.native_direct_gray_plan.as_ref() else {
-            return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
+        let Some(prepared) = self.native_prepared_direct_gray_plan.as_ref() else {
+            return self.decode_repeated_cpu_to_surfaces(fmt, count);
         };
-        if Self::should_auto_use_direct_for_repeated(plan, fmt, count) {
-            let Some(prepared) = self.native_prepared_direct_gray_plan.as_ref() else {
-                return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
-            };
-            crate::compute::execute_repeated_prepared_direct_grayscale_plan(prepared, fmt, count)
-        } else {
-            self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count)
+        crate::compute::execute_repeated_prepared_direct_grayscale_plan(prepared, fmt, count)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn decode_repeated_color_auto_to_device_routed(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: Option<&MetalBackendSession>,
+    ) -> Result<Vec<Surface>, Error> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(transfer_syntax) = j2k::J2kDecoder::inspect_support(self.bytes)
+            .ok()
+            .map(|support| support.transfer_syntax)
+        else {
+            return self.decode_repeated_cpu_to_surfaces(fmt, count);
+        };
+        if !crate::routing::auto_repeated_decode_uses_metal(
+            self.inner.info().dimensions,
+            fmt,
+            count,
+            transfer_syntax,
+        ) {
+            return self.decode_repeated_cpu_to_surfaces(fmt, count);
+        }
+        match self.decode_repeated_color_direct_to_device_routed(fmt, count, session) {
+            Err(error) if error.is_direct_fallback() => {
+                self.decode_repeated_cpu_to_surfaces(fmt, count)
+            }
+            result => result,
         }
     }
 }

@@ -92,7 +92,7 @@ fn prepared_classic_multitile_gray_and_rgb_are_resident_and_external_bit_exact()
 }
 
 #[test]
-fn classic_irreversible_gray_and_rgb_match_cpu_within_one_lsb_for_all_requests_and_layouts() {
+fn classic_irreversible_gray_and_rgb_match_cpu_exactly_for_all_requests_and_layouts() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
@@ -125,6 +125,34 @@ fn classic_irreversible_gray_and_rgb_match_cpu_within_one_lsb_for_all_requests_a
         for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
             for request in requests {
                 assert_classic_irreversible_case(&context, &encoded, layout, request);
+            }
+        }
+    }
+}
+
+#[test]
+fn classic_roi_maxshift_gray_and_rgb_match_cpu_exactly() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let requests = [
+        DecodeRequest::Full,
+        DecodeRequest::RegionReduced {
+            roi: Rect {
+                x: 2,
+                y: 4,
+                w: 10,
+                h: 8,
+            },
+            scale: Downscale::Half,
+        },
+    ];
+    for channels in [1, 3] {
+        let encoded = classic_roi_fixture(channels);
+        for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+            for request in requests {
+                assert_classic_case(&context, &encoded, layout, request);
             }
         }
     }
@@ -224,6 +252,31 @@ fn classic_irreversible_fixture(channels: u16) -> Arc<[u8]> {
             },
         )
         .expect("encode classic irreversible fixture"),
+    )
+}
+
+fn classic_roi_fixture(channels: u16) -> Arc<[u8]> {
+    let sample_count = 16 * 16 * channels as usize;
+    let samples = (0..sample_count)
+        .map(|index| u8::try_from((index * 53 + 11) & 0xff).expect("masked sample fits u8"))
+        .collect::<Vec<_>>();
+    Arc::from(
+        j2k_native::encode(
+            &samples,
+            16,
+            16,
+            channels,
+            8,
+            false,
+            &j2k_native::EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                use_mct: channels == 3,
+                roi_component_shifts: vec![7; channels as usize],
+                ..j2k_native::EncodeOptions::default()
+            },
+        )
+        .expect("encode classic ROI fixture"),
     )
 }
 
@@ -361,13 +414,21 @@ fn assert_classic_irreversible_case(
     allocation
         .copy_to_host(&mut external)
         .expect("download classic irreversible external output");
-    assert_within_one_lsb(&external, expected, "external", layout, request);
+    assert_eq!(
+        external.as_slice(),
+        expected.as_slice(),
+        "external {layout:?} {request:?}"
+    );
 
     let resident = decoder
         .decode_prepared(&prepared)
         .expect("decode classic irreversible resident batch");
     let actual = download_resident_bytes(&resident.groups()[0], expected.len());
-    assert_within_one_lsb(&actual, expected, "resident", layout, request);
+    assert_eq!(
+        actual.as_slice(),
+        expected.as_slice(),
+        "resident {layout:?} {request:?}"
+    );
 }
 
 fn download_resident_bytes(group: &CudaBatchGroup, expected_len: usize) -> Vec<u8> {
@@ -382,22 +443,6 @@ fn download_resident_bytes(group: &CudaBatchGroup, expected_len: usize) -> Vec<u
         .copy_range_to_host(dense.ranges()[0].offset, &mut actual)
         .expect("download classic color resident output");
     actual
-}
-
-fn assert_within_one_lsb(
-    actual: &[u8],
-    expected: &[u8],
-    route: &str,
-    layout: BatchLayout,
-    request: DecodeRequest,
-) {
-    assert_eq!(actual.len(), expected.len());
-    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-        assert!(
-            actual.abs_diff(expected) <= 1,
-            "{route} {layout:?} {request:?} sample {index}: actual={actual}, expected={expected}"
-        );
-    }
 }
 
 fn samples_as_bytes(samples: &CpuBatchSamples) -> Vec<u8> {

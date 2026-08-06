@@ -1,0 +1,11 @@
+# id	status	features	reason
+part1_core_lossless_53	implemented	part1-core;lossless-5-3	Part 1 reversible core support is covered by repo-local tests and the exact T.803 matrix.
+part1_core_lossy_97_layers_precincts	implemented	part1-core;lossy-9-7;quality-layers;precincts;progression-orders	Part 1 irreversible multi-layer support is covered by repo-local tests and the exact T.803 matrix.
+part1_poc_tlm_sop	implemented	part1-core;poc;progression-orders;tlm;sop	POC packet iteration, TLM metadata, SOP markers, and progression orders are covered locally and by selected T.803 cases.
+part1_plt_sop_eph	implemented	part1-core;poc;progression-orders;plt;sop;eph	PLT lengths, separated packet headers, SOP/EPH, and POC changes are covered locally and by selected T.803 cases.
+openhtj2k_ds0_ht_12_b11	implemented	part15-core;ht-refinement	The committed OpenHTJ2K-derived fixture covers HT refinement decoding; Part 15 is outside the Part 1 T.803 claim.
+openhtj2k_ds0_ht_09_b11	implemented	part15-core;ht-refinement	The committed OpenHTJ2K-derived fixture covers HT refinement decoding; Part 15 is outside the Part 1 T.803 claim.
+plm_iso_vector_absent	coverage-gap	plm;conformance-coverage-gap	The selected T.803 v3 Part 1 tables contain no described PLM-bearing case; PLM remains covered by repo-local tests.
+jpx_part2_deferred	out-of-scope	jpx;part2	JPX and JPEG 2000 Part 2 extensions are outside the scope except where Annex G requires JP2-compatible input handling.
+icc_roundtrip_deferred	coverage-gap	jp2;icc-roundtrip;external-parity	JP2/JPH ICC write, inspect, rewrap, and decode are covered locally; broader external ICC parity remains pending.
+encode_gt16_deferred	coverage-gap	encode-25-38-bit;external-parity	High-bit-depth paths have repo-local boundary coverage; broader external encoder parity remains publication evidence.

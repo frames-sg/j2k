@@ -15,9 +15,9 @@ use super::packetization::{
     cuda_ht_segment_lengths, flatten_cuda_htj2k_packetization_job, CudaHtj2kPacketizationPlanError,
     CudaHtj2kPacketizationPlanTagNodeState,
 };
-#[cfg(feature = "cuda-runtime")]
-use super::stage::cuda_dwt53_output_to_j2k;
 use super::stage::cuda_packetization_plan_fallback_reason;
+#[cfg(feature = "cuda-runtime")]
+use super::stage::{cuda_dwt53_output_to_j2k, cuda_dwt97_output_to_j2k};
 #[cfg(not(feature = "cuda-runtime"))]
 use super::CudaEncodeFallbackReason;
 #[cfg(feature = "cuda-runtime")]
@@ -52,11 +52,14 @@ use j2k_core::{BackendKind, CodecError};
 use j2k_cuda_runtime::{
     CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob,
 };
-#[cfg(feature = "cuda-runtime")]
-use j2k_native::forward_dwt53_reference;
 use j2k_native::{
     encode_with_accelerator as encode_with_native_accelerator, DecodeSettings, EncodeOptions,
     EncodeResult, Image,
+};
+#[cfg(feature = "cuda-runtime")]
+use j2k_native::{
+    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference,
+    try_deinterleave_reference,
 };
 
 fn assert_strict_cuda_classic_tier1_error<E: CodecError + ?Sized>(err: &E, context: &str) {

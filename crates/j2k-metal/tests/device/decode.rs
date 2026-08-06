@@ -28,6 +28,70 @@ fn full_classic_grayscale_decode_to_metal_matches_host_decode() {
 }
 
 #[test]
+fn full_classic_signed_gray4_decode_to_metal_matches_host_exactly() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let (bytes, expected) = fixture_classic_signed_gray4();
+    let options = BatchDecodeOptions {
+        layout: BatchLayout::Nhwc,
+        ..BatchDecodeOptions::default()
+    };
+    let mut decoder =
+        MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
+    let batch = decoder
+        .decode_batch(vec![EncodedImage::full(Arc::from(bytes))])
+        .expect("decode signed classic gray4 batch");
+    assert!(batch.errors().is_empty(), "{:?}", batch.errors());
+    assert!(
+        batch.group_errors().is_empty(),
+        "{:?}",
+        batch.group_errors()
+    );
+    let surface = &batch.groups()[0].surfaces()[0];
+    let actual = surface
+        .as_bytes()
+        .expect("signed classic gray4 surface bytes")
+        .chunks_exact(2)
+        .map(|sample| i16::from_ne_bytes([sample[0], sample[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn full_classic_signed_gray4_roi_decode_to_metal_matches_host_exactly() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let (bytes, expected) = fixture_classic_signed_gray4_roi();
+    let options = BatchDecodeOptions {
+        layout: BatchLayout::Nhwc,
+        ..BatchDecodeOptions::default()
+    };
+    let mut decoder =
+        MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
+    let batch = decoder
+        .decode_batch(vec![EncodedImage::full(Arc::from(bytes))])
+        .expect("decode signed classic gray4 ROI batch");
+    assert!(batch.errors().is_empty(), "{:?}", batch.errors());
+    assert!(
+        batch.group_errors().is_empty(),
+        "{:?}",
+        batch.group_errors()
+    );
+    let surface = &batch.groups()[0].surfaces()[0];
+    let actual = surface
+        .as_bytes()
+        .expect("signed classic gray4 ROI surface bytes")
+        .chunks_exact(2)
+        .map(|sample| i16::from_ne_bytes([sample[0], sample[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn full_htj2k_decode_to_metal_matches_host_decode() {
     if !should_run_metal_runtime() {
         return;
@@ -110,6 +174,92 @@ fn full_irreversible_j2k_decode_to_metal_matches_host_decode() {
 }
 
 #[test]
+fn full_irreversible_rgb_j2k_decode_to_metal_matches_host_decode_exactly() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let pixels = j2k_test_support::gradient_u8(16, 16, 3);
+    let bytes = encode(
+        &pixels,
+        16,
+        16,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: false,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode irreversible RGB8");
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut host = vec![0u8; 16 * 16 * 3];
+    host_decoder
+        .decode_into(&mut host, 16 * 3, PixelFormat::Rgb8)
+        .expect("host decode");
+
+    let surface = decoder
+        .decode_to_device(PixelFormat::Rgb8, BackendRequest::Metal)
+        .expect("device decode");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.as_bytes().expect("surface byte access"), host);
+}
+
+#[test]
+fn openjpeg_irreversible_rgb_roi_decode_to_metal_matches_cpu_exactly() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let codestream = j2k_test_support::OPENJPEG_IRREVERSIBLE_RGB8_8X8;
+    let roi = Rect {
+        x: 2,
+        y: 2,
+        w: 4,
+        h: 4,
+    };
+    let mut decoder = J2kDecoder::new(codestream).expect("decoder");
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut cpu_decoder = J2kDecoder::new(codestream).expect("CPU decoder");
+    let cpu = cpu_decoder
+        .decode_request_to_device_with_session(
+            MetalDecodeRequest::region(PixelFormat::Rgb8, roi, BackendRequest::Cpu),
+            &session,
+        )
+        .expect("CPU surface decode");
+    let mut full_decoder = J2kDecoder::new(codestream).expect("full CPU decoder");
+    let full = full_decoder
+        .decode_request_to_device_with_session(
+            MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Cpu),
+            &session,
+        )
+        .expect("full CPU surface decode");
+    let full = full.as_bytes().expect("full CPU surface byte access");
+    let mut cropped = Vec::with_capacity(4 * 4 * 3);
+    for y in roi.y..roi.y + roi.h {
+        let start = (y as usize * 8 + roi.x as usize) * 3;
+        cropped.extend_from_slice(&full[start..start + roi.w as usize * 3]);
+    }
+    assert_eq!(cpu.as_bytes().expect("CPU surface byte access"), cropped);
+    let surface = decoder
+        .decode_request_to_device_with_session(
+            MetalDecodeRequest::region(PixelFormat::Rgb8, roi, BackendRequest::Metal),
+            &session,
+        )
+        .expect("device decode");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        cpu.as_bytes().expect("CPU surface byte access")
+    );
+}
+
+#[test]
 fn auto_full_grayscale_prefers_cpu_for_small_classic_fixture() {
     let bytes = fixture_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
@@ -143,11 +293,7 @@ fn auto_repeated_grayscale_keeps_short_512_batch_on_cpu() {
 }
 
 #[test]
-fn auto_repeated_grayscale_uses_metal_for_512_batch() {
-    if !should_run_metal_runtime() {
-        return;
-    }
-
+fn auto_repeated_grayscale_keeps_unqualified_512_batch_on_cpu() {
     let bytes = fixture_gray8_sized(512, 512);
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let surfaces = decoder
@@ -156,7 +302,7 @@ fn auto_repeated_grayscale_uses_metal_for_512_batch() {
     assert_eq!(surfaces.len(), 16);
     assert!(surfaces
         .iter()
-        .all(|surface| surface.backend_kind() == BackendKind::Metal));
+        .all(|surface| surface.backend_kind() == BackendKind::Cpu));
 }
 
 #[test]

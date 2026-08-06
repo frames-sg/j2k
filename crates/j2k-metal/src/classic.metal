@@ -17,6 +17,7 @@ struct J2kClassicCleanupBatchJob {
     uint sub_band_type;
     uint style_flags;
     uint strict;
+    uint irreversible_midpoint;
     float dequantization_step;
 };
 
@@ -341,6 +342,61 @@ inline void coeff_set_magnitude_refined_dev(device uchar *states, uint idx) {
 
 inline void coeff_set_magnitude_refined_tg(threadgroup uchar *states, uint idx) {
     set_state_bit_tg(states, idx, J2K_MAG_REF_SHIFT, uchar(1u));
+}
+
+inline float reconstructed_classic_sample(
+    uint coefficient,
+    J2kClassicCleanupBatchJob job
+) {
+    const uint magnitude = coefficient & 0x7FFFFFFFu;
+    const uint decoded_bitplanes =
+        job.total_bitplanes + job.roi_shift - job.missing_msbs;
+    float reconstructed;
+    if (job.irreversible_midpoint != 0u && magnitude != 0u &&
+        job.number_of_coding_passes != 0u) {
+        const uint final_pass = job.number_of_coding_passes - 1u;
+        const uint decoded_plane = (final_pass + 2u) / 3u;
+        if (decoded_bitplanes > decoded_plane) {
+            uint lowest_decoded_bit = decoded_bitplanes - decoded_plane - 1u;
+            if (final_pass % 3u == 1u &&
+                (magnitude & (1u << lowest_decoded_bit)) == 0u) {
+                lowest_decoded_bit += 1u;
+            }
+            uint fixed_magnitude =
+                (magnitude << 1u) | (1u << lowest_decoded_bit);
+            if (job.roi_shift != 0u &&
+                fixed_magnitude >= (1u << job.roi_shift)) {
+                fixed_magnitude >>= job.roi_shift;
+            }
+            reconstructed = float(fixed_magnitude) * 0.5f;
+        } else {
+            reconstructed = float(magnitude);
+        }
+    } else {
+        uint reconstructed_magnitude = magnitude;
+        if (job.roi_shift != 0u &&
+            reconstructed_magnitude >= (1u << job.roi_shift)) {
+            reconstructed_magnitude >>= job.roi_shift;
+        }
+        reconstructed = float(reconstructed_magnitude);
+    }
+    return (coefficient & 0x80000000u) != 0u ? -reconstructed : reconstructed;
+}
+
+inline bool classic_decoded_bitplanes(
+    J2kClassicCleanupBatchJob job,
+    thread uint &bitplanes
+) {
+    if (job.total_bitplanes == 0u || job.total_bitplanes > 31u ||
+        job.roi_shift > 31u - job.total_bitplanes) {
+        return false;
+    }
+    const uint coded_bitplanes = job.total_bitplanes + job.roi_shift;
+    if (job.missing_msbs >= coded_bitplanes) {
+        return false;
+    }
+    bitplanes = coded_bitplanes - job.missing_msbs;
+    return true;
 }
 
 inline void reset_contexts(thread uchar *contexts) {
@@ -805,12 +861,12 @@ inline bool decode_classic_job(
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 0u);
         return false;
     }
-    if (job.total_bitplanes == 0u || job.total_bitplanes > 31u || job.missing_msbs >= job.total_bitplanes) {
+    uint bitplanes = 0u;
+    if (!classic_decoded_bitplanes(job, bitplanes)) {
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 1u);
         return false;
     }
 
-    const uint bitplanes = job.total_bitplanes - job.missing_msbs;
     const uint max_coding_passes = bitplanes == 0u ? 0u : 1u + 3u * (bitplanes - 1u);
     if (job.coded_len == 0u || max_coding_passes == 0u || job.number_of_coding_passes == 0u) {
         return true;
@@ -1073,11 +1129,8 @@ inline bool decode_classic_job(
             for (uint x = 0u; x < job.width; ++x) {
                 const uint coeff =
                     coefficients[coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING)];
-                int magnitude = int(coeff & 0x7FFFFFFFu);
-                if ((coeff & 0x80000000u) != 0u) {
-                    magnitude = -magnitude;
-                }
-                output[output_row + x] = float(magnitude) * job.dequantization_step;
+                output[output_row + x] =
+                    reconstructed_classic_sample(coeff, job) * job.dequantization_step;
             }
         }
     }
@@ -1106,12 +1159,12 @@ inline bool decode_classic_job_plain(
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 0u);
         return false;
     }
-    if (job.total_bitplanes == 0u || job.total_bitplanes > 31u || job.missing_msbs >= job.total_bitplanes) {
+    uint bitplanes = 0u;
+    if (!classic_decoded_bitplanes(job, bitplanes)) {
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 1u);
         return false;
     }
 
-    const uint bitplanes = job.total_bitplanes - job.missing_msbs;
     const uint max_coding_passes = bitplanes == 0u ? 0u : 1u + 3u * (bitplanes - 1u);
     if (job.coded_len == 0u || max_coding_passes == 0u || job.number_of_coding_passes == 0u) {
         return true;
@@ -1307,12 +1360,12 @@ inline bool decode_classic_job_plain_dev(
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 0u);
         return false;
     }
-    if (job.total_bitplanes == 0u || job.total_bitplanes > 31u || job.missing_msbs >= job.total_bitplanes) {
+    uint bitplanes = 0u;
+    if (!classic_decoded_bitplanes(job, bitplanes)) {
         set_classic_status(status, J2K_CLASSIC_STATUS_UNSUPPORTED, 1u);
         return false;
     }
 
-    const uint bitplanes = job.total_bitplanes - job.missing_msbs;
     const uint max_coding_passes = bitplanes == 0u ? 0u : 1u + 3u * (bitplanes - 1u);
     if (job.coded_len == 0u || max_coding_passes == 0u || job.number_of_coding_passes == 0u) {
         return true;
@@ -1495,11 +1548,8 @@ inline bool decode_classic_job_plain_dev(
             for (uint x = 0u; x < job.width; ++x) {
                 const uint coeff =
                     coefficients[coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING)];
-                int magnitude = int(coeff & 0x7FFFFFFFu);
-                if ((coeff & 0x80000000u) != 0u) {
-                    magnitude = -magnitude;
-                }
-                output[output_row + x] = float(magnitude) * job.dequantization_step;
+                output[output_row + x] =
+                    reconstructed_classic_sample(coeff, job) * job.dequantization_step;
             }
         }
     }
@@ -1524,12 +1574,8 @@ inline void store_classic_job_plain_output_tg(
         const uint coeff_idx =
             coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
         const uint coeff = coefficients[coeff_idx];
-        int magnitude = int(coeff & 0x7FFFFFFFu);
-        if ((coeff & 0x80000000u) != 0u) {
-            magnitude = -magnitude;
-        }
         output[job.output_offset + y * job.output_stride + x] =
-            float(magnitude) * job.dequantization_step;
+            reconstructed_classic_sample(coeff, job) * job.dequantization_step;
     }
 }
 
@@ -1667,12 +1713,8 @@ kernel void j2k_store_classic_repeated_batched(
         const uint y = sample_idx / job.width;
         const uint coeff =
             coefficients[coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING)];
-        int magnitude = int(coeff & 0x7FFFFFFFu);
-        if ((coeff & 0x80000000u) != 0u) {
-            magnitude = -magnitude;
-        }
         output[job.output_offset + y * job.output_stride + x] =
-            float(magnitude) * job.dequantization_step;
+            reconstructed_classic_sample(coeff, job) * job.dequantization_step;
     }
 }
 

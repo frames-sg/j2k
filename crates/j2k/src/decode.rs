@@ -13,10 +13,13 @@ pub use component_handoff::{
 };
 mod output;
 mod settings;
+mod srgb8;
 use output::{
     can_decode_u8_directly, write_components_u8_output, write_u16_output, write_u8_output,
 };
 pub use settings::DecodeSettings;
+pub(crate) use srgb8::decode_image_srgb8;
+pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
 
 /// Non-fatal JPEG 2000 decode warning surfaced through decode outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

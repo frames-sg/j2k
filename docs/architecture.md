@@ -39,6 +39,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |
 | `j2k-alloc-probe` | dev helper | Serial process-wide measurement of successful allocation calls and gross requested bytes at real codec boundaries. |
 | `j2k-compare` | tooling | Comparator tooling. |
+| `j2k-t803` | conformance tooling | Unpublished T.803 corpus, comparison, report, and adapter-IUT runner support. |
 | `xtask` | workspace tool | Repository automation under `xtask/`. |
 
 ## Dependency rules
@@ -71,6 +72,7 @@ j2k-jpeg-cuda -> j2k-core, j2k-cuda-runtime, j2k-jpeg, j2k-profile
 j2k-jpeg-metal -> j2k-core, j2k-jpeg, j2k-metal-support, j2k-profile
 j2k-tilecodec -> j2k-core
 j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
+j2k-t803 -> j2k, j2k-codec-math, j2k-compare, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-metal
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core

@@ -146,6 +146,7 @@ impl CudaContext {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
                 .launch_j2k_idwt_interleave_horizontal_53_multi(
                     jobs_device,
+                    max_width as usize,
                     max_height as usize,
                     kernel_jobs.len(),
                     false,
@@ -173,6 +174,7 @@ impl CudaContext {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self.launch_j2k_idwt_vertical_53_multi(
                 jobs_device,
                 max_width as usize,
+                max_height as usize,
                 kernel_jobs.len(),
                 false,
             ),
@@ -227,6 +229,7 @@ impl CudaContext {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
                 .launch_j2k_idwt_interleave_horizontal_53_multi(
                     jobs_device,
+                    max_width as usize,
                     max_height as usize,
                     kernel_jobs.len(),
                     true,
@@ -252,6 +255,7 @@ impl CudaContext {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self.launch_j2k_idwt_vertical_53_multi(
                 jobs_device,
                 max_width as usize,
+                max_height as usize,
                 kernel_jobs.len(),
                 true,
             ),

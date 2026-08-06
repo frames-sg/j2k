@@ -73,6 +73,47 @@ fn complete_batch_surfaces(
     true
 }
 
+pub(super) fn complete_repeated_device_failure(
+    session: &mut SessionState,
+    requests: &[QueuedRequest],
+    source: &crate::Error,
+) {
+    let message = format!("selected repeated Metal batch failed without CPU retry: {source}");
+    session.submissions = session.submissions.saturating_add(1);
+    for request in requests {
+        session.completed[request.output_slot] = Some(Err(crate::Error::MetalRuntime {
+            message: message.clone(),
+        }));
+    }
+}
+
+fn complete_repeated_device_result(
+    session: &mut SessionState,
+    requests: &[QueuedRequest],
+    decoded: Option<Result<Vec<Surface>, crate::Error>>,
+) -> bool {
+    match decoded {
+        None => false,
+        Some(Ok(surfaces)) => {
+            if !complete_batch_surfaces(session, requests, surfaces) {
+                complete_repeated_device_failure(
+                    session,
+                    requests,
+                    &crate::Error::MetalStateInvariant {
+                        state: "J2K Metal repeated batch output",
+                        reason: "surface count does not match request count",
+                    },
+                );
+            }
+            true
+        }
+        Some(Err(error)) => {
+            complete_repeated_device_failure(session, requests, &error);
+            true
+        }
+    }
+}
+
 pub(super) fn process_batch(
     session: &mut SessionState,
     grouped: GroupedRequests,
@@ -141,22 +182,16 @@ fn process_batch_inner(
     }
 
     if can_decode_requests_as_repeated_full_grayscale_batch(&requests) {
-        if let Some(Ok(surfaces)) =
-            decode_repeated_full_grayscale(&requests[0], requests.len(), backend)
-        {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
+        let decoded = decode_repeated_full_grayscale(&requests[0], requests.len(), backend);
+        if complete_repeated_device_result(session, &requests, decoded) {
+            return;
         }
     }
 
     if can_decode_requests_as_repeated_full_color_batch(&requests) {
-        if let Some(Ok(surfaces)) =
-            decode_repeated_full_color(&requests[0], requests.len(), backend)
-        {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
+        let decoded = decode_repeated_full_color(&requests[0], requests.len(), backend);
+        if complete_repeated_device_result(session, &requests, decoded) {
+            return;
         }
     }
 

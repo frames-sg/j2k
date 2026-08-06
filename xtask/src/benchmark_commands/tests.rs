@@ -47,6 +47,10 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
 
     let log = recording.log();
     assert!(log.contains("bench -p j2k --bench public_api --no-run|"));
+    assert!(
+        log.contains("bench -p j2k-cuda --bench auto_routing --features cuda-runtime --no-run|")
+    );
+    assert!(log.contains("bench -p j2k-metal --bench auto_routing --no-run|"));
     assert!(log.contains(
         "bench -p j2k-transcode-metal --bench dct97 --features bench-internals --no-run|"
     ));
@@ -57,7 +61,7 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 21);
+    assert_eq!(log.lines().count(), 23);
 }
 
 #[cfg(unix)]
@@ -90,13 +94,13 @@ fn benchmark_build_lanes_never_compile_the_other_accelerator() {
         ),
         (
             "cuda",
-            5,
+            6,
             "j2k-ml --bench batch_decode_cuda --features cpu,cuda",
             "j2k-metal",
         ),
         (
             "metal",
-            3,
+            4,
             "j2k-ml --bench batch_decode_metal --features cpu,metal",
             "j2k-cuda",
         ),

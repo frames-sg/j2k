@@ -24,6 +24,8 @@ fn release_status_executes_exact_sha_verification_without_exposing_tokens() {
                 &explicit_sha,
                 "--repository",
                 "frames-sg/j2k",
+                "--scope",
+                "cpu",
             ],
             &[("GH_TOKEN", "present")],
         ),
@@ -43,7 +45,7 @@ fn release_status_executes_exact_sha_verification_without_exposing_tokens() {
         "help must preserve task error handling"
     );
     assert!(String::from_utf8_lossy(&help.stderr).contains(
-        "usage: cargo xtask release-status --sha <40-hex-commit> [--repository owner/name]"
+        "usage: cargo xtask release-status --sha <40-hex-commit> [--repository owner/name] [--scope cpu|cuda|metal|all]"
     ));
 
     let log = harness.log();

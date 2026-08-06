@@ -41,6 +41,7 @@ pub(super) fn append_classic_subband(
         band_id: subband.band_id,
         width: subband.width,
         height: subband.height,
+        irreversible_midpoint: subband.irreversible_midpoint,
         code_block_start,
         code_block_count: checked_u32(
             owners.classic_code_blocks.len() - code_block_start as usize,
@@ -88,6 +89,7 @@ fn append_classic_job_metadata(
         missing_bit_planes: job.missing_bit_planes,
         number_of_coding_passes: job.number_of_coding_passes,
         total_bitplanes: job.total_bitplanes,
+        roi_shift: job.roi_shift,
         sub_band_type: classic_subband_type(job.sub_band_type),
         style_flags: classic_style_flags(job.style),
         strict: job.strict,
@@ -97,16 +99,19 @@ fn append_classic_job_metadata(
 }
 
 fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> Result<(), Error> {
-    if job.roi_shift != 0
-        || !(1..=64).contains(&job.width)
+    let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        return invalid_classic_plan();
+    };
+    if !(1..=64).contains(&job.width)
         || !(1..=64).contains(&job.height)
         || !(1..=31).contains(&job.total_bitplanes)
-        || job.missing_bit_planes >= job.total_bitplanes
+        || coded_bitplanes > 31
+        || job.missing_bit_planes >= coded_bitplanes
     {
         return invalid_classic_plan();
     }
-    let coded_bitplanes = job.total_bitplanes - job.missing_bit_planes;
-    let max_passes = 1 + 3 * (coded_bitplanes - 1);
+    let decoded_bitplanes = coded_bitplanes - job.missing_bit_planes;
+    let max_passes = 1 + 3 * (decoded_bitplanes - 1);
     if job.number_of_coding_passes > max_passes {
         return invalid_classic_plan();
     }

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    encode_with_accelerator, EncodeError, EncodeOptions, J2kDeinterleaveToF32Job,
+    encode_with_accelerator, EncodeError, EncodeOptions, J2kDeinterleaveToF32Job, J2kEncodeContext,
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardIctJob, J2kForwardRctJob,
 };
 use alloc::{vec, vec::Vec};
 
 #[derive(Clone, Copy)]
 enum FailedStage {
+    Begin,
     Deinterleave,
     Rct,
     Ict,
@@ -17,6 +18,18 @@ enum FailedStage {
 struct FailingAccelerator(FailedStage);
 
 struct MalformedDeinterleaveAccelerator;
+
+#[derive(Default)]
+struct ContextRecordingAccelerator {
+    context: Option<J2kEncodeContext>,
+}
+
+impl J2kEncodeStageAccelerator for ContextRecordingAccelerator {
+    fn begin_encode(&mut self, context: J2kEncodeContext) -> crate::J2kEncodeStageResult<()> {
+        self.context = Some(context);
+        Ok(())
+    }
+}
 
 impl J2kEncodeStageAccelerator for MalformedDeinterleaveAccelerator {
     fn encode_deinterleave(
@@ -28,6 +41,16 @@ impl J2kEncodeStageAccelerator for MalformedDeinterleaveAccelerator {
 }
 
 impl J2kEncodeStageAccelerator for FailingAccelerator {
+    fn begin_encode(&mut self, _context: J2kEncodeContext) -> crate::J2kEncodeStageResult<()> {
+        if matches!(self.0, FailedStage::Begin) {
+            Err(crate::J2kEncodeStageError::internal_invariant(
+                "staged test failure",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     fn encode_deinterleave(
         &mut self,
         _job: J2kDeinterleaveToF32Job<'_>,
@@ -118,10 +141,38 @@ fn assert_stage_error(
 
 #[test]
 fn staged_accelerator_failures_keep_typed_operation_taxonomy() {
+    assert_stage_error(FailedStage::Begin, "encode route selection", 1, true);
     assert_stage_error(FailedStage::Deinterleave, "pixel deinterleave", 1, true);
     assert_stage_error(FailedStage::Rct, "forward RCT", 3, true);
     assert_stage_error(FailedStage::Ict, "forward ICT", 3, false);
     assert_stage_error(FailedStage::Dwt53, "forward 5/3 DWT", 1, true);
+}
+
+#[test]
+fn encode_supplies_validated_route_context_before_stage_dispatch() {
+    let pixels = vec![17_u8; 8 * 4 * 3];
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible: false,
+        guard_bits: 2,
+        use_mct: true,
+        ..EncodeOptions::default()
+    };
+    let mut accelerator = ContextRecordingAccelerator::default();
+
+    encode_with_accelerator(&pixels, 8, 4, 3, 8, false, &options, &mut accelerator)
+        .expect("encode with route context");
+
+    assert_eq!(
+        accelerator.context,
+        Some(J2kEncodeContext {
+            num_pixels: 32,
+            num_components: 3,
+            bit_depth: 8,
+            signed: false,
+            reversible: false,
+        })
+    );
 }
 
 #[test]

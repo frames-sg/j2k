@@ -2,11 +2,12 @@
 
 use super::{
     bail, CodeBlock, ComponentInfo, DecodingError, J2kCodeBlockStyle, J2kSubBandType,
-    QuantizationStyle, Result, SubBand, SubBandType, MAX_BITPLANE_COUNT,
+    QuantizationStyle, Result, SubBand, SubBandType, WaveletTransform, MAX_BITPLANE_COUNT,
 };
 
 pub(super) struct SubBandDecodeParameters {
     pub(super) dequantization_step: f32,
+    pub(super) irreversible_midpoint: bool,
     pub(super) num_bitplanes: u8,
 }
 
@@ -43,6 +44,8 @@ pub(super) fn sub_band_decode_parameters(
 
     Ok(SubBandDecodeParameters {
         dequantization_step,
+        irreversible_midpoint: component_info.wavelet_transform()
+            == WaveletTransform::Irreversible97,
         num_bitplanes: u8::try_from(num_bitplanes).map_err(|_| DecodingError::TooManyBitplanes)?,
     })
 }

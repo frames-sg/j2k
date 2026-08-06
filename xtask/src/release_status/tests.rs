@@ -19,13 +19,29 @@ const WORKSPACE_CHILD_ENV: &str = "XTASK_TEST_RELEASE_STATUS_WORKSPACE_CHILD";
 #[test]
 fn options_require_and_normalize_an_exact_sha() {
     let options = parse_options(
-        ["--sha", &"A".repeat(40), "--repository", "frames-sg/j2k"]
-            .into_iter()
-            .map(str::to_string),
+        [
+            "--sha",
+            &"A".repeat(40),
+            "--repository",
+            "frames-sg/j2k",
+            "--scope",
+            "cpu",
+        ]
+        .into_iter()
+        .map(str::to_string),
     )
     .unwrap();
     assert_eq!(options.sha, "a".repeat(40));
     assert_eq!(options.repository.as_deref(), Some("frames-sg/j2k"));
+    assert_eq!(options.scope, "cpu");
+
+    let default_scope = parse_options(
+        ["--sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+            .into_iter()
+            .map(str::to_string),
+    )
+    .unwrap();
+    assert_eq!(default_scope.scope, "all");
 
     for invalid in ["abc", &"g".repeat(40), &"a".repeat(41)] {
         assert!(parse_options(["--sha", invalid].into_iter().map(str::to_string)).is_err());
@@ -38,6 +54,7 @@ fn options_reject_missing_values_duplicates_help_and_unknown_arguments() {
         (Vec::new(), "--sha is required"),
         (vec!["--sha"], "--sha` requires a value"),
         (vec!["--repository"], "--repository` requires a value"),
+        (vec!["--scope"], "--scope` requires a value"),
         (vec!["--help"], "usage: cargo xtask release-status"),
         (vec!["--unknown"], "unknown release-status argument"),
         (
@@ -62,6 +79,19 @@ fn options_reject_missing_values_duplicates_help_and_unknown_arguments() {
     )
     .expect_err("malformed repository must reject");
     assert!(error.contains("owner/name"));
+
+    let error = parse_options(
+        [
+            "--sha",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--scope",
+            "gpu",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    )
+    .expect_err("unknown evidence scope must reject");
+    assert!(error.contains("cpu, cuda, metal, or all"));
 }
 
 #[test]
@@ -145,9 +175,14 @@ fn release_status_derives_remote_and_executes_exact_verifier_contract() {
 
     if std::env::var_os(WORKSPACE_CHILD_ENV).is_some() {
         release_status(
-            ["--sha", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "--sha",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "--scope",
+                "cpu",
+            ]
+            .into_iter()
+            .map(str::to_string),
         )
         .expect("hermetic release-status command");
         return;
@@ -158,6 +193,7 @@ fn release_status_derives_remote_and_executes_exact_verifier_contract() {
         r#"case "${0##*/}" in
   git) printf '%s\n' 'git@example.invalid:frames-sg/j2k.git' ;;
   python3) exit 0 ;;
+  cargo) exit 0 ;;
   *) exit 90 ;;
 esac"#,
     );
@@ -167,6 +203,7 @@ esac"#,
         .expect("recording program parent");
     symlink(recording.program(), program_dir.join("git")).expect("fake git symlink");
     symlink(recording.program(), program_dir.join("python3")).expect("fake python3 symlink");
+    symlink(recording.program(), program_dir.join("cargo")).expect("fake cargo symlink");
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask workspace root");
@@ -177,6 +214,7 @@ esac"#,
         .current_dir(workspace)
         .env(WORKSPACE_CHILD_ENV, "1")
         .env("GH_TOKEN", "test-token-placeholder")
+        .env("CARGO", program_dir.join("cargo"))
         .env_remove("GITHUB_TOKEN")
         .env_remove("GITHUB_REPOSITORY")
         .env("PATH", program_dir)
@@ -191,13 +229,15 @@ esac"#,
 
     let log = recording.log();
     let lines = log.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "unexpected command log: {log}");
+    assert_eq!(lines.len(), 3, "unexpected command log: {log}");
     assert!(lines[0].starts_with("config --get remote.origin.url|"));
     assert!(lines[1].contains("verify-candidate --repository frames-sg/j2k"));
     assert!(lines[1]
         .contains("--candidate-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --token-env GH_TOKEN"));
     assert!(lines[1].contains("--aggregate-job Release candidate aggregate"));
     assert!(lines[1].contains("--ci-workflow full-validation.yml"));
-    assert!(lines[1].contains("--cuda-job CUDA full release validation"));
-    assert!(lines[1].contains("--metal-job Metal full release validation"));
+    assert!(lines[1].contains("--t803-scope cpu"));
+    assert!(lines[1].contains("--t803-out-dir"));
+    assert!(lines[2].contains("j2k-t803-runner -- verify --scope cpu --candidate-sha"));
+    assert_eq!(lines[2].matches("--report").count(), 3);
 }

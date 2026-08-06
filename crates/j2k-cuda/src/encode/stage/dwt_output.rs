@@ -43,7 +43,7 @@ pub(in crate::encode) fn cuda_dwt53_output_to_j2k(
     })
 }
 
-pub(super) fn cuda_dwt97_output_to_j2k(
+pub(in crate::encode) fn cuda_dwt97_output_to_j2k(
     output: &CudaDwt97Output,
 ) -> CudaStageResult<J2kForwardDwt97Output> {
     let (ll_width, ll_height) = output.ll_dimensions();

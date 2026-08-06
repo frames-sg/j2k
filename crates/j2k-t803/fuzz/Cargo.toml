@@ -1,0 +1,31 @@
+[package]
+name = "j2k-t803-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+j2k-t803 = { path = "..", features = ["runner"] }
+
+[[bin]]
+name = "pgx_fuzz"
+path = "fuzz_targets/pgx_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_fuzz"
+path = "fuzz_targets/archive_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+[workspace]

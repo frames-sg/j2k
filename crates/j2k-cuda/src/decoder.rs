@@ -107,6 +107,8 @@ pub struct J2kDecoder<'a> {
     )]
     bytes: &'a [u8],
     inner: CpuDecoder<'a>,
+    transfer_syntax: Option<j2k_core::CompressedTransferSyntax>,
+    payload_kind: Option<j2k_core::CompressedPayloadKind>,
     pool: CpuJ2kScratchPool,
 }
 

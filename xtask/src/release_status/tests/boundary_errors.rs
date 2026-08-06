@@ -28,6 +28,7 @@ fn run_child(
         .expect("recording program parent");
     symlink(recording.program(), program_dir.join("git")).expect("fake git symlink");
     symlink(recording.program(), program_dir.join("python3")).expect("fake python3 symlink");
+    symlink(recording.program(), program_dir.join("cargo")).expect("fake cargo symlink");
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask workspace root");
@@ -39,6 +40,7 @@ fn run_child(
         .current_dir(workspace)
         .env(CASE_ENV, case)
         .env("GITHUB_TOKEN", "test-token-placeholder")
+        .env("CARGO", program_dir.join("cargo"))
         .env_remove("GH_TOKEN")
         .env("PATH", program_dir);
     if let Some(repository) = repository {
@@ -66,14 +68,15 @@ fn repository_environment_empty_and_present_paths_execute_exact_contracts() {
     }
 
     for (case, repository, expected_repository, expected_commands) in [
-        ("present", "environment/repo", "environment/repo", 1_usize),
-        ("empty", "", "remote/repo", 2),
+        ("present", "environment/repo", "environment/repo", 2_usize),
+        ("empty", "", "remote/repo", 3),
     ] {
         let recording = RecordingProgram::new(
             "release-status-environment-boundary",
             r#"case "${0##*/}" in
   git) printf '%s\n' 'git@example.invalid:remote/repo.git' ;;
   python3) exit 0 ;;
+  cargo) exit 0 ;;
   *) exit 90 ;;
 esac"#,
         );
@@ -88,7 +91,10 @@ esac"#,
         let log = recording.log();
         let lines = log.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), expected_commands, "unexpected log: {log}");
-        let verifier = lines.last().expect("verifier command");
+        let verifier = lines
+            .iter()
+            .find(|line| line.contains("verify-candidate"))
+            .expect("verifier command");
         assert!(verifier.contains(&format!("--repository {expected_repository}")));
         assert!(verifier.contains("--token-env GITHUB_TOKEN"));
     }

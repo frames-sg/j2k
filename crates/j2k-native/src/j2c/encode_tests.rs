@@ -772,7 +772,7 @@ fn ht_target_coding_passes_tracks_ht_quality_layers() {
 )]
 fn packet_header_validation_allows_chunked_ppm_and_ppt_payloads() {
     const MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
-    let ppm_headers = vec![vec![0_u8; MARKER_PAYLOAD_LIMIT - 2], vec![1_u8; 1]];
+    let ppm_headers = vec![vec![0_u8; MARKER_PAYLOAD_LIMIT - 4], vec![1_u8; 1]];
     let ppt_headers = vec![vec![2_u8; MARKER_PAYLOAD_LIMIT + 1]];
 
     validate_packet_header_marker_payloads(true, false, &[&ppm_headers])

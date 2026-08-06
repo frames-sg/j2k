@@ -3,7 +3,8 @@
 use super::*;
 use j2k_core::CodecError;
 use j2k_native::{
-    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
+    encode, DecodeSettings, DecoderContext, EncodeOptions, HtOwnedCodeBlockBatchJob,
+    HtOwnedSubBandPlan, Image, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
 };
 
 fn one_block_direct_plan(
@@ -148,6 +149,74 @@ fn two_block_direct_plan() -> J2kDirectGrayscalePlan {
 }
 
 #[test]
+fn classic_cuda_plan_retains_irreversible_midpoint_reconstruction() {
+    let pixels = j2k_test_support::gradient_u8(16, 16, 1);
+    let bytes = encode(
+        &pixels,
+        16,
+        16,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: false,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode irreversible grayscale");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+    let direct = image
+        .build_direct_grayscale_plan_with_context(&mut context)
+        .expect("direct plan");
+
+    let cuda = CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+        .expect("CUDA plan");
+
+    assert!(
+        cuda.classic_subbands
+            .iter()
+            .all(|subband| subband.irreversible_midpoint),
+        "every classic CUDA sub-band must retain the 9/7 reconstruction rule"
+    );
+}
+
+#[test]
+fn classic_cuda_plan_accepts_roi_maxshift() {
+    let pixels = j2k_test_support::gradient_u8(16, 16, 1);
+    let bytes = encode(
+        &pixels,
+        16,
+        16,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            roi_component_shifts: vec![7],
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode ROI maxshift grayscale");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+    let direct = image
+        .build_direct_grayscale_plan_with_context(&mut context)
+        .expect("direct ROI plan");
+
+    let cuda = CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+        .expect("CUDA classic ROI plan");
+    assert!(
+        cuda.classic_code_blocks
+            .iter()
+            .all(|block| block.roi_shift == 7),
+        "every classic CUDA code-block must retain the component ROI maxshift"
+    );
+}
+
+#[test]
 fn append_payload_to_shared_offsets_blocks_and_drains_local_payload() {
     let mut first = one_block_plan(vec![1, 2]);
     let mut second = one_block_plan(vec![3, 4, 5]);
@@ -225,7 +294,7 @@ fn rejects_block_length_mismatch() {
 }
 
 #[test]
-fn rejects_roi_maxshift_jobs() {
+fn rejects_ht_roi_maxshift_jobs() {
     let mut direct = one_block_direct_plan(1, 0, vec![0xAA], 1);
     let J2kDirectGrayscaleStep::HtSubBand(subband) = &mut direct.steps[0] else {
         panic!("fixture starts with one HT sub-band");

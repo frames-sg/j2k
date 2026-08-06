@@ -176,7 +176,7 @@ fn submitted_shared_batch_continues_after_nonfatal_group_submit_failure() {
     }
 
     let valid_gray = Arc::<[u8]>::from(fixture_ht_gray8());
-    let unsupported_roi_rgb = unsupported_classic_roi_rgb();
+    let unsupported_roi_rgb = unsupported_ht_roi_rgb();
     let options = BatchDecodeOptions::default();
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

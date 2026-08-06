@@ -7,6 +7,7 @@ use super::{DecodeAllocationBudget, DecompositionStorage, SubBand};
 use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
+use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
     decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
     try_reserve_decode_elements, try_resize_decode_elements, HtCodeBlockDecodeJob,
@@ -40,6 +41,7 @@ pub(super) struct ClassicParallelParameters {
     pub(super) total_bitplanes: u8,
     pub(super) roi_shift: u8,
     pub(super) dequantization_step: f32,
+    pub(super) irreversible_midpoint: bool,
 }
 
 trait DecodedSubBandBlock {
@@ -106,7 +108,12 @@ pub(super) fn decode_classic_sub_band_blocks_parallel(
         .zip(pending_blocks.par_iter())
         .zip(workspaces.par_iter_mut())
         .try_for_each(|((decoded, pending), workspace)| -> Result<()> {
-            decode_j2k_code_block_scalar_with_workspace(
+            let decode = if parameters.irreversible_midpoint {
+                decode_j2k_code_block_scalar_with_workspace_midpoint
+            } else {
+                decode_j2k_code_block_scalar_with_workspace
+            };
+            decode(
                 J2kCodeBlockDecodeJob {
                     data: &pending.combined_data,
                     segments: &pending.segments,

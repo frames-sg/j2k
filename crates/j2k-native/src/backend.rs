@@ -277,6 +277,29 @@ pub trait HtCodeBlockDecoder {
         Ok(false)
     }
 
+    /// Optionally decode a full classic J2K sub-band with the requested
+    /// coefficient reconstruction rule.
+    ///
+    /// The default delegates reversible work to [`Self::decode_j2k_sub_band`].
+    /// It declines irreversible midpoint reconstruction because legacy
+    /// adapters did not receive enough information to implement that rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
+    fn decode_j2k_sub_band_with_midpoint(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        if irreversible_midpoint {
+            Ok(false)
+        } else {
+            self.decode_j2k_sub_band(job, output)
+        }
+    }
+
     /// Optionally decode one classic J2K code block.
     ///
     /// Implementations should return `Ok(true)` if they handled the request
@@ -292,6 +315,29 @@ pub trait HtCodeBlockDecoder {
         _output: &mut [f32],
     ) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Optionally decode one classic J2K code block with the requested
+    /// coefficient reconstruction rule.
+    ///
+    /// The default delegates reversible work to [`Self::decode_j2k_code_block`].
+    /// It declines irreversible midpoint reconstruction so an older adapter
+    /// cannot silently emit coefficients with the wrong reconstruction bias.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
+    fn decode_j2k_code_block_with_midpoint(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        if irreversible_midpoint {
+            Ok(false)
+        } else {
+            self.decode_j2k_code_block(job, output)
+        }
     }
 
     /// Optionally decode a full HTJ2K sub-band in one batch.

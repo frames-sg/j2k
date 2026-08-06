@@ -120,6 +120,21 @@ pub struct J2kDeinterleaveToF32Job<'a> {
     pub signed: bool,
 }
 
+/// Validated image and coding context supplied before encode-stage dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kEncodeContext {
+    /// Number of pixels in the encoded image or tile.
+    pub num_pixels: usize,
+    /// Number of interleaved source components.
+    pub num_components: u16,
+    /// Source sample bit depth.
+    pub bit_depth: u8,
+    /// Whether source samples are signed.
+    pub signed: bool,
+    /// Whether the codestream uses reversible coding.
+    pub reversible: bool,
+}
+
 /// Adapter forward RCT job for backend experimentation.
 #[derive(Debug)]
 pub struct J2kForwardRctJob<'a> {
@@ -656,6 +671,14 @@ pub struct CpuOnlyJ2kEncodeStageAccelerator;
 
 /// Adapter JPEG 2000 encode-stage accelerator for backend experimentation.
 pub trait J2kEncodeStageAccelerator {
+    /// Supply validated context before any encode-stage hook is invoked.
+    ///
+    /// Implementations may use this to choose a fixed route for the operation.
+    /// The default keeps existing accelerators source-compatible.
+    fn begin_encode(&mut self, _context: J2kEncodeContext) -> J2kEncodeStageResult<()> {
+        Ok(())
+    }
+
     /// Report cumulative backend dispatches completed by this accelerator.
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
         J2kEncodeDispatchReport::default()

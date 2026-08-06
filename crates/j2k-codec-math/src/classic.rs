@@ -100,6 +100,43 @@ pub const MQ_QE_VALUES: [u32; 47] = mq_qe_values();
 /// Packed MQ MPS/LPS transitions and switch flag for device lookup tables.
 pub const PACKED_MQ_TRANSITION_VALUES: [u32; 47] = packed_mq_transitions();
 
+/// Returns the bit position of the half-bin term used to reconstruct an
+/// irreversible coefficient after the final decoded coding pass.
+///
+/// `None` means there is no non-zero coefficient to reconstruct or the pass
+/// count is inconsistent with the number of decoded bitplanes.
+pub const fn irreversible_midpoint_bit(
+    magnitude: u64,
+    decoded_bitplanes: u32,
+    number_of_coding_passes: u32,
+) -> Option<u32> {
+    if magnitude == 0 || decoded_bitplanes == 0 || number_of_coding_passes == 0 {
+        return None;
+    }
+
+    let final_pass = number_of_coding_passes - 1;
+    let decoded_plane = final_pass.div_ceil(3);
+    let Some(mut lowest_decoded_bit) = decoded_bitplanes.checked_sub(decoded_plane + 1) else {
+        return None;
+    };
+    if lowest_decoded_bit >= u64::BITS {
+        return None;
+    }
+
+    // A final significance-propagation pass does not refine coefficients that
+    // were already significant. A newly significant coefficient has the
+    // current bit set, distinguishing the two cases without decoder state.
+    if final_pass % 3 == 1 && magnitude & (1_u64 << lowest_decoded_bit) == 0 {
+        lowest_decoded_bit += 1;
+    }
+
+    if lowest_decoded_bit < u64::BITS {
+        Some(lowest_decoded_bit)
+    } else {
+        None
+    }
+}
+
 /// Sign-coding context and XOR bit indexed by packed cardinal-neighbor state.
 #[rustfmt::skip]
 pub const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
@@ -197,6 +234,22 @@ mod tests {
     use core::hint::black_box;
 
     use super::*;
+
+    #[test]
+    fn irreversible_midpoint_bit_tracks_the_last_decoded_pass() {
+        assert_eq!(irreversible_midpoint_bit(4, 3, 1), Some(2));
+        assert_eq!(irreversible_midpoint_bit(2, 3, 2), Some(1));
+        assert_eq!(irreversible_midpoint_bit(4, 3, 2), Some(2));
+        assert_eq!(irreversible_midpoint_bit(4, 3, 3), Some(1));
+    }
+
+    #[test]
+    fn irreversible_midpoint_bit_rejects_empty_or_inconsistent_state() {
+        assert_eq!(irreversible_midpoint_bit(0, 3, 1), None);
+        assert_eq!(irreversible_midpoint_bit(4, 0, 1), None);
+        assert_eq!(irreversible_midpoint_bit(4, 3, 0), None);
+        assert_eq!(irreversible_midpoint_bit(1, 1, 5), None);
+    }
 
     #[test]
     fn device_tables_match_their_structured_sources_at_runtime() {

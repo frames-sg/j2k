@@ -141,9 +141,10 @@ fn execute_grayscale_plan_to_plane(
 fn decode_classic_sub_band(plan: &J2kOwnedSubBandPlan, output: &mut [f32]) -> Result<(), Error> {
     if let [block] = plan.jobs.as_slice() {
         let start = block.output_y as usize * plan.width as usize + block.output_x as usize;
-        return compute::decode_classic_cleanup_code_block(
+        return compute::decode_classic_cleanup_code_block_with_midpoint(
             classic_job(block),
             &mut output[start..],
+            plan.irreversible_midpoint,
         );
     }
 
@@ -156,13 +157,14 @@ fn decode_classic_sub_band(plan: &J2kOwnedSubBandPlan, output: &mut [f32]) -> Re
             code_block: classic_job(owned),
         })
         .collect();
-    compute::decode_classic_cleanup_sub_band(
+    compute::decode_classic_cleanup_sub_band_with_midpoint(
         j2k_native::J2kSubBandDecodeJob {
             width: plan.width,
             height: plan.height,
             jobs: &jobs,
         },
         output,
+        plan.irreversible_midpoint,
     )
 }
 

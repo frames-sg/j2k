@@ -12,7 +12,7 @@ use super::state::{
 };
 use crate::reader::BitReader;
 
-// Bypass bit reads can fail in strict mode when the raw segment runs short.
+// Bypass bit reads can fail in strict mode when byte stuffing is malformed.
 pub(super) trait BitDecoder {
     fn read_bit(&mut self, context: &mut ArithmeticDecoderContext) -> Option<u32>;
 }
@@ -27,9 +27,14 @@ impl<'a> BypassDecoder<'a> {
 
 impl BitDecoder for BypassDecoder<'_> {
     fn read_bit(&mut self, _: &mut ArithmeticDecoderContext) -> Option<u32> {
+        // T.800 D.4.1 extends a cleanly exhausted terminated segment with
+        // 0xFF bytes. In raw bypass mode this supplies one bits indefinitely.
+        if self.0.at_end() {
+            return Some(1);
+        }
         self.0.read_bits_with_stuffing(1).or({
             if self.1 {
-                // We have too little data, return `None`.
+                // The encoded bytes ended inside a required stuffing pair.
                 None
             } else {
                 // If not in strict mode, just pad with ones. Not sure if

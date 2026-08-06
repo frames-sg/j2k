@@ -5,7 +5,7 @@ use crate::{
     kernels::{
         j2k_dwt53_launch_geometry, j2k_idwt_multi_1d_launch_geometry,
         j2k_idwt_multi_coop_axis_launch_geometry, j2k_idwt_multi_coop_columns_launch_geometry,
-        j2k_idwt_multi_coop_launch_geometry, CudaKernel, CudaLaunchGeometry,
+        CudaKernel, CudaLaunchGeometry,
     },
 };
 
@@ -67,22 +67,23 @@ pub(super) fn validate_idwt_batch_launch(
         CudaJ2kIdwtBatchKernelMode::Generic => {
             j2k_idwt_multi_1d_launch_geometry(max_height as usize, job_count)
         }
-        CudaJ2kIdwtBatchKernelMode::Cooperative53 => {
-            j2k_idwt_multi_coop_launch_geometry(max_height as usize, job_count)
+        CudaJ2kIdwtBatchKernelMode::Cooperative53 | CudaJ2kIdwtBatchKernelMode::Cooperative97 => {
+            j2k_idwt_multi_coop_axis_launch_geometry(
+                max_height as usize,
+                max_width as usize,
+                job_count,
+            )
         }
-        CudaJ2kIdwtBatchKernelMode::Cooperative97 => j2k_idwt_multi_coop_axis_launch_geometry(
-            max_height as usize,
-            max_width as usize,
-            job_count,
-        ),
     };
     let vertical = match kernel_mode {
         CudaJ2kIdwtBatchKernelMode::Generic => {
             j2k_idwt_multi_1d_launch_geometry(max_width as usize, job_count)
         }
-        CudaJ2kIdwtBatchKernelMode::Cooperative53 => {
-            j2k_idwt_multi_coop_launch_geometry(max_width as usize, job_count)
-        }
+        CudaJ2kIdwtBatchKernelMode::Cooperative53 => j2k_idwt_multi_coop_axis_launch_geometry(
+            max_width as usize,
+            max_height as usize,
+            job_count,
+        ),
         CudaJ2kIdwtBatchKernelMode::Cooperative97 => idwt_vertical_97_multi_launch_geometry(
             max_width as usize,
             max_height as usize,

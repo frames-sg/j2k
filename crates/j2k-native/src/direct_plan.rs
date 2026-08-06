@@ -82,6 +82,8 @@ pub struct J2kOwnedSubBandPlan {
     pub width: u32,
     /// Sub-band height in samples.
     pub height: u32,
+    /// Whether classic Tier-1 coefficients use irreversible midpoint reconstruction.
+    pub irreversible_midpoint: bool,
     /// Owned code-block jobs for this sub-band.
     pub jobs: Vec<J2kOwnedCodeBlockBatchJob>,
 }

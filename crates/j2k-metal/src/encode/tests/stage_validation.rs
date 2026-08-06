@@ -321,7 +321,7 @@ fn metal_encode_stage_accelerator_can_leave_forward_rct_on_cpu() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn metal_forward_ict_dispatch_matches_cpu_reference() {
+fn metal_forward_ict_dispatch_matches_cpu_reference_exactly() {
     fn forward_ict_reference(
         plane0: &[f32],
         plane1: &[f32],
@@ -338,23 +338,34 @@ fn metal_forward_ict_dispatch_matches_cpu_reference() {
         (out0, out1, out2)
     }
 
-    fn assert_near(actual: &[f32], expected: &[f32], label: &str) {
+    fn assert_exact(actual: &[f32], expected: &[f32], label: &str) {
         assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
         for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-            assert!(
-                (actual - expected).abs() <= 0.0001,
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
                 "{label}[{index}] mismatch: actual={actual}, expected={expected}"
             );
         }
+    }
+
+    fn centered_u8(value: u32) -> f32 {
+        f32::from(u8::try_from(value & 0xff).expect("masked sample fits u8")) - 128.0
     }
 
     if !should_run_metal_runtime() {
         return;
     }
 
-    let mut plane0 = vec![0.0, 64.0, 128.0, 255.0, -12.5, 42.25];
-    let mut plane1 = vec![3.0, 67.0, 131.0, 252.0, 19.75, -8.5];
-    let mut plane2 = vec![7.0, 71.0, 135.0, 248.0, 33.5, 128.0];
+    let mut plane0 = (0_u32..4_096)
+        .map(|index| centered_u8(index * 17 + index / 7))
+        .collect::<Vec<_>>();
+    let mut plane1 = (0_u32..4_096)
+        .map(|index| centered_u8(index * 29 + index / 11 + 31))
+        .collect::<Vec<_>>();
+    let mut plane2 = (0_u32..4_096)
+        .map(|index| centered_u8(index * 43 + index / 13 + 73))
+        .collect::<Vec<_>>();
     let expected = forward_ict_reference(&plane0, &plane1, &plane2);
     let mut accelerator = MetalEncodeStageAccelerator::default();
 
@@ -367,9 +378,9 @@ fn metal_forward_ict_dispatch_matches_cpu_reference() {
         .expect("Metal ICT dispatch");
 
     assert!(dispatched);
-    assert_near(&plane0, &expected.0, "Y");
-    assert_near(&plane1, &expected.1, "Cb");
-    assert_near(&plane2, &expected.2, "Cr");
+    assert_exact(&plane0, &expected.0, "Y");
+    assert_exact(&plane1, &expected.1, "Cb");
+    assert_exact(&plane2, &expected.2, "Cr");
     assert_eq!(accelerator.forward_ict_attempts(), 1);
     assert_eq!(accelerator.forward_ict_dispatches(), 1);
     let report = accelerator.dispatch_report();

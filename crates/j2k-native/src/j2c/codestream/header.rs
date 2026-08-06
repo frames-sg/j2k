@@ -16,12 +16,13 @@ use crate::reader::BitReader;
 
 mod allocation;
 mod components;
+mod ppm;
 
 use allocation::{
-    try_extend_progression_changes, try_flatten_packet_lengths, try_flatten_ppm_packets,
-    try_none_vec, HeaderMarkerBudget,
+    try_extend_progression_changes, try_flatten_packet_lengths, try_none_vec, HeaderMarkerBudget,
 };
 use components::build_component_infos;
+use ppm::try_flatten_ppm_packets;
 
 #[expect(
     clippy::similar_names,
@@ -172,10 +173,7 @@ pub(crate) fn read_header<'a>(
             markers::PPM => {
                 reader.read_marker()?;
                 marker_budget.try_reserve_next(&mut ppm_markers)?;
-                let marker = ppm_marker(reader, marker_budget.remaining_bytes())?;
-                marker_budget
-                    .account_capacity::<super::PpmPacket<'_>>(marker.packets.capacity())?;
-                ppm_markers.push(marker);
+                ppm_markers.push(ppm_marker(reader)?);
             }
             markers::CRG => {
                 reader.read_marker()?;

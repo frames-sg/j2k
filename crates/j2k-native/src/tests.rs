@@ -1744,6 +1744,16 @@ fn direct_color_cpu_rgb8_executor_matches_scaled_region_decode() {
             };
             encode(&pixels, 16, 16, 3, 8, false, &options).expect("encode classic rgb8")
         }),
+        ("classic-9/7", {
+            let pixels = gradient_pixels(16, 16, 3);
+            let options = EncodeOptions {
+                reversible: false,
+                num_decomposition_levels: 2,
+                ..EncodeOptions::default()
+            };
+            encode(&pixels, 16, 16, 3, 8, false, &options)
+                .expect("encode irreversible classic rgb8")
+        }),
         ("htj2k", {
             let pixels = gradient_pixels(16, 16, 3);
             let options = EncodeOptions {

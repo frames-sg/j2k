@@ -6,7 +6,7 @@
 
 use alloc::vec::Vec;
 
-use crate::math::floor_f32;
+use crate::math::{floor_f32, mul_add};
 use j2k_codec_math::mct;
 
 /// Apply the forward Reversible Color Transform (RCT) in-place.
@@ -69,9 +69,21 @@ pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
         let g0 = *g;
         let b0 = *b;
 
-        let y = mct::ICT_FWD_Y_R * r0 + mct::ICT_FWD_Y_G * g0 + mct::ICT_FWD_Y_B * b0;
-        let cb = mct::ICT_FWD_CB_R * r0 + mct::ICT_FWD_CB_G * g0 + mct::ICT_FWD_CB_B * b0;
-        let cr = mct::ICT_FWD_CR_R * r0 + mct::ICT_FWD_CR_G * g0 + mct::ICT_FWD_CR_B * b0;
+        let y = mul_add(
+            mct::ICT_FWD_Y_B,
+            b0,
+            mul_add(mct::ICT_FWD_Y_R, r0, mct::ICT_FWD_Y_G * g0),
+        );
+        let cb = mul_add(
+            mct::ICT_FWD_CB_B,
+            b0,
+            mul_add(mct::ICT_FWD_CB_R, r0, mct::ICT_FWD_CB_G * g0),
+        );
+        let cr = mul_add(
+            mct::ICT_FWD_CR_B,
+            b0,
+            mul_add(mct::ICT_FWD_CR_R, r0, mct::ICT_FWD_CR_G * g0),
+        );
 
         *r = y;
         *g = cb;
@@ -143,6 +155,32 @@ mod tests {
         assert!(approx_eq(comps[0][0], 128.0, 0.01));
         assert!(approx_eq(comps[1][0], 0.0, 0.01));
         assert!(approx_eq(comps[2][0], 0.0, 0.01));
+    }
+
+    #[test]
+    fn forward_ict_uses_target_independent_fused_rounding() {
+        let mut comps = vec![vec![32.0, 35.0], vec![-7.0, -5.0], vec![-75.0, -74.0]];
+
+        forward_ict(&mut comps);
+
+        assert_eq!(
+            [
+                comps[0][0].to_bits(),
+                comps[0][1].to_bits(),
+                comps[1][0].to_bits(),
+                comps[1][1].to_bits(),
+                comps[2][0].to_bits(),
+                comps[2][1].to_bits(),
+            ],
+            [
+                0xc045_d2f3,
+                0xbf67_efa2,
+                0xc222_5321,
+                0xc224_fff3,
+                0x41c8_3b8e,
+                0x41cc_e214,
+            ]
+        );
     }
 
     #[test]

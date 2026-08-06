@@ -111,10 +111,10 @@ fn insert_ppm(mut codestream: Vec<u8>, header_len: usize) -> Vec<u8> {
     codestream.drain(body_start..body_start + header_len);
 
     let mut ppm = vec![0xFF, 0x60];
-    let marker_len = u16::try_from(5 + header.len()).expect("PPM marker length");
+    let marker_len = u16::try_from(7 + header.len()).expect("PPM marker length");
     ppm.extend_from_slice(&marker_len.to_be_bytes());
     ppm.push(0);
-    ppm.extend_from_slice(&u16::try_from(header.len()).unwrap().to_be_bytes());
+    ppm.extend_from_slice(&u32::try_from(header.len()).unwrap().to_be_bytes());
     ppm.extend_from_slice(&header);
     codestream.splice(sot_offset..sot_offset, ppm);
 

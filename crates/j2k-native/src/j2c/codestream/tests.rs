@@ -228,6 +228,8 @@ fn codestream_module_boundaries_stay_focused() {
             include_str!("header/components.rs"),
             120,
         ),
+        ("header PPM", include_str!("header/ppm.rs"), 130),
+        ("header PPM tests", include_str!("header/ppm/tests.rs"), 80),
         ("markers", include_str!("markers.rs"), 120),
         ("model", include_str!("model.rs"), 460),
         ("progression", include_str!("progression.rs"), 90),

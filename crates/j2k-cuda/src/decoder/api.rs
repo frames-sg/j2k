@@ -17,16 +17,44 @@ use super::{
     J2kDecodeWarning, J2kDecoder, J2kView, PixelFormat, ReadySubmission, Rect, Surface,
     DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
-use crate::allocation::try_vec_filled;
+use crate::{
+    allocation::try_vec_filled,
+    routing::{auto_cuda_available, auto_decode_uses_cuda, AutoDecodeOperation},
+};
 
 impl<'a> J2kDecoder<'a> {
     /// Create a CUDA-facing decoder from compressed bytes.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
+        let view = J2kView::parse(input)?;
+        let (transfer_syntax, payload_kind) = view.support_info().map_or((None, None), |support| {
+            (Some(support.transfer_syntax), Some(support.payload_kind))
+        });
         Ok(Self {
             bytes: input,
-            inner: CpuDecoder::new(input)?,
+            inner: CpuDecoder::from_view(view)?,
+            transfer_syntax,
+            payload_kind,
             pool: CpuJ2kScratchPool::new(),
         })
+    }
+
+    fn auto_decode_uses_cuda(
+        &self,
+        work_dimensions: (u32, u32),
+        fmt: PixelFormat,
+        operation: AutoDecodeOperation,
+    ) -> bool {
+        match (self.transfer_syntax, self.payload_kind) {
+            (Some(transfer_syntax), Some(payload_kind)) => auto_decode_uses_cuda(
+                work_dimensions,
+                self.inner.info().components,
+                fmt,
+                transfer_syntax,
+                payload_kind,
+                operation,
+            ),
+            _ => false,
+        }
     }
 
     fn decode_to_surface_impl(
@@ -36,7 +64,15 @@ impl<'a> J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
+        if matches!(backend, BackendRequest::Cuda)
+            || (backend == BackendRequest::Auto
+                && self.auto_decode_uses_cuda(
+                    self.inner.info().dimensions,
+                    fmt,
+                    AutoDecodeOperation::Full,
+                )
+                && auto_cuda_available(session)?)
+        {
             return decode_to_cuda_resident_surface_impl(self, session, fmt);
         }
         let dims = self.inner.info().dimensions;
@@ -73,6 +109,12 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::Region { roi },
         )?;
         let dims = plan.output_dims();
+        if backend == BackendRequest::Auto
+            && self.auto_decode_uses_cuda(dims, fmt, AutoDecodeOperation::Region)
+            && auto_cuda_available(session)?
+        {
+            return decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi);
+        }
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
@@ -90,11 +132,18 @@ impl<'a> J2kDecoder<'a> {
         if matches!(backend, BackendRequest::Cuda) {
             return decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale);
         }
-        let dims = DeviceDecodePlan::for_image(
+        let plan = DeviceDecodePlan::for_image(
             self.inner.info().dimensions,
             DeviceDecodeRequest::Scaled { scale },
-        )?
-        .output_dims();
+        )?;
+        let dims = plan.output_dims();
+        if backend == BackendRequest::Auto
+            && scale == Downscale::Half
+            && self.auto_decode_uses_cuda(dims, fmt, AutoDecodeOperation::ScaledHalf)
+            && auto_cuda_available(session)?
+        {
+            return decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale);
+        }
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
@@ -435,9 +484,14 @@ impl<'a> CpuBackedImageDecode<'a> for J2kDecoder<'a> {
 
     fn from_cpu_view(view: Self::View) -> Result<Self, Self::Error> {
         let bytes = view.bytes();
+        let (transfer_syntax, payload_kind) = view.support_info().map_or((None, None), |support| {
+            (Some(support.transfer_syntax), Some(support.payload_kind))
+        });
         Ok(Self {
             bytes,
             inner: CpuDecoder::from_view(view)?,
+            transfer_syntax,
+            payload_kind,
             pool: CpuJ2kScratchPool::new(),
         })
     }

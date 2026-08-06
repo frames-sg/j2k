@@ -1,11 +1,11 @@
 use super::{
     bail, decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
-    idwt, try_resize_decode_elements, DecodingError, DirectComponentBandScratch,
-    DirectComponentPlane, DirectCpuBand, DirectWorkspaceBudget, HtCodeBlockDecodeJob,
-    HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan, J2kCodeBlockDecodeJob,
-    J2kCodeBlockDecodeWorkspace, J2kDirectBandId, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kDirectIdwtStep, J2kDirectStoreStep, J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect,
-    J2kSingleDecompositionIdwtJob, Range, Result, Vec,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, idwt, try_resize_decode_elements,
+    DecodingError, DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand,
+    DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan,
+    J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kIdwtBand,
+    J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, Range, Result, Vec,
 };
 
 pub(super) fn execute_component_plan(
@@ -80,11 +80,12 @@ fn execute_classic_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_j2k_code_block_scalar_with_workspace(
-            code_block,
-            &mut output[output_range],
-            &mut workspace,
-        )?;
+        let decode = if plan.irreversible_midpoint {
+            decode_j2k_code_block_scalar_with_workspace_midpoint
+        } else {
+            decode_j2k_code_block_scalar_with_workspace
+        };
+        decode(code_block, &mut output[output_range], &mut workspace)?;
     }
     Ok(())
 }

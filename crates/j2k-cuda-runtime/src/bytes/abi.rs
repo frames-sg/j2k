@@ -309,7 +309,9 @@ impl_cuda_gpu_abi! {
         sub_band_type: u32,
         style_flags: u32,
         strict: u32,
+        irreversible_midpoint: u32,
         dequantization_step: f32,
+        roi_shift: u32,
     },
     CudaClassicKernelSegment {
         data_offset: u32,

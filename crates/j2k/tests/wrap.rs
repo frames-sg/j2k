@@ -54,7 +54,7 @@ fn jp2_with_palette_mapping(codestream: &[u8]) -> Vec<u8> {
     let mut ihdr = Vec::new();
     ihdr.extend_from_slice(&2_u32.to_be_bytes());
     ihdr.extend_from_slice(&2_u32.to_be_bytes());
-    ihdr.extend_from_slice(&3_u16.to_be_bytes());
+    ihdr.extend_from_slice(&1_u16.to_be_bytes());
     ihdr.extend_from_slice(&[7, 7, 0, 0]);
     push_box(&mut jp2h, b"ihdr", &ihdr);
 
@@ -108,7 +108,7 @@ fn jp2_with_signed_palette_mapping(codestream: &[u8]) -> Vec<u8> {
     ihdr.extend_from_slice(&2_u32.to_be_bytes());
     ihdr.extend_from_slice(&2_u32.to_be_bytes());
     ihdr.extend_from_slice(&1_u16.to_be_bytes());
-    ihdr.extend_from_slice(&[0x87, 7, 0, 0]);
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
     push_box(&mut jp2h, b"ihdr", &ihdr);
 
     let mut colr = Vec::new();

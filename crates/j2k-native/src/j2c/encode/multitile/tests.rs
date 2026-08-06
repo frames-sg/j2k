@@ -133,10 +133,12 @@ fn direct_packet_owners_match_single_tile_marker_serialization() {
     let header = read_header(&mut reader, &DecodeSettings::default(), 0, None)
         .expect("serialized single-tile header");
     assert_eq!(header.plm_packet_lengths, packetized.packet_lengths);
-    assert_eq!(header.ppm_packets.len(), packetized.packet_headers.len());
-    for (serialized, direct) in header.ppm_packets.iter().zip(&packetized.packet_headers) {
-        assert_eq!(serialized.data, direct);
-    }
+    assert_eq!(header.ppm_packets.len(), 1);
+    assert!(header.ppm_packets[0].ends_tile_part);
+    assert!(header.ppm_packets[0].data.iter().copied().eq(packetized
+        .packet_headers
+        .iter()
+        .flat_map(|header| header.iter().copied())));
 
     let sod = codestream
         .windows(2)

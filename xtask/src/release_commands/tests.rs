@@ -4,10 +4,36 @@ use std::collections::BTreeSet;
 
 use super::release_manifest::{crates_io_publishable, release_manifest_contract};
 use super::{
-    has_docs_rs_metadata, has_lib_target, package_name, release_cpu, release_integrity,
-    validate_publish_script_source, validate_publish_workflow_source, validate_release_docs_source,
-    validate_unpublished_dependencies, workspace_package_records,
+    has_docs_rs_metadata, has_lib_target, package_consumer_smoke, package_name, release_cpu,
+    release_integrity, validate_publish_script_source, validate_publish_workflow_source,
+    validate_release_docs_source, validate_unpublished_dependencies, workspace_package_records,
 };
+
+#[test]
+fn package_consumer_smoke_rejects_invalid_routes_before_packaging() {
+    for (args, expected) in [
+        (
+            vec!["--target", "unknown"],
+            "usage: cargo xtask package-consumer-smoke",
+        ),
+        (
+            vec!["--target", "metal", "--cuda-runtime"],
+            "--cuda-runtime requires --target cuda or all",
+        ),
+    ] {
+        let error = package_consumer_smoke(args.into_iter().map(str::to_string))
+            .expect_err("invalid package consumer request");
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+#[test]
+fn full_gpu_workflows_compile_the_packaged_adapter_archives() {
+    let workflow = include_str!("../../../.github/workflows/gpu-validation.yml");
+
+    assert!(workflow.contains("cargo xtask package-consumer-smoke --target cuda --cuda-runtime"));
+    assert!(workflow.contains("cargo xtask package-consumer-smoke --target metal"));
+}
 
 #[cfg(unix)]
 mod file_boundaries;

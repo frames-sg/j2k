@@ -4,7 +4,12 @@ use super::{
     backend_image_with_reduction, decode_image_region_into_with_native_context,
     decode_warnings_for_image, validate_buffer, validate_region, J2kDecoder,
 };
-use crate::{decode::J2kDecodeOutcome, scratch::J2kScratchPool, J2kError};
+use crate::{
+    decode::{J2kDecodeOutcome, J2kDecodedNativeComponents},
+    scratch::J2kScratchPool,
+    view::component_handoff_image_bytes,
+    J2kError,
+};
 use j2k_core::{PixelFormat, Rect, Unsupported};
 
 const UNREPRESENTABLE_REDUCTION: &str = "requested reduction exceeds supported image geometry";
@@ -36,6 +41,44 @@ fn scaled_covering_pow2(rect: Rect, denominator: u32) -> Rect {
 }
 
 impl J2kDecoder<'_> {
+    /// Decode owned native component planes after discarding an exact number
+    /// of JPEG 2000 resolution levels.
+    ///
+    /// A reduction of zero delegates to [`Self::decode_native_components`].
+    /// Each additional level halves both axes using the codestream's wavelet
+    /// resolution ladder; this method does not resample a full-resolution
+    /// output.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the reduction cannot be represented, exceeds
+    /// any component's available resolution ladder, is not honored exactly by
+    /// the native backend, or decode validation fails.
+    pub fn decode_native_components_at_reduction(
+        &mut self,
+        reduction_levels: u8,
+    ) -> Result<J2kDecodedNativeComponents, J2kError> {
+        if reduction_levels == 0 {
+            return self.decode_native_components();
+        }
+
+        let denominator = reduction_denominator(reduction_levels)?;
+        let expected_dims = (
+            self.info.dimensions.0.div_ceil(denominator),
+            self.info.dimensions.1.div_ceil(denominator),
+        );
+        let image = backend_image_with_reduction(self.bytes, self.settings, reduction_levels)?;
+        if (image.width(), image.height()) != expected_dims {
+            return Err(unsupported(INEXACT_REDUCTION));
+        }
+
+        let retained_image_bytes = component_handoff_image_bytes(&image)?;
+        let mut native_context = self.scaled_decode_native_context();
+        let decoded = image
+            .decode_native_components_with_context(&mut native_context)
+            .map_err(J2kError::from_native_decode_error)?;
+        J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
+    }
+
     /// Decode a source-coordinate region after discarding an exact number of
     /// JPEG 2000 resolution levels.
     ///

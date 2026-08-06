@@ -408,12 +408,11 @@ fn validate_component_metadata(
     metadata: &J2kFileMetadata,
     siz: &super::ParsedSiz,
 ) -> Result<(), J2kError> {
-    let source = resolved_component_source(metadata, siz);
-    let resolved_count = resolved_component_count(source, metadata, siz);
-    if resolved_count != usize::from(ihdr.components) {
+    let codestream_count = siz.component_info.len();
+    if codestream_count != usize::from(ihdr.components) {
         return Err(J2kError::InvalidBox {
             offset: ihdr.offset,
-            what: "ihdr component count must match resolved JP2 image components",
+            what: "ihdr component count must match codestream components",
         });
     }
 
@@ -424,17 +423,11 @@ fn validate_component_metadata(
                 what: "bpcc must not be present when ihdr bpc is explicit",
             });
         }
-        for index in 0..resolved_count {
-            let component = resolved_component_at(source, metadata, siz, index).ok_or(
-                J2kError::InvalidBox {
-                    offset: ihdr.offset,
-                    what: "JP2 component metadata could not be resolved",
-                },
-            )?;
-            if !same_component_precision(component, descriptor) {
+        for component in &siz.component_info {
+            if !same_component_precision(*component, descriptor) {
                 return Err(J2kError::InvalidBox {
                     offset: ihdr.offset,
-                    what: "ihdr bpc must match resolved JP2 image component precision",
+                    what: "ihdr bpc must match codestream component precision",
                 });
             }
         }
@@ -445,122 +438,17 @@ fn validate_component_metadata(
                 what: "bpcc component count must match ihdr component count",
             });
         }
-        for (index, descriptor) in metadata.bits_per_component.iter().enumerate() {
-            let component = resolved_component_at(source, metadata, siz, index).ok_or(
-                J2kError::InvalidBox {
-                    offset: ihdr.offset,
-                    what: "JP2 component metadata could not be resolved",
-                },
-            )?;
-            if !same_component_precision(component, *descriptor) {
+        for (component, descriptor) in siz.component_info.iter().zip(&metadata.bits_per_component) {
+            if !same_component_precision(*component, *descriptor) {
                 return Err(J2kError::InvalidBox {
                     offset: ihdr.offset,
-                    what: "bpcc entries must match resolved JP2 image component precision",
+                    what: "bpcc entries must match codestream component precision",
                 });
             }
         }
     }
 
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum ResolvedComponentSource {
-    Codestream,
-    Palette,
-    Mappings,
-}
-
-fn resolved_component_source(
-    metadata: &J2kFileMetadata,
-    siz: &super::ParsedSiz,
-) -> ResolvedComponentSource {
-    if metadata.component_mappings.is_empty() {
-        if metadata.palette.is_some() {
-            return ResolvedComponentSource::Palette;
-        }
-        return ResolvedComponentSource::Codestream;
-    }
-
-    let resolvable = metadata
-        .component_mappings
-        .iter()
-        .all(|mapping| match mapping.mapping_type {
-            J2kComponentMappingType::Direct => siz
-                .component_info
-                .get(usize::from(mapping.component_index))
-                .is_some(),
-            J2kComponentMappingType::Palette { column } => metadata
-                .palette
-                .as_ref()
-                .and_then(|palette| palette.columns.get(usize::from(column)))
-                .is_some(),
-            J2kComponentMappingType::Unknown { .. } => false,
-        });
-    if resolvable {
-        ResolvedComponentSource::Mappings
-    } else {
-        ResolvedComponentSource::Codestream
-    }
-}
-
-fn resolved_component_count(
-    source: ResolvedComponentSource,
-    metadata: &J2kFileMetadata,
-    siz: &super::ParsedSiz,
-) -> usize {
-    match source {
-        ResolvedComponentSource::Codestream => siz.component_info.len(),
-        ResolvedComponentSource::Palette => metadata
-            .palette
-            .as_ref()
-            .map_or(0, |palette| palette.columns.len()),
-        ResolvedComponentSource::Mappings => metadata.component_mappings.len(),
-    }
-}
-
-fn resolved_component_at(
-    source: ResolvedComponentSource,
-    metadata: &J2kFileMetadata,
-    siz: &super::ParsedSiz,
-    index: usize,
-) -> Option<J2kComponentInfo> {
-    match source {
-        ResolvedComponentSource::Codestream => siz.component_info.get(index).copied(),
-        ResolvedComponentSource::Palette => metadata
-            .palette
-            .as_ref()?
-            .columns
-            .get(index)
-            .copied()
-            .map(component_from_palette_column),
-        ResolvedComponentSource::Mappings => {
-            let mapping = metadata.component_mappings.get(index)?;
-            match mapping.mapping_type {
-                J2kComponentMappingType::Direct => siz
-                    .component_info
-                    .get(usize::from(mapping.component_index))
-                    .copied(),
-                J2kComponentMappingType::Palette { column } => metadata
-                    .palette
-                    .as_ref()?
-                    .columns
-                    .get(usize::from(column))
-                    .copied()
-                    .map(component_from_palette_column),
-                J2kComponentMappingType::Unknown { .. } => None,
-            }
-        }
-    }
-}
-
-fn component_from_palette_column(column: J2kPaletteColumn) -> J2kComponentInfo {
-    J2kComponentInfo {
-        bit_depth: column.bit_depth,
-        signed: column.signed,
-        x_rsiz: 1,
-        y_rsiz: 1,
-    }
 }
 
 fn same_component_precision(left: J2kComponentInfo, right: J2kComponentInfo) -> bool {

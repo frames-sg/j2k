@@ -4,11 +4,13 @@ use alloc::{vec, vec::Vec};
 
 use super::super::bitplane_encode;
 use super::arithmetic::cleanup_candidate_scan_mask;
+use super::bypass::{BitDecoder, BypassDecoder};
 use super::context::{
     context_label_magnitude_refinement_coding_from_state_lazy, context_label_sign_coding_index,
     context_label_sign_coding_index_normal,
 };
 use super::facade::decode_code_block_segments_validated;
+use super::reconstruction::reconstruct_irreversible_midpoint;
 use super::state::{
     BitPlaneDecodeContext, Coefficient, CoefficientState, NeighborSignificances,
     COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK, SIGNIFICANCE_MASK,
@@ -57,6 +59,73 @@ fn classic_coefficient_state_preserves_38_bit_magnitude() {
     coefficient.set_sign(1);
     assert_eq!(coefficient.get_i64(), -(1_i64 << 37));
     assert_eq!(coefficient.get(), i32::MIN);
+}
+
+#[test]
+fn irreversible_midpoint_reconstruction_tracks_the_last_decoded_pass() {
+    let mut first_plane = Coefficient::default();
+    first_plane.push_bit_at(1, 2);
+
+    assert_eq!(
+        reconstruct_irreversible_midpoint(first_plane, 3, 1, 0).to_bits(),
+        6.0_f32.to_bits()
+    );
+
+    first_plane.set_sign(1);
+    assert_eq!(
+        reconstruct_irreversible_midpoint(first_plane, 3, 1, 0).to_bits(),
+        (-6.0_f32).to_bits()
+    );
+
+    let zero = Coefficient::default();
+    assert_eq!(
+        reconstruct_irreversible_midpoint(zero, 3, 1, 0).to_bits(),
+        0.0_f32.to_bits()
+    );
+
+    let mut newly_significant_in_sigprop = Coefficient::default();
+    newly_significant_in_sigprop.push_bit_at(1, 1);
+    assert_eq!(
+        reconstruct_irreversible_midpoint(newly_significant_in_sigprop, 3, 2, 0).to_bits(),
+        3.0_f32.to_bits()
+    );
+
+    let mut awaiting_refinement = Coefficient::default();
+    awaiting_refinement.push_bit_at(1, 2);
+    assert_eq!(
+        reconstruct_irreversible_midpoint(awaiting_refinement, 3, 2, 0).to_bits(),
+        6.0_f32.to_bits()
+    );
+    assert_eq!(
+        reconstruct_irreversible_midpoint(awaiting_refinement, 3, 3, 0).to_bits(),
+        5.0_f32.to_bits()
+    );
+}
+
+#[test]
+fn strict_bypass_decoder_extends_clean_segment_end_with_ones() {
+    let mut decoder = BypassDecoder::new(&[0b1010_0101], true);
+    let mut context = crate::j2c::arithmetic_decoder::ArithmeticDecoderContext::default();
+    let mut bits = 0u16;
+
+    for _ in 0..10 {
+        bits = (bits << 1)
+            | u16::try_from(decoder.read_bit(&mut context).expect("raw bit"))
+                .expect("one bit fits u16");
+    }
+
+    assert_eq!(bits, 0b10_1001_0111);
+}
+
+#[test]
+fn strict_bypass_decoder_rejects_missing_stuffed_bit() {
+    let mut decoder = BypassDecoder::new(&[0xff], true);
+    let mut context = crate::j2c::arithmetic_decoder::ArithmeticDecoderContext::default();
+
+    for _ in 0..7 {
+        assert_eq!(decoder.read_bit(&mut context), Some(1));
+    }
+    assert_eq!(decoder.read_bit(&mut context), None);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use core::mem::size_of;
 
 use super::super::{
     CodingStyleComponent, CodingStyleDefault, ComponentInfo, ComponentSizeInfo, PacketLengthMarker,
-    PpmMarkerData, PpmPacket, ProgressionChange, QuantizationInfo, StepSize,
+    ProgressionChange, QuantizationInfo, StepSize,
 };
 use crate::error::{DecodeError, Result, ValidationError};
 use crate::{try_reserve_decode_elements, DEFAULT_MAX_DECODE_BYTES};
@@ -222,41 +222,6 @@ pub(super) fn try_flatten_packet_lengths(
     budget.release_capacity::<PacketLengthMarker>(marker_capacity)?;
     budget.release_capacity::<u32>(source_packet_capacity)?;
     Ok(packet_lengths)
-}
-
-pub(super) fn try_flatten_ppm_packets<'a>(
-    markers: Vec<PpmMarkerData<'a>>,
-    budget: &mut HeaderMarkerBudget,
-) -> Result<Vec<PpmPacket<'a>>> {
-    let marker_capacity = markers.capacity();
-    let source_packet_capacity = markers.iter().try_fold(0_usize, |total, marker| {
-        total
-            .checked_add(marker.packets.capacity())
-            .ok_or_else(allocation_overflow)
-    })?;
-    let packet_count = markers.iter().try_fold(0_usize, |total, marker| {
-        let nonempty_count = marker
-            .packets
-            .iter()
-            .filter(|packet| !packet.data.is_empty())
-            .count();
-        total
-            .checked_add(nonempty_count)
-            .ok_or_else(allocation_overflow)
-    })?;
-    let mut packets = Vec::new();
-    budget.try_reserve_len(&mut packets, packet_count)?;
-    for marker in markers {
-        packets.extend(
-            marker
-                .packets
-                .into_iter()
-                .filter(|packet| !packet.data.is_empty()),
-        );
-    }
-    budget.release_capacity::<PpmMarkerData<'_>>(marker_capacity)?;
-    budget.release_capacity::<PpmPacket<'_>>(source_packet_capacity)?;
-    Ok(packets)
 }
 
 #[cfg(test)]

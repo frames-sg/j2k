@@ -150,8 +150,8 @@ fn package_command_executes_list_and_dependency_aware_gates_hermetically() {
             .ordered_crates()
             .len();
     let consumer_commands = match std::env::consts::OS {
-        "linux" | "macos" => 5,
-        _ => 3,
+        "linux" | "macos" => 8,
+        _ => 6,
     };
     assert_eq!(
         commands.len(),

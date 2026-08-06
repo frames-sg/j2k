@@ -164,6 +164,13 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
     ),
     compile(
         "j2k-cuda",
+        Some("auto_routing"),
+        Some("cuda-runtime"),
+        BenchmarkLane::Cuda,
+        CUDA_BENCH_ENV,
+    ),
+    compile(
+        "j2k-cuda",
         Some("encode_stages"),
         Some("cuda-runtime"),
         BenchmarkLane::Cuda,
@@ -189,6 +196,13 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
         Some("cpu,cuda"),
         BenchmarkLane::Cuda,
         CUDA_BENCH_ENV,
+    ),
+    compile(
+        "j2k-metal",
+        Some("auto_routing"),
+        None,
+        BenchmarkLane::Metal,
+        METAL_BENCH_ENV,
     ),
     compile(
         "j2k-jpeg-metal",
@@ -339,5 +353,43 @@ mod tests {
         assert_eq!(performance_benchmark.features, Some("performance-feature"));
         assert_eq!(performance_benchmark.lane, BenchmarkLane::Metal);
         assert_eq!(performance_benchmark.env, &[("PERFORMANCE_ENV", "1")]);
+    }
+
+    #[test]
+    fn auto_routing_benchmarks_are_compiled_on_their_hardware_lanes() {
+        let cuda = super::COMPILE_BENCHMARKS
+            .iter()
+            .find(|benchmark| {
+                benchmark.package == "j2k-cuda" && benchmark.bench == Some("auto_routing")
+            })
+            .expect("CUDA Auto-routing benchmark registry entry");
+        assert_eq!(cuda.features, Some("cuda-runtime"));
+        assert_eq!(cuda.lane, BenchmarkLane::Cuda);
+        assert_eq!(cuda.runtime_env, super::CUDA_BENCH_ENV);
+
+        let metal = super::COMPILE_BENCHMARKS
+            .iter()
+            .find(|benchmark| {
+                benchmark.package == "j2k-metal" && benchmark.bench == Some("auto_routing")
+            })
+            .expect("Metal Auto-routing benchmark registry entry");
+        assert_eq!(metal.features, None);
+        assert_eq!(metal.lane, BenchmarkLane::Metal);
+        assert_eq!(metal.runtime_env, super::METAL_BENCH_ENV);
+    }
+
+    #[test]
+    fn gpu_benchmark_workflow_verifies_both_auto_routing_lanes() {
+        let workflow = include_str!("../../.github/workflows/gpu-benchmarks.yml");
+        assert!(workflow.contains("options: [smoke, criterion, profile, adoption, routing]"));
+        assert!(workflow.contains(
+            "cargo bench --profile release-bench -p j2k-cuda --bench auto_routing --features cuda-runtime"
+        ));
+        assert!(workflow
+            .contains("cargo bench --profile release-bench -p j2k-metal --bench auto_routing"));
+        assert_eq!(
+            workflow.matches("cargo xtask auto-routing verify").count(),
+            2
+        );
     }
 }

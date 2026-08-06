@@ -14,6 +14,8 @@ use super::{
     cuda_resident_input_error, encode_j2k_lossy_with_accelerator, BackendKind,
     J2kLossyEncodeOptions, J2kLossySamples, J2kResidentEncodeInputError,
 };
+#[cfg(feature = "cuda-runtime")]
+use j2k::{encode_j2k_lossy, J2kRateTarget};
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
@@ -181,6 +183,89 @@ fn cuda_lossy_htj2k_facade_require_device_dispatches_supported_stages_when_runti
     assert_eq!(accelerator.quantize_subband_dispatches(), 4);
     assert_eq!(accelerator.ht_code_block_dispatches(), 4);
     assert_eq!(accelerator.packetization_dispatches(), 1);
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_auto_host_output_lossy_classic_matches_cpu_for_rgb_fixture_when_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let (pixels, width, height, components) =
+        if let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") {
+            let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
+            (
+                image.pixels,
+                image.width,
+                image.height,
+                u16::try_from(image.channels).expect("PNM component count fits u16"),
+            )
+        } else {
+            const WIDTH: u32 = 640;
+            const HEIGHT: u32 = 480;
+            let pixels = (0u32..WIDTH * HEIGHT)
+                .flat_map(|index| {
+                    let x = index % WIDTH;
+                    let y = index / WIDTH;
+                    [
+                        u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
+                            .expect("masked red sample fits u8"),
+                        u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
+                            .expect("masked green sample fits u8"),
+                        u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
+                            .expect("masked blue sample fits u8"),
+                    ]
+                })
+                .collect();
+            (pixels, WIDTH, HEIGHT, 3)
+        };
+    let samples = || {
+        J2kLossySamples::new(&pixels, width, height, components, 8, false)
+            .expect("valid RGB8 samples")
+    };
+    let options = |backend| {
+        let mut options = J2kLossyEncodeOptions::default()
+            .with_backend(backend)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(3))
+            .with_rate_target(Some(J2kRateTarget::BitsPerPixel(4.0)))
+            .with_validation(J2kEncodeValidation::External);
+        options.psnr_iteration_budget = 1;
+        options
+    };
+
+    let cpu = encode_j2k_lossy(samples(), &options(EncodeBackendPreference::CpuOnly))
+        .expect("CPU lossy encode");
+    let mut accelerator = CudaEncodeStageAccelerator::for_auto_host_output();
+    let hybrid = encode_j2k_lossy_with_accelerator(
+        samples(),
+        &options(EncodeBackendPreference::Auto),
+        BackendKind::Cuda,
+        &mut accelerator,
+    )
+    .expect("hybrid CUDA lossy encode");
+
+    assert!(hybrid.dispatch_report.total() > 0);
+    if hybrid.codestream != cpu.codestream {
+        let first_difference = hybrid
+            .codestream
+            .iter()
+            .zip(&cpu.codestream)
+            .position(|(hybrid, cpu)| hybrid != cpu)
+            .map(|index| (index, cpu.codestream[index], hybrid.codestream[index]));
+        let mismatch_count = hybrid
+            .codestream
+            .iter()
+            .zip(&cpu.codestream)
+            .filter(|(hybrid, cpu)| hybrid != cpu)
+            .count();
+        panic!(
+            "hybrid lossy codestream differs from CPU: cpu_len={}, hybrid_len={}, mismatch_count={mismatch_count}, first_difference={first_difference:?}",
+            cpu.codestream.len(),
+            hybrid.codestream.len(),
+        );
+    }
 }
 
 #[test]

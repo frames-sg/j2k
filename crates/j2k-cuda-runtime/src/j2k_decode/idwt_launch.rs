@@ -7,8 +7,8 @@ use crate::{
     execution::{cuda_kernel_param, CudaLaunchMode},
     kernels::{
         j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry,
-        j2k_idwt_multi_1d_launch_geometry, j2k_idwt_multi_coop_axis_launch_geometry,
-        j2k_idwt_multi_coop_launch_geometry, CudaKernel, CudaLaunchGeometry,
+        j2k_idwt_multi_1d_launch_geometry, j2k_idwt_multi_coop_axis_launch_geometry, CudaKernel,
+        CudaLaunchGeometry,
     },
     memory::CudaDeviceBuffer,
 };
@@ -91,12 +91,14 @@ impl CudaContext {
     pub(in crate::j2k_decode) fn launch_j2k_idwt_interleave_horizontal_53_multi(
         &self,
         jobs: &CudaDeviceBuffer,
+        max_width: usize,
         max_rows: usize,
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
         self.launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
             jobs.device_ptr(),
+            max_width,
             max_rows,
             job_count,
             synchronize,
@@ -106,13 +108,14 @@ impl CudaContext {
     pub(in crate::j2k_decode) fn launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
         &self,
         jobs_ptr: CuDevicePtr,
+        max_width: usize,
         max_rows: usize,
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
-        let geometry = j2k_idwt_multi_coop_launch_geometry(max_rows, job_count)
+        let geometry = j2k_idwt_multi_coop_axis_launch_geometry(max_rows, max_width, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
         self.launch_j2k_idwt_named_kernel(
             CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
@@ -220,12 +223,14 @@ impl CudaContext {
         &self,
         jobs: &CudaDeviceBuffer,
         max_columns: usize,
+        max_height: usize,
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
         self.launch_j2k_idwt_vertical_53_multi_ptr(
             jobs.device_ptr(),
             max_columns,
+            max_height,
             job_count,
             synchronize,
         )
@@ -235,12 +240,13 @@ impl CudaContext {
         &self,
         jobs_ptr: CuDevicePtr,
         max_columns: usize,
+        max_height: usize,
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
-        let geometry = j2k_idwt_multi_coop_launch_geometry(max_columns, job_count)
+        let geometry = j2k_idwt_multi_coop_axis_launch_geometry(max_columns, max_height, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
         self.launch_j2k_idwt_named_kernel(
             CudaKernel::J2kIdwtVertical53Multi,

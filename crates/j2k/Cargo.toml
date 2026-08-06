@@ -24,6 +24,7 @@ j2k-codec-math = { path = "../j2k-codec-math", version = "=0.8.0" }
 j2k-core = { path = "../j2k-core", version = "=0.8.0" }
 j2k-native = { path = "../j2k-native", version = "=0.8.0" }
 j2k-types = { path = "../j2k-types", version = "=0.8.0" }
+moxcms = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

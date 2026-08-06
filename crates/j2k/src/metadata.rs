@@ -19,7 +19,7 @@ pub struct J2kComponentInfo {
 /// Full parsed JPEG 2000 / HTJ2K support metadata.
 ///
 /// This preserves the existing compact [`Info`] summary while exposing fields
-/// needed to reason about full Part 1 / Part 15 support surfaces.
+/// needed to reason about the implemented Part 1 / Part 15 support surfaces.
 #[derive(Debug, PartialEq, Eq)]
 pub struct J2kSupportInfo {
     /// Backward-compatible metadata summary used by shared codec traits.

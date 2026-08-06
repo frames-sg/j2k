@@ -1,0 +1,94 @@
+# T.803 Annex F encoder implementation compliance statement.
+# This is an adapter IUT: CPU-assisted cases remain labelled CPU or hybrid.
+schema_version = 1
+standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
+iut = "cuda"
+scope = "Informative Annex D/F evidence for public JPEG 2000 Part 1 CUDA adapter encoder surfaces with per-stage route disclosure"
+surfaces = [
+  "j2k_cuda::CudaLosslessEncoder",
+  "j2k::encode_j2k_lossy_with_accelerator(j2k_cuda::CudaEncodeStageAccelerator)",
+]
+matrix_path = "corpus/j2k-conformance/encoder-matrix-v1.toml"
+matrix_case_count = 25
+matrix_case_sha256 = "0ed86e8b051afd9b05a8364f4daca421b87add4576e49af543dccca81d4e2138"
+reference_decoder_standard = "ISO/IEC 15444-5 / ITU-T T.804"
+reference_decoder_implementation = "OpenJPEG"
+reference_decoder_version = "2.5.3"
+public_max_bit_depth = 38
+reference_validated_max_bit_depth = 31
+public_max_components = 16384
+component_sampling = false
+reference_limitations = [
+  "OpenJPEG stores decoded component samples in 32-bit signed integers, so 32-38 bit public encoder inputs are outside this matrix",
+  "CUDA adapter evidence covers interleaved host-input surfaces and records every CPU fallback stage",
+]
+
+[[markers]]
+marker = "SOC"
+usage = "always"
+[[markers]]
+marker = "CAP"
+usage = "outside-part1"
+[[markers]]
+marker = "PRF"
+usage = "not-produced"
+[[markers]]
+marker = "CPF"
+usage = "outside-part1"
+[[markers]]
+marker = "SOT"
+usage = "always"
+[[markers]]
+marker = "SOD"
+usage = "always"
+[[markers]]
+marker = "EOC"
+usage = "always"
+[[markers]]
+marker = "SIZ"
+usage = "always"
+[[markers]]
+marker = "COD"
+usage = "always"
+[[markers]]
+marker = "COC"
+usage = "conditional"
+[[markers]]
+marker = "RGN"
+usage = "not-produced"
+[[markers]]
+marker = "QCD"
+usage = "always"
+[[markers]]
+marker = "QCC"
+usage = "conditional"
+[[markers]]
+marker = "POC"
+usage = "not-produced"
+[[markers]]
+marker = "TLM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PLM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PLT"
+usage = "caller-controlled"
+[[markers]]
+marker = "PPM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PPT"
+usage = "caller-controlled"
+[[markers]]
+marker = "SOP"
+usage = "caller-controlled"
+[[markers]]
+marker = "EPH"
+usage = "caller-controlled"
+[[markers]]
+marker = "CRG"
+usage = "not-produced"
+[[markers]]
+marker = "COM"
+usage = "not-produced"

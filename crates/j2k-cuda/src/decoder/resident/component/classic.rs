@@ -51,11 +51,14 @@ pub(super) fn append_classic_subbands(
                 .iter()
                 .map(|segment| Ok::<_, Error>(cuda_classic_segment_from_plan(segment))),
         )?;
-        let jobs = host_budget.try_collect_results_exact(
-            code_blocks
-                .iter()
-                .map(|block| cuda_classic_job_from_plan(block, subband.width, segment_base)),
-        )?;
+        let jobs = host_budget.try_collect_results_exact(code_blocks.iter().map(|block| {
+            cuda_classic_job_from_plan(
+                block,
+                subband.width,
+                subband.irreversible_midpoint,
+                segment_base,
+            )
+        }))?;
         let output_words = checked_cuda_element_count(subband.width, subband.height).ok_or(
             Error::UnsupportedCudaRequest {
                 reason: CUDA_HTJ2K_KERNELS_NOT_READY,
@@ -98,6 +101,7 @@ fn cuda_classic_segment_from_plan(
 fn cuda_classic_job_from_plan(
     block: &crate::direct_plan::CudaClassicCodeBlock,
     subband_width: u32,
+    irreversible_midpoint: bool,
     segment_base: u32,
 ) -> Result<CudaClassicCodeBlockJob, Error> {
     let output_offset = block
@@ -129,6 +133,8 @@ fn cuda_classic_job_from_plan(
         sub_band_type: u32::from(block.sub_band_type),
         style_flags: block.style_flags,
         strict: block.strict,
+        irreversible_midpoint,
+        roi_shift: u32::from(block.roi_shift),
         dequantization_step: block.dequantization_step,
     })
 }

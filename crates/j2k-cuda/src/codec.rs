@@ -13,6 +13,7 @@ use j2k_core::{
 
 use crate::{
     allocation::{try_collect_results_exact, try_vec_filled},
+    routing::{auto_cuda_available, auto_repeated_decode_uses_cuda, inputs_repeat_one_slice},
     runtime::{validate_surface_request, wrap_surface},
 };
 use crate::{CudaSession, Error, J2kDecoder, Surface};
@@ -297,6 +298,23 @@ impl TileBatchDecodeManyDevice for Codec {
         let mut session = CudaSession::default();
         if matches!(backend, BackendRequest::Cuda) && Self::supports_cuda_batch_format(fmt) {
             return Self::decode_tiles_to_cuda_batch(inputs, fmt, &mut session);
+        }
+        if backend == BackendRequest::Auto
+            && Self::supports_cuda_batch_format(fmt)
+            && inputs_repeat_one_slice(inputs)
+        {
+            let support = CpuDecoder::inspect_support(inputs[0])?;
+            if auto_repeated_decode_uses_cuda(
+                support.info.dimensions,
+                support.info.components,
+                fmt,
+                support.transfer_syntax,
+                support.payload_kind,
+                inputs.len(),
+            ) && auto_cuda_available(&mut session)?
+            {
+                return Self::decode_tiles_to_cuda_batch(inputs, fmt, &mut session);
+            }
         }
 
         try_collect_results_exact(

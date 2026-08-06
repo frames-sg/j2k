@@ -66,13 +66,16 @@ fn classic_prepared_job_supports_runtime(
     if job.width > J2K_CLASSIC_MAX_WIDTH || job.height > J2K_CLASSIC_MAX_HEIGHT {
         return false;
     }
-    if job.output_stride < job.width || job.roi_shift != 0 {
+    if job.output_stride < job.width {
         return false;
     }
-    if job.total_bitplanes == 0 || job.total_bitplanes > 31 || job.missing_msbs >= 31 {
+    let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        return false;
+    };
+    if job.total_bitplanes == 0 || coded_bitplanes > 31 || job.missing_msbs >= coded_bitplanes {
         return false;
     }
-    let bitplanes = job.total_bitplanes.saturating_sub(job.missing_msbs);
+    let bitplanes = coded_bitplanes - job.missing_msbs;
     if bitplanes == 0 {
         return false;
     }
@@ -183,6 +186,7 @@ mod tests {
             sub_band_type: 0,
             style_flags: 0,
             strict: 1,
+            irreversible_midpoint: 0,
             dequantization_step: 1.0,
         }
     }
@@ -198,12 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn classic_runtime_preflight_rejects_unimplemented_roi_shift_and_inconsistent_empty_job() {
+    fn classic_runtime_preflight_accepts_roi_shift_and_rejects_invalid_bitplanes() {
         let segment = valid_classic_segment();
         let mut job = valid_classic_job();
         assert!(classic_prepared_job_supports_runtime(&job, &[segment]));
 
         job.roi_shift = 1;
+        assert!(classic_prepared_job_supports_runtime(&job, &[segment]));
+
+        job.roi_shift = 31;
         assert!(!classic_prepared_job_supports_runtime(&job, &[segment]));
 
         job.roi_shift = 0;
