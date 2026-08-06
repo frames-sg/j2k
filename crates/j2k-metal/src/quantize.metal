@@ -34,7 +34,8 @@ inline int j2k_quantize_sample(float sample, constant J2kQuantizeSubbandParams &
     }
 
     const int sign = sample < 0.0f ? -1 : 1;
-    const int magnitude = int(floor(fabs(sample) / delta));
+    // Fast division can cross a deadzone boundary; match the CPU quotient.
+    const int magnitude = int(floor(precise::divide(fabs(sample), delta)));
     return sign * magnitude;
 }
 
