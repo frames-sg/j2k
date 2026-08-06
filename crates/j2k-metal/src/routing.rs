@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, CompressedTransferSyntax, PixelFormat};
+#[cfg(any(target_os = "macos", test))]
+use j2k_core::CompressedTransferSyntax;
+use j2k_core::{BackendRequest, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::metal_kernel_route;
 use j2k_metal_support::{
@@ -15,11 +17,16 @@ pub(crate) const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
 
 // Minimum qualified cells from verified Auto-routing artifact
 // 162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879.
+#[cfg(any(target_os = "macos", test))]
 const AUTO_REPEATED_DECODE_MIN_COUNT: usize = 16;
+#[cfg(any(target_os = "macos", test))]
 const AUTO_REPEATED_GRAY8_MIN_PIXELS: u64 = 2_960_793;
+#[cfg(any(target_os = "macos", test))]
 const AUTO_REPEATED_RGB8_LOSSY_MIN_PIXELS: u64 = 307_200;
+#[cfg(any(target_os = "macos", test))]
 const AUTO_REPEATED_RGB8_LOSSLESS_MIN_PIXELS: u64 = 5_038_848;
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn auto_repeated_decode_uses_metal(
     dimensions: (u32, u32),
     fmt: PixelFormat,
