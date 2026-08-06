@@ -30,8 +30,8 @@ use j2k_core::DeviceSubmission;
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
-    forward_dwt53_reference, forward_dwt97_reference,
-    quantize_reversible_reference as quantize_reference, try_deinterleave_reference, EncodeOptions,
+    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference,
+    quantize_subband_reference as quantize_reference, try_deinterleave_reference, EncodeOptions,
     J2kCodeBlockStyle,
 };
 use j2k_native::{DecodeSettings, Image};

@@ -53,7 +53,7 @@ fn metal_encode_deinterleave_compute_rejects_invalid_shape_structured() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn metal_quantize_subband_kernel_matches_cpu_reference() {
+fn metal_quantize_subband_kernel_matches_cpu_reference_at_boundaries() {
     #[derive(Clone, Copy)]
     struct Case {
         name: &'static str,
@@ -66,13 +66,6 @@ fn metal_quantize_subband_kernel_matches_cpu_reference() {
     if !should_run_metal_runtime() {
         return;
     }
-
-    let coefficients = (0_u16..257)
-        .map(|idx| {
-            let centered = f32::from(idx) - 128.0;
-            centered * 0.375 + f32::from(idx % 7) * 0.125 - if idx % 5 == 0 { 0.5 } else { 0.0 }
-        })
-        .collect::<Vec<_>>();
 
     for case in [
         Case {
@@ -104,6 +97,23 @@ fn metal_quantize_subband_kernel_matches_cpu_reference() {
             reversible: false,
         },
     ] {
+        let mut coefficients = (0_u16..257)
+            .map(|idx| {
+                let centered = f32::from(idx) - 128.0;
+                centered * 0.375 + f32::from(idx % 7) * 0.125 - if idx % 5 == 0 { 0.5 } else { 0.0 }
+            })
+            .collect::<Vec<_>>();
+        if !case.reversible {
+            let exponent = i32::from(case.range_bits) - i32::from(case.step_exponent);
+            let base = 2.0_f32.powi(exponent);
+            let delta = base * (1.0 + f32::from(case.step_mantissa) / 2048.0);
+            for magnitude in [1_u16, 2, 5, 30, 255, 4_096] {
+                let boundary = delta * f32::from(magnitude);
+                let below = f32::from_bits(boundary.to_bits() - 1);
+                let above = f32::from_bits(boundary.to_bits() + 1);
+                coefficients.extend([below, boundary, above, -below, -boundary, -above]);
+            }
+        }
         let expected = quantize_reference(
             &coefficients,
             case.step_exponent,
@@ -120,7 +130,20 @@ fn metal_quantize_subband_kernel_matches_cpu_reference() {
         })
         .unwrap_or_else(|err| panic!("Metal quantize_subband failed for {}: {err}", case.name));
 
-        assert_eq!(actual, expected, "{}", case.name);
+        assert_eq!(actual.len(), expected.len(), "{} length", case.name);
+        if let Some((index, (&actual, &expected))) = actual
+            .iter()
+            .zip(&expected)
+            .enumerate()
+            .find(|(_, (actual, expected))| actual != expected)
+        {
+            panic!(
+                "{} coefficient[{index}]={:?} (bits={:#010x}): Metal={actual}, CPU={expected}",
+                case.name,
+                coefficients[index],
+                coefficients[index].to_bits()
+            );
+        }
     }
 }
 
@@ -322,22 +345,6 @@ fn metal_encode_stage_accelerator_can_leave_forward_rct_on_cpu() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_ict_dispatch_matches_cpu_reference_exactly() {
-    fn forward_ict_reference(
-        plane0: &[f32],
-        plane1: &[f32],
-        plane2: &[f32],
-    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-        let mut out0 = Vec::with_capacity(plane0.len());
-        let mut out1 = Vec::with_capacity(plane1.len());
-        let mut out2 = Vec::with_capacity(plane2.len());
-        for ((&r, &g), &b) in plane0.iter().zip(plane1).zip(plane2) {
-            out0.push(0.299 * r + 0.587 * g + 0.114 * b);
-            out1.push(-0.16875 * r - 0.33126 * g + 0.5 * b);
-            out2.push(0.5 * r - 0.41869 * g - 0.08131 * b);
-        }
-        (out0, out1, out2)
-    }
-
     fn assert_exact(actual: &[f32], expected: &[f32], label: &str) {
         assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
         for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
@@ -366,7 +373,11 @@ fn metal_forward_ict_dispatch_matches_cpu_reference_exactly() {
     let mut plane2 = (0_u32..4_096)
         .map(|index| centered_u8(index * 43 + index / 13 + 73))
         .collect::<Vec<_>>();
-    let expected = forward_ict_reference(&plane0, &plane1, &plane2);
+    plane0.extend([32.0, 35.0]);
+    plane1.extend([-7.0, -5.0]);
+    plane2.extend([-75.0, -74.0]);
+    let expected =
+        forward_ict_reference(Vec::from([plane0.clone(), plane1.clone(), plane2.clone()]));
     let mut accelerator = MetalEncodeStageAccelerator::default();
 
     let dispatched = accelerator
@@ -378,9 +389,9 @@ fn metal_forward_ict_dispatch_matches_cpu_reference_exactly() {
         .expect("Metal ICT dispatch");
 
     assert!(dispatched);
-    assert_exact(&plane0, &expected.0, "Y");
-    assert_exact(&plane1, &expected.1, "Cb");
-    assert_exact(&plane2, &expected.2, "Cr");
+    assert_exact(&plane0, &expected[0], "Y");
+    assert_exact(&plane1, &expected[1], "Cb");
+    assert_exact(&plane2, &expected[2], "Cr");
     assert_eq!(accelerator.forward_ict_attempts(), 1);
     assert_eq!(accelerator.forward_ict_dispatches(), 1);
     let report = accelerator.dispatch_report();

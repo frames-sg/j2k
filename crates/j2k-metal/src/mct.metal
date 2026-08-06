@@ -112,9 +112,10 @@ kernel void j2k_forward_ict(
     const float g = plane1[gid];
     const float b = plane2[gid];
 
-    plane0[gid] = 0.299f * r + 0.587f * g + 0.114f * b;
-    plane1[gid] = -0.16875f * r - 0.33126f * g + 0.5f * b;
-    plane2[gid] = 0.5f * r - 0.41869f * g - 0.08131f * b;
+    // Match the CPU transform's target-independent nested fused rounding.
+    plane0[gid] = fma(0.114f, b, fma(0.299f, r, 0.587f * g));
+    plane1[gid] = fma(0.5f, b, fma(-0.16875f, r, -0.33126f * g));
+    plane2[gid] = fma(-0.08131f, b, fma(0.5f, r, -0.41869f * g));
 
     if (gid == 0) {
         status->code = J2K_MCT_STATUS_OK;
