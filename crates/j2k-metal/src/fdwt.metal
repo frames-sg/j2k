@@ -280,6 +280,8 @@ kernel void j2k_forward_dwt97_lift_horizontal(
     constant J2kForwardDwt97Params &params [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
     (void)unused;
     if (
         gid.x >= params.current_width ||
@@ -307,7 +309,11 @@ kernel void j2k_forward_dwt97_lift_horizontal(
         update_high,
         false
     );
-    data[row_base + gid.x] += params.coefficient * (left + right);
+    data[row_base + gid.x] = fma(
+        params.coefficient,
+        left + right,
+        data[row_base + gid.x]
+    );
 }
 
 kernel void j2k_forward_dwt97_lift_vertical(
@@ -316,6 +322,8 @@ kernel void j2k_forward_dwt97_lift_vertical(
     constant J2kForwardDwt97Params &params [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
     (void)unused;
     if (
         gid.x >= params.current_width ||
@@ -344,7 +352,8 @@ kernel void j2k_forward_dwt97_lift_vertical(
         update_high,
         false
     );
-    data[gid.y * params.full_width + gid.x] += params.coefficient * (top + bottom);
+    const uint index = gid.y * params.full_width + gid.x;
+    data[index] = fma(params.coefficient, top + bottom, data[index]);
 }
 
 kernel void j2k_forward_dwt97_deinterleave_horizontal(

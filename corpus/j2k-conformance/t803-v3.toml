@@ -1,0 +1,1732 @@
+# T.803 v3 / ISO/IEC 15444-4:2024 Part 1 decoder and Annex G JP2 selection.
+# The copyrighted electronic attachment remains external and must not be committed.
+schema_version = 1
+standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
+
+[source]
+url = "https://www.itu.int/wftp3/public/t/testsignal/SpeImage/T803/v2024_02/T.803v3_15444-4ed4-ElecAtt-codestreams.zip"
+archive_sha256 = "ac04b52e1fe38404912036c14f215099ea9a785f38644fbe76ae8f3d1523c86d"
+archive_bytes = 131660076
+
+[[files]]
+path = "files/codestreams_hifi/hifi_p1_02.j2k"
+sha256 = "2870eaf3a8f7ed91b8db07663b0c0ffa3de11b6565dfafd62e3571232a766085"
+
+[[files]]
+path = "files/codestreams_profile0/p0_01.j2k"
+sha256 = "a61ea8d21ad0f7f9b76796e0f841c3e125240f83e308e3b8d626f4356b9a1113"
+
+[[files]]
+path = "files/codestreams_profile0/p0_02.j2k"
+sha256 = "150c8554b827c25b48029f3455b43ce3c029a26bea06eea2c60076c868bb07be"
+
+[[files]]
+path = "files/codestreams_profile0/p0_03.j2k"
+sha256 = "0aa26db75e8414d554e1fa93a0c7e101f16bb203f1fe06983fdd0c01fa61ddee"
+
+[[files]]
+path = "files/codestreams_profile0/p0_04.j2k"
+sha256 = "3d35a4eeffb00e150bb69611afec80fba9570d5fca18a04c4e644badfd052c6f"
+
+[[files]]
+path = "files/codestreams_profile0/p0_05.j2k"
+sha256 = "35f3840030802898d5ff2fc6ff39eea3b8080cad65db859830b869d48579cf9f"
+
+[[files]]
+path = "files/codestreams_profile0/p0_06.j2k"
+sha256 = "8a98292f29c4f04ef57c9a2974a1c254cca8297ce270c8baeb911bfe975c013d"
+
+[[files]]
+path = "files/codestreams_profile0/p0_07.j2k"
+sha256 = "46c4f5d64880a2df20d3faa22f6697384a6599dedb1b283e41a2efb1009cd9d1"
+
+[[files]]
+path = "files/codestreams_profile0/p0_08.j2k"
+sha256 = "4eb4eb2b356e16640ee94a24327fb66385c387657863072d774d633cf4379ef8"
+
+[[files]]
+path = "files/codestreams_profile0/p0_09.j2k"
+sha256 = "409c62a227497e7f2fc7e49055c02530cce742b6b385800b8a5aa4ae5bfab1a4"
+
+[[files]]
+path = "files/codestreams_profile0/p0_10.j2k"
+sha256 = "0146480434740e7580ec5a413fd19654a2f1273dd7db25dc5d0b75ab98a9d706"
+
+[[files]]
+path = "files/codestreams_profile0/p0_11.j2k"
+sha256 = "d20d8a13b570ef4adb0c8d4166568b043d00124c2db652ce7f78d85ac1d77b62"
+
+[[files]]
+path = "files/codestreams_profile0/p0_12.j2k"
+sha256 = "741885b801b7b8a901b61792f52e0d67d05b7a87a7fc2a718c92cb6c969416fc"
+
+[[files]]
+path = "files/codestreams_profile0/p0_13.j2k"
+sha256 = "12463d0c67e803fac6637d384263abbb6b546826419ecb725aed18fd45bcabb0"
+
+[[files]]
+path = "files/codestreams_profile0/p0_14.j2k"
+sha256 = "3e8df4a1dc7e5edcd9478d2e5d350e16f802ef8da3161d63a979f94906440e54"
+
+[[files]]
+path = "files/codestreams_profile0/p0_15.j2k"
+sha256 = "0aa26db75e8414d554e1fa93a0c7e101f16bb203f1fe06983fdd0c01fa61ddee"
+
+[[files]]
+path = "files/codestreams_profile0/p0_16.j2k"
+sha256 = "853d78ff805eff1aa9d6b97cea42ea4975d334b0d4d6b36f217baa0bc1314d27"
+
+[[files]]
+path = "files/codestreams_profile1/p1_01.j2k"
+sha256 = "26919bf56968ab57137bb478badb0bde8d2d53dfa26233935eecfbd40f235b81"
+
+[[files]]
+path = "files/codestreams_profile1/p1_02.j2k"
+sha256 = "9fb9a26fbd769ea4fce1ca450ed605764af9931783eba49b3551b3a37b7a6f87"
+
+[[files]]
+path = "files/codestreams_profile1/p1_03.j2k"
+sha256 = "0ff5572be1d0411550ceaf3b935f2c9f100bbd0399efbb8d48143add8d56ffb7"
+
+[[files]]
+path = "files/codestreams_profile1/p1_04.j2k"
+sha256 = "fbbe812a6ce6abfc5d1eef02c2e3838c023c24f0ff0b1dcd79c4e1d018b3351f"
+
+[[files]]
+path = "files/codestreams_profile1/p1_05.j2k"
+sha256 = "6b1eb070cb40585a9c0ce8569a957dcdbb1948e6129c0af50ec38ee9c0cef994"
+
+[[files]]
+path = "files/codestreams_profile1/p1_06.j2k"
+sha256 = "08a7fb96ba93bb3cd57183eee56ee92e91cb58193a378c6a4208d8cf1877459b"
+
+[[files]]
+path = "files/codestreams_profile1/p1_07.j2k"
+sha256 = "59576c42568098e4e5d9967eefb0a59b0002fedd7776c201c2c9f9aeb3cf1949"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_01.pgx"
+sha256 = "268a50614b74bb375092d11aa21594069666568a73fe0b83f3ca9cfbda389139"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_02.pgx"
+sha256 = "7d7924248477c4368eadd508234545acca9f790e5cd2f888651de44b0ae9e9f9"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_03r0.pgx"
+sha256 = "29aa1042c71b3868bf607e4e3b29436604f512c392131925523a060554aea9f5"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_03r1.pgx"
+sha256 = "3e3e2055b0b7783d16a339447a0dcc50d6ddb2381ac5d2769d3bd4206f30a68d"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_04.pgx"
+sha256 = "3bd0ba5ab481a5415e7272fd03a5c8463ffc223c09b3954ead086c7556502cea"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_05.pgx"
+sha256 = "008e9c31c4409706048d59d3dd9f79c87db0ea8c45eb49d53449c56c8919a2df"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_06.pgx"
+sha256 = "2a2c37396620bc14f37c578c74b2894ecfeb5e20bd30dc67fc0e8db4bbfb592b"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_07.pgx"
+sha256 = "55ee08494d259e5879aa4695d8c9d1afca4f4bb0be65bde61b55c7120d425d38"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_08.pgx"
+sha256 = "ad58ffadc846fc3ce72d1280ef3f2300c3697bfa754c6eb292167f9f835716a6"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_09.pgx"
+sha256 = "ce4dcf09fbd8076527f8d3ea83d9a6c23e24c8aa50f74ac7cd943695f59c875a"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_10.pgx"
+sha256 = "c58b9eb2901a78519af6eec0946a38a9ebb01bc9bb429fb3ea7cc4fc7e9a0bfb"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_11.pgx"
+sha256 = "4a4457e31466d9a78d332fea16237da57cd4b2f3d4fa6dee0074fa568b282765"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_12.pgx"
+sha256 = "69a27310574c9849c6af457de29ba5eec34fd2b2037cd96e6ac7eca0a4fa40e9"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_13.pgx"
+sha256 = "7f2bc12d19df4b2dd7b651c48d87c419ba8caa0cb7ec76424f672ba0ab53261c"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_14.pgx"
+sha256 = "c556ab741f9b7d0a519830d9d609fd68366d7af200a9c2dd740e18218ced8fba"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_15r0.pgx"
+sha256 = "12e00c98f9ad94527542d99c0763955614352ece12f22afa8e418c77fdcb9d35"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_15r1.pgx"
+sha256 = "b95be5fbc4272595678af5955805ea073decb7bbb4e60708eaf41853c5c1311a"
+
+[[files]]
+path = "files/reference_class0_profile0/c0p0_16.pgx"
+sha256 = "48876e9905a149b70299072d8f148bf697589c6c5aa15b328af8566bb4daecf5"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_01.pgx"
+sha256 = "00bdf8d02daa6eafb36a4563dd6c0f6125e2df75b2eb66f38b122a1c105849db"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_02.pgx"
+sha256 = "23b2f1215dc6581c3f7014224f02f208ae7b05bc977300bc75a516160e4c7f27"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_03.pgx"
+sha256 = "d3836ed021026ec9b5b13ad0d0cbc00446318134143a8dcba32ba6b5f6d78d6f"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_04r0.pgx"
+sha256 = "63cc22c9b256116fae5976fdce1f7254f9743cba571dc2b4f5ddba1b11883a6a"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_04r3.pgx"
+sha256 = "caddf11fa88f7ca8bc80ad11188203e69496d1437f7edb3930370b862cfd5489"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_05.pgx"
+sha256 = "06595f8b3d171dbb5538bba8c9ba701e4e8e6c50d2208a28623d01a02d65a279"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_06.pgx"
+sha256 = "25053fa746c9c552ab67b7da59b60384b6e1b8aba688d0314550beb5ba561f80"
+
+[[files]]
+path = "files/reference_class0_profile1/c0p1_07.pgx"
+sha256 = "ee0f0dd90be110241c60dbed84e03c94ff4f83d5cbdae603db9182f24cf5f8a4"
+
+[[files]]
+path = "files/reference_class1HF_profile1/hifi_02-0.pgx"
+sha256 = "d043e2685517ac444fd2b5e5b9785bdc8e0ec767dcea8fece3ff450f599ab549"
+
+[[files]]
+path = "files/reference_class1HF_profile1/hifi_02-1.pgx"
+sha256 = "ad44bd5c5fba4e5cc46a332b1f2543ef92207b37ef6ee5c5fb4db7e842d15c5f"
+
+[[files]]
+path = "files/reference_class1HF_profile1/hifi_02-2.pgx"
+sha256 = "a8624f77a99fd4264abe8dea5ff266da36f55ad4d35ffb261c9721ec01293d27"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_01-0.pgx"
+sha256 = "d1c24494c873c6c6bf84021bcbbf4606ade7c1755f9bf4ee0c2fd999ce9ae211"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_02-0.pgx"
+sha256 = "f8928b6d8d200c7dbc56e754c1826caf773d99e52c2c1bc4bbfdea7bc1e0d236"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_03-0.pgx"
+sha256 = "edbdfc559b314d6ec3b3f75d94c50ba2b65040cf02ef0017a97ba92e9fedaa86"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_04-0.pgx"
+sha256 = "51705f9c5e9a0abf2890a6d05d8e5cc509bc0dedc46a590acf04255318e25001"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_04-1.pgx"
+sha256 = "9949ce4c13203132f6200926fec8c24ccb2381b8888ade607d9b73f403ee6c42"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_04-2.pgx"
+sha256 = "81c8dda3f54ac601b0e9a4e18d7556ec69fddbb7997ae8aed75e3b512e6cbd60"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_05-0.pgx"
+sha256 = "87122bc8f4a15c2b507d3d766c91b3fee54142c1935c0cdef43444a319f0a77f"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_05-1.pgx"
+sha256 = "92876bda577d5ea7b2ba7c4c2c2a646251043f681f9e3cbf4f92260fac3ee3b7"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_05-2.pgx"
+sha256 = "8183c2a7682d34b62cb09a747ab803207282f882590f5a533e61a9d6b1922511"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_05-3.pgx"
+sha256 = "1d52fc3949c1110036d7f478f378a11bc7d91a2d02743d6c5eccde72e345cc6f"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_06-0.pgx"
+sha256 = "8e4fe489e03fd5579f28c527bb966526a4cbc8bd2957277f9ef71f4d366ad286"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_06-1.pgx"
+sha256 = "37cd7cbb59d8a8a6868d90b458fe7f1c1ca9cc8c3d1aaeb3279401cdac0a007f"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_06-2.pgx"
+sha256 = "37da1bfb1f6fc90e65ecb62efab284daaf8828235e808bb3f1dcc819e242a87f"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_06-3.pgx"
+sha256 = "e3a2ddfc7a37a16dde4c51d4bca43bc07fe65505d1d03986f9516713e6527f57"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_07-0.pgx"
+sha256 = "2f59fff782b20c1648b68019ce6069960aac5efb2bf98a4df509ad4ba5a72b3b"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_07-1.pgx"
+sha256 = "967181e82d33e3442160bf0ae3e5ffa6db99a21584e6736acb2719030ad1e412"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_07-2.pgx"
+sha256 = "2d8d2ae1d2e33a486c3187206599944856b8a75525a165069042f4cfc295dc74"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_08-0.pgx"
+sha256 = "69a2af90074593b007d50c96b1c5e4ecb1e591e265dc4f2ab5a230359ab2c87d"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_08-1.pgx"
+sha256 = "fa2598b68dde7613b50caa1e5692dcecec934b33e2eb8327f44a274869bc3025"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_08-2.pgx"
+sha256 = "7c3c05a5c5d4fe8efa55975e1b6d24869b3e1bf140db2b32b5dd14e42d65f77e"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_09-0.pgx"
+sha256 = "174557fca48a83f7a474d2307984051326350266fec1acf623466e8f92bc8a29"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_10-0.pgx"
+sha256 = "feee51c4c4519bd4ddbd53fb9e8186ddc95c4e64b42ffc9681d65d26172f76c4"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_10-1.pgx"
+sha256 = "4857f0f3247bac8bef2354dc88727cece95bb5713cbe1e83c346601c8cd395d1"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_10-2.pgx"
+sha256 = "460dede2e04d2be3f2c74334784b58bac59bd640c2f2fbad64489e788d2c511a"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_11-0.pgx"
+sha256 = "2255812746edf02b988b0efefedf99ad2a9c1e01f2260a223490480d53e69c99"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_12-0.pgx"
+sha256 = "2336f73b2596e62ce5fd46a09813c4e88f2b57eabdfa5178008f8ef6982de8bd"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_13-0.pgx"
+sha256 = "a3250795aa7c31d0caf0a9ad706e21652060768b404210624e5dd695787dbc07"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_13-1.pgx"
+sha256 = "ff079e7fe2ca5fd542f6b85bda838fa9f11428a59d7584f6523cb649cb8b79c7"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_13-2.pgx"
+sha256 = "83d2079dcfaee85fcd75e8a23d6dd69686b966ba334d2c8ca9a25b2bbc7079b0"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_13-3.pgx"
+sha256 = "d1bb447c46cf81b0673ff570eb5d5f940aeebd8e6fee68f21e061c6d5cb064ae"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_14-0.pgx"
+sha256 = "c4e96524ccf8f0520e92f335dc4bf968c74187ab491660992fff4740e6a1cd63"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_14-1.pgx"
+sha256 = "b1e1b60cda396c16803da500f8b3006a2bf7375f39f1c79cf79f827881bbd714"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_14-2.pgx"
+sha256 = "c4e96524ccf8f0520e92f335dc4bf968c74187ab491660992fff4740e6a1cd63"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_15-0.pgx"
+sha256 = "edbdfc559b314d6ec3b3f75d94c50ba2b65040cf02ef0017a97ba92e9fedaa86"
+
+[[files]]
+path = "files/reference_class1_profile0/c1p0_16-0.pgx"
+sha256 = "48876e9905a149b70299072d8f148bf697589c6c5aa15b328af8566bb4daecf5"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_01-0.pgx"
+sha256 = "fd1730adccecdfa90c31e895ea58083670ccedbe6fe053b20c3bb7c7cf8fb96b"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_02-0.pgx"
+sha256 = "0ed11a110b40f1f7174546decf075a12ba201e1d5bbba18dcfa638d6b320bc3f"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_02-1.pgx"
+sha256 = "23551bc04b229de63344f7a7f4b0cc19d8512681ad3fbd5d7b3fbd55d23228dc"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_02-2.pgx"
+sha256 = "46349e1ccb1df738b58ce7d0f706bd6c2937eb6457596e9ec9f858ed0d9b47a4"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_03-0.pgx"
+sha256 = "416ff6c9b3d917ff20d3bd6405e224049137d04ed80dec9f8f42dfa070deb794"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_03-1.pgx"
+sha256 = "9cfbc8ebb61d6447cc4fc98d8cca63016a288037a4609b7424685fd72a984ca1"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_03-2.pgx"
+sha256 = "71fd301fb0da107998a8805a46faff754c14316d1544e4159778b43055b210a5"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_03-3.pgx"
+sha256 = "1d52fc3949c1110036d7f478f378a11bc7d91a2d02743d6c5eccde72e345cc6f"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_04-0.pgx"
+sha256 = "46208571732cee8d274ec11629da785c6358599a040ddeb3d5e8f0b76e38594a"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_05-0.pgx"
+sha256 = "e60798e11ca7af7fba5af5805f0cdb0682d903f698b4f4fc3f2bceab56331ad0"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_05-1.pgx"
+sha256 = "c9858b293f37c4c831cec4c7fc21cae83493b6f60995ddd8cfe67e5f7c85c1c1"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_05-2.pgx"
+sha256 = "c9279428c9c879a590fe70e991ddc76ab41a9441b43c349020a1b8582fb2671a"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_06-0.pgx"
+sha256 = "5f1fea232444c1afa6f1e06738a64910436d122f2fe69b0bf5ea59a55ac7f66e"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_06-1.pgx"
+sha256 = "52acc2a2c4374dcdcdf4b795c430fef1e632e5fc35590401c7c0a618935f6749"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_06-2.pgx"
+sha256 = "01cb2817388ee05f1f4524b0420f86580e62e098ac17680f18ec53cf7f470fc0"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_07-0.pgx"
+sha256 = "ee0f0dd90be110241c60dbed84e03c94ff4f83d5cbdae603db9182f24cf5f8a4"
+
+[[files]]
+path = "files/reference_class1_profile1/c1p1_07-1.pgx"
+sha256 = "b72f60a12ec7dcb1360cc9adfd86bfb2e81d929262df5e0167d00c02e61b4df4"
+
+[[files]]
+path = "files/reference_jp2/jp2_1.tif"
+sha256 = "1d88f16d47e304affde8fdb3a593a18b328dfa28c04884ac6c889cdefa154d19"
+
+[[files]]
+path = "files/reference_jp2/jp2_2.tif"
+sha256 = "9850a8d54b227dcb931f43c96e3522fcf106629c60e9126381f3b39009c40c91"
+
+[[files]]
+path = "files/reference_jp2/jp2_3.tif"
+sha256 = "512a8827b98d71051c3cba52b96a323e879870ba90dc254016befaa1aa90dbd5"
+
+[[files]]
+path = "files/reference_jp2/jp2_4.tif"
+sha256 = "97395ed8d03798ef25ab7e53d904c288a37c8a07d1510ec1e897cdd923cf8eb1"
+
+[[files]]
+path = "files/reference_jp2/jp2_5.tif"
+sha256 = "434b199ca176bb87de22d3e7413bf791602a7d0c21056745fb052d395dd52751"
+
+[[files]]
+path = "files/reference_jp2/jp2_6.tif"
+sha256 = "927541305c4f46e1eb43e5e551260bfee8b0c395b5ffba95a77483b0216bd2c6"
+
+[[files]]
+path = "files/reference_jp2/jp2_7.tif"
+sha256 = "65972c102d9277fbc901fbc60ee2253542f665b558c4548f986834a5488d6ed8"
+
+[[files]]
+path = "files/reference_jp2/jp2_8.tif"
+sha256 = "4f0187ac2cf3ab95739f642cafcf96fcb1f42d0de9a0ce92464d7b10f80d4b31"
+
+[[files]]
+path = "files/reference_jp2/jp2_9.tif"
+sha256 = "f092ba8dcffe34f289dbb258de2c3c22eb1eab7bd511096eacf812c29c2883fb"
+
+[[files]]
+path = "files/testfiles_jp2/file1.jp2"
+sha256 = "4e3d51df7bc66cf367162acfff88b0889d2b2c79ea8d99d93b2d2bd165398deb"
+
+[[files]]
+path = "files/testfiles_jp2/file2.jp2"
+sha256 = "c87b78e7c3298ddb5e2c4b9a27485ae52ed0906184ae4eecf13b7525ad160960"
+
+[[files]]
+path = "files/testfiles_jp2/file3.jp2"
+sha256 = "fe922461d6928f9b9c86c222a133c42c19d119351400d5e8dd6a1e60db437e66"
+
+[[files]]
+path = "files/testfiles_jp2/file4.jp2"
+sha256 = "b3474f23bcf622f4f82c8ede5c473a4a1bae1c287b713fbd8447442e37edcee0"
+
+[[files]]
+path = "files/testfiles_jp2/file5.jp2"
+sha256 = "dbaeb5aaadf2f911c38f2585fa7d87a490c5abcf6742d6c91ecdebe42077ecd7"
+
+[[files]]
+path = "files/testfiles_jp2/file6.jp2"
+sha256 = "78ae553dc97b22352a2417aba739160e3b6c5b187b2efb867fb50f9814f1bc67"
+
+[[files]]
+path = "files/testfiles_jp2/file7.jp2"
+sha256 = "c9e6c845fde3db494035b9be8728239da45791b3269687a043a1fcedd8d11dbf"
+
+[[files]]
+path = "files/testfiles_jp2/file8.jp2"
+sha256 = "81e8a8bae1e3d7e632091a120a8a6650a04636b2276a550889b153290348eb01"
+
+[[files]]
+path = "files/testfiles_jp2/file9.jp2"
+sha256 = "6dfea011b013b62353fedcce9520e7c061dbbe8bf0c06d9edad4ac8889274b91"
+
+[[decoder_cases]]
+id = "c1-c0p0-01"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_01.j2k"
+reference = "files/reference_class0_profile0/c0p0_01.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-02"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_02.j2k"
+reference = "files/reference_class0_profile0/c0p0_02.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 126
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-03r0"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_03.j2k"
+reference = "files/reference_class0_profile0/c0p0_03r0.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 4
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-03r1"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_03.j2k"
+reference = "files/reference_class0_profile0/c0p0_03r1.pgx"
+component = 0
+reduction_levels = 1
+signed = true
+bit_depth = 4
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-04"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_04.j2k"
+reference = "files/reference_class0_profile0/c0p0_04.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 80
+height = 60
+peak = 33
+mse = 55.8
+
+[[decoder_cases]]
+id = "c1-c0p0-05"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_05.j2k"
+reference = "files/reference_class0_profile0/c0p0_05.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 54
+mse = 68.0
+
+[[decoder_cases]]
+id = "c1-c0p0-06"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_06.j2k"
+reference = "files/reference_class0_profile0/c0p0_06.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 65
+height = 17
+peak = 109
+mse = 743.0
+
+[[decoder_cases]]
+id = "c1-c0p0-07"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_07.j2k"
+reference = "files/reference_class0_profile0/c0p0_07.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 8
+width = 128
+height = 128
+peak = 10
+mse = 0.34
+
+[[decoder_cases]]
+id = "c1-c0p0-08"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_08.j2k"
+reference = "files/reference_class0_profile0/c0p0_08.pgx"
+component = 0
+reduction_levels = 5
+signed = true
+bit_depth = 8
+width = 17
+height = 96
+peak = 7
+mse = 6.72
+
+[[decoder_cases]]
+id = "c1-c0p0-09"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_09.j2k"
+reference = "files/reference_class0_profile0/c0p0_09.pgx"
+component = 0
+reduction_levels = 2
+signed = false
+bit_depth = 8
+width = 5
+height = 10
+peak = 4
+mse = 1.47
+
+[[decoder_cases]]
+id = "c1-c0p0-10"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_10.j2k"
+reference = "files/reference_class0_profile0/c0p0_10.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 64
+peak = 10
+mse = 2.84
+
+[[decoder_cases]]
+id = "c1-c0p0-11"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_11.j2k"
+reference = "files/reference_class0_profile0/c0p0_11.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-12"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_12.j2k"
+reference = "files/reference_class0_profile0/c0p0_12.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 3
+height = 5
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+# This 257-component codestream enables RCT. T.803 B.2.5 compares Cclass-0
+# component 0 before inverse MCT, while Cclass-1 compares decoded components.
+# The runner therefore reads COD transform metadata instead of inferring MCT
+# from the display colorspace, which is intentionally unknown for this shape.
+id = "c1-c0p0-13"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_13.j2k"
+reference = "files/reference_class0_profile0/c0p0_13.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-14"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_14.j2k"
+reference = "files/reference_class0_profile0/c0p0_14.pgx"
+component = 0
+reduction_levels = 2
+signed = false
+bit_depth = 8
+width = 13
+height = 13
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-15r0"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_15.j2k"
+reference = "files/reference_class0_profile0/c0p0_15r0.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 4
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-15r1"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_15.j2k"
+reference = "files/reference_class0_profile0/c0p0_15r1.pgx"
+component = 0
+reduction_levels = 1
+signed = true
+bit_depth = 4
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c1-c0p0-16"
+table = "C.1"
+codestream = "files/codestreams_profile0/p0_16.j2k"
+reference = "files/reference_class0_profile0/c0p0_16.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c4-c0p1-01"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_01.j2k"
+reference = "files/reference_class0_profile1/c0p1_01.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 61
+height = 99
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c4-c0p1-02"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_02.j2k"
+reference = "files/reference_class0_profile1/c0p1_02.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 80
+height = 60
+peak = 35
+mse = 74.0
+
+[[decoder_cases]]
+id = "c4-c0p1-03"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_03.j2k"
+reference = "files/reference_class0_profile1/c0p1_03.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 28
+mse = 18.8
+
+[[decoder_cases]]
+id = "c4-c0p1-04r0"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_04.j2k"
+reference = "files/reference_class0_profile1/c0p1_04r0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 2
+mse = 0.55
+
+[[decoder_cases]]
+id = "c4-c0p1-04r3"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_04.j2k"
+reference = "files/reference_class0_profile1/c0p1_04r3.pgx"
+component = 0
+reduction_levels = 3
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 128
+mse = 2042.0
+
+[[decoder_cases]]
+id = "c4-c0p1-05"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_05.j2k"
+reference = "files/reference_class0_profile1/c0p1_05.pgx"
+component = 0
+reduction_levels = 4
+signed = false
+bit_depth = 8
+width = 32
+height = 32
+peak = 128
+mse = 16384.0
+
+[[decoder_cases]]
+id = "c4-c0p1-06"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_06.j2k"
+reference = "files/reference_class0_profile1/c0p1_06.pgx"
+component = 0
+reduction_levels = 1
+signed = false
+bit_depth = 8
+width = 6
+height = 6
+peak = 128
+mse = 16384.0
+
+[[decoder_cases]]
+id = "c4-c0p1-07"
+table = "C.4"
+codestream = "files/codestreams_profile1/p1_07.j2k"
+reference = "files/reference_class0_profile1/c0p1_07.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 2
+height = 12
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-01-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_01.j2k"
+reference = "files/reference_class1_profile0/c1p0_01-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-02-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_02.j2k"
+reference = "files/reference_class1_profile0/c1p0_02-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 126
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-03-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_03.j2k"
+reference = "files/reference_class1_profile0/c1p0_03-0.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 4
+width = 256
+height = 256
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-04-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_04.j2k"
+reference = "files/reference_class1_profile0/c1p0_04-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 5
+mse = 0.776
+
+[[decoder_cases]]
+id = "c6-c1p0-04-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_04.j2k"
+reference = "files/reference_class1_profile0/c1p0_04-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 4
+mse = 0.626
+
+[[decoder_cases]]
+id = "c6-c1p0-04-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_04.j2k"
+reference = "files/reference_class1_profile0/c1p0_04-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 6
+mse = 1.07
+
+[[decoder_cases]]
+id = "c6-c1p0-05-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_05.j2k"
+reference = "files/reference_class1_profile0/c1p0_05-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1024
+height = 1024
+peak = 2
+mse = 0.319
+
+[[decoder_cases]]
+id = "c6-c1p0-05-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_05.j2k"
+reference = "files/reference_class1_profile0/c1p0_05-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1024
+height = 1024
+peak = 2
+mse = 0.323
+
+[[decoder_cases]]
+id = "c6-c1p0-05-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_05.j2k"
+reference = "files/reference_class1_profile0/c1p0_05-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 2
+mse = 0.317
+
+[[decoder_cases]]
+id = "c6-c1p0-05-3"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_05.j2k"
+reference = "files/reference_class1_profile0/c1p0_05-3.pgx"
+component = 3
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-06-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_06.j2k"
+reference = "files/reference_class1_profile0/c1p0_06-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 513
+height = 129
+peak = 635
+mse = 11287.0
+
+[[decoder_cases]]
+id = "c6-c1p0-06-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_06.j2k"
+reference = "files/reference_class1_profile0/c1p0_06-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 257
+height = 129
+peak = 403
+mse = 6124.0
+
+[[decoder_cases]]
+id = "c6-c1p0-06-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_06.j2k"
+reference = "files/reference_class1_profile0/c1p0_06-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 513
+height = 65
+peak = 378
+mse = 3968.0
+
+[[decoder_cases]]
+id = "c6-c1p0-06-3"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_06.j2k"
+reference = "files/reference_class1_profile0/c1p0_06-3.pgx"
+component = 3
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 257
+height = 65
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-07-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_07.j2k"
+reference = "files/reference_class1_profile0/c1p0_07-0.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 12
+width = 2048
+height = 2048
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-07-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_07.j2k"
+reference = "files/reference_class1_profile0/c1p0_07-1.pgx"
+component = 1
+reduction_levels = 0
+signed = true
+bit_depth = 12
+width = 2048
+height = 2048
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-07-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_07.j2k"
+reference = "files/reference_class1_profile0/c1p0_07-2.pgx"
+component = 2
+reduction_levels = 0
+signed = true
+bit_depth = 12
+width = 2048
+height = 2048
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-08-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_08.j2k"
+reference = "files/reference_class1_profile0/c1p0_08-0.pgx"
+component = 0
+reduction_levels = 1
+signed = true
+bit_depth = 12
+width = 257
+height = 1536
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-08-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_08.j2k"
+reference = "files/reference_class1_profile0/c1p0_08-1.pgx"
+component = 1
+reduction_levels = 1
+signed = true
+bit_depth = 12
+width = 257
+height = 1536
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-08-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_08.j2k"
+reference = "files/reference_class1_profile0/c1p0_08-2.pgx"
+component = 2
+reduction_levels = 1
+signed = true
+bit_depth = 12
+width = 257
+height = 1536
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-09-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_09.j2k"
+reference = "files/reference_class1_profile0/c1p0_09-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 17
+height = 37
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-10-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_10.j2k"
+reference = "files/reference_class1_profile0/c1p0_10-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 64
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-10-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_10.j2k"
+reference = "files/reference_class1_profile0/c1p0_10-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 64
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-10-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_10.j2k"
+reference = "files/reference_class1_profile0/c1p0_10-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 64
+height = 64
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-11-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_11.j2k"
+reference = "files/reference_class1_profile0/c1p0_11-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-12-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_12.j2k"
+reference = "files/reference_class1_profile0/c1p0_12-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 3
+height = 5
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-13-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_13.j2k"
+reference = "files/reference_class1_profile0/c1p0_13-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-13-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_13.j2k"
+reference = "files/reference_class1_profile0/c1p0_13-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-13-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_13.j2k"
+reference = "files/reference_class1_profile0/c1p0_13-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-13-3"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_13.j2k"
+reference = "files/reference_class1_profile0/c1p0_13-3.pgx"
+component = 3
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1
+height = 1
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+# Table C.6 prints 49x149, while both the pinned v3 PGX header and p0_14
+# codestream declare this component as 49x49. Comparison follows the official
+# electronic attachment and records its hashes above.
+id = "c6-c1p0-14-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_14.j2k"
+reference = "files/reference_class1_profile0/c1p0_14-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 49
+height = 49
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-14-1"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_14.j2k"
+reference = "files/reference_class1_profile0/c1p0_14-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 49
+height = 49
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-14-2"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_14.j2k"
+reference = "files/reference_class1_profile0/c1p0_14-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 49
+height = 49
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-15-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_15.j2k"
+reference = "files/reference_class1_profile0/c1p0_15-0.pgx"
+component = 0
+reduction_levels = 0
+signed = true
+bit_depth = 4
+width = 256
+height = 256
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c6-c1p0-16-0"
+table = "C.6"
+codestream = "files/codestreams_profile0/p0_16.j2k"
+reference = "files/reference_class1_profile0/c1p0_16-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 128
+height = 128
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c7-c1p1-01-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_01.j2k"
+reference = "files/reference_class1_profile1/c1p1_01-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 61
+height = 99
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c7-c1p1-02-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_02.j2k"
+reference = "files/reference_class1_profile1/c1p1_02-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 5
+mse = 0.765
+
+[[decoder_cases]]
+id = "c7-c1p1-02-1"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_02.j2k"
+reference = "files/reference_class1_profile1/c1p1_02-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 4
+mse = 0.616
+
+[[decoder_cases]]
+id = "c7-c1p1-02-2"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_02.j2k"
+reference = "files/reference_class1_profile1/c1p1_02-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 640
+height = 480
+peak = 6
+mse = 1.051
+
+[[decoder_cases]]
+id = "c7-c1p1-03-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_03.j2k"
+reference = "files/reference_class1_profile1/c1p1_03-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1024
+height = 1024
+peak = 2
+mse = 0.311
+
+[[decoder_cases]]
+id = "c7-c1p1-03-1"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_03.j2k"
+reference = "files/reference_class1_profile1/c1p1_03-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 1024
+height = 1024
+peak = 2
+mse = 0.28
+
+[[decoder_cases]]
+id = "c7-c1p1-03-2"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_03.j2k"
+reference = "files/reference_class1_profile1/c1p1_03-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 1
+mse = 0.267
+
+[[decoder_cases]]
+id = "c7-c1p1-03-3"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_03.j2k"
+reference = "files/reference_class1_profile1/c1p1_03-3.pgx"
+component = 3
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c7-c1p1-04-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_04.j2k"
+reference = "files/reference_class1_profile1/c1p1_04-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 1024
+height = 1024
+peak = 624
+mse = 3080.0
+
+[[decoder_cases]]
+id = "c7-c1p1-05-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_05.j2k"
+reference = "files/reference_class1_profile1/c1p1_05-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 40
+mse = 8.458
+
+[[decoder_cases]]
+id = "c7-c1p1-05-1"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_05.j2k"
+reference = "files/reference_class1_profile1/c1p1_05-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 40
+mse = 9.716
+
+[[decoder_cases]]
+id = "c7-c1p1-05-2"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_05.j2k"
+reference = "files/reference_class1_profile1/c1p1_05-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 512
+height = 512
+peak = 40
+mse = 10.154
+
+[[decoder_cases]]
+id = "c7-c1p1-06-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_06.j2k"
+reference = "files/reference_class1_profile1/c1p1_06-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 12
+height = 12
+peak = 2
+mse = 0.6
+
+[[decoder_cases]]
+id = "c7-c1p1-06-1"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_06.j2k"
+reference = "files/reference_class1_profile1/c1p1_06-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 12
+height = 12
+peak = 2
+mse = 0.6
+
+[[decoder_cases]]
+id = "c7-c1p1-06-2"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_06.j2k"
+reference = "files/reference_class1_profile1/c1p1_06-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 12
+height = 12
+peak = 2
+mse = 0.6
+
+[[decoder_cases]]
+id = "c7-c1p1-07-0"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_07.j2k"
+reference = "files/reference_class1_profile1/c1p1_07-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 2
+height = 12
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c7-c1p1-07-1"
+table = "C.7"
+codestream = "files/codestreams_profile1/p1_07.j2k"
+reference = "files/reference_class1_profile1/c1p1_07-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 8
+width = 8
+height = 12
+peak = 0
+mse = 0.0
+
+[[decoder_cases]]
+id = "c8-hifi-02-0"
+table = "C.8"
+codestream = "files/codestreams_hifi/hifi_p1_02.j2k"
+reference = "files/reference_class1HF_profile1/hifi_02-0.pgx"
+component = 0
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 128
+height = 128
+peak = 43
+mse = 80.0
+
+[[decoder_cases]]
+id = "c8-hifi-02-1"
+table = "C.8"
+codestream = "files/codestreams_hifi/hifi_p1_02.j2k"
+reference = "files/reference_class1HF_profile1/hifi_02-1.pgx"
+component = 1
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 128
+height = 128
+peak = 33
+mse = 62.0
+
+[[decoder_cases]]
+id = "c8-hifi-02-2"
+table = "C.8"
+codestream = "files/codestreams_hifi/hifi_p1_02.j2k"
+reference = "files/reference_class1HF_profile1/hifi_02-2.pgx"
+component = 2
+reduction_levels = 0
+signed = false
+bit_depth = 12
+width = 128
+height = 128
+peak = 38
+mse = 72.0
+
+[[jp2_cases]]
+id = "jp2-1"
+input = "files/testfiles_jp2/file1.jp2"
+reference = "files/reference_jp2/jp2_1.tif"
+components = 3
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-2"
+input = "files/testfiles_jp2/file2.jp2"
+reference = "files/reference_jp2/jp2_2.tif"
+components = 3
+bit_depth = 8
+width = 480
+height = 640
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-3"
+input = "files/testfiles_jp2/file3.jp2"
+reference = "files/reference_jp2/jp2_3.tif"
+components = 3
+bit_depth = 8
+width = 480
+height = 640
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-4"
+input = "files/testfiles_jp2/file4.jp2"
+reference = "files/reference_jp2/jp2_4.tif"
+components = 1
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-5"
+input = "files/testfiles_jp2/file5.jp2"
+reference = "files/reference_jp2/jp2_5.tif"
+components = 3
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-6"
+input = "files/testfiles_jp2/file6.jp2"
+reference = "files/reference_jp2/jp2_6.tif"
+components = 1
+bit_depth = 12
+width = 768
+height = 512
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-7"
+input = "files/testfiles_jp2/file7.jp2"
+reference = "files/reference_jp2/jp2_7.tif"
+components = 3
+bit_depth = 16
+width = 480
+height = 640
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-8"
+input = "files/testfiles_jp2/file8.jp2"
+reference = "files/reference_jp2/jp2_8.tif"
+components = 1
+bit_depth = 8
+width = 700
+height = 400
+peak = 4
+
+[[jp2_cases]]
+id = "jp2-9"
+input = "files/testfiles_jp2/file9.jp2"
+reference = "files/reference_jp2/jp2_9.tif"
+components = 1
+bit_depth = 8
+width = 768
+height = 512
+peak = 4

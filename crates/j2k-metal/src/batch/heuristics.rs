@@ -419,10 +419,8 @@ fn can_decode_as_repeated_full_metal_batch(first: &QueuedRequest, next: &QueuedR
 pub(super) fn is_repeated_full_grayscale_candidate(request: &QueuedRequest) -> bool {
     matches!(request.op, BatchOp::Full)
         && matches!(request.fmt, PixelFormat::Gray8 | PixelFormat::Gray16)
-        && matches!(
-            request.backend,
-            BackendRequest::Auto | BackendRequest::Metal
-        )
+        && (request.backend == BackendRequest::Metal
+            || (request.backend == BackendRequest::Auto && request.fmt == PixelFormat::Gray8))
 }
 
 pub(super) fn is_repeated_full_color_candidate(request: &QueuedRequest) -> bool {
@@ -431,7 +429,8 @@ pub(super) fn is_repeated_full_color_candidate(request: &QueuedRequest) -> bool 
             request.fmt,
             PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
         )
-        && request.backend == BackendRequest::Metal
+        && (request.backend == BackendRequest::Metal
+            || (request.backend == BackendRequest::Auto && request.fmt == PixelFormat::Rgb8))
 }
 
 pub(super) fn is_distinct_full_grayscale_metal_candidate(request: &QueuedRequest) -> bool {

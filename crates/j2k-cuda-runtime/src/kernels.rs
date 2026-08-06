@@ -35,7 +35,7 @@ pub(crate) use j2k::{
     j2k_classic_codeblock_launch_geometry, j2k_dwt53_launch_geometry,
     j2k_forward_rct_launch_geometry, j2k_idwt_multi_1d_launch_geometry,
     j2k_idwt_multi_coop_axis_launch_geometry, j2k_idwt_multi_coop_columns_launch_geometry,
-    j2k_idwt_multi_coop_launch_geometry, j2k_store_batch_launch_geometry,
+    j2k_store_batch_launch_geometry,
 };
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
 pub(crate) use jpeg::cuda_oxide_jpeg_decode_ptx;

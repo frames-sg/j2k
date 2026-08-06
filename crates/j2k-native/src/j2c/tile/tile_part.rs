@@ -8,10 +8,7 @@ use super::metadata::{
     try_clone_coding_parameters, try_clone_quantization_info, TileMetadataBudget,
     TileMetadataTransaction,
 };
-use super::{
-    ComponentTile, MergedTilePart, PacketLengthMetadata, ResolutionTile, SeparatedTilePart, Tile,
-    TilePart,
-};
+use super::{MergedTilePart, PacketLengthMetadata, SeparatedTilePart, Tile, TilePart};
 use crate::error::{bail, err, DecodingError, MarkerError, Result, TileError, ValidationError};
 use crate::j2c::codestream::{self, markers, skip_marker_segment, Header, PacketLengthMarker};
 use crate::reader::BitReader;
@@ -266,13 +263,7 @@ pub(super) fn parse_tile_part<'a>(
     let ppt_header_capacity = ppt_headers.capacity();
 
     ppt_headers.sort_by_key(|ppt_header| ppt_header.sequence_idx);
-    let ppm_header_count = ppm_header_count(
-        tile,
-        packet_lengths_present.then_some(temporary_packet_length_count),
-        &tile_part_header,
-        main_header,
-        *ppm_packet_idx,
-    )?;
+    let ppm_header_count = ppm_header_count(main_header, *ppm_packet_idx)?;
     let header_count = ppt_headers
         .len()
         .checked_add(ppm_header_count)
@@ -369,104 +360,18 @@ fn retain_tile_part_metadata(
     Ok(())
 }
 
-fn ppm_header_count(
-    tile: &Tile<'_>,
-    packet_length_count: Option<usize>,
-    tile_part_header: &TilePartHeader,
-    main_header: &Header<'_>,
-    ppm_packet_idx: usize,
-) -> Result<usize> {
+fn ppm_header_count(main_header: &Header<'_>, ppm_packet_idx: usize) -> Result<usize> {
     if main_header.ppm_packets.is_empty() {
         return Ok(0);
     }
-    if let Some(packet_length_count) = packet_length_count {
-        return Ok(packet_length_count);
-    }
-    if tile_part_header.num_tile_parts == 1 {
-        return tile_packet_count(tile);
-    }
-
-    // Without PLT lengths, this legacy PPM representation has no serialized
-    // boundary for a multi-part tile. Preserve the former one-entry fallback
-    // until the parser supports cross-marker Nppm tile-part accumulation.
-    Ok(usize::from(
-        main_header.ppm_packets.get(ppm_packet_idx).is_some(),
-    ))
-}
-
-fn tile_packet_count(tile: &Tile<'_>) -> Result<usize> {
-    if tile.progression_changes.is_empty() {
-        let component_end = u16::try_from(tile.component_infos.len())
-            .map_err(|_| ValidationError::TooManyChannels)?;
-        let resolution_end = tile
-            .component_infos
-            .iter()
-            .map(|component| component.coding_style.parameters.num_resolution_levels)
-            .max()
-            .ok_or(ValidationError::InvalidComponentMetadata)?;
-        return packet_count_for_bounds(tile, 0, resolution_end, tile.num_layers, 0, component_end);
-    }
-
-    tile.progression_changes
+    main_header
+        .ppm_packets
+        .get(ppm_packet_idx..)
+        .ok_or(TileError::Invalid)?
         .iter()
-        .try_fold(0_usize, |total, change| {
-            let count = packet_count_for_bounds(
-                tile,
-                change.resolution_start,
-                change.resolution_end,
-                change.layer_end.min(tile.num_layers),
-                change.component_start,
-                change.component_end,
-            )?;
-            total
-                .checked_add(count)
-                .ok_or(ValidationError::ImageTooLarge.into())
-        })
-}
-
-fn packet_count_for_bounds(
-    tile: &Tile<'_>,
-    resolution_start: u8,
-    resolution_end: u8,
-    layer_end: u8,
-    component_start: u16,
-    component_end: u16,
-) -> Result<usize> {
-    let component_len =
-        u16::try_from(tile.component_infos.len()).map_err(|_| ValidationError::TooManyChannels)?;
-    let component_end = component_end.min(component_len);
-    let total_resolution_end = tile
-        .component_infos
-        .iter()
-        .map(|component| component.coding_style.parameters.num_resolution_levels)
-        .max()
-        .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let resolution_end = resolution_end.min(total_resolution_end);
-    if resolution_start >= resolution_end || layer_end == 0 || component_start >= component_end {
-        return Err(DecodingError::InvalidProgressionIterator.into());
-    }
-
-    let mut packet_count = 0_usize;
-    for component_idx in component_start..component_end {
-        let component = tile
-            .component_infos
-            .get(usize::from(component_idx))
-            .ok_or(ValidationError::InvalidComponentMetadata)?;
-        let component_tile = ComponentTile::new(tile, component);
-        let component_resolution_end = resolution_end.min(component.num_resolution_levels());
-        for resolution in resolution_start..component_resolution_end {
-            let precinct_count =
-                usize::try_from(ResolutionTile::new(component_tile, resolution).num_precincts())
-                    .map_err(|_| ValidationError::ImageTooLarge)?;
-            let layer_packets = precinct_count
-                .checked_mul(usize::from(layer_end))
-                .ok_or(ValidationError::ImageTooLarge)?;
-            packet_count = packet_count
-                .checked_add(layer_packets)
-                .ok_or(ValidationError::ImageTooLarge)?;
-        }
-    }
-    Ok(packet_count)
+        .position(|packet| packet.ends_tile_part)
+        .and_then(|offset| offset.checked_add(1))
+        .ok_or(TileError::Invalid.into())
 }
 
 struct TilePartHeader {

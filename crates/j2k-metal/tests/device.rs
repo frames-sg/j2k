@@ -42,7 +42,7 @@ fn should_run_metal_runtime() -> bool {
     j2k_test_support::metal_runtime_gate(module_path!())
 }
 
-fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
+fn unsupported_ht_roi_rgb() -> Arc<[u8]> {
     let pixels = (0..4_u8)
         .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
         .collect::<Vec<_>>();
@@ -53,8 +53,8 @@ fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
         ..EncodeOptions::default()
     };
     Arc::from(
-        encode(&pixels, 2, 2, 3, 8, false, &options)
-            .expect("encode classic RGB8 with unsupported RGN maxshift"),
+        encode_htj2k(&pixels, 2, 2, 3, 8, false, &options)
+            .expect("encode HTJ2K RGB8 with unsupported RGN maxshift"),
     )
 }
 
@@ -281,6 +281,42 @@ fn fixture_classic_signed_gray12() -> (Vec<u8>, Vec<i16>) {
     };
     (
         encode(&pixels, 4, 4, 1, 12, true, &options).expect("encode signed classic gray12"),
+        samples,
+    )
+}
+
+fn fixture_classic_signed_gray4() -> (Vec<u8>, Vec<i16>) {
+    let samples = (-8_i16..=7).collect::<Vec<_>>();
+    let pixels = samples
+        .iter()
+        .map(|sample| sample.to_le_bytes()[0])
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    (
+        encode(&pixels, 4, 4, 1, 4, true, &options).expect("encode signed classic gray4"),
+        samples,
+    )
+}
+
+fn fixture_classic_signed_gray4_roi() -> (Vec<u8>, Vec<i16>) {
+    let samples = (-8_i16..=7).collect::<Vec<_>>();
+    let pixels = samples
+        .iter()
+        .map(|sample| sample.to_le_bytes()[0])
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        roi_component_shifts: vec![7],
+        ..EncodeOptions::default()
+    };
+    (
+        encode(&pixels, 4, 4, 1, 4, true, &options)
+            .expect("encode signed classic gray4 with ROI maxshift"),
         samples,
     )
 }

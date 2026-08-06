@@ -42,7 +42,36 @@ pub fn library_path() -> &'static str {
     "openjpeg-sys vendored openjp2"
 }
 
+/// Native component image decoded by the vendored `OpenJPEG` reference implementation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenJpegDecodedImage {
+    /// Reference-grid image dimensions.
+    pub dimensions: (u32, u32),
+    /// Decoded components in codestream order.
+    pub components: Vec<OpenJpegDecodedComponent>,
+}
+
+/// One native component decoded by the vendored `OpenJPEG` reference implementation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenJpegDecodedComponent {
+    /// Component-grid dimensions.
+    pub dimensions: (u32, u32),
+    /// Horizontal and vertical SIZ sampling factors.
+    pub sampling: (u32, u32),
+    /// Significant component precision.
+    pub bit_depth: u8,
+    /// Whether component samples are signed.
+    pub signed: bool,
+    /// Row-major decoded component samples.
+    pub samples: Vec<i32>,
+}
+
 crate::external_decode_wrappers!(decode);
+
+/// Decode native component samples without display scaling or interleaving.
+pub fn decode_components(bytes: &[u8]) -> Result<OpenJpegDecodedImage, String> {
+    decode_with_image(bytes, ExternalDecodeRequest::gray(), pack_components)
+}
 
 /// Owns an `OpenJPEG` stream; never null.
 struct StreamGuard(*mut opj_stream_t);
@@ -91,14 +120,22 @@ impl Drop for ImageGuard {
     }
 }
 
+fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, String> {
+    let channels = usize::try_from(request.color.channels())
+        .map_err(|_| "openjpeg: channel count exceeds platform usize".to_string())?;
+    decode_with_image(bytes, request, |image| pack_image(image, channels))
+}
+
 #[expect(
     unsafe_code,
     reason = "decode coordinates checked RAII-owned OpenJPEG stream, codec, and image handles"
 )]
-fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, String> {
+fn decode_with_image<T>(
+    bytes: &[u8],
+    request: ExternalDecodeRequest,
+    consume: impl FnOnce(*mut opj_image_t) -> Result<T, String>,
+) -> Result<T, String> {
     let codec_format = codec_format(bytes)?;
-    let channels = usize::try_from(request.color.channels())
-        .map_err(|_| "openjpeg: channel count exceeds platform usize".to_string())?;
     let decode_area = request.region.map(checked_decode_area).transpose()?;
     // Declaration order matters: drops run in reverse (image, codec, stream),
     // and the RAII guards free the FFI resources on every exit path,
@@ -125,11 +162,11 @@ fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, Strin
         if opj_decode(codec.0, stream.0, image.0) == bool_false() {
             return Err("openjpeg: decode failed".to_string());
         }
-        let packed = pack_image(image.0, channels)?;
+        let decoded = consume(image.0)?;
         if opj_end_decompress(codec.0, stream.0) == bool_false() {
             return Err("openjpeg: end_decompress failed".to_string());
         }
-        Ok(packed)
+        Ok(decoded)
     }
 }
 
@@ -268,6 +305,85 @@ fn pack_image(image: *mut opj_image_t, channels: usize) -> Result<Vec<u8>, Strin
 
 #[expect(
     unsafe_code,
+    reason = "component extraction validates OpenJPEG image arrays and copies their bounded sample buffers"
+)]
+fn pack_components(image: *mut opj_image_t) -> Result<OpenJpegDecodedImage, String> {
+    if image.is_null() {
+        return Err("openjpeg: null image".to_string());
+    }
+    // SAFETY: `image` was checked non-null and remains owned by the caller's `ImageGuard`.
+    let image = unsafe { &*image };
+    if image.numcomps == 0 || image.comps.is_null() {
+        return Err("openjpeg: image has no components".to_string());
+    }
+    let width = image
+        .x1
+        .checked_sub(image.x0)
+        .ok_or_else(|| "openjpeg: invalid reference-grid width".to_string())?;
+    let height = image
+        .y1
+        .checked_sub(image.y0)
+        .ok_or_else(|| "openjpeg: invalid reference-grid height".to_string())?;
+    if width == 0 || height == 0 {
+        return Err("openjpeg: image has zero-sized output".to_string());
+    }
+    let component_count = usize::try_from(image.numcomps)
+        .map_err(|_| "openjpeg: component count exceeds platform usize".to_string())?;
+    let mut components = Vec::new();
+    components
+        .try_reserve_exact(component_count)
+        .map_err(|_| "openjpeg: cannot allocate component owners".to_string())?;
+    let mut total_samples = 0usize;
+    for index in 0..component_count {
+        // SAFETY: `index < numcomps`; OpenJPEG owns a contiguous component array.
+        let component = unsafe { &*image.comps.add(index) };
+        if component.w == 0 || component.h == 0 || component.dx == 0 || component.dy == 0 {
+            return Err(format!("openjpeg: component {index} has invalid geometry"));
+        }
+        if component.data.is_null() {
+            return Err(format!("openjpeg: component {index} data missing"));
+        }
+        let component_width = usize::try_from(component.w)
+            .map_err(|_| "openjpeg: component width exceeds platform usize".to_string())?;
+        let component_height = usize::try_from(component.h)
+            .map_err(|_| "openjpeg: component height exceeds platform usize".to_string())?;
+        let sample_len = checked_component_sample_len(component_width, component_height)?;
+        total_samples = total_samples
+            .checked_add(sample_len)
+            .ok_or_else(|| "openjpeg: total component sample count overflow".to_string())?;
+        let total_bytes = total_samples
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| "openjpeg: total component byte count overflow".to_string())?;
+        if total_bytes > MAX_EXTERNAL_OUTPUT_BYTES {
+            return Err(format!(
+                "openjpeg: native component output exceeds {MAX_EXTERNAL_OUTPUT_BYTES} byte cap"
+            ));
+        }
+        let bit_depth = u8::try_from(component_precision(component.prec)?.0)
+            .map_err(|_| "openjpeg: component precision exceeds u8".to_string())?;
+        // SAFETY: `data` is non-null and OpenJPEG allocated `w * h` i32 samples.
+        let source = unsafe { slice::from_raw_parts(component.data, sample_len) };
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(sample_len)
+            .map_err(|_| "openjpeg: cannot allocate component samples".to_string())?;
+        samples.extend_from_slice(source);
+        components.push(OpenJpegDecodedComponent {
+            dimensions: (component.w, component.h),
+            sampling: (component.dx, component.dy),
+            bit_depth,
+            signed: component.sgnd != 0,
+            samples,
+        });
+    }
+    Ok(OpenJpegDecodedImage {
+        dimensions: (width, height),
+        components,
+    })
+}
+
+#[expect(
+    unsafe_code,
     reason = "component lookup validates OpenJPEG's component array and sample buffer bounds"
 )]
 fn read_component(
@@ -379,11 +495,11 @@ fn scale_to_u8(value: i32, precision: ComponentPrecision, signed: bool) -> u8 {
         value
     };
     if precision <= 8 {
-        u8::try_from(adjusted.clamp(0, 255)).expect("sample was clamped to the u8 range")
+        u8::try_from(adjusted.clamp(0, 255)).unwrap_or(0)
     } else {
         let max = i64::from((1_u32 << precision.min(31)) - 1);
         let scaled = (i64::from(adjusted.max(0)) * 255 + max / 2) / max.max(1);
-        u8::try_from(scaled.clamp(0, 255)).expect("sample was clamped to the u8 range")
+        u8::try_from(scaled.clamp(0, 255)).unwrap_or(0)
     }
 }
 
@@ -651,5 +767,36 @@ mod tests {
             .expect("bounded decode area"),
             [1, 2, 4, 6]
         );
+    }
+
+    #[test]
+    fn native_component_decode_preserves_signed_samples_and_metadata() {
+        let samples = [-2048_i16, -1, 0, 2047];
+        let bytes = samples
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = j2k_native::encode(
+            &bytes,
+            2,
+            2,
+            1,
+            12,
+            true,
+            &j2k_native::EncodeOptions {
+                num_decomposition_levels: 0,
+                ..j2k_native::EncodeOptions::default()
+            },
+        )
+        .expect("encode signed OpenJPEG oracle fixture");
+
+        let decoded = super::decode_components(&encoded).expect("OpenJPEG component decode");
+        assert_eq!(decoded.dimensions, (2, 2));
+        assert_eq!(decoded.components.len(), 1);
+        assert_eq!(decoded.components[0].dimensions, (2, 2));
+        assert_eq!(decoded.components[0].sampling, (1, 1));
+        assert_eq!(decoded.components[0].bit_depth, 12);
+        assert!(decoded.components[0].signed);
+        assert_eq!(decoded.components[0].samples, [-2048, -1, 0, 2047]);
     }
 }

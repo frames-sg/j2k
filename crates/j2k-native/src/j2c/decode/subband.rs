@@ -3,7 +3,8 @@
 use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
     bitplane, classic_decode_job_parameters, collect_classic_code_block_data,
-    decode_j2k_code_block_scalar_with_workspace, ht_block_decode,
+    decode_j2k_code_block_scalar_with_workspace,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, ht_block_decode,
     ht_code_block_has_decodable_passes, sub_band_decode_parameters, CodeBlock, ComponentInfo,
     CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
     HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob,
@@ -95,6 +96,7 @@ fn decode_sub_band_bitplanes(
     let sub_band = storage.sub_bands[sub_band_idx].clone();
     let SubBandDecodeParameters {
         dequantization_step,
+        irreversible_midpoint,
         num_bitplanes,
     } = sub_band_decode_parameters(&sub_band, resolution, component_info)?;
 
@@ -187,13 +189,14 @@ fn decode_sub_band_bitplanes(
         }
 
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-        if ht_decoder.decode_j2k_sub_band(
+        if ht_decoder.decode_j2k_sub_band_with_midpoint(
             J2kSubBandDecodeJob {
                 width: sub_band.rect.width(),
                 height: sub_band.rect.height(),
                 jobs: &batch_jobs,
             },
             base_store,
+            irreversible_midpoint,
         )? {
             tile_ctx.debug_counters.decoded_code_blocks += batch_jobs.len();
             return Ok(());
@@ -231,14 +234,19 @@ fn decode_sub_band_bitplanes(
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?
             };
             let output_slice = &mut base_store[base_idx..base_idx + output_len];
-            if ht_decoder.decode_j2k_code_block(job.code_block, output_slice)? {
-                continue;
-            }
-            decode_j2k_code_block_scalar_with_workspace(
+            if ht_decoder.decode_j2k_code_block_with_midpoint(
                 job.code_block,
                 output_slice,
-                &mut scalar_workspace,
-            )?;
+                irreversible_midpoint,
+            )? {
+                continue;
+            }
+            let decode = if irreversible_midpoint {
+                decode_j2k_code_block_scalar_with_workspace_midpoint
+            } else {
+                decode_j2k_code_block_scalar_with_workspace
+            };
+            decode(job.code_block, output_slice, &mut scalar_workspace)?;
         }
 
         return Ok(());
@@ -265,6 +273,7 @@ fn decode_sub_band_bitplanes(
                     total_bitplanes: num_bitplanes,
                     roi_shift: component_info.roi_shift,
                     dequantization_step,
+                    irreversible_midpoint,
                 },
                 &mut budget,
             )?;
@@ -311,11 +320,20 @@ fn decode_sub_band_bitplanes(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    let coefficient = apply_roi_maxshift_inverse_i64(
-                        coefficient.get_i64(),
-                        component_info.roi_shift,
-                    );
-                    *output = coefficient as f32;
+                    *output = if irreversible_midpoint {
+                        tile_ctx
+                            .bit_plane_decode_context
+                            .reconstruct_irreversible_midpoint(
+                                coefficient,
+                                code_block.number_of_coding_passes,
+                                component_info.roi_shift,
+                            )
+                    } else {
+                        apply_roi_maxshift_inverse_i64(
+                            coefficient.get_i64(),
+                            component_info.roi_shift,
+                        ) as f32
+                    };
                     *output *= dequantization_step;
                 }
 

@@ -205,20 +205,6 @@ pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
     x_blocks_launch_geometry(max_len, job_count, COPY_U8_THREADS)
 }
 
-pub(crate) fn j2k_idwt_multi_coop_launch_geometry(
-    max_len: usize,
-    job_count: usize,
-) -> Option<CudaLaunchGeometry> {
-    let lanes = c_uint::try_from(max_len).ok()?;
-    let jobs = c_uint::try_from(job_count).ok()?;
-    let threads = if max_len > COPY_U8_THREADS {
-        J2K_IDWT_COOP_THREADS_LARGE_CUDA
-    } else {
-        J2K_IDWT_COOP_THREADS_SMALL_CUDA
-    };
-    CudaLaunchGeometry::new((lanes, jobs, 1), (threads, 1, 1))
-}
-
 pub(crate) fn j2k_idwt_multi_coop_axis_launch_geometry(
     work_items: usize,
     lane_count: usize,

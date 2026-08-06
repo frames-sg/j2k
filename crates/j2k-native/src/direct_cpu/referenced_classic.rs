@@ -3,6 +3,7 @@
 //! Parse-free CPU execution for referenced classic JPEG 2000 plans.
 
 use crate::error::{bail, DecodingError, Result};
+use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
     decode_j2k_code_block_scalar_with_workspace, try_reserve_decode_elements,
     J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectGrayscalePlan,
@@ -278,11 +279,12 @@ fn execute_classic_sub_band_referenced(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_j2k_code_block_scalar_with_workspace(
-            code_block,
-            &mut output[output_range],
-            workspace,
-        )?;
+        let decode = if plan.irreversible_midpoint {
+            decode_j2k_code_block_scalar_with_workspace_midpoint
+        } else {
+            decode_j2k_code_block_scalar_with_workspace
+        };
+        decode(code_block, &mut output[output_range], workspace)?;
     }
     Ok(())
 }

@@ -49,6 +49,7 @@ pub(super) fn prepare_classic_sub_band_with_payloads(
             block_index,
             block,
             job.width,
+            job.irreversible_midpoint,
             &mut append_payload,
         )?;
     }
@@ -90,6 +91,7 @@ fn append_classic_sub_band_job(
     block_index: usize,
     block: &j2k_native::J2kOwnedCodeBlockBatchJob,
     output_stride: u32,
+    irreversible_midpoint: bool,
     append_payload: &mut impl FnMut(usize, &mut Vec<u8>) -> Result<usize, Error>,
 ) -> Result<(), Error> {
     let coded_offset = u32::try_from(owners.coded_data.len()).map_err(|_| Error::MetalKernel {
@@ -103,6 +105,7 @@ fn append_classic_sub_band_job(
         block_coded_len,
         segment_offset,
         output_stride,
+        irreversible_midpoint,
     )?);
     Ok(())
 }
@@ -140,6 +143,7 @@ fn classic_cleanup_job(
     block_coded_len: usize,
     segment_offset: u32,
     output_stride: u32,
+    irreversible_midpoint: bool,
 ) -> Result<J2kClassicCleanupBatchJob, Error> {
     Ok(J2kClassicCleanupBatchJob {
         coded_offset,
@@ -172,6 +176,7 @@ fn classic_cleanup_job(
         },
         style_flags: classic_style_flags(block.style),
         strict: u32::from(block.strict),
+        irreversible_midpoint: u32::from(irreversible_midpoint),
         dequantization_step: block.dequantization_step,
     })
 }

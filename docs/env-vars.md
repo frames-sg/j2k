@@ -184,6 +184,12 @@ override it.
 | `J2K_ADOPTION_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture manifest passed to `--manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
 | `J2K_ADOPTION_ENCODE_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | None; adoption runs fail closed when unset | Benchmark/CI |
 | `J2K_ADOPTION_ENCODE_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode manifest passed to `--encode-manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_MANIFEST` | Path to the hash-pinned schema-v1 JSON workload manifest used by the CUDA and Metal Auto-routing Criterion benches. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_ROOT` | Corpus root against which every relative path in `J2K_AUTO_ROUTING_MANIFEST` is resolved and hash-checked. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_EVIDENCE` | Output path for raw route-parity evidence written beside Criterion estimates. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_CANDIDATE_SHA` | Exact lowercase 40-hex commit identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_HARDWARE` | Non-empty accelerator hardware identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_DRIVER` | Non-empty driver/toolchain identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
 | `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 

@@ -199,6 +199,26 @@ jobs:
           elapsed="$(( $(date +%s) - started ))"
           echo "CUDA full wall time: ${elapsed}s" | tee -a "${GITHUB_STEP_SUMMARY}"
           exit "${status}"
+      - name: Compile packaged CUDA adapter and dependencies as an external consumer
+        run: cargo xtask package-consumer-smoke --target cuda --cuda-runtime
+      - name: Generate exact-reference CUDA adapter evidence
+        if: ${{ always() }}
+        run: |
+          status=0
+          cargo xtask t803 fetch || status=$?
+          if [ "${status}" -eq 0 ]; then
+            cargo xtask t803 run --iut cuda --out-dir target/t803/reports || status=$?
+          fi
+          echo "T803_STATUS=${status}" >> "${GITHUB_ENV}"
+      - name: Upload CUDA T.803 reports only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: j2k-t803-cuda-linux-x86_64-${{ github.sha }}
+          path: |
+            target/t803/reports/cuda.json
+            target/t803/reports/cuda.md
+          if-no-files-found: error
       - name: Ensure pinned coverage tool
         run: scripts/ensure-cargo-llvm-cov.sh
       - name: Collect changed-line CUDA host coverage
@@ -215,6 +235,9 @@ jobs:
             coverage-cuda-summary.json
             coverage-cuda-regions.json
           if-no-files-found: error
+      - name: Enforce CUDA T.803 result after evidence upload
+        if: ${{ always() }}
+        run: exit "${T803_STATUS:-1}"
 
   metal-full:
     name: Metal full release validation
@@ -261,6 +284,26 @@ jobs:
           elapsed="$(( $(date +%s) - started ))"
           echo "Metal full wall time: ${elapsed}s" | tee -a "${GITHUB_STEP_SUMMARY}"
           exit "${status}"
+      - name: Compile packaged Metal adapter and dependencies as an external consumer
+        run: cargo xtask package-consumer-smoke --target metal
+      - name: Generate exact-reference Metal adapter evidence
+        if: ${{ always() }}
+        run: |
+          status=0
+          cargo xtask t803 fetch || status=$?
+          if [ "${status}" -eq 0 ]; then
+            cargo xtask t803 run --iut metal --out-dir target/t803/reports || status=$?
+          fi
+          echo "T803_STATUS=${status}" >> "${GITHUB_ENV}"
+      - name: Upload Metal T.803 reports only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: j2k-t803-metal-macos-aarch64-${{ github.sha }}
+          path: |
+            target/t803/reports/metal.json
+            target/t803/reports/metal.md
+          if-no-files-found: error
       - name: Ensure pinned coverage tool
         run: scripts/ensure-cargo-llvm-cov.sh
       - name: Collect changed-line Metal host coverage
@@ -277,3 +320,6 @@ jobs:
             coverage-metal-summary.json
             coverage-metal-regions.json
           if-no-files-found: error
+      - name: Enforce Metal T.803 result after evidence upload
+        if: ${{ always() }}
+        run: exit "${T803_STATUS:-1}"

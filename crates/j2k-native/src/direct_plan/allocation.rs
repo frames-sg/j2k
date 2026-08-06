@@ -297,6 +297,7 @@ mod tests {
                 },
                 width: 1,
                 height: 1,
+                irreversible_midpoint: false,
                 jobs,
             },
         ));

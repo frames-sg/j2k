@@ -21,6 +21,7 @@ use j2k_core::{
 
 mod deep_scale;
 mod rows;
+mod srgb8;
 mod traits;
 
 /// Borrowed parse result for a JP2 or raw JPEG 2000 / HTJ2K codestream.

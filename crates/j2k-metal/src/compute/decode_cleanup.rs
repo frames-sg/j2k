@@ -58,9 +58,10 @@ fn validate_classic_sub_band_output(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_classic_cleanup_code_block(
+pub(crate) fn decode_classic_cleanup_code_block_with_midpoint(
     job: J2kCodeBlockDecodeJob<'_>,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) -> Result<(), Error> {
     let required_len = required_classic_output_len(job)?;
     if output.len() < required_len {
@@ -117,6 +118,7 @@ pub(crate) fn decode_classic_cleanup_code_block(
             },
             style_flags: classic_style_flags(job.style),
             strict: u32::from(job.strict),
+            irreversible_midpoint: u32::from(irreversible_midpoint),
             dequantization_step: job.dequantization_step,
         };
         dispatch_classic_cleanup_batched(runtime, job.data, &[batch_job], &segments, &decoded)?;
@@ -128,9 +130,10 @@ pub(crate) fn decode_classic_cleanup_code_block(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_classic_cleanup_sub_band(
+pub(crate) fn decode_classic_cleanup_sub_band_with_midpoint(
     job: J2kSubBandDecodeJob<'_>,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) -> Result<(), Error> {
     validate_classic_sub_band_output(&job, output.len())?;
     if job.jobs.is_empty() {
@@ -221,6 +224,7 @@ pub(crate) fn decode_classic_cleanup_sub_band(
                 },
                 style_flags: classic_style_flags(block.code_block.style),
                 strict: u32::from(block.code_block.strict),
+                irreversible_midpoint: u32::from(irreversible_midpoint),
                 dequantization_step: block.code_block.dequantization_step,
             });
         }

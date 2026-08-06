@@ -25,8 +25,10 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
 ];
 
 const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
+    "compute::tests::classic::irreversible_hybrid_cpu_tier1_matches_native_decode_exactly",
     "compute::tests::classic::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
     "compute::tests::classic::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
+    "compute::tests::classic::prepared_irreversible_classic_sub_band_records_midpoint_reconstruction",
     "compute::tests::grouping::distinct_prepared_ht_direct_plans_support_stacked_component_batch",
     "compute::tests::grouping::grouped_ht_direct_plan_uses_one_group_coded_arena",
     "compute::tests::grouping::prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder",

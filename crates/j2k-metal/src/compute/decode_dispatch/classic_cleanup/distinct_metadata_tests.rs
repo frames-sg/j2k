@@ -164,6 +164,7 @@ fn distinct_classic_batches_honor_empty_and_zero_fill_output_semantics() {
             sub_band_type: 0,
             style_flags: 1,
             strict: 1,
+            irreversible_midpoint: 0,
             dequantization_step: 1.0,
         };
         let output = new_shared_buffer_with_slice(&runtime.device, &[11.0_f32; 4])?;
@@ -222,6 +223,7 @@ fn distinct_classic_device_failure_keeps_nonzero_source_identity() {
             sub_band_type: 0,
             style_flags: 1,
             strict: 1,
+            irreversible_midpoint: 0,
             dequantization_step: 1.0,
         };
         let invalid = J2kClassicCleanupBatchJob {

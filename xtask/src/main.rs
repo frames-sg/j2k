@@ -15,6 +15,7 @@ mod adoption_manifest;
 mod adoption_materialize;
 #[cfg(feature = "adoption")]
 mod adoption_report;
+mod auto_routing;
 mod benchmark_commands;
 mod benchmark_registry;
 mod clone_audit;
@@ -38,6 +39,7 @@ mod release_status;
 mod semver;
 mod source_audit;
 mod stable_api;
+mod t803;
 #[cfg(all(test, unix))]
 mod test_command;
 
@@ -54,7 +56,8 @@ use quality_commands::{
     test, verify_unsafe_audit,
 };
 use release_commands::{
-    j2k_ml_package_smoke, package, published_library_packages, release_cpu, release_integrity,
+    j2k_ml_package_smoke, package, package_consumer_smoke, published_library_packages, release_cpu,
+    release_integrity,
 };
 use stable_api::CARGO_PUBLIC_API_VERSION;
 
@@ -102,6 +105,7 @@ fn run() -> Result<(), String> {
         "public-support" => public_support::public_support(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
+        "auto-routing" => auto_routing::auto_routing(env::args().skip(2)),
         "codec-math-codegen" => codec_math_codegen(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
@@ -118,6 +122,7 @@ fn run() -> Result<(), String> {
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "repo-lint" => repo_lint(env::args().skip(2)),
+        "t803" => t803::t803(env::args().skip(2)),
         "release-integrity" => release_integrity(env::args().skip(2)),
         "release-status" => release_status::release_status(env::args().skip(2)),
         "release-cpu" => release_cpu(),
@@ -126,6 +131,7 @@ fn run() -> Result<(), String> {
         "release-metal" => metal::release_metal(env::args().skip(2)),
         "coverage" => coverage::coverage(env::args().skip(2)),
         "j2k-ml-package-smoke" => j2k_ml_package_smoke(),
+        "package-consumer-smoke" => package_consumer_smoke(env::args().skip(2)),
         "package" => package(),
         "ci" => ci(),
         "help" | "-h" | "--help" => {
@@ -157,6 +163,7 @@ fn print_help() {
           public-support verify the public J2K/HTJ2K support matrix and publication gates [--final]\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
           j2k-perf-guard compare one strict host/CUDA/Metal Criterion lane against a baseline git ref\n\
+          auto-routing  verify Criterion-backed hybrid Auto-routing promotion evidence\n\
           codec-math-codegen check generated codec-math Rust and Metal fragments\n\
            fuzz-build    compile fuzz harnesses\n\
            fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
@@ -169,14 +176,16 @@ fn print_help() {
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            repo-lint     run repository policy checks owned by xtask\n\
+           t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
-           release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
+           release-status verify one frozen SHA's scoped T.803 evidence [--sha SHA] [--repository owner/name] [--scope cpu|cuda|metal|all]\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-cuda  run fail-closed CUDA validation on Linux x86_64 [--mode quick|full]\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed Metal hardware validation on macOS [--mode quick|full]\n\
            coverage      enforce >=80% host-wide or accelerator critical-path coverage [host|metal|cuda] [--base REV]\n\
            j2k-ml-package-smoke compile j2k-ml from an external consumer without third-party path patches\n\
+           package-consumer-smoke compile packaged j2k/CUDA/Metal archives from clean external consumers [--target ...] [--cuda-runtime]\n\
            package       construct all staged packages from a clean worktree and publish-dry-run registry-independent crates"
     );
 }

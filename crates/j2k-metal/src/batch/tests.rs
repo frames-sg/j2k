@@ -7,14 +7,15 @@ use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use crate::{Error, MetalSession};
 
 #[cfg(target_os = "macos")]
-use super::execute::process_batch;
+use super::execute::{complete_repeated_device_failure, process_batch};
 #[cfg(target_os = "macos")]
 use super::heuristics::GroupedRequests;
 use super::heuristics::{
-    auto_region_scaled_direct_metal_min_dim, can_decode_requests_as_repeated_region_scaled_batch,
-    group_metal_requests, profile_route_label, same_input_bytes, BatchRoute,
-    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
-    AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
+    auto_region_scaled_direct_metal_min_dim, can_decode_requests_as_repeated_full_color_batch,
+    can_decode_requests_as_repeated_full_grayscale_batch,
+    can_decode_requests_as_repeated_region_scaled_batch, group_metal_requests, profile_route_label,
+    same_input_bytes, BatchRoute, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT,
+    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM, AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
     AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
 };
 use super::request::{BatchOp, QueuedRequest};
@@ -36,6 +37,34 @@ fn auto_rgb_region_scaled_request(input: Arc<[u8]>) -> QueuedRequest {
         },
         0,
     )
+}
+
+fn auto_full_request(input: Arc<[u8]>, fmt: PixelFormat) -> QueuedRequest {
+    QueuedRequest::new(input, fmt, BackendRequest::Auto, BatchOp::Full, 0)
+}
+
+#[test]
+fn auto_repeated_full_candidates_are_limited_to_measured_formats() {
+    let shared = Arc::<[u8]>::from([1_u8]);
+    let requests = |fmt| {
+        vec![
+            auto_full_request(shared.clone(), fmt),
+            auto_full_request(shared.clone(), fmt),
+        ]
+    };
+
+    assert!(can_decode_requests_as_repeated_full_color_batch(&requests(
+        PixelFormat::Rgb8
+    )));
+    assert!(!can_decode_requests_as_repeated_full_color_batch(
+        &requests(PixelFormat::Rgba8)
+    ));
+    assert!(can_decode_requests_as_repeated_full_grayscale_batch(
+        &requests(PixelFormat::Gray8)
+    ));
+    assert!(!can_decode_requests_as_repeated_full_grayscale_batch(
+        &requests(PixelFormat::Gray16)
+    ));
 }
 
 fn auto_rgb_region_scaled_request_with_max_dim(
@@ -157,6 +186,41 @@ fn slot_release_reports_missing_reserved_capacity_without_panicking() {
         })
     ));
     assert!(state.free_slots.is_empty());
+}
+
+#[test]
+fn selected_repeated_device_failure_is_reported_without_cpu_retry() {
+    let shared = Arc::<[u8]>::from([1_u8]);
+    let requests = (0..2)
+        .map(|slot| {
+            let mut request = auto_full_request(shared.clone(), PixelFormat::Rgb8);
+            request.output_slot = slot;
+            request
+        })
+        .collect::<Vec<_>>();
+    let mut session = SessionState {
+        submissions: 0,
+        queued: Vec::new(),
+        completed: (0..requests.len()).map(|_| None).collect(),
+        free_slots: Vec::new(),
+    };
+
+    complete_repeated_device_failure(
+        &mut session,
+        &requests,
+        &Error::MetalKernel {
+            message: "synthetic dispatch failure".to_string(),
+        },
+    );
+
+    assert_eq!(session.submissions, 1);
+    assert!(session.completed.iter().all(|result| {
+        matches!(
+            result,
+            Some(Err(Error::MetalRuntime { message }))
+                if message.contains("synthetic dispatch failure")
+        )
+    }));
 }
 
 #[test]

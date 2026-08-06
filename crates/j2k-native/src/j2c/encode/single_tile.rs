@@ -3,8 +3,8 @@
 use super::multitile::{encode_multitile_impl, MultiTileEncodeRequest};
 use super::{
     packet_encode, profile, write_single_tile_packetized_codestream_for_session, BlockCodingMode,
-    EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, J2kEncodeStageAccelerator,
-    NativeEncodePipelineResult, NativeEncodeSession, Vec,
+    EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, J2kEncodeContext,
+    J2kEncodeStageAccelerator, NativeEncodePipelineResult, NativeEncodeSession, Vec,
 };
 
 mod accelerator;
@@ -23,14 +23,15 @@ pub(super) use coefficient_source::{OwnedDwtComponent, PackedF32DwtComponent};
 
 use accelerator::{
     prepare_accelerated_components, try_encode_complete_ht_tile, AcceleratedComponentRequest,
+    PreparedComponentTransforms,
 };
 use finalize::{
     finalize_accelerated_codestream, finalize_staged_codestream, TransformStageTimings,
 };
 use ownership::{codestream_final_plan_retained_bytes, prepared_transforms_retained_bytes};
 use plan::{
-    build_single_tile_plan, validate_encode_request, CodestreamFinalPlan, ValidatedEncodeRoute,
-    ValidatedSingleTileInput,
+    build_single_tile_plan, validate_encode_request, CodestreamFinalPlan, SingleTilePlan,
+    ValidatedEncodeRoute, ValidatedSingleTileInput,
 };
 pub(super) use precomputed::{
     encode_precomputed_53_single_tile, encode_precomputed_97_single_tile,
@@ -238,6 +239,15 @@ fn prepare_validated_single_tile(
         session,
     )?;
 
+    begin_encode_route(
+        accelerator,
+        plan.num_pixels,
+        num_components,
+        bit_depth,
+        signed,
+        options.reversible,
+    )?;
+
     if plan.high_bit_exact && options.reversible {
         let (packetized_tile, plan) =
             encode_reversible_i64_single_tile_packets(ReversibleI64SingleTileRequest {
@@ -313,17 +323,48 @@ fn prepare_validated_single_tile(
         session,
         accelerator,
     )?;
+    Ok(finish_staged_preparation(encoded, plan, prepared))
+}
+
+fn finish_staged_preparation(
+    encoded: EncodedTilePackets,
+    plan: SingleTilePlan,
+    prepared: PreparedComponentTransforms,
+) -> PreparedSingleTile {
     let transform_timings = TransformStageTimings {
         deinterleave: prepared.deinterleave_us,
         mct: prepared.mct_us,
         dwt: prepared.dwt_us,
     };
     drop(prepared);
-    Ok(PreparedSingleTile::Staged {
+    PreparedSingleTile::Staged {
         encoded,
         final_plan: plan.into_codestream_final_plan(),
         transform_timings,
-    })
+    }
+}
+
+fn begin_encode_route(
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+    num_pixels: usize,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    reversible: bool,
+) -> NativeEncodePipelineResult<()> {
+    accelerator
+        .begin_encode(J2kEncodeContext {
+            num_pixels,
+            num_components,
+            bit_depth,
+            signed,
+            reversible,
+        })
+        .map_err(|source| crate::EncodeError::Accelerator {
+            operation: "encode route selection",
+            source,
+        })?;
+    Ok(())
 }
 
 fn finalize_prepared_single_tile(

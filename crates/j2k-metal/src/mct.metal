@@ -102,6 +102,8 @@ kernel void j2k_forward_ict(
     device J2kMctStatus *status [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
     if (gid >= params.len) {
         return;
     }

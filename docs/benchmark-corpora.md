@@ -13,7 +13,7 @@ its pinned manifest and summarized by the `adoption-report` subcommand.
 
 | Corpus | Use | Source | Repo handling |
 | --- | --- | --- | --- |
-| ISO JPEG 2000 conformance files | Compliance-style claims for JPEG 2000 Part 1 and HTJ2K Part 15. | ISO/IEC 15444-4 / ITU-T T.803 electronic attachments. | User-supplied. Do not commit unless licensing permits. Track expected vectors in `corpus/j2k-conformance/manifest.tsv`. |
+| ISO JPEG 2000 conformance files | Exact-reference evidence for the selected JPEG 2000 Part 1 decoder classes and Annex G JP2 reader. | ISO/IEC 15444-4:2024 / ITU-T T.803 v3 electronic attachment. | Copyrighted external input. Never commit or upload the corpus. The official URL, archive digest, and exact selected-file inventory are pinned in `corpus/j2k-conformance/t803-v3.toml`. |
 | OpenJPEG test data | Regression and interoperability corpus with real JP2/J2K edge cases. | `https://github.com/uclouvain/openjpeg-data` | User-supplied clone path. |
 | OpenJPH / HTJ2K fixtures | HTJ2K-specific interoperability and JPH/J2K variants. | `https://github.com/aous72/OpenJPH` and released OpenJPH test assets. | User-supplied clone/path; small license-compatible fixtures may be committed with notices. |
 | jpylyzer test files | JP2 parser/metadata robustness, including valid and invalid files. | `https://github.com/openpreserve/jpylyzer-test-files` | User-supplied clone/path. Invalid files should be used for robustness tests, not throughput comparisons. |
@@ -278,6 +278,51 @@ comparator can enforce the shared three-resolution profile. Use
 `adoption-manifest` directly for externally supplied native J2K/JP2/JPH files,
 ISO conformance attachments, OpenJPEG data, OpenJPH data, and jpylyzer parser
 fixtures that should not be re-encoded by this repo.
+
+## Auto-routing workload manifest
+
+Hybrid promotion uses a smaller, strict JSON manifest rather than the adoption
+TSVs. Schema version 1 contains a corpus label, an HTTPS provenance URL, and a
+non-empty `cases` array. Each case has a unique safe `id`, a relative `path`, a
+`kind` of `decode` or `encode`, a `pixel_format` of `gray8` or `rgb8`, and the
+lowercase SHA-256 of the exact input bytes. Decode cases are J2K/JP2 inputs;
+encode cases are binary 8-bit PGM/PPM files.
+
+```json
+{
+  "schema_version": 1,
+  "corpus": "release-routing-workloads-2026",
+  "source_url": "https://example.org/pinned-corpus-record",
+  "cases": [
+    {
+      "id": "decode-natural-01",
+      "path": "decode/natural-01.jp2",
+      "kind": "decode",
+      "pixel_format": "rgb8",
+      "sha256": "<64 lowercase hexadecimal characters>"
+    },
+    {
+      "id": "encode-natural-01",
+      "path": "encode/natural-01.ppm",
+      "kind": "encode",
+      "pixel_format": "rgb8",
+      "sha256": "<64 lowercase hexadecimal characters>"
+    }
+  ]
+}
+```
+
+The loader rejects absolute or escaping paths, symlinks, duplicates, hash
+drift, malformed PNM, oversized cases, and incomplete inventories. A
+representative release manifest should cover more than one favorable image and
+span small/large, gray/RGB, lossless/lossy, full, ROI, scaled, and batch work.
+The manifest and inputs remain external; the verified report records the exact
+manifest hash and every exercised workload ID.
+
+On a self-hosted runner, dispatch `GPU benchmarks` with `suite=routing` and set
+the repository variables `J2K_AUTO_ROUTING_MANIFEST` and
+`J2K_AUTO_ROUTING_ROOT` to the manifest and corpus root available on that host.
+The workflow fails closed when either is absent.
 
 ## Running All Available Corpora
 

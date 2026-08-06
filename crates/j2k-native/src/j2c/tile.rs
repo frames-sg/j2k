@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use super::build::{PrecinctData, SubBandType};
 use super::codestream::{markers, ComponentInfo, Header, ProgressionChange, ProgressionOrder};
 use super::rect::IntRect;
-use crate::error::{bail, MarkerError, Result, ValidationError};
+use crate::error::{bail, MarkerError, Result, TileError, ValidationError};
 use crate::reader::BitReader;
 
 mod cursor;
@@ -208,6 +208,10 @@ pub(crate) fn parse<'a>(
             &mut ppm_packet_idx,
             &mut metadata_budget,
         )?;
+    }
+
+    if main_header.strict && ppm_packet_idx != main_header.ppm_packets.len() {
+        bail!(TileError::Invalid);
     }
 
     if main_header.strict && reader.read_marker()? != markers::EOC {
@@ -494,6 +498,8 @@ impl<'a> ResolutionTile<'a> {
                 .vertical_resolution,
         )
         .checked_mul(y_stride)?;
+        let precinct_grid_width = 1_u32.checked_shl(u32::from(self.precinct_exponent_x()))?;
+        let precinct_grid_height = 1_u32.checked_shl(u32::from(self.precinct_exponent_y()))?;
 
         // These variables are used to map the start coordinates of each
         // precinct _on the reference grid_. Remember that the first
@@ -507,15 +513,13 @@ impl<'a> ResolutionTile<'a> {
         // is divisible, then we can't take the x/y position of the tile
         // as the start of the precinct, but instead have to advance to the
         // next multiple.
-        if !r_x.is_multiple_of(precinct_x_step)
-            && (self.rect.x0 * (1 << nl_minus_r)).is_multiple_of(precinct_x_step)
+        if !r_x.is_multiple_of(precinct_x_step) && self.rect.x0.is_multiple_of(precinct_grid_width)
         {
             r_x = r_x.checked_next_multiple_of(precinct_x_step)?;
         }
 
         // Same as above.
-        if !r_y.is_multiple_of(precinct_y_step)
-            && (self.rect.y0 * (1 << nl_minus_r)).is_multiple_of(precinct_y_step)
+        if !r_y.is_multiple_of(precinct_y_step) && self.rect.y0.is_multiple_of(precinct_grid_height)
         {
             r_y = r_y.checked_next_multiple_of(precinct_y_step)?;
         }
@@ -607,6 +611,54 @@ mod tests {
         assert_eq!(ceil_div_by_power_of_two(0, u8::MAX), 0);
         assert_eq!(subband_coordinate(u32::MAX, 32, true), 1);
         assert_eq!(subband_coordinate(u32::MAX, 33, true), 0);
+    }
+
+    #[test]
+    fn first_subsampled_precinct_uses_the_next_reference_grid_position_when_aligned() {
+        let component_info = ComponentInfo {
+            size_info: ComponentSizeInfo {
+                precision: 8,
+                signed: false,
+                horizontal_resolution: 4,
+                vertical_resolution: 1,
+            },
+            coding_style: CodingStyleComponent {
+                flags: CodingStyleFlags::default(),
+                parameters: CodingStyleParameters {
+                    num_decomposition_levels: 1,
+                    num_resolution_levels: 2,
+                    code_block_width: 6,
+                    code_block_height: 6,
+                    code_block_style: CodeBlockStyle::default(),
+                    transformation: WaveletTransform::Reversible53,
+                    precinct_exponents: vec![(0, 0), (1, 1)],
+                },
+            },
+            quantization_info: QuantizationInfo {
+                quantization_style: QuantizationStyle::NoQuantization,
+                guard_bits: 2,
+                step_sizes: vec![],
+            },
+            roi_shift: 0,
+        };
+        let tile = Tile {
+            idx: 0,
+            tile_parts: vec![],
+            rect: IntRect::from_ltrb(4, 0, 12, 12),
+            component_infos: vec![component_info],
+            progression_order: ProgressionOrder::ResolutionPositionComponentLayer,
+            progression_changes: vec![],
+            mct: false,
+            num_layers: 1,
+        };
+        let component = ComponentTile::new(&tile, &tile.component_infos[0]);
+        let precincts = ResolutionTile::new(component, 0)
+            .precincts()
+            .expect("valid precinct geometry")
+            .collect::<Vec<_>>();
+
+        assert_eq!(precincts[0].r_x, 8);
+        assert_eq!(precincts[0].r_y, 0);
     }
 
     /// Test case for the example in B.4.

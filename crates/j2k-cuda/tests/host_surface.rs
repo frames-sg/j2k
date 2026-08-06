@@ -1,7 +1,7 @@
 use j2k_core::{
-    BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale, ImageDecode,
-    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
-    TileBatchDecodeManyDevice,
+    BackendRequest, CodecError, CompressedTransferSyntax, DeviceSubmission, DeviceSurface,
+    Downscale, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect,
+    TileBatchDecodeDevice, TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode, EncodeOptions};
@@ -182,6 +182,111 @@ fn auto_falls_back_to_cpu_surface() {
     assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
     assert_eq!(surface.residency(), SurfaceResidency::Host);
     assert!(surface.as_host_bytes().is_some());
+}
+
+#[test]
+fn auto_routes_only_benchmark_qualified_rgb_lossy_cells_when_runtime_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let bytes = fixture_classic(640, 480, 3, false);
+    let support = j2k::J2kDecoder::inspect_support(&bytes).expect("inspect promoted workload");
+    assert_eq!(support.info.dimensions, (640, 480));
+    assert_eq!(
+        support.transfer_syntax,
+        CompressedTransferSyntax::Jpeg2000Lossy
+    );
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let surface = decoder
+        .decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)
+        .expect("promoted Auto surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
+    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+
+    let roi = Rect {
+        x: 160,
+        y: 120,
+        w: 320,
+        h: 240,
+    };
+    let mut decoder = J2kDecoder::new(&bytes).expect("ROI decoder");
+    let surface = decoder
+        .decode_region_to_device(PixelFormat::Rgb8, roi, BackendRequest::Auto)
+        .expect("promoted Auto ROI surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
+    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("scaled decoder");
+    let surface = decoder
+        .decode_scaled_to_device(PixelFormat::Rgb8, Downscale::Half, BackendRequest::Auto)
+        .expect("promoted Auto scaled surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
+    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("quarter-scale decoder");
+    let surface = decoder
+        .decode_scaled_to_device(PixelFormat::Rgb8, Downscale::Quarter, BackendRequest::Auto)
+        .expect("unmeasured Auto quarter-scale surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
+    assert_eq!(surface.residency(), SurfaceResidency::Host);
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("tiny ROI decoder");
+    let surface = decoder
+        .decode_region_to_device(
+            PixelFormat::Rgb8,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            BackendRequest::Auto,
+        )
+        .expect("unmeasured tiny Auto ROI surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
+    assert_eq!(surface.residency(), SurfaceResidency::Host);
+
+    let jp2 = j2k::wrap_j2k_codestream(&bytes, j2k::J2kFileWrapOptions::jp2())
+        .expect("wrap promoted workload as JP2");
+    let mut decoder = J2kDecoder::new(&jp2).expect("JP2 decoder");
+    let surface = decoder
+        .decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)
+        .expect("unmeasured JP2 Auto surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
+    assert_eq!(surface.residency(), SurfaceResidency::Host);
+
+    let inputs = vec![bytes.as_slice(); 16];
+    let mut context = j2k_cuda::J2kContext::default();
+    let mut pool = j2k_cuda::J2kScratchPool::new();
+    let surfaces = Codec::decode_tiles_to_device(
+        &mut context,
+        &mut pool,
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Auto,
+    )
+    .expect("promoted repeated Auto batch");
+    assert_eq!(surfaces.len(), inputs.len());
+    assert!(surfaces.iter().all(|surface| {
+        surface.backend_kind() == j2k_core::BackendKind::Cuda
+            && surface.residency() == SurfaceResidency::CudaResidentDecode
+    }));
+
+    let retained = fixture_classic(256, 149, 3, false);
+    let retained_support =
+        j2k::J2kDecoder::inspect_support(&retained).expect("inspect retained workload");
+    assert_eq!(retained_support.info.dimensions, (256, 149));
+    assert_eq!(
+        retained_support.transfer_syntax,
+        CompressedTransferSyntax::Jpeg2000Lossy
+    );
+    let mut decoder = J2kDecoder::new(&retained).expect("retained decoder");
+    let surface = decoder
+        .decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)
+        .expect("retained Auto surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
+    assert_eq!(surface.residency(), SurfaceResidency::Host);
 }
 
 #[test]
@@ -1640,6 +1745,60 @@ fn decode_tiles_to_device_explicit_cuda_mixed_grayscale_batch_matches_host_bytes
         })
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_repeated_large_classic_gray_matches_host_bytes() {
+    const WIDTH: usize = 640;
+    const HEIGHT: usize = 480;
+
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let width_u32 = u32::try_from(WIDTH).expect("fixture width fits u32");
+    let height_u32 = u32::try_from(HEIGHT).expect("fixture height fits u32");
+    let classic = fixture_classic(width_u32, height_u32, 1, true);
+    let mut single = vec![0; WIDTH * HEIGHT];
+    J2kDecoder::new(&classic)
+        .expect("host decoder")
+        .decode_into(&mut single, WIDTH, PixelFormat::Gray8)
+        .expect("host repeated grayscale reference");
+
+    for (profiled, batch_size) in [(true, 1), (false, 1), (false, 2), (false, 16)] {
+        let inputs = vec![classic.as_slice(); batch_size];
+        let mut session = CudaSession::default();
+        let surfaces = if profiled {
+            J2kDecoder::decode_batch_to_device_with_session_and_profile(
+                &inputs,
+                PixelFormat::Gray8,
+                &mut session,
+            )
+            .map(|(surfaces, _report)| surfaces)
+        } else {
+            J2kDecoder::decode_batch_to_device_with_session(
+                &inputs,
+                PixelFormat::Gray8,
+                &mut session,
+            )
+        }
+        .expect("strict CUDA repeated classic grayscale batch");
+        assert_eq!(surfaces.len(), batch_size);
+        for surface in &surfaces {
+            assert_resident_cuda_surface(surface);
+        }
+
+        let actual = j2k_cuda::Surface::download_batch_tight(&surfaces)
+            .expect("download repeated gray batch");
+        let expected = single.repeat(batch_size);
+        let first_mismatch = actual
+            .iter()
+            .zip(&expected)
+            .position(|(lhs, rhs)| lhs != rhs);
+        assert_eq!(
+            first_mismatch, None,
+            "profiled={profiled} batch size {batch_size} first mismatch: {first_mismatch:?}"
+        );
+    }
 }
 
 #[test]

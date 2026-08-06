@@ -17,6 +17,7 @@ members = [
     "crates/j2k-native",
     "crates/j2k-profile",
     "crates/j2k-test-support",
+    "crates/j2k-t803",
     "crates/j2k-tilecodec",
     "crates/j2k-transcode",
     "crates/j2k-transcode-cuda",
@@ -56,6 +57,7 @@ libc   = "0.2"
 log    = "0.4"
 memchr = { version = "2.8", default-features = false }
 image = { version = "0.25.8", default-features = false, features = ["bmp", "jpeg", "png", "pnm", "tiff"] }
+moxcms = { version = "=0.8.1", default-features = false }
 jpeg-encoder = "0.7.0"
 jpeg-decoder = { version = "0.3.2", default-features = false }
 zune-core = "0.5.1"
@@ -67,8 +69,10 @@ proc-macro2 = "1.0.106"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
+sha2 = "0.10.9"
 syn = "2.0.117"
 toml = "1.1.2"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib"] }
 burn-core = { version = "0.21.0", default-features = false, features = ["dataset", "std"] }
 burn-autodiff = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-flex = { version = "0.21.0", default-features = false, features = ["std"] }
@@ -100,6 +104,9 @@ module_name_repetitions = "allow"
 must_use_candidate      = "allow"
 missing_errors_doc      = "allow"
 missing_panics_doc      = "allow"
+
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 lto           = "fat"

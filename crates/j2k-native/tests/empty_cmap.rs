@@ -547,8 +547,8 @@ fn mixed_palette_jp2h_payload(
     let mut ihdr = Vec::new();
     ihdr.extend_from_slice(&height.to_be_bytes());
     ihdr.extend_from_slice(&width.to_be_bytes());
-    ihdr.extend_from_slice(&2_u16.to_be_bytes());
-    ihdr.extend_from_slice(&[0xff, 7, 0, 0]);
+    ihdr.extend_from_slice(&1_u16.to_be_bytes());
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
 
     let mut palette = Vec::new();
     palette.extend_from_slice(&1_u16.to_be_bytes());
@@ -557,7 +557,6 @@ fn mixed_palette_jp2h_payload(
 
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
-    jp2h_payload.extend_from_slice(&jp2_box(*b"bpcc", &[7, 0x8f]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"pclr", &palette));
     if include_component_mapping {
@@ -586,7 +585,7 @@ fn high_precision_palette_jp2h_payload(width: u32, height: u32, value: u32) -> V
     ihdr.extend_from_slice(&height.to_be_bytes());
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&1_u16.to_be_bytes());
-    ihdr.extend_from_slice(&[0xff, 7, 0, 0]);
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
 
     let mut palette = Vec::new();
     palette.extend_from_slice(&1_u16.to_be_bytes());
@@ -595,7 +594,6 @@ fn high_precision_palette_jp2h_payload(width: u32, height: u32, value: u32) -> V
 
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
-    jp2h_payload.extend_from_slice(&jp2_box(*b"bpcc", &[24]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"pclr", &palette));
     jp2h_payload.extend_from_slice(&jp2_box(*b"cmap", &[0, 0, 1, 0]));
@@ -606,8 +604,8 @@ fn high_precision_sycc_palette_jp2h_payload(width: u32, height: u32) -> Vec<u8> 
     let mut ihdr = Vec::new();
     ihdr.extend_from_slice(&height.to_be_bytes());
     ihdr.extend_from_slice(&width.to_be_bytes());
-    ihdr.extend_from_slice(&3_u16.to_be_bytes());
-    ihdr.extend_from_slice(&[0xff, 7, 0, 0]);
+    ihdr.extend_from_slice(&1_u16.to_be_bytes());
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
 
     let mut palette = Vec::new();
     palette.extend_from_slice(&1_u16.to_be_bytes());
@@ -618,7 +616,6 @@ fn high_precision_sycc_palette_jp2h_payload(width: u32, height: u32) -> Vec<u8> 
 
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
-    jp2h_payload.extend_from_slice(&jp2_box(*b"bpcc", &[24, 24, 24]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 18]));
     jp2h_payload.extend_from_slice(&jp2_box(*b"pclr", &palette));
     jp2h_payload.extend_from_slice(&jp2_box(*b"cmap", &[0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]));

@@ -1,0 +1,97 @@
+# T.803 Annex F encoder implementation compliance statement.
+# Encoder testing is informative and is not a decoder conformance claim.
+schema_version = 1
+standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
+iut = "cpu"
+scope = "Informative Annex D/F evidence for the listed public JPEG 2000 Part 1 encoder surfaces"
+surfaces = [
+  "j2k::encode_j2k_lossless",
+  "j2k::encode_j2k_lossless_components",
+  "j2k::encode_j2k_lossless_typed_components",
+  "j2k::encode_j2k_lossless_with_roi_regions",
+  "j2k::encode_j2k_lossy",
+]
+matrix_path = "corpus/j2k-conformance/encoder-matrix-v1.toml"
+matrix_case_count = 28
+matrix_case_sha256 = "6168ada6be73822b06b8b1b8564af009be17592b5b6d8b2e6bd0d578a69af4d5"
+reference_decoder_standard = "ISO/IEC 15444-5 / ITU-T T.804"
+reference_decoder_implementation = "OpenJPEG"
+reference_decoder_version = "2.5.3"
+public_max_bit_depth = 38
+reference_validated_max_bit_depth = 31
+public_max_components = 16384
+component_sampling = true
+reference_limitations = [
+  "OpenJPEG stores decoded component samples in 32-bit signed integers, so 32-38 bit public encoder inputs are outside this matrix",
+  "The matrix samples the declared API range; Annex D does not define an exhaustive encoder corpus",
+]
+
+[[markers]]
+marker = "SOC"
+usage = "always"
+[[markers]]
+marker = "CAP"
+usage = "outside-part1"
+[[markers]]
+marker = "PRF"
+usage = "not-produced"
+[[markers]]
+marker = "CPF"
+usage = "outside-part1"
+[[markers]]
+marker = "SOT"
+usage = "always"
+[[markers]]
+marker = "SOD"
+usage = "always"
+[[markers]]
+marker = "EOC"
+usage = "always"
+[[markers]]
+marker = "SIZ"
+usage = "always"
+[[markers]]
+marker = "COD"
+usage = "always"
+[[markers]]
+marker = "COC"
+usage = "conditional"
+[[markers]]
+marker = "RGN"
+usage = "caller-controlled"
+[[markers]]
+marker = "QCD"
+usage = "always"
+[[markers]]
+marker = "QCC"
+usage = "conditional"
+[[markers]]
+marker = "POC"
+usage = "not-produced"
+[[markers]]
+marker = "TLM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PLM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PLT"
+usage = "caller-controlled"
+[[markers]]
+marker = "PPM"
+usage = "caller-controlled"
+[[markers]]
+marker = "PPT"
+usage = "caller-controlled"
+[[markers]]
+marker = "SOP"
+usage = "caller-controlled"
+[[markers]]
+marker = "EPH"
+usage = "caller-controlled"
+[[markers]]
+marker = "CRG"
+usage = "not-produced"
+[[markers]]
+marker = "COM"
+usage = "not-produced"

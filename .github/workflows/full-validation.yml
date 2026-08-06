@@ -296,6 +296,47 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
       - run: cargo xtask release-cpu
 
+  t803-cpu:
+    name: T.803 CPU (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, lane: linux-x86_64 }
+          - { os: macos-latest, lane: macos-aarch64 }
+          - { os: windows-latest, lane: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+      - name: Generate exact-reference CPU evidence
+        shell: bash
+        run: |
+          status=0
+          cargo xtask t803 fetch || status=$?
+          if [ "${status}" -eq 0 ]; then
+            cargo xtask t803 run --iut cpu --out-dir target/t803/reports || status=$?
+          fi
+          echo "T803_STATUS=${status}" >> "${GITHUB_ENV}"
+      - name: Upload CPU T.803 reports only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: j2k-t803-cpu-${{ matrix.lane }}-${{ github.sha }}
+          path: |
+            target/t803/reports/cpu.json
+            target/t803/reports/cpu.md
+          if-no-files-found: error
+      - name: Enforce CPU T.803 result after evidence upload
+        if: ${{ always() }}
+        shell: bash
+        run: exit "${T803_STATUS:-1}"
+
   metal-compile:
     name: Metal compile and pure tests
     runs-on: macos-latest
@@ -459,6 +500,7 @@ jobs:
       - typos
       - test
       - release-cpu
+      - t803-cpu
       - metal-compile
       - no-std
       - miri

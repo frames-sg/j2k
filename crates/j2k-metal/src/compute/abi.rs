@@ -163,6 +163,7 @@ pub(crate) struct J2kClassicCleanupBatchJob {
     pub(crate) sub_band_type: u32,
     pub(crate) style_flags: u32,
     pub(crate) strict: u32,
+    pub(crate) irreversible_midpoint: u32,
     pub(crate) dequantization_step: f32,
 }
 

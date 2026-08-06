@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, PixelFormat};
+use j2k_core::{BackendRequest, CompressedTransferSyntax, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::metal_kernel_route;
 use j2k_metal_support::{
@@ -12,6 +12,37 @@ use crate::Error;
 
 pub(crate) const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
     "J2K Metal Auto decode stays on CPU until decode benchmark evidence justifies Metal routing";
+
+// Minimum qualified cells from verified Auto-routing artifact
+// 162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879.
+const AUTO_REPEATED_DECODE_MIN_COUNT: usize = 16;
+const AUTO_REPEATED_GRAY8_MIN_PIXELS: u64 = 2_960_793;
+const AUTO_REPEATED_RGB8_LOSSY_MIN_PIXELS: u64 = 307_200;
+const AUTO_REPEATED_RGB8_LOSSLESS_MIN_PIXELS: u64 = 5_038_848;
+
+pub(crate) fn auto_repeated_decode_uses_metal(
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+    count: usize,
+    transfer_syntax: CompressedTransferSyntax,
+) -> bool {
+    if count < AUTO_REPEATED_DECODE_MIN_COUNT {
+        return false;
+    }
+    let pixels = u64::from(dimensions.0) * u64::from(dimensions.1);
+    match (fmt, transfer_syntax) {
+        (PixelFormat::Gray8, CompressedTransferSyntax::Jpeg2000Lossy) => {
+            pixels >= AUTO_REPEATED_GRAY8_MIN_PIXELS
+        }
+        (PixelFormat::Rgb8, CompressedTransferSyntax::Jpeg2000Lossy) => {
+            pixels >= AUTO_REPEATED_RGB8_LOSSY_MIN_PIXELS
+        }
+        (PixelFormat::Rgb8, CompressedTransferSyntax::Jpeg2000Lossless) => {
+            pixels >= AUTO_REPEATED_RGB8_LOSSLESS_MIN_PIXELS
+        }
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteDecision {
@@ -150,6 +181,77 @@ fn j2k_route_decision_profile(decision: RouteDecision) -> MetalRouteProfileLabel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_repeated_decode_thresholds_match_verified_external_cells() {
+        assert!(!auto_repeated_decode_uses_metal(
+            (512, 512),
+            PixelFormat::Gray8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(auto_repeated_decode_uses_metal(
+            (3323, 891),
+            PixelFormat::Gray8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (3323, 891),
+            PixelFormat::Gray8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossless,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (3323, 891),
+            PixelFormat::Gray16,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+
+        assert!(!auto_repeated_decode_uses_metal(
+            (256, 149),
+            PixelFormat::Rgb8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(auto_repeated_decode_uses_metal(
+            (640, 480),
+            PixelFormat::Rgb8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (640, 480),
+            PixelFormat::Rgb8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossless,
+        ));
+        assert!(auto_repeated_decode_uses_metal(
+            (2592, 1944),
+            PixelFormat::Rgb8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossless,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (640, 480),
+            PixelFormat::Rgba8,
+            16,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (2592, 1944),
+            PixelFormat::Rgb8,
+            15,
+            CompressedTransferSyntax::Jpeg2000Lossy,
+        ));
+        assert!(!auto_repeated_decode_uses_metal(
+            (2592, 1944),
+            PixelFormat::Rgb8,
+            16,
+            CompressedTransferSyntax::HtJpeg2000Lossless,
+        ));
+    }
 
     #[test]
     fn cuda_route_reports_unsupported_backend() {

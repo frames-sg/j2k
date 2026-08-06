@@ -62,6 +62,7 @@ pub(in crate::direct_plan) fn append_referenced_classic_subband<'a>(
         band_id: subband.band_id,
         width: subband.width,
         height: subband.height,
+        irreversible_midpoint: subband.irreversible_midpoint,
         code_block_start,
         code_block_count: checked_u32(
             owners.classic_code_blocks.len() - code_block_start as usize,

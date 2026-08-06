@@ -5,14 +5,18 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
@@ -20,6 +24,9 @@ API_VERSION = "2022-11-28"
 PAGE_SIZE = 100
 MAX_PAGES = 1_000
 MAX_TAG_DEPTH = 16
+MAX_T803_ARTIFACT_ARCHIVE_BYTES = 8 * 1024 * 1024
+MAX_T803_REPORT_BYTES = 4 * 1024 * 1024
+T803_SCOPES = ("cpu", "cuda", "metal", "all")
 SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}\Z")
 
 CUDA_PREFIXES = (
@@ -34,7 +41,12 @@ METAL_PREFIXES = (
     "crates/j2k-metal/",
     "crates/j2k-transcode-metal/",
 )
-SHARED_GPU_PREFIXES = ("crates/j2k-profile/",)
+SHARED_GPU_PREFIXES = (
+    "corpus/j2k-conformance/",
+    "crates/j2k-profile/",
+    "crates/j2k-t803/",
+    "xtask/src/auto_routing",
+)
 SHARED_GPU_EXACT_PATHS = frozenset(
     {
         ".github/CODEOWNERS",
@@ -45,6 +57,7 @@ SHARED_GPU_EXACT_PATHS = frozenset(
         ".github/workflows/publish.yml",
         "scripts/ci_plan.py",
         "scripts/github_actions_verify.py",
+        "xtask/src/t803.rs",
     }
 )
 CUDA_QUICK_JOB = "CUDA quick validation"
@@ -56,6 +69,41 @@ RELEASE_CANDIDATE_JOB = "Release candidate aggregate"
 
 class VerificationError(RuntimeError):
     """An expected verification condition was not met."""
+
+
+class _CredentialSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow artifact redirects without forwarding credentials cross-origin."""
+
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(
+            request, file_pointer, code, message, headers, new_url
+        )
+        if redirected is None:
+            return None
+        old = urllib.parse.urlsplit(request.full_url)
+        new = urllib.parse.urlsplit(redirected.full_url)
+        if (old.scheme.lower(), old.netloc.lower()) != (
+            new.scheme.lower(),
+            new.netloc.lower(),
+        ):
+            credential_names = {
+                "authorization",
+                "cookie",
+                "proxy-authorization",
+            }
+            for header_map in (redirected.headers, redirected.unredirected_hdrs):
+                for name in tuple(header_map):
+                    if name.lower() in credential_names:
+                        del header_map[name]
+        return redirected
 
 
 def _dict(value: Any, context: str) -> Mapping[str, Any]:
@@ -120,7 +168,7 @@ class GitHubApi:
         repository: str,
         token: str,
         *,
-        opener: Callable[..., Any] = urllib.request.urlopen,
+        opener: Callable[..., Any] | None = None,
     ) -> None:
         if not token:
             raise VerificationError("GitHub API token is not configured")
@@ -130,7 +178,9 @@ class GitHubApi:
         self._base_url = api_url.rstrip("/")
         self._repository = "/".join(urllib.parse.quote(part, safe="") for part in repo_parts)
         self._token = token
-        self._opener = opener
+        self._opener = opener or urllib.request.build_opener(
+            _CredentialSafeRedirectHandler()
+        ).open
 
     def get_json(
         self, path: str, params: Mapping[str, str | int] | None = None
@@ -146,6 +196,68 @@ class GitHubApi:
         """Return found=false only for an authenticated HTTP 404 response."""
 
         return self._get_json(path, params, allow_not_found=True)
+
+    def download_bytes(self, path: str, *, maximum_bytes: int) -> bytes:
+        if not path.startswith("/"):
+            raise VerificationError("internal API path must begin with a slash")
+        if maximum_bytes <= 0:
+            raise VerificationError("internal download limit must be positive")
+        url = f"{self._base_url}/repos/{self._repository}{path}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/octet-stream",
+                "Authorization": f"Bearer {self._token}",
+                "X-GitHub-Api-Version": API_VERSION,
+            },
+        )
+        try:
+            with self._opener(request, timeout=30) as response:
+                final_url = response.geturl()
+                parsed = urllib.parse.urlsplit(final_url)
+                if (
+                    parsed.scheme != "https"
+                    or not parsed.netloc
+                    or parsed.username is not None
+                    or parsed.password is not None
+                ):
+                    raise VerificationError(
+                        "artifact download ended at an unsafe URL"
+                    )
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        declared = int(content_length)
+                    except ValueError:
+                        raise VerificationError(
+                            "artifact download returned an invalid Content-Length"
+                        ) from None
+                    if declared <= 0 or declared > maximum_bytes:
+                        raise VerificationError(
+                            "artifact download exceeds the configured size limit"
+                        )
+                raw = response.read(maximum_bytes + 1)
+        except VerificationError:
+            raise
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise VerificationError(
+                f"GitHub API artifact download failed with HTTP {error.code} for {path}"
+            ) from None
+        except urllib.error.URLError as error:
+            reason = type(error.reason).__name__
+            raise VerificationError(
+                f"GitHub API artifact download failed for {path} ({reason})"
+            ) from None
+        except (OSError, TimeoutError) as error:
+            raise VerificationError(
+                f"GitHub API artifact download failed for {path} ({type(error).__name__})"
+            ) from None
+        if not raw or len(raw) > maximum_bytes:
+            raise VerificationError(
+                "artifact download is empty or exceeds the configured size limit"
+            )
+        return raw
 
     def _get_json(
         self,
@@ -312,6 +424,219 @@ def fetch_run_jobs(api: GitHubApi, run_id: int) -> list[Mapping[str, Any]]:
         if len(raw_jobs) < PAGE_SIZE:
             return jobs
     raise VerificationError("workflow job pagination exceeded the safety limit")
+
+
+@dataclass(frozen=True)
+class WorkflowArtifact:
+    artifact_id: int
+    name: str
+    size_in_bytes: int
+
+
+@dataclass(frozen=True)
+class T803ArtifactSpec:
+    run_id: int
+    artifact_name: str
+    report_stem: str
+
+
+def t803_artifact_specs(
+    candidate_sha: str,
+    ci_run_id: int,
+    gpu_run_id: int | None,
+    *,
+    scope: str = "all",
+) -> tuple[T803ArtifactSpec, ...]:
+    sha = normalize_sha(candidate_sha, "T.803 artifact candidate SHA")
+    scope = normalize_t803_scope(scope)
+    if ci_run_id <= 0:
+        raise VerificationError("T.803 CI artifact run ID must be positive")
+    if scope in ("cuda", "metal", "all") and (
+        gpu_run_id is None or gpu_run_id <= 0
+    ):
+        raise VerificationError("selected T.803 GPU scope requires a positive GPU run ID")
+
+    specs: list[T803ArtifactSpec] = []
+    if scope in ("cpu", "all"):
+        specs.extend(
+            (
+                T803ArtifactSpec(
+                    ci_run_id, f"j2k-t803-cpu-linux-x86_64-{sha}", "cpu"
+                ),
+                T803ArtifactSpec(
+                    ci_run_id, f"j2k-t803-cpu-macos-aarch64-{sha}", "cpu"
+                ),
+                T803ArtifactSpec(
+                    ci_run_id, f"j2k-t803-cpu-windows-x86_64-{sha}", "cpu"
+                ),
+            )
+        )
+    if scope in ("cuda", "all"):
+        assert gpu_run_id is not None
+        specs.append(
+            T803ArtifactSpec(
+                gpu_run_id, f"j2k-t803-cuda-linux-x86_64-{sha}", "cuda"
+            )
+        )
+    if scope in ("metal", "all"):
+        assert gpu_run_id is not None
+        specs.append(
+            T803ArtifactSpec(
+                gpu_run_id, f"j2k-t803-metal-macos-aarch64-{sha}", "metal"
+            )
+        )
+    return tuple(specs)
+
+
+def normalize_t803_scope(scope: str) -> str:
+    if scope not in T803_SCOPES:
+        raise VerificationError(
+            f"T.803 scope must be one of {', '.join(T803_SCOPES)}"
+        )
+    return scope
+
+
+def fetch_run_artifacts(api: GitHubApi, run_id: int) -> list[WorkflowArtifact]:
+    if run_id <= 0:
+        raise VerificationError("workflow artifact run ID must be positive")
+    artifacts: list[WorkflowArtifact] = []
+    for page in range(1, MAX_PAGES + 1):
+        payload = _dict(
+            api.get_json(
+                f"/actions/runs/{run_id}/artifacts",
+                {"per_page": PAGE_SIZE, "page": page},
+            ),
+            "workflow artifacts",
+        )
+        raw_artifacts = _list(payload.get("artifacts"), "workflow artifacts list")
+        for index, raw_artifact in enumerate(raw_artifacts):
+            artifact = _dict(raw_artifact, f"workflow artifact {index}")
+            artifact_id = _integer(artifact.get("id"), "workflow artifact id")
+            name = _string(artifact.get("name"), "workflow artifact name")
+            expired = _boolean(artifact.get("expired"), "workflow artifact expired")
+            size = _integer(
+                artifact.get("size_in_bytes"), "workflow artifact size_in_bytes"
+            )
+            workflow_run = _dict(
+                artifact.get("workflow_run"), "workflow artifact workflow_run"
+            )
+            artifact_run_id = _integer(
+                workflow_run.get("id"), "workflow artifact run id"
+            )
+            if artifact_id <= 0 or size <= 0:
+                raise VerificationError("workflow artifact id and size must be positive")
+            if artifact_run_id != run_id:
+                raise VerificationError(
+                    f"workflow artifact {name} belongs to run {artifact_run_id}, expected {run_id}"
+                )
+            if expired:
+                raise VerificationError(f"workflow artifact {name} has expired")
+            artifacts.append(WorkflowArtifact(artifact_id, name, size))
+        if len(raw_artifacts) < PAGE_SIZE:
+            return artifacts
+    raise VerificationError("workflow artifact pagination exceeded the safety limit")
+
+
+def download_t803_report_artifacts(
+    api: GitHubApi,
+    *,
+    candidate_sha: str,
+    ci_run_id: int,
+    gpu_run_id: int | None,
+    output_dir: Path,
+    scope: str = "all",
+) -> tuple[Path, ...]:
+    specs = t803_artifact_specs(
+        candidate_sha, ci_run_id, gpu_run_id, scope=scope
+    )
+    if output_dir.is_symlink() or (output_dir.exists() and not output_dir.is_dir()):
+        raise VerificationError("T.803 artifact output must be a real directory")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if any(output_dir.iterdir()):
+        raise VerificationError("T.803 artifact output directory must be empty")
+
+    artifacts_by_run = {
+        run_id: fetch_run_artifacts(api, run_id)
+        for run_id in sorted({spec.run_id for spec in specs})
+    }
+    reports: list[Path] = []
+    for spec in specs:
+        matches = [
+            artifact
+            for artifact in artifacts_by_run[spec.run_id]
+            if artifact.name == spec.artifact_name
+        ]
+        if len(matches) != 1:
+            raise VerificationError(
+                f"run {spec.run_id} must contain exactly one {spec.artifact_name} artifact"
+            )
+        artifact = matches[0]
+        if artifact.size_in_bytes > MAX_T803_ARTIFACT_ARCHIVE_BYTES:
+            raise VerificationError(
+                f"workflow artifact {artifact.name} exceeds the configured size limit"
+            )
+        archive = api.download_bytes(
+            f"/actions/artifacts/{artifact.artifact_id}/zip",
+            maximum_bytes=MAX_T803_ARTIFACT_ARCHIVE_BYTES,
+        )
+        artifact_dir = output_dir / spec.artifact_name
+        reports.append(
+            extract_t803_report_archive(
+                archive,
+                report_stem=spec.report_stem,
+                output_dir=artifact_dir,
+            )
+        )
+    return tuple(reports)
+
+
+def extract_t803_report_archive(
+    archive_bytes: bytes, *, report_stem: str, output_dir: Path
+) -> Path:
+    if not archive_bytes or len(archive_bytes) > MAX_T803_ARTIFACT_ARCHIVE_BYTES:
+        raise VerificationError("T.803 artifact archive has an invalid size")
+    expected_names = {f"{report_stem}.json", f"{report_stem}.md"}
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            if len(names) != len(set(names)):
+                raise VerificationError("T.803 artifact contains duplicate paths")
+            for member in members:
+                path = PurePosixPath(member.filename)
+                file_type = (member.external_attr >> 16) & 0o170000
+                if (
+                    path.is_absolute()
+                    or len(path.parts) != 1
+                    or ".." in path.parts
+                    or "\\" in member.filename
+                    or member.is_dir()
+                    or file_type == stat.S_IFLNK
+                ):
+                    raise VerificationError("T.803 artifact contains an unsafe path")
+                if member.flag_bits & 0x1:
+                    raise VerificationError("T.803 artifact contains an encrypted file")
+                if member.file_size <= 0 or member.file_size > MAX_T803_REPORT_BYTES:
+                    raise VerificationError("T.803 artifact report has an invalid size")
+            if set(names) != expected_names:
+                raise VerificationError(
+                    "T.803 artifact must contain only its canonical JSON and Markdown reports"
+                )
+            contents = {
+                member.filename: archive.read(member)
+                for member in members
+            }
+    except VerificationError:
+        raise
+    except (OSError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        raise VerificationError("T.803 artifact is not a valid bounded ZIP archive") from None
+
+    if output_dir.exists():
+        raise VerificationError("T.803 artifact extraction directory already exists")
+    output_dir.mkdir()
+    for name in sorted(contents):
+        (output_dir / name).write_bytes(contents[name])
+    return output_dir / f"{report_stem}.json"
 
 
 def verify_workflow_run(
@@ -570,7 +895,8 @@ def verify_release_evidence(
     cuda_job: str,
     metal_job: str,
     ci_branch: str,
-) -> tuple[int, int]:
+    t803_scope: str = "all",
+) -> tuple[int, int | None]:
     verify_repository_origin(origin_url, server_url, repository)
     require_github_release_absent(api, tag)
     expected_sha = normalize_sha(candidate_sha, "candidate SHA")
@@ -588,6 +914,7 @@ def verify_release_evidence(
         cuda_job=cuda_job,
         metal_job=metal_job,
         ci_branch=ci_branch,
+        t803_scope=t803_scope,
     )
 
 
@@ -601,7 +928,8 @@ def verify_candidate_evidence(
     cuda_job: str,
     metal_job: str,
     ci_branch: str,
-) -> tuple[int, int]:
+    t803_scope: str = "all",
+) -> tuple[int, int | None]:
     """Verify all post-freeze release evidence for one exact commit SHA."""
 
     require_private_vulnerability_reporting(api)
@@ -614,13 +942,21 @@ def verify_candidate_evidence(
         required_event="push",
         required_head_branch=ci_branch,
     )
-    gpu_run = verify_workflow_run(
-        api,
-        gpu_workflow,
-        expected_sha,
-        [cuda_job, metal_job],
-        required_event="workflow_dispatch",
-    )
+    scope = normalize_t803_scope(t803_scope)
+    required_gpu_jobs = []
+    if scope in ("cuda", "all"):
+        required_gpu_jobs.append(cuda_job)
+    if scope in ("metal", "all"):
+        required_gpu_jobs.append(metal_job)
+    gpu_run = None
+    if required_gpu_jobs:
+        gpu_run = verify_workflow_run(
+            api,
+            gpu_workflow,
+            expected_sha,
+            required_gpu_jobs,
+            required_event="workflow_dispatch",
+        )
     return ci_run, gpu_run
 
 
@@ -668,6 +1004,10 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--cuda-job", default=CUDA_JOB)
     release_parser.add_argument("--metal-job", default=METAL_JOB)
     release_parser.add_argument("--ci-branch", default="main")
+    release_parser.add_argument(
+        "--t803-scope", choices=T803_SCOPES, default="all"
+    )
+    release_parser.add_argument("--t803-out-dir")
 
     candidate_parser = subparsers.add_parser(
         "verify-candidate",
@@ -681,6 +1021,10 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_parser.add_argument("--cuda-job", default=CUDA_JOB)
     candidate_parser.add_argument("--metal-job", default=METAL_JOB)
     candidate_parser.add_argument("--ci-branch", default="main")
+    candidate_parser.add_argument(
+        "--t803-scope", choices=T803_SCOPES, default="all"
+    )
+    candidate_parser.add_argument("--t803-out-dir")
     return parser
 
 
@@ -739,13 +1083,30 @@ def run_command(args: argparse.Namespace) -> None:
             cuda_job=args.cuda_job,
             metal_job=args.metal_job,
             ci_branch=args.ci_branch,
+            t803_scope=args.t803_scope,
         )
+        reports: tuple[Path, ...] = ()
+        if args.t803_out_dir:
+            reports = download_t803_report_artifacts(
+                api,
+                candidate_sha=args.candidate_sha,
+                ci_run_id=ci_run,
+                gpu_run_id=gpu_run,
+                output_dir=Path(args.t803_out_dir),
+                scope=args.t803_scope,
+            )
         print(
             "verified origin, private vulnerability reporting, absent GitHub Release, "
             f"annotated tag {args.tag}, "
             "and exact-SHA evidence "
-            f"(CI run {ci_run}, GPU run {gpu_run})"
+            + (
+                f"(CI run {ci_run})"
+                if gpu_run is None
+                else f"(CI run {ci_run}, GPU run {gpu_run})"
+            )
         )
+        for report in reports:
+            print(f"downloaded T.803 report {report}")
         return
     if args.command == "verify-candidate":
         ci_run, gpu_run = verify_candidate_evidence(
@@ -757,12 +1118,29 @@ def run_command(args: argparse.Namespace) -> None:
             cuda_job=args.cuda_job,
             metal_job=args.metal_job,
             ci_branch=args.ci_branch,
+            t803_scope=args.t803_scope,
         )
+        reports = ()
+        if args.t803_out_dir:
+            reports = download_t803_report_artifacts(
+                api,
+                candidate_sha=args.candidate_sha,
+                ci_run_id=ci_run,
+                gpu_run_id=gpu_run,
+                output_dir=Path(args.t803_out_dir),
+                scope=args.t803_scope,
+            )
         print(
             "verified private vulnerability reporting and exact-SHA release candidate "
             f"{args.candidate_sha.lower()} "
-            f"(CI run {ci_run}, GPU run {gpu_run})"
+            + (
+                f"(CI run {ci_run})"
+                if gpu_run is None
+                else f"(CI run {ci_run}, GPU run {gpu_run})"
+            )
         )
+        for report in reports:
+            print(f"downloaded T.803 report {report}")
         return
     raise VerificationError(f"unsupported command {args.command}")
 

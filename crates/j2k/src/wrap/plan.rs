@@ -23,7 +23,6 @@ pub(super) struct WrapPlan<'a> {
     pub(super) parsed: &'a ParsedImageInfo,
     pub(super) metadata: J2kFileBoxMetadata<'a>,
     pub(super) colors: ColorSelection<'a>,
-    pub(super) components: ResolvedComponents<'a>,
     pub(super) component_count: u16,
     pub(super) image_header_bpc: u8,
     pub(super) bpcc_payload_len: Option<usize>,
@@ -44,18 +43,21 @@ impl<'a> WrapPlan<'a> {
     ) -> Result<Self, J2kError> {
         let components = ResolvedComponents::new(parsed, metadata)?;
         components.validate_precisions()?;
-        let component_count = u16::try_from(components.len()).map_err(|_| {
+        let codestream_components = ResolvedComponents::Codestream(&parsed.components);
+        let component_count = u16::try_from(codestream_components.len()).map_err(|_| {
             J2kError::Unsupported(Unsupported {
-                what: "JP2/JPH resolved image component count exceeds u16",
+                what: "JP2/JPH codestream component count exceeds u16",
             })
         })?;
-        let uses_bpcc = components.uses_bpcc()?;
+        let uses_bpcc = codestream_components.uses_bpcc()?;
         let image_header_bpc = if uses_bpcc {
             0xff
         } else {
-            components.component(0).map_or(0xff, component_bpc)
+            codestream_components
+                .component(0)
+                .map_or(0xff, component_bpc)
         };
-        let bpcc_payload_len = uses_bpcc.then_some(components.len());
+        let bpcc_payload_len = uses_bpcc.then_some(codestream_components.len());
         let palette_payload_len = metadata.palette.map(validate_palette);
         let palette_payload_len = palette_payload_len.transpose()?;
         let component_mapping_payload_len = component_mapping_payload_len(parsed, metadata)?;
@@ -107,7 +109,6 @@ impl<'a> WrapPlan<'a> {
             parsed,
             metadata,
             colors,
-            components,
             component_count,
             image_header_bpc,
             bpcc_payload_len,

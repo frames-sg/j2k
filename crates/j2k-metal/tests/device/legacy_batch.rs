@@ -56,7 +56,7 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
 }
 
 #[test]
-fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
+fn submitted_auto_512_grayscale_tiles_stay_on_cpu() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -88,13 +88,14 @@ fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
 
     for submission in submissions {
         let surface = submission.wait().expect("surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
         assert_eq!(surface.dimensions(), (512, 512));
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
-        "compatible auto grayscale tiles should flush through one repeated Metal batch"
+        "unqualified repeated Auto tiles should flush through one CPU batch fallback"
     );
 }
 

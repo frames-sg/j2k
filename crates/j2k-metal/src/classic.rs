@@ -39,13 +39,12 @@ impl MetalClassicBlockDecoder {
     pub(crate) fn batched_kernel_dispatches(&self) -> usize {
         self.batched_kernel_dispatches
     }
-}
 
-impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
-    fn decode_j2k_sub_band(
+    fn decode_j2k_sub_band_inner(
         &mut self,
         job: J2kSubBandDecodeJob<'_>,
         output: &mut [f32],
+        irreversible_midpoint: bool,
     ) -> Result<bool> {
         if job.jobs.len() <= 1 {
             return Ok(false);
@@ -58,14 +57,66 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
             .iter()
             .all(|batch_job| supports_metal_classic_kernel(&batch_job.code_block))
         {
-            compute::decode_classic_cleanup_sub_band(job, output)
-                .map_err(metal_classic_sub_band_decode_error)?;
+            compute::decode_classic_cleanup_sub_band_with_midpoint(
+                job,
+                output,
+                irreversible_midpoint,
+            )
+            .map_err(metal_classic_sub_band_decode_error)?;
             self.batched_kernel_dispatches = self.batched_kernel_dispatches.saturating_add(1);
             return Ok(true);
         }
 
+        if irreversible_midpoint {
+            return Ok(false);
+        }
         decode_j2k_sub_band_scalar(job, output)?;
         Ok(true)
+    }
+
+    fn decode_j2k_code_block_inner(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        self.blocks_decoded = self.blocks_decoded.saturating_add(1);
+        #[cfg(target_os = "macos")]
+        if supports_metal_classic_kernel(&job) {
+            compute::decode_classic_cleanup_code_block_with_midpoint(
+                job,
+                output,
+                irreversible_midpoint,
+            )
+            .map_err(metal_classic_code_block_decode_error)?;
+            self.kernel_dispatches = self.kernel_dispatches.saturating_add(1);
+            return Ok(true);
+        }
+
+        if irreversible_midpoint {
+            return Ok(false);
+        }
+        decode_j2k_code_block_scalar(job, output)?;
+        Ok(true)
+    }
+}
+
+impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
+    fn decode_j2k_sub_band(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+    ) -> Result<bool> {
+        self.decode_j2k_sub_band_inner(job, output, false)
+    }
+
+    fn decode_j2k_sub_band_with_midpoint(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        self.decode_j2k_sub_band_inner(job, output, irreversible_midpoint)
     }
 
     fn decode_j2k_code_block(
@@ -73,17 +124,16 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         job: J2kCodeBlockDecodeJob<'_>,
         output: &mut [f32],
     ) -> Result<bool> {
-        self.blocks_decoded = self.blocks_decoded.saturating_add(1);
-        #[cfg(target_os = "macos")]
-        if supports_metal_classic_kernel(&job) {
-            compute::decode_classic_cleanup_code_block(job, output)
-                .map_err(metal_classic_code_block_decode_error)?;
-            self.kernel_dispatches = self.kernel_dispatches.saturating_add(1);
-            return Ok(true);
-        }
+        self.decode_j2k_code_block_inner(job, output, false)
+    }
 
-        decode_j2k_code_block_scalar(job, output)?;
-        Ok(true)
+    fn decode_j2k_code_block_with_midpoint(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        self.decode_j2k_code_block_inner(job, output, irreversible_midpoint)
     }
 }
 
@@ -115,16 +165,17 @@ fn supports_metal_classic_kernel(job: &J2kCodeBlockDecodeJob<'_>) -> bool {
     if job.number_of_coding_passes == 0 {
         return false;
     }
-    if job.roi_shift != 0 {
-        return false;
-    }
     if job.data.is_empty() {
         return false;
     }
-    if job.total_bitplanes == 0 || job.total_bitplanes > 31 || job.missing_bit_planes >= 31 {
+    let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        return false;
+    };
+    if job.total_bitplanes == 0 || coded_bitplanes > 31 || job.missing_bit_planes >= coded_bitplanes
+    {
         return false;
     }
-    let bitplanes = job.total_bitplanes.saturating_sub(job.missing_bit_planes);
+    let bitplanes = coded_bitplanes - job.missing_bit_planes;
     if bitplanes == 0 {
         return false;
     }
@@ -210,16 +261,20 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::compute;
     #[cfg(target_os = "macos")]
+    use j2k_native::{decode_j2k_code_block_scalar, J2kCodeBlockDecodeJob, J2kCodeBlockSegment};
     use j2k_native::{
-        decode_j2k_code_block_scalar, HtCodeBlockDecoder, J2kCodeBlockDecodeJob,
-        J2kCodeBlockSegment,
+        encode, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder,
+        Image,
     };
-    use j2k_native::{encode, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, Image};
 
     #[cfg(target_os = "macos")]
     fn should_run_metal_runtime() -> bool {
         j2k_test_support::metal_runtime_gate(module_path!())
     }
+
+    struct CpuOnlyCodeBlockDecoder;
+
+    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {}
 
     #[cfg(target_os = "macos")]
     #[derive(Clone)]
@@ -462,6 +517,52 @@ mod tests {
     }
 
     #[test]
+    fn metal_classic_decoder_matches_native_region_for_openjpeg_irreversible_rgb() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let image = Image::new(
+            j2k_test_support::OPENJPEG_IRREVERSIBLE_RGB8_8X8,
+            &DecodeSettings::default(),
+        )
+        .expect("image");
+        let roi = (2, 2, 4, 4);
+        let mut expected_context = DecoderContext::default();
+        let expected = image
+            .decode_region_components_with_ht_decoder(
+                &mut expected_context,
+                roi,
+                &mut CpuOnlyCodeBlockDecoder,
+            )
+            .expect("native region decode");
+
+        let mut hooked_context = DecoderContext::default();
+        let mut decoder = MetalClassicBlockDecoder::default();
+        let actual = image
+            .decode_region_components_with_ht_decoder(&mut hooked_context, roi, &mut decoder)
+            .expect("Metal classic region decode");
+
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        for (component, (actual_plane, expected_plane)) in
+            actual.planes().iter().zip(expected.planes()).enumerate()
+        {
+            assert_eq!(
+                actual_plane.samples(),
+                expected_plane.samples(),
+                "Metal classic component {component} must match native region decode"
+            );
+        }
+        assert!(decoder.blocks_decoded() > 0);
+        #[cfg(target_os = "macos")]
+        assert!(
+            decoder.kernel_dispatches() + decoder.batched_kernel_dispatches() > 0,
+            "OpenJPEG RGB region must exercise a Metal classic kernel"
+        );
+    }
+
+    #[test]
     fn metal_classic_decoder_batches_multi_block_subbands() {
         #[cfg(target_os = "macos")]
         if !should_run_metal_runtime() {
@@ -549,7 +650,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -598,7 +699,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -625,7 +726,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -674,7 +775,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -723,7 +824,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -776,7 +877,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -832,7 +933,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -870,7 +971,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }
@@ -898,7 +999,7 @@ mod tests {
         let mut expected = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
         let mut actual = vec![0.0f32; job.output_len()];
-        compute::decode_classic_cleanup_code_block(job.as_job(), &mut actual)
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
             .expect("metal decode");
         assert_eq!(actual, expected);
     }

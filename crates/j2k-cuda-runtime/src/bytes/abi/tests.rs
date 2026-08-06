@@ -17,8 +17,9 @@ fn explicit_tail_fields_preserve_cuda_host_abi_sizes_and_offsets() {
     );
     assert_eq!(size_of::<CudaHtj2kDequantizeKernelJob>(), 40);
     assert_eq!(offset_of!(CudaHtj2kDequantizeKernelJob, reserved_tail), 36);
-    assert_eq!(size_of::<CudaClassicKernelJob>(), 72);
-    assert_eq!(offset_of!(CudaClassicKernelJob, dequantization_step), 68);
+    assert_eq!(size_of::<CudaClassicKernelJob>(), 80);
+    assert_eq!(offset_of!(CudaClassicKernelJob, dequantization_step), 72);
+    assert_eq!(offset_of!(CudaClassicKernelJob, roi_shift), 76);
     assert_eq!(size_of::<CudaClassicKernelSegment>(), 20);
     assert_eq!(size_of::<CudaClassicKernelTables>(), 1_656);
     assert_eq!(offset_of!(CudaClassicKernelTables, mq_transitions), 188);

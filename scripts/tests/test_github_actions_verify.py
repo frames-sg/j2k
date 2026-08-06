@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
+from pathlib import Path
+import tempfile
 import urllib.error
+import urllib.request
 import unittest
+import zipfile
 from typing import Any, Mapping
 
 from scripts import github_actions_verify as verifier
@@ -17,6 +22,7 @@ TAG_SHA = "c" * 40
 class FakeApi:
     def __init__(self) -> None:
         self.responses: dict[tuple[str, tuple[tuple[str, str], ...]], Any] = {}
+        self.downloads: dict[str, bytes] = {}
         self.calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
 
     @staticmethod
@@ -50,6 +56,15 @@ class FakeApi:
     ) -> verifier.OptionalJsonResponse:
         response = self.get_json(path, params)
         return verifier.OptionalJsonResponse(found=response is not None, payload=response)
+
+    def add_download(self, path: str, payload: bytes) -> None:
+        self.downloads[path] = payload
+
+    def download_bytes(self, path: str, *, maximum_bytes: int) -> bytes:
+        del maximum_bytes
+        if path not in self.downloads:
+            raise AssertionError(f"unexpected fake API download: {path}")
+        return self.downloads[path]
 
 
 def workflow_metadata(api: FakeApi, filename: str, workflow_id: int) -> None:
@@ -104,6 +119,14 @@ def add_jobs(api: FakeApi, run_id: int, jobs: list[dict[str, Any]]) -> None:
     )
 
 
+def report_archive(stem: str) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{stem}.json", "{}\n")
+        archive.writestr(f"{stem}.md", "# evidence\n")
+    return output.getvalue()
+
+
 class PullRequestPolicyTests(unittest.TestCase):
     def test_pull_request_files_are_paginated_and_renames_use_both_paths(self) -> None:
         api = FakeApi()
@@ -146,6 +169,22 @@ class PullRequestPolicyTests(unittest.TestCase):
         self.assertEqual(decision.required_jobs, ())
         self.assertEqual(decision.changed_gpu_paths, ())
 
+    def test_shared_conformance_and_routing_paths_require_both_hardware_lanes(self) -> None:
+        paths = [
+            "crates/j2k-t803/src/runner.rs",
+            "corpus/j2k-conformance/t803-v3.toml",
+            "xtask/src/t803.rs",
+            "xtask/src/auto_routing/tests.rs",
+        ]
+
+        decision = verifier.classify_gpu_paths(paths)
+
+        self.assertEqual(
+            decision.required_jobs,
+            (verifier.CUDA_QUICK_JOB, verifier.METAL_QUICK_JOB),
+        )
+        self.assertEqual(decision.changed_gpu_paths, tuple(sorted(paths)))
+
 
 class ParserTests(unittest.TestCase):
     def test_verify_candidate_parser_smoke(self) -> None:
@@ -156,12 +195,45 @@ class ParserTests(unittest.TestCase):
                 "frames-sg/j2k",
                 "--candidate-sha",
                 SHA,
+                "--t803-out-dir",
+                "target/t803/release-evidence",
             ]
         )
         self.assertEqual(args.command, "verify-candidate")
         self.assertEqual(args.aggregate_job, verifier.RELEASE_CANDIDATE_JOB)
         self.assertEqual(args.cuda_job, verifier.CUDA_JOB)
         self.assertEqual(args.metal_job, verifier.METAL_JOB)
+        self.assertEqual(args.t803_out_dir, "target/t803/release-evidence")
+
+
+class RedirectSecurityTests(unittest.TestCase):
+    def test_cross_origin_redirect_strips_every_credential_header(self) -> None:
+        request = urllib.request.Request(
+            "https://api.github.com/repos/frames-sg/j2k/actions/artifacts/1/zip",
+            headers={
+                "Authorization": "Bearer secret",
+                "Cookie": "session=secret",
+                "Proxy-Authorization": "Basic secret",
+                "X-Trace": "keep-me",
+            },
+        )
+
+        redirected = verifier._CredentialSafeRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://objects.githubusercontent.com/artifact.zip",
+        )
+
+        self.assertIsNotNone(redirected)
+        assert redirected is not None
+        headers = {name.lower(): value for name, value in redirected.header_items()}
+        self.assertNotIn("authorization", headers)
+        self.assertNotIn("cookie", headers)
+        self.assertNotIn("proxy-authorization", headers)
+        self.assertEqual(headers["x-trace"], "keep-me")
 
     def test_verify_release_parser_requires_origin_context(self) -> None:
         args = verifier.build_parser().parse_args(
@@ -177,10 +249,13 @@ class ParserTests(unittest.TestCase):
                 "v0.7.0",
                 "--candidate-sha",
                 SHA,
+                "--t803-out-dir",
+                "target/t803/release-evidence",
             ]
         )
         self.assertEqual(args.command, "verify-release")
         self.assertEqual(args.origin_url, "https://github.com/frames-sg/j2k.git")
+        self.assertEqual(args.t803_out_dir, "target/t803/release-evidence")
 
 
 class WorkflowVerificationTests(unittest.TestCase):
@@ -361,6 +436,74 @@ class WorkflowVerificationTests(unittest.TestCase):
 
 
 class ReleaseVerificationTests(unittest.TestCase):
+    def test_cpu_t803_scope_does_not_require_a_gpu_run(self) -> None:
+        specs = verifier.t803_artifact_specs(SHA, 10, None, scope="cpu")
+
+        self.assertEqual(len(specs), 3)
+        self.assertTrue(all(spec.run_id == 10 for spec in specs))
+        self.assertTrue(all(spec.report_stem == "cpu" for spec in specs))
+
+    def test_exact_run_t803_artifacts_are_downloaded_and_extracted(self) -> None:
+        api = FakeApi()
+        ci_run = 10
+        gpu_run = 20
+        specs = verifier.t803_artifact_specs(SHA, ci_run, gpu_run)
+        for run_id in (ci_run, gpu_run):
+            run_specs = [spec for spec in specs if spec.run_id == run_id]
+            api.add(
+                f"/actions/runs/{run_id}/artifacts",
+                {
+                    "artifacts": [
+                        {
+                            "id": index + run_id * 10,
+                            "name": spec.artifact_name,
+                            "expired": False,
+                            "size_in_bytes": 512,
+                            "workflow_run": {"id": run_id},
+                        }
+                        for index, spec in enumerate(run_specs)
+                    ]
+                },
+                {"per_page": 100, "page": 1},
+            )
+            for index, spec in enumerate(run_specs):
+                artifact_id = index + run_id * 10
+                api.add_download(
+                    f"/actions/artifacts/{artifact_id}/zip",
+                    report_archive(spec.report_stem),
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            reports = verifier.download_t803_report_artifacts(
+                api,  # type: ignore[arg-type]
+                candidate_sha=SHA,
+                ci_run_id=ci_run,
+                gpu_run_id=gpu_run,
+                output_dir=Path(directory),
+            )
+
+            self.assertEqual(len(reports), 5)
+            self.assertTrue(all(path.is_file() for path in reports))
+            self.assertEqual(
+                {path.name for path in reports},
+                {"cpu.json", "cuda.json", "metal.json"},
+            )
+
+    def test_t803_artifact_extraction_rejects_path_traversal(self) -> None:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("../cpu.json", "{}\n")
+            archive.writestr("cpu.md", "# evidence\n")
+
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+            verifier.VerificationError, "unsafe"
+        ):
+            verifier.extract_t803_report_archive(
+                output.getvalue(),
+                report_stem="cpu",
+                output_dir=Path(directory),
+            )
+
     def test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag(self) -> None:
         api = FakeApi()
         api.add("/private-vulnerability-reporting", {"enabled": True})
@@ -404,6 +547,85 @@ class ReleaseVerificationTests(unittest.TestCase):
         self.assertFalse(
             any(path.startswith("/git/") for path, _params in api.calls),
             "post-freeze candidate status must not require a release tag",
+        )
+
+    def test_cpu_candidate_scope_does_not_query_the_gpu_workflow(self) -> None:
+        api = FakeApi()
+        api.add("/private-vulnerability-reporting", {"enabled": True})
+        workflow_metadata(api, "ci.yml", 88)
+        api.add(
+            "/actions/workflows/88/runs",
+            {
+                "workflow_runs": [
+                    workflow_run(
+                        10,
+                        workflow_id=88,
+                        path=".github/workflows/ci.yml",
+                        event="push",
+                    )
+                ]
+            },
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+
+        result = verifier.verify_candidate_evidence(
+            api,  # type: ignore[arg-type]
+            candidate_sha=SHA,
+            ci_workflow="ci.yml",
+            aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+            gpu_workflow="gpu-validation.yml",
+            cuda_job=verifier.CUDA_JOB,
+            metal_job=verifier.METAL_JOB,
+            ci_branch="main",
+            t803_scope="cpu",
+        )
+
+        self.assertEqual(result, (10, None))
+        self.assertFalse(
+            any("gpu-validation.yml" in path for path, _params in api.calls),
+            "CPU evidence must remain independent of accelerator availability",
+        )
+
+    def test_cuda_candidate_scope_requires_only_the_cuda_job(self) -> None:
+        api = FakeApi()
+        api.add("/private-vulnerability-reporting", {"enabled": True})
+        workflow_metadata(api, "ci.yml", 88)
+        api.add(
+            "/actions/workflows/88/runs",
+            {
+                "workflow_runs": [
+                    workflow_run(
+                        10,
+                        workflow_id=88,
+                        path=".github/workflows/ci.yml",
+                        event="push",
+                    )
+                ]
+            },
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(20)])
+        add_jobs(api, 20, [workflow_job(verifier.CUDA_JOB)])
+
+        result = verifier.verify_candidate_evidence(
+            api,  # type: ignore[arg-type]
+            candidate_sha=SHA,
+            ci_workflow="ci.yml",
+            aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+            gpu_workflow="gpu-validation.yml",
+            cuda_job=verifier.CUDA_JOB,
+            metal_job=verifier.METAL_JOB,
+            ci_branch="main",
+            t803_scope="cuda",
+        )
+
+        self.assertEqual(result, (10, 20))
+        specs = verifier.t803_artifact_specs(SHA, 10, 20, scope="cuda")
+        self.assertEqual(
+            [(spec.run_id, spec.report_stem) for spec in specs], [(20, "cuda")]
         )
 
     def test_post_freeze_candidate_requires_private_vulnerability_reporting(self) -> None:

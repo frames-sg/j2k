@@ -6,11 +6,16 @@
 
 use alloc::vec::Vec;
 
+use super::codestream::ComponentInfo;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use crate::error::{DecodingError, Result};
+use crate::{try_resize_decode_elements, ValidationError, DEFAULT_MAX_DECODE_BYTES};
 use alloc::boxed::Box;
 use core::cmp::Ordering;
 use core::iter;
+use core::mem::size_of;
+
+const PACKETS_PER_INCLUSION_WORD: usize = u64::BITS as usize;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Hash, Eq)]
 pub(crate) struct ProgressionData {
@@ -27,25 +32,111 @@ pub(crate) struct IteratorInput<'a> {
     components: (u16, u16),
 }
 
+struct PacketInclusionMap {
+    resolution_offsets: Vec<usize>,
+    words: Vec<u64>,
+    max_resolution: usize,
+    layers: usize,
+}
+
+impl PacketInclusionMap {
+    fn new(tile: &Tile<'_>) -> Result<Self> {
+        let max_resolution = tile
+            .component_infos
+            .iter()
+            .map(ComponentInfo::num_resolution_levels)
+            .max()
+            .map(usize::from)
+            .ok_or(DecodingError::InvalidProgressionIterator)?;
+        let layers = usize::from(tile.num_layers);
+        let slot_count = tile
+            .component_infos
+            .len()
+            .checked_mul(max_resolution)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let mut resolution_offsets = Vec::new();
+        try_resize_decode_elements(&mut resolution_offsets, slot_count, usize::MAX)?;
+
+        let mut packet_count = 0_usize;
+        for (component_index, component) in tile.component_tiles().enumerate() {
+            for resolution in component.resolution_tiles() {
+                let slot = component_index
+                    .checked_mul(max_resolution)
+                    .and_then(|base| base.checked_add(usize::from(resolution.resolution)))
+                    .ok_or(ValidationError::ImageTooLarge)?;
+                resolution_offsets[slot] = packet_count;
+                let precinct_count = usize::try_from(resolution.num_precincts())
+                    .map_err(|_| ValidationError::ImageTooLarge)?;
+                let resolution_packets = precinct_count
+                    .checked_mul(layers)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+                packet_count = packet_count
+                    .checked_add(resolution_packets)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            }
+        }
+
+        let word_count = packet_count.div_ceil(PACKETS_PER_INCLUSION_WORD);
+        let retained_bytes = resolution_offsets
+            .capacity()
+            .checked_mul(size_of::<usize>())
+            .and_then(|bytes| {
+                word_count
+                    .checked_mul(size_of::<u64>())
+                    .and_then(|word_bytes| bytes.checked_add(word_bytes))
+            })
+            .ok_or(ValidationError::ImageTooLarge)?;
+        if retained_bytes > DEFAULT_MAX_DECODE_BYTES {
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+        let mut words = Vec::new();
+        try_resize_decode_elements(&mut words, word_count, 0_u64)?;
+        Ok(Self {
+            resolution_offsets,
+            words,
+            max_resolution,
+            layers,
+        })
+    }
+
+    fn insert(&mut self, packet: ProgressionData) -> bool {
+        let Some(slot) = usize::from(packet.component)
+            .checked_mul(self.max_resolution)
+            .and_then(|base| base.checked_add(usize::from(packet.resolution)))
+        else {
+            return false;
+        };
+        let Some(&resolution_offset) = self.resolution_offsets.get(slot) else {
+            return false;
+        };
+        let Some(packet_offset) = usize::try_from(packet.precinct)
+            .ok()
+            .and_then(|precinct| precinct.checked_mul(self.layers))
+            .and_then(|base| base.checked_add(usize::from(packet.layer_num)))
+            .and_then(|offset| resolution_offset.checked_add(offset))
+        else {
+            return false;
+        };
+        let word_index = packet_offset / PACKETS_PER_INCLUSION_WORD;
+        let mask = 1_u64 << (packet_offset % PACKETS_PER_INCLUSION_WORD);
+        let Some(word) = self.words.get_mut(word_index) else {
+            return false;
+        };
+        let is_new = *word & mask == 0;
+        *word |= mask;
+        is_new
+    }
+}
+
 impl<'a> IteratorInput<'a> {
-    pub(crate) fn new(tile: &'a Tile<'a>) -> Self {
-        Self::new_with_custom_bounds(
+    pub(crate) fn new(tile: &'a Tile<'a>) -> Option<Self> {
+        Self::try_new_with_custom_bounds(
             tile,
             // Will be clamped automatically.
             (0, u8::MAX),
             (0, u8::MAX),
             (0, u16::MAX),
         )
-    }
-
-    pub(crate) fn new_with_custom_bounds(
-        tile: &'a Tile<'a>,
-        resolutions: (u8, u8),
-        layers: (u8, u8),
-        components: (u16, u16),
-    ) -> Self {
-        Self::try_new_with_custom_bounds(tile, resolutions, layers, components)
-            .expect("valid progression iterator bounds")
     }
 
     pub(crate) fn try_new_with_custom_bounds(
@@ -125,7 +216,9 @@ pub(crate) fn progression_iterator<'a>(
     tile: &'a Tile<'a>,
 ) -> Result<Box<dyn Iterator<Item = ProgressionData> + 'a>> {
     if tile.progression_changes.is_empty() {
-        return progression_iterator_for_order(tile.progression_order, IteratorInput::new(tile));
+        let iter_input =
+            IteratorInput::new(tile).ok_or(DecodingError::InvalidProgressionIterator)?;
+        return progression_iterator_for_order(tile.progression_order, iter_input);
     }
 
     let mut iterators = Vec::new();
@@ -144,7 +237,14 @@ pub(crate) fn progression_iterator<'a>(
         )?);
     }
 
-    Ok(Box::new(iterators.into_iter().flatten()))
+    let mut inclusion = PacketInclusionMap::new(tile)?;
+
+    Ok(Box::new(
+        iterators
+            .into_iter()
+            .flatten()
+            .filter(move |packet| inclusion.insert(*packet)),
+    ))
 }
 
 fn progression_iterator_for_order<'a>(
@@ -401,4 +501,128 @@ pub(crate) fn component_position_resolution_layer_progression(
             .then_with(|| p.resolution.cmp(&s.resolution))
             .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::j2c::codestream::{
+        CodeBlockStyle, CodingStyleComponent, CodingStyleFlags, CodingStyleParameters,
+        ComponentInfo, ComponentSizeInfo, ProgressionChange, ProgressionOrder, QuantizationInfo,
+        QuantizationStyle, WaveletTransform,
+    };
+    use crate::j2c::rect::IntRect;
+
+    #[test]
+    fn overlapping_progression_changes_emit_each_packet_once() {
+        let tile = Tile {
+            idx: 0,
+            tile_parts: vec![],
+            component_infos: vec![ComponentInfo {
+                size_info: ComponentSizeInfo {
+                    precision: 8,
+                    signed: false,
+                    horizontal_resolution: 1,
+                    vertical_resolution: 1,
+                },
+                coding_style: CodingStyleComponent {
+                    flags: CodingStyleFlags::default(),
+                    parameters: CodingStyleParameters {
+                        num_decomposition_levels: 1,
+                        num_resolution_levels: 2,
+                        code_block_width: 6,
+                        code_block_height: 6,
+                        code_block_style: CodeBlockStyle::default(),
+                        transformation: WaveletTransform::Reversible53,
+                        precinct_exponents: vec![(15, 15), (15, 15)],
+                    },
+                },
+                quantization_info: QuantizationInfo {
+                    quantization_style: QuantizationStyle::NoQuantization,
+                    guard_bits: 2,
+                    step_sizes: vec![],
+                },
+                roi_shift: 0,
+            }],
+            rect: IntRect::from_ltrb(0, 0, 8, 8),
+            progression_order: ProgressionOrder::LayerResolutionComponentPosition,
+            progression_changes: vec![
+                ProgressionChange {
+                    resolution_start: 0,
+                    component_start: 0,
+                    layer_end: 2,
+                    resolution_end: 1,
+                    component_end: 1,
+                    progression_order: ProgressionOrder::LayerResolutionComponentPosition,
+                },
+                ProgressionChange {
+                    resolution_start: 0,
+                    component_start: 0,
+                    layer_end: 2,
+                    resolution_end: 2,
+                    component_end: 1,
+                    progression_order: ProgressionOrder::LayerResolutionComponentPosition,
+                },
+            ],
+            num_layers: 2,
+            mct: false,
+        };
+
+        let packets = progression_iterator(&tile)
+            .expect("valid progression")
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            packets,
+            [
+                ProgressionData {
+                    layer_num: 0,
+                    resolution: 0,
+                    component: 0,
+                    precinct: 0,
+                },
+                ProgressionData {
+                    layer_num: 1,
+                    resolution: 0,
+                    component: 0,
+                    precinct: 0,
+                },
+                ProgressionData {
+                    layer_num: 0,
+                    resolution: 1,
+                    component: 0,
+                    precinct: 0,
+                },
+                ProgressionData {
+                    layer_num: 1,
+                    resolution: 1,
+                    component: 0,
+                    precinct: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_component_set_is_an_invalid_progression_iterator() {
+        let tile = Tile {
+            idx: 0,
+            tile_parts: vec![],
+            component_infos: vec![],
+            rect: IntRect::from_ltrb(0, 0, 1, 1),
+            progression_order: ProgressionOrder::LayerResolutionComponentPosition,
+            progression_changes: vec![],
+            num_layers: 1,
+            mct: false,
+        };
+
+        assert!(matches!(
+            progression_iterator(&tile),
+            Err(crate::error::DecodeError::Decoding(
+                DecodingError::InvalidProgressionIterator
+            ))
+        ));
+    }
 }

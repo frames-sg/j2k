@@ -26,12 +26,14 @@ use crate::profile;
 use crate::reader::BitReader;
 use crate::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    decode_j2k_code_block_scalar_with_workspace, HtCodeBlockBatchJob, HtCodeBlockDecodeJob,
-    HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, HtSubBandDecodeJob,
-    J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kCodeBlockStyle,
-    J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
-    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
+    decode_j2k_code_block_scalar_with_workspace,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, HtCodeBlockBatchJob,
+    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
+    HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
+    J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
+    J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType,
+    J2kWaveletTransform,
 };
 use core::mem::size_of;
 use core::ops::Range;

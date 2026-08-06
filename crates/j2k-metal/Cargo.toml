@@ -38,6 +38,7 @@ metal = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 rayon = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
 syn = { workspace = true, features = ["full"] }
@@ -57,3 +58,8 @@ undocumented_unsafe_blocks = "warn"
 # implementation-quality lint gate to avoid fingerprint-only release churn.
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
+
+[[bench]]
+name = "auto_routing"
+harness = false
+test = false

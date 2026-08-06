@@ -7,10 +7,10 @@ use j2k::J2kEncodeStageError;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 use j2k::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Output,
-    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeContext,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeStageResult, J2kForwardDwt53Job,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
+    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
     J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(target_os = "macos")]
@@ -23,7 +23,9 @@ use super::{
     MetalEncodeInputStaging, MetalLosslessEncodeTile,
 };
 
-const AUTO_HOST_OUTPUT_STAGE_MIN_PIXELS: usize = 512 * 512;
+// Minimum qualified cells from verified Auto-routing artifact
+// 162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879.
+const AUTO_LOSSY_RGB8_MIN_PIXELS: usize = 5_038_848;
 
 /// Encode-stage accelerator for JPEG 2000 Metal work.
 ///
@@ -35,6 +37,7 @@ pub struct MetalEncodeStageAccelerator {
     route_profile: MetalEncodeRouteProfile,
     parallel_cpu_code_block_fallback: bool,
     auto_host_output_force_cpu_fallback: bool,
+    host_output_stages_enabled: bool,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
     forward_ict_attempts: usize,
@@ -62,6 +65,7 @@ impl Default for MetalEncodeStageAccelerator {
             route_profile: MetalEncodeRouteProfile::Explicit,
             parallel_cpu_code_block_fallback: false,
             auto_host_output_force_cpu_fallback: false,
+            host_output_stages_enabled: false,
             deinterleave_attempts: 0,
             forward_rct_attempts: 0,
             forward_ict_attempts: 0,
@@ -88,6 +92,7 @@ impl Default for MetalEncodeStageAccelerator {
 enum MetalEncodeRouteProfile {
     Explicit,
     AutoHostOutput,
+    HostOutputEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +152,23 @@ impl MetalEncodeStageAccelerator {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::AUTO_HOST_OUTPUT_STAGE_DISPATCHES,
             route_profile: MetalEncodeRouteProfile::AutoHostOutput,
+            parallel_cpu_code_block_fallback: true,
+            ..Self::default()
+        }
+    }
+
+    /// Create the host-output hybrid route without applying the Auto size gate.
+    ///
+    /// This is intended for reproducible route benchmarks and adapter-IUT
+    /// conformance evidence. It runs the same Metal preparation stages as
+    /// [`Self::for_auto_host_output`] while keeping code-block coding and
+    /// packetization on the CPU. It does not change the public Auto policy.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn for_host_output_benchmark() -> Self {
+        Self {
+            dispatch_stages: MetalEncodeDispatchStages::AUTO_HOST_OUTPUT_STAGE_DISPATCHES,
+            route_profile: MetalEncodeRouteProfile::HostOutputEvidence,
             parallel_cpu_code_block_fallback: true,
             ..Self::default()
         }
@@ -286,10 +308,23 @@ impl MetalEncodeStageAccelerator {
         self.packetization_dispatches
     }
 
-    fn auto_host_stage_supported_for_len(&self, len: usize) -> bool {
-        self.route_profile != MetalEncodeRouteProfile::AutoHostOutput
-            || len >= AUTO_HOST_OUTPUT_STAGE_MIN_PIXELS
+    fn host_output_stage_supported(&self) -> bool {
+        self.route_profile == MetalEncodeRouteProfile::Explicit || self.host_output_stages_enabled
     }
+}
+
+pub(super) fn auto_host_output_should_dispatch(context: J2kEncodeContext) -> bool {
+    if context.reversible || context.bit_depth != 8 || context.signed {
+        return false;
+    }
+    match context.num_components {
+        3 => context.num_pixels >= AUTO_LOSSY_RGB8_MIN_PIXELS,
+        _ => false,
+    }
+}
+
+pub(super) fn host_output_evidence_should_dispatch(context: J2kEncodeContext) -> bool {
+    matches!(context.num_components, 1..=4)
 }
 
 #[cfg(target_os = "macos")]
@@ -318,6 +353,18 @@ pub(super) fn metal_dispatch_option<T>(
 
 #[doc(hidden)]
 impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
+    fn begin_encode(&mut self, context: J2kEncodeContext) -> J2kEncodeStageResult<()> {
+        self.auto_host_output_force_cpu_fallback = false;
+        self.host_output_stages_enabled = match self.route_profile {
+            MetalEncodeRouteProfile::Explicit => true,
+            MetalEncodeRouteProfile::AutoHostOutput => auto_host_output_should_dispatch(context),
+            MetalEncodeRouteProfile::HostOutputEvidence => {
+                host_output_evidence_should_dispatch(context)
+            }
+        };
+        Ok(())
+    }
+
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
         J2kEncodeDispatchReport {
             deinterleave: self.deinterleave_dispatches,
@@ -345,7 +392,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             .dispatch_stages
             .contains(MetalEncodeDispatchStages::DEINTERLEAVE)
             || self.auto_host_output_force_cpu_fallback
-            || !self.auto_host_stage_supported_for_len(job.num_pixels)
+            || !self.host_output_stage_supported()
         {
             let _ = job;
             return Ok(None);
@@ -381,7 +428,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             .dispatch_stages
             .contains(MetalEncodeDispatchStages::FORWARD_RCT)
             || self.auto_host_output_force_cpu_fallback
-            || !self.auto_host_stage_supported_for_len(job.plane0.len())
+            || !self.host_output_stage_supported()
         {
             let _ = job;
             return Ok(false);
@@ -408,7 +455,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             .dispatch_stages
             .contains(MetalEncodeDispatchStages::FORWARD_ICT)
             || self.auto_host_output_force_cpu_fallback
-            || !self.auto_host_stage_supported_for_len(job.plane0.len())
+            || !self.host_output_stage_supported()
         {
             let _ = job;
             return Ok(false);
@@ -450,8 +497,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             let _ = job;
             return Ok(None);
         }
-        let sample_count = (job.width as usize).saturating_mul(job.height as usize);
-        if !self.auto_host_stage_supported_for_len(sample_count) {
+        if !self.host_output_stage_supported() {
             let _ = job;
             return Ok(None);
         }
@@ -492,8 +538,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             let _ = job;
             return Ok(None);
         }
-        let sample_count = (job.width as usize).saturating_mul(job.height as usize);
-        if !self.auto_host_stage_supported_for_len(sample_count) {
+        if !self.host_output_stage_supported() {
             let _ = job;
             return Ok(None);
         }
@@ -531,7 +576,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             .dispatch_stages
             .contains(MetalEncodeDispatchStages::QUANTIZE_SUBBAND)
             || self.auto_host_output_force_cpu_fallback
-            || !self.auto_host_stage_supported_for_len(job.coefficients.len())
+            || !self.host_output_stage_supported()
         {
             let _ = job;
             return Ok(None);

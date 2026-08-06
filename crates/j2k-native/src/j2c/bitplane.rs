@@ -5,6 +5,7 @@ mod bypass;
 mod context;
 mod facade;
 mod observer;
+mod reconstruction;
 mod schedule;
 mod state;
 

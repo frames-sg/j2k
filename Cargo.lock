@@ -2562,6 +2562,7 @@ dependencies = [
  "j2k-native",
  "j2k-test-support",
  "j2k-types",
+ "moxcms",
  "proptest",
  "thiserror 2.0.18",
 ]
@@ -2687,6 +2688,7 @@ name = "j2k-metal"
 version = "0.8.0"
 dependencies = [
  "cc",
+ "criterion",
  "j2k",
  "j2k-codec-math",
  "j2k-core",
@@ -2750,10 +2752,35 @@ name = "j2k-profile"
 version = "0.8.0"
 
 [[package]]
+name = "j2k-t803"
+version = "0.8.0"
+dependencies = [
+ "image",
+ "j2k",
+ "j2k-codec-math",
+ "j2k-compare",
+ "j2k-core",
+ "j2k-cuda",
+ "j2k-cuda-runtime",
+ "j2k-metal",
+ "j2k-native",
+ "j2k-test-support",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "toml",
+ "zip",
+]
+
+[[package]]
 name = "j2k-test-support"
 version = "0.8.0"
 dependencies = [
  "j2k-native",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -4840,6 +4867,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5684,6 +5717,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "syn",
  "tar",
  "toml",
@@ -5796,6 +5830,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

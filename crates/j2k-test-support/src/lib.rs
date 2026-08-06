@@ -8,6 +8,7 @@ use std::{
     path::Path,
 };
 
+mod auto_routing;
 mod corpus;
 mod cuda;
 mod fixtures;
@@ -18,6 +19,14 @@ mod metal;
 mod metal_shader;
 mod pixels;
 
+pub use auto_routing::{
+    append_auto_routing_output, auto_routing_operation_label, auto_routing_route_cell,
+    auto_routing_sha256, load_auto_routing_manifest, load_auto_routing_pnm,
+    write_auto_routing_evidence, AutoRoutingBackend, AutoRoutingCell, AutoRoutingEvidence,
+    AutoRoutingExecution, AutoRoutingManifest, AutoRoutingManifestCase, AutoRoutingOperation,
+    AutoRoutingPixelFormat, AutoRoutingPlatform, AutoRoutingPnm, AutoRoutingRoute,
+    AutoRoutingWorkload, AutoRoutingWorkloadKind, AutoRoutingWorkloadSet,
+};
 pub use corpus::{collect_jpeg_paths, is_jpeg_path, paths_from_env};
 pub use cuda::{
     cuda_device_unavailable_is_skip, cuda_jpeg_hardware_decode_gate,
@@ -35,7 +44,7 @@ pub use fixtures::{
     OpenJphBatchFixture, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
     JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8,
     JPEG_BASELINE_422_16X8_RGB, JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB,
-    JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
+    JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY, OPENJPEG_IRREVERSIBLE_RGB8_8X8,
 };
 #[cfg(feature = "j2k-native-fixtures")]
 pub use fixtures::{

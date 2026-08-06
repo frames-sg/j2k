@@ -8,7 +8,10 @@ use std::path::Path;
 use crate::command_support::run_cargo;
 use crate::process::{cargo, run_command_owned, CommandContext};
 
-use consumer::{package_archive_path, run_j2k_ml_consumer_gate};
+use consumer::{
+    package_archive_path, run_core_package_consumer_gates, run_j2k_ml_consumer_gate,
+    CORE_PACKAGE_CONSUMERS,
+};
 
 use super::release_manifest::{
     registry_independent_packages, release_dependencies_by_package,
@@ -149,17 +152,46 @@ pub(super) fn run(
     metadata: &serde_json::Value,
     manifest: &ReleaseManifestContract,
 ) -> Result<(), String> {
-    for step in package_gate_plan(metadata, manifest)? {
+    let plan = package_gate_plan(metadata, manifest)?;
+    for step in &plan {
         if step.registry_independent {
             run_cargo(&["publish", "-p", step.package.as_str(), "--dry-run"])?;
         } else {
-            run_staged_package(&step, false)?;
+            run_staged_package(step, false)?;
         }
         if step.package == "j2k-ml" {
-            run_j2k_ml_consumer_gate(&step, &package_archive_path(metadata, &step)?)?;
+            run_j2k_ml_consumer_gate(step, &package_archive_path(metadata, step)?)?;
         }
     }
-    Ok(())
+    run_core_package_consumer_gates(metadata, &plan, &CORE_PACKAGE_CONSUMERS, false)
+}
+
+pub(super) fn run_core_package_smoke(
+    metadata: &serde_json::Value,
+    manifest: &ReleaseManifestContract,
+    consumers: &[&str],
+    cuda_runtime: bool,
+) -> Result<(), String> {
+    let plan = package_gate_plan(metadata, manifest)?;
+    let mut required = BTreeSet::new();
+    for package in consumers {
+        let step = plan
+            .iter()
+            .find(|step| step.package == *package)
+            .ok_or_else(|| format!("package gate plan omitted `{package}`"))?;
+        required.insert(step.package.as_str());
+        required.extend(
+            step.patches
+                .iter()
+                .map(|(dependency, _)| dependency.as_str()),
+        );
+    }
+    for step in &plan {
+        if required.contains(step.package.as_str()) {
+            run_staged_package(step, true)?;
+        }
+    }
+    run_core_package_consumer_gates(metadata, &plan, consumers, cuda_runtime)
 }
 
 #[cfg(test)]

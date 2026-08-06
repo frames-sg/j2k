@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 j2k = { path = ".." }
+j2k-test-support = { path = "../../j2k-test-support" }
 
 [[bin]]
 name = "parse_fuzz"
@@ -42,6 +43,13 @@ bench = false
 [[bin]]
 name = "jp2_metadata_fuzz"
 path = "fuzz_targets/jp2_metadata_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srgb8_fuzz"
+path = "fuzz_targets/srgb8_fuzz.rs"
 test = false
 doc = false
 bench = false

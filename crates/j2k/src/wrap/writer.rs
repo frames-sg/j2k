@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use super::{
     allocation::allocate_output,
     color::PlannedColorSpec,
-    metadata::{component_bpc, ChannelDefinitionPlan, ResolvedComponents},
+    metadata::{component_bpc, ChannelDefinitionPlan},
     plan::WrapPlan,
     JP2_COMPRESSION_TYPE, JP2_SIGNATURE_PAYLOAD,
 };
@@ -31,7 +31,7 @@ pub(super) fn write(plan: &WrapPlan<'_>, retained_bytes: usize) -> Result<Vec<u8
     writer.box_header(*b"jp2h", plan.jp2_header_payload_len)?;
     write_image_header(&mut writer, plan)?;
     if let Some(payload_len) = plan.bpcc_payload_len {
-        write_bits_per_component(&mut writer, plan.components, payload_len)?;
+        write_bits_per_component(&mut writer, &plan.parsed.components, payload_len)?;
     }
     plan.colors.for_each_resolved(plan.parsed, |color| {
         write_color_specification(&mut writer, color)
@@ -125,16 +125,11 @@ fn write_image_header(writer: &mut CheckedWriter, plan: &WrapPlan<'_>) -> Result
 
 fn write_bits_per_component(
     writer: &mut CheckedWriter,
-    components: ResolvedComponents<'_>,
+    components: &[crate::J2kComponentInfo],
     payload_len: usize,
 ) -> Result<(), J2kError> {
     writer.box_header(*b"bpcc", payload_len)?;
-    for index in 0..components.len() {
-        let component = components
-            .component(index)
-            .ok_or(J2kError::InternalInvariant {
-                what: "validated BPCC component became unresolved",
-            })?;
+    for &component in components {
         writer.byte(component_bpc(component))?;
     }
     Ok(())

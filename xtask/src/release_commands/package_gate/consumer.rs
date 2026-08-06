@@ -1,5 +1,6 @@
 //! Clean consumer validation for the packaged `j2k-ml` source archive.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -11,6 +12,8 @@ use flate2::read::GzDecoder;
 use crate::process::{cargo, run_command_owned, CommandContext};
 
 use super::{append_patch_config_args, PackageGateStep};
+
+pub(super) const CORE_PACKAGE_CONSUMERS: [&str; 3] = ["j2k", "j2k-cuda", "j2k-metal"];
 
 pub(super) fn j2k_ml_consumer_checks(target_os: &str) -> &'static [&'static str] {
     match target_os {
@@ -46,6 +49,58 @@ pub(super) fn j2k_ml_consumer_manifest(
         .unwrap();
     }
     Ok(manifest)
+}
+
+pub(super) fn package_consumer_manifest(
+    step: &PackageGateStep,
+    packaged_crates: &BTreeMap<String, PathBuf>,
+) -> Result<String, String> {
+    let current = packaged_crates.get(&step.package).ok_or_else(|| {
+        format!(
+            "clean consumer is missing packaged source for `{}`",
+            step.package
+        )
+    })?;
+    let features = if step.package == "j2k-cuda" {
+        "[features]\ndefault = []\ncuda-runtime = [\"j2k-cuda/cuda-runtime\"]\n\n"
+    } else {
+        ""
+    };
+    let mut manifest = format!(
+        "[package]\nname = \"{}-package-consumer\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n\
+         {}\
+         [dependencies]\n{} = \"={}\"\n\n\
+         [patch.crates-io]\n{} = {{ path = {} }}\n",
+        step.package,
+        features,
+        step.package,
+        step.version,
+        step.package,
+        toml_string(&current.to_string_lossy())?,
+    );
+    for (dependency, _) in &step.patches {
+        let path = packaged_crates.get(dependency).ok_or_else(|| {
+            format!("clean consumer is missing packaged source for `{dependency}`")
+        })?;
+        writeln!(
+            &mut manifest,
+            "{dependency} = {{ path = {} }}",
+            toml_string(&path.to_string_lossy())?
+        )
+        .unwrap();
+    }
+    Ok(manifest)
+}
+
+pub(super) fn package_consumer_source(package: &str) -> Result<&'static str, String> {
+    match package {
+        "j2k" => Ok("fn main() { let _ = j2k::J2kDecoder::new(&[]); }\n"),
+        "j2k-cuda" => Ok("fn main() { let _ = j2k_cuda::J2kDecoder::new(&[]); }\n"),
+        "j2k-metal" => Ok("fn main() { let _ = j2k_metal::J2kDecoder::new(&[]); }\n"),
+        _ => Err(format!(
+            "no clean package consumer source is defined for `{package}`"
+        )),
+    }
 }
 
 pub(super) const CONSUMER_SOURCE: &str = r#"use j2k::BatchDecodeOptions;
@@ -226,4 +281,115 @@ pub(super) fn run_j2k_ml_consumer_gate(
         )
     });
     result.and(cleanup)
+}
+
+pub(super) fn run_core_package_consumer_gates(
+    metadata: &serde_json::Value,
+    plan: &[PackageGateStep],
+    consumers: &[&str],
+    cuda_runtime: bool,
+) -> Result<(), String> {
+    let consumer = fresh_core_consumer_dir()?;
+    let result = (|| {
+        let targets = consumers
+            .iter()
+            .map(|package| {
+                plan.iter()
+                    .find(|step| step.package == *package)
+                    .ok_or_else(|| format!("package gate plan omitted `{package}`"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let required = targets
+            .iter()
+            .flat_map(|step| {
+                std::iter::once(step.package.as_str()).chain(
+                    step.patches
+                        .iter()
+                        .map(|(dependency, _)| dependency.as_str()),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let mut packaged_crates = BTreeMap::new();
+        for package in required {
+            let step = plan
+                .iter()
+                .find(|step| step.package == package)
+                .ok_or_else(|| format!("package gate plan omitted dependency `{package}`"))?;
+            let extracted = extract_packaged_crate(
+                &package_archive_path(metadata, step)?,
+                &consumer.join("packaged"),
+                step,
+            )?;
+            packaged_crates.insert(package.to_string(), extracted);
+        }
+
+        let target_dir = consumer.join("target");
+        for step in targets {
+            let project = consumer.join(&step.package);
+            fs::create_dir_all(project.join("src")).map_err(|error| {
+                format!(
+                    "failed to create clean {} consumer at {}: {error}",
+                    step.package,
+                    project.display()
+                )
+            })?;
+            fs::write(
+                project.join("Cargo.toml"),
+                package_consumer_manifest(step, &packaged_crates)?,
+            )
+            .map_err(|error| {
+                format!(
+                    "failed to write clean {} consumer manifest: {error}",
+                    step.package
+                )
+            })?;
+            fs::write(
+                project.join("src/main.rs"),
+                package_consumer_source(&step.package)?,
+            )
+            .map_err(|error| {
+                format!(
+                    "failed to write clean {} consumer source: {error}",
+                    step.package
+                )
+            })?;
+            let mut args = vec!["check".to_string()];
+            if cuda_runtime && step.package == "j2k-cuda" {
+                args.extend(["--features".to_string(), "cuda-runtime".to_string()]);
+            }
+            run_command_owned(
+                cargo(),
+                &args,
+                CommandContext::new()
+                    .current_dir(&project)
+                    .target_dir(&target_dir),
+            )?;
+        }
+        Ok(())
+    })();
+    let cleanup = fs::remove_dir_all(&consumer).map_err(|error| {
+        format!(
+            "failed to remove clean core/GPU consumers {}: {error}",
+            consumer.display()
+        )
+    });
+    result.and(cleanup)
+}
+
+fn fresh_core_consumer_dir() -> Result<PathBuf, String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+        .as_nanos();
+    let path = env::temp_dir().join(format!(
+        "j2k-core-gpu-package-consumers-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&path).map_err(|error| {
+        format!(
+            "failed to create clean core/GPU consumer root at {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
 }

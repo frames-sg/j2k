@@ -273,6 +273,20 @@ impl BitPlaneDecodeContext {
             .take(self.height as usize)
     }
 
+    pub(crate) fn reconstruct_irreversible_midpoint(
+        &self,
+        coefficient: Coefficient,
+        number_of_coding_passes: u8,
+        roi_shift: u8,
+    ) -> f32 {
+        super::reconstruction::reconstruct_irreversible_midpoint(
+            coefficient,
+            self.bitplanes,
+            number_of_coding_passes,
+            roi_shift,
+        )
+    }
+
     pub(super) fn arithmetic_decoder_context(
         &mut self,
         ctx_label: u8,

@@ -117,7 +117,9 @@ pub(super) fn prepare_classic_decode(
                 sub_band_type: job.sub_band_type,
                 style_flags: job.style_flags,
                 strict: u32::from(job.strict),
+                irreversible_midpoint: u32::from(job.irreversible_midpoint),
                 dequantization_step: job.dequantization_step,
+                roi_shift: job.roi_shift,
             });
             let segment_end = job.segment_start.checked_add(job.segment_count).ok_or(
                 CudaError::LengthTooLarge {
@@ -159,10 +161,16 @@ pub(super) fn validate_classic_job(
     output_words: usize,
     job: &CudaClassicCodeBlockJob,
 ) -> Result<(), CudaError> {
+    let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        return Err(invalid(
+            "classic code-block dimensions, bitplanes, or sub-band are invalid",
+        ));
+    };
     if !(1..=MAX_CODEBLOCK_DIMENSION).contains(&job.width)
         || !(1..=MAX_CODEBLOCK_DIMENSION).contains(&job.height)
         || !(1..=MAX_BITPLANES).contains(&job.total_bitplanes)
-        || job.missing_bitplanes >= job.total_bitplanes
+        || coded_bitplanes > MAX_BITPLANES
+        || job.missing_bitplanes >= coded_bitplanes
         || job.sub_band_type > 3
         || job.style_flags & !KNOWN_STYLE_FLAGS != 0
     {
@@ -170,8 +178,8 @@ pub(super) fn validate_classic_job(
             "classic code-block dimensions, bitplanes, or sub-band are invalid",
         ));
     }
-    let coded_bitplanes = job.total_bitplanes - job.missing_bitplanes;
-    if job.number_of_coding_passes > 1 + 3 * (coded_bitplanes - 1) {
+    let decoded_bitplanes = coded_bitplanes - job.missing_bitplanes;
+    if job.number_of_coding_passes > 1 + 3 * (decoded_bitplanes - 1) {
         return Err(invalid(
             "classic code-block pass count exceeds its coded bitplanes",
         ));

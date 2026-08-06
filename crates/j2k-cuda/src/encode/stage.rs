@@ -40,9 +40,7 @@ use super::stage_error::{adapter_error, arithmetic_overflow, CudaStageResult};
 #[cfg(feature = "cuda-runtime")]
 mod dwt_output;
 #[cfg(feature = "cuda-runtime")]
-pub(super) use self::dwt_output::cuda_dwt53_output_to_j2k;
-#[cfg(feature = "cuda-runtime")]
-use self::dwt_output::cuda_dwt97_output_to_j2k;
+pub(super) use self::dwt_output::{cuda_dwt53_output_to_j2k, cuda_dwt97_output_to_j2k};
 
 macro_rules! emit_cuda_encode_route {
     ($(($key:expr, $value:expr)),+ $(,)?) => {{
@@ -137,6 +135,10 @@ impl CudaEncodeStageAccelerator {
         {
             self.device_unavailable_observed = false;
         }
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = self;
+        }
     }
 
     pub(super) const fn device_unavailable_observed(&self) -> bool {
@@ -146,6 +148,7 @@ impl CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
+            let _ = self;
             true
         }
     }
@@ -503,6 +506,15 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         job: J2kDeinterleaveToF32Job<'_>,
     ) -> CudaStageResult<Option<Vec<Vec<f32>>>> {
         self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
+        if job.num_components > 4 {
+            emit_cuda_encode_route!(
+                ("op", "encode_deinterleave"),
+                ("decision", "cpu_fallback"),
+                ("reason", "component_count_unsupported"),
+                ("components", job.num_components),
+            );
+            return Ok(None);
+        }
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let num_components = cuda_component_count_u8(

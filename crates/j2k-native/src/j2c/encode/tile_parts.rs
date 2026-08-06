@@ -87,7 +87,7 @@ pub(super) fn validate_packet_header_marker_payloads(
     tile_packet_headers: &[&[Vec<u8>]],
 ) -> NativeEncodePipelineResult<()> {
     const PACKET_HEADER_MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
-    const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 2;
+    const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 4;
     const MAX_PACKET_HEADER_MARKERS: usize = u8::MAX as usize + 1;
 
     if !write_ppm && !write_ppt {
@@ -106,38 +106,48 @@ pub(super) fn validate_packet_header_marker_payloads(
     if write_ppm {
         let mut marker_count = 0usize;
         let mut payload_len = 0usize;
-        for header in tile_packet_headers
-            .iter()
-            .flat_map(|headers| headers.iter())
-        {
-            if header.len() > PPM_PACKET_HEADER_LIMIT {
-                return Err(NativeEncodePipelineError::unsupported(
-                    "PPM packet header exceeds marker payload limit",
-                ));
-            }
-            let entry_len = 2usize.checked_add(header.len()).ok_or(
-                NativeEncodePipelineError::arithmetic_overflow("PPM marker payload length"),
-            )?;
-            if payload_len == 0 {
-                marker_count = marker_count.checked_add(1).ok_or(
-                    NativeEncodePipelineError::arithmetic_overflow("PPM marker count"),
+        for headers in tile_packet_headers {
+            let tile_part_len = headers.iter().try_fold(0usize, |total, header| {
+                total.checked_add(header.len()).ok_or(
+                    NativeEncodePipelineError::arithmetic_overflow("PPM tile-part packet headers"),
+                )
+            })?;
+            u32::try_from(tile_part_len).map_err(|_| {
+                NativeEncodePipelineError::unsupported("PPM tile-part packet headers exceed u32")
+            })?;
+            for (header_index, header) in headers.iter().enumerate() {
+                if header.len() > PPM_PACKET_HEADER_LIMIT {
+                    return Err(NativeEncodePipelineError::unsupported(
+                        "PPM packet header exceeds marker payload limit",
+                    ));
+                }
+                let entry_len = header
+                    .len()
+                    .checked_add(usize::from(header_index == 0) * 4)
+                    .ok_or(NativeEncodePipelineError::arithmetic_overflow(
+                        "PPM marker payload length",
+                    ))?;
+                if payload_len == 0 {
+                    marker_count = marker_count.checked_add(1).ok_or(
+                        NativeEncodePipelineError::arithmetic_overflow("PPM marker count"),
+                    )?;
+                } else if payload_len
+                    .checked_add(entry_len)
+                    .is_none_or(|len| len > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
+                {
+                    marker_count = marker_count.checked_add(1).ok_or(
+                        NativeEncodePipelineError::arithmetic_overflow("PPM marker count"),
+                    )?;
+                    payload_len = 0;
+                }
+                payload_len = payload_len.checked_add(entry_len).ok_or(
+                    NativeEncodePipelineError::arithmetic_overflow("PPM marker payload length"),
                 )?;
-            } else if payload_len
-                .checked_add(entry_len)
-                .is_none_or(|len| len > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
-            {
-                marker_count = marker_count.checked_add(1).ok_or(
-                    NativeEncodePipelineError::arithmetic_overflow("PPM marker count"),
-                )?;
-                payload_len = 0;
-            }
-            payload_len = payload_len.checked_add(entry_len).ok_or(
-                NativeEncodePipelineError::arithmetic_overflow("PPM marker payload length"),
-            )?;
-            if marker_count > MAX_PACKET_HEADER_MARKERS {
-                return Err(NativeEncodePipelineError::unsupported(
-                    "PPM packet headers require more than 256 marker segments",
-                ));
+                if marker_count > MAX_PACKET_HEADER_MARKERS {
+                    return Err(NativeEncodePipelineError::unsupported(
+                        "PPM packet headers require more than 256 marker segments",
+                    ));
+                }
             }
         }
     }

@@ -168,7 +168,7 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(required.len(), 19);
+    assert_eq!(required.len(), 21);
     assert_eq!(optional.len(), 1);
     assert_eq!(required.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
     assert_eq!(optional.len(), METAL_OPTIONAL_IGNORED_TESTS.len());

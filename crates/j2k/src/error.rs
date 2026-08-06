@@ -186,6 +186,10 @@ pub enum J2kError {
         expected: usize,
     },
 
+    /// The primary JP2 restricted ICC profile is malformed.
+    #[error("invalid JP2 restricted ICC profile")]
+    InvalidIccProfile,
+
     /// A facade/cache invariant failed with a static diagnostic.
     #[error("internal JPEG 2000 invariant failed: {what}")]
     InternalInvariant {

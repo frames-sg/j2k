@@ -17,6 +17,7 @@ const METAL_JOB: &str = "Metal full release validation";
 struct Options {
     sha: String,
     repository: Option<String>,
+    scope: String,
 }
 
 pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -46,13 +47,20 @@ pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), S
         ));
     }
 
+    let evidence_dir = root.join("target").join("t803").join(format!(
+        "release-status-{}-{}",
+        options.sha.clone(),
+        std::process::id()
+    ));
+    let evidence_dir_text = evidence_dir.to_string_lossy().into_owned();
+
     let command_args = vec![
         "scripts/github_actions_verify.py".to_string(),
         "verify-candidate".to_string(),
         "--repository".to_string(),
         repository,
         "--candidate-sha".to_string(),
-        options.sha,
+        options.sha.clone(),
         "--token-env".to_string(),
         token_env.to_string(),
         "--ci-workflow".to_string(),
@@ -67,22 +75,90 @@ pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), S
         CUDA_JOB.to_string(),
         "--metal-job".to_string(),
         METAL_JOB.to_string(),
+        "--t803-scope".to_string(),
+        options.scope.clone(),
+        "--t803-out-dir".to_string(),
+        evidence_dir_text,
     ];
     process::run_command_owned(
         OsString::from("python3"),
         &command_args,
         CommandContext::new().current_dir(&root),
+    )?;
+    verify_t803_reports(&root, &evidence_dir, &options.sha, &options.scope)
+}
+
+fn verify_t803_reports(
+    root: &Path,
+    evidence_dir: &Path,
+    candidate_sha: &str,
+    scope: &str,
+) -> Result<(), String> {
+    let mut args = [
+        "run",
+        "--quiet",
+        "-p",
+        "j2k-t803",
+        "--features",
+        "runner",
+        "--bin",
+        "j2k-t803-runner",
+        "--",
+        "verify",
+        "--scope",
+        scope,
+        "--candidate-sha",
+        candidate_sha,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    for report in t803_report_paths(evidence_dir, candidate_sha, scope) {
+        args.push("--report".to_string());
+        args.push(report.to_string_lossy().into_owned());
+    }
+    process::run_command_owned(
+        process::cargo(),
+        &args,
+        CommandContext::new().current_dir(root),
     )
+}
+
+fn t803_report_paths(evidence_dir: &Path, candidate_sha: &str, scope: &str) -> Vec<PathBuf> {
+    let mut lanes = Vec::new();
+    if matches!(scope, "cpu" | "all") {
+        lanes.extend([
+            ("cpu-linux-x86_64", "cpu"),
+            ("cpu-macos-aarch64", "cpu"),
+            ("cpu-windows-x86_64", "cpu"),
+        ]);
+    }
+    if matches!(scope, "cuda" | "all") {
+        lanes.push(("cuda-linux-x86_64", "cuda"));
+    }
+    if matches!(scope, "metal" | "all") {
+        lanes.push(("metal-macos-aarch64", "metal"));
+    }
+    lanes
+        .into_iter()
+        .map(|(lane, stem)| {
+            evidence_dir
+                .join(format!("j2k-t803-{lane}-{candidate_sha}"))
+                .join(format!("{stem}.json"))
+        })
+        .collect()
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut sha = None;
     let mut repository = None;
+    let mut scope = None;
     let mut args = args;
     while let Some(arg) = args.next() {
         let slot = match arg.as_str() {
             "--sha" => &mut sha,
             "--repository" => &mut repository,
+            "--scope" => &mut scope,
             "-h" | "--help" => return Err(usage()),
             other => {
                 return Err(format!(
@@ -104,7 +180,19 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
 
     let sha = normalize_sha(&sha.ok_or_else(|| format!("--sha is required\n{}", usage()))?)?;
     let repository = repository.as_deref().map(validate_repository).transpose()?;
-    Ok(Options { sha, repository })
+    let scope = validate_scope(scope.as_deref().unwrap_or("all"))?;
+    Ok(Options {
+        sha,
+        repository,
+        scope,
+    })
+}
+
+fn validate_scope(value: &str) -> Result<String, String> {
+    match value {
+        "cpu" | "cuda" | "metal" | "all" => Ok(value.to_string()),
+        _ => Err("--scope must be one of cpu, cuda, metal, or all".to_string()),
+    }
 }
 
 fn normalize_sha(value: &str) -> Result<String, String> {
@@ -225,7 +313,7 @@ fn select_token_env(
 }
 
 fn usage() -> String {
-    "usage: cargo xtask release-status --sha <40-hex-commit> [--repository owner/name]".to_string()
+    "usage: cargo xtask release-status --sha <40-hex-commit> [--repository owner/name] [--scope cpu|cuda|metal|all]".to_string()
 }
 
 #[cfg(test)]

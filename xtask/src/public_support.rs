@@ -1,7 +1,7 @@
 use std::fs;
 
 const SUPPORT_DOC: &str = "docs/public-support.md";
-const CONFORMANCE_MANIFEST: &str = "corpus/j2k-conformance/manifest.tsv";
+const SUPPORT_INVENTORY: &str = "corpus/j2k-conformance/support-inventory.tsv";
 
 const REQUIRED_COLUMNS: &[&str] = &[
     "ID",
@@ -257,7 +257,7 @@ pub(crate) fn public_support(args: impl IntoIterator<Item = String>) -> Result<(
     }
 
     let doc = read(SUPPORT_DOC)?;
-    let manifest = read(CONFORMANCE_MANIFEST)?;
+    let inventory = read(SUPPORT_INVENTORY)?;
     let mut failures = Vec::new();
 
     require_contains_all(&doc, REQUIRED_COLUMNS, SUPPORT_DOC, &mut failures);
@@ -270,16 +270,16 @@ pub(crate) fn public_support(args: impl IntoIterator<Item = String>) -> Result<(
         &mut failures,
     );
     require_contains_all(
-        &manifest,
+        &inventory,
         REQUIRED_MANIFEST_IDS,
-        CONFORMANCE_MANIFEST,
+        SUPPORT_INVENTORY,
         &mut failures,
     );
 
-    for id in manifest_ids(&manifest) {
+    for id in inventory_ids(&inventory) {
         if !doc.contains(id) && !id.starts_with('#') {
             failures.push(format!(
-                "{SUPPORT_DOC} does not mention conformance manifest row `{id}`"
+                "{SUPPORT_DOC} does not mention support inventory row `{id}`"
             ));
         }
     }
@@ -320,8 +320,8 @@ fn require_contains_all(haystack: &str, needles: &[&str], path: &str, failures: 
     }
 }
 
-fn manifest_ids(manifest: &str) -> impl Iterator<Item = &str> {
-    manifest.lines().filter_map(|line| {
+fn inventory_ids(inventory: &str) -> impl Iterator<Item = &str> {
+    inventory.lines().filter_map(|line| {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             return None;
@@ -360,11 +360,12 @@ fn support_row_status<'a>(doc: &'a str, id: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{manifest_ids, support_row_status};
+    use super::{inventory_ids, support_row_status};
 
     #[test]
-    fn manifest_ids_skips_header_comments() {
-        let ids = manifest_ids("# id\tpath\nrow_a\ta\n\nrow_b\tb").collect::<Vec<_>>();
+    fn inventory_ids_skips_header_comments() {
+        let ids = inventory_ids("# id\tstatus\nrow_a\timplemented\n\nrow_b\tout-of-scope")
+            .collect::<Vec<_>>();
 
         assert_eq!(ids, ["row_a", "row_b"]);
     }

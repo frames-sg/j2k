@@ -5,12 +5,15 @@
 use std::sync::Arc;
 
 use burn_cuda::CudaDevice;
-use j2k::{prepare_batch, BatchDecodeOptions, BatchItemError, DecodeSettings, EncodedImage};
-use j2k_ml::{BurnBatchTensor, BurnDecodeError, CudaUploadBurnDecoder};
+use j2k::{
+    prepare_batch, BatchDecodeOptions, BatchItemError, CpuBatchDecoder, CpuBatchSamples,
+    DecodeSettings, EncodedImage,
+};
+use j2k_ml::{BurnBatchTensor, CudaUploadBurnDecoder};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::{cuda_runtime_and_strict_oxide_gate, htj2k_gray8_large_fixture};
 
-fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
+fn classic_roi_rgb() -> Arc<[u8]> {
     let pixels = (0..4_u8)
         .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
         .collect::<Vec<_>>();
@@ -29,7 +32,7 @@ fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
                 ..EncodeOptions::default()
             },
         )
-        .expect("encode classic RGB8 with unsupported RGN maxshift"),
+        .expect("encode classic RGB8 with RGN maxshift"),
     )
 }
 
@@ -205,43 +208,44 @@ fn staged_upload_session_reuses_events_and_codec_memory_for_one_thousand_batches
 }
 
 #[test]
-fn cuda_burn_batch_continues_after_one_group_submit_failure() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA group submit continuation") {
+fn cuda_burn_batch_decodes_classic_roi_and_ht_groups_together() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA mixed classic/HT batch") {
         return;
     }
+    let options = BatchDecodeOptions::default();
     let valid_gray = Arc::<[u8]>::from(htj2k_gray8_large_fixture(8, 8));
-    let mut decoder =
-        CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
+    let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
     let prepared = decoder
         .prepare(vec![
-            EncodedImage::full(unsupported_classic_roi_rgb()),
+            EncodedImage::full(classic_roi_rgb()),
             EncodedImage::full(valid_gray),
         ])
         .expect("prepare two homogeneous CUDA groups");
     assert_eq!(prepared.groups().len(), 2);
+    let mut cpu = CpuBatchDecoder::new(options);
+    let expected = cpu
+        .decode_prepared(&prepared)
+        .expect("decode mixed classic/HT CPU oracle");
 
     let submitted = decoder
         .submit_prepared(&prepared)
-        .expect("unsupported group must remain a result-level failure");
-    assert_eq!(submitted.len(), 1);
-    let output = submitted.wait().expect("finish supported CUDA group");
+        .expect("submit mixed classic/HT CUDA groups");
+    assert_eq!(submitted.len(), 2);
+    let output = submitted.wait().expect("finish mixed CUDA groups");
 
     assert!(output.errors.is_empty());
-    assert_eq!(output.groups.len(), 1);
-    assert_eq!(output.groups[0].source_indices, [1]);
-    assert_eq!(output.group_errors.len(), 1);
-    assert_eq!(output.group_errors[0].source_indices(), &[0]);
-    let BurnDecodeError::Cuda(j2k_cuda::CudaBatchError::GroupExecution {
-        source_indices,
-        source,
-        ..
-    }) = output.group_errors[0].source()
-    else {
-        panic!("group-local CUDA failure must use the published batch error contract");
-    };
-    assert_eq!(source_indices, &[0]);
-    assert!(matches!(
-        source.as_ref(),
-        j2k_cuda::Error::UnsupportedCudaRequest { .. }
-    ));
+    assert!(output.group_errors.is_empty());
+    assert_eq!(output.groups.len(), expected.groups().len());
+    for (actual, expected) in output.groups.into_iter().zip(expected.groups()) {
+        assert_eq!(actual.source_indices, expected.source_indices());
+        let (BurnBatchTensor::U8(actual), CpuBatchSamples::U8(expected)) =
+            (actual.tensor, expected.samples())
+        else {
+            panic!("mixed classic/HT fixture must remain native U8")
+        };
+        assert_eq!(
+            actual.into_data().into_vec::<u8>().expect("CUDA U8 data"),
+            *expected
+        );
+    }
 }

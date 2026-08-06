@@ -138,6 +138,7 @@ pub(crate) struct CudaClassicCodeBlock {
     pub(crate) missing_bit_planes: u8,
     pub(crate) number_of_coding_passes: u8,
     pub(crate) total_bitplanes: u8,
+    pub(crate) roi_shift: u8,
     pub(crate) sub_band_type: u8,
     pub(crate) style_flags: u32,
     pub(crate) strict: bool,
@@ -162,6 +163,7 @@ pub(crate) struct CudaClassicSubband {
     pub(crate) band_id: CudaHtj2kBandId,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) irreversible_midpoint: bool,
     pub(crate) code_block_start: u32,
     pub(crate) code_block_count: u32,
 }
@@ -287,7 +289,7 @@ pub(crate) struct CudaHtj2kDecodePlan {
     classic_code_blocks: Vec<CudaClassicCodeBlock>,
     classic_segments: Vec<CudaClassicSegment>,
     #[cfg_attr(
-        not(feature = "cuda-runtime"),
+        all(not(feature = "cuda-runtime"), not(test)),
         expect(
             dead_code,
             reason = "classic subband metadata is consumed only by CUDA decode routes"

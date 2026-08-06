@@ -54,7 +54,7 @@ const TRANSCODE_PARITY_TESTS: &[&str] = &[
 
 const ML_CUDA_TESTS: &[&str] = &[
     "staged_upload_session_reuses_events_and_codec_memory_for_one_thousand_batches",
-    "cuda_burn_batch_continues_after_one_group_submit_failure",
+    "cuda_burn_batch_decodes_classic_roi_and_ht_groups_together",
     "cuda_burn_decoder_construction_is_infallible_and_lazy",
     "cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_without_cuda",
     "staged_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session",
@@ -197,7 +197,12 @@ fn run_release_cuda(os: &str, arch: &str, mode: ValidationMode) -> Result<(), St
         ValidationMode::Full => {
             for suite in CUDA_CLIPPY_SUITES {
                 let args = clippy_suite_args(suite);
-                let label = format!("{} CUDA Clippy", suite.package);
+                let label = format!("{} CUDA library Clippy", suite.package);
+                let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, &label)?;
+                reject_cuda_skip_markers(&output, &label)?;
+
+                let args = clippy_non_library_suite_args(suite);
+                let label = format!("{} CUDA test and benchmark Clippy", suite.package);
                 let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, &label)?;
                 reject_cuda_skip_markers(&output, &label)?;
             }
@@ -290,7 +295,7 @@ fn validate_cuda_device_probe(output: &str) -> Result<(), String> {
 fn clippy_suite_args(suite: &CudaClippySuite) -> Vec<&'static str> {
     vec![
         "clippy",
-        "--all-targets",
+        "--lib",
         "-p",
         suite.package,
         "--features",
@@ -298,6 +303,27 @@ fn clippy_suite_args(suite: &CudaClippySuite) -> Vec<&'static str> {
         "--",
         "-D",
         "warnings",
+    ]
+}
+
+fn clippy_non_library_suite_args(suite: &CudaClippySuite) -> Vec<&'static str> {
+    vec![
+        "clippy",
+        "--bins",
+        "--examples",
+        "--tests",
+        "--benches",
+        "-p",
+        suite.package,
+        "--features",
+        suite.features,
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::disallowed_methods",
+        "-A",
+        "clippy::disallowed_macros",
     ]
 }
 

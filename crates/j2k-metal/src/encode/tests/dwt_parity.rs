@@ -178,3 +178,72 @@ fn metal_forward_dwt97_multi_level_matches_native_encode_output() {
 
     assert_metal_dwt97_matches_native_encode(&pixels, width, height, 3);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_dwt97_matches_fractional_cpu_reference_exactly() {
+    fn assert_exact(actual: &[f32], expected: &[f32], label: &str) {
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{label}[{index}] mismatch: actual={actual:?}, expected={expected:?}"
+            );
+        }
+    }
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let width = 64;
+    let height = 48;
+    let samples = (0..width * height)
+        .map(|index| {
+            let byte =
+                u8::try_from((index * 43 + index / 7 + 91) & 0xff).expect("masked sample fits u8");
+            f32::from(byte) * 0.587 - 74.472_99
+        })
+        .collect::<Vec<_>>();
+    let expected =
+        forward_dwt97_reference(&samples, width, height, 3).expect("CPU 9/7 DWT reference");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let actual = accelerator
+        .encode_forward_dwt97(J2kForwardDwt97Job {
+            samples: &samples,
+            width,
+            height,
+            num_levels: 3,
+        })
+        .expect("Metal 9/7 DWT stage")
+        .expect("Metal 9/7 DWT dispatch");
+
+    assert_eq!(actual.ll_width, expected.ll_width);
+    assert_eq!(actual.ll_height, expected.ll_height);
+    assert_exact(&actual.ll, &expected.ll, "LL");
+    assert_eq!(actual.levels.len(), expected.levels.len());
+    for (index, (actual, expected)) in actual.levels.iter().zip(&expected.levels).enumerate() {
+        assert_eq!(actual.width, expected.width, "level {index} width");
+        assert_eq!(actual.height, expected.height, "level {index} height");
+        assert_eq!(
+            actual.low_width, expected.low_width,
+            "level {index} low width"
+        );
+        assert_eq!(
+            actual.low_height, expected.low_height,
+            "level {index} low height"
+        );
+        assert_eq!(
+            actual.high_width, expected.high_width,
+            "level {index} high width"
+        );
+        assert_eq!(
+            actual.high_height, expected.high_height,
+            "level {index} high height"
+        );
+        assert_exact(&actual.hl, &expected.hl, "HL");
+        assert_exact(&actual.lh, &expected.lh, "LH");
+        assert_exact(&actual.hh, &expected.hh, "HH");
+    }
+}

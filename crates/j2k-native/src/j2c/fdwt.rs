@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use crate::math::floor_f32;
+use crate::math::{floor_f32, mul_add};
 use crate::{EncodeError, EncodeResult};
 use j2k_codec_math::dwt;
 
@@ -343,14 +343,14 @@ fn forward_lift_97(data: &mut [f32]) {
         } else {
             data[last_even]
         };
-        data[i] += ALPHA * (left + right);
+        data[i] = mul_add(ALPHA, left + right, data[i]);
     }
 
     // Step 2: β update on even (low-pass) samples
     for i in (0..n).step_by(2) {
         let left = if i > 0 { data[i - 1] } else { data[1] };
         let right = if i + 1 < n { data[i + 1] } else { left };
-        data[i] += BETA * (left + right);
+        data[i] = mul_add(BETA, left + right, data[i]);
     }
 
     // Step 3: γ predict on odd samples
@@ -361,14 +361,14 @@ fn forward_lift_97(data: &mut [f32]) {
         } else {
             data[last_even]
         };
-        data[i] += GAMMA * (left + right);
+        data[i] = mul_add(GAMMA, left + right, data[i]);
     }
 
     // Step 4: δ update on even samples
     for i in (0..n).step_by(2) {
         let left = if i > 0 { data[i - 1] } else { data[1] };
         let right = if i + 1 < n { data[i + 1] } else { left };
-        data[i] += DELTA * (left + right);
+        data[i] = mul_add(DELTA, left + right, data[i]);
     }
 
     // Step 5 & 6: Scale
@@ -512,6 +512,27 @@ mod tests {
                 assert!(high.abs() < 0.001, "len={len} data={data:?}");
             }
         }
+    }
+
+    #[test]
+    fn forward_lift_97_uses_target_independent_fused_rounding() {
+        let mut data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        forward_lift_97(&mut data);
+
+        assert_eq!(
+            data.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            vec![
+                0x3faa_b4bc,
+                0x3e7f_ffff,
+                0x4044_b068,
+                0x3350_dd84,
+                0x409e_49c0,
+                0xbe3a_ec76,
+                0x40e2_0777,
+                0x3f5d_7665,
+            ]
+        );
     }
 
     #[test]

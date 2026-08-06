@@ -7,9 +7,10 @@ use super::super::decode_dispatch::{
 };
 use super::super::{
     decode_prepared_classic_sub_band_on_cpu, direct_tier1_input_buffer_prepares_for_test,
-    prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
-    prepare_direct_grayscale_plan, reset_direct_tier1_input_buffer_prepares_for_test,
-    PreparedClassicSubBand, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    execute_hybrid_cpu_tier1_direct_color_plan, prepare_direct_color_plan,
+    prepare_direct_color_plan_for_cpu_upload, prepare_direct_grayscale_plan,
+    reset_direct_tier1_input_buffer_prepares_for_test, PreparedClassicSubBand,
+    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
 };
 use super::runtime::should_run_metal_runtime;
 use j2k_native::{
@@ -19,6 +20,7 @@ use j2k_native::{
     J2kOwnedSubBandPlan, J2kSubBandDecodeJob,
 };
 use metal::Device;
+use std::sync::Arc;
 
 #[test]
 #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
@@ -44,6 +46,72 @@ fn prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload() {
         decode_prepared_classic_sub_band_on_cpu(prepared_sub_band).expect("prepared CPU decode");
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
+fn prepared_irreversible_classic_sub_band_records_midpoint_reconstruction() {
+    let pixels: Vec<u8> = (0..64).collect();
+    let options = EncodeOptions {
+        reversible: false,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode 9/7 gray8");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+    let plan = image
+        .build_direct_grayscale_plan_with_context(&mut context)
+        .expect("direct grayscale plan");
+    let prepared = prepare_direct_grayscale_plan(&plan).expect("prepared direct plan");
+    let prepared_sub_band = first_prepared_classic_sub_band(&prepared);
+
+    assert!(
+        prepared_sub_band
+            .jobs
+            .iter()
+            .all(|job| job.irreversible_midpoint != 0),
+        "every prepared job in a 9/7 sub-band must retain midpoint reconstruction"
+    );
+}
+
+#[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
+fn irreversible_hybrid_cpu_tier1_matches_native_decode_exactly() {
+    let pixels = j2k_test_support::gradient_u8(16, 16, 3);
+    let bytes = encode(
+        &pixels,
+        16,
+        16,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: false,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode irreversible RGB8");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut expected_context = DecoderContext::default();
+    let expected = image
+        .decode_with_context(&mut expected_context)
+        .expect("native decode");
+    let mut plan_context = DecoderContext::default();
+    let plan = image
+        .build_direct_color_plan_with_context(&mut plan_context)
+        .expect("direct color plan");
+    let prepared = prepare_direct_color_plan_for_cpu_upload(&plan).expect("prepared color plan");
+
+    let surface =
+        execute_hybrid_cpu_tier1_direct_color_plan(Arc::new(prepared), j2k_core::PixelFormat::Rgb8)
+            .expect("hybrid decode");
+
+    assert_eq!(
+        surface.as_bytes().expect("surface bytes").as_ref(),
+        expected.data
+    );
 }
 
 #[test]
@@ -211,6 +279,7 @@ fn classic_plain_fast_path_accepts_style_zero_arithmetic_jobs() {
         sub_band_type: 0,
         style_flags: 0,
         strict: 1,
+        irreversible_midpoint: 0,
         dequantization_step: 1.0,
     }];
     let segments = [J2kClassicSegment {
@@ -245,6 +314,7 @@ fn classic_repeated_plain_fast_path_stays_off_for_wsi_batch_size() {
         sub_band_type: 0,
         style_flags: 0,
         strict: 1,
+        irreversible_midpoint: 0,
         dequantization_step: 1.0,
     }];
     let segments = [J2kClassicSegment {

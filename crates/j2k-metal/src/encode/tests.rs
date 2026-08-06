@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use super::stage_accelerator::{
+    auto_host_output_should_dispatch, host_output_evidence_should_dispatch,
+};
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
 use j2k::{
-    encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
+    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(target_os = "macos")]
@@ -14,7 +18,10 @@ use j2k::{
     ReversibleTransform,
 };
 #[cfg(target_os = "macos")]
-use j2k::{J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, J2kQuantizeSubbandJob};
+use j2k::{
+    J2kDeinterleaveToF32Job, J2kEncodeContext, J2kForwardDwt53Job, J2kForwardDwt97Job,
+    J2kForwardIctJob, J2kQuantizeSubbandJob,
+};
 use j2k::{J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob};
 #[cfg(target_os = "macos")]
 use j2k_core::CodecError;
@@ -23,8 +30,9 @@ use j2k_core::DeviceSubmission;
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
-    forward_dwt53_reference, quantize_reversible_reference as quantize_reference,
-    try_deinterleave_reference, EncodeOptions, J2kCodeBlockStyle,
+    forward_dwt53_reference, forward_dwt97_reference,
+    quantize_reversible_reference as quantize_reference, try_deinterleave_reference, EncodeOptions,
+    J2kCodeBlockStyle,
 };
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]

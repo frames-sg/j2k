@@ -302,14 +302,12 @@ pub(crate) fn quantize_subband(
         if delta <= 0.0 {
             return vec![0i32; coefficients.len()];
         }
-        let inv_delta = 1.0 / delta;
-
         coefficients
             .iter()
             .map(|&c| {
                 // Deadzone quantization: q = sign(c) * floor(|c| / Δ)
                 let sign = if c < 0.0 { -1 } else { 1 };
-                let magnitude = floor_f32(c.abs() * inv_delta) as i32;
+                let magnitude = floor_f32(c.abs() / delta) as i32;
                 sign * magnitude
             })
             .collect()
@@ -356,10 +354,9 @@ pub(crate) fn try_quantize_subband(
         quantized.resize(coefficients.len(), 0);
         return Ok(quantized);
     }
-    let inv_delta = 1.0 / delta;
     for &coefficient in coefficients {
         let sign = if coefficient < 0.0 { -1 } else { 1 };
-        let magnitude = floor_f32(coefficient.abs() * inv_delta) as i32;
+        let magnitude = floor_f32(coefficient.abs() / delta) as i32;
         quantized.push(sign * magnitude);
     }
     Ok(quantized)
@@ -395,6 +392,19 @@ mod tests {
         assert_eq!(result[1], -5);
         assert_eq!(result[2], 0); // Below deadzone
         assert_eq!(result[3], 0); // Below deadzone
+    }
+
+    #[test]
+    fn irreversible_quantization_uses_direct_division_at_integer_boundary() {
+        let coefficient = f32::from_bits(0x41fa_c8ff);
+        let step = QuantStepSize {
+            exponent: 8,
+            mantissa: 23,
+        };
+
+        let result = quantize_subband(&[coefficient, -coefficient], &step, 8, false);
+
+        assert_eq!(result, vec![30, -30]);
     }
 
     #[test]

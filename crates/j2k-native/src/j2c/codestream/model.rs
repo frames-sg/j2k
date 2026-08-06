@@ -21,12 +21,13 @@ pub(crate) struct Header<'a> {
 #[derive(Debug)]
 pub(crate) struct PpmMarkerData<'a> {
     pub(crate) sequence_idx: u8,
-    pub(crate) packets: Vec<PpmPacket<'a>>,
+    pub(crate) data: &'a [u8],
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct PpmPacket<'a> {
     pub(crate) data: &'a [u8],
+    pub(crate) ends_tile_part: bool,
 }
 
 #[derive(Debug)]

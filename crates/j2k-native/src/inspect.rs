@@ -195,6 +195,7 @@ pub fn inspect_j2k_codestream_header(
                 let _ = read_segment_payload(input, &mut offset, "CAP")?;
                 high_throughput_cap = true;
             }
+            0x30..=0x3F => {}
             _ => {
                 let _ = read_segment_payload(input, &mut offset, "segment")?;
             }
@@ -505,6 +506,20 @@ mod tests {
         assert_eq!(header.tile_count, (2, 1));
         assert_eq!(header.resolution_levels, 6);
         assert!(header.reversible);
+    }
+
+    #[test]
+    fn inspect_skips_parameterless_reserved_main_header_markers() {
+        let mut bytes = minimal_codestream();
+        let sot = bytes
+            .windows(2)
+            .position(|marker| marker == [0xFF, 0x90])
+            .expect("SOT marker");
+        bytes.splice(sot..sot, [0xFF, 0x30]);
+
+        let header = inspect_j2k_codestream_header(&bytes).expect("header with reserved marker");
+
+        assert_eq!(header.dimensions, (128, 64));
     }
 
     #[test]

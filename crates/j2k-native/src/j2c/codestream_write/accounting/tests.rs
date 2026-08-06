@@ -46,8 +46,8 @@ fn assert_marker_payloads(codestream: &[u8]) {
     let ppm = marker_offsets(codestream, markers::PPM);
     assert_eq!(ppm.len(), 1);
     assert_eq!(
-        &codestream[ppm[0] + 5..ppm[0] + 12],
-        &[0x00, 0x02, 0xaa, 0xbb, 0x00, 0x01, 0xcc]
+        &codestream[ppm[0] + 5..ppm[0] + 16],
+        &[0x00, 0x00, 0x00, 0x02, 0xaa, 0xbb, 0x00, 0x00, 0x00, 0x01, 0xcc]
     );
     let plt = marker_offsets(codestream, markers::PLT);
     assert_eq!(plt.len(), 2);

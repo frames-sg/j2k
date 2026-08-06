@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::error::{bail, DecodingError, Result};
+use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
     decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
     HtCodeBlockDecodeJob, HtCodeBlockPayloadRanges, J2kCodeBlockDecodeJob, J2kDirectGrayscaleStep,
@@ -118,7 +119,12 @@ pub fn execute_referenced_classic_entropy_job(
         job.width,
         job.height,
     )?;
-    decode_j2k_code_block_scalar_with_workspace(
+    let decode = if sub_band.irreversible_midpoint {
+        decode_j2k_code_block_scalar_with_workspace_midpoint
+    } else {
+        decode_j2k_code_block_scalar_with_workspace
+    };
+    decode(
         J2kCodeBlockDecodeJob {
             data,
             segments: &job.segments,

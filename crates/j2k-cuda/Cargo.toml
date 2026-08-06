@@ -51,6 +51,12 @@ harness = false
 test = false
 
 [[bench]]
+name = "auto_routing"
+harness = false
+test = false
+required-features = ["cuda-runtime"]
+
+[[bench]]
 name = "htj2k_decode"
 harness = false
 test = false

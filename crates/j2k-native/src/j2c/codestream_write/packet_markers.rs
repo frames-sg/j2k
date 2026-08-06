@@ -9,7 +9,7 @@ use crate::j2c::encode::allocation::checked_add_bytes;
 use crate::{EncodeError, EncodeResult};
 
 pub(super) const PACKET_HEADER_MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
-pub(super) const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 2;
+pub(super) const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 4;
 const MAX_PACKET_MARKERS: usize = u8::MAX as usize + 1;
 const PLT_CHUNK_SIZE: usize = u16::MAX as usize - 3;
 const PLM_CHUNK_SIZE: usize = u16::MAX as usize - 7;
@@ -43,31 +43,15 @@ pub(super) fn plm_marker_bytes(tiles: &[TilePartData<'_>]) -> EncodeResult<usize
 }
 
 pub(super) fn ppm_marker_bytes(tiles: &[TilePartData<'_>]) -> EncodeResult<usize> {
-    let mut total = 0usize;
-    let mut payload = 0usize;
-    let mut marker_count = 0usize;
-    for header in tiles.iter().flat_map(|tile| tile.packet_headers.iter()) {
-        if header.len() > PPM_PACKET_HEADER_LIMIT {
-            return invalid("PPM packet header exceeds marker payload limit");
-        }
-        let entry = header
-            .len()
-            .checked_add(2)
-            .ok_or(EncodeError::ArithmeticOverflow {
-                what: "PPM marker payload length",
-            })?;
-        if payload != 0
-            && payload
-                .checked_add(entry)
-                .is_none_or(|bytes| bytes > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
-        {
-            total = add_ppm_marker(total, payload, &mut marker_count)?;
-            payload = 0;
-        }
-        payload = checked_add_bytes(payload, entry, "PPM marker payload length")?;
+    if tiles.iter().any(|tile| tile.packet_headers.is_empty()) {
+        return invalid("PPM encode requires separated packet headers");
     }
-    if payload != 0 {
+    let mut total = 0usize;
+    let mut marker_count = 0usize;
+    let mut cursor = HeaderCursor::default();
+    while let Some((end, payload)) = next_ppm_chunk(tiles, cursor)? {
         total = add_ppm_marker(total, payload, &mut marker_count)?;
+        cursor = end;
     }
     Ok(total)
 }
@@ -112,33 +96,7 @@ pub(super) fn write_ppm_markers(out: &mut Vec<u8>, tiles: &[TilePartData<'_>]) -
     ppm_marker_bytes(tiles)?;
     let mut cursor = HeaderCursor::default();
     let mut sequence = 0usize;
-    loop {
-        let mut end = cursor;
-        let mut payload = 0usize;
-        loop {
-            let before = end;
-            let Some(header) = next_header(tiles, &mut end) else {
-                break;
-            };
-            let entry = header
-                .len()
-                .checked_add(2)
-                .ok_or(EncodeError::ArithmeticOverflow {
-                    what: "PPM marker payload length",
-                })?;
-            if payload != 0
-                && payload
-                    .checked_add(entry)
-                    .is_none_or(|bytes| bytes > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
-            {
-                end = before;
-                break;
-            }
-            payload = checked_add_bytes(payload, entry, "PPM marker payload length")?;
-        }
-        if payload == 0 {
-            break;
-        }
+    while let Some((end, payload)) = next_ppm_chunk(tiles, cursor)? {
         write_marker(out, markers::PPM);
         let marker_len =
             u16::try_from(payload + 3).map_err(|_| EncodeError::InternalInvariant {
@@ -151,15 +109,14 @@ pub(super) fn write_ppm_markers(out: &mut Vec<u8>, tiles: &[TilePartData<'_>]) -
             })?,
         );
         while cursor != end {
-            let header = next_header(tiles, &mut cursor).ok_or(EncodeError::InternalInvariant {
-                what: "validated PPM header cursor ended early",
-            })?;
-            let header_len =
-                u16::try_from(header.len()).map_err(|_| EncodeError::InternalInvariant {
-                    what: "validated PPM packet header length exceeds u16",
+            let header =
+                next_ppm_header(tiles, &mut cursor)?.ok_or(EncodeError::InternalInvariant {
+                    what: "validated PPM header cursor ended early",
                 })?;
-            out.extend_from_slice(&header_len.to_be_bytes());
-            out.extend_from_slice(header);
+            if let Some(tile_part_len) = header.tile_part_len {
+                out.extend_from_slice(&tile_part_len.to_be_bytes());
+            }
+            out.extend_from_slice(header.data);
         }
         sequence += 1;
     }
@@ -360,20 +317,81 @@ struct HeaderCursor {
     header: usize,
 }
 
-fn next_header<'a>(tiles: &[TilePartData<'a>], cursor: &mut HeaderCursor) -> Option<&'a [u8]> {
+struct PpmHeader<'a> {
+    tile_part_len: Option<u32>,
+    data: &'a [u8],
+}
+
+fn next_ppm_chunk(
+    tiles: &[TilePartData<'_>],
+    start: HeaderCursor,
+) -> EncodeResult<Option<(HeaderCursor, usize)>> {
+    let mut end = start;
+    let mut payload = 0usize;
     loop {
-        let tile = tiles.get(cursor.tile)?;
+        let before = end;
+        let Some(header) = next_ppm_header(tiles, &mut end)? else {
+            break;
+        };
+        if header.data.len() > PPM_PACKET_HEADER_LIMIT {
+            return invalid("PPM packet header exceeds marker payload limit");
+        }
+        let entry_len = header
+            .data
+            .len()
+            .checked_add(usize::from(header.tile_part_len.is_some()) * 4)
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "PPM marker payload length",
+            })?;
+        if payload != 0
+            && payload
+                .checked_add(entry_len)
+                .is_none_or(|bytes| bytes > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
+        {
+            end = before;
+            break;
+        }
+        payload = checked_add_bytes(payload, entry_len, "PPM marker payload length")?;
+    }
+    Ok((payload != 0).then_some((end, payload)))
+}
+
+fn next_ppm_header<'a>(
+    tiles: &[TilePartData<'a>],
+    cursor: &mut HeaderCursor,
+) -> EncodeResult<Option<PpmHeader<'a>>> {
+    loop {
+        let Some(tile) = tiles.get(cursor.tile) else {
+            return Ok(None);
+        };
         if let Some(header) = tile.packet_headers.get(cursor.header) {
+            let tile_part_len = if cursor.header == 0 {
+                Some(ppm_tile_part_header_len(tile.packet_headers)?)
+            } else {
+                None
+            };
             cursor.header += 1;
             if cursor.header == tile.packet_headers.len() {
                 cursor.tile += 1;
                 cursor.header = 0;
             }
-            return Some(header.as_slice());
+            return Ok(Some(PpmHeader {
+                tile_part_len,
+                data: header,
+            }));
         }
         cursor.tile += 1;
         cursor.header = 0;
     }
+}
+
+fn ppm_tile_part_header_len(headers: &[Vec<u8>]) -> EncodeResult<u32> {
+    let len = headers.iter().try_fold(0usize, |total, header| {
+        checked_add_bytes(total, header.len(), "PPM tile-part packet headers")
+    })?;
+    u32::try_from(len).map_err(|_| EncodeError::InvalidInput {
+        what: "PPM tile-part packet headers exceed u32",
+    })
 }
 
 fn invalid<T>(what: &'static str) -> EncodeResult<T> {

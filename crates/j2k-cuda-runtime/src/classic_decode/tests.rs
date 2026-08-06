@@ -18,8 +18,28 @@ fn max_job() -> CudaClassicCodeBlockJob {
         sub_band_type: 3,
         style_flags: 0,
         strict: true,
+        irreversible_midpoint: false,
+        roi_shift: 0,
         dequantization_step: 1.0,
     }
+}
+
+#[test]
+fn classic_preflight_accepts_roi_maxshift_and_rejects_bitplane_overflow() {
+    let segments = [CudaClassicSegment {
+        data_offset: 0,
+        data_length: 7,
+        start_coding_pass: 0,
+        end_coding_pass: 91,
+        use_arithmetic: true,
+    }];
+    let mut job = max_job();
+    job.total_bitplanes = 24;
+    job.roi_shift = 7;
+    validate_classic_job(7, &segments, 64 * 64, &job).expect("valid ROI maxshift");
+
+    job.roi_shift = 8;
+    assert!(validate_classic_job(7, &segments, 64 * 64, &job).is_err());
 }
 
 #[test]

@@ -202,18 +202,37 @@ fn prepare_metadata_fixture(root: &Path) -> PathBuf {
     );
     let mut metadata =
         serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("parse cargo metadata");
-    let version = metadata
+    let workspace_members = metadata
+        .get("workspace_members")
+        .and_then(serde_json::Value::as_array)
+        .expect("metadata includes workspace members");
+    let packaged_members = metadata
         .get("packages")
         .and_then(serde_json::Value::as_array)
-        .and_then(|packages| {
-            packages.iter().find_map(|package| {
-                (package.get("name").and_then(serde_json::Value::as_str) == Some("j2k-ml"))
-                    .then(|| package.get("version").and_then(serde_json::Value::as_str))
-                    .flatten()
-            })
+        .expect("metadata includes packages")
+        .iter()
+        .filter(|package| {
+            package
+                .get("id")
+                .is_some_and(|id| workspace_members.contains(id))
         })
-        .expect("metadata includes j2k-ml")
-        .to_string();
+        .filter(|package| match package.get("publish") {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Array(registries)) => !registries.is_empty(),
+            Some(_) => panic!("workspace package has malformed publish metadata"),
+        })
+        .map(|package| {
+            let name = package
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .expect("workspace package has a name");
+            let version = package
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .expect("workspace package has a version");
+            (name.to_string(), version.to_string())
+        })
+        .collect::<Vec<_>>();
     let target = root.join("target");
     metadata["target_directory"] = serde_json::Value::String(target.to_string_lossy().into_owned());
     let metadata_path = root.join("metadata.json");
@@ -222,16 +241,19 @@ fn prepare_metadata_fixture(root: &Path) -> PathBuf {
         serde_json::to_vec(&metadata).expect("serialize metadata fixture"),
     )
     .expect("write metadata fixture");
-    write_packaged_fixture(
-        &target
-            .join("package")
-            .join(format!("j2k-ml-{version}.crate")),
-        &version,
-    );
+    for (package, version) in packaged_members {
+        write_packaged_fixture(
+            &target
+                .join("package")
+                .join(format!("{package}-{version}.crate")),
+            &package,
+            &version,
+        );
+    }
     metadata_path
 }
 
-fn write_packaged_fixture(path: &Path, version: &str) {
+fn write_packaged_fixture(path: &Path, package: &str, version: &str) {
     fs::create_dir_all(path.parent().expect("package fixture has parent"))
         .expect("create package fixture directory");
     let encoder = GzEncoder::new(
@@ -239,7 +261,7 @@ fn write_packaged_fixture(path: &Path, version: &str) {
         Compression::default(),
     );
     let mut archive = tar::Builder::new(encoder);
-    let manifest = format!("[package]\nname = \"j2k-ml\"\nversion = \"{version}\"\n");
+    let manifest = format!("[package]\nname = \"{package}\"\nversion = \"{version}\"\n");
     let mut header = tar::Header::new_gnu();
     header.set_mode(0o644);
     header.set_size(u64::try_from(manifest.len()).expect("package manifest fixture fits in u64"));
@@ -247,7 +269,7 @@ fn write_packaged_fixture(path: &Path, version: &str) {
     archive
         .append_data(
             &mut header,
-            format!("j2k-ml-{version}/Cargo.toml"),
+            format!("{package}-{version}/Cargo.toml"),
             Cursor::new(manifest),
         )
         .expect("append package manifest fixture");

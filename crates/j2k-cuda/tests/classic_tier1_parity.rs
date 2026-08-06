@@ -241,6 +241,8 @@ fn cuda_job(
         sub_band_type: subband_tag(case.subband),
         style_flags: style_flags(case.style),
         strict,
+        irreversible_midpoint: false,
+        roi_shift: 0,
         dequantization_step: 1.0,
     }
 }
@@ -355,7 +357,9 @@ fn check_truncated_bypass(
     }
     let expected = native_decode(case, encoded, data, &segments, false)
         .expect("native lenient truncated bypass decode");
-    assert!(native_decode(case, encoded, data, &segments, true).is_err());
+    let expected_strict = native_decode(case, encoded, data, &segments, true)
+        .expect("native strict truncated bypass decode extends a clean segment end");
+    assert_eq!(expected_strict, expected, "native strict truncated parity");
     let actual = cuda_decode(
         context,
         pool,
@@ -366,16 +370,14 @@ fn check_truncated_bypass(
     )
     .expect("CUDA lenient truncated bypass decode");
     assert_eq!(actual, expected, "lenient truncated parity");
-    assert!(
-        cuda_decode(
-            context,
-            pool,
-            data,
-            cuda_job(case, encoded, truncated_len, true),
-            &cuda_segments(&segments),
-            output_words,
-        )
-        .is_err(),
-        "CUDA strict truncated bypass decode must fail"
-    );
+    let actual_strict = cuda_decode(
+        context,
+        pool,
+        data,
+        cuda_job(case, encoded, truncated_len, true),
+        &cuda_segments(&segments),
+        output_words,
+    )
+    .expect("CUDA strict truncated bypass decode extends a clean segment end");
+    assert_eq!(actual_strict, expected_strict, "strict truncated parity");
 }

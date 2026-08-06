@@ -19,6 +19,7 @@ mod direct_plan;
 mod encode;
 mod error;
 mod profile;
+mod routing;
 mod runtime;
 mod session;
 mod surface;

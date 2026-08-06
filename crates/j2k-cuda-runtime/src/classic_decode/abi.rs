@@ -40,6 +40,10 @@ pub struct CudaClassicCodeBlockJob {
     pub style_flags: u32,
     /// Whether malformed entropy data is rejected.
     pub strict: bool,
+    /// Whether coefficients use irreversible midpoint reconstruction.
+    pub irreversible_midpoint: bool,
+    /// JPEG 2000 Part 1 ROI maxshift applied to this code-block.
+    pub roi_shift: u32,
     /// Fused coefficient dequantization multiplier.
     pub dequantization_step: f32,
 }
@@ -93,7 +97,9 @@ pub(crate) struct CudaClassicKernelJob {
     pub(crate) sub_band_type: u32,
     pub(crate) style_flags: u32,
     pub(crate) strict: u32,
+    pub(crate) irreversible_midpoint: u32,
     pub(crate) dequantization_step: f32,
+    pub(crate) roi_shift: u32,
 }
 
 #[repr(C)]

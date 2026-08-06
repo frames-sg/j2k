@@ -114,7 +114,7 @@ fn cuda_quantize_reversible_matches_native_reference_when_required() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: pixel deinterleave (covers 8-bit unsigned, 8-bit signed, 16-bit unsigned)
+// Test 4: pixel deinterleave across supported precision and signedness boundaries
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cuda-runtime")]
@@ -259,6 +259,37 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             cuda_out.components(),
             native.as_slice(),
             "16-bit signed deinterleave mismatch"
+        );
+    }
+
+    // --- 4e: 12-bit signed single-component, including both sign boundaries ---
+    {
+        let values: &[u16] = &[0x0800, 0x0fff, 0x0000, 0x07ff];
+        let mut pixels: Vec<u8> = Vec::with_capacity(values.len() * 2);
+        for value in values {
+            pixels.extend_from_slice(&value.to_le_bytes());
+        }
+        let num_pixels = values.len();
+        let num_components = 1u8;
+        let bit_depth = 12u8;
+        let signed = true;
+
+        let native = try_deinterleave_reference(
+            &pixels,
+            num_pixels,
+            u16::from(num_components),
+            bit_depth,
+            signed,
+        )
+        .expect("valid native 12-bit signed deinterleave input");
+        let cuda_out = context
+            .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
+            .expect("CUDA deinterleave 12-bit signed gray");
+
+        assert_eq!(
+            cuda_out.components(),
+            native.as_slice(),
+            "12-bit signed deinterleave mismatch"
         );
     }
 }

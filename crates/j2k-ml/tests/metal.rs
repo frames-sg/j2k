@@ -14,7 +14,7 @@ use j2k::{
 };
 use j2k_core::Colorspace;
 use j2k_ml::{BurnBatchTensor, BurnDecodeError, MetalUploadBurnDecoder};
-use j2k_native::{encode, EncodeOptions};
+use j2k_native::{encode_htj2k, EncodeOptions};
 use j2k_test_support::{
     generated_htj2k_rgba_fixture, htj2k_rgb8_97_fixture, metal_runtime_gate,
     openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture, openhtj2k_refinement_pixels,
@@ -61,12 +61,12 @@ fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
     .expect("wrap explicit HTJ2K RGBA image")
 }
 
-fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
+fn unsupported_ht_roi_rgb() -> Arc<[u8]> {
     let pixels = (0..4_u8)
         .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
         .collect::<Vec<_>>();
     Arc::from(
-        encode(
+        encode_htj2k(
             &pixels,
             2,
             2,
@@ -80,7 +80,7 @@ fn unsupported_classic_roi_rgb() -> Arc<[u8]> {
                 ..EncodeOptions::default()
             },
         )
-        .expect("encode classic RGB8 with unsupported RGN maxshift"),
+        .expect("encode HTJ2K RGB8 with unsupported RGN maxshift"),
     )
 }
 

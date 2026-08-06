@@ -8,18 +8,34 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.8.0` is published and security-supported. It replaces
-the defective `j2k-ml 0.7.5` accelerator packages with CUDA and Metal adapters
-that use released dependency APIs. See the [release notes](CHANGELOG.md),
-[release policy](docs/release.md), and [security policy](SECURITY.md).
+**Release status:** `0.8.0` is published and security-supported. See the
+[release notes](CHANGELOG.md), [release policy](docs/release.md), and
+[security policy](SECURITY.md).
 
-**Safe public Rust APIs, audited unsafe boundaries, and vendor-independent JPEG 2000 / HTJ2K.**
+**A general-purpose JPEG 2000 and HTJ2K codec with safe Rust APIs, a portable
+CPU baseline, and optional CUDA and Metal acceleration.**
 
-J2K is a Rust image-codec workspace for JPEG 2000 / HTJ2K decode, encode,
-recode, and JPEG-to-HTJ2K coefficient-domain transcoding. It is built for teams
-that need safe Rust integration for untrusted still-image inputs, permissive
-MIT/Apache-2.0 licensing, and optional acceleration across both CUDA and Apple
-Metal without making a GPU vendor SDK the public API.
+J2K provides JPEG 2000 / HTJ2K decode, encode, recode, and
+JPEG-to-HTJ2K coefficient-domain transcoding. Its public APIs cover whole-image,
+region, reduced-resolution, tile, batch, host-output, and resident-device
+workflows without coupling the codec to a particular application domain. The
+workspace is dual-licensed under MIT/Apache-2.0.
+
+Region and reduced-resolution decoding plus retained tiled batch plans avoid
+whole-image work for slide-scale and other large-image readers; those are codec
+capabilities, not domain-specific APIs.
+
+ISO/IEC 15444-4:2024 / ITU-T T.803 v3 work is **candidate/pending**; neither
+the published release nor `main` makes a formal conformance claim. Current
+macOS arm64 and Linux x86-64 CPU development reports each pass all 90 selected
+decoder and Annex G JP2 cases with zero skips. The real-hardware adapter
+development reports are **CUDA: 0/90 device-native, 48/90 hybrid, 42/90
+CPU-routed** and **Metal: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**.
+All selected outputs are within the applicable bounds, but neither result is a
+device-native conformance result. Release wording remains gated on deterministic
+exact-SHA reports for each claimed CPU or adapter lane. The intended scope,
+per-stage route disclosure, encoder evidence, and report verification rules are in
+[docs/t803-conformance.md](docs/t803-conformance.md).
 
 Speed matters, but it is not the reason this project exists. The strategic
 gap is a memory-safety-oriented Rust codec with a portable CPU baseline,
@@ -28,20 +44,18 @@ benchmark gates. The public crate release centers on `j2k`, with lower-level
 crates for native codec internals, device adapters, JPEG input, and transcode
 pipelines.
 
-The codec support claim is intentionally scoped and explicit: full JPEG 2000
-Part 1 codestream support for still-image workflows, JP2 wrapping, HTJ2K
-Part 15 codestream support, and JPH wrapping. JPX / JPEG 2000 Part 2
-extensions are outside this claim unless a feature is required for standard
-JP2/JPH still-image correctness. The living support boundary is
+The codec support boundary is intentionally scoped and explicit: JPEG 2000
+Part 1 still-image codestream features, JP2 wrapping, HTJ2K Part 15
+codestreams, and JPH wrapping. JPX / JPEG 2000 Part 2 extensions are outside
+this boundary unless a feature is required for standard JP2/JPH still-image
+correctness. The implementation matrix is
 [docs/public-support.md](docs/public-support.md).
 
-The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
-are the main public examples and benchmark fixtures because they stress
-large tiled images, strict color handling, and high-throughput GPU paths, but
-the decoder, encoder, and transcode crates are not WSI-only. The
-[digital-pathology workflow audit](docs/digital-pathology-workflow-audit.md)
-defines the container, indexing, color, memory, and validation responsibilities
-that remain outside the codec layer.
+The APIs expose codec operations rather than application-specific workflow
+abstractions. Medical imaging, geospatial systems, digital preservation,
+servers, desktop applications, and large tiled-image readers can use the same
+decoder, encoder, and transcode surfaces. Domain containers, indexing,
+application metadata, and workflow validation remain outside the codec layer.
 
 ## Why J2K exists
 
@@ -132,6 +146,13 @@ device requests are strict. Unsupported device shapes return errors instead of
 silently changing the requested backend. `Auto` is an optimization policy, not a
 promise to use a device whenever one is available.
 
+A new fixed hybrid threshold is eligible for `Auto` only when identical-output
+external-corpus Criterion evidence shows a median at least 10% faster than CPU
+and any supported strict-device route, with non-overlapping 95% confidence
+intervals. The policy never calibrates at runtime. Explicit `Cuda` and `Metal`
+requests remain strict, and an accelerator failure after `Auto` selects a device
+is an error rather than a silent CPU retry.
+
 CUDA paths use J2K-owned CUDA Oxide device kernels through `cuda-runtime`.
 NVIDIA performance claims require self-hosted benchmark evidence; hosted CI is
 not treated as NVIDIA performance evidence.
@@ -193,8 +214,6 @@ Use lower-level crates only when you need a specific integration point:
 | Tile compression codecs | `j2k-tilecodec` |
 | Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
-The names `statumen` and `wsi-dicom` are not current package names.
-
 ## Support and evidence
 
 The living codec support matrix is
@@ -202,19 +221,14 @@ The living codec support matrix is
 adapter has a narrower, explicit boundary in
 [docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
 qualifications are recorded separately in
-[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md). Candidate Part 1
+decoder conformance evidence is tracked separately in
+[docs/t803-conformance.md](docs/t803-conformance.md).
 
-## Fast Path For LLM-Assisted Use
-
-For normal JPEG 2000 / HTJ2K work, start with the public codec crate:
-
-```bash
-cargo add j2k
-```
-
-The shared decode traits live in `j2k-core` and are implemented by codec
-crates: `ImageDecode`, `ImageDecodeRows`, `TileBatchDecode`, and
-device-surface traits.
+The previous `j2k-ml 0.7.5` accelerator features were defective. That release
+history is retained in the [release policy](docs/release.md); current CUDA and
+Metal adapters use released dependency APIs and are validated as clean
+packaged consumers before publication.
 
 ## Current backend posture
 
@@ -275,6 +289,8 @@ Reference files:
   environment variables
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
   HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
+- [docs/t803-conformance.md](docs/t803-conformance.md) - candidate T.803 v3
+  decoder claims, encoder procedure, blockers, and release evidence rules
 - [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
   prepared reuse, and explicit accelerator decode/upload adapters
 - [docs/release.md](docs/release.md) - release and package validation policy

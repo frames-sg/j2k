@@ -614,32 +614,9 @@ mod inner {
 )]
 #[inline(always)]
 pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
-    #[cfg(all(
-        feature = "std",
-        any(
-            all(
-                any(target_arch = "x86", target_arch = "x86_64"),
-                target_feature = "fma"
-            ),
-            all(target_arch = "aarch64", target_feature = "neon")
-        )
-    ))]
-    {
-        f32::mul_add(a, b, c)
-    }
-    #[cfg(not(all(
-        feature = "std",
-        any(
-            all(
-                any(target_arch = "x86", target_arch = "x86_64"),
-                target_feature = "fma"
-            ),
-            all(target_arch = "aarch64", target_feature = "neon")
-        )
-    )))]
-    {
-        a * b + c
-    }
+    // The 9/7 lifting path must use one rounding step on every CPU target so
+    // its output does not change with compile-time FMA availability.
+    libm::fmaf(a, b, c)
 }
 
 #[expect(
@@ -899,6 +876,22 @@ mod simd_operator_tests {
                 "lane {index}: expected {expected}, got {actual}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod floating_point_tests {
+    use super::mul_add;
+
+    #[test]
+    fn scalar_mul_add_has_one_rounding_step_on_every_target() {
+        let value = mul_add(
+            f32::from_bits(0x4526_ba09),
+            f32::from_bits(0xbf41_420c),
+            f32::from_bits(0x4470_e5c9),
+        );
+
+        assert_eq!(value.to_bits(), 0xc483_47a5);
     }
 }
 

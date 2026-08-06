@@ -4,6 +4,7 @@ use core::ops::Range;
 use crate::error::{bail, DecodingError, Result};
 use crate::j2c::idwt;
 use crate::math::{floor_f32, round_f32};
+use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
     decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
     try_resize_decode_elements, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,

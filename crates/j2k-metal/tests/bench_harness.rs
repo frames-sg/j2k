@@ -39,12 +39,17 @@ fn bench_sources_under(path: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn j2k_metal_has_no_legacy_criterion_bench_targets() {
+fn j2k_metal_declares_only_the_auto_routing_criterion_bench() {
     let cargo = cargo_toml();
 
+    assert_eq!(
+        cargo.matches("[[bench]]").count(),
+        1,
+        "j2k-metal must keep one audited benchmark target"
+    );
     assert!(
-        !cargo.contains("[[bench]]"),
-        "j2k-metal bench targets were reset for a clean profiling redesign"
+        cargo.contains("[[bench]]\nname = \"auto_routing\"\nharness = false\ntest = false"),
+        "j2k-metal must keep the release-routing benchmark explicit"
     );
 
     for target in ["device_upload", "compare", "encode_stages", "decode_stages"] {
@@ -56,24 +61,24 @@ fn j2k_metal_has_no_legacy_criterion_bench_targets() {
 }
 
 #[test]
-fn j2k_metal_has_no_legacy_bench_only_dev_dependencies() {
+fn j2k_metal_bench_dependencies_are_limited_to_auto_routing() {
     let cargo = cargo_toml();
 
-    for dependency in ["criterion", "j2k-compare"] {
-        assert!(
-            !cargo.contains(&format!("{dependency} =")),
-            "legacy bench-only dev dependency must stay removed: {dependency}"
-        );
-    }
+    assert_eq!(cargo.matches("criterion =").count(), 1);
+    assert!(
+        !cargo.contains("j2k-compare ="),
+        "legacy comparison dependency must stay removed"
+    );
 }
 
 #[test]
-fn j2k_metal_benches_directory_is_clean_for_redesign() {
+fn j2k_metal_benches_directory_contains_only_auto_routing() {
     let sources = bench_sources_under(&manifest_dir().join("benches"));
 
-    assert!(
-        sources.is_empty(),
-        "remove stale j2k-metal bench sources before adding new profiling benches: {sources:?}"
+    assert_eq!(
+        sources,
+        [manifest_dir().join("benches/auto_routing.rs")],
+        "j2k-metal benchmark sources must stay limited to release routing evidence"
     );
 }
 

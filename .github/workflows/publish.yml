@@ -56,7 +56,17 @@ jobs:
             --aggregate-job "Release candidate aggregate" \
             --gpu-workflow gpu-validation.yml \
             --cuda-job "CUDA full release validation" \
-            --metal-job "Metal full release validation"
+            --metal-job "Metal full release validation" \
+            --t803-scope cpu \
+            --t803-out-dir target/t803/release-evidence
+      - name: Verify downloaded T.803 report contents
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          candidate_sha="$(git rev-parse HEAD)"
+          cargo xtask t803 verify --scope cpu --candidate-sha "${candidate_sha}" \
+            --report "target/t803/release-evidence/j2k-t803-cpu-linux-x86_64-${candidate_sha}/cpu.json" \
+            --report "target/t803/release-evidence/j2k-t803-cpu-macos-aarch64-${candidate_sha}/cpu.json" \
+            --report "target/t803/release-evidence/j2k-t803-cpu-windows-x86_64-${candidate_sha}/cpu.json"
       - name: Verify release metadata integrity
         run: cargo xtask release-integrity
       - name: Verify final publish metadata

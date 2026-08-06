@@ -709,6 +709,119 @@ fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    reason = "fixture coordinates and parallel plane names mirror the CUDA API"
+)]
+fn j2k_inverse_dwt_batch_640x480_reversible_matches_single_when_runtime_required() {
+    const WIDTH: usize = 640;
+    const HEIGHT: usize = 480;
+    const BAND_WIDTH: usize = WIDTH / 2;
+    const BAND_HEIGHT: usize = HEIGHT / 2;
+
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let width_u32 = u32::try_from(WIDTH).expect("fixture width fits u32");
+    let height_u32 = u32::try_from(HEIGHT).expect("fixture height fits u32");
+    let band_width_u32 = u32::try_from(BAND_WIDTH).expect("fixture band width fits u32");
+    let band_height_u32 = u32::try_from(BAND_HEIGHT).expect("fixture band height fits u32");
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let band_len = BAND_WIDTH * BAND_HEIGHT;
+    let ll_values: Vec<f32> = (0..band_len).map(|idx| (idx % 43) as f32).collect();
+    let hl_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 3) % 47) as f32).collect();
+    let lh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 5) % 53) as f32).collect();
+    let hh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 7) % 59) as f32).collect();
+    let ll = context
+        .upload(super::super::f32_slice_as_bytes(&ll_values))
+        .expect("upload 640x480 LL");
+    let hl = context
+        .upload(super::super::f32_slice_as_bytes(&hl_values))
+        .expect("upload 640x480 HL");
+    let lh = context
+        .upload(super::super::f32_slice_as_bytes(&lh_values))
+        .expect("upload 640x480 LH");
+    let hh = context
+        .upload(super::super::f32_slice_as_bytes(&hh_values))
+        .expect("upload 640x480 HH");
+    let job = CudaJ2kIdwtJob {
+        rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width_u32,
+            y1: height_u32,
+        },
+        ll_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: band_width_u32,
+            y1: band_height_u32,
+        },
+        hl_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: band_width_u32,
+            y1: band_height_u32,
+        },
+        lh_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: band_width_u32,
+            y1: band_height_u32,
+        },
+        hh_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: band_width_u32,
+            y1: band_height_u32,
+        },
+        irreversible97: 0,
+    };
+
+    let single = context
+        .j2k_inverse_dwt_single_device_with_pool(&ll, &hl, &lh, &hh, job, &pool)
+        .expect("640x480 single CUDA inverse DWT");
+    let batch_output = pool
+        .take(WIDTH * HEIGHT * std::mem::size_of::<f32>())
+        .expect("640x480 batched IDWT output");
+    let execution = context
+        .j2k_inverse_dwt_batch_device_with_pool(
+            &[CudaJ2kIdwtTarget {
+                ll: &ll,
+                hl: &hl,
+                lh: &lh,
+                hh: &hh,
+                output: batch_output
+                    .as_device_buffer()
+                    .expect("640x480 batch output device buffer"),
+                job,
+            }],
+            &pool,
+        )
+        .expect("640x480 batched CUDA inverse DWT");
+    assert_eq!(execution.kernel_dispatches(), 2);
+
+    let mut single_actual = vec![0.0f32; WIDTH * HEIGHT];
+    single
+        .buffer()
+        .expect("640x480 single output device buffer")
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut single_actual))
+        .expect("download 640x480 single IDWT");
+    let mut batch_actual = vec![0.0f32; WIDTH * HEIGHT];
+    batch_output
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut batch_actual))
+        .expect("download 640x480 batch IDWT");
+    let first_mismatch = batch_actual
+        .iter()
+        .zip(&single_actual)
+        .position(|(batch, single)| batch.to_bits() != single.to_bits());
+    assert_eq!(first_mismatch, None);
+}
+
+#[test]
 fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -983,6 +1096,199 @@ fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_re
         .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut sequence_actual))
         .expect("download sequence stage2 IDWT");
     assert_eq!(sequence_actual, legacy_actual);
+}
+
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "two-stage reversible pipeline fixture keeps stage buffers explicit"
+)]
+fn j2k_inverse_dwt_batch_sequence_large_mixed_modes_matches_single_path_when_runtime_required() {
+    const STAGE1_WIDTH: usize = 320;
+    const STAGE1_HEIGHT: usize = 240;
+    const STAGE2_WIDTH: usize = 640;
+    const STAGE2_HEIGHT: usize = 480;
+
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let stage1_width_u32 = u32::try_from(STAGE1_WIDTH).expect("stage 1 width fits u32");
+    let stage1_height_u32 = u32::try_from(STAGE1_HEIGHT).expect("stage 1 height fits u32");
+    let stage2_width_u32 = u32::try_from(STAGE2_WIDTH).expect("stage 2 width fits u32");
+    let stage2_height_u32 = u32::try_from(STAGE2_HEIGHT).expect("stage 2 height fits u32");
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let stage1_band_len = STAGE1_WIDTH / 2 * (STAGE1_HEIGHT / 2);
+    let stage2_band_len = STAGE2_WIDTH / 2 * (STAGE2_HEIGHT / 2);
+    let stage1_ll_values: Vec<f32> = (0..stage1_band_len).map(|idx| (idx % 43) as f32).collect();
+    let stage1_hl_values: Vec<f32> = (0..stage1_band_len)
+        .map(|idx| ((idx * 3) % 47) as f32)
+        .collect();
+    let stage1_lh_values: Vec<f32> = (0..stage1_band_len)
+        .map(|idx| ((idx * 5) % 53) as f32)
+        .collect();
+    let stage1_hh_values: Vec<f32> = (0..stage1_band_len)
+        .map(|idx| ((idx * 7) % 59) as f32)
+        .collect();
+    let stage2_hl_values: Vec<f32> = (0..stage2_band_len)
+        .map(|idx| ((idx * 11) % 61) as f32)
+        .collect();
+    let stage2_lh_values: Vec<f32> = (0..stage2_band_len)
+        .map(|idx| ((idx * 13) % 67) as f32)
+        .collect();
+    let stage2_hh_values: Vec<f32> = (0..stage2_band_len)
+        .map(|idx| ((idx * 17) % 71) as f32)
+        .collect();
+    let stage1_ll = context
+        .upload(super::super::f32_slice_as_bytes(&stage1_ll_values))
+        .expect("upload stage1 LL");
+    let stage1_hl = context
+        .upload(super::super::f32_slice_as_bytes(&stage1_hl_values))
+        .expect("upload stage1 HL");
+    let stage1_lh = context
+        .upload(super::super::f32_slice_as_bytes(&stage1_lh_values))
+        .expect("upload stage1 LH");
+    let stage1_hh = context
+        .upload(super::super::f32_slice_as_bytes(&stage1_hh_values))
+        .expect("upload stage1 HH");
+    let stage2_hl = context
+        .upload(super::super::f32_slice_as_bytes(&stage2_hl_values))
+        .expect("upload stage2 HL");
+    let stage2_lh = context
+        .upload(super::super::f32_slice_as_bytes(&stage2_lh_values))
+        .expect("upload stage2 LH");
+    let stage2_hh = context
+        .upload(super::super::f32_slice_as_bytes(&stage2_hh_values))
+        .expect("upload stage2 HH");
+    let job = |width: u32, height: u32| CudaJ2kIdwtJob {
+        rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+        },
+        ll_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width / 2,
+            y1: height / 2,
+        },
+        hl_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width / 2,
+            y1: height / 2,
+        },
+        lh_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width / 2,
+            y1: height / 2,
+        },
+        hh_rect: CudaJ2kRect {
+            x0: 0,
+            y0: 0,
+            x1: width / 2,
+            y1: height / 2,
+        },
+        irreversible97: 0,
+    };
+    let stage1_job = job(stage1_width_u32, stage1_height_u32);
+    let stage2_job = job(stage2_width_u32, stage2_height_u32);
+
+    let single_stage1 = context
+        .j2k_inverse_dwt_single_device_with_pool(
+            &stage1_ll, &stage1_hl, &stage1_lh, &stage1_hh, stage1_job, &pool,
+        )
+        .expect("single stage1 IDWT");
+    let single_stage2 = context
+        .j2k_inverse_dwt_single_device_with_pool(
+            single_stage1.buffer().expect("single stage1 output"),
+            &stage2_hl,
+            &stage2_lh,
+            &stage2_hh,
+            stage2_job,
+            &pool,
+        )
+        .expect("single stage2 IDWT");
+    let sequence_stage1 = pool
+        .take(STAGE1_WIDTH * STAGE1_HEIGHT * std::mem::size_of::<f32>())
+        .expect("sequence stage1 output");
+    let sequence_stage2 = pool
+        .take(STAGE2_WIDTH * STAGE2_HEIGHT * std::mem::size_of::<f32>())
+        .expect("sequence stage2 output");
+    let stage1_targets = [CudaJ2kIdwtTarget {
+        ll: &stage1_ll,
+        hl: &stage1_hl,
+        lh: &stage1_lh,
+        hh: &stage1_hh,
+        output: sequence_stage1
+            .as_device_buffer()
+            .expect("sequence stage1 device buffer"),
+        job: stage1_job,
+    }];
+    let stage2_targets = [CudaJ2kIdwtTarget {
+        ll: sequence_stage1
+            .as_device_buffer()
+            .expect("sequence stage1 device buffer"),
+        hl: &stage2_hl,
+        lh: &stage2_lh,
+        hh: &stage2_hh,
+        output: sequence_stage2
+            .as_device_buffer()
+            .expect("sequence stage2 device buffer"),
+        job: stage2_job,
+    }];
+    // SAFETY: all inputs and outputs remain live and untouched until the
+    // returned execution is explicitly finished below.
+    let queued = unsafe {
+        context.j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
+            &[&stage1_targets, &stage2_targets],
+            &pool,
+        )
+    }
+    .expect("large queued IDWT sequence");
+    assert_eq!(queued.execution().kernel_dispatches(), 4);
+    queued.finish().expect("finish large queued IDWT sequence");
+
+    let mut single_stage1_actual = vec![0.0f32; STAGE1_WIDTH * STAGE1_HEIGHT];
+    single_stage1
+        .buffer()
+        .expect("single stage1 output")
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(
+            &mut single_stage1_actual,
+        ))
+        .expect("download single stage1 IDWT");
+    let mut sequence_stage1_actual = vec![0.0f32; STAGE1_WIDTH * STAGE1_HEIGHT];
+    sequence_stage1
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(
+            &mut sequence_stage1_actual,
+        ))
+        .expect("download sequence stage1 IDWT");
+    let stage1_first_mismatch = sequence_stage1_actual
+        .iter()
+        .zip(&single_stage1_actual)
+        .position(|(sequence, single)| sequence.to_bits() != single.to_bits());
+    assert_eq!(stage1_first_mismatch, None, "stage1 mismatch");
+
+    let mut single_actual = vec![0.0f32; STAGE2_WIDTH * STAGE2_HEIGHT];
+    single_stage2
+        .buffer()
+        .expect("single stage2 output")
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut single_actual))
+        .expect("download single two-stage IDWT");
+    let mut sequence_actual = vec![0.0f32; STAGE2_WIDTH * STAGE2_HEIGHT];
+    sequence_stage2
+        .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut sequence_actual))
+        .expect("download sequence two-stage IDWT");
+    let first_mismatch = sequence_actual
+        .iter()
+        .zip(&single_actual)
+        .position(|(sequence, single)| sequence.to_bits() != single.to_bits());
+    assert_eq!(first_mismatch, None);
 }
 
 #[test]

@@ -306,6 +306,20 @@ impl<'a> Image<'a> {
         &self.color_space
     }
 
+    /// Return the primary JP2 restricted ICC profile, when present.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn primary_icc_profile(&self) -> Option<&[u8]> {
+        match self
+            .boxes
+            .primary_color_specification()
+            .map(|specification| &specification.color_space)
+        {
+            Some(jp2::colr::ColorSpace::Icc(profile)) => Some(profile),
+            _ => None,
+        }
+    }
+
     /// The width of the image.
     #[must_use]
     pub fn width(&self) -> u32 {

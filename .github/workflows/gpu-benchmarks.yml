@@ -13,7 +13,7 @@ on:
         type: choice
         required: true
         default: smoke
-        options: [smoke, criterion, profile, adoption]
+        options: [smoke, criterion, profile, adoption, routing]
       baseline-ref:
         description: "Immutable baseline revision for Criterion comparisons"
         type: string
@@ -134,6 +134,28 @@ jobs:
             --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
             --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
             --require-cuda --out-dir target/gpu-benchmark/adoption
+      - name: Measure and verify CUDA Auto routing
+        if: ${{ inputs.suite == 'routing' }}
+        env:
+          J2K_AUTO_ROUTING_MANIFEST: ${{ vars.J2K_AUTO_ROUTING_MANIFEST }}
+          J2K_AUTO_ROUTING_ROOT: ${{ vars.J2K_AUTO_ROUTING_ROOT }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+        run: |
+          : "${J2K_AUTO_ROUTING_MANIFEST:?Set J2K_AUTO_ROUTING_MANIFEST}"
+          : "${J2K_AUTO_ROUTING_ROOT:?Set J2K_AUTO_ROUTING_ROOT}"
+          mkdir -p target/gpu-benchmark/auto-routing
+          export J2K_AUTO_ROUTING_CANDIDATE_SHA="${GITHUB_SHA}"
+          export J2K_AUTO_ROUTING_EVIDENCE="${GITHUB_WORKSPACE}/target/gpu-benchmark/auto-routing/evidence.json"
+          export J2K_AUTO_ROUTING_HARDWARE="$(nvidia-smi --query-gpu=name --format=csv,noheader | paste -sd ';' -)"
+          export J2K_AUTO_ROUTING_DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | sort -u | paste -sd ';' -)"
+          args=()
+          if [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo bench --profile release-bench -p j2k-cuda --bench auto_routing --features cuda-runtime -- "${args[@]}"
+          cargo xtask auto-routing verify \
+            --evidence "${J2K_AUTO_ROUTING_EVIDENCE}" \
+            --external-manifest "${J2K_AUTO_ROUTING_MANIFEST}" \
+            --criterion-root target/criterion \
+            --out target/gpu-benchmark/auto-routing/verified.json
       - name: Require unchanged CUDA device identity
         if: always()
         run: |
@@ -231,6 +253,28 @@ jobs:
             --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
             --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
             --require-metal --out-dir target/gpu-benchmark/adoption
+      - name: Measure and verify Metal Auto routing
+        if: ${{ inputs.suite == 'routing' }}
+        env:
+          J2K_AUTO_ROUTING_MANIFEST: ${{ vars.J2K_AUTO_ROUTING_MANIFEST }}
+          J2K_AUTO_ROUTING_ROOT: ${{ vars.J2K_AUTO_ROUTING_ROOT }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+        run: |
+          : "${J2K_AUTO_ROUTING_MANIFEST:?Set J2K_AUTO_ROUTING_MANIFEST}"
+          : "${J2K_AUTO_ROUTING_ROOT:?Set J2K_AUTO_ROUTING_ROOT}"
+          mkdir -p target/gpu-benchmark/auto-routing
+          export J2K_AUTO_ROUTING_CANDIDATE_SHA="${GITHUB_SHA}"
+          export J2K_AUTO_ROUTING_EVIDENCE="${GITHUB_WORKSPACE}/target/gpu-benchmark/auto-routing/evidence.json"
+          export J2K_AUTO_ROUTING_HARDWARE="$(sysctl -n machdep.cpu.brand_string)"
+          export J2K_AUTO_ROUTING_DRIVER="macOS $(sw_vers -productVersion); $(xcrun metal --version | head -n 1)"
+          args=()
+          if [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo bench --profile release-bench -p j2k-metal --bench auto_routing -- "${args[@]}"
+          cargo xtask auto-routing verify \
+            --evidence "${J2K_AUTO_ROUTING_EVIDENCE}" \
+            --external-manifest "${J2K_AUTO_ROUTING_MANIFEST}" \
+            --criterion-root target/criterion \
+            --out target/gpu-benchmark/auto-routing/verified.json
       - name: Require unchanged Metal device identity
         if: always()
         run: |

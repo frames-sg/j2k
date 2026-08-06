@@ -289,6 +289,11 @@ pub(super) fn fuzz_build() -> Result<(), String> {
         "check",
         "--manifest-path",
         "crates/j2k-transcode/fuzz/Cargo.toml",
+    ])?;
+    run_cargo(&[
+        "check",
+        "--manifest-path",
+        "crates/j2k-t803/fuzz/Cargo.toml",
     ])
 }
 
@@ -296,6 +301,7 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k", "decode_fuzz"),
     ("crates/j2k", "jp2_box_fuzz"),
     ("crates/j2k", "jp2_metadata_fuzz"),
+    ("crates/j2k", "srgb8_fuzz"),
     ("crates/j2k", "parse_fuzz"),
     ("crates/j2k", "region_scaled_fuzz"),
     ("crates/j2k-jpeg", "decode_fuzz"),
@@ -304,6 +310,8 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k-jpeg", "row_stream_fuzz"),
     ("crates/j2k-tilecodec", "decompress_fuzz"),
     ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),
+    ("crates/j2k-t803", "pgx_fuzz"),
+    ("crates/j2k-t803", "archive_fuzz"),
 ];
 
 pub(super) fn fuzz_run() -> Result<(), String> {

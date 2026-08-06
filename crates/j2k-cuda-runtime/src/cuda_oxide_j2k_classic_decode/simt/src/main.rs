@@ -5,6 +5,7 @@
 
 use cuda_device::{kernel, thread, SharedArray};
 use cuda_host::cuda_module;
+use j2k_codec_math::classic::irreversible_midpoint_bit;
 include!("../../../cuda_oxide_simt_prelude.rs");
 
 const MAX_PADDED_COEFFICIENTS: usize = 66 * 66;
@@ -47,7 +48,9 @@ struct ClassicJob {
     sub_band_type: u32,
     style_flags: u32,
     strict: u32,
+    irreversible_midpoint: u32,
     dequantization_step: f32,
+    roi_shift: u32,
 }
 
 #[repr(C)]
@@ -163,6 +166,33 @@ fn set_coefficient_sign(coefficients: *mut u32, index: u32, negative: u32) {
             value
         },
     );
+}
+
+#[inline(always)]
+fn reconstructed_classic_sample(coefficient: u32, job: ClassicJob) -> f32 {
+    let magnitude = coefficient & 0x7fff_ffff;
+    let mut reconstructed = magnitude as f32;
+    let decoded_bitplanes = job.total_bitplanes + job.roi_shift - job.missing_msbs;
+    if job.irreversible_midpoint != 0 {
+        if let Some(lowest_decoded_bit) = irreversible_midpoint_bit(
+            u64::from(magnitude),
+            decoded_bitplanes,
+            job.number_of_coding_passes,
+        ) {
+            let mut fixed_magnitude = (magnitude << 1) | (1 << lowest_decoded_bit);
+            if job.roi_shift != 0 && fixed_magnitude >= 1 << job.roi_shift {
+                fixed_magnitude >>= job.roi_shift;
+            }
+            reconstructed = fixed_magnitude as f32 * 0.5;
+        }
+    } else if job.roi_shift != 0 && magnitude >= 1 << job.roi_shift {
+        reconstructed = (magnitude >> job.roi_shift) as f32;
+    }
+    if coefficient & 0x8000_0000 != 0 {
+        -reconstructed
+    } else {
+        reconstructed
+    }
 }
 
 #[inline(always)]
@@ -395,9 +425,8 @@ fn arithmetic_decode_bit(
 fn raw_read_bit(decoder: &mut BypassDecoder) -> u32 {
     let byte_position = decoder.bit_pos / 8;
     if byte_position >= decoder.data_len {
-        if decoder.strict {
-            return RAW_READ_FAILED;
-        }
+        // T.800 D.4.1 extends a cleanly exhausted terminated segment with
+        // 0xFF bytes. Strict mode still rejects a malformed stuffed bit below.
         decoder.bit_pos += 1;
         return 1;
     }
@@ -512,13 +541,17 @@ fn validate_job_header(
     }
     if job.total_bitplanes == 0
         || job.total_bitplanes > 31
-        || job.missing_msbs >= job.total_bitplanes
+        || job.roi_shift > 31 - job.total_bitplanes
         || job.sub_band_type > 3
         || job.style_flags & !KNOWN_STYLE_FLAGS != 0
     {
         return fail(statuses, job_index, STATUS_UNSUPPORTED, 2);
     }
-    let bitplanes = job.total_bitplanes - job.missing_msbs;
+    let coded_bitplanes = job.total_bitplanes + job.roi_shift;
+    if job.missing_msbs >= coded_bitplanes {
+        return fail(statuses, job_index, STATUS_UNSUPPORTED, 2);
+    }
+    let bitplanes = coded_bitplanes - job.missing_msbs;
     let max_passes = 1 + 3 * (bitplanes - 1);
     if job.number_of_coding_passes > max_passes {
         return fail(statuses, job_index, STATUS_UNSUPPORTED, 3);
@@ -541,7 +574,7 @@ fn decode_job(
     statuses: *mut ClassicStatus,
     job_index: u32,
 ) -> bool {
-    let bitplanes = job.total_bitplanes - job.missing_msbs;
+    let bitplanes = job.total_bitplanes + job.roi_shift - job.missing_msbs;
     if job.number_of_coding_passes == 0 {
         return true;
     }
@@ -888,18 +921,12 @@ mod kernels {
                 coefficients.cast_const(),
                 coefficient_index(padded_width, x + 1, y + 1) as usize,
             );
-            let magnitude = (packed & 0x7fff_ffff) as i32;
-            let signed = if packed & 0x8000_0000 != 0 {
-                -magnitude
-            } else {
-                magnitude
-            };
             simt_store(
                 output,
                 job.output_offset as usize
                     + y as usize * job.output_stride as usize
                     + x as usize,
-                signed as f32 * job.dequantization_step,
+                reconstructed_classic_sample(packed, job) * job.dequantization_step,
             );
             sample += CLASSIC_DECODE_THREADS;
         }

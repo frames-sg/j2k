@@ -2,6 +2,8 @@
 
 //! Persistent CUDA batch decoder facade.
 
+#[cfg(not(feature = "cuda-runtime"))]
+use super::IndexedBatchError;
 #[cfg(feature = "cuda-runtime")]
 use super::{
     decode_warnings, group_pixel_format, native_color_inputs, native_decode_settings,
@@ -142,9 +144,20 @@ impl CudaBatchDecoder {
             if let Some(group) = prepared.groups().first() {
                 return Err(CudaBatchError::group(group, Error::CudaUnavailable));
             }
+            let mut errors = Vec::new();
+            errors
+                .try_reserve_exact(prepared.errors().len())
+                .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+                    what: "CUDA stub indexed errors",
+                    bytes: prepared
+                        .errors()
+                        .len()
+                        .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
+                })?;
+            errors.extend_from_slice(prepared.errors());
             Ok(CudaBatchDecodeResult {
                 groups: Vec::new(),
-                errors: prepared.errors().to_vec(),
+                errors,
                 group_errors: Vec::new(),
             })
         }

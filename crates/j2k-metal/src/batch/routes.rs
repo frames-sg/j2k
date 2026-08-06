@@ -64,11 +64,21 @@ pub(super) fn decode_repeated_full_color(
 
     #[cfg(target_os = "macos")]
     {
-        Some(
-            J2kDecoder::new(request.input.as_ref()).and_then(|mut decoder| {
-                decoder.decode_repeated_color_direct_to_device_routed(request.fmt, count, backend)
-            }),
-        )
+        Some(J2kDecoder::new(request.input.as_ref()).and_then(
+            |mut decoder| match request.backend {
+                BackendRequest::Auto => {
+                    decoder.decode_repeated_color_auto_to_device_routed(request.fmt, count, backend)
+                }
+                BackendRequest::Metal => decoder.decode_repeated_color_direct_to_device_routed(
+                    request.fmt,
+                    count,
+                    backend,
+                ),
+                _ => Err(batch_scheduler_invariant(
+                    "repeated color batch contains an unsupported backend",
+                )),
+            },
+        ))
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -34,6 +34,7 @@ pub(super) fn build_grayscale_sub_band_step(
 ) -> Result<Option<J2kDirectGrayscaleStep>> {
     let SubBandDecodeParameters {
         dequantization_step,
+        irreversible_midpoint,
         num_bitplanes,
     } = sub_band_decode_parameters(sub_band, resolution, component_info)?;
 
@@ -70,6 +71,7 @@ pub(super) fn build_grayscale_sub_band_step(
         budget,
         classic_payloads,
         dequantization_step,
+        irreversible_midpoint,
         num_bitplanes,
     )
     .map(Some)
@@ -173,6 +175,7 @@ fn build_classic_sub_band_step(
     budget: &mut DecodeAllocationBudget,
     mut classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
     dequantization_step: f32,
+    irreversible_midpoint: bool,
     num_bitplanes: u8,
 ) -> Result<J2kDirectGrayscaleStep> {
     let (sub_band_type, style) =
@@ -217,6 +220,7 @@ fn build_classic_sub_band_step(
             rect: J2kRect::from(sub_band.rect),
             width: sub_band.rect.width(),
             height: sub_band.rect.height(),
+            irreversible_midpoint,
             jobs,
         },
     ))
