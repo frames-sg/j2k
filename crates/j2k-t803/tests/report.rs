@@ -169,7 +169,23 @@ fn report_json_is_deterministic_versioned_and_round_trips() {
     assert!(first.contains("\"schema_version\": 3"));
     assert!(first.contains("ISO/IEC 15444-4:2024 / ITU-T T.803 v3"));
     assert!(first.contains("ISO/IEC 15444-5 / ITU-T T.804"));
-    assert_eq!(T803Report::from_json(&first).expect("parse report"), report);
+    let reparsed = T803Report::from_json(&first).expect("parse report");
+    assert_eq!(reparsed, report);
+    assert_eq!(reparsed.to_json().expect("reserialize report"), first);
+}
+
+#[test]
+fn report_json_round_trip_preserves_difficult_f64_values() {
+    let mut case = passing_case(cpu_stages());
+    case.mse = Some(0.247_063_802_083_333_34);
+    case.allowed_mse = Some(1.0);
+    let mut report = report(Vec::from([case]));
+    report.encoder.cases[0].actual_bits_per_pixel = Some(13.244_893_054_554_193);
+
+    let json = report.to_json().expect("serialize report");
+    let reparsed = T803Report::from_json(&json).expect("parse report");
+
+    assert_eq!(reparsed.to_json().expect("reserialize report"), json);
 }
 
 #[test]
