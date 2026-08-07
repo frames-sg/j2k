@@ -206,7 +206,7 @@ class GitHubApi:
         request = urllib.request.Request(
             url,
             headers={
-                "Accept": "application/octet-stream",
+                "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
                 "X-GitHub-Api-Version": API_VERSION,
             },

@@ -837,6 +837,24 @@ class ApiFailureTests(unittest.TestCase):
         ):
             verifier.GitHubApi("https://api.github.invalid", "owner/repo", "")
 
+    def test_artifact_download_uses_github_json_media_type(self) -> None:
+        captured_headers: dict[str, str] = {}
+
+        def capture(request: Any, timeout: int) -> Any:
+            self.assertEqual(timeout, 30)
+            captured_headers.update(
+                {name.lower(): value for name, value in request.header_items()}
+            )
+            raise urllib.error.HTTPError(request.full_url, 418, "Stop", {}, None)
+
+        api = verifier.GitHubApi(
+            "https://api.github.invalid", "owner/repo", "token", opener=capture
+        )
+        with self.assertRaises(verifier.VerificationError):
+            api.download_bytes("/actions/artifacts/1/zip", maximum_bytes=1024)
+
+        self.assertEqual(captured_headers["accept"], "application/vnd.github+json")
+
     def test_http_failure_does_not_expose_token(self) -> None:
         token = "secret-token-that-must-not-appear"
 
