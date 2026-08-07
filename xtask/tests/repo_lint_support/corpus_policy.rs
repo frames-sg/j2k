@@ -1,8 +1,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path, process::Command};
 
 use super::{assert_file_pattern_checks, repo_root, sha256_hex, FilePatternCheck};
+
+#[test]
+fn j2k_conformance_manifests_have_platform_stable_line_endings() {
+    let root = repo_root();
+    let paths = [
+        "corpus/j2k-conformance/encoder-ics-cpu.toml",
+        "corpus/j2k-conformance/encoder-ics-cuda.toml",
+        "corpus/j2k-conformance/encoder-ics-metal.toml",
+        "corpus/j2k-conformance/encoder-matrix-v1.toml",
+        "corpus/j2k-conformance/t803-v3.toml",
+    ];
+    let output = Command::new("git")
+        .args(["check-attr", "eol", "--"])
+        .args(paths)
+        .current_dir(root)
+        .output()
+        .expect("inspect conformance manifest line-ending attributes");
+    assert!(
+        output.status.success(),
+        "git check-attr failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let attributes = String::from_utf8(output.stdout).expect("git attributes are UTF-8");
+
+    for path in paths {
+        assert!(
+            attributes
+                .lines()
+                .any(|line| line == format!("{path}: eol: lf")),
+            "{path} must be checked out with LF bytes so evidence hashes are platform-stable"
+        );
+    }
+}
 
 #[test]
 fn conformance_manifest_hashes_and_generator_cover_committed_fixtures() {

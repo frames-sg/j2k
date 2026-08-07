@@ -6,3 +6,4 @@
 *.j2c binary
 *.jp2 binary
 *.jph binary
+corpus/j2k-conformance/*.toml text eol=lf
