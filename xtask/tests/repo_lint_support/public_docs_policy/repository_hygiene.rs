@@ -152,14 +152,6 @@ fn release_facing_docs_match_the_latest_release_tag() {
             "docs/env-vars.md",
             format!("Stable: supported for the published v{minor_line} contract."),
         ),
-        (
-            "engineering/burn-community-notice-draft.md",
-            format!("`j2k-ml {version}` is published on crates.io."),
-        ),
-        (
-            "engineering/j2k-ml-adoption-release.md",
-            format!("# `j2k-ml {version}` adoption follow-up"),
-        ),
     ];
     for (relative, expected) in checks {
         let source = fs::read_to_string(root.join(relative))

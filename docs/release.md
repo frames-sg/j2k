@@ -45,36 +45,38 @@ that are absent from the selected registry releases. The `cpu` feature is
 unaffected. The published `0.8.0` adapters instead perform accelerator codec
 decode, explicit decoded-pixel readback, and ordinary Burn tensor upload using
 released public APIs. Do not recommend the defective 0.7.5 accelerator
-features. Any Burn community notice still requires the post-publication
-exact-version consumer and benchmark evidence listed in the notice draft.
+features.
 
 Version `0.8.0` was intentionally source- and behavior-incompatible
 with `0.7.5`: decode entry points become strict by default, explicit leniency
 is limited to the documented JP2/JPH metadata recoveries, warnings report
 actual recovery rather than lenient configuration, and
 `J2kDecodeWarning::LenientDecodeMode` becomes
-`J2kDecodeWarning::LenientMetadataRecovery`. The
-[reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md) records
-the release's generated signature diff, and the adjacent
-[review configuration](../engineering/public-api-review-0.8.0.yml) contains the
-exact source- and behavior-break ledger with migrations.
+`J2kDecodeWarning::LenientMetadataRecovery`. The [reviewed API
+report][v0.8.0-api-report] records the release's generated signature diff, and
+the adjacent [review configuration][v0.8.0-api-review] contains the exact
+source- and behavior-break ledger with migrations.
 
-Version `0.8.1` compares directly with published `v0.8.0`. Its
-[reviewed API report](../engineering/reviewed-public-api-diff-0.8.1.md) and
-[review configuration](../engineering/public-api-review-0.8.1.yml) record an
-additive-only public surface: exact-resolution and sRGB/ICC decode APIs,
-encode-stage context, and the shared irreversible midpoint calculation. The
-one-time `0.7.5` to `0.8.0` transition allowance has been removed.
+Version `0.8.1` compares directly with published `v0.8.0`. Its [reviewed API
+report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md) and
+[review configuration](release-evidence/public-api/public-api-review-0.8.1.yml)
+record an additive-only public surface: exact-resolution and sRGB/ICC decode
+APIs, encode-stage context, and the shared irreversible midpoint calculation.
+The one-time `0.7.5` to `0.8.0` transition allowance has been removed.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
 not claim source compatibility with `0.6.x`. The
-[`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
-[reviewed API report](../engineering/reviewed-public-api-diff-0.7.3.md)
-records the additions, removals, and changed signatures. That report was
-regenerated, independently reviewed, and verified for the published tag.
-Any report prepared for a future release remains provisional until it is
-regenerated and verified after that release's final source freeze.
+[`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the [reviewed API
+report][v0.7.3-api-report] records the additions, removals, and changed
+signatures. That report was regenerated, independently reviewed, and verified
+for the published tag. Any report prepared for a future release remains
+provisional until it is regenerated and verified after that release's final
+source freeze.
+
+[v0.7.3-api-report]: https://github.com/frames-sg/j2k/blob/v0.7.3/engineering/reviewed-public-api-diff-0.7.3.md
+[v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
+[v0.8.0-api-review]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/public-api-review-0.8.0.yml
 
 ## Candidate freeze and exact-SHA evidence
 

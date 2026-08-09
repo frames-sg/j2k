@@ -31,7 +31,7 @@ METAL_ROOTS = frozenset(
     }
 )
 SHARED_GPU_PACKAGES = frozenset({"j2k-ml"})
-DOCUMENTATION_PREFIXES = ("docs/", "engineering/")
+DOCUMENTATION_PREFIXES = ("docs/",)
 DOCUMENTATION_PATHS = frozenset(
     {
         "CHANGELOG.md",
@@ -47,8 +47,7 @@ DOCUMENTATION_PATHS = frozenset(
 )
 QUALITY_EVIDENCE_PREFIXES = (
     "docs/stable-api-",
-    "engineering/public-api-review-",
-    "engineering/reviewed-public-api-diff-",
+    "docs/release-evidence/public-api/",
 )
 BROAD_PATHS = frozenset(
     {
