@@ -20,6 +20,35 @@ cargo xtask doc
 Comparator benchmarks may need optional system libraries. The workspace README
 defines benchmark publication and no-silent-skip behavior.
 
+`cargo xtask repo-lint` is reserved for repository invariants that Cargo,
+rustc, Clippy, behavior tests, or a standard external tool cannot express. It
+may enforce release-manifest ordering, public-API inventory agreement,
+dependency and corpus provenance, workflow permissions, and fail-closed
+hardware gates. It must not freeze private file layout, helper names, line
+counts, test names, or formatting already owned by the toolchain.
+
+`cargo xtask clone-audit` runs the checked-in production and test/support clone
+lanes with the pinned scanner and thresholds in `.jscpd.json` and
+`.jscpd-tests.json`. New substantial clones should be consolidated or explained
+in the pull request with the distinct ownership or lifecycle that requires
+them.
+
+Before removing a repository policy, identify the invariant it protects and
+replace it with compiler enforcement, direct tests, parsed structural checks,
+or measured evidence where applicable. Historical teardown diaries are not a
+substitute for the current executable gate.
+
+## Documentation Ownership
+
+- Current workspace boundaries and durable design rationale belong in
+  `docs/architecture.md` or the owning crate's README.
+- Contributor workflow and repository-quality policy belong in this file.
+- Generated evidence required by release tooling belongs under
+  `docs/release-evidence/` in a narrowly named category.
+- Temporary plans, completed audit diaries, handoff notes, and communication
+  drafts belong in issues, pull requests, or release records rather than a
+  generic top-level documentation directory.
+
 ## Pull Requests
 
 - Keep changes scoped to one codec, adapter, or documentation topic when

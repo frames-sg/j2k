@@ -47,7 +47,8 @@ the candidate directly with published 0.8.0. Both reports also record each
 package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
-count/fingerprint in `engineering/public-api-review-0.8.1.yml`.
+count/fingerprint in
+`docs/release-evidence/public-api/public-api-review-0.8.1.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
 The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
@@ -73,11 +74,13 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The completed 0.7.5-to-0.8.0 comparison is in the generated
-[`0.8.0` reviewed API report](../engineering/reviewed-public-api-diff-0.8.0.md).
+[`0.8.0` reviewed API report][v0.8.0-api-report].
 That report became release evidence after source freeze and the exact-SHA
 local, hosted, Metal, and CUDA gates completed. The current comparison is in
 the generated
-[`0.8.1` reviewed API report](../engineering/reviewed-public-api-diff-0.8.1.md).
+[`0.8.1` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md).
+
+[v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
 The currently published stable contract is the `0.8.x` line. Version `0.8.0`
 intentionally changed the strict-decoding behavior and one warning variant

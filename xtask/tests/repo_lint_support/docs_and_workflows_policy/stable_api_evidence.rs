@@ -15,23 +15,34 @@ struct SummaryEvidence {
 #[test]
 fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
     let root = repo_root();
-    let report = fs::read_to_string(root.join("engineering/reviewed-public-api-diff-0.7.5.md"))
-        .expect("read reviewed API diff report");
-    let config_source = fs::read_to_string(root.join("engineering/public-api-review-0.7.5.yml"))
-        .expect("read public API review config");
+    let report = fs::read_to_string(
+        root.join("docs/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md"),
+    )
+    .expect("read reviewed API diff report");
+    let config_source = fs::read_to_string(
+        root.join("docs/release-evidence/public-api/public-api-review-0.8.1.yml"),
+    )
+    .expect("read public API review config");
     let config: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&config_source).expect("parse public API review config");
     let config = config.as_mapping().expect("review config root mapping");
     assert_eq!(
         config.get("version").and_then(serde_yaml_ng::Value::as_u64),
-        Some(2),
+        Some(3),
         "review config schema must cover hidden inventory evidence"
     );
     assert_eq!(
         config
             .get("candidate_version")
             .and_then(serde_yaml_ng::Value::as_str),
-        Some("0.7.5")
+        Some("0.8.1")
+    );
+    assert!(
+        config
+            .get("break_ledger")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .is_some_and(Vec::is_empty),
+        "the additive 0.8.1 review must not carry a source-break exception"
     );
     let reviews = config
         .get("reviews")
@@ -53,10 +64,8 @@ fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
             "Hidden inventory fingerprint",
             "Full hidden-inventory fingerprint",
         ]),
-        PatternCheck::new("reviewed API diff patch exception", &report).required(&[
-            "explicitly reviewed source-incompatible patch candidate",
-            "compatibility checks use `major`",
-        ]),
+        PatternCheck::new("reviewed API report candidate", &report)
+            .required(&["- Candidate version: `0.8.1`"]),
     ]);
 }
 
