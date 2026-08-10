@@ -2,16 +2,14 @@
 
 use std::{borrow::Cow, ops::Range, sync::Arc};
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::Buffer;
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
     PixelFormat, SurfaceMetadata, SurfaceResidency,
 };
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
-#[cfg(target_os = "macos")]
-use metal::foreign_types::ForeignType;
-#[cfg(target_os = "macos")]
-use metal::Buffer;
 
 #[cfg(target_os = "macos")]
 use crate::error::metal_kernel_support_error;
@@ -152,12 +150,22 @@ impl Surface {
     /// ensure that no CPU or GPU access through the returned handle (or a clone
     /// of it) mutates the surface range while this surface or any clone sharing
     /// the allocation remains alive.
-    pub unsafe fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+    pub unsafe fn metal_buffer(
+        &self,
+    ) -> Option<(
+        &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
+        usize,
+    )> {
         self.metal_buffer_trusted()
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
+    pub(crate) fn metal_buffer_trusted(
+        &self,
+    ) -> Option<(
+        &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
+        usize,
+    )> {
         match &self.storage {
             Storage::Metal(image) => {
                 // SAFETY: backend code binds this private handle under the
@@ -272,7 +280,7 @@ impl DeviceSurface for Surface {
                 BackendKind::Metal,
                 // SAFETY: reading the handle identity does not access or mutate
                 // the allocation, and this surface retains the resident owner.
-                u64::try_from(unsafe { image.raw_buffer() }.as_ptr() as usize).ok()?,
+                u64::try_from(core::ptr::from_ref(unsafe { image.raw_buffer() }).addr()).ok()?,
                 image.byte_offset(),
                 self.byte_len(),
             )),

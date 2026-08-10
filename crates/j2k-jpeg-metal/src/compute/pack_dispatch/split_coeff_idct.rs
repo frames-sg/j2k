@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
 use super::super::{
     dispatch_1d_pipeline, dispatch_3d_pipeline, new_compute_command_encoder, Buffer,
@@ -49,68 +49,36 @@ pub(in crate::compute) fn encode_split_coeff_idct_passes(
     let (coeff_blocks, dc_only_flags) = scratch;
 
     let coeff_encoder = new_compute_command_encoder(command_buffer)?;
-    coeff_encoder.set_compute_pipeline_state(coeffs_pipeline);
-    coeff_encoder.set_buffer(0, Some(entropy_payload), 0);
-    coeff_encoder.set_buffer(1, Some(coeff_blocks), 0);
-    coeff_encoder.set_buffer(2, Some(dc_only_flags), 0);
-    coeff_encoder.set_bytes(
-        4,
-        size_of::<JpegFast420BatchParams>() as u64,
-        (&raw const *params).cast(),
-    );
-    coeff_encoder.set_bytes(5, size_of::<[u16; 64]>() as u64, quants[0].as_ptr().cast());
-    coeff_encoder.set_bytes(6, size_of::<[u16; 64]>() as u64, quants[1].as_ptr().cast());
-    coeff_encoder.set_bytes(7, size_of::<[u16; 64]>() as u64, quants[2].as_ptr().cast());
-    coeff_encoder.set_bytes(
-        8,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[0]).cast(),
-    );
-    coeff_encoder.set_bytes(
-        9,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[0]).cast(),
-    );
-    coeff_encoder.set_bytes(
-        10,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[1]).cast(),
-    );
-    coeff_encoder.set_bytes(
-        11,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[1]).cast(),
-    );
-    coeff_encoder.set_bytes(
-        12,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[2]).cast(),
-    );
-    coeff_encoder.set_bytes(
-        13,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[2]).cast(),
-    );
-    coeff_encoder.set_buffer(14, Some(entropy_offsets), 0);
-    coeff_encoder.set_buffer(15, Some(entropy_lens), 0);
-    coeff_encoder.set_buffer(16, Some(status_buffer), 0);
-    coeff_encoder.set_buffer(17, Some(entropy_checkpoints), 0);
+    coeff_encoder.setComputePipelineState(coeffs_pipeline);
+    coeff_encoder.bind_buffer(0, Some(entropy_payload), 0);
+    coeff_encoder.bind_buffer(1, Some(coeff_blocks), 0);
+    coeff_encoder.bind_buffer(2, Some(dc_only_flags), 0);
+    coeff_encoder.bind_bytes::<JpegFast420BatchParams>(4, params);
+    coeff_encoder.bind_bytes::<[u16; 64]>(5, quants[0]);
+    coeff_encoder.bind_bytes::<[u16; 64]>(6, quants[1]);
+    coeff_encoder.bind_bytes::<[u16; 64]>(7, quants[2]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(8, &dc_tables[0]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(9, &ac_tables[0]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(10, &dc_tables[1]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(11, &ac_tables[1]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(12, &dc_tables[2]);
+    coeff_encoder.bind_bytes::<PreparedHuffmanHost>(13, &ac_tables[2]);
+    coeff_encoder.bind_buffer(14, Some(entropy_offsets), 0);
+    coeff_encoder.bind_buffer(15, Some(entropy_lens), 0);
+    coeff_encoder.bind_buffer(16, Some(status_buffer), 0);
+    coeff_encoder.bind_buffer(17, Some(entropy_checkpoints), 0);
     dispatch_1d_pipeline(&coeff_encoder, coeffs_pipeline, total_decode_threads);
-    coeff_encoder.end_encoding();
+    coeff_encoder.endEncoding();
 
     let idct_encoder = new_compute_command_encoder(command_buffer)?;
-    idct_encoder.set_compute_pipeline_state(idct_pipeline);
-    idct_encoder.set_buffer(0, Some(coeff_blocks), 0);
-    idct_encoder.set_buffer(1, Some(dc_only_flags), 0);
-    idct_encoder.set_buffer(2, Some(planes[0]), 0);
-    idct_encoder.set_buffer(3, Some(planes[1]), 0);
-    idct_encoder.set_buffer(4, Some(planes[2]), 0);
-    idct_encoder.set_bytes(
-        5,
-        size_of::<JpegFast420BatchParams>() as u64,
-        (&raw const *params).cast(),
-    );
+    idct_encoder.setComputePipelineState(idct_pipeline);
+    idct_encoder.bind_buffer(0, Some(coeff_blocks), 0);
+    idct_encoder.bind_buffer(1, Some(dc_only_flags), 0);
+    idct_encoder.bind_buffer(2, Some(planes[0]), 0);
+    idct_encoder.bind_buffer(3, Some(planes[1]), 0);
+    idct_encoder.bind_buffer(4, Some(planes[2]), 0);
+    idct_encoder.bind_bytes::<JpegFast420BatchParams>(5, params);
     dispatch_3d_pipeline(&idct_encoder, idct_pipeline, idct_grid);
-    idct_encoder.end_encoding();
+    idct_encoder.endEncoding();
     Ok(())
 }

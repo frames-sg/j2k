@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::{Buffer, BufferRef, DeviceRef};
 use j2k_core::accelerator::GpuAbi;
 use j2k_metal_support::{
     checked_buffer_fill_bytes, checked_buffer_read as support_checked_buffer_read,
     checked_buffer_read_vec, checked_buffer_write, checked_private_buffer, checked_shared_buffer,
     checked_shared_buffer_with_bytes, checked_shared_buffer_with_slice, MetalSupportError,
 };
-use metal::{Buffer, DeviceRef};
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -86,7 +86,10 @@ fn buffer_readback_error(context: &str, error: MetalSupportError) -> Error {
     buffer_access_error(context, error)
 }
 
-pub(crate) fn checked_buffer_read<T: GpuAbi>(buffer: &Buffer, context: &str) -> Result<T, Error> {
+pub(crate) fn checked_buffer_read<T: GpuAbi>(
+    buffer: &BufferRef,
+    context: &str,
+) -> Result<T, Error> {
     // SAFETY: JPEG readback helpers are called only for CPU-initialized buffers
     // or after `commit_and_wait_jpeg` has completed the producing commands.
     unsafe { support_checked_buffer_read::<T>(buffer, 0) }
@@ -94,7 +97,7 @@ pub(crate) fn checked_buffer_read<T: GpuAbi>(buffer: &Buffer, context: &str) -> 
 }
 
 pub(crate) fn checked_buffer_slice<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &BufferRef,
     len: usize,
     context: &str,
 ) -> Result<Vec<T>, Error> {
@@ -102,7 +105,7 @@ pub(crate) fn checked_buffer_slice<T: GpuAbi>(
 }
 
 pub(crate) fn checked_buffer_slice_at<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &BufferRef,
     byte_offset: usize,
     len: usize,
     context: &str,
@@ -114,7 +117,7 @@ pub(crate) fn checked_buffer_slice_at<T: GpuAbi>(
 }
 
 pub(crate) fn checked_copy_bytes_to_buffer_at(
-    buffer: &Buffer,
+    buffer: &BufferRef,
     byte_offset: usize,
     bytes: &[u8],
     context: &str,
@@ -126,7 +129,7 @@ pub(crate) fn checked_copy_bytes_to_buffer_at(
 }
 
 pub(crate) fn checked_fill_buffer_u8(
-    buffer: &Buffer,
+    buffer: &BufferRef,
     len: usize,
     value: u8,
     context: &str,

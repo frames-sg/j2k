@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 use std::time::Instant;
 
-use metal::{Buffer, CommandBufferRef, ComputeCommandEncoderRef};
+use crate::metal_types::{Buffer, CommandBufferRef, ComputeCommandEncoderRef};
 
 use super::decode_dispatch::mct::dispatch_inverse_mct_buffers_in_command_buffer;
 use super::direct_grayscale_execute::{

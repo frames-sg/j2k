@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 #[cfg(test)]
 use super::MetalBatchScratch;
 use super::{
@@ -128,7 +130,7 @@ fn encode_fast_subsampled_full_rgba_staged_decode<P: FastSubsampledMetal>(
         FastBatchDecodeMode::Fused => {
             let decode_pipeline = P::full_rgb_batch_decode_pipeline(pass.runtime);
             let decoder_encoder = new_compute_command_encoder(pass.command_buffer)?;
-            decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+            decoder_encoder.setComputePipelineState(decode_pipeline);
             bind_fast_decode_entropy_inputs::<JpegFast420BatchParams>(
                 &decoder_encoder,
                 &FastDecodeEntropyInputs {
@@ -147,13 +149,13 @@ fn encode_fast_subsampled_full_rgba_staged_decode<P: FastSubsampledMetal>(
                     slot16_buffer: pass.status_buffer,
                 },
             );
-            decoder_encoder.set_buffer(17, Some(&pass.entropy_buffers.checkpoints), 0);
+            decoder_encoder.bind_buffer(17, Some(&pass.entropy_buffers.checkpoints), 0);
             dispatch_1d_pipeline(
                 &decoder_encoder,
                 decode_pipeline,
                 pass.shape.total_decode_threads,
             );
-            decoder_encoder.end_encoding();
+            decoder_encoder.endEncoding();
         }
         #[cfg(test)]
         FastBatchDecodeMode::SplitCoeffIdct => {

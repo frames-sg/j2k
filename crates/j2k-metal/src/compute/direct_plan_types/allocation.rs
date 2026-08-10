@@ -2,9 +2,12 @@
 
 //! Actual retained host/device accounting for prepared direct-plan owners.
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 
-use metal::BufferRef;
+use crate::metal_types::BufferRef;
 
 use super::{
     PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
@@ -40,8 +43,7 @@ impl PreparedPlanRetainedBytes {
     }
 
     fn include_buffer(&mut self, buffer: &BufferRef) -> Result<(), &'static str> {
-        let bytes = usize::try_from(buffer.length())
-            .map_err(|_| "Metal prepared-plan buffer length does not fit usize")?;
+        let bytes = buffer.length();
         self.device = self
             .device
             .checked_add(bytes)

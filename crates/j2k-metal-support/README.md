@@ -9,6 +9,13 @@ command buffers and encoders are retained into owned Rust handles before they
 leave the constructor boundary. Codec-specific kernels stay in the codec
 adapter crates.
 
+Version 0.9 exposes this ownership model directly. Owned expert values are
+`objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTL...>>`; borrowed
+values are `&ProtocolObject<dyn MTL...>`. Submission guards retain command
+buffers, resources, and events until `wait` or blocking `Drop`, and exact
+resource/queue matching uses pointer identity. There is no `metal-rs`
+compatibility feature.
+
 ## Links
 
 - API docs: <https://docs.rs/j2k-metal-support>

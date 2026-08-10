@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::{
     lossless_prepare_sizes, metal_profile_coefficient_prep_split_commands_enabled,
     new_command_buffer, prepare_lossless_batch_item, take_recyclable_private_buffer,

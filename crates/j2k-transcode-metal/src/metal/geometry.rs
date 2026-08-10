@@ -2,12 +2,12 @@
 
 use super::{
     bind_projection_band_buffers, buffer_with_slice, dispatch_projection_threads,
-    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, size_of,
-    try_transcode_vec_with_capacity, Buffer, ComputeCommandEncoderRef, DctBatchProjectionParams,
-    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
-    DctProjectionParams, Device, Htj2k97CodeBlockOptions, J2kSubBandType, MetalSparseRow,
-    MetalSparseRows, MetalTranscodeError, MetalWeightTap, Reversible53ProjectionParams,
-    SparseWeightRow, METAL_DCT97_UNSUPPORTED_GRID, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, try_transcode_vec_with_capacity,
+    Buffer, ComputeCommandEncoderRef, DctBatchProjectionParams, DctGridToDwt97Job,
+    DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, DctProjectionParams, Device,
+    Htj2k97CodeBlockOptions, J2kSubBandType, MetalSparseRow, MetalSparseRows, MetalTranscodeError,
+    MetalWeightTap, Reversible53ProjectionParams, SparseWeightRow, TranscodeComputeEncoderExt,
+    METAL_DCT97_UNSUPPORTED_GRID, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
 
 mod allocation;
@@ -102,11 +102,7 @@ pub(super) fn dispatch_reversible_band(
         horizontal_low: u32::from(geometry.horizontal_low),
     };
     encoder.set_buffer(1, Some(output), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<Reversible53ProjectionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<Reversible53ProjectionParams>(2, &params);
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),
@@ -134,11 +130,7 @@ pub(super) fn dispatch_band(
         band_height: geometry.band_height,
     };
     bind_projection_band_buffers(encoder, x_weights, y_weights, output);
-    encoder.set_bytes(
-        7,
-        size_of::<DctProjectionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<DctProjectionParams>(7, &params);
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),
@@ -168,11 +160,7 @@ pub(super) fn dispatch_band_batch(
         output_stride: geometry.output_stride,
     };
     bind_projection_band_buffers(encoder, x_weights, y_weights, output);
-    encoder.set_bytes(
-        7,
-        size_of::<DctBatchProjectionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<DctBatchProjectionParams>(7, &params);
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),

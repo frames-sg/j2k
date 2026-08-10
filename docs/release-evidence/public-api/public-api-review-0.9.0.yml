@@ -1,0 +1,310 @@
+version: 3
+baseline_tag: v0.8.1
+baseline_version: 0.8.1
+candidate_version: "0.9.0"
+break_ledger:
+  - id: metal-support-objc2-api
+    kind: source
+    packages: [j2k-metal-support]
+    removed_items:
+      - package: j2k-metal-support
+        item: "pub const fn j2k_metal_support::mtl_size(u64, u64, u64) -> metal::types::MTLSize"
+      - package: j2k-metal-support
+        item: "pub const fn j2k_metal_support::one_d_threads_per_group(u64) -> metal::types::MTLSize"
+      - package: j2k-metal-support
+        item: "pub const fn j2k_metal_support::two_d_threads_per_group(u64, u64) -> metal::types::MTLSize"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalImageDestination::validate_device(&self, &metal::device::DeviceRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalPipelineLoader::library(&self) -> &metal::library::Library"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalPipelineLoader::new(&metal::device::DeviceRef, &str) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalPipelineLoader::pipeline(&self, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device(&self) -> &metal::device::DeviceRef"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device_handle(&self) -> &metal::device::Device"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalRuntimeSession<R, E>::get_or_init_runtime(&self, impl core::ops::function::FnOnce(&metal::device::Device) -> core::result::Result<R, E>) -> &core::result::Result<R, E>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::MetalRuntimeSession<R, E>::new(metal::device::Device) -> Self"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::ResidentMetalImage::validate_device(&self, &metal::device::DeviceRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_blit_command_encoder(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<metal::encoder::BlitCommandEncoder, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_command_buffer(&metal::commandqueue::CommandQueueRef) -> core::result::Result<metal::commandbuffer::CommandBuffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_command_queue(&metal::device::DeviceRef) -> core::result::Result<metal::commandqueue::CommandQueue, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_compute_command_encoder(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<metal::encoder::ComputeCommandEncoder, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_private_buffer(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_private_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_shared_buffer(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_shared_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_shared_buffer_with_bytes(&metal::device::DeviceRef, &[u8]) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_shared_buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, &[T]) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_texture(&metal::device::DeviceRef, &metal::texture::TextureDescriptorRef) -> core::result::Result<metal::texture::Texture, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::checked_texture_descriptor() -> core::result::Result<metal::texture::TextureDescriptor, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::commit_and_wait(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::dispatch_1d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, u64)"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::dispatch_2d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32))"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::dispatch_3d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32, u32))"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::dispatch_single_thread(&metal::encoder::ComputeCommandEncoderRef)"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::ensure_completed(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::named_pipeline(&metal::device::DeviceRef, &metal::library::Library, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::shader_library(&metal::device::DeviceRef, &str) -> core::result::Result<metal::library::Library, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::system_default_device() -> core::result::Result<metal::device::Device, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub fn j2k_metal_support::wait_for_completion(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::MetalImageDestination::from_exclusive_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::MetalImageDestination::raw_buffer(&self) -> &metal::buffer::Buffer"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::ResidentMetalImage::from_completed_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::ResidentMetalImage::raw_buffer(&self) -> &metal::buffer::Buffer"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::SubmittedMetalImages::from_uncommitted(&metal::device::DeviceRef, metal::commandbuffer::CommandBuffer, alloc::vec::Vec<(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout)>, alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::checked_buffer_fill_bytes(&metal::buffer::Buffer, usize, usize, u8) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::checked_buffer_read<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize) -> core::result::Result<T, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::checked_buffer_read_vec<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, usize) -> core::result::Result<alloc::vec::Vec<T>, j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub unsafe fn j2k_metal_support::checked_buffer_write<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, &[T]) -> core::result::Result<(), j2k_metal_support::MetalSupportError>"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::BufferAllocation"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::BufferAllocation::message: alloc::string::String"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandBufferCreation"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandBufferCreation::message: alloc::string::String"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandEncoderCreation"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandEncoderCreation::kind: j2k_metal_support::MetalCommandEncoderKind"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandEncoderCreation::message: alloc::string::String"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandQueue"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::CommandQueue::message: alloc::string::String"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::TextureAllocation"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::TextureAllocation::message: alloc::string::String"
+      - package: j2k-metal-support
+        item: "pub j2k_metal_support::MetalSupportError::TextureDescriptorUnavailable"
+    summary: "The Metal support boundary now exposes retained objc2-metal protocol objects and typed Metal values instead of metal-rs owners and Ref wrappers; the obsolete descriptor helper and unreachable raw-message-send errors were removed."
+    migration: "Construct and pass Retained<ProtocolObject<dyn MTL...>> values, borrow ProtocolObject references, construct MTLTextureDescriptor directly, and handle the remaining typed allocation and unavailable-object errors."
+  - id: jpeg-metal-objc2-api
+    kind: source
+    packages: [j2k-jpeg-metal]
+    removed_items:
+      - package: j2k-jpeg-metal
+        item: "pub fn j2k_jpeg_metal::MetalBackendSession::device(&self) -> &metal::device::DeviceRef"
+      - package: j2k-jpeg-metal
+        item: "pub fn j2k_jpeg_metal::MetalBackendSession::new(metal::device::Device) -> Self"
+      - package: j2k-jpeg-metal
+        item: "pub fn j2k_jpeg_metal::MetalBatchTextureOutput::metal_pixel_format(&self) -> metal::constants::MTLPixelFormat"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::buffer(&self) -> &metal::buffer::BufferRef"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::new(&'a metal::buffer::Buffer, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &metal::buffer::BufferRef"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::MetalBatchTextureOutput::texture(&self, usize) -> core::option::Option<&metal::texture::TextureRef>"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::MetalTextureTile::texture(&self) -> &metal::texture::TextureRef"
+      - package: j2k-jpeg-metal
+        item: "pub unsafe fn j2k_jpeg_metal::Surface::metal_buffer(&self) -> core::option::Option<(&metal::buffer::Buffer, usize)>"
+    summary: "JPEG Metal sessions, textures, and resident-buffer expert APIs now expose objc2-metal protocol objects and pixel-format values."
+    migration: "Replace metal-rs device, buffer, texture, and pixel-format arguments with retained or borrowed objc2-metal protocol objects as ownership requires."
+  - id: j2k-metal-objc2-api
+    kind: source
+    packages: [j2k-metal]
+    removed_items:
+      - package: j2k-metal
+        item: "pub fn j2k_metal::MetalBackendSession::device(&self) -> &metal::device::DeviceRef"
+      - package: j2k-metal
+        item: "pub fn j2k_metal::MetalBackendSession::new(metal::device::Device) -> Self"
+      - package: j2k-metal
+        item: "pub fn j2k_metal::MetalBackendSession::with_command_queue(metal::device::Device, metal::commandqueue::CommandQueue) -> core::result::Result<Self, j2k_metal::Error>"
+      - package: j2k-metal
+        item: "pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into_for_consumer_queue(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination, &metal::commandqueue::CommandQueueRef) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>"
+      - package: j2k-metal
+        item: "pub fn j2k_metal::SubmittedMetalGroupDecodeInto::enqueue_consumer_wait(&mut self, &metal::commandqueue::CommandQueueRef) -> core::result::Result<(), j2k_metal::Error>"
+      - package: j2k-metal
+        item: "pub unsafe fn j2k_metal::MetalEncodedJ2k::from_raw_parts(metal::buffer::Buffer, core::ops::range::Range<usize>, usize, (u32, u32), u8, u8, bool) -> core::result::Result<Self, j2k_metal::Error>"
+      - package: j2k-metal
+        item: "pub unsafe fn j2k_metal::MetalEncodedJ2k::into_codestream_buffer(self) -> metal::buffer::Buffer"
+      - package: j2k-metal
+        item: "pub unsafe fn j2k_metal::MetalLosslessEncodeTile<'a>::from_buffer(&'a metal::buffer::Buffer, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self"
+      - package: j2k-metal
+        item: "pub unsafe fn j2k_metal::MetalResidentBatch::metal_buffer(&self) -> &metal::buffer::Buffer"
+      - package: j2k-metal
+        item: "pub unsafe fn j2k_metal::Surface::metal_buffer(&self) -> core::option::Option<(&metal::buffer::Buffer, usize)>"
+    summary: "J2K Metal sessions, consumer queues, encoded buffers, and resident-buffer expert APIs now expose objc2-metal ownership directly."
+    migration: "Replace metal-rs Device, CommandQueue, and Buffer values with retained objc2-metal protocol objects and borrowed protocol references."
+  - id: transcode-metal-objc2-api
+    kind: source
+    packages: [j2k-transcode-metal]
+    removed_items:
+      - package: j2k-transcode-metal
+        item: "pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto_with_device(metal::device::Device) -> Self"
+      - package: j2k-transcode-metal
+        item: "pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit_with_device(metal::device::Device) -> Self"
+      - package: j2k-transcode-metal
+        item: "pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::with_device(self, metal::device::Device) -> Self"
+      - package: j2k-transcode-metal
+        item: "pub fn j2k_transcode_metal::MetalTranscodeSession::new(metal::device::Device) -> Self"
+    summary: "Metal transcode constructors now take retained objc2-metal device protocol objects instead of metal-rs Device values."
+    migration: "Create or retain a ProtocolObject<dyn MTLDevice> with objc2-metal and pass its Retained owner to the transcode constructor."
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 189
+    hidden_fingerprint: "fnv1a64:b87aa26da547e491"
+    rationale: "Reviewed the complete ordinary j2k-core surface against v0.8.1; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-core inventory; decode contracts, planning types, validation boundaries, and typed failures are unchanged from v0.8.1."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the complete ordinary j2k-profile surface against v0.8.1; its documented surface remains the crate module root only."
+    hidden_rationale: "Reviewed the complete hidden profiling inventory; capture ownership, controls, and callable profiling surfaces are unchanged from v0.8.1."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:123e85c6e67ae535"
+    hidden_count: 57
+    hidden_fingerprint: "fnv1a64:338f28d060e145ae"
+    rationale: "Reviewed the two additive HTJ2K magnitude-bound accessors; they expose accelerator diagnostics without changing any existing signature or default behavior."
+    hidden_rationale: "Reviewed the complete hidden j2k-types inventory, including the corresponding accelerator reporting state; no hidden public contract was removed."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete ordinary and hidden j2k-codec-math inventories against v0.8.1; no public API item changed."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 1093
+    hidden_fingerprint: "fnv1a64:0c13ab1f1405e36a"
+    rationale: "Reviewed the complete ordinary j2k-cuda-runtime surface against v0.8.1; no ordinary public API item changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA runtime inventory, including current HTJ2K magnitude-bound state; no hidden public item was removed."
+  j2k-metal-support:
+    removed_fingerprint: "fnv1a64:7818945d8af2ad19"
+    added_fingerprint: "fnv1a64:975dd37803e8a6a2"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:02139606f1202938"
+    rationale: "Reviewed all 55 removals or signature changes and 54 objc2-metal additions. The support crate now owns devices, queues, command buffers, encoders, resources, pipelines, and events with retained objc2 protocol objects; callers construct texture descriptors directly, and unreachable raw-message-send error variants are no longer exposed."
+    hidden_rationale: "Reviewed the complete hidden support inventory after the ownership migration, including retained Objective-C objects and checked allocation, command, completion, and buffer-access boundaries."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:49c281fc612720fc"
+    hidden_count: 683
+    hidden_fingerprint: "fnv1a64:f6f62471065f9f46"
+    rationale: "Reviewed the additive HTJ2K capability inspection types, accessors, and typed CAP/CPF failures. They expose parsed codestream metadata without removing existing decode APIs."
+    hidden_rationale: "Reviewed the complete hidden native inventory supporting capability parsing, mixed block coding, exact reconstruction, and typed failures; no hidden public contract was removed."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 550
+    hidden_fingerprint: "fnv1a64:d2bd76732f32e066"
+    rationale: "Reviewed the complete ordinary j2k-jpeg surface against v0.8.1; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG inventory, including codec context, batch, decode, and typed error boundaries; it is unchanged from v0.8.1."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the complete ordinary j2k-tilecodec surface against v0.8.1; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden tilecodec inventory, including codec, scratch, and source-preserving error boundaries; it is unchanged from v0.8.1."
+  j2k:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:e46ed19a65e41b08"
+    hidden_count: 105
+    hidden_fingerprint: "fnv1a64:439bc4b61c1ec5b3"
+    rationale: "Reviewed the additive channel-definition implementation and raw association/type accessors. They expose preserved JP2 metadata without changing existing decode entry points."
+    hidden_rationale: "Reviewed the complete hidden j2k inventory; retained plans, validation, adapters, and typed error boundaries remain compatible with v0.8.1."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:989f3a9519cddfd0"
+    hidden_count: 458
+    hidden_fingerprint: "fnv1a64:7932adfbeacc95f0"
+    rationale: "Reviewed the additive accessor for the last HTJ2K 9/7 magnitude bounds; it reports stage diagnostics without changing routing or transform behavior."
+    hidden_rationale: "Reviewed the complete hidden transcode inventory, including magnitude-bound accounting, transforms, packetization, resident handoff, and typed errors."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 18
+    hidden_fingerprint: "fnv1a64:6f5f3ec742bd8f61"
+    rationale: "Reviewed the complete ordinary j2k-transcode-cuda surface against v0.8.1; no ordinary public API item changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA transcode inventory, including magnitude-bound reporting, routing, resident handoff, and source-preserving failures."
+  j2k-jpeg-metal:
+    removed_fingerprint: "fnv1a64:94183c7862812373"
+    added_fingerprint: "fnv1a64:d12449a61ca74753"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:47b67dd1a1574b00"
+    rationale: "Reviewed all nine metal-rs removals and fifteen objc2-metal additions. Sessions, encode tiles, resident buffers, texture outputs, and pixel formats now expose retained or borrowed objc2 protocol objects; the additional Send and Sync implementations follow retained ownership."
+    hidden_rationale: "Reviewed the complete hidden JPEG Metal inventory after the host API migration, including retained session, resource, texture, and command lifetimes and typed Metal failures."
+  j2k-metal:
+    removed_fingerprint: "fnv1a64:dcefa432c9f9e386"
+    added_fingerprint: "fnv1a64:fc937a0b1b73db0a"
+    hidden_count: 315
+    hidden_fingerprint: "fnv1a64:814d79b9d14edc7c"
+    rationale: "Reviewed the ten exact expert-API substitutions from metal-rs to objc2-metal. Device and queue constructors, cross-queue synchronization, raw resident buffers, encode tiles, and encoded-buffer handoffs now use retained or borrowed protocol objects without a compatibility adapter."
+    hidden_rationale: "Reviewed the complete hidden J2K Metal inventory, including retained command and resource lifetimes, shared-event ordering, pointer identity, GPU timing, capture, buffer pools, and benchmark-only constructors."
+  j2k-transcode-metal:
+    removed_fingerprint: "fnv1a64:b03356569187d1f6"
+    added_fingerprint: "fnv1a64:2368298d03ffdc5e"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:5bf8a22a33753a2d"
+    rationale: "Reviewed the four transcode constructor substitutions. Each now takes a retained objc2 MTLDevice protocol object and no metal-rs compatibility surface remains."
+    hidden_rationale: "Reviewed the complete hidden Metal transcode inventory, including retained buffers, command queues, pipelines, projection paths, resident handoff, and typed failures."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 124
+    hidden_fingerprint: "fnv1a64:0b31ccb3e7974bc4"
+    rationale: "Reviewed the complete ordinary j2k-jpeg-cuda surface against v0.8.1; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG CUDA inventory, including session-bound execution, allocation accounting, and typed runtime failures; it is unchanged from v0.8.1."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 186
+    hidden_fingerprint: "fnv1a64:31552954b6e69931"
+    rationale: "Reviewed the complete ordinary j2k-cuda surface against v0.8.1; no ordinary public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden J2K CUDA inventory, including magnitude-bound reporting, completion uncertainty, device identity, event ordering, pools, and guarded interop."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete j2k-ml ordinary and hidden inventories against v0.8.1; no public API item was added, removed, or changed."

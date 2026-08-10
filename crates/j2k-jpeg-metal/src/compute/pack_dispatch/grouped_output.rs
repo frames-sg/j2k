@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::buffers::new_shared_buffer;
+use objc2::Message;
+use objc2_metal::{MTLBlitCommandEncoder, MTLCommandEncoder};
 
 use super::super::{
     commit_and_wait_jpeg, new_blit_command_encoder, new_command_buffer, Buffer, BufferError, Error,
@@ -103,7 +105,7 @@ pub(in crate::compute) fn copy_grouped_surfaces_to_output(
                         message: "JPEG Metal grouped buffer destination offset overflowed"
                             .to_string(),
                     })?;
-                copies.push((source.clone(), source_offset, destination_offset));
+                copies.push((source.retain(), source_offset, destination_offset));
                 mapped_results.push((
                     original_index,
                     Ok(Surface::from_batch_output_buffer_offset(
@@ -122,21 +124,20 @@ pub(in crate::compute) fn copy_grouped_surfaces_to_output(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let blit = new_blit_command_encoder(&command_buffer)?;
         for (source, source_offset, destination_offset) in copies {
-            blit.copy_from_buffer(
-                &source,
-                u64::try_from(source_offset).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Metal grouped buffer source offset exceeds u64".to_string(),
-                })?,
-                &output_buffer,
-                u64::try_from(destination_offset).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Metal grouped buffer destination offset exceeds u64".to_string(),
-                })?,
-                u64::try_from(out_tile_len).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Metal grouped buffer copy size exceeds u64".to_string(),
-                })?,
-            );
+            // SAFETY: The grouped-copy plan validates every source tile and
+            // destination slot against their retained allocations before this
+            // encoder is created. Both buffers remain owned through completion.
+            unsafe {
+                blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                    &source,
+                    source_offset,
+                    &output_buffer,
+                    destination_offset,
+                    out_tile_len,
+                );
+            }
         }
-        blit.end_encoding();
+        blit.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
     }
 

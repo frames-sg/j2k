@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 #[cfg(test)]
 use super::super::DirectStatusCheck;
 use super::super::{
@@ -7,8 +10,8 @@ use super::super::{
     wait_for_completion_metal, Arc, CommandBuffer, DirectExecutionMetadata,
     DirectStatusRetirementMode, Error, MetalRuntime,
 };
+use crate::metal_types::{CommandQueue, CommandQueueRef, Event, SharedEvent};
 use crate::MetalDecodeDispatchReport;
-use metal::{foreign_types::ForeignType, CommandQueue, CommandQueueRef, Event, SharedEvent};
 
 pub(crate) enum DirectDestinationConsumerOrdering {
     Deferred,
@@ -42,8 +45,8 @@ impl SubmittedDirectDestination {
         &mut self,
         consumer_queue: &CommandQueueRef,
     ) -> Result<(), Error> {
-        let producer_registry_id = self.runtime.device.registry_id();
-        let consumer_registry_id = consumer_queue.device().registry_id();
+        let producer_registry_id = self.runtime.device.registryID();
+        let consumer_registry_id = consumer_queue.device().registryID();
         if producer_registry_id != consumer_registry_id {
             return Err(crate::error::metal_kernel_support_error(
                 "J2K Metal consumer queue belongs to a different device",
@@ -71,7 +74,9 @@ impl SubmittedDirectDestination {
             });
         };
         let wait_command = new_command_buffer(consumer_queue)?;
-        wait_command.encode_wait_for_event(completion_event, 1);
+        let completion_event: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLEvent> =
+            objc2::runtime::ProtocolObject::from_ref(&**completion_event);
+        wait_command.encodeWaitForEvent_value(completion_event, 1);
         wait_command.commit();
         #[cfg(test)]
         crate::compute::test_counters::record_direct_destination_event_wait();
@@ -107,13 +112,15 @@ impl SubmittedDirectDestination {
             .iter()
             .map(|status| match status {
                 DirectStatusCheck::Classic { buffer, .. }
-                | DirectStatusCheck::Ht { buffer, .. } => buffer.as_ptr() as usize,
+                | DirectStatusCheck::Ht { buffer, .. } => {
+                    objc2::rc::Retained::as_ptr(buffer).addr()
+                }
             })
             .collect();
         let scratch = metadata
             .scratch_buffers
             .iter()
-            .map(|owner| owner.buffer.buffer().as_ptr() as usize)
+            .map(|owner| objc2::rc::Retained::as_ptr(owner.buffer.buffer()).addr())
             .collect();
         (statuses, scratch)
     }
@@ -169,6 +176,10 @@ impl Drop for SubmittedDirectDestination {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one submission boundary keeps command commitment, event ownership, and same-queue ordering visibly atomic"
+)]
 pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
     runtime: Arc<MetalRuntime>,
     command_buffer: CommandBuffer,
@@ -184,8 +195,16 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
         DirectDestinationConsumerOrdering::Deferred => {
             #[cfg(test)]
             crate::compute::test_counters::record_direct_destination_event_allocation();
-            let event = runtime.device.new_shared_event();
-            command_buffer.encode_signal_event(&event, 1);
+            let event =
+                j2k_metal_support::checked_shared_event(&runtime.device).map_err(|source| {
+                    crate::error::metal_kernel_support_error(
+                        "J2K Metal direct destination shared-event allocation",
+                        source,
+                    )
+                })?;
+            let event_ref: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLEvent> =
+                objc2::runtime::ProtocolObject::from_ref(&*event);
+            command_buffer.encodeSignalEvent_value(event_ref, 1);
             #[cfg(test)]
             crate::compute::test_counters::record_direct_destination_event_signal();
             command_buffer.commit();
@@ -198,7 +217,9 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
         DirectDestinationConsumerOrdering::Known {
             consumer_queue,
             timeline: _,
-        } if consumer_queue.as_ptr() == runtime.queue.as_ptr() => {
+        } if objc2::rc::Retained::as_ptr(&consumer_queue)
+            == objc2::rc::Retained::as_ptr(&runtime.queue) =>
+        {
             command_buffer.commit();
             None
         }
@@ -206,8 +227,8 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
             consumer_queue,
             timeline,
         } => {
-            let producer_registry_id = runtime.device.registry_id();
-            let consumer_registry_id = consumer_queue.device().registry_id();
+            let producer_registry_id = runtime.device.registryID();
+            let consumer_registry_id = consumer_queue.device().registryID();
             if producer_registry_id != consumer_registry_id {
                 return Err(crate::error::metal_kernel_support_error(
                     "J2K Metal consumer queue belongs to a different device",
@@ -232,18 +253,27 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
                     state: "J2K Metal consumer event timeline",
                     reason: "event timeline value overflowed",
                 })?;
-            let event = timeline
-                .event
-                .get_or_insert_with(|| {
+            let event = if let Some(event) = timeline.event.as_ref() {
+                event.clone()
+            } else {
+                let event =
+                    j2k_metal_support::checked_event(&runtime.device).map_err(|source| {
+                        crate::error::metal_kernel_support_error(
+                            "J2K Metal direct destination event allocation",
+                            source,
+                        )
+                    })?;
+                timeline.event = Some(event.clone());
+                {
                     #[cfg(test)]
                     crate::compute::test_counters::record_direct_destination_event_allocation();
-                    runtime.device.new_event()
-                })
-                .clone();
-            command_buffer.encode_signal_event(&event, value);
+                }
+                event
+            };
+            command_buffer.encodeSignalEvent_value(&event, value);
             #[cfg(test)]
             crate::compute::test_counters::record_direct_destination_event_signal();
-            wait_command.encode_wait_for_event(&event, value);
+            wait_command.encodeWaitForEvent_value(&event, value);
             timeline.next_value = value;
             command_buffer.commit();
             wait_command.commit();
@@ -253,7 +283,7 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
             consumer_waits.push(wait_command);
             #[cfg(test)]
             {
-                known_consumer_event_ptr = Some(event.as_ptr() as usize);
+                known_consumer_event_ptr = Some(objc2::rc::Retained::as_ptr(&event).addr());
                 known_consumer_value = Some(value);
             }
             Some(DirectDestinationCompletionDependency::Known { _event: event })

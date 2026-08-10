@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::CommandBuffer;
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use crate::metal_types::CommandBuffer;
 
 use super::super::resident_packet_plan::PreparedLosslessBatchTile;
 use super::super::resident_tier1::{
@@ -24,8 +27,8 @@ use super::{
     label_compute_encoder, new_blit_command_encoder, new_compute_command_encoder,
     new_private_buffer, new_resident_encode_command_buffer,
     schedule_classic_tier1_gpu_token_pack_readback, size_of, take_recyclable_private_buffer,
-    Buffer, ClassicTier1ProfileRequest, ClassicTier1ProfileResult, Duration, Error, ForeignType,
-    Instant, J2kClassicEncodeBatchJob, J2kClassicEncodeOutputCapacityMode, J2kClassicEncodeStatus,
+    Buffer, ClassicTier1ProfileRequest, ClassicTier1ProfileResult, Duration, Error, Instant,
+    J2kClassicEncodeBatchJob, J2kClassicEncodeOutputCapacityMode, J2kClassicEncodeStatus,
     J2kClassicSegment, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer,
     MetalRuntime, SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_SETUP,
@@ -223,11 +226,12 @@ fn prepare_classic_coefficients(
 ) -> Result<ClassicCoefficientPreparation, Error> {
     let split_command_buffers = true;
     let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
-        let ptr = first.coefficient_buffer.as_ptr();
+        let ptr = objc2::rc::Retained::as_ptr(&first.coefficient_buffer);
         prepared_tiles
             .iter()
             .all(|tile| {
-                tile.coefficient_buffer_is_batch_shared && tile.coefficient_buffer.as_ptr() == ptr
+                tile.coefficient_buffer_is_batch_shared
+                    && objc2::rc::Retained::as_ptr(&tile.coefficient_buffer) == ptr
             })
             .then(|| first.coefficient_buffer.clone())
     });
@@ -277,7 +281,7 @@ fn prepare_classic_coefficients(
                 new_private_buffer(&runtime.device, total_coefficient_bytes.max(1))?;
             let blit = new_blit_command_encoder(&command_buffer)?;
             if profile_stages {
-                blit.set_label("J2K coefficient prep");
+                blit.setLabel(Some(&NSString::from_str("J2K coefficient prep")));
             }
             for (tile, &dst_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
                 if tile.coefficient_byte_len > 0 {
@@ -290,7 +294,7 @@ fn prepare_classic_coefficients(
                     );
                 }
             }
-            blit.end_encoding();
+            blit.endEncoding();
             if split_command_buffers {
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
@@ -742,23 +746,19 @@ fn dispatch_classic_tier1(
             let encoder = new_compute_command_encoder(&command_buffer)?;
             label_compute_encoder(&encoder, "J2K Tier-1 encode");
             let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, tier1_jobs);
-            encoder.set_compute_pipeline_state(classic_encode_pipeline);
+            encoder.setComputePipelineState(classic_encode_pipeline);
             encoder.set_buffer(0, Some(coefficient_buffer), 0);
             encoder.set_buffer(1, Some(tier1_output_buffer), 0);
             encoder.set_buffer(2, Some(tier1_job_buffer), 0);
             encoder.set_buffer(3, Some(tier1_status_buffer), 0);
             encoder.set_buffer(4, Some(tier1_segment_buffer), 0);
-            encoder.set_bytes(
-                5,
-                size_of::<u32>() as u64,
-                (&raw const tier1_job_count).cast(),
-            );
+            encoder.set_bytes::<u32>(5, &tier1_job_count);
             dispatch_1d_pipeline(
                 &encoder,
                 classic_encode_pipeline,
                 u64::from(tier1_job_count),
             );
-            encoder.end_encoding();
+            encoder.endEncoding();
             drop(signpost);
             if let Some(started) = command_encode_started {
                 *classic_block_encode_duration =

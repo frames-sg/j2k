@@ -429,15 +429,15 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    struct MetalCaptureGuard<'a> {
-        manager: &'a metal::CaptureManagerRef,
+    struct MetalCaptureGuard {
+        manager: objc2::rc::Retained<objc2_metal::MTLCaptureManager>,
     }
 
     #[cfg(target_os = "macos")]
-    impl Drop for MetalCaptureGuard<'_> {
+    impl Drop for MetalCaptureGuard {
         fn drop(&mut self) {
-            if self.manager.is_capturing() {
-                self.manager.stop_capture();
+            if self.manager.isCapturing() {
+                self.manager.stopCapture();
             }
         }
     }
@@ -446,7 +446,11 @@ mod tests {
     #[test]
     #[ignore = "GPU capture harness; run explicitly with --ignored --nocapture"]
     fn metal_irreversible_idwt_gpu_capture() {
-        use metal::{CaptureDescriptor, CaptureManager, MTLCaptureDestination};
+        use objc2::runtime::{AnyObject, ProtocolObject};
+        use objc2_foundation::{NSString, NSURL};
+        use objc2_metal::{
+            MTLCaptureDescriptor, MTLCaptureDestination, MTLCaptureManager, MTLDevice,
+        };
 
         if !should_run_metal_runtime() {
             return;
@@ -488,18 +492,31 @@ mod tests {
                 &mut output,
             )?;
 
-            let manager = CaptureManager::shared();
+            // SAFETY: `sharedCaptureManager` returns Metal's process-wide
+            // retained singleton. This ignored macOS-only harness calls it
+            // after the runtime/device gate and keeps the returned owner alive
+            // until capture is stopped by `MetalCaptureGuard`.
+            let manager = unsafe { MTLCaptureManager::sharedCaptureManager() };
             assert!(
-                manager.supports_destination(MTLCaptureDestination::GpuTraceDocument),
+                manager.supportsDestination(MTLCaptureDestination::GPUTraceDocument),
                 "Metal GPU trace documents are unavailable on this host"
             );
-            let descriptor = CaptureDescriptor::new();
-            descriptor.set_capture_device(&device);
-            descriptor.set_destination(MTLCaptureDestination::GpuTraceDocument);
-            descriptor.set_output_url(&trace_path);
+            let descriptor = MTLCaptureDescriptor::new();
+            let device_object: &ProtocolObject<dyn MTLDevice> = &device;
+            let capture_object: &AnyObject = device_object.as_ref();
+            // SAFETY: Metal capture descriptors accept exactly an MTLDevice,
+            // MTLCommandQueue, or MTLCaptureScope. `capture_object` is the
+            // retained `MTLDevice` created above and outlives the capture.
+            unsafe { descriptor.setCaptureObject(Some(capture_object)) };
+            descriptor.setDestination(MTLCaptureDestination::GPUTraceDocument);
+            let trace_path = NSString::from_str(&trace_path.to_string_lossy());
+            let trace_url = NSURL::fileURLWithPath(&trace_path);
+            descriptor.setOutputURL(Some(&trace_url));
             manager
-                .start_capture(&descriptor)
-                .map_err(|message| crate::Error::MetalRuntime { message })?;
+                .startCaptureWithDescriptor_error(&descriptor)
+                .map_err(|error| crate::Error::MetalRuntime {
+                    message: error.to_string(),
+                })?;
             let capture = MetalCaptureGuard { manager };
             let result = crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
                 fixture.job(),

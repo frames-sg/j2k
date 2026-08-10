@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use crate::metal_types::ComputeCommandEncoderRef;
 use j2k_metal_support::MetalImageDestination;
 use j2k_native::J2kDirectStoreStep;
-use metal::ComputeCommandEncoderRef;
 
 use super::super::{
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,

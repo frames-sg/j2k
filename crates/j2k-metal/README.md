@@ -6,6 +6,12 @@ The crate provides resident Metal decode and encode-stage integration for
 supported workloads. It uses `j2k-metal-support` for runtime setup while
 keeping codec-specific kernels local.
 
+In version 0.9, expert constructors and raw resident handoffs use
+`objc2-metal` protocol objects directly. Pass retained protocol objects for
+owned devices, queues, command buffers, and buffers, and borrowed protocol
+references where the API does not take ownership. The previous `metal-rs`
+types are intentionally source-incompatible.
+
 Encode support is stage-oriented unless a documented resident path accepts the
 shape. For lossless HTJ2K host-output, fixed `Auto` cells use Metal coefficient
 preparation and HT Tier-1 followed by CPU packetization: RGB8 at 1,024 x 1,024

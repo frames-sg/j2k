@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::*;
 
 #[cfg(target_os = "macos")]
@@ -14,7 +15,7 @@ fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
     }
 
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
-    let device = metal::Device::system_default().expect("Metal device");
+    let device = j2k_metal_support::system_default_device().expect("Metal device");
     let session = crate::MetalBackendSession::new(device);
     let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
         .expect("upload test pixels");

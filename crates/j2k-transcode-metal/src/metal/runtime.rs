@@ -4,6 +4,7 @@ use super::{
     checked_command_queue, idct8_basis_table, shared_buffer_with_slice, system_default_device, Arc,
     Buffer, CommandQueue, ComputePipelineState, Device, MetalPipelineLoader, MetalTranscodeError,
 };
+use objc2_metal::MTLDevice as _;
 
 pub(super) fn shader_source() -> String {
     [
@@ -29,6 +30,23 @@ pub(super) struct MetalRuntime {
     pub(super) idct_basis: Buffer,
 }
 
+#[expect(
+    unsafe_code,
+    reason = "objc2 Metal protocol objects require an audited cross-thread runtime boundary"
+)]
+// SAFETY: Retained Metal devices, queues, pipelines, and buffers support
+// cross-thread ownership. This runtime is immutable after construction and
+// contains no unsynchronized host-side mutable cache.
+unsafe impl Send for MetalRuntime {}
+#[expect(
+    unsafe_code,
+    reason = "objc2 Metal protocol objects require an audited cross-thread runtime boundary"
+)]
+// SAFETY: Shared runtime references expose only immutable retained handles;
+// Metal command ordering is established by independent command buffers on the
+// retained queue.
+unsafe impl Sync for MetalRuntime {}
+
 #[derive(Clone, Default)]
 /// Reusable Metal session for transcode-stage accelerator dispatch.
 pub struct MetalTranscodeSession {
@@ -38,7 +56,9 @@ pub struct MetalTranscodeSession {
 
 impl MetalTranscodeSession {
     /// Create a transcode session bound to an existing Metal device.
-    pub fn new(device: Device) -> Self {
+    pub fn new(
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         Self {
             device: Some(device),
             runtime: None,
@@ -155,6 +175,122 @@ pub(super) struct Reversible53ProjectionParams {
     pub(super) vertical_low: u32,
     pub(super) horizontal_low: u32,
 }
+
+macro_rules! prove_gpu_parameter_layout {
+    ($ty:ty, $offset:expr;) => {
+        let _: [(); core::mem::size_of::<$ty>()] = [(); $offset];
+    };
+    (
+        $ty:ty,
+        $offset:expr;
+        $field:ident: $field_ty:ty
+        $(, $remaining_field:ident: $remaining_field_ty:ty)*
+    ) => {
+        let _: [(); core::mem::offset_of!($ty, $field)] = [(); $offset];
+        prove_gpu_parameter_layout!(
+            $ty,
+            $offset + core::mem::size_of::<$field_ty>();
+            $($remaining_field: $remaining_field_ty),*
+        );
+    };
+}
+
+macro_rules! impl_gpu_parameter_abi {
+    ($(
+        $ty:ty {
+            $first_field:ident: $first_field_ty:ty
+            $(, $field:ident: $field_ty:ty)*
+            $(,)?
+        }
+    ),+ $(,)?) => {
+        $(
+            const _: () = {
+                fn assert_field_types(value: &$ty) {
+                    let _: &$first_field_ty = &value.$first_field;
+                    $(let _: &$field_ty = &value.$field;)*
+                }
+                let _ = assert_field_types;
+
+                prove_gpu_parameter_layout!(
+                    $ty,
+                    0;
+                    $first_field: $first_field_ty
+                    $(, $field: $field_ty)*
+                );
+            };
+
+            #[expect(
+                unsafe_code,
+                reason = "the compile-time field walk proves a padding-free Metal ABI value"
+            )]
+            // SAFETY: The type is repr(C), Copy, contains only numeric scalar
+            // fields for which every bit pattern is valid, and the compile-time
+            // field walk proves that its complete representation has no padding.
+            unsafe impl j2k_core::accelerator::GpuAbi for $ty {
+                const NAME: &'static str = stringify!($ty);
+            }
+        )+
+    };
+}
+
+impl_gpu_parameter_abi!(
+    DctProjectionParams {
+        width: u32,
+        height: u32,
+        block_cols: u32,
+        band_width: u32,
+        band_height: u32,
+    },
+    DctBatchProjectionParams {
+        width: u32,
+        height: u32,
+        block_cols: u32,
+        blocks_per_item: u32,
+        band_width: u32,
+        band_height: u32,
+        output_stride: u32,
+    },
+    Dct97IdctRowLiftParams {
+        width: u32,
+        height: u32,
+        block_cols: u32,
+        blocks_per_item: u32,
+        low_width: u32,
+        high_width: u32,
+    },
+    Dct97ColumnLiftParams {
+        height: u32,
+        low_width: u32,
+        high_width: u32,
+        low_height: u32,
+        high_height: u32,
+        row_low_stride: u32,
+        row_high_stride: u32,
+        ll_stride: u32,
+        hl_stride: u32,
+        lh_stride: u32,
+        hh_stride: u32,
+    },
+    Dct97QuantizeCodeblocksParams {
+        band_width: u32,
+        band_height: u32,
+        output_stride: u32,
+        code_block_width: u32,
+        code_block_height: u32,
+        inv_delta: f32,
+    },
+    Reversible53ProjectionParams {
+        width: u32,
+        height: u32,
+        block_cols: u32,
+        blocks_per_item: u32,
+        band_width: u32,
+        band_height: u32,
+        output_stride: u32,
+        vertical_low: u32,
+        horizontal_low: u32,
+    },
+);
 
 #[repr(C)]
 #[derive(Clone, Copy)]

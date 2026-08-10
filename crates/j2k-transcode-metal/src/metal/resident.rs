@@ -5,12 +5,17 @@ use super::{
     checked_compute_command_encoder, commit_and_wait, dispatch_band_batch, dwt97_block_value_count,
     output_buffer, output_i32_buffer, private_f32_buffer, read_f32_buffer_at, size_of,
     try_transcode_vec_with_capacity, u32_param, upload_sparse_rows, BackendKind, BatchBandGeometry,
-    Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DeviceMemoryRange, ForeignType,
-    MetalRuntime, MetalTranscodeError, ProjectedBands, ProjectionBatchJob, ResidentBufferRef,
-    ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
-    ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
-    ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
-    DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
+    Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DeviceMemoryRange, MetalRuntime,
+    MetalTranscodeError, ProjectedBands, ProjectionBatchJob, ResidentBufferRef, ResidentColorModel,
+    ResidentComponentGeometry, ResidentDctCoefficientOrder, ResidentDctGridLayout,
+    ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout, ResidentHandoffError,
+    ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling, DWT97_BLOCK_COEFFICIENTS,
+    METAL_DCT97_UNSUPPORTED_GRID,
+};
+use objc2::rc::Retained;
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLBuffer as _, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _,
 };
 
 #[derive(Clone, Copy)]
@@ -347,12 +352,11 @@ pub(super) fn resident_buffer_ref(
     offset: usize,
     len: usize,
 ) -> Result<ResidentBufferRef<'_>, MetalTranscodeError> {
-    let allocation = u64::try_from(buffer.as_ptr() as usize).map_err(|error| {
-        MetalTranscodeError::runtime("Metal resident buffer address conversion", error)
-    })?;
-    let allocation_len = usize::try_from(buffer.length()).map_err(|error| {
-        MetalTranscodeError::runtime("Metal resident buffer length conversion", error)
-    })?;
+    let allocation =
+        u64::try_from(Retained::as_ptr(buffer).cast::<()>() as usize).map_err(|error| {
+            MetalTranscodeError::runtime("Metal resident buffer address conversion", error)
+        })?;
+    let allocation_len = buffer.length();
     resident_result(ResidentBufferRef::with_allocation_len(
         DeviceMemoryRange::new(BackendKind::Metal, allocation, offset, len),
         allocation_len,
@@ -404,6 +408,7 @@ pub(super) fn projection_batch_output_transfer_bytes(
         buffers.hh.length(),
     ]
     .into_iter()
+    .map(|bytes| u64::try_from(bytes).unwrap_or(u64::MAX))
     .fold(0_u64, u64::saturating_add)
 }
 
@@ -429,6 +434,7 @@ pub(super) fn dwt97_codeblock_output_transfer_bytes(buffers: &Dwt97CodeBlockOutp
         buffers.hh.length(),
     ]
     .into_iter()
+    .map(|bytes| u64::try_from(bytes).unwrap_or(u64::MAX))
     .fold(0_u64, u64::saturating_add)
 }
 
@@ -518,11 +524,11 @@ pub(super) fn dispatch_projection_batch_bands(
     let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
         MetalTranscodeError::support("Metal batch projection command buffer creation", error)
     })?;
-    command_buffer.set_label(job.label);
+    command_buffer.setLabel(Some(&NSString::from_str(job.label)));
     let encoder = checked_compute_command_encoder(&command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal batch projection compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.dct_project_band_batch);
+    encoder.setComputePipelineState(&runtime.dct_project_band_batch);
     bind_projection_input_buffers(&encoder, blocks, &runtime.idct_basis);
 
     dispatch_band_batch(
@@ -590,7 +596,7 @@ pub(super) fn dispatch_projection_batch_bands(
         },
     );
 
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal batch projection command buffer", error)
     })?;

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::super::{
     classic_encode_code_blocks_pipeline_kind, label_compute_encoder,
     metal_profile_classic_tier1_arithmetic_pack_enabled,
@@ -11,8 +14,8 @@ use super::super::{
     J2kClassicTier1PassPlanCounters, J2kClassicTier1SymbolPlanCounters,
     J2kClassicTier1TokenSegment, J2kResidentClassicTier1DensityReadback,
     J2kResidentClassicTier1PassPlanReadback, J2kResidentClassicTier1SymbolPlanReadback,
-    J2kResidentClassicTier1TokenEmitReadback, MTLSize, MetalRuntime,
-    CLASSIC_TIER1_TOKEN_ARENA_BYTES, CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
+    J2kResidentClassicTier1TokenEmitReadback, MetalRuntime, CLASSIC_TIER1_TOKEN_ARENA_BYTES,
+    CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
 };
 
 #[cfg(target_os = "macos")]
@@ -47,27 +50,23 @@ pub(in crate::compute) fn dispatch_classic_tier1_density_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 density profile");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_density_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_density_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
-    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(3, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_density_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(J2kResidentClassicTier1DensityReadback {
         buffer: counter_buffer,
         count: tier1_jobs.len(),
@@ -101,27 +100,23 @@ pub(in crate::compute) fn dispatch_classic_tier1_raw_pack_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 raw-pack profile");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_raw_pack_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_raw_pack_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&raw_output_buffer), 0);
-    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(3, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_raw_pack_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(raw_output_buffer))
 }
 
@@ -152,27 +147,23 @@ pub(in crate::compute) fn dispatch_classic_tier1_arithmetic_pack_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 arithmetic-pack profile");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_arithmetic_pack_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_arithmetic_pack_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&arithmetic_output_buffer), 0);
-    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(3, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_arithmetic_pack_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(arithmetic_output_buffer))
 }
 
@@ -208,27 +199,23 @@ pub(in crate::compute) fn dispatch_classic_tier1_symbol_plan_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 symbol plan");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_symbol_plan_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_symbol_plan_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
-    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(3, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_symbol_plan_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(J2kResidentClassicTier1SymbolPlanReadback {
         buffer: counter_buffer,
         count: tier1_jobs.len(),
@@ -267,27 +254,23 @@ pub(in crate::compute) fn dispatch_classic_tier1_pass_plan_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 pass plan");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_pass_plan_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_pass_plan_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
-    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(3, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_pass_plan_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(J2kResidentClassicTier1PassPlanReadback {
         buffer: counter_buffer,
         count: tier1_jobs.len(),
@@ -352,39 +335,27 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_profile(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
     encoder.set_buffer(3, Some(&token_buffer), 0);
     encoder.set_buffer(4, Some(&segment_buffer), 0);
-    encoder.set_bytes(
-        5,
-        size_of::<u32>() as u64,
-        (&raw const token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        6,
-        size_of::<u32>() as u64,
-        (&raw const token_segment_stride).cast(),
-    );
-    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(5, &token_stride_bytes);
+    encoder.set_bytes::<u32>(6, &token_segment_stride);
+    encoder.set_bytes::<u32>(7, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_token_emit_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(Some(J2kResidentClassicTier1TokenEmitReadback {
         counter_buffer,
         token_buffer: Some(token_buffer),

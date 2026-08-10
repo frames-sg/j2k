@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::time::Instant;
 
+use crate::metal_types::{Buffer, ComputeCommandEncoderRef};
 use j2k_native::{J2kDirectStoreStep, J2kWaveletTransform};
-use metal::{Buffer, ComputeCommandEncoderRef};
 
 use super::{upload_cpu_decoded_coefficients, DirectComponentPlaneRequest};
 use crate::compute::{

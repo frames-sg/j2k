@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::{
-    Arc, Buffer, CommandBuffer, ComputePipelineState, EncodeProgressionOrder, HybridSignpostName,
-    J2kClassicEncodeBatchJob, J2kHtEncodeBatchJob, J2kPacketizationPacketDescriptor,
-    J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats, MetalRuntime,
+    Arc, Buffer, BufferRef, CommandBuffer, ComputePipelineState, EncodeProgressionOrder,
+    HybridSignpostName, J2kClassicEncodeBatchJob, J2kHtEncodeBatchJob,
+    J2kPacketizationPacketDescriptor, J2kResidentEncodeGpuStageCommandBuffer,
+    J2kResidentEncodeStageStats, MetalRuntime,
 };
 
 #[cfg(target_os = "macos")]
@@ -24,7 +26,7 @@ pub(crate) struct J2kLosslessDeviceCodeBlock {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct J2kLosslessDevicePrepareJob<'a> {
-    pub(crate) input: &'a Buffer,
+    pub(crate) input: &'a BufferRef,
     pub(crate) input_byte_offset: usize,
     pub(crate) input_width: u32,
     pub(crate) input_height: u32,

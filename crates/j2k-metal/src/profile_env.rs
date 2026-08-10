@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 #[cfg(test)]
 use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use crate::metal_types::{CommandBufferRef, ComputeCommandEncoderRef};
 use j2k_profile::{env_flag_from_env, ProfileStageMode, StageModeCache};
-use metal::{CommandBufferRef, ComputeCommandEncoderRef};
 
 mod direct;
 
@@ -255,7 +258,7 @@ pub(crate) fn metal_profile_classic_tier1_token_pack_enabled() -> bool {
 
 pub(crate) fn label_command_buffer(command_buffer: &CommandBufferRef, label: &str) {
     if metal_profile_stages_enabled() {
-        command_buffer.set_label(label);
+        command_buffer.setLabel(Some(&NSString::from_str(label)));
     }
 }
 
@@ -297,6 +300,6 @@ pub(crate) fn hybrid_stage_signpost(name: HybridSignpostName) -> Option<HybridSt
 
 pub(crate) fn label_compute_encoder(encoder: &ComputeCommandEncoderRef, label: &str) {
     if metal_profile_stages_enabled() {
-        encoder.set_label(label);
+        encoder.setLabel(Some(&NSString::from_str(label)));
     }
 }

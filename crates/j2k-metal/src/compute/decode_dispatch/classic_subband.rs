@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     classic_batch_is_plain_arithmetic, classic_batch_uses_plain_fast_path,
     classic_repeated_uses_plain_fast_path, dispatch_classic_cleanup_batched_in_encoder,
@@ -71,7 +74,7 @@ fn select_repeated_classic_kernel(
     let plain_fast = classic_repeated_uses_plain_fast_path(count, batch.jobs, batch.segments)
         && runtime
             .classic_cleanup_plain_repeated_batched
-            .max_total_threads_per_threadgroup()
+            .maxTotalThreadsPerThreadgroup()
             >= 32;
     if plain_fast {
         RepeatedClassicKernel::PlainFast
@@ -310,7 +313,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&job.jobs, &job.segments)
         && runtime
             .classic_cleanup_plain_batched
-            .max_total_threads_per_threadgroup()
+            .maxTotalThreadsPerThreadgroup()
             >= 32;
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, job.jobs.len())?;
     if job.zero_fill {
@@ -376,7 +379,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&group.jobs, &group.segments)
         && runtime
             .classic_cleanup_plain_batched
-            .max_total_threads_per_threadgroup()
+            .maxTotalThreadsPerThreadgroup()
             >= 32;
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, group.jobs.len())?;
     if group.zero_fill {

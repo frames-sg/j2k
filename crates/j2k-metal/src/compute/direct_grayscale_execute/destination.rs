@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::{
     allocate_direct_execution_metadata, direct_ht_job_count, new_command_buffer,
     new_compute_command_encoder, Arc, Error, MetalRuntime, PixelFormat,
@@ -75,7 +77,7 @@ pub(crate) fn submit_prepared_direct_grayscale_plan_batch_into_group(
         metadata: &mut metadata,
     }
     .encode();
-    compute_encoder.end_encoding();
+    compute_encoder.endEncoding();
     result?;
     metadata.record_tier1_dispatches();
     commit_direct_destination(runtime, command_buffer, metadata, consumer_ordering)

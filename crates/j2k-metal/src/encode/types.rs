@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::ResidentMetalImage;
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+use objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
+use objc2_metal::{MTLBuffer, MTLDevice};
 use std::time::Duration;
 
 use super::MetalEncodedJ2k;
@@ -15,7 +20,7 @@ use super::MetalEncodedJ2k;
 #[derive(Debug, Clone, Copy)]
 /// Metal buffer and layout metadata for one lossless J2K encode tile.
 pub struct MetalLosslessEncodeTile<'a> {
-    pub(super) buffer: &'a Buffer,
+    pub(super) buffer: &'a ProtocolObject<dyn MTLBuffer>,
     pub(super) byte_offset: usize,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -45,7 +50,7 @@ impl<'a> MetalLosslessEncodeTile<'a> {
     /// encode, submit, or validate this tile; a buffer from another device is
     /// not compatible even when its layout and storage mode otherwise match.
     pub unsafe fn from_buffer(
-        buffer: &'a Buffer,
+        buffer: &'a ProtocolObject<dyn MTLBuffer>,
         byte_offset: usize,
         dimensions: (u32, u32),
         pitch_bytes: usize,
@@ -63,7 +68,7 @@ impl<'a> MetalLosslessEncodeTile<'a> {
     }
 
     pub(crate) fn from_trusted_buffer(
-        buffer: &'a Buffer,
+        buffer: &'a ProtocolObject<dyn MTLBuffer>,
         byte_offset: usize,
         dimensions: (u32, u32),
         pitch_bytes: usize,
@@ -103,9 +108,12 @@ impl<'a> MetalLosslessEncodeTile<'a> {
         }
     }
 
-    pub(super) fn validate_device(self, device: &metal::DeviceRef) -> Result<(), crate::Error> {
-        let image_registry_id = self.buffer.device().registry_id();
-        let requested_registry_id = device.registry_id();
+    pub(super) fn validate_device(
+        self,
+        device: &ProtocolObject<dyn MTLDevice>,
+    ) -> Result<(), crate::Error> {
+        let image_registry_id = self.buffer.device().registryID();
+        let requested_registry_id = device.registryID();
         if image_registry_id == requested_registry_id {
             Ok(())
         } else {

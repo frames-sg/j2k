@@ -1,5 +1,5 @@
 #![cfg(target_os = "macos")]
-use std::sync::Arc;
+use std::{ptr, sync::Arc};
 
 use j2k::{
     wrap_j2k_codestream, BatchCodecRoute, BatchDecodeOptions, BatchLayout, CpuBatchDecoder,
@@ -17,6 +17,8 @@ use j2k_metal::{
     MetalTileBatch, Surface, SurfaceResidency,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::MTLBuffer;
 
 const UNSUPPORTED_RGBA16_REASON: &str = "J2K Metal does not support PixelFormat::Rgba16";
 const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
@@ -59,7 +61,9 @@ fn fixture_ht_roi_rgb() -> Arc<[u8]> {
     )
 }
 
-fn completed_surface_metal_buffer(surface: &Surface) -> Option<(&metal::Buffer, usize)> {
+fn completed_surface_metal_buffer(
+    surface: &Surface,
+) -> Option<(&ProtocolObject<dyn MTLBuffer>, usize)> {
     // SAFETY: Every surface passed by these tests has completed its decode, and
     // the tests never submit a writer or mutate a returned handle.
     unsafe { surface.metal_buffer() }

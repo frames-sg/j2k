@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::*;
 
 #[cfg(target_os = "macos")]
@@ -199,8 +200,8 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
 
     assert_eq!(encoded.len(), 2);
     assert_eq!(
-        encoded[0].encoded.codestream_buffer.as_ptr(),
-        encoded[1].encoded.codestream_buffer.as_ptr(),
+        objc2::rc::Retained::as_ptr(&encoded[0].encoded.codestream_buffer),
+        objc2::rc::Retained::as_ptr(&encoded[1].encoded.codestream_buffer),
         "classic J2K resident batch encode should assemble codestreams into one shared batch buffer"
     );
     assert_eq!(encoded[0].encoded.byte_offset, 0);
@@ -451,8 +452,8 @@ fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
         "HTJ2K resident batch should query each unique retained command buffer timestamp once"
     );
     assert_eq!(
-        encoded[0].encoded.codestream_buffer.as_ptr(),
-        encoded[1].encoded.codestream_buffer.as_ptr(),
+        objc2::rc::Retained::as_ptr(&encoded[0].encoded.codestream_buffer),
+        objc2::rc::Retained::as_ptr(&encoded[1].encoded.codestream_buffer),
         "HTJ2K resident batch encode should assemble codestreams into one shared batch buffer"
     );
     assert_eq!(encoded[0].encoded.byte_offset, 0);
@@ -498,7 +499,7 @@ fn metal_ht_private_batch_encode_reuses_private_arenas_between_batches() {
     let second: Vec<u8> = (0..WIDTH * HEIGHT)
         .map(|i| 255u8.wrapping_sub(((i * 5 + 11) & 0xFF) as u8))
         .collect();
-    let device = metal::Device::system_default().expect("Metal device");
+    let device = j2k_metal_support::system_default_device().expect("Metal device");
     let session = crate::MetalBackendSession::new(device.clone());
     let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
         .expect("private benchmark input buffer");
@@ -574,7 +575,7 @@ fn perf_shape_ht_private_batch_has_no_warm_pool_misses_or_evictions() {
     let pixels: Vec<u8> = (0..WIDTH * HEIGHT * 3)
         .map(|index| u8::try_from((index * 29 + index / 7) & 0xff).expect("masked pixel"))
         .collect();
-    let device = metal::Device::system_default().expect("Metal device");
+    let device = j2k_metal_support::system_default_device().expect("Metal device");
     let session = crate::MetalBackendSession::new(device.clone());
     let input = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
         .expect("private benchmark input buffer");

@@ -22,7 +22,7 @@ fn zero_fill_is_barriered_before_single_and_batched_ht_cleanup() {
             .find("encoder.memory_barrier_with_resources(&[decoded]);")
             .unwrap_or_else(|| panic!("missing decoded-buffer barrier in {name}"));
         let cleanup = body
-            .find("encoder.set_compute_pipeline_state")
+            .find("encoder.setComputePipelineState")
             .unwrap_or_else(|| panic!("missing cleanup pipeline in {name}"));
         assert!(zero_fill < barrier && barrier < cleanup, "{name}");
     }

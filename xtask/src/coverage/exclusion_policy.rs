@@ -61,21 +61,6 @@ const GENERATED_DWT_EVIDENCE: &[EvidenceTest] = &[
     ),
 ];
 
-const VENDORED_BLOCK_EVIDENCE: &[EvidenceTest] = &[
-    primary_evidence(
-        "xtask/tests/repo_lint_support/dependency_policy.rs",
-        "all_workspace_path_patches_have_pinned_provenance_and_local_digests",
-    ),
-    supplemental_evidence(
-        "crates/j2k-metal-support/src/tests.rs",
-        "commit_and_wait_accepts_unlabeled_command_buffer",
-    ),
-    supplemental_evidence(
-        "crates/j2k-metal-support/src/tests.rs",
-        "buffer_readback_copies_typed_shared_buffer_values",
-    ),
-];
-
 const fn primary_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
     EvidenceTest {
         path,
@@ -150,14 +135,6 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
             path: "crates/j2k-codec-math/generated/dwt97_constants.rs",
         },
         evidence: GENERATED_DWT_EVIDENCE,
-    },
-    CoverageExclusion {
-        id: "vendored-block-ffi-binding",
-        reason: "the reviewed patched block dependency is outside workspace instrumentation; real Metal tests exercise its callback and lifecycle boundary",
-        matcher: ExclusionMatcher::WholeFile {
-            path: "third_party/block-0.1.6-patched/src/lib.rs",
-        },
-        evidence: VENDORED_BLOCK_EVIDENCE,
     },
 ];
 

@@ -5,13 +5,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use core::mem::size_of;
+use core::{ffi::c_void, mem::size_of, ptr::NonNull};
 
+use j2k_core::accelerator::GpuAbi;
 use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
     checked_buffer_read_vec, checked_buffer_write, checked_command_buffer, checked_command_queue,
-    checked_compute_command_encoder, commit_and_wait, system_default_device, MetalPipelineLoader,
-    MetalSupportError,
+    checked_compute_command_encoder, commit_and_wait, mtl_size, system_default_device,
+    MetalPipelineLoader, MetalSupportError,
 };
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, idct_blocks_to_signed_samples_rayon,
@@ -24,10 +25,75 @@ use j2k_transcode::{
     ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
     ReversibleDwt53FirstLevel, TranscodeStageError,
 };
-use metal::{
-    foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef,
-    ComputePipelineState, Device, MTLSize,
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
+    MTLBuffer, MTLCommandBuffer, MTLCommandQueue, MTLComputeCommandEncoder,
+    MTLComputePipelineState, MTLDevice,
 };
+
+pub(super) use objc2_metal::MTLSize;
+
+type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+type CommandBufferRef = ProtocolObject<dyn MTLCommandBuffer>;
+type CommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
+type ComputeCommandEncoderRef = ProtocolObject<dyn MTLComputeCommandEncoder>;
+type ComputePipelineState = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
+type Device = Retained<ProtocolObject<dyn MTLDevice>>;
+
+/// Checked shader-binding vocabulary for support-created retaining command
+/// buffers.
+trait TranscodeComputeEncoderExt {
+    fn set_buffer(&self, index: u64, buffer: Option<&ProtocolObject<dyn MTLBuffer>>, offset: u64);
+
+    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T);
+}
+
+impl TranscodeComputeEncoderExt for ProtocolObject<dyn MTLComputeCommandEncoder> {
+    #[expect(
+        unsafe_code,
+        reason = "objc2 requires an audited resource-binding boundary"
+    )]
+    fn set_buffer(&self, index: u64, buffer: Option<&ProtocolObject<dyn MTLBuffer>>, offset: u64) {
+        let index = usize::try_from(index).expect("Metal buffer index fits usize");
+        (index < 31)
+            .then_some(())
+            .expect("Metal buffer index exceeds the API binding table");
+        let offset = usize::try_from(offset).expect("Metal buffer offset fits usize");
+        if let Some(buffer) = buffer {
+            (offset <= buffer.length())
+                .then_some(())
+                .expect("Metal buffer offset is out of bounds");
+        }
+        // SAFETY: The binding index and offset were checked above. Every
+        // encoder is created through j2k-metal-support from a retaining command
+        // buffer, which retains bound resources through completion; private
+        // call sites define the matching shader ABI and submission ordering.
+        unsafe { self.setBuffer_offset_atIndex(buffer, offset, index) };
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "objc2 requires an audited immediate-byte binding boundary"
+    )]
+    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T) {
+        let index = usize::try_from(index).expect("Metal byte-binding index fits usize");
+        (index < 31)
+            .then_some(())
+            .expect("Metal byte-binding index exceeds the API binding table");
+        let bytes = T::as_bytes(value);
+        (!bytes.is_empty())
+            .then_some(())
+            .expect("Metal byte binding requires a nonempty ABI value");
+        (bytes.len() == core::mem::size_of::<T>())
+            .then_some(())
+            .expect("Metal byte-binding length must match its ABI value");
+        let pointer = NonNull::from(bytes).cast::<c_void>();
+        // SAFETY: GpuAbi exposes exactly `bytes.len()` initialized,
+        // padding-free bytes. Metal copies them during this call, and the
+        // binding index and ABI length were checked above.
+        unsafe { self.setBytes_length_atIndex(pointer, bytes.len(), index) };
+    }
+}
 
 use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;

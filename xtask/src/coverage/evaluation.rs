@@ -327,10 +327,7 @@ fn record_disposition(result: &mut ChangedCoverageResult, disposition: &'static 
 }
 
 const fn reviewed_nonmeasurable_role(role: SourceRole) -> bool {
-    matches!(
-        role,
-        SourceRole::Generated(_) | SourceRole::VendoredReviewed(_)
-    )
+    matches!(role, SourceRole::Generated(_))
 }
 
 pub(super) fn coverage_violations(

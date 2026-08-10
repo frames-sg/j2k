@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::{borrow::Cow, sync::Arc};
 
+use crate::metal_types::Buffer;
 use j2k_native::{
     HtCodeBlockPayloadRanges, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep,
     J2kRequiredBandRegion, J2kWaveletTransform,
 };
-use metal::Buffer;
 
 use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
 use super::{CpuTier1CoefficientCache, DirectTier1Mode};
@@ -23,6 +24,14 @@ pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) cpu_tier1_cache: Arc<CpuTier1CoefficientCache>,
 }
 
+// SAFETY: A prepared plan is immutable after construction. Its retained Metal
+// buffers are cross-thread resources and are bound only for read access; all
+// host-owned vectors and the coefficient cache are immutable through this API.
+unsafe impl Send for PreparedDirectGrayscalePlan {}
+// SAFETY: The same immutable-plan contract permits concurrent readers; GPU
+// writes target per-submission scratch rather than these cached buffers.
+unsafe impl Sync for PreparedDirectGrayscalePlan {}
+
 pub(crate) struct PreparedDirectColorPlan {
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depths: [u8; 3],
@@ -32,6 +41,13 @@ pub(crate) struct PreparedDirectColorPlan {
     pub(super) transform: J2kWaveletTransform,
     pub(super) component_plans: Vec<PreparedDirectGrayscalePlan>,
 }
+
+// SAFETY: The color plan contains only immutable metadata and prepared
+// grayscale plans satisfying the cross-thread contract above.
+unsafe impl Send for PreparedDirectColorPlan {}
+// SAFETY: No mutable state is exposed after construction, so concurrent cache
+// readers cannot race host or GPU writes through this owner.
+unsafe impl Sync for PreparedDirectColorPlan {}
 
 pub(super) enum PreparedDirectGrayscaleStep {
     ClassicSubBand(PreparedClassicSubBand),

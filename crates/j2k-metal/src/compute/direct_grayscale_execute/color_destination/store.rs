@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
-    dispatch_3d_pipeline, size_of, BatchLayout, Buffer, Error, MetalImageDestination, MetalRuntime,
+    dispatch_3d_pipeline, BatchLayout, Buffer, Error, MetalImageDestination, MetalRuntime,
     PixelFormat, PreparedDirectColorPlan,
 };
 use crate::compute::abi::J2kNativeColorBatchStoreParams;
@@ -23,7 +26,7 @@ pub(super) struct NativeColorStoreConfig {
 #[cfg(target_os = "macos")]
 pub(super) fn encode_exact_native_color_batch_store_in_encoder(
     runtime: &MetalRuntime,
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
     planes: &[Buffer],
     plan: &PreparedDirectColorPlan,
     config: NativeColorStoreConfig,
@@ -40,7 +43,7 @@ pub(super) fn encode_exact_native_color_batch_store_in_encoder(
         [r, g, b, a] => encoder.memory_barrier_with_resources(&[r, g, b, a]),
         _ => unreachable!("plane count was validated against the native color format"),
     }
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     for (index, plane) in planes.iter().enumerate() {
         encoder.set_buffer(index as u64, Some(plane), 0);
     }
@@ -53,11 +56,7 @@ pub(super) fn encode_exact_native_color_batch_store_in_encoder(
             message: "J2K Metal stacked exact color destination offset exceeds u64".to_string(),
         })?,
     );
-    encoder.set_bytes(
-        channels as u64 + 1,
-        size_of::<J2kNativeColorBatchStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kNativeColorBatchStoreParams>(channels as u64 + 1, &params);
     dispatch_3d_pipeline(
         encoder,
         pipeline,

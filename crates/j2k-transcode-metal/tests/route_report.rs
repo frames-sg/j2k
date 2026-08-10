@@ -25,7 +25,7 @@ fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
         return;
     }
 
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         metal_device_unavailable_is_skip(module_path!());
         return;
     };

@@ -88,7 +88,7 @@ pub(super) fn encode_lossless_tile_with_report(
         input_copy_used = true;
         source_byte_offset = 0;
     }
-    let buffer = staged_buffer.as_ref().unwrap_or(tile.buffer);
+    let buffer = staged_buffer.as_deref().unwrap_or(tile.buffer);
     let len = (tile.output_width as usize)
         .checked_mul(tile.output_height as usize)
         .and_then(|samples| samples.checked_mul(bytes_per_pixel))

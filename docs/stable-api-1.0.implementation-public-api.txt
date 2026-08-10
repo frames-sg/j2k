@@ -996,8 +996,8 @@ pub type j2k_jpeg_metal::Decoder<'a>::DeviceSurface = j2k_jpeg_metal::Surface
 pub type j2k_jpeg_metal::Decoder<'a>::Session = j2k_jpeg_metal::MetalSession
 pub type j2k_jpeg_metal::Decoder<'a>::SubmittedSurface = j2k_jpeg_metal::batch::MetalSubmission
 pub type j2k_jpeg_metal::Decoder<'a>::View = j2k_jpeg::decoder::view::JpegView<'a>
-pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::buffer(&self) -> &metal::buffer::BufferRef
-pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::into_buffer(self) -> metal::buffer::Buffer
+pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::into_buffer(self) -> objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>
 ```
 
 ## `j2k-metal`
@@ -1059,7 +1059,7 @@ pub fn j2k_metal::J2kDecoder<'a>::submit_region_to_device(&mut self, &mut Self::
 pub fn j2k_metal::J2kDecoder<'a>::submit_scaled_to_device(&mut self, &mut Self::Session, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_metal::J2kDecoder<'a>::submit_to_device(&mut self, &mut Self::Session, j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_metal::MetalBackendSession::backend_kind(&self) -> j2k_core::backend::BackendKind
-pub fn j2k_metal::MetalBackendSession::uses_command_queue(&self, &metal::commandqueue::CommandQueueRef) -> core::result::Result<bool, j2k_metal::Error>
+pub fn j2k_metal::MetalBackendSession::uses_command_queue(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<bool, j2k_metal::Error>
 pub fn j2k_metal::MetalEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::stage_error::J2kEncodeStageResult<()>
 pub fn j2k_metal::MetalEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::stage_error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
@@ -1075,6 +1075,7 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::encode_quantize_subband(&mut self
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_block(&mut self, j2k_types::J2kTier1CodeBlockEncodeJob<'_>) -> j2k_types::stage_error::J2kEncodeStageResult<core::option::Option<j2k_types::EncodedJ2kCodeBlock>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[j2k_types::J2kTier1CodeBlockEncodeJob<'_>]) -> j2k_types::stage_error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<j2k_types::EncodedJ2kCodeBlock>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::for_host_output_benchmark() -> Self
+pub fn j2k_metal::MetalEncodeStageAccelerator::ht_tile_required_magnitude_bound(&self) -> core::option::Option<u8>
 pub fn j2k_metal::MetalEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool
 pub fn j2k_metal::MetalLosslessEncodeBatchStats::new() -> Self
 pub fn j2k_metal::MetalLosslessEncodeStageStats::add_assign(&mut self, Self)
@@ -1090,8 +1091,8 @@ pub fn j2k_metal::Surface::dimensions(&self) -> (u32, u32)
 pub fn j2k_metal::Surface::memory_range(&self) -> core::option::Option<j2k_core::accelerator::DeviceMemoryRange>
 pub fn j2k_metal::Surface::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub fn j2k_metal::benchmark_group_region_scaled_requests(&[alloc::sync::Arc<[u8]>], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_metal::BenchmarkGroupedRequests, j2k_metal::Error>
-pub fn j2k_metal::benchmark_overwrite_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &metal::buffer::Buffer, &[u8]) -> core::result::Result<(), j2k_metal::Error>
-pub fn j2k_metal::benchmark_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &[u8]) -> core::result::Result<metal::buffer::Buffer, j2k_metal::Error>
+pub fn j2k_metal::benchmark_overwrite_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, &[u8]) -> core::result::Result<(), j2k_metal::Error>
+pub fn j2k_metal::benchmark_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &[u8]) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal::Error>
 pub fn j2k_metal::benchmark_region_scaled_direct_plan_prepare(&[u8], j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<(), j2k_metal::Error>
 pub fn j2k_metal::download_surfaces_packed(&j2k_metal::MetalBackendSession, &[&j2k_metal::Surface]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_metal::Error>
 pub fn j2k_metal::encode_lossless_batch_with_report(j2k_metal::MetalLosslessEncodeBatchRequest<'_, '_>, &j2k::encode::contracts::J2kLosslessEncodeOptions, &j2k_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_metal::MetalLosslessEncodeOutcome>, j2k_metal::Error>
@@ -2138,7 +2139,7 @@ pub fn j2k_metal_support::FallibleSubmissionQueue<S>::try_finish<O, E>(self, &'s
 pub fn j2k_metal_support::FallibleSubmissionQueue<S>::try_push_with<E>(&mut self, &'static str, impl core::ops::function::FnOnce(usize, usize) -> core::result::Result<S, E>) -> core::result::Result<usize, E> where E: core::convert::From<j2k_core::batch::BatchInfrastructureError>
 pub fn j2k_metal_support::FallibleSubmissionQueue<S>::with_capacity_hint(usize) -> Self
 pub struct j2k_metal_support::FallibleSubmissionQueue<S>
-pub unsafe fn j2k_metal_support::ResidentMetalImage::from_exclusive_pending_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::from_exclusive_pending_buffer(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 ```
 
 ## `j2k-transcode-metal`

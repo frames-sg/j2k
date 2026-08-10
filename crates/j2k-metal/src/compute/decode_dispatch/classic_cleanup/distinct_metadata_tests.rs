@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 
 use j2k_core::BatchInfrastructureError;
@@ -138,7 +141,7 @@ fn distinct_classic_batches_honor_empty_and_zero_fill_output_semantics() {
             &output,
             &mut scratch_buffers,
         )?;
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         validate_direct_status(runtime, status)?;
         assert_eq!(
@@ -186,7 +189,7 @@ fn distinct_classic_batches_honor_empty_and_zero_fill_output_semantics() {
             &output,
             &mut scratch_buffers,
         )?;
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         validate_direct_status(runtime, status)?;
         assert_eq!(
@@ -261,7 +264,7 @@ fn distinct_classic_device_failure_keeps_nonzero_source_identity() {
             &mut scratch_buffers,
         )?;
         status.remap_sources(&[3, 9])?;
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         let error = validate_direct_status(runtime, status)
             .expect_err("invalid second classic source must fail");

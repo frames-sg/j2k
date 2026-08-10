@@ -6,6 +6,7 @@ use j2k_jpeg::adapter::{
     JpegBaselineGpuEncodeTilePlan, JpegBaselineHuffmanTable,
 };
 use j2k_jpeg::{JpegBackend, JpegEncodeError};
+use objc2_metal::MTLBuffer;
 
 use super::{allocation, JpegBaselineMetalEncodeTile, MetalJpegBaselineEncodeAdapter};
 use crate::compute;
@@ -30,14 +31,14 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
     }
 
     fn source_key(&self, tile: &JpegBaselineMetalEncodeTile<'tile>) -> Self::SourceKey {
-        tile.buffer_trusted().gpu_address()
+        tile.buffer_trusted().gpuAddress()
     }
 
     fn gpu_tile(
         &self,
         tile: JpegBaselineMetalEncodeTile<'tile>,
     ) -> Result<JpegBaselineGpuEncodeTile, Self::Error> {
-        metal_gpu_tile(tile)
+        Ok(metal_gpu_tile(tile))
     }
 
     fn map_plan_error(&self, error: JpegBaselineGpuEncodeError) -> Self::Error {
@@ -120,14 +121,9 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
     }
 }
 
-fn metal_gpu_tile(
-    tile: JpegBaselineMetalEncodeTile<'_>,
-) -> Result<JpegBaselineGpuEncodeTile, crate::Error> {
-    let buffer_len =
-        usize::try_from(tile.buffer_trusted().length()).map_err(|_| crate::Error::MetalKernel {
-            message: "JPEG Baseline Metal encode buffer length exceeds usize".to_string(),
-        })?;
-    Ok(JpegBaselineGpuEncodeTile {
+fn metal_gpu_tile(tile: JpegBaselineMetalEncodeTile<'_>) -> JpegBaselineGpuEncodeTile {
+    let buffer_len = tile.buffer_trusted().length();
+    JpegBaselineGpuEncodeTile {
         byte_offset: tile.byte_offset,
         width: tile.width,
         height: tile.height,
@@ -136,7 +132,7 @@ fn metal_gpu_tile(
         output_height: tile.output_height,
         format: tile.format,
         buffer_len,
-    })
+    }
 }
 
 fn metal_encode_params(params: JpegBaselineGpuEncodeParams) -> compute::JpegBaselineEncodeParams {

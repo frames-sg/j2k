@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::mem::{size_of, size_of_val};
 
+use crate::metal_types::{Buffer, BufferRef, Device};
 use j2k_core::accelerator::GpuAbi;
 use j2k_metal_support::{
     checked_buffer_fill_bytes, checked_buffer_read as support_checked_buffer_read,
     checked_buffer_read_vec, checked_buffer_write, checked_private_buffer, checked_shared_buffer,
     checked_shared_buffer_with_slice, MetalSupportError,
 };
-use metal::{Buffer, Device};
 
 use crate::{error::metal_kernel_support_error, Error};
 
@@ -74,8 +77,11 @@ pub(crate) fn checked_buffer_slice_at<T: GpuAbi>(
         .map_err(|error| buffer_access_error(context, error))
 }
 
-pub(crate) fn buffer_is_cpu_visible(buffer: &Buffer) -> bool {
-    !buffer.contents().is_null()
+pub(crate) fn buffer_is_cpu_visible(buffer: &BufferRef) -> bool {
+    matches!(
+        buffer.storageMode(),
+        objc2_metal::MTLStorageMode::Shared | objc2_metal::MTLStorageMode::Managed
+    )
 }
 
 /// Copy caller-owned GPU ABI input into Metal-owned shared storage.

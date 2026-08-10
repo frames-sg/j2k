@@ -2,8 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::metal_types::{Texture, TextureRef};
 use j2k_core::PixelFormat;
-use metal::{Texture, TextureRef};
 
 /// One decoded JPEG tile resident in a caller-owned Metal texture.
 pub struct MetalTextureTile {
@@ -38,7 +38,7 @@ impl MetalTextureTile {
     /// work submitted through raw handles. No raw access may overlap a safe
     /// decode through that output, one of its clones or subsets, or another
     /// tile derived from the same allocation.
-    pub unsafe fn texture(&self) -> &TextureRef {
+    pub unsafe fn texture(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture> {
         self.texture_trusted()
     }
 

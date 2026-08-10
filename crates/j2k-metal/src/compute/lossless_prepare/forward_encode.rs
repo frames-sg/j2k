@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
     decode_mct_status_error, dispatch_1d_pipeline, label_command_buffer, label_compute_encoder,
     new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of, with_runtime,
     zeroed_shared_buffer, Error, J2kForwardIctParams, J2kForwardRctParams, J2kMctStatus,
-    J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, MTLSize, J2K_MCT_STATUS_OK,
+    J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, J2K_MCT_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -41,34 +44,18 @@ pub(crate) fn encode_forward_rct(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.forward_rct);
+        encoder.setComputePipelineState(&runtime.forward_rct);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
         encoder.set_buffer(2, Some(&plane2_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kForwardRctParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kForwardRctParams>(3, &params);
         encoder.set_buffer(4, Some(&status_buffer), 0);
-        let width = runtime
-            .forward_rct
-            .thread_execution_width()
-            .max(1)
-            .min(len as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: len as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
+        let width = runtime.forward_rct.threadExecutionWidth().max(1).min(len);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(len as u64, 1, 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "forward RCT status")?;
@@ -128,34 +115,18 @@ pub(crate) fn encode_forward_ict(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.forward_ict);
+        encoder.setComputePipelineState(&runtime.forward_ict);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
         encoder.set_buffer(2, Some(&plane2_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kForwardIctParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kForwardIctParams>(3, &params);
         encoder.set_buffer(4, Some(&status_buffer), 0);
-        let width = runtime
-            .forward_ict
-            .thread_execution_width()
-            .max(1)
-            .min(len as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: len as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
+        let width = runtime.forward_ict.threadExecutionWidth().max(1).min(len);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(len as u64, 1, 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "forward ICT status")?;
@@ -238,16 +209,12 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         label_command_buffer(&command_buffer, "j2k encode-stage quantize_subband");
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "J2K encode-stage quantize_subband");
-        encoder.set_compute_pipeline_state(&runtime.quantize_subband);
+        encoder.setComputePipelineState(&runtime.quantize_subband);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<J2kQuantizeSubbandParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kQuantizeSubbandParams>(2, &params);
         dispatch_1d_pipeline(&encoder, &runtime.quantize_subband, u64::from(len_u32));
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")

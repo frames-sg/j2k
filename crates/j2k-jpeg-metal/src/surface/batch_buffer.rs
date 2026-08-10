@@ -2,8 +2,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::metal_types::{Buffer, BufferRef};
 use j2k_core::{BufferError, Downscale, PixelFormat, Rect};
-use metal::{Buffer, BufferRef};
 
 #[cfg(test)]
 use super::{Storage, Surface};
@@ -24,6 +24,14 @@ pub struct MetalBatchOutputBuffer {
     tile_stride_bytes: usize,
     tile_capacity: usize,
 }
+
+// SAFETY: The Metal allocation is cross-thread capable, and all safe access
+// that can overlap decoder reuse is serialized by the shared `access_gate`.
+// Raw access remains unsafe and carries the synchronization contract.
+unsafe impl Send for MetalBatchOutputBuffer {}
+// SAFETY: Shared safe references expose immutable metadata or acquire the
+// allocation gate before access; they cannot initiate unsynchronized writes.
+unsafe impl Sync for MetalBatchOutputBuffer {}
 
 impl MetalBatchOutputBuffer {
     /// Allocate a reusable RGB8 output buffer for `tile_capacity` full-size tiles.
@@ -150,7 +158,7 @@ impl MetalBatchOutputBuffer {
     /// gate cannot observe work submitted through raw handles. No such access
     /// may overlap a safe decode into this output or readback from a [`crate::Surface`]
     /// that aliases this allocation.
-    pub unsafe fn buffer(&self) -> &BufferRef {
+    pub unsafe fn buffer(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer> {
         self.buffer_trusted()
     }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::{
     encode_exact_native_color_batch_store_in_encoder,
     encode_prepared_direct_component_plane_in_encoder, encode_stacked_direct_component_plane_batch,
@@ -38,8 +39,8 @@ pub(super) fn color_component_plan_refs(
 #[cfg(target_os = "macos")]
 pub(super) struct ColorGroupEncoder<'a> {
     pub(super) runtime: &'a MetalRuntime,
-    pub(super) command_buffer: &'a metal::CommandBufferRef,
-    pub(super) compute_encoder: &'a metal::ComputeCommandEncoderRef,
+    pub(super) command_buffer: &'a crate::metal_types::CommandBufferRef,
+    pub(super) compute_encoder: &'a crate::metal_types::ComputeCommandEncoderRef,
     pub(super) plans: &'a [Arc<PreparedDirectColorPlan>],
     pub(super) fmt: PixelFormat,
     pub(super) layout: BatchLayout,

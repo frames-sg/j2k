@@ -13,7 +13,7 @@ use j2k_jpeg::Decoder as CpuDecoder;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
 #[cfg(target_os = "macos")]
-use metal::Device;
+use objc2_metal::MTLDevice;
 
 #[cfg(target_os = "macos")]
 use crate::compute;
@@ -35,7 +35,9 @@ pub struct MetalBackendSession {
 #[cfg(target_os = "macos")]
 impl MetalBackendSession {
     /// Create a session bound to an existing Metal device.
-    pub fn new(device: Device) -> Self {
+    pub fn new(
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         Self {
             runtime_session: MetalRuntimeSession::new(device),
         }
@@ -49,7 +51,7 @@ impl MetalBackendSession {
     }
 
     /// Metal device used by this session.
-    pub fn device(&self) -> &metal::DeviceRef {
+    pub fn device(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice> {
         self.runtime_session.device()
     }
 

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+#[cfg(target_os = "macos")]
 use super::{
     checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
     decode_ht_status_error, dispatch_single_thread, dispatch_zero_u32_buffer_in_encoder,
     ht_batch_output_word_count, ht_output_word_count, new_command_buffer,
     new_compute_command_encoder, size_of, zeroed_shared_buffer, Buffer, ComputeCommandEncoderRef,
     Error, J2kHtCleanupBatchJob, J2kHtCleanupParams, J2kHtRepeatedBatchParams, J2kHtStatus,
-    MTLSize, MetalRuntime, J2K_HT_STATUS_OK,
+    MetalRuntime, J2K_HT_STATUS_OK,
 };
 #[cfg(target_os = "macos")]
 use crate::compute::decode_dispatch::MetalHtPipelineKind;
@@ -59,21 +62,17 @@ pub(in crate::compute) fn dispatch_ht_cleanup(
         )?,
     )?;
     encoder.memory_barrier_with_resources(&[decoded]);
-    encoder.set_compute_pipeline_state(&runtime.ht_cleanup);
+    encoder.setComputePipelineState(&runtime.ht_cleanup);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kHtCleanupParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kHtCleanupParams>(2, &params);
     encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
     encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
     dispatch_single_thread(&encoder);
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait_metal(&command_buffer)?;
 
     let status = checked_buffer_read::<J2kHtStatus>(&status_buffer, "HT cleanup status")?;
@@ -107,7 +106,7 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched(
         ht_batch_output_word_count(jobs)?,
     )?;
     encoder.memory_barrier_with_resources(&[decoded]);
-    encoder.set_compute_pipeline_state(&runtime.ht_cleanup_batched);
+    encoder.setComputePipelineState(&runtime.ht_cleanup_batched);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(&jobs_buffer), 0);
@@ -118,22 +117,14 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched(
     encoder.set_buffer(7, Some(&status_buffer), 0);
     let width = runtime
         .ht_cleanup_batched
-        .thread_execution_width()
+        .threadExecutionWidth()
         .max(1)
-        .min(jobs.len() as u64);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: jobs.len() as u64,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
+        .min(jobs.len());
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(jobs.len() as u64, 1, 1),
+        j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait_metal(&command_buffer)?;
 
     let statuses =
@@ -164,7 +155,7 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched_in_encoder_with_status_off
         MetalHtPipelineKind::SigProp => &runtime.ht_cleanup_batched_sigprop,
         MetalHtPipelineKind::MagRef => &runtime.ht_cleanup_batched_magref,
     };
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(dispatch.coded_data), 0);
     encoder.set_buffer(1, Some(dispatch.decoded), 0);
     encoder.set_buffer(2, Some(dispatch.jobs), 0);
@@ -178,20 +169,12 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched_in_encoder_with_status_off
         dispatch.status_offset_bytes,
     );
     let width = pipeline
-        .thread_execution_width()
+        .threadExecutionWidth()
         .max(1)
-        .min(dispatch.job_count as u64);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: dispatch.job_count as u64,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
+        .min(dispatch.job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(dispatch.job_count as u64, 1, 1),
+        j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
 }
 
@@ -207,15 +190,11 @@ pub(in crate::compute) fn dispatch_ht_cleanup_repeated_batched_in_encoder_with_s
         MetalHtPipelineKind::SigProp => &runtime.ht_cleanup_repeated_batched_sigprop,
         MetalHtPipelineKind::MagRef => &runtime.ht_cleanup_repeated_batched_magref,
     };
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(dispatch.coded_data), 0);
     encoder.set_buffer(1, Some(dispatch.decoded), 0);
     encoder.set_buffer(2, Some(dispatch.jobs), 0);
-    encoder.set_bytes(
-        3,
-        size_of::<J2kHtRepeatedBatchParams>() as u64,
-        (&raw const dispatch.repeated).cast(),
-    );
+    encoder.set_bytes::<J2kHtRepeatedBatchParams>(3, &dispatch.repeated);
     encoder.set_buffer(4, Some(&runtime.ht_vlc_table0), 0);
     encoder.set_buffer(5, Some(&runtime.ht_vlc_table1), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table0), 0);
@@ -226,19 +205,15 @@ pub(in crate::compute) fn dispatch_ht_cleanup_repeated_batched_in_encoder_with_s
         dispatch.status_offset_bytes,
     );
     let width = pipeline
-        .thread_execution_width()
+        .threadExecutionWidth()
         .max(1)
-        .min(dispatch.base_job_count as u64);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: dispatch.base_job_count as u64,
-            height: u64::from(dispatch.repeated.batch_count),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
+        .min(dispatch.base_job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            dispatch.base_job_count as u64,
+            u64::from(dispatch.repeated.batch_count),
+            1,
+        ),
+        j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
 }

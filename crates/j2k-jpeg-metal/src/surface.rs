@@ -19,9 +19,7 @@ use crate::error::metal_kernel_support_error;
 use crate::Error;
 
 #[cfg(target_os = "macos")]
-use metal::foreign_types::ForeignType;
-#[cfg(target_os = "macos")]
-use metal::Buffer;
+use crate::metal_types::{Buffer, BufferRef};
 
 #[cfg(target_os = "macos")]
 mod batch_buffer;
@@ -62,6 +60,15 @@ pub struct Surface {
     pub(crate) pitch_bytes: usize,
     pub(crate) storage: Storage,
 }
+
+// SAFETY: Host storage uses `Arc`; immutable resident Metal storage is covered
+// by `ResidentMetalImage`; and safe access to reusable Metal storage is
+// serialized by `access_gate`. Raw buffer access is unsafe and documents the
+// synchronization obligations that safe Rust cannot express.
+unsafe impl Send for Surface {}
+// SAFETY: Safe shared access either reads immutable storage or acquires the
+// reusable allocation's mutex. No safe API permits unsynchronized mutation.
+unsafe impl Sync for Surface {}
 
 impl Surface {
     pub(crate) fn retained_host_capacity_bytes(&self) -> usize {
@@ -161,12 +168,17 @@ impl Surface {
     /// no command may write the surface range while [`Surface::as_bytes`] or
     /// [`Surface::download_into`] reads it, and no raw access may overlap a safe
     /// decoder write through an aliasing [`MetalBatchOutputBuffer`].
-    pub unsafe fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+    pub unsafe fn metal_buffer(
+        &self,
+    ) -> Option<(
+        &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
+        usize,
+    )> {
         self.metal_buffer_trusted()
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
+    pub(crate) fn metal_buffer_trusted(&self) -> Option<(&BufferRef, usize)> {
         match &self.storage {
             Storage::Metal {
                 resident: Some(image),
@@ -353,7 +365,7 @@ impl DeviceSurface for Surface {
                 let (buffer, offset) = self.metal_buffer_trusted()?;
                 Some(DeviceMemoryRange::new(
                     BackendKind::Metal,
-                    u64::try_from(buffer.as_ptr() as usize).ok()?,
+                    u64::try_from(core::ptr::from_ref(buffer).cast::<()>() as usize).ok()?,
                     offset,
                     self.byte_len(),
                 ))

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::{mem::size_of, sync::Arc};
 
 use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
@@ -179,7 +182,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid plane pack");
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(
         0,
         stage.planes[0].as_ref().map(std::convert::AsRef::as_ref),
@@ -201,13 +204,9 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
         0,
     );
     encoder.set_buffer(4, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        5,
-        size_of::<J2kPackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kPackParams>(5, &params);
     dispatch_2d_pipeline(&encoder, pipeline, stage.dims);
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Surface::from_metal_buffer(out_buffer, stage.dims, fmt)
 }
@@ -250,18 +249,14 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid MCT RGB8 pack");
-    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8);
+    encoder.setComputePipelineState(&runtime.pack_mct_rgb8);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_buffer(3, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        4,
-        size_of::<J2kMctRgb8PackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kMctRgb8PackParams>(4, &params);
     dispatch_2d_pipeline(&encoder, &runtime.pack_mct_rgb8, dims);
-    encoder.end_encoding();
+    encoder.endEncoding();
     drop(signpost);
 
     Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
@@ -330,22 +325,18 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid batched MCT RGB8 pack");
-    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
+    encoder.setComputePipelineState(&runtime.pack_mct_rgb8_batched);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_buffer(3, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        4,
-        size_of::<J2kBatchedMctRgb8PackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kBatchedMctRgb8PackParams>(4, &params);
     dispatch_3d_pipeline(
         &encoder,
         &runtime.pack_mct_rgb8_batched,
         (dims.0, dims.1, count_u32),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     drop(signpost);
 
     for index in 0..count {
@@ -423,24 +414,22 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated MCT RGB8 pack");
-    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
+    encoder.setComputePipelineState(&runtime.pack_mct_rgb8_batched);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_buffer(3, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        4,
-        size_of::<J2kBatchedMctRgb8PackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kBatchedMctRgb8PackParams>(4, &params);
     dispatch_2d_pipeline(&encoder, &runtime.pack_mct_rgb8_batched, dims);
-    encoder.end_encoding();
+    encoder.endEncoding();
     drop(signpost);
 
     if surface_bytes > 0 && count > 1 {
         let blit = new_blit_command_encoder(command_buffer)?;
         if metal_profile_stages_enabled() {
-            blit.set_label("J2K decode hybrid repeated output blit");
+            blit.setLabel(Some(&NSString::from_str(
+                "J2K decode hybrid repeated output blit",
+            )));
         }
         let mut copied = 1usize;
         while copied < count {
@@ -473,7 +462,7 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
             record_hybrid_repeated_output_blit();
             copied += copy_count;
         }
-        blit.end_encoding();
+        blit.endEncoding();
     }
 
     for index in 0..count {

@@ -2,6 +2,10 @@ use super::*;
 use j2k_core::CodecError;
 #[cfg(target_os = "macos")]
 use j2k_core::{DeviceSurface, ImageDecode, ImageDecodeDevice};
+#[cfg(target_os = "macos")]
+use objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
+use objc2_metal::{MTLBlitCommandEncoder, MTLCommandEncoder, MTLOrigin, MTLSize, MTLTexture};
 
 #[cfg(target_os = "macos")]
 fn patterned_index_byte(index: usize) -> u8 {
@@ -21,7 +25,7 @@ fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
 #[cfg(target_os = "macos")]
 fn download_rgba8_texture(
     session: &MetalBackendSession,
-    texture: &metal::TextureRef,
+    texture: &ProtocolObject<dyn MTLTexture>,
     dimensions: (u32, u32),
 ) -> Vec<u8> {
     let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
@@ -34,19 +38,27 @@ fn download_rgba8_texture(
         j2k_metal_support::checked_command_buffer(&queue).expect("texture readback command buffer");
     let blit = j2k_metal_support::checked_blit_command_encoder(&command_buffer)
         .expect("texture readback blit encoder");
-    blit.copy_from_texture_to_buffer(
-        texture,
-        0,
-        0,
-        metal::MTLOrigin { x: 0, y: 0, z: 0 },
-        metal::MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
-        &buffer,
-        0,
-        row_bytes as u64,
-        byte_len as u64,
-        metal::MTLBlitOption::None,
-    );
-    blit.end_encoding();
+    // SAFETY: The source region matches the validated texture dimensions, the
+    // destination allocation covers `byte_len`, and both resources remain
+    // retained until the command buffer completes below.
+    unsafe {
+        blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+            texture,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLSize {
+                width: dimensions.0 as usize,
+                height: dimensions.1 as usize,
+                depth: 1,
+            },
+            &buffer,
+            0,
+            row_bytes,
+            byte_len,
+        );
+    }
+    blit.endEncoding();
     j2k_metal_support::commit_and_wait(&command_buffer).expect("texture readback blit");
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "texture test readback")
@@ -507,7 +519,7 @@ fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (16, 16));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -551,7 +563,7 @@ fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (16, 16));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -595,7 +607,7 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (16, 16));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -898,7 +910,7 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (8, 8));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1062,7 +1074,7 @@ fn assert_table_mixed_full_buffer_groups_resident(
         assert_eq!(surface.dimensions(), dimensions);
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1121,7 +1133,7 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (4, 4));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1166,7 +1178,7 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (4, 4));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1211,7 +1223,7 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (4, 4));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1268,7 +1280,7 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1328,7 +1340,7 @@ fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1389,7 +1401,7 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1450,7 +1462,7 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1527,7 +1539,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1615,7 +1627,7 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -1814,7 +1826,7 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-        assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+        assert!(std::ptr::eq(buffer, output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),

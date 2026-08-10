@@ -39,7 +39,7 @@ use j2k_test_support::{
     read_pnm_image,
 };
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+type Buffer = objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>;
 
 const DIMS: &[u32] = &[128, 512, 1024];
 const RESIDENT_BATCH_SIZES: &[usize] = &[1, 16, 256, 1024];

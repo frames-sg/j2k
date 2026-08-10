@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::{
     dispatch_forward_dwt53_on_buffers, dispatch_forward_rct_on_buffers,
     dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
-use j2k_core::PixelFormat;
-use metal::{Buffer, ComputePipelineState, MTLSize};
+use j2k_core::{accelerator::GpuAbi, PixelFormat};
+use objc2_metal::{MTLComputePipelineState, MTLSize};
+
+use crate::metal_types::{Buffer, ComputeCommandEncoderRef, ComputePipelineState};
 
 use super::{
     FastSubsampledPacket, PlaneMode, PreparedHuffmanHost, MODE_GRAY, MODE_RGB, MODE_YCBCR,
@@ -35,17 +37,17 @@ pub(super) struct FastDecodeEntropyInputs<'a, P> {
 /// bytes, the three component planes, the family params struct, the three
 /// quantization tables, the per-component DC/AC Huffman table pairs, and the
 /// three layout-specific auxiliary buffers for slots 14-16.
-pub(super) fn bind_fast_decode_entropy_inputs<P>(
-    encoder: &metal::ComputeCommandEncoderRef,
+pub(super) fn bind_fast_decode_entropy_inputs<P: GpuAbi>(
+    encoder: &ComputeCommandEncoderRef,
     inputs: &FastDecodeEntropyInputs<'_, P>,
 ) {
-    encoder.set_buffer(0, Some(inputs.entropy_buffer), 0);
-    encoder.set_buffer(1, Some(inputs.planes[0]), 0);
-    encoder.set_buffer(2, Some(inputs.planes[1]), 0);
-    encoder.set_buffer(3, Some(inputs.planes[2]), 0);
-    encoder.set_bytes(4, size_of::<P>() as u64, (&raw const *inputs.params).cast());
+    encoder.bind_buffer(0, Some(inputs.entropy_buffer), 0);
+    encoder.bind_buffer(1, Some(inputs.planes[0]), 0);
+    encoder.bind_buffer(2, Some(inputs.planes[1]), 0);
+    encoder.bind_buffer(3, Some(inputs.planes[2]), 0);
+    encoder.bind_bytes::<P>(4, inputs.params);
     for (slot, quant) in (5u64..).zip(inputs.quants) {
-        encoder.set_bytes(slot, size_of::<[u16; 64]>() as u64, quant.as_ptr().cast());
+        encoder.bind_bytes::<[u16; 64]>(slot, quant);
     }
     for (index, (dc, ac)) in inputs
         .dc_tables
@@ -54,20 +56,12 @@ pub(super) fn bind_fast_decode_entropy_inputs<P>(
         .enumerate()
     {
         let slot = 8 + 2 * index as u64;
-        encoder.set_bytes(
-            slot,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const *dc).cast(),
-        );
-        encoder.set_bytes(
-            slot + 1,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const *ac).cast(),
-        );
+        encoder.bind_bytes::<PreparedHuffmanHost>(slot, dc);
+        encoder.bind_bytes::<PreparedHuffmanHost>(slot + 1, ac);
     }
-    encoder.set_buffer(14, Some(inputs.slot14_buffer), 0);
-    encoder.set_buffer(15, Some(inputs.slot15_buffer), 0);
-    encoder.set_buffer(16, Some(inputs.slot16_buffer), 0);
+    encoder.bind_buffer(14, Some(inputs.slot14_buffer), 0);
+    encoder.bind_buffer(15, Some(inputs.slot15_buffer), 0);
+    encoder.bind_buffer(16, Some(inputs.slot16_buffer), 0);
 }
 
 pub(super) fn fast_packet_huffman_tables<P: FastSubsampledPacket>(
@@ -89,31 +83,31 @@ pub(super) fn fast_packet_huffman_tables<P: FastSubsampledPacket>(
 
 /// Bind the shared three-plane pack kernel layout at slots 0-4: the component
 /// planes, the packed output buffer, and the pack params struct.
-pub(super) fn bind_three_plane_pack<P>(
-    encoder: &metal::ComputeCommandEncoderRef,
+pub(super) fn bind_three_plane_pack<P: GpuAbi>(
+    encoder: &ComputeCommandEncoderRef,
     planes: [Option<&Buffer>; 3],
     out_buffer: &Buffer,
     params: &P,
 ) {
-    encoder.set_buffer(0, planes[0].map(std::convert::AsRef::as_ref), 0);
-    encoder.set_buffer(1, planes[1].map(std::convert::AsRef::as_ref), 0);
-    encoder.set_buffer(2, planes[2].map(std::convert::AsRef::as_ref), 0);
-    encoder.set_buffer(3, Some(out_buffer), 0);
-    encoder.set_bytes(4, size_of::<P>() as u64, (&raw const *params).cast());
+    encoder.bind_buffer(0, planes[0].map(std::convert::AsRef::as_ref), 0);
+    encoder.bind_buffer(1, planes[1].map(std::convert::AsRef::as_ref), 0);
+    encoder.bind_buffer(2, planes[2].map(std::convert::AsRef::as_ref), 0);
+    encoder.bind_buffer(3, Some(out_buffer), 0);
+    encoder.bind_bytes::<P>(4, params);
 }
 
 pub(super) fn dispatch_2d_pipeline(
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &ComputeCommandEncoderRef,
     pipeline: &ComputePipelineState,
     dims: (u32, u32),
 ) {
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    let width = pipeline.threadExecutionWidth().max(1);
+    let max_threads = pipeline.maxTotalThreadsPerThreadgroup().max(width);
     let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
+            width: dims.0 as usize,
+            height: dims.1 as usize,
             depth: 1,
         },
         MTLSize {
@@ -126,18 +120,18 @@ pub(super) fn dispatch_2d_pipeline(
 
 #[cfg(target_os = "macos")]
 pub(super) fn dispatch_3d_pipeline(
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &ComputeCommandEncoderRef,
     pipeline: &ComputePipelineState,
     dims: (u32, u32, u32),
 ) {
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    let width = pipeline.threadExecutionWidth().max(1);
+    let max_threads = pipeline.maxTotalThreadsPerThreadgroup().max(width);
     let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: u64::from(dims.2),
+            width: dims.0 as usize,
+            height: dims.1 as usize,
+            depth: dims.2 as usize,
         },
         MTLSize {
             width,
@@ -154,23 +148,24 @@ pub(super) fn packed_pair_extent(value: u32) -> u32 {
 
 #[cfg(target_os = "macos")]
 pub(super) fn dispatch_1d_pipeline(
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &ComputeCommandEncoderRef,
     pipeline: &ComputePipelineState,
     threads: u32,
 ) {
     let threadgroup_width = choose_1d_threadgroup_width(
-        pipeline.thread_execution_width(),
-        pipeline.max_total_threads_per_threadgroup(),
+        pipeline.threadExecutionWidth() as u64,
+        pipeline.maxTotalThreadsPerThreadgroup() as u64,
         threads,
     );
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         MTLSize {
-            width: u64::from(threads.max(1)),
+            width: threads.max(1) as usize,
             height: 1,
             depth: 1,
         },
         MTLSize {
-            width: threadgroup_width,
+            width: usize::try_from(threadgroup_width)
+                .expect("Metal thread-group width fits NSUInteger"),
             height: 1,
             depth: 1,
         },

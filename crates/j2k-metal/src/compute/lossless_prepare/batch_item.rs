@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     dispatch_forward_dwt53_components_on_buffers, dispatch_forward_dwt53_components_split_profile,
     dispatch_forward_dwt53_on_buffers, dispatch_forward_dwt53_on_buffers_split_profile,

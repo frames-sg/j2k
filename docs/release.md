@@ -1,7 +1,9 @@
 # Release Policy
 
-The `j2k` 0.8.1 public crate release is published and security-supported. It
-carries the release-scoped Part 1 T.803 decoder evidence described in
+The `j2k` 0.9.0 workspace is the next release candidate; it is not yet
+published or security-supported. The `j2k` 0.8.1 public crate release is published and security-supported.
+It remains the latest published line and carries the release-scoped
+Part 1 T.803 decoder evidence described in
 [`T.803 conformance`](t803-conformance.md). Unreleased Part 15 evidence remains
 development-only until it is regenerated from a future exact clean candidate.
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
@@ -12,6 +14,7 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.9.0` | Unpublished release candidate with reviewed `objc2-metal` API-break evidence. | Not supported until publication and final exact-SHA validation. |
 | `0.8.1` | Published on crates.io from annotated tag `v0.8.1`. | Latest supported release. |
 | `0.8.0` | Previous crates.io release from annotated tag `v0.8.0`. | Supported. |
 | `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
@@ -66,6 +69,18 @@ report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md) and
 record an additive-only public surface: exact-resolution and sRGB/ICC decode
 APIs, encode-stage context, and the shared irreversible midpoint calculation.
 The one-time `0.7.5` to `0.8.0` transition allowance has been removed.
+
+Candidate `0.9.0` compares directly with published `v0.8.1`. Its [reviewed API
+report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md) and
+[review configuration](release-evidence/public-api/public-api-review-0.9.0.yml)
+record the intentional expert Metal API break: `metal-rs` device, queue,
+buffer, texture, descriptor, size, and pixel-format types become retained or
+borrowed `objc2-metal` objects and values. Callers construct texture descriptors
+directly; the obsolete helper and unreachable raw-message-send errors are
+removed. The break ledger enumerates every removed item in the four affected
+Metal crates. The transition is valid
+only for `0.9.0`; after publication the semver baseline must rotate to tagged
+`v0.9.0` before another candidate is accepted.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
@@ -139,9 +154,8 @@ Before final candidate freeze, complete both structured fields in every
 actual reviewer identity and review date. The publish-integrity command
 discovers these records from the workspace manifest and fails if any one is
 missing or unapproved. The date must be a calendar-valid `YYYY-MM-DD`; never
-infer either value from commit metadata. The patched `block`
-[release approval record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
-remains the example for the required format.
+infer either value from commit metadata. This generic validation remains in
+force even when the current workspace has no repository-local path patches.
 Also have a repository administrator enable GitHub private vulnerability
 reporting under **Security** settings before exact-SHA candidate verification.
 The authenticated candidate verifier reads that repository setting and fails
@@ -362,30 +376,12 @@ are failures. These checks retain the per-backend minimum test count floors and
 named runtime sentinels for every Metal-facing package. J2K Metal Criterion
 bench signoff is reset until new narrow profiling benches are added.
 
-The workspace resolves `metal v0.33.0` and patches its transitive `block v0.1.6`
-through `third_party/block-0.1.6-patched` to mitigate the dependency's
-future-incompatibility warning. The
-[patch provenance record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
-pins the source digests, documents the limited ABI spelling changes, and records
-the release's maintainer approval. That approval alone is not release signoff
-and does not replace validation with lockfile-strict metadata plus the normal
-Metal build and runtime gates. Remove
-it only after the resolved `metal` dependency no longer uses the affected crate
-or an approved replacement is adopted, and record that removal in the release
-notes. Do not downgrade or merely silence the warning.
-
-This override protects repository builds only. Cargo [reads `[patch]` only
-from the top-level workspace](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section)
-and ignores patch settings supplied by a dependency, so a crates.io consumer
-of the published Metal adapters will still resolve upstream `metal 0.33.0` and
-upstream `block 0.1.6` unless that consumer adds its own override. The current
-upstream [`metal` manifest](https://github.com/gfx-rs/metal-rs/blob/master/Cargo.toml)
-still declares `block 0.1.6`, and its
-[README](https://github.com/gfx-rs/metal-rs/blob/master/README.md) marks
-`metal` deprecated in favor of `objc2-metal`.
-Do not describe the local patch as a downstream fix. The release evidence
-records this resolution explicitly; migration to maintained `objc2-metal`
-or another publishable dependency path remains tracked maintenance debt.
+Candidate 0.9.0 replaces the deprecated `metal-rs` host binding with the pinned
+`objc2`, `objc2-foundation`, and `objc2-metal` stack. The workspace and
+published Metal adapters no longer require a top-level crates.io patch or the
+unmaintained `block 0.1.6` crate. Release review must keep the objc2 versions
+unified and run the dependency-tree proof plus the normal Metal build and
+runtime gates.
 
 CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
 
@@ -398,10 +394,9 @@ being mislabeled as uncovered production.
 Reviewed non-host-instrumentable exclusions are exact and named: CUDA SIMT
 device Rust, generated cuda-oxide host scaffolds, the shared SIMT prelude,
 CUDA/NVTX FFI declaration spans, the embedded MSL string body, the generated
-codec-math DWT fragment, and the vendored patched `block` FFI binding. Every
-generated or reviewed-vendored line must match one of those exclusions and its
-named freshness, integrity, or runtime-parity evidence. Metal and CUDA lanes
-publish separate LCOV and summary artifacts and remain required before release.
+codec-math DWT fragment. Every generated line must match its named freshness,
+integrity, or runtime-parity evidence. Metal and CUDA lanes publish separate
+LCOV and summary artifacts and remain required before release.
 
 Each coverage lane forces `CARGO_LLVM_COV_TARGET_DIR` and
 `CARGO_LLVM_COV_BUILD_DIR` to the same unique empty directory and uses only

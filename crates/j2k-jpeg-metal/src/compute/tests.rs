@@ -138,7 +138,7 @@ fn viewport_plane_cache_lease_serializes_cloned_sessions() {
     let session_alias = session.clone();
     let runtime = session.runtime_result().as_ref().expect("Metal runtime");
     let first = cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8), 0).expect("first stage");
-    let first_buffer = first.plane0.as_ptr() as usize;
+    let first_buffer = objc2::rc::Retained::as_ptr(&first.plane0).cast::<()>() as usize;
     assert_eq!(
         session.runtime_ptr_for_test(),
         session_alias.runtime_ptr_for_test(),
@@ -156,7 +156,7 @@ fn viewport_plane_cache_lease_serializes_cloned_sessions() {
         let second =
             cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8), 0).expect("second stage");
         acquired_tx
-            .send(second.plane0.as_ptr() as usize)
+            .send(objc2::rc::Retained::as_ptr(&second.plane0).cast::<()>() as usize)
             .expect("signal cache lease acquisition");
     });
 
@@ -187,7 +187,7 @@ fn cached_gray_stage_returns_fresh_public_surface() {
 
     let runtime = MetalRuntime::new().expect("Metal runtime");
     let stage = cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8), 0).expect("stage");
-    let cached_buffer = stage.plane0.as_ptr();
+    let cached_buffer = objc2::rc::Retained::as_ptr(&stage.plane0);
     let surface = stage
         .finish_with_runtime(&runtime, PixelFormat::Gray8)
         .expect("fresh Gray8 surface");
@@ -196,9 +196,8 @@ fn cached_gray_stage_returns_fresh_public_surface() {
         .expect("Metal-backed Gray8 surface");
 
     assert_eq!(offset, 0);
-    assert_ne!(
-        surface_buffer.as_ptr(),
-        cached_buffer,
+    assert!(
+        !core::ptr::eq(core::ptr::from_ref(surface_buffer), cached_buffer),
         "safe-readable Gray8 output must not alias the reusable plane cache"
     );
     assert_eq!(
@@ -208,9 +207,8 @@ fn cached_gray_stage_returns_fresh_public_surface() {
 
     let reused =
         cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8), 0).expect("reused stage");
-    assert_eq!(
-        reused.plane0.as_ptr(),
-        cached_buffer,
+    assert!(
+        core::ptr::eq(objc2::rc::Retained::as_ptr(&reused.plane0), cached_buffer,),
         "fresh public output must preserve internal cache reuse"
     );
 }

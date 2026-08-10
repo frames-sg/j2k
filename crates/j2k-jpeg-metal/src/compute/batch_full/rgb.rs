@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
+use objc2_metal::MTLCommandBuffer;
 #[cfg(test)]
 use std::mem::size_of;
 use std::{sync::MutexGuard, time::Instant};
@@ -457,7 +460,7 @@ fn encode_fast_subsampled_full_rgb_decode<P: FastSubsampledMetal>(
             let timing_encode_start = timing_enabled.then(Instant::now);
             let decode_pipeline = P::full_rgb_batch_decode_pipeline(pass.runtime);
             let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-            decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+            decoder_encoder.setComputePipelineState(decode_pipeline);
             bind_fast_decode_entropy_inputs::<JpegFast420BatchParams>(
                 &decoder_encoder,
                 &FastDecodeEntropyInputs {
@@ -480,13 +483,13 @@ fn encode_fast_subsampled_full_rgb_decode<P: FastSubsampledMetal>(
                     slot16_buffer: &pass.buffers.status_buffer,
                 },
             );
-            decoder_encoder.set_buffer(17, Some(&pass.buffers.entropy_checkpoints_buffer), 0);
+            decoder_encoder.bind_buffer(17, Some(&pass.buffers.entropy_checkpoints_buffer), 0);
             dispatch_1d_pipeline(
                 &decoder_encoder,
                 decode_pipeline,
                 pass.shape.total_decode_threads,
             );
-            decoder_encoder.end_encoding();
+            decoder_encoder.endEncoding();
             if timing_enabled {
                 timing.encode_decode = timing_encode_start
                     .expect("timing start is set when timing is enabled")
@@ -594,7 +597,7 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
     let timing_pack_encode_start = timing.enabled.then(Instant::now);
     let pack_pipeline = P::pack_full_rgb_batch_pipeline(runtime);
     let pack_encoder = new_compute_command_encoder(command_buffer)?;
-    pack_encoder.set_compute_pipeline_state(pack_pipeline);
+    pack_encoder.setComputePipelineState(pack_pipeline);
     bind_three_plane_pack::<JpegFast420BatchParams>(
         &pack_encoder,
         [
@@ -614,7 +617,7 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
             shape.tile_count_u32,
         ),
     );
-    pack_encoder.end_encoding();
+    pack_encoder.endEncoding();
     if timing.enabled {
         timing.timing.encode_pack = timing_pack_encode_start
             .expect("timing start is set when timing is enabled")

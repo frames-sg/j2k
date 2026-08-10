@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::accelerator::GpuAbi;
-use metal::Buffer;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{MTLBuffer, MTLResource, MTLStorageMode};
 
 use crate::MetalSupportError;
 
@@ -48,17 +49,20 @@ pub(crate) fn checked_buffer_typed_range<T: GpuAbi>(
 }
 
 fn checked_buffer_contents_ptr<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
     offset_bytes: usize,
     len: usize,
 ) -> Result<*mut T, MetalSupportError> {
-    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    let buffer_len = buffer.length();
     let byte_len = checked_buffer_typed_range::<T>(buffer_len, offset_bytes, len)?;
 
-    let base = buffer.contents().cast::<u8>();
-    if base.is_null() {
+    if !matches!(
+        buffer.storageMode(),
+        MTLStorageMode::Shared | MTLStorageMode::Managed
+    ) {
         return Err(MetalSupportError::BufferContentsUnavailable);
     }
+    let base = buffer.contents().as_ptr().cast::<u8>();
     let address =
         (base as usize)
             .checked_add(offset_bytes)
@@ -90,7 +94,7 @@ fn checked_buffer_contents_ptr<T: GpuAbi>(
 /// All Metal writers must have completed, and the range must remain immutable
 /// during the copy.
 pub unsafe fn checked_buffer_read<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
     offset_bytes: usize,
 ) -> Result<T, MetalSupportError> {
     let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, 1)?;
@@ -109,11 +113,11 @@ pub unsafe fn checked_buffer_read<T: GpuAbi>(
 /// All Metal writers must have completed, and the range must remain immutable
 /// during the copy.
 pub unsafe fn checked_buffer_read_vec<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
     offset_bytes: usize,
     len: usize,
 ) -> Result<Vec<T>, MetalSupportError> {
-    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    let buffer_len = buffer.length();
     checked_buffer_typed_range::<T>(buffer_len, offset_bytes, len)?;
     if len == 0 {
         return Ok(Vec::new());
@@ -146,11 +150,11 @@ pub unsafe fn checked_buffer_read_vec<T: GpuAbi>(
 ///
 /// No Metal command or other CPU access may overlap this write.
 pub unsafe fn checked_buffer_write<T: GpuAbi>(
-    buffer: &Buffer,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
     offset_bytes: usize,
     values: &[T],
 ) -> Result<(), MetalSupportError> {
-    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    let buffer_len = buffer.length();
     checked_buffer_typed_range::<T>(buffer_len, offset_bytes, values.len())?;
     if values.is_empty() {
         return Ok(());
@@ -173,12 +177,12 @@ pub unsafe fn checked_buffer_write<T: GpuAbi>(
 ///
 /// No Metal command or other CPU access may overlap this fill.
 pub unsafe fn checked_buffer_fill_bytes(
-    buffer: &Buffer,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
     offset_bytes: usize,
     len: usize,
     value: u8,
 ) -> Result<(), MetalSupportError> {
-    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    let buffer_len = buffer.length();
     checked_buffer_typed_range::<u8>(buffer_len, offset_bytes, len)?;
     if len == 0 {
         return Ok(());

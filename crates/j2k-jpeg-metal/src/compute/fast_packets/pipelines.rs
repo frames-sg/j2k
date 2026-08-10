@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
 use super::super::{
     checked_u32, dispatch_1d_pipeline, fast420_batch_timing_enabled, new_compute_command_encoder,
@@ -178,23 +178,19 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                     ..ctx.decode_params
                 };
                 let boundary_encoder = new_compute_command_encoder(ctx.command_buffer)?;
-                boundary_encoder.set_compute_pipeline_state(
+                boundary_encoder.setComputePipelineState(
                     &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
                 );
-                boundary_encoder.set_buffer(0, Some(vertical_meta_buffer), 0);
-                boundary_encoder.set_buffer(1, Some(vertical_samples_buffer), 0);
-                boundary_encoder.set_bytes(
-                    2,
-                    size_of::<JpegFast420TextureBatchParams>() as u64,
-                    (&raw const decode_params).cast(),
-                );
-                boundary_encoder.set_texture(0, Some(texture));
+                boundary_encoder.bind_buffer(0, Some(vertical_meta_buffer), 0);
+                boundary_encoder.bind_buffer(1, Some(vertical_samples_buffer), 0);
+                boundary_encoder.bind_bytes::<JpegFast420TextureBatchParams>(2, &decode_params);
+                boundary_encoder.bind_texture(0, Some(texture));
                 dispatch_1d_pipeline(
                     &boundary_encoder,
                     &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
                     mcu_threads,
                 );
-                boundary_encoder.end_encoding();
+                boundary_encoder.endEncoding();
             }
         }
         if ctx.decode_params.mcus_per_row > 1 && ctx.decode_params.mcu_rows > 1 {
@@ -211,22 +207,18 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 };
                 let corner_encoder = new_compute_command_encoder(ctx.command_buffer)?;
                 corner_encoder
-                    .set_compute_pipeline_state(&runtime.fast420_rgba_texture_corner_pipeline);
-                corner_encoder.set_buffer(0, Some(ctx.boundary_meta_buffer), 0);
-                corner_encoder.set_buffer(1, Some(vertical_meta_buffer), 0);
-                corner_encoder.set_buffer(2, Some(vertical_samples_buffer), 0);
-                corner_encoder.set_bytes(
-                    3,
-                    size_of::<JpegFast420TextureBatchParams>() as u64,
-                    (&raw const decode_params).cast(),
-                );
-                corner_encoder.set_texture(0, Some(texture));
+                    .setComputePipelineState(&runtime.fast420_rgba_texture_corner_pipeline);
+                corner_encoder.bind_buffer(0, Some(ctx.boundary_meta_buffer), 0);
+                corner_encoder.bind_buffer(1, Some(vertical_meta_buffer), 0);
+                corner_encoder.bind_buffer(2, Some(vertical_samples_buffer), 0);
+                corner_encoder.bind_bytes::<JpegFast420TextureBatchParams>(3, &decode_params);
+                corner_encoder.bind_texture(0, Some(texture));
                 dispatch_1d_pipeline(
                     &corner_encoder,
                     &runtime.fast420_rgba_texture_corner_pipeline,
                     mcu_threads,
                 );
-                corner_encoder.end_encoding();
+                corner_encoder.endEncoding();
             }
         }
         Ok(())

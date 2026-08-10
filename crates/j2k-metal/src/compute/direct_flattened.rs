@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::{sync::Arc, time::Instant};
 
+use crate::metal_types::Buffer;
 use j2k_native::HtCodeBlockDecodeWorkspace;
-use metal::Buffer;
 
 use crate::profile_env::{hybrid_stage_signpost, SIGNPOST_DECODE_HYBRID_CPU_TIER1};
 use crate::Error;

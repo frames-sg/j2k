@@ -4,8 +4,8 @@
 use std::cell::Cell;
 use std::sync::Mutex;
 
+use crate::metal_types::Device;
 use j2k_metal_support::{checked_private_buffer, checked_shared_buffer};
-use metal::Device;
 
 use crate::Error;
 

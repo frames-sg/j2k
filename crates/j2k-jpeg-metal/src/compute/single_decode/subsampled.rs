@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
 use crate::buffers::new_shared_buffer;
 
@@ -121,7 +121,7 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     let decode_pipeline = P::decode_pipeline(runtime);
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -137,25 +137,21 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     if let Some(out_buffer) = out_buffer.as_ref() {
         let Some(pack_pipeline) = P::pack_pipeline_for_format(runtime, fmt) else {
             return Ok(None);
         };
         let pack_encoder = new_compute_command_encoder(&command_buffer)?;
-        pack_encoder.set_compute_pipeline_state(pack_pipeline);
-        pack_encoder.set_buffer(0, Some(&y_plane), 0);
-        pack_encoder.set_buffer(1, Some(&cb_plane), 0);
-        pack_encoder.set_buffer(2, Some(&cr_plane), 0);
-        pack_encoder.set_buffer(3, Some(out_buffer), 0);
-        pack_encoder.set_bytes(
-            4,
-            size_of::<JpegFast420Params>() as u64,
-            (&raw const params).cast(),
-        );
+        pack_encoder.setComputePipelineState(pack_pipeline);
+        pack_encoder.bind_buffer(0, Some(&y_plane), 0);
+        pack_encoder.bind_buffer(1, Some(&cb_plane), 0);
+        pack_encoder.bind_buffer(2, Some(&cr_plane), 0);
+        pack_encoder.bind_buffer(3, Some(out_buffer), 0);
+        pack_encoder.bind_bytes::<JpegFast420Params>(4, &params);
         dispatch_2d_pipeline(&pack_encoder, pack_pipeline, packet.dimensions());
-        pack_encoder.end_encoding();
+        pack_encoder.endEncoding();
     }
 
     commit_and_wait_jpeg(&command_buffer)?;
@@ -377,7 +373,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     let decode_pipeline = P::scaled_region_decode_pipeline(runtime);
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -393,11 +389,11 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let pack_encoder = new_compute_command_encoder(&command_buffer)?;
     let pack_pipeline = P::pack_windowed_pipeline_for_format(runtime, fmt);
-    pack_encoder.set_compute_pipeline_state(pack_pipeline);
+    pack_encoder.setComputePipelineState(pack_pipeline);
     bind_three_plane_pack::<JpegFast420WindowedPackParams>(
         &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
@@ -405,7 +401,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
         &pack_params,
     );
     dispatch_2d_pipeline(&pack_encoder, pack_pipeline, (scaled_roi.w, scaled_roi.h));
-    pack_encoder.end_encoding();
+    pack_encoder.endEncoding();
 
     commit_and_wait_jpeg(&command_buffer)?;
 

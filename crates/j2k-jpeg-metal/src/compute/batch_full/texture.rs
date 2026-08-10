@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{mem::size_of, sync::MutexGuard};
+use crate::metal_types::prelude::*;
+
+use std::sync::MutexGuard;
 
 use super::super::{
     batch, batch_entropy_buffers, bind_fast_decode_entropy_inputs, checked_u32,
@@ -421,7 +423,7 @@ fn full_rgba_texture_params_for_tile<P: FastSubsampledMetal>(
 
 #[cfg(target_os = "macos")]
 fn bind_full_rgba_texture_params_for_tile<P: FastSubsampledMetal>(
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
     buffer_index: u64,
     first: &P,
     shape: FullRgbaTextureBatchShape,
@@ -439,19 +441,11 @@ fn bind_full_rgba_texture_params_for_tile<P: FastSubsampledMetal>(
             alpha: u32::from(u8::MAX),
             mode: plane_mode_to_u32(shape.mode),
         };
-        encoder.set_bytes(
-            buffer_index,
-            size_of::<JpegFast444TextureBatchParams>() as u64,
-            (&raw const decode_params).cast(),
-        );
+        encoder.bind_bytes::<JpegFast444TextureBatchParams>(buffer_index, &decode_params);
     } else {
         let decode_params =
             full_rgba_texture_params_for_tile::<P>(first, shape, tile_index, tile_index_ctx)?;
-        encoder.set_bytes(
-            buffer_index,
-            size_of::<JpegFast420TextureBatchParams>() as u64,
-            (&raw const decode_params).cast(),
-        );
+        encoder.bind_bytes::<JpegFast420TextureBatchParams>(buffer_index, &decode_params);
     }
     Ok(())
 }
@@ -518,8 +512,8 @@ fn encode_fast_subsampled_full_rgba_texture_decode_tiles<P: FastSubsampledMetal>
                 message: "JPEG Metal batch texture output slot was missing".to_string(),
             })?;
         let decoder_encoder = new_compute_command_encoder(pass.command_buffer)?;
-        decoder_encoder.set_compute_pipeline_state(texture_decode_pipeline);
-        decoder_encoder.set_buffer(0, Some(&pass.entropy_buffers.payload), 0);
+        decoder_encoder.setComputePipelineState(texture_decode_pipeline);
+        decoder_encoder.bind_buffer(0, Some(&pass.entropy_buffers.payload), 0);
         bind_full_rgba_texture_params_for_tile::<P>(
             &decoder_encoder,
             4,
@@ -528,68 +522,32 @@ fn encode_fast_subsampled_full_rgba_texture_decode_tiles<P: FastSubsampledMetal>
             index,
             pass.tile_index_ctx,
         )?;
-        decoder_encoder.set_bytes(
-            5,
-            size_of::<[u16; 64]>() as u64,
-            pass.first.y_quant().as_ptr().cast(),
-        );
-        decoder_encoder.set_bytes(
-            6,
-            size_of::<[u16; 64]>() as u64,
-            pass.first.cb_quant().as_ptr().cast(),
-        );
-        decoder_encoder.set_bytes(
-            7,
-            size_of::<[u16; 64]>() as u64,
-            pass.first.cr_quant().as_ptr().cast(),
-        );
-        decoder_encoder.set_bytes(
-            8,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const dc_tables[0]).cast(),
-        );
-        decoder_encoder.set_bytes(
-            9,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const ac_tables[0]).cast(),
-        );
-        decoder_encoder.set_bytes(
-            10,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const dc_tables[1]).cast(),
-        );
-        decoder_encoder.set_bytes(
-            11,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const ac_tables[1]).cast(),
-        );
-        decoder_encoder.set_bytes(
-            12,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const dc_tables[2]).cast(),
-        );
-        decoder_encoder.set_bytes(
-            13,
-            size_of::<PreparedHuffmanHost>() as u64,
-            (&raw const ac_tables[2]).cast(),
-        );
-        decoder_encoder.set_buffer(14, Some(&pass.entropy_buffers.offsets), 0);
-        decoder_encoder.set_buffer(15, Some(&pass.entropy_buffers.lens), 0);
-        decoder_encoder.set_buffer(16, Some(pass.status_buffer), 0);
-        decoder_encoder.set_buffer(17, Some(&pass.entropy_buffers.checkpoints), 0);
-        decoder_encoder.set_buffer(18, Some(pass.boundary_buffers.0), 0);
-        decoder_encoder.set_buffer(19, Some(pass.boundary_buffers.1), 0);
+        decoder_encoder.bind_bytes::<[u16; 64]>(5, pass.first.y_quant());
+        decoder_encoder.bind_bytes::<[u16; 64]>(6, pass.first.cb_quant());
+        decoder_encoder.bind_bytes::<[u16; 64]>(7, pass.first.cr_quant());
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(8, &dc_tables[0]);
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(9, &ac_tables[0]);
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(10, &dc_tables[1]);
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(11, &ac_tables[1]);
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(12, &dc_tables[2]);
+        decoder_encoder.bind_bytes::<PreparedHuffmanHost>(13, &ac_tables[2]);
+        decoder_encoder.bind_buffer(14, Some(&pass.entropy_buffers.offsets), 0);
+        decoder_encoder.bind_buffer(15, Some(&pass.entropy_buffers.lens), 0);
+        decoder_encoder.bind_buffer(16, Some(pass.status_buffer), 0);
+        decoder_encoder.bind_buffer(17, Some(&pass.entropy_buffers.checkpoints), 0);
+        decoder_encoder.bind_buffer(18, Some(pass.boundary_buffers.0), 0);
+        decoder_encoder.bind_buffer(19, Some(pass.boundary_buffers.1), 0);
         if let Some((vertical_meta_buffer, vertical_samples_buffer)) = pass.vertical_buffers {
-            decoder_encoder.set_buffer(20, Some(vertical_meta_buffer), 0);
-            decoder_encoder.set_buffer(21, Some(vertical_samples_buffer), 0);
+            decoder_encoder.bind_buffer(20, Some(vertical_meta_buffer), 0);
+            decoder_encoder.bind_buffer(21, Some(vertical_samples_buffer), 0);
         }
-        decoder_encoder.set_texture(0, Some(texture));
+        decoder_encoder.bind_texture(0, Some(texture));
         dispatch_1d_pipeline(
             &decoder_encoder,
             texture_decode_pipeline,
             pass.shape.segment_count_u32,
         );
-        decoder_encoder.end_encoding();
+        decoder_encoder.endEncoding();
     }
     Ok(())
 }
@@ -619,17 +577,13 @@ fn encode_fast_subsampled_full_rgba_texture_boundary_passes<P: FastSubsampledMet
         let decode_params =
             full_rgba_texture_params_for_tile::<P>(first, shape, index, tile_index_ctx)?;
         let boundary_encoder = new_compute_command_encoder(command_buffer)?;
-        boundary_encoder.set_compute_pipeline_state(boundary_pipeline);
-        boundary_encoder.set_buffer(0, Some(boundary_buffers.0), 0);
-        boundary_encoder.set_buffer(1, Some(boundary_buffers.1), 0);
-        boundary_encoder.set_bytes(
-            2,
-            size_of::<JpegFast420TextureBatchParams>() as u64,
-            (&raw const decode_params).cast(),
-        );
-        boundary_encoder.set_texture(0, Some(texture));
+        boundary_encoder.setComputePipelineState(boundary_pipeline);
+        boundary_encoder.bind_buffer(0, Some(boundary_buffers.0), 0);
+        boundary_encoder.bind_buffer(1, Some(boundary_buffers.1), 0);
+        boundary_encoder.bind_bytes::<JpegFast420TextureBatchParams>(2, &decode_params);
+        boundary_encoder.bind_texture(0, Some(texture));
         dispatch_1d_pipeline(&boundary_encoder, boundary_pipeline, repair_threads);
-        boundary_encoder.end_encoding();
+        boundary_encoder.endEncoding();
     }
     Ok(())
 }

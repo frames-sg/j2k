@@ -2,9 +2,9 @@
 
 //! Metal baseline JPEG entropy submission and bounded host readback.
 
-use std::mem::{size_of, size_of_val};
+use objc2_metal::MTLSize;
 
-use metal::MTLSize;
+use crate::metal_types::prelude::*;
 
 use super::{
     commit_and_wait_jpeg, new_command_buffer, new_compute_command_encoder, with_runtime_for_session,
@@ -34,46 +34,18 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.jpeg_baseline_encode_pipeline);
-        encoder.set_buffer(0, Some(job.input), job.input_offset as u64);
-        encoder.set_buffer(1, Some(&entropy_buffer), 0);
-        encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<JpegBaselineEncodeParams>() as u64,
-            (&raw const job.params).cast(),
-        );
-        encoder.set_bytes(
-            4,
-            size_of_val(&job.q_luma) as u64,
-            job.q_luma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            5,
-            size_of_val(&job.q_chroma) as u64,
-            job.q_chroma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            6,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_luma).cast(),
-        );
-        encoder.set_bytes(
-            7,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_luma).cast(),
-        );
-        encoder.set_bytes(
-            8,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_chroma).cast(),
-        );
-        encoder.set_bytes(
-            9,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_chroma).cast(),
-        );
-        encoder.dispatch_threads(
+        encoder.setComputePipelineState(&runtime.jpeg_baseline_encode_pipeline);
+        encoder.bind_buffer(0, Some(job.input), job.input_offset as u64);
+        encoder.bind_buffer(1, Some(&entropy_buffer), 0);
+        encoder.bind_buffer(2, Some(&status_buffer), 0);
+        encoder.bind_bytes::<JpegBaselineEncodeParams>(3, &job.params);
+        encoder.bind_bytes::<[u8; 64]>(4, &job.q_luma);
+        encoder.bind_bytes::<[u8; 64]>(5, &job.q_chroma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_luma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_luma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(8, &job.huff_dc_chroma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(9, &job.huff_ac_chroma);
+        encoder.dispatchThreads_threadsPerThreadgroup(
             MTLSize {
                 width: 1,
                 height: 1,
@@ -85,7 +57,7 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
                 depth: 1,
             },
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
         let status = checked_buffer_read::<JpegBaselineEncodeStatus>(
@@ -157,45 +129,21 @@ pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.jpeg_baseline_encode_batch_pipeline);
-        encoder.set_buffer(0, Some(job.input), 0);
-        encoder.set_buffer(1, Some(&entropy_buffer), 0);
-        encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_buffer(3, Some(&params_buffer), 0);
-        encoder.set_bytes(
-            4,
-            size_of_val(&job.q_luma) as u64,
-            job.q_luma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            5,
-            size_of_val(&job.q_chroma) as u64,
-            job.q_chroma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            6,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_luma).cast(),
-        );
-        encoder.set_bytes(
-            7,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_luma).cast(),
-        );
-        encoder.set_bytes(
-            8,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_chroma).cast(),
-        );
-        encoder.set_bytes(
-            9,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_chroma).cast(),
-        );
-        encoder.set_bytes(10, size_of::<u32>() as u64, (&raw const tile_count).cast());
-        encoder.dispatch_threads(
+        encoder.setComputePipelineState(&runtime.jpeg_baseline_encode_batch_pipeline);
+        encoder.bind_buffer(0, Some(job.input), 0);
+        encoder.bind_buffer(1, Some(&entropy_buffer), 0);
+        encoder.bind_buffer(2, Some(&status_buffer), 0);
+        encoder.bind_buffer(3, Some(&params_buffer), 0);
+        encoder.bind_bytes::<[u8; 64]>(4, &job.q_luma);
+        encoder.bind_bytes::<[u8; 64]>(5, &job.q_chroma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_luma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_luma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(8, &job.huff_dc_chroma);
+        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(9, &job.huff_ac_chroma);
+        encoder.bind_bytes::<u32>(10, &tile_count);
+        encoder.dispatchThreads_threadsPerThreadgroup(
             MTLSize {
-                width: u64::from(tile_count),
+                width: tile_count as usize,
                 height: 1,
                 depth: 1,
             },
@@ -205,7 +153,7 @@ pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
                 depth: 1,
             },
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
         let status_slice = checked_buffer_slice::<JpegBaselineEncodeStatus>(

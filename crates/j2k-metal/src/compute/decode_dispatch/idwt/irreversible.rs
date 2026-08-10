@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
     hybrid_stage_signpost, label_compute_encoder, new_command_buffer, new_compute_command_encoder,
-    size_of, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error,
-    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob,
-    MetalRuntime, SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
+    with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error, J2kIdwt97StepParams,
+    J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob, MetalRuntime,
+    SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 use super::{IdwtSubBandBuffers, SingleIdwtDispatch};
 use j2k_codec_math::dwt;
@@ -80,7 +83,7 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
                 decoded_offset: 0,
             },
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let decoded_host = checked_buffer_slice::<f32>(&decoded, output.len(), "IDWT output")?;
@@ -99,7 +102,7 @@ pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_i
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
         &encoder, dispatch,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -124,17 +127,13 @@ pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_i
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.set_compute_pipeline_state(&runtime.idwt_interleave);
+    encoder.setComputePipelineState(&runtime.idwt_interleave);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
     encoder.set_buffer(2, Some(lh), lh_offset as u64);
     encoder.set_buffer(3, Some(hh), hh_offset as u64);
     encoder.set_buffer(4, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes(
-        5,
-        size_of::<J2kIdwtSingleDecompositionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
     dispatch_2d_pipeline(
         encoder,
         &runtime.idwt_interleave,
@@ -152,13 +151,9 @@ fn dispatch_irreversible97_stages(
     decoded_offset: usize,
     params: J2kIdwtSingleDecompositionParams,
 ) {
-    encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_horizontal_scale);
+    encoder.setComputePipelineState(&runtime.idwt_irreversible97_horizontal_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes(
-        1,
-        size_of::<J2kIdwtSingleDecompositionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     dispatch_2d_pipeline(
         encoder,
         &runtime.idwt_irreversible97_horizontal_scale,
@@ -168,13 +163,9 @@ fn dispatch_irreversible97_stages(
 
     let first_even_x = (params.x0 + params.output_x) & 1;
     let first_odd_x = 1 - first_even_x;
-    encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_horizontal_step);
+    encoder.setComputePipelineState(&runtime.idwt_irreversible97_horizontal_step);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes(
-        1,
-        size_of::<J2kIdwtSingleDecompositionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     for (coefficient, parity) in [
         (dwt::IDWT97_NEG_DELTA_F32, first_even_x),
         (dwt::IDWT97_NEG_GAMMA_F32, first_odd_x),
@@ -187,11 +178,7 @@ fn dispatch_irreversible97_stages(
             _reserved0: 0,
             _reserved1: 0,
         };
-        encoder.set_bytes(
-            2,
-            size_of::<J2kIdwt97StepParams>() as u64,
-            (&raw const step).cast(),
-        );
+        encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
         dispatch_2d_pipeline(
             encoder,
             &runtime.idwt_irreversible97_horizontal_step,
@@ -200,13 +187,9 @@ fn dispatch_irreversible97_stages(
         encoder.memory_barrier_with_resources(&[decoded]);
     }
 
-    encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_vertical_scale);
+    encoder.setComputePipelineState(&runtime.idwt_irreversible97_vertical_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes(
-        1,
-        size_of::<J2kIdwtSingleDecompositionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     dispatch_2d_pipeline(
         encoder,
         &runtime.idwt_irreversible97_vertical_scale,
@@ -216,13 +199,9 @@ fn dispatch_irreversible97_stages(
 
     let first_even_y = (params.y0 + params.output_y) & 1;
     let first_odd_y = 1 - first_even_y;
-    encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_vertical_step);
+    encoder.setComputePipelineState(&runtime.idwt_irreversible97_vertical_step);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes(
-        1,
-        size_of::<J2kIdwtSingleDecompositionParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     for (coefficient, parity) in [
         (dwt::IDWT97_NEG_DELTA_F32, first_even_y),
         (dwt::IDWT97_NEG_GAMMA_F32, first_odd_y),
@@ -235,11 +214,7 @@ fn dispatch_irreversible97_stages(
             _reserved0: 0,
             _reserved1: 0,
         };
-        encoder.set_bytes(
-            2,
-            size_of::<J2kIdwt97StepParams>() as u64,
-            (&raw const step).cast(),
-        );
+        encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
         dispatch_2d_pipeline(
             encoder,
             &runtime.idwt_irreversible97_vertical_step,

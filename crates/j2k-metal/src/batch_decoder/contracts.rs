@@ -2,13 +2,13 @@
 
 //! Shared Metal batch result and metadata contracts.
 
+#[cfg(target_os = "macos")]
+use super::ResidentMetalImage;
 use super::{
     BatchGroupInfo, Error, IndexedBatchError, J2kDecodeWarning, PreparedBatchGroup, Rect, Surface,
 };
 #[cfg(any(test, target_os = "macos"))]
 use super::{BatchLayout, PixelFormat};
-#[cfg(target_os = "macos")]
-use super::{Buffer, ResidentMetalImage};
 use crate::MetalDecodeDispatchReport;
 
 #[cfg(any(test, target_os = "macos"))]
@@ -140,7 +140,9 @@ impl MetalResidentBatch {
     /// value (or a clone) until that GPU work completes. No CPU or GPU writer
     /// may access the allocation while any resident-batch owner exists.
     #[must_use]
-    pub unsafe fn metal_buffer(&self) -> &Buffer {
+    pub unsafe fn metal_buffer(
+        &self,
+    ) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer> {
         // SAFETY: the caller accepts the immutable raw-handle contract above.
         unsafe { self.storage.raw_buffer() }
     }

@@ -52,7 +52,6 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
         release_root.join(".github/workflows"),
         release_root.join("docs"),
         release_root.join("scripts"),
-        release_root.join("third_party/block-0.1.6-patched"),
     ] {
         std::fs::create_dir_all(directory).expect("create hermetic release directory");
     }
@@ -86,19 +85,14 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.8.1\"\n\n[patch.crates-io]\nblock = { path = \"third_party/block-0.1.6-patched\" }\n",
+        "[workspace.package]\nversion = \"0.9.0\"\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.8.1] - 2026-08-06\n",
+        "# Changelog\n\n## [0.9.0] - 2026-08-10\n",
     )
     .expect("write finalized changelog fixture");
-    std::fs::write(
-        release_root.join("third_party/block-0.1.6-patched/PATCH_PROVENANCE.md"),
-        "## Release approval\n\n- Reviewer identity: `@release-reviewer`\n- Approval date: `2026-07-12`\n",
-    )
-    .expect("write approved provenance fixture");
 
     run_test_in_dir(
         "release_commands::tests::orchestration::release_integrity_publish_mode_accepts_hermetic_final_metadata",

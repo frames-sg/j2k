@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{MetalBufferPools, PoolLimits};
+use crate::metal_types::Device;
 use j2k_metal_support::{
     checked_blit_command_encoder, checked_command_buffer, checked_command_queue,
     checked_private_buffer, checked_shared_buffer_with_bytes, commit_and_wait,
 };
-use metal::foreign_types::ForeignType;
-use metal::Device;
 
 mod lookup;
 mod production_limits;
 mod warm_reuse;
 
 fn device() -> Device {
-    Device::system_default().expect("Metal device")
+    j2k_metal_support::system_default_device().expect("Metal device")
 }
 
 #[test]
@@ -29,9 +31,9 @@ fn completed_exact_size_reuse_updates_actual_byte_accounting() {
     let command_buffer = checked_command_buffer(&queue).expect("command buffer");
     let blit = checked_blit_command_encoder(&command_buffer).expect("blit encoder");
     blit.copy_from_buffer(&upload, 0, &buffer, 0, 16);
-    blit.end_encoding();
+    blit.endEncoding();
     commit_and_wait(&command_buffer).expect("buffer work completion before recycle");
-    let pointer = buffer.as_ptr();
+    let pointer = objc2::rc::Retained::as_ptr(buffer.buffer());
 
     for _ in 0..16 {
         pools
@@ -41,7 +43,7 @@ fn completed_exact_size_reuse_updates_actual_byte_accounting() {
         buffer = pools
             .take_private(&device, 16)
             .expect("take private buffer");
-        assert_eq!(buffer.as_ptr(), pointer);
+        assert_eq!(objc2::rc::Retained::as_ptr(buffer.buffer()), pointer);
     }
     drop(buffer);
     let diagnostics = pools.private_diagnostics().unwrap();

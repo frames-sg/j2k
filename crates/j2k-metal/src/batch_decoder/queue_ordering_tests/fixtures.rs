@@ -46,7 +46,7 @@ pub(super) fn distinct_gray8_fixture(seed: u8) -> Arc<[u8]> {
 }
 
 pub(super) fn gray8_destination(
-    device: &metal::DeviceRef,
+    device: &crate::metal_types::DeviceRef,
 ) -> Result<MetalImageDestination, Box<dyn std::error::Error>> {
     let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(device, 16)?;
     let layout = MetalImageLayout::new_batch(0, (4, 4), 4, PixelFormat::Gray8, 1, 16)?;
@@ -56,7 +56,7 @@ pub(super) fn gray8_destination(
 }
 
 pub(super) fn wrong_size_gray8_destination(
-    device: &metal::DeviceRef,
+    device: &crate::metal_types::DeviceRef,
 ) -> Result<MetalImageDestination, Box<dyn std::error::Error>> {
     let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(device, 4)?;
     let layout = MetalImageLayout::new_batch(0, (2, 2), 2, PixelFormat::Gray8, 1, 4)?;

@@ -25,7 +25,7 @@ This task must run on macOS with `cargo-public-api` `0.52.0` installed
 silently change with the runner host or floating nightly channel.
 
 The ordinary snapshot uses `RUSTDOCFLAGS=-D warnings` so its comparison with
-the published 0.7.5 snapshot keeps the same scope. A second pass adds
+the published 0.8.1 snapshot keeps the same scope. A second pass adds
 `--document-hidden-items` and records only the extra rustdoc-hidden items in
 the implementation snapshot. Rustdoc can rewrite equivalent re-export paths
 when hidden modules become visible, so the generator forms a conservative full
@@ -34,7 +34,7 @@ sorted difference from the ordinary pass. This guarantees that the combined
 inventory remains a superset of the ordinary contract while retaining rewritten
 path variants for review rather than silently dropping reachable API. An empty
 full cargo-public-api pass fails the gate; an empty per-package hidden-only
-difference is recorded truthfully. The 0.7.5 baseline comparison continues to
+difference is recorded truthfully. The 0.8.1 baseline comparison continues to
 use only the ordinary snapshot. Those
 adapters are implementation-facing, but they are still reachable Rust API and
 therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
@@ -42,18 +42,23 @@ compatibility escape hatch.
 
 The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
 with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
-report compares its ordinary inventory with 0.7.5. The 0.8.1 report compares
-that release directly with published 0.8.0. Both reports also record each
+report compares its ordinary inventory with 0.7.5, and the 0.8.1 report
+compares that release directly with published 0.8.0. The 0.9.0 report compares
+the candidate directly with published 0.8.1. All reports also record each
 package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
 count/fingerprint in
-`docs/release-evidence/public-api/public-api-review-0.8.1.yml`.
+`docs/release-evidence/public-api/public-api-review-0.9.0.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
 The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
 0.8.1 review file has no break-ledger entries because its generated diff is
-additive only.
+additive only. The 0.9.0 review file deliberately enumerates every removed
+`metal-rs` expert signature across `j2k-metal-support`, `j2k-jpeg-metal`,
+`j2k-metal`, and `j2k-transcode-metal`, plus the obsolete texture-descriptor
+helper and unreachable raw-message-send errors, with direct `objc2-metal`
+migration guidance and no compatibility layer.
 Source-break entries must enumerate every exact removed API item, package,
 summary, and migration. Validation requires that inventory to equal the
 generated removed-item set: an omitted, duplicate, unknown, or stale item fails
@@ -78,7 +83,9 @@ inventory. The completed 0.7.5-to-0.8.0 comparison is in the generated
 That report became release evidence after source freeze and the exact-SHA
 local, hosted, Metal, and CUDA gates completed. The current comparison is in
 the generated
-[`0.8.1` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md).
+[`0.9.0` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md),
+with its human review in
+[`public-api-review-0.9.0.yml`](release-evidence/public-api/public-api-review-0.9.0.yml).
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
@@ -87,9 +94,14 @@ intentionally changed the strict-decoding behavior and one warning variant
 under Cargo's pre-1.0 compatibility rules. It does not claim source or behavior
 compatibility with `0.7.x`; its exact breaks and migrations are in the review
 file. Version `0.8.1` adds exact-resolution and sRGB/ICC decode APIs plus
-encode-stage context without removing or changing a 0.8.0 item. Version
-`0.7.0` similarly contracted parts of the pre-1.0 `0.6.2` API and did not claim
-source compatibility with `0.6.x`.
+encode-stage context without removing or changing a 0.8.0 item. Candidate
+`0.9.0` intentionally breaks the experimental and implementation-facing Metal
+expert APIs by replacing `metal-rs` owners and `*Ref` wrappers with retained or
+borrowed `objc2-metal` protocol objects. Texture descriptors are constructed
+directly with objc2-metal, and only typed allocation and availability errors
+remain. It does not claim Metal expert API source compatibility with `0.8.x`.
+Version `0.7.0` similarly contracted parts
+of the pre-1.0 `0.6.2` API and did not claim source compatibility with `0.6.x`.
 
 ## Stability tiers
 
@@ -131,13 +143,13 @@ removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
 exception applied only to `0.7.5`.
 
-The completed transition lock was intentionally narrow: `0.8.0` was the only
-candidate permitted to compare against `v0.7.5` as an intentional pre-1.0
-break. The checked-in historical evidence retains that comparison. The active
-baseline is now published `v0.8.0` at its pinned peeled commit, and the one-time
-transition lock is disabled. The 0.8.1 and later patch-line checks therefore
-compare with the real 0.8 contract instead of inheriting permission for
-0.7-to-0.8 breakage.
+The completed historical transition lock was intentionally narrow: `0.8.0`
+was the only candidate permitted to compare against `v0.7.5` as an intentional
+pre-1.0 break. The active baseline is published `v0.8.1` at peeled commit
+`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. A new one-time lock permits only
+candidate `0.9.0` to compare against that baseline for this reviewed Metal API
+break. Before any later candidate is checked, the baseline must rotate to the
+published `v0.9.0` tag and version.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.

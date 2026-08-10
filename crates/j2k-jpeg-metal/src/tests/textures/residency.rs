@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use objc2_metal::{MTLBuffer, MTLResource, MTLStorageMode};
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -45,7 +46,7 @@ fn jpeg_private_rgb8_tile_uses_private_output_buffer() {
     // SAFETY: The private decode waited for completion and no command accesses
     // the raw buffer while this test inspects its storage metadata.
     let raw_buffer = unsafe { tile.buffer() };
-    assert_eq!(raw_buffer.storage_mode(), metal::MTLStorageMode::Private);
+    assert_eq!(raw_buffer.storageMode(), MTLStorageMode::Private);
     assert!(tile.status_buffer_trusted().length() > 0);
 
     let resident = tile.resident_image();

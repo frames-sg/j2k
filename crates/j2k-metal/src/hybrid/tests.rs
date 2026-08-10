@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use j2k_core::{Downscale, PixelFormat, Rect};
 #[cfg(target_os = "macos")]
-use metal::Device;
+use crate::metal_types::Device;
+use j2k_core::{Downscale, PixelFormat, Rect};
 
 use super::{
     decode_region_scaled_color_batch_direct_to_device,
@@ -54,7 +54,7 @@ fn session_runtime_fixture() -> Option<(Device, MetalBackendSession, usize, Rect
     if !should_run_metal_runtime() {
         return None;
     }
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return None;
     };
@@ -259,7 +259,7 @@ fn known_repeated_region_scaled_color_batch_reuses_cached_plan_across_calls() {
         return;
     }
 
-    if Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }
@@ -296,7 +296,7 @@ fn known_distinct_region_scaled_color_batch_reuses_cached_plans_across_calls() {
         return;
     }
 
-    if Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }

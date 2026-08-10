@@ -188,7 +188,7 @@ fn registered_shared_accelerator_sources_reach_both_gpu_denominators() {
 }
 
 #[test]
-fn generated_and_vendored_sources_have_reviewed_dispositions() {
+fn generated_sources_have_reviewed_dispositions() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let generated = "crates/j2k-codec-math/generated/dwt97_constants.rs";
     let generated_changed = changed(generated, [1]);
@@ -206,21 +206,4 @@ fn generated_and_vendored_sources_have_reviewed_dispositions() {
         1
     );
     assert_eq!(generated_result.overall.measurable, 0);
-
-    let vendored = "third_party/block-0.1.6-patched/src/lib.rs";
-    let vendored_changed = changed(vendored, [1]);
-    let vendored_index = SourceIndex::repository_subset(&root, &vendored_changed, &[]).unwrap();
-    let vendored_result = evaluate_changed_coverage(
-        CoverageLane::Metal,
-        &root,
-        &vendored_changed,
-        &LcovReport::default(),
-        &vendored_index,
-    )
-    .unwrap();
-    assert_eq!(
-        vendored_result.source_dispositions["vendored-block-ffi-binding"].changed_lines,
-        1
-    );
-    assert_eq!(vendored_result.overall.measurable, 0);
 }

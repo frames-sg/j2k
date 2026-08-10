@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::time::Instant;
 
 use crate::compute::decode_dispatch::{
@@ -30,7 +33,7 @@ impl SubmissionContext<'_, '_, '_> {
     fn encode_repeated_reversible53_idwt(
         &mut self,
         idwt: &PreparedDirectIdwt,
-        output: &metal::Buffer,
+        output: &crate::metal_types::Buffer,
     ) -> Result<(), Error> {
         let (ll, low_low_stride) = lookup_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
@@ -93,7 +96,7 @@ impl SubmissionContext<'_, '_, '_> {
     fn encode_distinct_irreversible97_idwt(
         &mut self,
         step_idx: usize,
-        output: &metal::Buffer,
+        output: &crate::metal_types::Buffer,
         span: &CheckedF32BatchSpan,
     ) -> Result<(), Error> {
         for (instance_idx, bands) in self.resources.band_sets.iter().enumerate() {

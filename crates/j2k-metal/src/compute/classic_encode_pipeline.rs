@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::ComputePipelineState;
+#[cfg(target_os = "macos")]
+use crate::metal_types::ComputePipelineState;
 
 use crate::profile_env::classic_selective_bypass_disabled;
 

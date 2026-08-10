@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+#[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::{CommandQueue, Device, Event};
 #[cfg(target_os = "macos")]
 use j2k_core::BackendKind;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
-#[cfg(target_os = "macos")]
-use metal::{
-    foreign_types::{ForeignType, ForeignTypeRef},
-    Device,
-};
 
 use crate::{batch, Error};
 
@@ -28,7 +28,7 @@ pub(crate) use cache::{
 
 #[cfg(target_os = "macos")]
 pub(crate) struct MetalConsumerEventTimeline {
-    pub(crate) event: Option<metal::Event>,
+    pub(crate) event: Option<Event>,
     pub(crate) next_value: u64,
 }
 
@@ -47,7 +47,7 @@ impl MetalConsumerEventTimeline {
 /// Reusable Metal device session for J2K decode and encode submissions.
 pub struct MetalBackendSession {
     runtime_session: MetalRuntimeSession<Arc<crate::compute::MetalRuntime>, MetalSupportError>,
-    command_queue: Option<metal::CommandQueue>,
+    command_queue: Option<CommandQueue>,
     direct_plan_caches: direct_plan_cache::DirectPlanCaches,
     consumer_event_timeline: Arc<Mutex<MetalConsumerEventTimeline>>,
 }
@@ -55,7 +55,9 @@ pub struct MetalBackendSession {
 #[cfg(target_os = "macos")]
 impl MetalBackendSession {
     /// Create a session bound to an existing Metal device.
-    pub fn new(device: Device) -> Self {
+    pub fn new(
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         Self::with_runtime_session(MetalRuntimeSession::new(device), None)
     }
 
@@ -64,10 +66,13 @@ impl MetalBackendSession {
     /// Sharing the framework's exact queue provides producer and consumer
     /// ordering without host waits or an additional event bridge.
     pub fn with_command_queue(
-        device: Device,
-        command_queue: metal::CommandQueue,
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+        command_queue: objc2::rc::Retained<
+            objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
+        >,
     ) -> Result<Self, Error> {
-        if command_queue.device().as_ptr() != device.as_ptr() {
+        let queue_device = command_queue.device();
+        if objc2::rc::Retained::as_ptr(&queue_device) != objc2::rc::Retained::as_ptr(&device) {
             return Err(Error::UnsupportedMetalRequest {
                 reason: "command queue belongs to a different Metal device",
             });
@@ -80,7 +85,7 @@ impl MetalBackendSession {
 
     fn with_runtime_session(
         runtime_session: MetalRuntimeSession<Arc<crate::compute::MetalRuntime>, MetalSupportError>,
-        command_queue: Option<metal::CommandQueue>,
+        command_queue: Option<CommandQueue>,
     ) -> Self {
         Self {
             runtime_session,
@@ -98,7 +103,7 @@ impl MetalBackendSession {
     }
 
     /// Metal device used by this session.
-    pub fn device(&self) -> &metal::DeviceRef {
+    pub fn device(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice> {
         self.runtime_session.device()
     }
 
@@ -136,9 +141,9 @@ impl MetalBackendSession {
     #[doc(hidden)]
     pub fn uses_command_queue(
         &self,
-        command_queue: &metal::CommandQueueRef,
+        command_queue: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
     ) -> Result<bool, Error> {
-        Ok(self.runtime()?.queue.as_ptr() == command_queue.as_ptr())
+        Ok(core::ptr::eq(self.runtime()?.queue.as_ref(), command_queue))
     }
 
     pub(crate) fn consumer_event_timeline(&self) -> Arc<Mutex<MetalConsumerEventTimeline>> {

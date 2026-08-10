@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(test)]
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
+
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::metal_types::{Buffer, Device};
 use j2k_core::{PixelFormat, Rect};
 use j2k_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter, JpegError};
 use j2k_metal_support::dispatch_2d_pipeline;
-use metal::{Buffer, Device};
 
 use crate::buffers::{
     checked_copy_bytes_to_buffer_at, checked_fill_buffer_u8, new_private_buffer, new_shared_buffer,
@@ -255,7 +255,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -267,7 +267,7 @@ impl PlaneStage {
             &params,
         );
         dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
         surface_from_plane_buffer(out_buffer, self.dims, fmt, residency)
@@ -300,7 +300,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -312,7 +312,7 @@ impl PlaneStage {
             &params,
         );
         dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
         Ok(Surface::from_batch_output_buffer_offset(
@@ -375,7 +375,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let pack_encoder = new_compute_command_encoder(&command_buffer)?;
-        pack_encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        pack_encoder.setComputePipelineState(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
             &pack_encoder,
             [
@@ -387,23 +387,19 @@ impl PlaneStage {
             &pack_params,
         );
         dispatch_2d_pipeline(&pack_encoder, &runtime.pack_pipeline, self.dims);
-        pack_encoder.end_encoding();
+        pack_encoder.endEncoding();
 
         let texture_encoder = new_compute_command_encoder(&command_buffer)?;
-        texture_encoder.set_compute_pipeline_state(&runtime.rgb8_to_rgba_texture_pipeline);
-        texture_encoder.set_buffer(0, Some(&out_buffer), 0);
-        texture_encoder.set_bytes(
-            1,
-            size_of::<JpegRgb8ToRgbaTextureParams>() as u64,
-            (&raw const texture_params).cast(),
-        );
-        texture_encoder.set_texture(0, Some(texture));
+        texture_encoder.setComputePipelineState(&runtime.rgb8_to_rgba_texture_pipeline);
+        texture_encoder.bind_buffer(0, Some(&out_buffer), 0);
+        texture_encoder.bind_bytes::<JpegRgb8ToRgbaTextureParams>(1, &texture_params);
+        texture_encoder.bind_texture(0, Some(texture));
         dispatch_2d_pipeline(
             &texture_encoder,
             &runtime.rgb8_to_rgba_texture_pipeline,
             self.dims,
         );
-        texture_encoder.end_encoding();
+        texture_encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
         let texture = output
@@ -442,7 +438,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -454,7 +450,7 @@ impl PlaneStage {
             &params,
         );
         dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
         let command_buffer = command_buffer.clone();
 

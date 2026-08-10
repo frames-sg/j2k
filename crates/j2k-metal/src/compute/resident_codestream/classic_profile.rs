@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::CommandBuffer;
+use crate::metal_types::CommandBuffer;
 
 use super::super::resident_tier1::{
     J2kResidentClassicTier1DensityReadback, J2kResidentClassicTier1PassPlanReadback,

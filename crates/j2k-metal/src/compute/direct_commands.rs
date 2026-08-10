@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use crate::metal_types::{
+    BlitCommandEncoder, CommandBuffer, CommandBufferRef, CommandQueueRef, ComputeCommandEncoder,
+};
 use j2k_metal_support::{
     checked_blit_command_encoder, checked_command_buffer, checked_compute_command_encoder,
-};
-use metal::{
-    BlitCommandEncoder, CommandBuffer, CommandBufferRef, CommandQueueRef, ComputeCommandEncoder,
 };
 
 use crate::error::metal_kernel_support_error;

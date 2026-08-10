@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
 use j2k_core::{
     BackendKind, BackendRequest, CodecError, DeviceSurface, Downscale, PixelFormat, Rect,
 };
-#[cfg(target_os = "macos")]
-use metal::Device;
 
 #[cfg(target_os = "macos")]
 use super::is_direct_runtime_fallback_error;
@@ -151,7 +152,7 @@ fn metal_backend_sessions_own_distinct_direct_plan_caches() {
         return;
     }
 
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
@@ -172,7 +173,7 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
         return;
     }
 
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
@@ -222,7 +223,7 @@ fn decoder_local_prepared_binding_is_revalidated_for_session_device() {
         return;
     }
 
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
@@ -242,7 +243,7 @@ fn decoder_local_prepared_binding_is_revalidated_for_session_device() {
     )
     .expect("encode classic grayscale device-identity fixture");
     let session = MetalBackendSession::new(device);
-    let expected_device = session.device().registry_id();
+    let expected_device = session.device().registryID();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let first = decoder
         .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
@@ -269,7 +270,7 @@ fn repeated_session_hits_share_native_and_prepared_plan_owners() {
         return;
     }
 
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
@@ -330,7 +331,7 @@ fn explicit_metal_request_does_not_stage_cpu_pixels() {
         return;
     }
 
-    if Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }
@@ -358,7 +359,7 @@ fn repeated_region_scaled_color_batch_reuses_prepared_plan() {
         return;
     }
 
-    if Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }

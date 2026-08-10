@@ -72,13 +72,13 @@ use super::{
     new_resident_encode_command_buffer, new_shared_buffer, packet_tree_node_count,
     prepared_lossless_batch_tiles, take_recyclable_private_buffer, with_runtime,
     with_runtime_for_session, zeroed_recyclable_shared_buffer, zeroed_shared_buffer, Buffer,
-    ComputeCommandEncoderRef, Error, ForeignType, J2kClassicEncodeOutputCapacityMode,
+    ComputeCommandEncoderRef, Error, J2kClassicEncodeOutputCapacityMode,
     J2kHtPacketOutputCapacityMode, J2kLosslessCodestreamAssemblyJob,
     J2kLosslessCodestreamBlockCodingMode, J2kPacketizationBlockCodingMode,
     J2kPacketizationEncodeJob, J2kPendingResidentLosslessCodestream,
     J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
     J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentLosslessCodestream, J2kResidentPacketizationEncodeJob, MTLSize, MetalRuntime,
+    J2kResidentLosslessCodestream, J2kResidentPacketizationEncodeJob, MetalRuntime,
     ResidentBatchPacketPlan, ResidentBatchPacketPlanParams,
 };
 

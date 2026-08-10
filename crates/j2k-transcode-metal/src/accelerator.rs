@@ -102,14 +102,18 @@ impl MetalDctToWaveletStageAccelerator {
     /// Create an explicit-dispatch accelerator bound to an existing Metal device.
     #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn new_explicit_with_device(device: ::metal::Device) -> Self {
+    pub fn new_explicit_with_device(
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         Self::new_explicit_with_session(MetalTranscodeSession::new(device))
     }
 
     /// Create an Auto-mode accelerator bound to an existing Metal device.
     #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn for_auto_with_device(device: ::metal::Device) -> Self {
+    pub fn for_auto_with_device(
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         Self::for_auto_with_session(MetalTranscodeSession::new(device))
     }
 
@@ -124,7 +128,10 @@ impl MetalDctToWaveletStageAccelerator {
     /// Bind this accelerator to an existing Metal device.
     #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn with_device(self, device: ::metal::Device) -> Self {
+    pub fn with_device(
+        self,
+        device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    ) -> Self {
         self.with_session(MetalTranscodeSession::new(device))
     }
 

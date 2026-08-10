@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use objc2_metal::MTLResource as _;
 
 #[test]
 fn full_classic_grayscale_decode_to_metal_matches_host_decode() {
@@ -435,7 +436,7 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     let (buffer, byte_offset) =
         completed_surface_metal_buffer(&metal_surface).expect("metal buffer");
     assert_eq!(byte_offset, 0);
-    let buffer_len = usize::try_from(buffer.length()).expect("metal buffer length fits usize");
+    let buffer_len = buffer.length();
     assert!(buffer_len >= metal_surface.byte_len());
 
     let mut cpu_decoder = J2kDecoder::new(&bytes).expect("cpu decoder");
@@ -447,13 +448,11 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
 
 #[test]
 fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
-    use metal::foreign_types::ForeignType;
-
     if !should_run_metal_runtime() {
         return;
     }
 
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
@@ -471,7 +470,7 @@ fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
 
     let buffer =
         j2k_metal_support::checked_shared_buffer(&device, 64).expect("test buffer allocation");
-    let expected_ptr = buffer.as_ptr();
+    let expected_ptr = Retained::as_ptr(&buffer);
     // SAFETY: This fresh allocation has no writers and stays immutable until
     // the encoded object is consumed below.
     let encoded = unsafe {
@@ -488,14 +487,12 @@ fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
     // SAFETY: This encoded descriptor is the allocation's only owner and no
     // sibling descriptor or cloned handle exists.
     let handed_off = unsafe { encoded.into_codestream_buffer() };
-    assert_eq!(handed_off.as_ptr(), expected_ptr);
+    assert_eq!(Retained::as_ptr(&handed_off), expected_ptr);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn decode_to_device_with_session_uses_session_device() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -514,14 +511,13 @@ fn decode_to_device_with_session_uses_session_device() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     let (buffer, _) = completed_surface_metal_buffer(&surface).expect("metal buffer");
-    assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
+    let buffer_device = buffer.device();
+    assert!(ptr::eq(buffer_device.as_ref(), session.device()));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -561,14 +557,13 @@ fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
         host.as_slice()
     );
     let (buffer, _) = completed_surface_metal_buffer(&surface).expect("metal buffer");
-    assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
+    let buffer_device = buffer.device();
+    assert!(ptr::eq(buffer_device.as_ref(), session.device()));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -597,7 +592,8 @@ fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
     );
     let (buffer, byte_offset) = completed_surface_metal_buffer(&surface).expect("Metal buffer");
     assert_eq!(byte_offset, 0);
-    assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
+    let buffer_device = buffer.device();
+    assert!(ptr::eq(buffer_device.as_ref(), session.device()));
 }
 
 #[cfg(target_os = "macos")]

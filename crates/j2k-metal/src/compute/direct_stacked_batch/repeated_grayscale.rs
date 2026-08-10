@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{Buffer, CommandBufferRef};
+use crate::metal_types::{Buffer, CommandBufferRef};
 
 use super::super::{
     DirectScratchBuffer, DirectStatusCheck, Error, MetalRuntime, PixelFormat,

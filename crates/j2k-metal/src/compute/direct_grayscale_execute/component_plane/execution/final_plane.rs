@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::Buffer;
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use crate::metal_types::Buffer;
 
 use crate::compute::{
     direct_scratch::{take_f32_scratch_buffer, DirectScratchBuffer},
@@ -33,7 +36,7 @@ impl FinalComponentPlane {
     ) -> Result<Buffer, Error> {
         if let Some(retained) = &self.retained {
             validate_later_component_store(retained.dimensions, retained.len, dimensions, len)?;
-            if retained.buffer.length() < bytes as u64 {
+            if retained.buffer.length() < bytes {
                 return Err(Error::MetalStateInvariant {
                     state: "J2K MetalDirect component tile store",
                     reason: "retained final component plane is smaller than the validated store",

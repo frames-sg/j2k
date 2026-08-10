@@ -6,6 +6,10 @@ coefficient-domain transcode pipeline on macOS.
 This crate accelerates supported transform stages and delegates runtime setup to
 `j2k-metal-support`.
 
+Version 0.9 device constructors take retained `objc2-metal`
+`ProtocolObject<dyn MTLDevice>` owners directly. The former `metal-rs::Device`
+constructors are intentionally removed.
+
 Auto routing is conservative by default. Single-job reversible 5/3 and 9/7
 Metal transcode thresholds are disabled with `usize::MAX`, so single-tile
 requests stay on the CPU unless callers explicitly lower

@@ -37,8 +37,6 @@ use j2k_native::{
     J2kCodeBlockStyle,
 };
 use j2k_native::{DecodeSettings, Image};
-#[cfg(target_os = "macos")]
-use metal::foreign_types::ForeignType;
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]

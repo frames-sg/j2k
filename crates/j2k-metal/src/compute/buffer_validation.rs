@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::mem::size_of;
 
+use crate::metal_types::{Buffer, BufferRef};
 use j2k_metal_support::{dispatch_2d_pipeline, dispatch_single_thread};
-use metal::Buffer;
 
 use crate::{profile_env::label_command_buffer, Error};
 
@@ -17,7 +20,7 @@ use super::{
 
 pub(crate) fn validate_metal_buffer_matches_bytes(
     expected: &[u8],
-    actual_buffer: &Buffer,
+    actual_buffer: &BufferRef,
     actual_byte_offset: usize,
     session: &crate::MetalBackendSession,
 ) -> Result<(), Error> {
@@ -40,17 +43,13 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&command_buffer, "j2k lossless coefficient prep");
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.validate_bytes_equal);
+        encoder.setComputePipelineState(&runtime.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(&expected_buffer), 0);
         encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kValidateBytesParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kValidateBytesParams>(3, &params);
         dispatch_single_thread(&encoder);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kValidateBytesStatus>(
@@ -71,9 +70,9 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
 }
 
 pub(crate) fn validate_metal_buffers_match(
-    expected_buffer: &Buffer,
+    expected_buffer: &BufferRef,
     expected_byte_offset: usize,
-    actual_buffer: &Buffer,
+    actual_buffer: &BufferRef,
     actual_byte_offset: usize,
     byte_len: usize,
     session: &crate::MetalBackendSession,
@@ -101,17 +100,13 @@ pub(crate) fn validate_metal_buffers_match(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&command_buffer, "j2k lossless coefficient prep batch");
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.validate_bytes_equal);
+        encoder.setComputePipelineState(&runtime.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(expected_buffer), expected_offset);
         encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kValidateBytesParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kValidateBytesParams>(3, &params);
         dispatch_single_thread(&encoder);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kValidateBytesStatus>(
@@ -133,7 +128,7 @@ pub(crate) fn validate_metal_buffers_match(
 
 #[derive(Clone, Copy)]
 pub(crate) struct PaddedInterleavedCopy<'a> {
-    pub(crate) src_buffer: &'a Buffer,
+    pub(crate) src_buffer: &'a BufferRef,
     pub(crate) src_byte_offset: usize,
     pub(crate) src_width: u32,
     pub(crate) src_height: u32,
@@ -188,20 +183,16 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
         };
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.copy_interleaved_padded);
+        encoder.setComputePipelineState(&runtime.copy_interleaved_padded);
         encoder.set_buffer(0, Some(copy.src_buffer), src_offset);
         encoder.set_buffer(1, Some(&dst_buffer), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<J2kCopyInterleavedParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kCopyInterleavedParams>(2, &params);
         dispatch_2d_pipeline(
             &encoder,
             &runtime.copy_interleaved_padded,
             (copy.dst_width, copy.dst_height),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         Ok(dst_buffer)
     })

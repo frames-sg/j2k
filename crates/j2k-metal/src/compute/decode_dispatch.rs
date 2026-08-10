@@ -23,7 +23,7 @@ use super::{
     zeroed_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
     DirectIdwtCommandBuffers, DirectScratchBuffer, DirectStatusCheck, Error, HtCodeBlockDecodeJob,
     J2kInverseMctJob, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kWaveletTransform,
-    MTLSize, MetalRuntime, PixelFormat, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    MetalRuntime, PixelFormat, PreparedClassicSubBand, PreparedClassicSubBandGroup,
     PreparedHtSubBand, PreparedHtSubBandGroup, Surface,
 };
 

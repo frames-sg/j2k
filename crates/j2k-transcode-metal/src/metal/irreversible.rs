@@ -9,21 +9,25 @@ use super::{
     dwt97_quantize_inv_delta, projection_batch_output_buffers,
     projection_batch_output_transfer_bytes, projection_batch_output_transfer_count,
     projection_batch_private_output_buffers, read_prequantized_97_codeblock_outputs,
-    read_projected_batch_outputs, size_of, staged_threads_per_group,
-    try_transcode_vec_with_capacity, u32_param, validate_codeblock_projection_allocations,
-    validate_dwt97_batch_geometry, validate_dwt97_codeblock_batch_geometry,
-    validate_float_projection_allocations, validate_grid, validate_htj2k97_codeblock_options,
-    validate_resident_dct_handoffs_for_dwt97_jobs, validate_resident_dct_handoffs_for_htj2k_jobs,
-    validate_resident_dwt_handoffs_for_dwt97_jobs, validate_resident_dwt_handoffs_for_htj2k_jobs,
-    Buffer, CommandBufferRef, ComputeCommandEncoderRef, Dct97ColumnLiftParams,
-    Dct97IdctRowLiftParams, Dct97QuantizeCodeblocksParams, DctGridToDwt53Job, DctGridToDwt97Job,
+    read_projected_batch_outputs, staged_threads_per_group, try_transcode_vec_with_capacity,
+    u32_param, validate_codeblock_projection_allocations, validate_dwt97_batch_geometry,
+    validate_dwt97_codeblock_batch_geometry, validate_float_projection_allocations, validate_grid,
+    validate_htj2k97_codeblock_options, validate_resident_dct_handoffs_for_dwt97_jobs,
+    validate_resident_dct_handoffs_for_htj2k_jobs, validate_resident_dwt_handoffs_for_dwt97_jobs,
+    validate_resident_dwt_handoffs_for_htj2k_jobs, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, Dct97ColumnLiftParams, Dct97IdctRowLiftParams,
+    Dct97QuantizeCodeblocksParams, DctGridToDwt53Job, DctGridToDwt97Job,
     DctGridToHtj2k97CodeBlockJob, Dwt53TwoDimensional, Dwt97BatchStageTimings,
     Dwt97CodeBlockOutputBuffers, Dwt97TwoDimensional, Htj2k97CodeBlockOptions, Instant,
-    J2kSubBandType, MTLSize, MetalRuntime, MetalTranscodeError, MetalTranscodeSession,
+    J2kSubBandType, MetalRuntime, MetalTranscodeError, MetalTranscodeSession,
     PrequantizedHtj2k97Component, ProjectionBatchJob, ProjectionBatchOutputBuffers,
     ProjectionBatchShape, ProjectionJob, SparseDwt53WeightRows, SparseDwt97WeightRows,
-    DWT97_STAGED_COLUMNS_PER_GROUP, DWT97_STAGED_MAX_AXIS, DWT97_STAGED_ROWS_PER_GROUP,
-    METAL_DCT53_UNSUPPORTED_GRID, METAL_DCT97_UNSUPPORTED_GRID,
+    TranscodeComputeEncoderExt, DWT97_STAGED_COLUMNS_PER_GROUP, DWT97_STAGED_MAX_AXIS,
+    DWT97_STAGED_ROWS_PER_GROUP, METAL_DCT53_UNSUPPORTED_GRID, METAL_DCT97_UNSUPPORTED_GRID,
+};
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLBuffer as _, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _,
 };
 
 mod staging;
@@ -265,7 +269,8 @@ pub(super) fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
         projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
     timings.pack_upload_transfers = usize::from(blocks.length() > 0);
-    timings.pack_upload_bytes = blocks.length();
+    timings.pack_upload_bytes =
+        u64::try_from(blocks.length()).expect("macOS Metal buffer length fits u64");
     timings.resident_dct_handoff_count =
         validate_resident_dct_handoffs_for_dwt97_jobs(&blocks, jobs)?;
     timings.resident_dwt_handoff_count =
@@ -274,7 +279,9 @@ pub(super) fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
     let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
         MetalTranscodeError::support("Metal staged 9/7 command buffer creation", error)
     })?;
-    command_buffer.set_label("j2k-transcode-metal dct97 staged lift batch");
+    command_buffer.setLabel(Some(&NSString::from_str(
+        "j2k-transcode-metal dct97 staged lift batch",
+    )));
     let row_start = Instant::now();
     encode_dwt97_staged_row_lift(
         &command_buffer,
@@ -331,7 +338,8 @@ pub(super) fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
         dwt97_codeblock_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
     timings.pack_upload_transfers = usize::from(blocks.length() > 0);
-    timings.pack_upload_bytes = blocks.length();
+    timings.pack_upload_bytes =
+        u64::try_from(blocks.length()).expect("macOS Metal buffer length fits u64");
     timings.resident_dct_handoff_count =
         validate_resident_dct_handoffs_for_htj2k_jobs(&blocks, jobs)?;
     timings.resident_dwt_handoff_count =
@@ -340,7 +348,9 @@ pub(super) fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
     let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
         MetalTranscodeError::support("Metal staged HTJ2K command buffer creation", error)
     })?;
-    command_buffer.set_label("j2k-transcode-metal dct97 codeblock pipeline batch");
+    command_buffer.setLabel(Some(&NSString::from_str(
+        "j2k-transcode-metal dct97 codeblock pipeline batch",
+    )));
     let row_start = Instant::now();
     encode_dwt97_staged_row_lift(
         &command_buffer,
@@ -425,25 +435,17 @@ fn encode_dwt97_staged_row_lift(
     let encoder = checked_compute_command_encoder(command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal 9/7 row-lift compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.dct97_idct_row_lift_batch);
+    encoder.setComputePipelineState(&runtime.dct97_idct_row_lift_batch);
     encoder.set_buffer(0, Some(blocks), 0);
     encoder.set_buffer(1, Some(&runtime.idct_basis), 0);
     encoder.set_buffer(2, Some(&row_buffers.low), 0);
     encoder.set_buffer(3, Some(&row_buffers.high), 0);
-    encoder.set_bytes(
-        4,
-        size_of::<Dct97IdctRowLiftParams>() as u64,
-        (&raw const params).cast(),
-    );
-    encoder.dispatch_thread_groups(
-        MTLSize {
-            width: row_groups as u64,
-            height: u64::from(shape.batch_count_u32),
-            depth: 1,
-        },
+    encoder.set_bytes::<Dct97IdctRowLiftParams>(4, &params);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        super::mtl_size(row_groups as u64, u64::from(shape.batch_count_u32), 1),
         staged_threads_per_group(),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -483,27 +485,19 @@ fn encode_dwt97_staged_column_lift(
     let encoder = checked_compute_command_encoder(command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal 9/7 column-lift compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.dct97_column_lift_batch);
+    encoder.setComputePipelineState(&runtime.dct97_column_lift_batch);
     encoder.set_buffer(0, Some(&row_buffers.low), 0);
     encoder.set_buffer(1, Some(&row_buffers.high), 0);
     encoder.set_buffer(2, Some(&output_buffers.ll), 0);
     encoder.set_buffer(3, Some(&output_buffers.hl), 0);
     encoder.set_buffer(4, Some(&output_buffers.lh), 0);
     encoder.set_buffer(5, Some(&output_buffers.hh), 0);
-    encoder.set_bytes(
-        6,
-        size_of::<Dct97ColumnLiftParams>() as u64,
-        (&raw const params).cast(),
-    );
-    encoder.dispatch_thread_groups(
-        MTLSize {
-            width: column_groups as u64,
-            height: u64::from(shape.batch_count_u32),
-            depth: 2,
-        },
+    encoder.set_bytes::<Dct97ColumnLiftParams>(6, &params);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        super::mtl_size(column_groups as u64, u64::from(shape.batch_count_u32), 2),
         staged_threads_per_group(),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -520,7 +514,7 @@ pub(super) fn encode_dwt97_quantize_codeblocks(
     let encoder = checked_compute_command_encoder(command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal HTJ2K quantize compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.dct97_quantize_codeblocks_batch);
+    encoder.setComputePipelineState(&runtime.dct97_quantize_codeblocks_batch);
     dispatch_dwt97_quantize_codeblock_band(
         &encoder,
         &band_buffers.ll,
@@ -577,7 +571,7 @@ pub(super) fn encode_dwt97_quantize_codeblocks(
             batch_count: shape.batch_count_u32,
         },
     )?;
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -611,11 +605,7 @@ pub(super) fn dispatch_dwt97_quantize_codeblock_band(
     };
     encoder.set_buffer(0, Some(band_buffer), 0);
     encoder.set_buffer(1, Some(codeblock_buffer), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<Dct97QuantizeCodeblocksParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<Dct97QuantizeCodeblocksParams>(2, &params);
     dispatch_projection_threads(
         encoder,
         band.width as u64,

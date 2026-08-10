@@ -6,6 +6,7 @@ use super::{
     MetalTranscodeError, DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
     METAL_READBACK_CHUNK_BYTES,
 };
+use objc2_metal::MTLBuffer as _;
 
 mod basis;
 mod storage;
@@ -117,8 +118,7 @@ pub(super) fn write_dwt97_blocks_to_buffer_at(
 }
 
 pub(super) fn buffer_f32_capacity(buffer: &Buffer) -> usize {
-    let element_size = size_of::<f32>() as u64;
-    usize::try_from(buffer.length() / element_size).unwrap_or(usize::MAX)
+    buffer.length() / size_of::<f32>()
 }
 
 pub(super) fn read_f32_buffer(

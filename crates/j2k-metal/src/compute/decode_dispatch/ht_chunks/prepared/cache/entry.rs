@@ -2,11 +2,14 @@
 
 //! Identity and retained-byte accounting for one prepared HT cache entry.
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 use std::sync::Arc;
 
+use crate::metal_types::Device;
 use j2k_core::HtGpuJobChunkLimits;
-use metal::Device;
 
 use super::super::super::{HtBatchInput, HtPayloadSource, J2kHtCleanupBatchJob};
 use super::super::{PreparedMetalHtChunk, PreparedMetalHtExecution};
@@ -236,13 +239,9 @@ impl PreparedMetalHtChunk {
     }
 
     fn device_bytes(&self) -> Result<usize, Error> {
-        usize::try_from(self.coded_buffer.length())
-            .ok()
-            .and_then(|coded| {
-                usize::try_from(self.jobs_buffer.length())
-                    .ok()
-                    .and_then(|jobs| coded.checked_add(jobs))
-            })
+        self.coded_buffer
+            .length()
+            .checked_add(self.jobs_buffer.length())
             .ok_or(Error::MetalStateInvariant {
                 state: "J2K Metal prepared HT execution cache",
                 reason: "chunk device byte count overflow",

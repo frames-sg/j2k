@@ -4,8 +4,8 @@
 
 pub(super) mod cache;
 
+use crate::metal_types::{Buffer, Device};
 use j2k_core::HtGpuJobChunkLimits;
-use metal::{Buffer, Device};
 
 use super::{
     execution::validate_pass_homogeneous_chunk, HtBatchInput, J2kHtCleanupBatchJob,
@@ -26,6 +26,14 @@ pub(in crate::compute) struct PreparedMetalHtChunk {
     pub(in crate::compute) coded_buffer: Buffer,
     pub(in crate::compute) jobs_buffer: Buffer,
 }
+
+// SAFETY: A prepared execution is immutable after construction. Its host
+// arenas are read-only, and its retained coded/job Metal buffers are bound only
+// for shader reads while each submission owns separate writable outputs.
+unsafe impl Send for PreparedMetalHtExecution {}
+// SAFETY: Concurrent readers cannot mutate the host arenas or retained input
+// buffers through this type; all GPU writes target per-submission storage.
+unsafe impl Sync for PreparedMetalHtExecution {}
 
 impl PreparedMetalHtExecution {
     fn prepare(

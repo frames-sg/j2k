@@ -8,6 +8,7 @@ use j2k_jpeg_metal::{
     decode_viewport_to_surface, Codec, Decoder, Error, MetalBackendSession, MetalDecodeRequest,
     MetalSession, ScratchPool, SurfaceResidency, ViewportTile, ViewportWorkload,
 };
+use objc2_metal::{MTLBuffer, MTLResource};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
@@ -72,7 +73,7 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     // commands that access the returned buffer.
     let (buffer, byte_offset) = unsafe { metal_surface.metal_buffer() }.expect("metal buffer");
     assert_eq!(byte_offset, 0);
-    let buffer_len = usize::try_from(buffer.length()).expect("metal buffer length fits usize");
+    let buffer_len = buffer.length();
     assert!(buffer_len >= metal_surface.byte_len());
 
     let mut cpu_decoder = Decoder::new(BASELINE_420).expect("cpu decoder");
@@ -86,8 +87,6 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
 #[cfg(target_os = "macos")]
 #[test]
 fn decode_to_device_with_session_uses_session_device() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -104,7 +103,8 @@ fn decode_to_device_with_session_uses_session_device() {
     // SAFETY: the decode completed before return and this test submits no
     // commands that access the returned buffer.
     let (buffer, _) = unsafe { surface.metal_buffer() }.expect("metal buffer");
-    assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
+    let buffer_device = buffer.device();
+    assert!(core::ptr::eq(buffer_device.as_ref(), session.device()));
 }
 
 #[cfg(target_os = "macos")]

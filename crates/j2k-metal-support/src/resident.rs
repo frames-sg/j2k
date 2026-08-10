@@ -3,13 +3,17 @@
 use std::{fmt, mem};
 
 use j2k_core::{DeviceSubmission, PixelFormat};
-use metal::{Buffer, BufferRef, CommandBuffer, DeviceRef, MTLCommandBufferStatus};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus, MTLDevice, MTLResource};
 
 use crate::{wait_for_completion, MetalSupportError};
 
 mod destination;
 
 pub use self::destination::{MetalImageDestination, MetalImageLayout};
+
+type BufferHandle = Retained<ProtocolObject<dyn MTLBuffer>>;
+type CommandBufferHandle = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
 
 /// Owned, logically immutable Metal-resident image.
 ///
@@ -18,11 +22,19 @@ pub use self::destination::{MetalImageDestination, MetalImageLayout};
 /// documented unsafe interop boundary.
 #[derive(Clone)]
 pub struct ResidentMetalImage {
-    buffer: Buffer,
+    buffer: BufferHandle,
     device_registry_id: u64,
     buffer_len: usize,
     layout: MetalImageLayout,
 }
+
+// SAFETY: Metal resources are cross-thread objects. Safe APIs expose this
+// retained allocation only as immutable image metadata; raw resource access is
+// unsafe and carries an explicit no-writer/synchronization contract.
+unsafe impl Send for ResidentMetalImage {}
+// SAFETY: Clones are read-only retained views. Concurrent mutation is possible
+// only after crossing the documented unsafe raw-resource boundary.
+unsafe impl Sync for ResidentMetalImage {}
 
 impl fmt::Debug for ResidentMetalImage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -48,10 +60,10 @@ impl ResidentMetalImage {
     /// Returns a typed layout or bounds error when the image range does not fit
     /// in the allocation.
     pub unsafe fn from_completed_buffer(
-        buffer: Buffer,
+        buffer: BufferHandle,
         layout: MetalImageLayout,
     ) -> Result<Self, MetalSupportError> {
-        let buffer_len = buffer_len(&buffer)?;
+        let buffer_len = buffer_len(&buffer);
         validate_bounds(layout, buffer_len)?;
         Ok(Self::from_validated(buffer, buffer_len, layout))
     }
@@ -77,16 +89,16 @@ impl ResidentMetalImage {
     /// in the allocation.
     #[doc(hidden)]
     pub unsafe fn from_exclusive_pending_buffer(
-        buffer: Buffer,
+        buffer: BufferHandle,
         layout: MetalImageLayout,
     ) -> Result<Self, MetalSupportError> {
-        let buffer_len = buffer_len(&buffer)?;
+        let buffer_len = buffer_len(&buffer);
         validate_bounds(layout, buffer_len)?;
         Ok(Self::from_validated(buffer, buffer_len, layout))
     }
 
-    fn from_validated(buffer: Buffer, buffer_len: usize, layout: MetalImageLayout) -> Self {
-        let device_registry_id = buffer.device().registry_id();
+    fn from_validated(buffer: BufferHandle, buffer_len: usize, layout: MetalImageLayout) -> Self {
+        let device_registry_id = buffer.device().registryID();
         Self {
             buffer,
             device_registry_id,
@@ -176,8 +188,11 @@ impl ResidentMetalImage {
     ///
     /// Returns [`MetalSupportError::MetalImageDeviceMismatch`] for a different
     /// Metal device.
-    pub fn validate_device(&self, device: &DeviceRef) -> Result<(), MetalSupportError> {
-        validate_registry_id(self.device_registry_id(), device.registry_id())
+    pub fn validate_device(
+        &self,
+        device: &ProtocolObject<dyn MTLDevice>,
+    ) -> Result<(), MetalSupportError> {
+        validate_registry_id(self.device_registry_id(), device.registryID())
     }
 
     /// Borrow the raw Metal allocation for an audited backend operation.
@@ -189,17 +204,25 @@ impl ResidentMetalImage {
     /// until completion. Any derived raw handles must remain inside the audited
     /// backend boundary. No CPU or GPU writer may access the allocation.
     #[must_use]
-    pub unsafe fn raw_buffer(&self) -> &Buffer {
+    pub unsafe fn raw_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
 }
 
 /// Submitted Metal work that resolves to immutable resident images.
 pub struct SubmittedMetalImages {
-    command_buffer: Option<CommandBuffer>,
+    command_buffer: Option<CommandBufferHandle>,
     outputs: Vec<ResidentMetalImage>,
     inputs: Vec<ResidentMetalImage>,
 }
+
+// SAFETY: The submission exclusively owns its command buffer and output
+// allocations until completion. Moving that ownership between threads does not
+// introduce concurrent encoding or CPU access.
+unsafe impl Send for SubmittedMetalImages {}
+// SAFETY: Shared references expose only immutable diagnostics; completion and
+// ownership transfer require `&mut self` or consuming `self`.
+unsafe impl Sync for SubmittedMetalImages {}
 
 impl fmt::Debug for SubmittedMetalImages {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -227,9 +250,9 @@ impl SubmittedMetalImages {
     /// Returns a typed layout, bounds, or device-identity error before the
     /// command buffer is committed.
     pub unsafe fn from_uncommitted(
-        device: &DeviceRef,
-        command_buffer: CommandBuffer,
-        outputs: Vec<(Buffer, MetalImageLayout)>,
+        device: &ProtocolObject<dyn MTLDevice>,
+        command_buffer: CommandBufferHandle,
+        outputs: Vec<(BufferHandle, MetalImageLayout)>,
         inputs: Vec<ResidentMetalImage>,
     ) -> Result<Self, MetalSupportError> {
         if outputs.is_empty() {
@@ -237,15 +260,15 @@ impl SubmittedMetalImages {
                 reason: "a Metal image submission must contain an output",
             });
         }
-        let registry_id = device.registry_id();
+        let registry_id = device.registryID();
         for input in &inputs {
             validate_registry_id(input.device_registry_id(), registry_id)?;
         }
         let outputs = outputs
             .into_iter()
             .map(|(buffer, layout)| {
-                validate_registry_id(buffer.device().registry_id(), registry_id)?;
-                let len = buffer_len(&buffer)?;
+                validate_registry_id(buffer.device().registryID(), registry_id)?;
+                let len = buffer_len(&buffer);
                 validate_bounds(layout, len)?;
                 Ok(ResidentMetalImage::from_validated(buffer, len, layout))
             })
@@ -289,10 +312,8 @@ impl Drop for SubmittedMetalImages {
     }
 }
 
-fn buffer_len(buffer: &BufferRef) -> Result<usize, MetalSupportError> {
-    usize::try_from(buffer.length()).map_err(|_| MetalSupportError::MetalImageLayout {
-        reason: "Metal buffer length exceeds usize",
-    })
+fn buffer_len(buffer: &ProtocolObject<dyn MTLBuffer>) -> usize {
+    buffer.length()
 }
 
 fn validate_bounds(layout: MetalImageLayout, buffer_len: usize) -> Result<(), MetalSupportError> {

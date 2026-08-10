@@ -14,6 +14,5 @@ __pycache__/
 corpus/wsi-samples/gdc-downloads/
 .tmp-metadata.json
 
-# Machine-local analysis permissions and nested vendored-crate build state.
+# Machine-local analysis permissions.
 reasonix.toml
-/third_party/block-0.1.6-patched/Cargo.lock

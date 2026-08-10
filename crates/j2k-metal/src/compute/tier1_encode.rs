@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::mem::size_of;
 
 use j2k_metal_support::{dispatch_1d_pipeline, dispatch_single_thread};
@@ -359,15 +362,15 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
         let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
-        encoder.set_compute_pipeline_state(classic_encode_pipeline);
+        encoder.setComputePipelineState(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
-        encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
+        encoder.set_bytes::<u32>(5, &job_count);
         dispatch_1d_pipeline(&encoder, classic_encode_pipeline, u64::from(job_count));
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kClassicEncodeStatus>(
@@ -537,15 +540,15 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
         let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
-        encoder.set_compute_pipeline_state(classic_encode_pipeline);
+        encoder.setComputePipelineState(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
-        encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
+        encoder.set_bytes::<u32>(5, &job_count);
         dispatch_1d_pipeline(&encoder, classic_encode_pipeline, u64::from(job_count));
-        encoder.end_encoding();
+        encoder.endEncoding();
         command_buffer.commit();
 
         Ok(J2kResidentLosslessTier1CodeBlocks {
@@ -670,7 +673,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
         let pipeline = &runtime.ht_encode_code_blocks;
-        encoder.set_compute_pipeline_state(pipeline);
+        encoder.setComputePipelineState(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
@@ -678,9 +681,9 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
+        encoder.set_bytes::<u32>(7, &job_count);
         dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
-        encoder.end_encoding();
+        encoder.endEncoding();
         command_buffer.commit();
 
         Ok(J2kResidentLosslessHtCodeBlocks {
@@ -764,18 +767,14 @@ pub(crate) fn encode_classic_tier1_code_block(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.classic_encode_code_block);
+        encoder.setComputePipelineState(&runtime.classic_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<J2kClassicEncodeParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kClassicEncodeParams>(2, &params);
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         dispatch_single_thread(&encoder);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status =
@@ -953,7 +952,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             0,
             status_bytes as u64,
         );
-        blit.end_encoding();
+        blit.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
@@ -1118,7 +1117,7 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
     let pipeline = &runtime.ht_encode_code_blocks;
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(&coefficient_buffer), 0);
     encoder.set_buffer(1, Some(&output), 0);
     encoder.set_buffer(2, Some(&job_buffer), 0);
@@ -1126,9 +1125,9 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
-    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.set_bytes::<u32>(7, &job_count);
     dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait_metal(&command_buffer)?;
 
     let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
@@ -1198,20 +1197,16 @@ pub(crate) fn encode_ht_cleanup_code_block(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.ht_encode_code_block);
+        encoder.setComputePipelineState(&runtime.ht_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<J2kHtEncodeParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kHtEncodeParams>(2, &params);
         encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
         encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         dispatch_single_thread(&encoder);
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kHtEncodeStatus>(&status_buffer, "HT encode status")?;

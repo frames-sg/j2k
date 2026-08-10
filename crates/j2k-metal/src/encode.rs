@@ -47,6 +47,8 @@ mod validation;
 
 #[cfg(target_os = "macos")]
 use crate::compute;
+#[cfg(target_os = "macos")]
+use crate::metal_types::Buffer;
 use j2k::J2kLosslessEncodeOptions;
 #[cfg(target_os = "macos")]
 use j2k::J2kLosslessSamples;
@@ -56,8 +58,6 @@ use j2k::{EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, Reve
 use j2k_core::{BackendKind, DeviceSurface, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::J2kPacketizationEncodeJob;
-#[cfg(target_os = "macos")]
-use metal::Buffer;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 #[cfg(target_os = "macos")]

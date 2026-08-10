@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
     dispatch_single_thread, encode_status_error, new_command_buffer, new_compute_command_encoder,
@@ -435,7 +438,7 @@ fn execute_tier2_packetization(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.packet_encode);
+    encoder.setComputePipelineState(&runtime.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
     encoder.set_buffer(2, Some(&block_buffer), 0);
@@ -443,16 +446,12 @@ fn execute_tier2_packetization(
     encoder.set_buffer(4, Some(&output_buffer), 0);
     encoder.set_buffer(5, Some(&header_buffer), 0);
     encoder.set_buffer(6, Some(&scratch_buffer), 0);
-    encoder.set_bytes(
-        7,
-        size_of::<J2kPacketEncodeParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kPacketEncodeParams>(7, &params);
     encoder.set_buffer(8, Some(&status_buffer), 0);
     encoder.set_buffer(9, Some(&descriptor_buffer), 0);
     encoder.set_buffer(10, Some(&state_block_buffer), 0);
     dispatch_single_thread(&encoder);
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait_metal(&command_buffer)?;
 
     let status =

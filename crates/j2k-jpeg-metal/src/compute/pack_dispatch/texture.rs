@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
+
+use objc2::Message;
+use objc2_metal::MTLTexture;
 
 use super::super::{
     batch, commit_and_wait_jpeg, dispatch_2d_pipeline, new_command_buffer,
@@ -54,9 +57,9 @@ pub(in crate::compute) fn validate_rgba_texture_batch_output(
                 message: "JPEG Metal batch texture output slot was missing".to_string(),
             });
         };
-        if texture.width() != u64::from(dimensions.0)
-            || texture.height() != u64::from(dimensions.1)
-            || texture.pixel_format() != MTLPixelFormat::RGBA8Unorm
+        if texture.width() != dimensions.0 as usize
+            || texture.height() != dimensions.1 as usize
+            || texture.pixelFormat() != MTLPixelFormat::RGBA8Unorm
         {
             return Err(Error::UnsupportedMetalRequest {
                 reason:
@@ -143,7 +146,7 @@ fn collect_rgb8_texture_copy_results(
                     .ok_or_else(|| Error::MetalKernel {
                         message: "JPEG Metal batch texture output slot was missing".to_string(),
                     })?;
-                copies.push((original_index, source.clone(), source_offset));
+                copies.push((original_index, source.retain(), source_offset));
                 mapped_results.push((
                     original_index,
                     Ok(crate::MetalTextureTile::new(
@@ -215,7 +218,7 @@ pub(in crate::compute) fn copy_rgb8_surfaces_to_rgba_textures(
     if !copies.is_empty() {
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.rgb8_to_rgba_texture_pipeline);
+        encoder.setComputePipelineState(&runtime.rgb8_to_rgba_texture_pipeline);
         for (original_index, source, source_offset) in copies {
             let texture =
                 output
@@ -223,22 +226,18 @@ pub(in crate::compute) fn copy_rgb8_surfaces_to_rgba_textures(
                     .ok_or_else(|| Error::MetalKernel {
                         message: "JPEG Metal batch texture output slot was missing".to_string(),
                     })?;
-            encoder.set_buffer(
+            encoder.bind_buffer(
                 0,
                 Some(&source),
                 u64::try_from(source_offset).map_err(|_| Error::MetalKernel {
                     message: "JPEG Metal texture copy source offset exceeds u64".to_string(),
                 })?,
             );
-            encoder.set_bytes(
-                1,
-                size_of::<JpegRgb8ToRgbaTextureParams>() as u64,
-                (&raw const params).cast(),
-            );
-            encoder.set_texture(0, Some(texture));
+            encoder.bind_bytes::<JpegRgb8ToRgbaTextureParams>(1, &params);
+            encoder.bind_texture(0, Some(texture));
             dispatch_2d_pipeline(&encoder, &runtime.rgb8_to_rgba_texture_pipeline, dimensions);
         }
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
     }
 

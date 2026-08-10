@@ -6,9 +6,18 @@
 //! Metal-resident decode surfaces, batch decode sessions, and lossless encode
 //! helpers on macOS. Non-macOS builds keep the same API surface and return
 //! `Error::MetalUnavailable` for explicit Metal-only requests.
+//!
+//! The 0.9 expert surface uses `objc2-metal` directly: owned devices, queues,
+//! command buffers, and resources are retained protocol objects, while
+//! borrowed parameters are protocol-object references. This intentionally
+//! replaces the former `metal-rs` types without an adapter layer.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
+
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 mod batch;
 mod batch_allocation;
 mod batch_decoder;
@@ -31,6 +40,8 @@ mod hybrid;
 mod idwt;
 #[cfg(any(test, target_os = "macos"))]
 mod mct;
+#[cfg(target_os = "macos")]
+mod metal_types;
 mod profile;
 #[cfg(target_os = "macos")]
 mod profile_env;
@@ -45,15 +56,12 @@ mod tile_batch;
 
 use j2k_core::{Downscale, PixelFormat, Rect};
 
+pub use j2k_core::SurfaceResidency;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{
     checked_blit_command_encoder, checked_command_buffer, checked_private_buffer,
     checked_shared_buffer_with_bytes, commit_and_wait,
 };
-#[cfg(target_os = "macos")]
-use metal::Buffer;
-
-pub use j2k_core::SurfaceResidency;
 #[cfg(target_os = "macos")]
 pub use j2k_metal_support::{MetalImageDestination, MetalImageLayout};
 
@@ -127,7 +135,8 @@ pub fn benchmark_region_scaled_direct_plan_prepare(
 pub fn benchmark_private_buffer_with_bytes(
     session: &MetalBackendSession,
     bytes: &[u8],
-) -> Result<Buffer, Error> {
+) -> Result<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>, Error>
+{
     if bytes.is_empty() {
         return Err(Error::MetalKernel {
             message: "J2K Metal benchmark private input upload is empty".to_string(),
@@ -145,7 +154,7 @@ pub fn benchmark_private_buffer_with_bytes(
     let command_buffer = checked_command_buffer(runtime.command_queue()).map_err(map_allocation)?;
     let blit = checked_blit_command_encoder(&command_buffer).map_err(map_allocation)?;
     blit.copy_from_buffer(&upload, 0, &private, 0, byte_len);
-    blit.end_encoding();
+    blit.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {
         error::metal_kernel_support_error(
             format!("J2K Metal benchmark private input upload failed: {error}"),
@@ -159,7 +168,7 @@ pub fn benchmark_private_buffer_with_bytes(
 #[doc(hidden)]
 pub fn benchmark_overwrite_private_buffer_with_bytes(
     session: &MetalBackendSession,
-    dst: &Buffer,
+    dst: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
     bytes: &[u8],
 ) -> Result<(), Error> {
     if bytes.is_empty() {
@@ -170,7 +179,7 @@ pub fn benchmark_overwrite_private_buffer_with_bytes(
     let byte_len = u64::try_from(bytes.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal benchmark private input overwrite length exceeds u64".to_string(),
     })?;
-    if byte_len > dst.length() {
+    if usize::try_from(byte_len).map_or(true, |byte_len| byte_len > dst.length()) {
         return Err(Error::MetalKernel {
             message: "J2K Metal benchmark private input overwrite exceeds destination buffer"
                 .to_string(),
@@ -184,7 +193,7 @@ pub fn benchmark_overwrite_private_buffer_with_bytes(
     let command_buffer = checked_command_buffer(runtime.command_queue()).map_err(map_allocation)?;
     let blit = checked_blit_command_encoder(&command_buffer).map_err(map_allocation)?;
     blit.copy_from_buffer(&upload, 0, dst, 0, byte_len);
-    blit.end_encoding();
+    blit.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {
         error::metal_kernel_support_error(
             format!("J2K Metal benchmark private input overwrite failed: {error}"),

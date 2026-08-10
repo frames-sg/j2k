@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::{Buffer, BufferRef, CommandBuffer};
 use j2k_core::PixelFormat;
 use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
-use metal::{Buffer, BufferRef, CommandBuffer};
+use objc2::Message;
 
 use crate::error::metal_kernel_support_error;
 use crate::Error;
@@ -80,14 +81,14 @@ impl ResidentPrivateJpegTile {
     /// buffer or a handle cloned from it. That obligation covers raw handles
     /// obtained from every clone of this tile; no two accesses may overlap when
     /// either can write the decoded range.
-    pub unsafe fn buffer(&self) -> &BufferRef {
+    pub unsafe fn buffer(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer> {
         self.buffer_trusted()
     }
 
     pub(crate) fn buffer_trusted(&self) -> &BufferRef {
         // SAFETY: this crate-private accessor is used only for read-only Metal
         // binding after the producer has completed.
-        unsafe { self.image.raw_buffer() }.as_ref()
+        unsafe { self.image.raw_buffer() }
     }
 
     /// Consume this wrapper and transfer ownership of its decoded buffer.
@@ -100,9 +101,11 @@ impl ResidentPrivateJpegTile {
     /// raw access remains unsafe; normal Metal synchronization remains each
     /// buffer recipient's responsibility after a handoff.
     #[deprecated(note = "use into_resident_image; raw Metal handles require unsafe interop")]
-    pub unsafe fn into_buffer(self) -> Buffer {
+    pub unsafe fn into_buffer(
+        self,
+    ) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>> {
         // SAFETY: the caller accepts the raw-handle synchronization contract.
-        unsafe { self.image.raw_buffer() }.to_owned()
+        unsafe { self.image.raw_buffer() }.retain()
     }
 
     #[cfg(test)]

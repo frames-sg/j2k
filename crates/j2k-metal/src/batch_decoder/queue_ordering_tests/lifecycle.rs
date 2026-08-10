@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
 use j2k::EncodedImage;
@@ -46,7 +47,7 @@ fn overlapping_prepared_submissions_keep_distinct_status_and_scratch_owners() {
     }
 
     let encoded = Arc::<[u8]>::from(j2k_test_support::openhtj2k_refinement_fixture());
-    let device = metal::Device::system_default().expect("system Metal device");
+    let device = j2k_metal_support::system_default_device().expect("system Metal device");
     let queue = j2k_metal_support::checked_command_queue(&device).expect("overlap command queue");
     let backend = MetalBackendSession::with_command_queue(device.clone(), queue.clone())
         .expect("isolated exact-queue backend");
@@ -136,7 +137,7 @@ fn dropping_exact_queue_work_leaves_the_session_reusable() {
         return;
     }
 
-    let device = metal::Device::system_default().expect("system Metal device");
+    let device = j2k_metal_support::system_default_device().expect("system Metal device");
     let queue =
         j2k_metal_support::checked_command_queue(&device).expect("exact consumer command queue");
     let backend = MetalBackendSession::with_command_queue(device.clone(), queue.clone())

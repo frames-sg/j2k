@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, decode_classic_status_error,
     j2k_u32_param, new_command_buffer, new_compute_command_encoder, size_of,
     take_classic_coefficients_scratch_buffer, zeroed_shared_buffer, Buffer, CommandBufferRef,
     ComputeCommandEncoderRef, DirectStatusCheck, Error, J2kClassicCleanupBatchJob,
-    J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus, MTLSize, MetalRuntime,
+    J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus, MetalRuntime,
     J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
 };
 
@@ -91,7 +94,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(jobs, segments)
         && runtime
             .classic_cleanup_plain_batched
-            .max_total_threads_per_threadgroup()
+            .maxTotalThreadsPerThreadgroup()
             >= 32;
     let pipeline = if use_plain_fast_path {
         &runtime.classic_cleanup_plain_batched
@@ -105,7 +108,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(&jobs_buffer), 0);
@@ -113,37 +116,18 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
     encoder.set_buffer(4, Some(&status_buffer), 0);
     encoder.set_buffer(5, Some(&coefficients_scratch.buffer), 0);
     if use_plain_fast_path {
-        encoder.dispatch_thread_groups(
-            MTLSize {
-                width: jobs.len() as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 32,
-                height: 1,
-                depth: 1,
-            },
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(jobs.len() as u64, 1, 1),
+            j2k_metal_support::mtl_size(32, 1, 1),
         );
     } else {
-        let width = pipeline
-            .thread_execution_width()
-            .max(1)
-            .min(jobs.len() as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: jobs.len() as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
+        let width = pipeline.threadExecutionWidth().max(1).min(jobs.len());
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(jobs.len() as u64, 1, 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
     }
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait_metal(&command_buffer)?;
 
     let statuses =
@@ -262,7 +246,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched_in_encoder_with_statu
     } else {
         &runtime.classic_cleanup_batched
     };
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
@@ -270,34 +254,15 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched_in_encoder_with_statu
     encoder.set_buffer(4, Some(status_buffer), 0);
     encoder.set_buffer(5, Some(coefficients_scratch), 0);
     if use_plain_fast_path {
-        encoder.dispatch_thread_groups(
-            MTLSize {
-                width: job_count as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 32,
-                height: 1,
-                depth: 1,
-            },
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(job_count as u64, 1, 1),
+            j2k_metal_support::mtl_size(32, 1, 1),
         );
     } else {
-        let width = pipeline
-            .thread_execution_width()
-            .max(1)
-            .min(job_count as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: job_count as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
+        let width = pipeline.threadExecutionWidth().max(1).min(job_count);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(job_count as u64, 1, 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
     }
 }
@@ -351,50 +316,27 @@ pub(in crate::compute) fn dispatch_classic_cleanup_repeated_batched_in_command_b
     let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
     encoder.set_buffer(3, Some(segments), 0);
     encoder.set_buffer(4, Some(&status_buffer), 0);
     encoder.set_buffer(5, Some(coefficients_scratch), 0);
-    encoder.set_bytes(
-        6,
-        size_of::<J2kClassicRepeatedBatchParams>() as u64,
-        (&raw const repeated).cast(),
-    );
+    encoder.set_bytes::<J2kClassicRepeatedBatchParams>(6, &repeated);
     if use_plain_fast_path {
-        encoder.dispatch_thread_groups(
-            MTLSize {
-                width: job_count as u64,
-                height: u64::from(repeated.batch_count),
-                depth: 1,
-            },
-            MTLSize {
-                width: 32,
-                height: 1,
-                depth: 1,
-            },
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(job_count as u64, u64::from(repeated.batch_count), 1),
+            j2k_metal_support::mtl_size(32, 1, 1),
         );
     } else {
-        let width = pipeline
-            .thread_execution_width()
-            .max(1)
-            .min(job_count as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: job_count as u64,
-                height: u64::from(repeated.batch_count),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
+        let width = pipeline.threadExecutionWidth().max(1).min(job_count);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(job_count as u64, u64::from(repeated.batch_count), 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
     }
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
@@ -428,7 +370,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in
     let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.classic_cleanup_plain_dev_repeated_batched);
+    encoder.setComputePipelineState(&runtime.classic_cleanup_plain_dev_repeated_batched);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
@@ -436,28 +378,16 @@ pub(in crate::compute) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in
     encoder.set_buffer(4, Some(&status_buffer), 0);
     encoder.set_buffer(5, Some(coefficients_scratch), 0);
     encoder.set_buffer(6, Some(states_scratch), 0);
-    encoder.set_bytes(
-        7,
-        size_of::<J2kClassicRepeatedBatchParams>() as u64,
-        (&raw const repeated).cast(),
-    );
+    encoder.set_bytes::<J2kClassicRepeatedBatchParams>(7, &repeated);
     let width = runtime
         .classic_cleanup_plain_dev_repeated_batched
-        .thread_execution_width()
+        .threadExecutionWidth()
         .max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: job_count as u64,
-            height: u64::from(repeated.batch_count),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(job_count as u64, u64::from(repeated.batch_count), 1),
+        j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
@@ -483,27 +413,15 @@ pub(in crate::compute) fn dispatch_classic_store_repeated_batched_in_command_buf
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.classic_store_repeated_batched);
+    encoder.setComputePipelineState(&runtime.classic_store_repeated_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_buffer(1, Some(jobs), 0);
     encoder.set_buffer(2, Some(coefficients_scratch), 0);
-    encoder.set_bytes(
-        3,
-        size_of::<J2kClassicRepeatedBatchParams>() as u64,
-        (&raw const repeated).cast(),
+    encoder.set_bytes::<J2kClassicRepeatedBatchParams>(3, &repeated);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(job_count as u64, u64::from(repeated.batch_count), 1),
+        j2k_metal_support::mtl_size(32, 1, 1),
     );
-    encoder.dispatch_thread_groups(
-        MTLSize {
-            width: job_count as u64,
-            height: u64::from(repeated.batch_count),
-            depth: 1,
-        },
-        MTLSize {
-            width: 32,
-            height: 1,
-            depth: 1,
-        },
-    );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     default_metal_ht_chunk_limits, dispatch_1d_pipeline, encode_metal_ht_batches_in_encoder,
-    encode_repeated_metal_ht_batch_in_command_buffer, size_of, Buffer, CommandBufferRef,
+    encode_repeated_metal_ht_batch_in_command_buffer, Buffer, CommandBufferRef,
     ComputeCommandEncoderRef, DirectStatusCheck, Error, HtBatchInput, HtCodeBlockDecodeJob,
     J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
@@ -168,9 +171,9 @@ pub(in crate::compute) fn dispatch_zero_u32_buffer_in_encoder(
         return Ok(());
     }
 
-    encoder.set_compute_pipeline_state(&runtime.zero_u32_buffer);
+    encoder.setComputePipelineState(&runtime.zero_u32_buffer);
     encoder.set_buffer(0, Some(buffer), 0);
-    encoder.set_bytes(1, size_of::<u32>() as u64, (&raw const word_count).cast());
+    encoder.set_bytes::<u32>(1, &word_count);
     dispatch_1d_pipeline(encoder, &runtime.zero_u32_buffer, u64::from(word_count));
     Ok(())
 }

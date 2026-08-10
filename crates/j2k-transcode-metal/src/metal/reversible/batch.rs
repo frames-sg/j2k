@@ -5,8 +5,10 @@ use super::super::{
     commit_and_wait, dispatch_reversible_band, output_i32_buffer, read_i32_buffer_at,
     reversible_band_geometry, try_transcode_vec_with_capacity, u32_param, Buffer, MetalRuntime,
     MetalTranscodeError, ReversibleBatchKernelGeometry, ReversibleDwt53FirstLevel,
-    METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    TranscodeComputeEncoderExt, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
+use objc2_foundation::NSString;
+use objc2_metal::{MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _};
 
 pub(super) fn dispatch_with_runtime(
     runtime: &MetalRuntime,
@@ -148,11 +150,13 @@ fn dispatch_reversible_projection(
     let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
         MetalTranscodeError::support("Metal reversible 5/3 command buffer creation", error)
     })?;
-    command_buffer.set_label("j2k-transcode-metal reversible dct53 projection");
+    command_buffer.setLabel(Some(&NSString::from_str(
+        "j2k-transcode-metal reversible dct53 projection",
+    )));
     let encoder = checked_compute_command_encoder(&command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal reversible 5/3 compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.reversible53_project_band);
+    encoder.setComputePipelineState(&runtime.reversible53_project_band);
     encoder.set_buffer(0, Some(blocks), 0);
 
     let dispatch = |output: &Buffer,
@@ -201,7 +205,7 @@ fn dispatch_reversible_projection(
         false,
         false,
     )?;
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait(&command_buffer)
         .map_err(|error| MetalTranscodeError::support("Metal reversible 5/3 command buffer", error))
 }

@@ -5,6 +5,33 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+Staged workspace version: `0.9.0`.
+
+- Breaking: all expert Metal APIs in `j2k-metal-support`, `j2k-metal`,
+  `j2k-jpeg-metal`, and `j2k-transcode-metal` now use objc2 ownership directly:
+  owned objects are `Retained<ProtocolObject<dyn MTL...>>`, borrowed objects are
+  `&ProtocolObject<dyn MTL...>`, and Metal value/descriptor types come from
+  `objc2-metal`. Callers must replace `metal::Device`, `*Ref`, `MTLSize`,
+  texture, queue, command-buffer, and buffer spellings with their objc2
+  equivalents; there is no `metal-rs` compatibility feature or adapter.
+- Replaces the workspace's deprecated `metal-rs 0.33` dependency with the
+  pinned `objc2 0.6.4`, `objc2-foundation 0.3.2`, and `objc2-metal 0.3.2`
+  stack. This removes the transitive `block 0.1.6` dependency, its local patch,
+  and all associated lint, coverage, packaging, and release exceptions while
+  preserving the existing Metal kernels and codec behavior.
+- Centralizes Metal object creation, retained command submission, checked
+  buffer access, shared-event creation, pipeline loading, and resident-image
+  ownership in `j2k-metal-support`. Typed objc2 APIs now cover queue/resource
+  identity, GPU timing, capture, textures, and event ordering; the remaining
+  pointer and immediate-byte bindings have explicit safety proofs.
+- Shader compilation failures retain their typed Metal diagnostics. The objc2
+  binding does not expose warning-only `NSError` values returned alongside a
+  successful library, so successful compilations no longer log those warnings.
+- Removes `checked_texture_descriptor` and the unreachable raw-message-send
+  `MetalSupportError` variants. Expert callers construct
+  `MTLTextureDescriptor` directly and handle the remaining typed allocation
+  and availability errors.
+
 - Extends the shared ISO/IEC 15444-4:2024 / ITU-T T.803 v3 framework with
   unversioned HTJ2K Part 15 development evidence. The CPU IUT passes all 160
   selected Part 1 and Part 15 cases with zero skips on macOS arm64, Linux

@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{ComputeCommandEncoderRef, ComputePipelineState, MTLSize};
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{MTLComputeCommandEncoder, MTLComputePipelineState, MTLSize};
 
 /// Construct a Metal dispatch size.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Metal is supported only on 64-bit macOS targets, where NSUInteger and u64 have equal ranges"
+)]
 pub const fn mtl_size(width: u64, height: u64, depth: u64) -> MTLSize {
+    // J2K supports only 64-bit macOS targets, where NSUInteger and u64 have
+    // identical ranges.
     MTLSize {
-        width,
-        height,
-        depth,
+        width: width as usize,
+        height: height as usize,
+        depth: depth as usize,
     }
 }
 
@@ -32,47 +39,47 @@ pub const fn two_d_threads_per_group(simd_width: u64, max_threads: u64) -> MTLSi
 
 /// Dispatch a one-dimensional compute workload with one SIMD group per threadgroup.
 pub fn dispatch_1d_pipeline(
-    encoder: &ComputeCommandEncoderRef,
-    pipeline: &ComputePipelineState,
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    pipeline: &ProtocolObject<dyn MTLComputePipelineState>,
     width: u64,
 ) {
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         mtl_size(width, 1, 1),
-        one_d_threads_per_group(pipeline.thread_execution_width()),
+        one_d_threads_per_group(pipeline.threadExecutionWidth() as u64),
     );
 }
 
 /// Dispatch a single compute thread.
-pub fn dispatch_single_thread(encoder: &ComputeCommandEncoderRef) {
-    encoder.dispatch_threads(mtl_size(1, 1, 1), mtl_size(1, 1, 1));
+pub fn dispatch_single_thread(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>) {
+    encoder.dispatchThreads_threadsPerThreadgroup(mtl_size(1, 1, 1), mtl_size(1, 1, 1));
 }
 
 /// Dispatch a two-dimensional compute workload using the pipeline's SIMD width.
 pub fn dispatch_2d_pipeline(
-    encoder: &ComputeCommandEncoderRef,
-    pipeline: &ComputePipelineState,
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    pipeline: &ProtocolObject<dyn MTLComputePipelineState>,
     dims: (u32, u32),
 ) {
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         mtl_size(u64::from(dims.0), u64::from(dims.1), 1),
         two_d_threads_per_group(
-            pipeline.thread_execution_width(),
-            pipeline.max_total_threads_per_threadgroup(),
+            pipeline.threadExecutionWidth() as u64,
+            pipeline.maxTotalThreadsPerThreadgroup() as u64,
         ),
     );
 }
 
 /// Dispatch a three-dimensional compute workload using a 2D threadgroup shape.
 pub fn dispatch_3d_pipeline(
-    encoder: &ComputeCommandEncoderRef,
-    pipeline: &ComputePipelineState,
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    pipeline: &ProtocolObject<dyn MTLComputePipelineState>,
     dims: (u32, u32, u32),
 ) {
-    encoder.dispatch_threads(
+    encoder.dispatchThreads_threadsPerThreadgroup(
         mtl_size(u64::from(dims.0), u64::from(dims.1), u64::from(dims.2)),
         two_d_threads_per_group(
-            pipeline.thread_execution_width(),
-            pipeline.max_total_threads_per_threadgroup(),
+            pipeline.threadExecutionWidth() as u64,
+            pipeline.maxTotalThreadsPerThreadgroup() as u64,
         ),
     );
 }

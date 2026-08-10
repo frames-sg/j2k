@@ -6,8 +6,8 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::time::Duration;
 
+use crate::metal_types::Buffer;
 use j2k_jpeg::adapter::JpegEntropyCheckpointV1;
-use metal::Buffer;
 
 use crate::buffers::MetalBatchScratch;
 use crate::{batch, Error, Surface};

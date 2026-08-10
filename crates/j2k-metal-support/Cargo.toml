@@ -19,11 +19,13 @@ name = "j2k_metal_support"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.8.1" }
+j2k-core = { path = "../j2k-core", version = "=0.9.0" }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-metal = { workspace = true }
 
 [dev-dependencies]
 j2k-test-support = { path = "../j2k-test-support" }

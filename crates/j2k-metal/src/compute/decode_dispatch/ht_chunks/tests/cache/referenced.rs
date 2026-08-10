@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 use std::sync::Arc;
 
@@ -78,7 +81,7 @@ fn second_referenced_prepared_submission_uploads_no_immutable_arenas() {
             default_metal_ht_chunk_limits(),
         )
         .expect("submit referenced prepared execution");
-        encoder.end_encoding();
+        encoder.endEncoding();
         crate::compute::commit_and_wait_metal(&command_buffer)
             .expect("complete referenced prepared execution");
         crate::compute::validate_direct_status(&runtime, status)
