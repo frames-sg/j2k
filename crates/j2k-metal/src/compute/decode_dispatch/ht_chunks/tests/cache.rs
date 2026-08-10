@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 
 use j2k_native::{DecodeSettings, DecoderContext, EncodeOptions, Image};
@@ -78,7 +81,7 @@ fn second_prepared_ht_submission_reuses_immutable_gpu_arenas() {
                 group.total_coefficients,
                 default_metal_ht_chunk_limits(),
             )?;
-            encoder.end_encoding();
+            encoder.endEncoding();
             commit_and_wait_metal(&command_buffer)?;
             validate_direct_status(runtime, status)?;
             let coefficients = checked_buffer_slice::<f32>(

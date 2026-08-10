@@ -2,8 +2,8 @@
 
 //! Single-image execution for prepared region-scaled direct plans.
 
+use crate::metal_types::Device;
 use j2k_core::{Downscale, PixelFormat, Rect};
-use metal::Device;
 
 use super::planning::{
     build_region_scaled_direct_plan, build_region_scaled_direct_plan_with_session,

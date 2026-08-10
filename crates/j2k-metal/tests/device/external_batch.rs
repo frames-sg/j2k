@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use objc2::Message as _;
+use objc2_metal::{MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _};
 
 #[test]
 fn shared_metal_batch_keeps_indexed_prepare_failures_and_decodes_other_groups() {
@@ -251,7 +253,7 @@ fn submitted_prepared_group_orders_a_same_device_consumer_queue() {
             EncodedImage::full(second_bytes.clone()),
         ])
         .expect("prepare consumer-ordered Gray8 group");
-    let device = decoder.backend_session().device().to_owned();
+    let device = decoder.backend_session().device().retain();
     let destination_buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(&device, 26)
         .expect("consumer-ordered destination");
     let consumer_buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(&device, 18)
@@ -276,8 +278,19 @@ fn submitted_prepared_group_orders_a_same_device_consumer_queue() {
         .expect("consumer command buffer");
     let blit = j2k_metal_support::checked_blit_command_encoder(&consumer_command)
         .expect("consumer blit encoder");
-    blit.copy_from_buffer(&destination_buffer, 4, &consumer_buffer, 0, 18);
-    blit.end_encoding();
+    // SAFETY: Both ranges are within their checked shared allocations. The
+    // command buffer retains both buffers through completion, and the shared
+    // event wait above orders this read after the producer's writes.
+    unsafe {
+        blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+            &destination_buffer,
+            4,
+            &consumer_buffer,
+            0,
+            18,
+        );
+    };
+    blit.endEncoding();
     consumer_command.commit();
 
     pending.wait().expect("producer group completion");

@@ -2,28 +2,23 @@
 
 use super::{
     checked_command_buffer, checked_compute_command_encoder, commit_and_wait, dispatch_band,
-    dispatch_projection_batch_bands, dwt97_batch_blocks_buffer, dwt97_blocks_buffer, output_buffer,
-    projection_batch_output_buffers, projection_batch_shape, projection_batch_weight_buffers,
-    read_f32_buffer, read_projected_batch_outputs, u32_param, upload_sparse_rows, BandGeometry,
-    Buffer, ComputeCommandEncoderRef, DctGridToDwt97Job, MTLSize, MetalRuntime,
-    MetalTranscodeError, SparseWeightRow, DWT97_STAGED_THREADS_PER_GROUP,
+    dispatch_projection_batch_bands, dwt97_batch_blocks_buffer, dwt97_blocks_buffer, mtl_size,
+    output_buffer, projection_batch_output_buffers, projection_batch_shape,
+    projection_batch_weight_buffers, read_f32_buffer, read_projected_batch_outputs, u32_param,
+    upload_sparse_rows, BandGeometry, Buffer, ComputeCommandEncoderRef, DctGridToDwt97Job, MTLSize,
+    MetalRuntime, MetalTranscodeError, SparseWeightRow, TranscodeComputeEncoderExt,
+    DWT97_STAGED_THREADS_PER_GROUP,
 };
+use objc2_foundation::NSString;
+use objc2_metal::{MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _};
 
 pub(super) fn staged_threads_per_group() -> MTLSize {
-    MTLSize {
-        width: DWT97_STAGED_THREADS_PER_GROUP,
-        height: 1,
-        depth: 1,
-    }
+    mtl_size(DWT97_STAGED_THREADS_PER_GROUP, 1, 1)
 }
 
 #[inline]
 pub(super) fn projection_thread_grid(width: u64, height: u64, depth: u64) -> MTLSize {
-    MTLSize {
-        width,
-        height,
-        depth,
-    }
+    mtl_size(width, height, depth)
 }
 
 #[inline]
@@ -47,7 +42,7 @@ pub(super) fn dispatch_projection_threads(
     depth: u64,
 ) {
     let (threads, threads_per_group) = projection_dispatch_sizes(width, height, depth);
-    encoder.dispatch_threads(threads, threads_per_group);
+    encoder.dispatchThreads_threadsPerThreadgroup(threads, threads_per_group);
 }
 
 #[inline]
@@ -152,11 +147,11 @@ pub(super) fn dispatch_projected_bands_with_runtime(
     let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
         MetalTranscodeError::support("Metal projected-band command buffer creation", error)
     })?;
-    command_buffer.set_label(job.label);
+    command_buffer.setLabel(Some(&NSString::from_str(job.label)));
     let encoder = checked_compute_command_encoder(&command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal projected-band compute encoder creation", error)
     })?;
-    encoder.set_compute_pipeline_state(&runtime.dct_project_band);
+    encoder.setComputePipelineState(&runtime.dct_project_band);
     bind_projection_input_buffers(&encoder, &blocks, &runtime.idct_basis);
 
     dispatch_band(
@@ -212,7 +207,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
         },
     );
 
-    encoder.end_encoding();
+    encoder.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {
         MetalTranscodeError::support("Metal projected-band command buffer", error)
     })?;

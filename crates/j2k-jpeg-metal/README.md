@@ -6,6 +6,10 @@ Supported paths return resident Metal outputs or use Metal kernels for selected
 adapter stages. Explicit Metal requests are strict and fail for unsupported
 shapes.
 
+Version 0.9 uses retained and borrowed `objc2-metal` protocol objects in its
+expert session, buffer, and texture APIs. It does not provide aliases or
+adapters for the former `metal-rs` types.
+
 ## JPEG Decode Scope
 
 JPEG Metal decode is selective acceleration, not full JPEG feature coverage. It

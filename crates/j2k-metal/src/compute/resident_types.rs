@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
+use crate::metal_types::{Buffer, CommandBuffer};
 use j2k_native::J2kPacketizationPacketDescriptor;
-use metal::{Buffer, CommandBuffer};
 
 use super::{
     J2kLosslessCodestreamAssemblyJob, J2kPreparedLosslessDeviceCodeBlocks,

@@ -175,7 +175,7 @@ fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
 #[cfg(target_os = "macos")]
 fn download_rgba8_texture(
     session: &MetalBackendSession,
-    texture: &metal::TextureRef,
+    texture: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>,
     dimensions: (u32, u32),
 ) -> Vec<u8> {
     let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
@@ -188,19 +188,28 @@ fn download_rgba8_texture(
         .expect("viewport texture readback command buffer");
     let blit = j2k_metal_support::checked_blit_command_encoder(&command_buffer)
         .expect("viewport texture readback blit encoder");
-    blit.copy_from_texture_to_buffer(
-        texture,
-        0,
-        0,
-        metal::MTLOrigin { x: 0, y: 0, z: 0 },
-        metal::MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
-        &buffer,
-        0,
-        row_bytes as u64,
-        byte_len as u64,
-        metal::MTLBlitOption::None,
-    );
-    blit.end_encoding();
+    // SAFETY: The source region matches the validated texture dimensions, the
+    // destination allocation covers `byte_len`, and both resources remain
+    // retained until the command buffer completes below.
+    unsafe {
+        objc2_metal::MTLBlitCommandEncoder::copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+            &*blit,
+            texture,
+            0,
+            0,
+            objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+            objc2_metal::MTLSize {
+                width: dimensions.0 as usize,
+                height: dimensions.1 as usize,
+                depth: 1,
+            },
+            &buffer,
+            0,
+            row_bytes,
+            byte_len,
+        );
+    }
+    objc2_metal::MTLCommandEncoder::endEncoding(&*blit);
     j2k_metal_support::commit_and_wait(&command_buffer).expect("viewport texture readback blit");
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "viewport texture readback")
@@ -521,7 +530,7 @@ fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+    assert!(std::ptr::eq(buffer, output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(
         surface.as_bytes().expect("surface byte access"),
@@ -569,7 +578,7 @@ fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+    assert!(std::ptr::eq(buffer, output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(
         surface.as_bytes().expect("surface byte access"),
@@ -632,7 +641,7 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+    assert!(std::ptr::eq(buffer, output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(
         surface.as_bytes().expect("surface byte access"),
@@ -715,7 +724,7 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
+    assert!(std::ptr::eq(buffer, output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(
         surface.as_bytes().expect("surface byte access"),

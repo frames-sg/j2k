@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::{
     cell::RefCell,
     sync::{Arc, Mutex},
 };
 
+use crate::metal_types::{Buffer, CommandBufferRef, CommandQueue, ComputePipelineState, Device};
 use j2k_metal_support::{
     checked_command_queue, checked_shared_buffer, checked_shared_buffer_with_slice,
     commit_and_wait, wait_for_completion, MetalPipelineLoader, MetalSupportError,
@@ -12,10 +16,6 @@ use j2k_metal_support::{
 use j2k_native::{
     ht_uvlc_encode_table, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0,
     ht_vlc_encode_table1, ht_vlc_table0, ht_vlc_table1,
-};
-use metal::{
-    foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputePipelineState,
-    Device,
 };
 
 use crate::{
@@ -144,6 +144,16 @@ pub(crate) struct MetalRuntime {
     pub(in crate::compute) prepared_ht_execution_cache:
         Mutex<super::decode_dispatch::PreparedMetalHtExecutionCache>,
 }
+
+// SAFETY: Every retained Metal object in the runtime is documented by Metal
+// as usable across threads. CPU-side mutable pool/cache state is protected by
+// its own mutex, pipelines and lookup buffers are immutable after creation,
+// and command submission remains serialized by each Metal queue.
+unsafe impl Send for MetalRuntime {}
+// SAFETY: Shared references expose only immutable Metal handles or
+// mutex-protected pool/cache operations; no unsynchronized CPU mutation is
+// reachable through `MetalRuntime`.
+unsafe impl Sync for MetalRuntime {}
 
 impl MetalRuntime {
     #[cfg(test)]
@@ -342,7 +352,7 @@ impl MetalRuntime {
         })
     }
 
-    pub(crate) fn command_queue(&self) -> &metal::CommandQueueRef {
+    pub(crate) fn command_queue(&self) -> &crate::metal_types::CommandQueueRef {
         self.queue.as_ref()
     }
 
@@ -397,7 +407,7 @@ pub(super) fn with_runtime<R>(
 }
 
 pub(crate) fn current_runtime_device_registry_id() -> Result<u64, Error> {
-    with_runtime(|runtime| Ok(runtime.device.registry_id()))
+    with_runtime(|runtime| Ok(runtime.device.registryID()))
 }
 
 pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
@@ -443,7 +453,7 @@ pub(super) fn with_runtime_for_device<R>(
 ) -> Result<R, Error> {
     let override_runtime = METAL_RUNTIME_OVERRIDE.with(|slot| slot.borrow().clone());
     if let Some(runtime) = override_runtime {
-        if runtime.device.as_ptr() == device.as_ptr() {
+        if objc2::rc::Retained::as_ptr(&runtime.device) == objc2::rc::Retained::as_ptr(device) {
             return f(&runtime);
         }
     }

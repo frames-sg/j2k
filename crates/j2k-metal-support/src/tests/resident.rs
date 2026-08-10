@@ -7,6 +7,10 @@ use crate::{
     ResidentMetalImage, SubmittedMetalImages,
 };
 use j2k_core::{DeviceSubmission, PixelFormat};
+use objc2_foundation::NSRange;
+use objc2_metal::{
+    MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLDevice,
+};
 
 #[test]
 fn metal_image_layout_rejects_short_pitch_and_overflow() {
@@ -66,7 +70,7 @@ fn resident_metal_image_validates_bounds_and_device_identity() {
     // SAFETY: The buffer has never been submitted or aliased for mutation.
     let image = unsafe { ResidentMetalImage::from_completed_buffer(buffer, layout) }
         .expect("bounded resident image");
-    assert_eq!(image.device_registry_id(), device.registry_id());
+    assert_eq!(image.device_registry_id(), device.registryID());
     assert_eq!(image.byte_len(), 8);
 
     let out_of_bounds =
@@ -118,8 +122,8 @@ fn submitted_metal_images_waits_and_returns_immutable_outputs() {
     let command_buffer = checked_command_buffer(&queue).expect("Metal command buffer");
     let output = checked_shared_buffer_for_len::<u8>(&device, 4).expect("output buffer");
     let blit = checked_blit_command_encoder(&command_buffer).expect("Metal blit encoder");
-    blit.fill_buffer(&output, metal::NSRange::new(0, 4), 7);
-    blit.end_encoding();
+    blit.fillBuffer_range_value(&output, NSRange::new(0, 4), 7);
+    blit.endEncoding();
     let layout = MetalImageLayout::new(0, (4, 1), 4, PixelFormat::Gray8).expect("output layout");
 
     // SAFETY: `output` is fresh, the command buffer is its only writer, and no
@@ -161,10 +165,18 @@ fn submitted_metal_images_retain_inputs_until_completion() {
         .expect("resident input image");
     let output = checked_shared_buffer_for_len::<u8>(&device, 4).expect("output buffer");
     let blit = checked_blit_command_encoder(&command_buffer).expect("Metal blit encoder");
-    // SAFETY: The raw input is bound only for a read retained by `inputs` until
-    // the submission completes.
-    blit.copy_from_buffer(unsafe { input.raw_buffer() }, 0, &output, 0, 4);
-    blit.end_encoding();
+    // SAFETY: The ranges lie within both four-byte allocations, and the raw
+    // input is retained by `inputs` until GPU completion.
+    unsafe {
+        blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+            input.raw_buffer(),
+            0,
+            &output,
+            0,
+            4,
+        );
+    }
+    blit.endEncoding();
 
     // SAFETY: `output` is fresh and written only by this command; the resident
     // input bound above is included in the submission keepalives.
@@ -201,8 +213,8 @@ fn dropping_submitted_metal_images_completes_the_command_buffer() {
     let observed_command_buffer = command_buffer.clone();
     let output = checked_shared_buffer_for_len::<u8>(&device, 4).expect("output buffer");
     let blit = checked_blit_command_encoder(&command_buffer).expect("Metal blit encoder");
-    blit.fill_buffer(&output, metal::NSRange::new(0, 4), 9);
-    blit.end_encoding();
+    blit.fillBuffer_range_value(&output, NSRange::new(0, 4), 9);
+    blit.endEncoding();
     let layout = MetalImageLayout::new(0, (4, 1), 4, PixelFormat::Gray8).expect("output layout");
 
     // SAFETY: `output` is fresh, the command buffer is its only writer, and no
@@ -220,7 +232,7 @@ fn dropping_submitted_metal_images_completes_the_command_buffer() {
 
     assert_eq!(
         observed_command_buffer.status(),
-        metal::MTLCommandBufferStatus::Completed
+        MTLCommandBufferStatus::Completed
     );
 }
 
@@ -293,7 +305,7 @@ fn metal_image_destination_validates_device_and_preserves_subrange_layout() {
         .expect("valid destination");
 
     assert_eq!(destination.layout(), layout);
-    assert_eq!(destination.device_registry_id(), device.registry_id());
+    assert_eq!(destination.device_registry_id(), device.registryID());
     destination
         .validate_device(&device)
         .expect("matching destination device");

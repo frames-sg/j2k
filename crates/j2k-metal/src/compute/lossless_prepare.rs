@@ -28,7 +28,7 @@ use super::{
     with_runtime, with_runtime_for_session, zeroed_shared_buffer, Buffer, CommandBuffer,
     CommandBufferRef, Error, J2kLosslessDeviceBatchPrepareItem, J2kLosslessDeviceCodeBlock,
     J2kLosslessDevicePrepareJob, J2kPreparedLosslessDeviceCodeBlocks, J2kQuantizeSubbandJob,
-    MTLSize, MetalRuntime,
+    MetalRuntime,
 };
 
 mod batch;

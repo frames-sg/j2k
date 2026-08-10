@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::super::{
     batch, bind_fast_decode_entropy_inputs, checked_u32, dispatch_1d_pipeline,
     fast_decode_status_error, fast_packet_huffman_tables,
@@ -258,7 +260,7 @@ pub(in crate::compute) fn encode_subsampled_region_rgb_decode<P: FastRegionScale
 ) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(
+    decoder_encoder.setComputePipelineState(
         <P as FastRegionScaledMetal>::scaled_region_batch_decode_pipeline(runtime),
     );
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
@@ -275,13 +277,13 @@ pub(in crate::compute) fn encode_subsampled_region_rgb_decode<P: FastRegionScale
             slot16_buffer: status_buffer,
         },
     );
-    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    decoder_encoder.bind_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
         &decoder_encoder,
         <P as FastRegionScaledMetal>::scaled_region_batch_decode_pipeline(runtime),
         shape.total_decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
     Ok(())
 }
 
@@ -299,7 +301,7 @@ pub(in crate::compute) fn encode_subsampled_region_texture_decode<
 ) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(
+    decoder_encoder.setComputePipelineState(
         <P as FastSubsampledMetal>::scaled_region_batch_decode_pipeline(runtime),
     );
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
@@ -316,13 +318,13 @@ pub(in crate::compute) fn encode_subsampled_region_texture_decode<
             slot16_buffer: status_buffer,
         },
     );
-    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    decoder_encoder.bind_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
         &decoder_encoder,
         <P as FastSubsampledMetal>::scaled_region_batch_decode_pipeline(runtime),
         shape.total_decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
     Ok(())
 }
 

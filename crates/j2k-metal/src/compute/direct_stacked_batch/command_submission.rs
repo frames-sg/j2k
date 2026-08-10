@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{Buffer, ComputeCommandEncoderRef};
+use crate::metal_types::{Buffer, ComputeCommandEncoderRef};
 
 use crate::batch_allocation::BatchMetadataBudget;
 

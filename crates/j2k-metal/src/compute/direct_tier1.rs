@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
+use crate::metal_types::Buffer;
 use j2k_core::accelerator::GpuAbi;
-use metal::Buffer;
 
 use super::{copied_slice_buffer, Error, MetalRuntime, PreparedDirectColorPlan};
 

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
     dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, size_of, with_runtime, Buffer,
-    CommandBufferRef, ComputeCommandEncoderRef, Error, J2kGrayStoreParams,
-    J2kRepeatedGrayStoreParams, J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams,
-    MTLSize, MetalRuntime, PixelFormat, Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
+    new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams,
+    J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams, MetalRuntime, PixelFormat,
+    Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
 };
 use crate::compute::direct_surface_pack::checked_metal_surface_len;
 #[cfg(target_os = "macos")]
@@ -93,20 +96,16 @@ pub(crate) fn decode_store_component_and_capture(
         let output_buffer = copied_slice_buffer(&runtime.device, output)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.store_component);
+        encoder.setComputePipelineState(&runtime.store_component);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<J2kStoreParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kStoreParams>(2, &params);
         dispatch_2d_pipeline(
             &encoder,
             &runtime.store_component,
             (copy_width, copy_height),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         let captured = checked_buffer_slice::<f32>(
             &output_buffer,
@@ -140,7 +139,7 @@ pub(in crate::compute) fn dispatch_store_component_buffer_in_command_buffer_with
         output_offset_bytes,
         params,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -154,14 +153,10 @@ pub(in crate::compute) fn dispatch_store_component_buffer_in_encoder_with_offset
     output_offset_bytes: usize,
     params: J2kStoreParams,
 ) {
-    encoder.set_compute_pipeline_state(&runtime.store_component);
+    encoder.setComputePipelineState(&runtime.store_component);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), output_offset_bytes as u64);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kStoreParams>(2, &params);
     dispatch_2d_pipeline(
         encoder,
         &runtime.store_component,
@@ -188,7 +183,7 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_command_buffer(
         output,
         params,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -200,14 +195,10 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_encoder(
     output: &Buffer,
     params: J2kRepeatedStoreParams,
 ) {
-    encoder.set_compute_pipeline_state(&runtime.store_component_repeated);
+    encoder.setComputePipelineState(&runtime.store_component_repeated);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kRepeatedStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kRepeatedStoreParams>(2, &params);
     dispatch_3d_pipeline(
         encoder,
         &runtime.store_component_repeated,
@@ -266,31 +257,19 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kRepeatedGrayStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    encoder.set_bytes::<J2kRepeatedGrayStoreParams>(2, &params);
+    let width = pipeline.threadExecutionWidth().max(1);
+    let max_threads = pipeline.maxTotalThreadsPerThreadgroup().max(width);
     if contiguous_full_surface {
         let total_samples = u64::from(params.input_width)
             * u64::from(params.input_height)
             * u64::from(params.batch_count);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: total_samples,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: max_threads,
-                height: 1,
-                depth: 1,
-            },
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(total_samples, 1, 1),
+            j2k_metal_support::mtl_size(max_threads as u64, 1, 1),
         );
     } else {
         dispatch_3d_pipeline(
@@ -299,7 +278,7 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
             (params.copy_width, params.copy_height, params.batch_count),
         );
     }
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K Metal repeated store surface collection",
@@ -343,14 +322,10 @@ pub(in crate::compute) fn encode_gray_store_to_surface_in_encoder(
         }
     };
 
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kGrayStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kGrayStoreParams>(2, &params);
     dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
 
     Surface::from_metal_buffer(out_buffer, dims, fmt)

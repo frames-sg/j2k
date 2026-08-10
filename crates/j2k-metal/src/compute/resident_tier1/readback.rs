@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_read, completed_command_buffers_gpu_duration, encode_status_error,
     finish_completed_resident_lossless_codestream_batch, new_blit_command_encoder,
@@ -140,7 +143,7 @@ pub(in crate::compute) fn schedule_resident_tier1_status_readback(
     let readback = new_shared_buffer(&runtime.device, byte_len.max(1))?;
     let blit = new_blit_command_encoder(command_buffer)?;
     blit.copy_from_buffer(status_buffer, 0, &readback, 0, byte_len as u64);
-    blit.end_encoding();
+    blit.endEncoding();
     let classic_jobs = if let Some(classic_jobs) = classic_jobs {
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal resident Tier-1 status readback",

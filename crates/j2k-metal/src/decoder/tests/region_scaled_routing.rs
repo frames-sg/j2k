@@ -2,7 +2,6 @@
 
 use j2k::{wrap_j2k_codestream, J2kFileWrapOptions};
 use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
-use metal::Device;
 
 use super::{
     hybrid, should_run_metal_runtime, J2kDecoder, MetalBackendSession, MetalDecodeRequest,
@@ -13,7 +12,7 @@ fn jph_region_and_scaled_requests_use_prepared_direct_plans() {
     if !should_run_metal_runtime() {
         return;
     }
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };

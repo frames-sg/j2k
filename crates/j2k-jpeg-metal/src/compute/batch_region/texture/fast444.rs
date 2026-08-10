@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::super::super::{
     batch, batch_entropy_buffers, bind_fast_decode_entropy_inputs, checked_u32,
     commit_and_wait_jpeg, copy_rgb8_surfaces_to_rgba_textures, dispatch_1d_pipeline,
@@ -229,8 +231,7 @@ fn encode_fast444_region_texture_decode(
 ) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder
-        .set_compute_pipeline_state(&runtime.fast444_scaled_region_batch_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_region_batch_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -245,13 +246,13 @@ fn encode_fast444_region_texture_decode(
             slot16_buffer: status_buffer,
         },
     );
-    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    decoder_encoder.bind_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
         &decoder_encoder,
         &runtime.fast444_scaled_region_batch_decode_pipeline,
         shape.total_decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
     Ok(())
 }
 

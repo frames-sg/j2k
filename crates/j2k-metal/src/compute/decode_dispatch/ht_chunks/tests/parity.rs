@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::{mem::size_of, num::NonZeroUsize};
 
 use j2k_core::HtGpuJobChunkLimits;
@@ -128,7 +131,7 @@ fn forced_multi_chunk_metal_output_matches_cpu_coefficients() {
             group.total_coefficients,
             tiny_limits,
         )?;
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         validate_direct_status(runtime, status)?;
         let coefficients =

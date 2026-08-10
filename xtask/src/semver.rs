@@ -25,11 +25,11 @@ use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
 const SEMVER_TOOLCHAIN: &str = "1.96";
-const SEMVER_BASELINE_VERSION: &str = "0.8.0";
-const SEMVER_BASELINE_TAG: &str = "v0.8.0";
-const SEMVER_BASELINE_COMMIT: &str = "53e0ad3d4f75f492af55413e0dab5a5834bd09c6";
-const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md";
-const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.8.1.yml";
+const SEMVER_BASELINE_VERSION: &str = "0.8.1";
+const SEMVER_BASELINE_TAG: &str = "v0.8.1";
+const SEMVER_BASELINE_COMMIT: &str = "f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b";
+const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.9.0.md";
+const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.9.0.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {
@@ -38,7 +38,12 @@ struct BaselineTransition<'a> {
     required_next_baseline_tag: &'a str,
 }
 
-const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> = None;
+const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> =
+    Some(BaselineTransition {
+        candidate_version: "0.9.0",
+        required_next_baseline_version: "0.9.0",
+        required_next_baseline_tag: "v0.9.0",
+    });
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",

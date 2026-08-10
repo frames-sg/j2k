@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+#[cfg(target_os = "macos")]
 use crate::error::metal_kernel_support_error;
+#[cfg(target_os = "macos")]
+use crate::metal_types::Buffer;
 #[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, DeviceMemoryRange};
-#[cfg(target_os = "macos")]
-use metal::{foreign_types::ForeignType, Buffer};
 #[cfg(target_os = "macos")]
 use std::ops::Range;
 #[cfg(target_os = "macos")]
@@ -64,10 +67,7 @@ impl MetalEncodedJ2k {
             .ok_or_else(|| crate::Error::MetalKernel {
                 message: "J2K Metal codestream capacity range overflows usize".to_string(),
             })?;
-        let allocation_len =
-            usize::try_from(codestream_buffer.length()).map_err(|_| crate::Error::MetalKernel {
-                message: "J2K Metal codestream allocation length exceeds usize".to_string(),
-            })?;
+        let allocation_len = codestream_buffer.length();
         if capacity_end > allocation_len {
             return Err(crate::Error::MetalKernel {
                 message: format!(
@@ -106,7 +106,9 @@ impl MetalEncodedJ2k {
     /// that range until the returned object is dropped. These obligations also
     /// apply to every handle cloned from `codestream_buffer` before this call.
     pub unsafe fn from_raw_parts(
-        codestream_buffer: Buffer,
+        codestream_buffer: objc2::rc::Retained<
+            objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
+        >,
         codestream_range: Range<usize>,
         capacity: usize,
         dimensions: (u32, u32),
@@ -157,7 +159,9 @@ impl MetalEncodedJ2k {
     /// ensure that no CPU or GPU access through the returned handle (or a clone)
     /// mutates any range while a sharing `MetalEncodedJ2k` remains alive. All
     /// prior writers must complete before any sharing output is read back.
-    pub unsafe fn into_codestream_buffer(self) -> Buffer {
+    pub unsafe fn into_codestream_buffer(
+        self,
+    ) -> objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>> {
         self.codestream_buffer
     }
 
@@ -214,7 +218,7 @@ impl MetalEncodedJ2k {
     pub fn codestream_memory_range(&self) -> Option<DeviceMemoryRange> {
         Some(DeviceMemoryRange::new(
             BackendKind::Metal,
-            u64::try_from(self.codestream_buffer_trusted().as_ptr() as usize).ok()?,
+            u64::try_from(core::ptr::from_ref(self.codestream_buffer_trusted()).addr()).ok()?,
             self.byte_offset,
             self.capacity,
         ))
@@ -222,7 +226,7 @@ impl MetalEncodedJ2k {
 
     /// Backing Metal allocation length in bytes.
     pub fn codestream_allocation_len(&self) -> Option<usize> {
-        usize::try_from(self.codestream_buffer_trusted().length()).ok()
+        Some(self.codestream_buffer_trusted().length())
     }
 
     /// Materialize the finished codestream bytes from the backing Metal buffer.

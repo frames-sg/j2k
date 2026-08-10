@@ -29,30 +29,17 @@ pub enum MetalSupportError {
     MetalUnavailable,
     /// Metal returned a null command queue for the selected device.
     CommandQueueUnavailable,
-    /// Metal command queue creation failed before returning a queue.
-    CommandQueue {
-        /// Error reported by the Objective-C message send.
-        message: String,
-    },
     /// Metal returned a null command buffer for an available command queue.
     CommandBufferUnavailable,
-    /// Objective-C dispatch failed while requesting a Metal command buffer.
-    CommandBufferCreation {
-        /// Error reported by the Objective-C message send.
-        message: String,
-    },
     /// Metal returned a null command encoder for an available command buffer.
     CommandEncoderUnavailable {
         /// Kind of encoder requested.
         kind: MetalCommandEncoderKind,
     },
-    /// Objective-C dispatch failed while requesting a Metal command encoder.
-    CommandEncoderCreation {
-        /// Kind of encoder requested.
-        kind: MetalCommandEncoderKind,
-        /// Error reported by the Objective-C message send.
-        message: String,
-    },
+    /// Metal returned no single-device event object.
+    EventUnavailable,
+    /// Metal returned no shared event object.
+    SharedEventUnavailable,
     /// A committed Metal command buffer did not complete successfully.
     CommandBuffer {
         /// Best-effort label assigned to the command buffer.
@@ -131,11 +118,6 @@ pub enum MetalSupportError {
         /// Requested Metal buffer length in bytes.
         requested: usize,
     },
-    /// Objective-C dispatch failed while requesting a Metal buffer.
-    BufferAllocation {
-        /// Error reported by the Objective-C message send.
-        message: String,
-    },
     /// A texture descriptor has zero or otherwise unaccountable allocation geometry.
     TextureDescriptorInvalid {
         /// Stable descriptor property that failed validation.
@@ -159,13 +141,6 @@ pub enum MetalSupportError {
         /// Requested texture array length.
         array_length: u64,
     },
-    /// Objective-C dispatch failed while requesting a Metal texture.
-    TextureAllocation {
-        /// Error reported by the Objective-C message send.
-        message: String,
-    },
-    /// Metal returned no texture descriptor object.
-    TextureDescriptorUnavailable,
     /// The Metal buffer is not CPU-visible through `contents()`.
     BufferContentsUnavailable,
 }
@@ -183,19 +158,12 @@ impl fmt::Display for MetalSupportError {
         match self {
             Self::MetalUnavailable => f.write_str("Metal is unavailable on this host"),
             Self::CommandQueueUnavailable => f.write_str("Metal command queue is unavailable"),
-            Self::CommandQueue { message } => {
-                write!(f, "Metal command queue creation failed: {message}")
-            }
             Self::CommandBufferUnavailable => f.write_str("Metal command buffer is unavailable"),
-            Self::CommandBufferCreation { message } => {
-                write!(f, "Metal command buffer creation failed: {message}")
-            }
             Self::CommandEncoderUnavailable { kind } => {
                 write!(f, "Metal {kind} command encoder is unavailable")
             }
-            Self::CommandEncoderCreation { kind, message } => {
-                write!(f, "Metal {kind} command encoder creation failed: {message}")
-            }
+            Self::EventUnavailable => f.write_str("Metal event is unavailable"),
+            Self::SharedEventUnavailable => f.write_str("Metal shared event is unavailable"),
             Self::CommandBuffer { label, status } => {
                 write!(f, "Metal command buffer `{label}` completed with status {status}")
             }
@@ -256,9 +224,6 @@ impl fmt::Display for MetalSupportError {
             Self::BufferAllocationFailed { requested } => {
                 write!(f, "Metal buffer allocation failed for {requested} bytes")
             }
-            Self::BufferAllocation { message } => {
-                write!(f, "Metal buffer allocation dispatch failed: {message}")
-            }
             Self::TextureDescriptorInvalid { reason } => write!(f, "invalid texture: {reason}"),
             Self::TextureAllocationTooLarge { requested, cap } => write!(
                 f,
@@ -273,10 +238,6 @@ impl fmt::Display for MetalSupportError {
                 f,
                 "Metal texture allocation failed for {width}x{height}x{depth}, array length {array_length}"
             ),
-            Self::TextureAllocation { message } => {
-                write!(f, "Metal texture allocation dispatch failed: {message}")
-            }
-            Self::TextureDescriptorUnavailable => f.write_str("Metal texture is unavailable"),
             Self::BufferContentsUnavailable => f.write_str("Metal buffer is not CPU-visible"),
         }
     }

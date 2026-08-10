@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::super::ht_subband::dispatch_zero_u32_buffer_in_encoder;
 use super::{
     classic_batch_uses_plain_fast_path, dispatch_classic_cleanup_batched_in_encoder,
@@ -29,7 +32,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_bands_to_buffer_in_command
         output,
         scratch_buffers,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }
 
@@ -89,7 +92,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_band_groups_to_buffer_in_c
         output,
         scratch_buffers,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }
 
@@ -276,7 +279,7 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&jobs, &segments)
         && runtime
             .classic_cleanup_plain_batched
-            .max_total_threads_per_threadgroup()
+            .maxTotalThreadsPerThreadgroup()
             >= 32;
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, jobs.len())?;
     let (status_check, states_scratch) = dispatch_classic_cleanup_batched_in_encoder(

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::collections::VecDeque;
 
-use metal::{Buffer, Device};
+use crate::metal_types::{Buffer, Device};
 
 use super::MetalBufferPoolDiagnostics;
 
@@ -27,8 +30,7 @@ impl PoolLimits {
     }
 
     fn for_device(device: &Device, retained_buffers: usize) -> Self {
-        let device_limit =
-            usize::try_from(device.max_buffer_length()).map_or(usize::MAX, |bytes| bytes);
+        let device_limit = device.maxBufferLength();
         Self {
             retained_bytes: device_limit.min(DEFAULT_RETAINED_BYTES_PER_POOL),
             retained_buffers,
@@ -61,8 +63,7 @@ pub(crate) struct PooledBuffer {
 
 impl PooledBuffer {
     pub(super) fn new_checked(expected_bytes: usize, buffer: Buffer) -> Result<Self, &'static str> {
-        let actual_bytes = usize::try_from(buffer.length())
-            .map_err(|_| "Metal buffer length does not fit usize")?;
+        let actual_bytes = buffer.length();
         if actual_bytes != expected_bytes {
             return Err("recorded buffer size differs from the Metal allocation length");
         }

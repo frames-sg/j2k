@@ -21,7 +21,7 @@ use j2k_core::Rect;
 use j2k_metal_support::{MetalImageDestination, MetalImageLayout, ResidentMetalImage};
 
 #[cfg(target_os = "macos")]
-use metal::{Buffer, DeviceRef};
+use crate::metal_types::{Buffer, DeviceRef};
 
 use crate::{Error, MetalBackendSession, Surface};
 

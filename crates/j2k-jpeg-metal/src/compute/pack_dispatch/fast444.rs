@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::super::{
     bind_fast_decode_entropy_inputs, checked_entropy_segment_count, core_rect_to_jpeg,
     decode_status_buffer, dispatch_1d_pipeline, entropy_checkpoints_buffer,
@@ -66,7 +68,7 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(&runtime.fast444_region_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.fast444_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -86,7 +88,7 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
         &runtime.fast444_region_decode_pipeline,
         decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
@@ -157,7 +159,7 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -177,7 +179,7 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
         &runtime.fast444_scaled_decode_pipeline,
         decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
@@ -287,7 +289,7 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_region_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -307,7 +309,7 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
         &runtime.fast444_scaled_region_decode_pipeline,
         decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
@@ -373,7 +375,7 @@ pub(in crate::compute) fn encode_fast444_batch_item(
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(&runtime.fast444_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.fast444_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -393,7 +395,7 @@ pub(in crate::compute) fn encode_fast444_batch_item(
         &runtime.fast444_decode_pipeline,
         decode_threads,
     );
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,

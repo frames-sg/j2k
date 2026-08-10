@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::{
+    BlitCommandEncoder, Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CommandQueueRef,
+    ComputeCommandEncoder, ComputePipelineState, Device,
+};
 #[cfg(test)]
 use j2k_core::BackendRequest;
 use j2k_core::{BufferError, PixelFormat, Rect};
@@ -18,13 +23,8 @@ use j2k_metal_support::{
     checked_compute_command_encoder, commit_and_wait, wait_for_completion, MetalPipelineLoader,
     MetalSupportError,
 };
-#[cfg(all(target_os = "macos", test))]
-use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
-use metal::{
-    BlitCommandEncoder, Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CommandQueueRef,
-    ComputeCommandEncoder, ComputePipelineState, Device, MTLPixelFormat, MTLResourceOptions,
-};
+use objc2_metal::{MTLPixelFormat, MTLResourceOptions};
 #[cfg(target_os = "macos")]
 use std::{
     cell::RefCell,
@@ -343,6 +343,14 @@ pub(crate) struct MetalRuntime {
     viewport_plane_cache_gate: Arc<ViewportPlaneCacheGate>,
 }
 
+// SAFETY: Metal devices, queues, and immutable pipeline states support
+// cross-thread use. All mutable host-side caches are protected by mutexes, and
+// each command encoder remains confined to the submission that creates it.
+unsafe impl Send for MetalRuntime {}
+// SAFETY: Shared runtime operations allocate independent command buffers;
+// shared scratch/cache mutation is serialized by the corresponding mutex.
+unsafe impl Sync for MetalRuntime {}
+
 #[cfg(target_os = "macos")]
 impl MetalRuntime {
     #[cfg(test)]
@@ -466,7 +474,7 @@ impl MetalRuntime {
         Ok(self
             .viewport_plane_cache()?
             .as_ref()
-            .map(|cached| cached.plane0.as_ptr() as usize))
+            .map(|cached| objc2::rc::Retained::as_ptr(&cached.plane0).cast::<()>() as usize))
     }
 }
 

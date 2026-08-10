@@ -5,6 +5,10 @@
 //! The crate exposes the same CPU-visible JPEG decode surface as
 //! `j2k-jpeg`, with optional Metal-resident surfaces and batch submission
 //! helpers on macOS. Non-macOS builds return `Error::MetalUnavailable`.
+//!
+//! The 0.9 expert surface uses `objc2-metal` directly. Owned Metal objects are
+//! retained protocol objects and borrowed buffers or textures are
+//! protocol-object references; the former `metal-rs` API is not preserved.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
@@ -22,6 +26,8 @@ mod decoder;
 mod encode;
 mod error;
 mod fast_packets;
+#[cfg(target_os = "macos")]
+mod metal_types;
 mod plan_owner_ledger;
 #[cfg(target_os = "macos")]
 mod resident_batch;
@@ -46,9 +52,6 @@ use j2k_jpeg::{
     DecodeRequest as CpuDecodeRequest, Decoder as CpuDecoder, DecoderContext as CpuDecoderContext,
     ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
-
-#[cfg(target_os = "macos")]
-use metal::Device;
 
 #[cfg(target_os = "macos")]
 pub use codec_batch::{
@@ -867,7 +870,8 @@ pub(crate) fn upload_surface(
         BackendRequest::Auto | BackendRequest::Metal => {
             #[cfg(target_os = "macos")]
             {
-                let device = Device::system_default().ok_or(Error::MetalUnavailable)?;
+                let device = j2k_metal_support::system_default_device()
+                    .map_err(|_| Error::MetalUnavailable)?;
                 let buffer = buffers::new_shared_buffer_with_data(&device, &bytes)?;
                 Surface::from_cpu_staged_metal_buffer(buffer, dimensions, fmt)
             }

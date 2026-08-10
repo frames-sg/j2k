@@ -11,6 +11,7 @@ use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage};
 use j2k_core::SurfaceResidency;
 #[cfg(target_os = "macos")]
 use j2k_metal::{MetalBatchDecoder, MetalDecodeDispatchReport};
+use objc2_metal::MTLDevice as _;
 
 #[cfg(target_os = "macos")]
 use crate::{
@@ -83,7 +84,7 @@ impl MetalIut {
         Ok(PlatformIdentity {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
-            hardware: format!("{} (registry {})", device.name(), device.registry_id()),
+            hardware: format!("{} (registry {})", device.name(), device.registryID()),
             driver: macos_driver_identity()?,
         })
     }

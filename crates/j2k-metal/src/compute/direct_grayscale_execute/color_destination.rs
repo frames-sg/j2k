@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{mem::size_of, sync::Arc};
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use std::sync::Arc;
 
 use j2k::BatchLayout;
 use j2k_metal_support::{dispatch_3d_pipeline, MetalImageDestination};
@@ -90,7 +93,7 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
     } else {
         encoder.encode_individually()
     };
-    compute_encoder.end_encoding();
+    compute_encoder.endEncoding();
     result?;
 
     metadata.record_tier1_dispatches();

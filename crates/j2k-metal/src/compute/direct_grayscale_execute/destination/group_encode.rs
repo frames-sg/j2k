@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{mem::size_of, sync::Arc};
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use std::sync::Arc;
 
 use super::super::{
     encode_prepared_direct_grayscale_plan_into_in_encoder,
@@ -17,8 +20,8 @@ use super::super::destination_index_validation::validate_stacked_grayscale_desti
 
 pub(super) struct GrayscaleGroupEncoder<'a> {
     pub(super) runtime: &'a MetalRuntime,
-    pub(super) command_buffer: &'a metal::CommandBufferRef,
-    pub(super) compute_encoder: &'a metal::ComputeCommandEncoderRef,
+    pub(super) command_buffer: &'a crate::metal_types::CommandBufferRef,
+    pub(super) compute_encoder: &'a crate::metal_types::ComputeCommandEncoderRef,
     pub(super) plans: &'a [Arc<PreparedDirectGrayscalePlan>],
     pub(super) fmt: PixelFormat,
     pub(super) destination: &'a MetalImageDestination,
@@ -131,8 +134,8 @@ impl GrayscaleGroupEncoder<'_> {
 
 fn encode_stacked_grayscale_destination(
     runtime: &MetalRuntime,
-    encoder: &metal::ComputeCommandEncoderRef,
-    plane: &metal::Buffer,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
+    plane: &crate::metal_types::Buffer,
     plan: &PreparedDirectGrayscalePlan,
     fmt: PixelFormat,
     count: usize,
@@ -197,7 +200,7 @@ fn encode_stacked_grayscale_destination(
         }
     };
     encoder.memory_barrier_with_resources(&[plane]);
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(plane), 0);
     // SAFETY: the checked destination owns this exact dense group range until
     // the submitted command buffer has completed.
@@ -208,11 +211,7 @@ fn encode_stacked_grayscale_destination(
             message: "J2K Metal stacked grayscale destination offset exceeds u64".to_string(),
         })?,
     );
-    encoder.set_bytes(
-        2,
-        size_of::<J2kRepeatedGrayStoreParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kRepeatedGrayStoreParams>(2, &params);
     dispatch_3d_pipeline(
         encoder,
         pipeline,

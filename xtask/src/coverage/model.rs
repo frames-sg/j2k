@@ -60,8 +60,6 @@ const fn accelerator_package(
     }
 }
 
-const METAL_VENDOR_PATHS: &[&str] = &["third_party/block-0.1.6-patched/src/lib.rs"];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CoverageLane {
     Host,
@@ -128,7 +126,6 @@ impl CoverageLane {
                 METAL_ACCELERATOR_LANE.owns_path(path)
                     || path.starts_with(ML_METAL_MODULE_PREFIX)
                     || is_shared_accelerator_path(path)
-                    || METAL_VENDOR_PATHS.contains(&path)
             }
             Self::Cuda => {
                 CUDA_ACCELERATOR_LANE.owns_path(path)

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{Buffer, CommandBufferRef};
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
+use crate::metal_types::{Buffer, CommandBufferRef};
 
 use crate::compute::{
     direct_buffers::copied_slice_buffer, direct_commands::new_compute_command_encoder,
@@ -57,6 +60,6 @@ pub(in crate::compute) fn encode_prepared_direct_component_plane_in_command_buff
     let command_buffer = request.command_buffer;
     let encoder = new_compute_command_encoder(command_buffer)?;
     let result = encode_prepared_direct_component_plane_in_encoder(request, &encoder);
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }

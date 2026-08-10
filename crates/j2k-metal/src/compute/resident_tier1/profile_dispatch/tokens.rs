@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 #[cfg(test)]
 use super::super::test_counters;
 use super::super::{
@@ -9,16 +12,12 @@ use super::super::{
     new_compute_command_encoder, new_shared_buffer, size_of, take_recyclable_private_buffer,
     Buffer, CommandBufferRef, Error, J2kClassicEncodeBatchJob, J2kClassicTier1SymbolPlanCounters,
     J2kClassicTier1TokenSegment, J2kResidentClassicTier1GpuTokenBuffers,
-    J2kResidentClassicTier1SplitTokenBuffers, J2kResidentClassicTier1TokenEmitReadback, MTLSize,
+    J2kResidentClassicTier1SplitTokenBuffers, J2kResidentClassicTier1TokenEmitReadback,
     MetalRuntime, CLASSIC_TIER1_MQ_BYTE_TOKEN_ARENA_BYTES, CLASSIC_TIER1_TOKEN_ARENA_BYTES,
     CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
 };
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "profile dispatch keeps Metal bindings and retained buffers in ABI order"
-)]
 pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -83,45 +82,29 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 split token emit");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_split_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_split_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
     encoder.set_buffer(3, Some(&mq_token_buffer), 0);
     encoder.set_buffer(4, Some(&raw_token_buffer), 0);
     encoder.set_buffer(5, Some(&segment_buffer), 0);
-    encoder.set_bytes(
-        6,
-        size_of::<u32>() as u64,
-        (&raw const mq_token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        7,
-        size_of::<u32>() as u64,
-        (&raw const raw_token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        8,
-        size_of::<u32>() as u64,
-        (&raw const token_segment_stride).cast(),
-    );
-    encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(6, &mq_token_stride_bytes);
+    encoder.set_bytes::<u32>(7, &raw_token_stride_bytes);
+    encoder.set_bytes::<u32>(8, &token_segment_stride);
+    encoder.set_bytes::<u32>(9, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_split_token_emit_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(J2kResidentClassicTier1SplitTokenBuffers {
         counter_buffer,
@@ -253,31 +236,19 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
     } else {
         label_compute_encoder(&encoder, "J2K classic Tier-1 split token emit");
     }
-    encoder.set_compute_pipeline_state(emit_pipeline);
+    encoder.setComputePipelineState(emit_pipeline);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
     encoder.set_buffer(3, Some(&mq_token_buffer), 0);
     encoder.set_buffer(4, Some(&raw_token_buffer), 0);
     encoder.set_buffer(5, Some(&segment_buffer), 0);
-    encoder.set_bytes(
-        6,
-        size_of::<u32>() as u64,
-        (&raw const mq_token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        7,
-        size_of::<u32>() as u64,
-        (&raw const raw_token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        8,
-        size_of::<u32>() as u64,
-        (&raw const token_segment_stride).cast(),
-    );
-    encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.set_bytes::<u32>(6, &mq_token_stride_bytes);
+    encoder.set_bytes::<u32>(7, &raw_token_stride_bytes);
+    encoder.set_bytes::<u32>(8, &token_segment_stride);
+    encoder.set_bytes::<u32>(9, &job_count);
     dispatch_1d_pipeline(&encoder, emit_pipeline, u64::from(job_count));
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(J2kResidentClassicTier1SplitTokenBuffers {
         counter_buffer,
@@ -350,39 +321,27 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_for_gpu_pack(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
-    encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.classic_tier1_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
     encoder.set_buffer(3, Some(&token_buffer), 0);
     encoder.set_buffer(4, Some(&segment_buffer), 0);
-    encoder.set_bytes(
-        5,
-        size_of::<u32>() as u64,
-        (&raw const token_stride_bytes).cast(),
-    );
-    encoder.set_bytes(
-        6,
-        size_of::<u32>() as u64,
-        (&raw const token_segment_stride).cast(),
-    );
-    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.set_bytes::<u32>(5, &token_stride_bytes);
+    encoder.set_bytes::<u32>(6, &token_segment_stride);
+    encoder.set_bytes::<u32>(7, &job_count);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .classic_tier1_token_emit_bypass_u16_32
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(J2kResidentClassicTier1GpuTokenBuffers {
         counter_buffer,
@@ -419,7 +378,7 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
         ClassicTier1TokenPackBuffers::Combined(token_buffers) => {
             let pipeline = &runtime.classic_tier1_token_pack_bypass_u16_32;
             label_compute_encoder(&encoder, "J2K classic Tier-1 token pack");
-            encoder.set_compute_pipeline_state(pipeline);
+            encoder.setComputePipelineState(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);
             encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
             encoder.set_buffer(2, Some(&token_buffers.token_buffer), 0);
@@ -427,27 +386,15 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
             encoder.set_buffer(4, Some(tier1_output_buffer), 0);
             encoder.set_buffer(5, Some(tier1_status_buffer), 0);
             encoder.set_buffer(6, Some(tier1_segment_buffer), 0);
-            encoder.set_bytes(
-                7,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.token_stride_bytes).cast(),
-            );
-            encoder.set_bytes(
-                8,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.token_segment_stride).cast(),
-            );
-            encoder.set_bytes(
-                9,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.job_count).cast(),
-            );
+            encoder.set_bytes::<u32>(7, &token_buffers.token_stride_bytes);
+            encoder.set_bytes::<u32>(8, &token_buffers.token_segment_stride);
+            encoder.set_bytes::<u32>(9, &token_buffers.job_count);
             (pipeline, token_buffers.job_count)
         }
         ClassicTier1TokenPackBuffers::Split(token_buffers) => {
             let pipeline = &runtime.classic_tier1_split_token_pack_bypass_u16_32;
             label_compute_encoder(&encoder, "J2K classic Tier-1 split token pack");
-            encoder.set_compute_pipeline_state(pipeline);
+            encoder.setComputePipelineState(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);
             encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
             encoder.set_buffer(2, Some(&token_buffers.mq_token_buffer), 0);
@@ -456,42 +403,18 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
             encoder.set_buffer(5, Some(tier1_output_buffer), 0);
             encoder.set_buffer(6, Some(tier1_status_buffer), 0);
             encoder.set_buffer(7, Some(tier1_segment_buffer), 0);
-            encoder.set_bytes(
-                8,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.mq_token_stride_bytes).cast(),
-            );
-            encoder.set_bytes(
-                9,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.raw_token_stride_bytes).cast(),
-            );
-            encoder.set_bytes(
-                10,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.token_segment_stride).cast(),
-            );
-            encoder.set_bytes(
-                11,
-                size_of::<u32>() as u64,
-                (&raw const token_buffers.job_count).cast(),
-            );
+            encoder.set_bytes::<u32>(8, &token_buffers.mq_token_stride_bytes);
+            encoder.set_bytes::<u32>(9, &token_buffers.raw_token_stride_bytes);
+            encoder.set_bytes::<u32>(10, &token_buffers.token_segment_stride);
+            encoder.set_bytes::<u32>(11, &token_buffers.job_count);
             (pipeline, token_buffers.job_count)
         }
     };
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: pipeline.thread_execution_width().max(1),
-            height: 1,
-            depth: 1,
-        },
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
+        j2k_metal_support::mtl_size(pipeline.threadExecutionWidth().max(1) as u64, 1, 1),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -625,7 +548,7 @@ pub(in crate::compute) fn schedule_classic_tier1_gpu_token_pack_readback(
             segment_byte_len as u64,
         );
     }
-    blit.end_encoding();
+    blit.endEncoding();
 
     Ok(Some(J2kResidentClassicTier1TokenEmitReadback {
         counter_buffer: counter_readback,

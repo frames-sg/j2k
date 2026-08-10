@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use objc2_metal::MTLDevice as _;
 
 #[test]
 fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_ht_batches() {
@@ -11,7 +12,7 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
     let first = Arc::<[u8]>::from(fixture_ht_gray8());
     let second = Arc::<[u8]>::from(fixture_ht_gray8_reversed());
     let mut decoder = MetalBatchDecoder::system_default().expect("persistent Metal decoder");
-    let registry_id = decoder.backend_session().device().registry_id();
+    let registry_id = decoder.backend_session().device().registryID();
 
     let before = decoder.submissions().expect("Metal batch submissions");
     let distinct = decoder
@@ -53,10 +54,7 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
         1,
         "repeated HT inputs must use one batch submission"
     );
-    assert_eq!(
-        decoder.backend_session().device().registry_id(),
-        registry_id
-    );
+    assert_eq!(decoder.backend_session().device().registryID(), registry_id);
 }
 
 #[test]

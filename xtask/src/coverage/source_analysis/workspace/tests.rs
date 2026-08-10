@@ -215,8 +215,6 @@ fn unreachable_source_dispositions_are_narrow_and_syntax_checked() {
     let repository = TestRepository::new();
     for path in [
         "crates/j2k-codec-math/generated/dwt97_constants.rs",
-        "third_party/block-0.1.6-patched/src/lib.rs",
-        "third_party/block-0.1.6-patched/src/test_utils.rs",
         "crates/j2k-test-support/fixtures/htj2k/openjph_batch/generate.rs",
         "xtask/tests/fixtures/clone_audit/fixture.rs",
         "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs",
@@ -234,15 +232,7 @@ fn unreachable_source_dispositions_are_narrow_and_syntax_checked() {
         ),
         Ok(SourceRole::Generated(GENERATED_DWT_DISPOSITION))
     ));
-    assert!(matches!(
-        classify_unreached_source(
-            repository.root(),
-            "third_party/block-0.1.6-patched/src/lib.rs"
-        ),
-        Ok(SourceRole::VendoredReviewed(VENDORED_BLOCK_DISPOSITION))
-    ));
     for path in [
-        "third_party/block-0.1.6-patched/src/test_utils.rs",
         "crates/j2k-test-support/fixtures/htj2k/openjph_batch/generate.rs",
         "xtask/tests/fixtures/clone_audit/fixture.rs",
     ] {

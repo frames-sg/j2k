@@ -3,7 +3,11 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use j2k_core::{Downscale, PixelFormat, Rect};
-use metal::{MTLPixelFormat, MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureRef};
+use objc2_metal::{
+    MTLDevice, MTLPixelFormat, MTLResource, MTLStorageMode, MTLTextureDescriptor, MTLTextureUsage,
+};
+
+use crate::metal_types::{Texture, TextureRef};
 
 #[cfg(test)]
 use super::MetalTextureTile;
@@ -19,6 +23,14 @@ pub struct MetalBatchTextureOutput {
     set: Arc<MetalBatchTextureSet>,
 }
 
+// SAFETY: Metal textures support cross-thread ownership, and every safe decode
+// or access path is serialized by the allocation set's shared mutex. Raw
+// texture access is unsafe and documents the remaining synchronization duty.
+unsafe impl Send for MetalBatchTextureOutput {}
+// SAFETY: Safe shared references expose immutable metadata or lock the shared
+// access gate; no safe API mutates a texture without that serialization.
+unsafe impl Sync for MetalBatchTextureOutput {}
+
 struct MetalBatchTextureSet {
     textures: Vec<Texture>,
     access_gate: Arc<Mutex<()>>,
@@ -26,6 +38,15 @@ struct MetalBatchTextureSet {
     fmt: PixelFormat,
     metal_fmt: MTLPixelFormat,
 }
+
+// SAFETY: Metal textures support cross-thread ownership. Every safe operation
+// that can submit writes or expose readback holds `access_gate`, and raw
+// texture access is unsafe with an explicit external synchronization contract.
+unsafe impl Send for MetalBatchTextureSet {}
+// SAFETY: Shared references expose immutable metadata or texture handles whose
+// safe access is serialized by `access_gate`; no unsynchronized safe mutation
+// is available through this allocation set.
+unsafe impl Sync for MetalBatchTextureSet {}
 
 impl MetalBatchTextureOutput {
     /// Allocate reusable private RGBA8 textures for `tile_capacity` full-size tiles.
@@ -41,18 +62,19 @@ impl MetalBatchTextureOutput {
             });
         }
 
-        let descriptor = j2k_metal_support::checked_texture_descriptor().map_err(|source| {
-            metal_kernel_support_error("JPEG Metal texture descriptor creation", source)
-        })?;
-        descriptor.set_texture_type(MTLTextureType::D2);
-        descriptor.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
-        descriptor.set_width(u64::from(dimensions.0));
-        descriptor.set_height(u64::from(dimensions.1));
-        descriptor.set_depth(1);
-        descriptor.set_mipmap_level_count(1);
-        descriptor.set_sample_count(1);
-        descriptor.set_storage_mode(MTLStorageMode::Private);
-        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        // SAFETY: Dimensions were checked nonzero above, are representable as
+        // `usize` on supported 64-bit macOS, and RGBA8 is valid for a 2D,
+        // single-sample, non-mipmapped descriptor.
+        let descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::RGBA8Unorm,
+                dimensions.0 as usize,
+                dimensions.1 as usize,
+                false,
+            )
+        };
+        descriptor.setStorageMode(MTLStorageMode::Private);
+        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
 
         let pixels = crate::batch_allocation::checked_count_product(
             dimensions.0 as usize,
@@ -64,17 +86,10 @@ impl MetalBatchTextureOutput {
             PixelFormat::Rgba8.bytes_per_pixel(),
             "JPEG Metal batch texture bytes",
         )?;
-        let heap_texture_bytes = usize::try_from(
-            session
-                .device()
-                .heap_texture_size_and_align(&descriptor)
-                .size,
-        )
-        .map_err(|_| j2k_core::BatchInfrastructureError::AllocationTooLarge {
-            what: "JPEG Metal batch texture planned bytes",
-            requested: usize::MAX,
-            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-        })?;
+        let heap_texture_bytes = session
+            .device()
+            .heapTextureSizeAndAlignWithDescriptor(&descriptor)
+            .size;
         let planned_texture_bytes = crate::batch_allocation::checked_count_product(
             tile_bytes.max(heap_texture_bytes),
             tile_capacity,
@@ -93,13 +108,7 @@ impl MetalBatchTextureOutput {
                 .map_err(|source| {
                     metal_kernel_support_error("JPEG Metal batch texture allocation", source)
                 })?;
-            let texture_bytes = usize::try_from(texture.allocated_size()).map_err(|_| {
-                j2k_core::BatchInfrastructureError::AllocationTooLarge {
-                    what: "JPEG Metal batch texture allocated bytes",
-                    requested: usize::MAX,
-                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-                }
-            })?;
+            let texture_bytes = texture.allocatedSize();
             budget.account_capacity::<u8>(texture_bytes)?;
             textures.push(texture);
         }
@@ -208,7 +217,10 @@ impl MetalBatchTextureOutput {
     /// may overlap a safe decode into this output, any clone or subset that
     /// shares its allocation gate, or access through a derived
     /// [`crate::MetalTextureTile`].
-    pub unsafe fn texture(&self, index: usize) -> Option<&TextureRef> {
+    pub unsafe fn texture(
+        &self,
+        index: usize,
+    ) -> Option<&objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>> {
         self.texture_trusted(index)
     }
 

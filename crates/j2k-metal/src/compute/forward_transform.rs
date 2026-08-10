@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::mem::{size_of, size_of_val};
 
 use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
@@ -145,6 +148,24 @@ pub(super) struct J2kForwardDwt97Params {
     pub(super) parity: u32,
     pub(super) coefficient: f32,
     pub(super) _reserved: u32,
+}
+
+const _: [(); 0] = [(); core::mem::offset_of!(J2kForwardDwt97Params, full_width)];
+const _: [(); 4] = [(); core::mem::offset_of!(J2kForwardDwt97Params, current_width)];
+const _: [(); 8] = [(); core::mem::offset_of!(J2kForwardDwt97Params, current_height)];
+const _: [(); 12] = [(); core::mem::offset_of!(J2kForwardDwt97Params, low_width)];
+const _: [(); 16] = [(); core::mem::offset_of!(J2kForwardDwt97Params, low_height)];
+const _: [(); 20] = [(); core::mem::offset_of!(J2kForwardDwt97Params, parity)];
+const _: [(); 24] = [(); core::mem::offset_of!(J2kForwardDwt97Params, coefficient)];
+const _: [(); 28] = [(); core::mem::offset_of!(J2kForwardDwt97Params, _reserved)];
+const _: [(); 32] = [(); core::mem::size_of::<J2kForwardDwt97Params>()];
+
+// SAFETY: The compile-time field walk proves the repr(C) value is exactly
+// eight initialized four-byte scalar fields without internal or tail padding.
+// Every u32/f32 bit pattern is valid and the Metal declaration has the same
+// field order and widths.
+unsafe impl j2k_core::accelerator::GpuAbi for J2kForwardDwt97Params {
+    const NAME: &'static str = "J2kForwardDwt97Params";
 }
 
 #[cfg(target_os = "macos")]
@@ -342,23 +363,19 @@ pub(crate) fn encode_deinterleave_to_f32(
         label_command_buffer(&command_buffer, "j2k encode-stage deinterleave");
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "J2K encode-stage deinterleave");
-        encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
+        encoder.setComputePipelineState(&runtime.lossless_deinterleave_to_planes);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
         encoder.set_buffer(2, Some(&plane_buffers[1]), 0);
         encoder.set_buffer(3, Some(&plane_buffers[2]), 0);
-        encoder.set_bytes(
-            4,
-            size_of::<J2kLosslessDeinterleaveParams>() as u64,
-            (&raw const params).cast(),
-        );
+        encoder.set_bytes::<J2kLosslessDeinterleaveParams>(4, &params);
         encoder.set_buffer(5, Some(&plane_buffers[3]), 0);
         dispatch_2d_pipeline(
             &encoder,
             &runtime.lossless_deinterleave_to_planes,
             (pixel_count, 1),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let planes = plane_buffers
@@ -421,20 +438,16 @@ pub(super) fn dispatch_forward_dwt97_pass(
 ) -> Result<(), Error> {
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, label);
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kForwardDwt97Params>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kForwardDwt97Params>(2, &params);
     dispatch_2d_pipeline(
         &encoder,
         pipeline,
         (params.current_width, params.current_height),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -502,20 +515,16 @@ pub(super) fn dispatch_forward_dwt53_pass(
 ) -> Result<(), Error> {
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, label);
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kForwardDwt53Params>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kForwardDwt53Params>(2, &params);
     dispatch_2d_pipeline(
         &encoder,
         pipeline,
         (params.current_width, params.current_height),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 
@@ -540,18 +549,14 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, label);
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(first_input_buffer), 0);
     encoder.set_buffer(1, Some(second_input_buffer), 0);
     encoder.set_buffer(2, Some(third_input_buffer), 0);
     encoder.set_buffer(3, Some(first_output_buffer), 0);
     encoder.set_buffer(4, Some(second_output_buffer), 0);
     encoder.set_buffer(5, Some(third_output_buffer), 0);
-    encoder.set_bytes(
-        6,
-        size_of::<J2kForwardDwt53BatchedParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kForwardDwt53BatchedParams>(6, &params);
     dispatch_3d_pipeline(
         &encoder,
         pipeline,
@@ -561,7 +566,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
             params.component_count,
         ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     Ok(())
 }
 

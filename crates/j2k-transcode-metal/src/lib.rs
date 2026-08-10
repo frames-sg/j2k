@@ -10,6 +10,10 @@
 //! paths: the default single-job reversible 5/3 and 9/7 thresholds are
 //! `usize::MAX`, so single-tile requests stay on the CPU unless callers opt in
 //! with `with_auto_reversible_min_samples` or `with_auto_dwt97_min_samples`.
+//!
+//! Device-accepting expert constructors use retained `objc2-metal`
+//! `ProtocolObject<dyn MTLDevice>` owners as of 0.9. There is no `metal-rs`
+//! constructor compatibility layer.
 
 #[cfg(target_os = "macos")]
 mod metal;

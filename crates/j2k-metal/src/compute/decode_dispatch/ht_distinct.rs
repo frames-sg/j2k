@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     default_metal_ht_chunk_limits, encode_metal_ht_batches_in_encoder, new_compute_command_encoder,
     new_shared_buffer, Buffer, CommandBufferRef, DirectStatusCheck, Error, HtBatchInput,
@@ -16,14 +19,14 @@ pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_command_buff
     let encoder = new_compute_command_encoder(command_buffer)?;
     let result =
         encode_distinct_ht_sub_bands_to_buffer_in_encoder(runtime, &encoder, sub_bands, output);
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_encoder(
     runtime: &MetalRuntime,
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
     sub_bands: &[&PreparedHtSubBand],
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
@@ -77,14 +80,14 @@ pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_comman
     let encoder = new_compute_command_encoder(command_buffer)?;
     let result =
         encode_distinct_ht_sub_band_groups_to_buffer_in_encoder(runtime, &encoder, groups, output);
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_encoder(
     runtime: &MetalRuntime,
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
     groups: &[&PreparedHtSubBandGroup],
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
@@ -142,7 +145,7 @@ pub(in crate::compute) struct DistinctHtBatch<'a> {
 #[cfg(target_os = "macos")]
 fn encode_distinct_ht_batches_to_buffer_in_encoder<'a>(
     runtime: &MetalRuntime,
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
     batches: impl Iterator<Item = DistinctHtBatch<'a>> + Clone,
     output: &Buffer,
     output_word_count: usize,

@@ -45,7 +45,7 @@ fn bench_device_upload(c: &mut Criterion) {
 fn metal_decode_available() -> bool {
     #[cfg(target_os = "macos")]
     {
-        metal::Device::system_default().is_some()
+        j2k_metal_support::system_default_device().is_ok()
     }
     #[cfg(not(target_os = "macos"))]
     {

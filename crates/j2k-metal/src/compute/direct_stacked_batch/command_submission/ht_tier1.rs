@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::time::Instant;
 
-use metal::Buffer;
+use crate::metal_types::Buffer;
 
 use crate::batch_allocation::{BatchMetadataBudget, BatchMetadataRequest};
 use crate::compute::decode_dispatch::{

@@ -2,16 +2,15 @@
 
 use std::sync::{Arc, OnceLock};
 
-use metal::{
-    foreign_types::{ForeignType, ForeignTypeRef},
-    objc::{runtime::Sel, Message},
-    BlitCommandEncoder, BlitCommandEncoderRef, CommandBuffer, CommandBufferRef, CommandQueue,
-    CommandQueueRef, ComputeCommandEncoder, ComputeCommandEncoderRef, Device, DeviceRef,
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
     MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLComputeCommandEncoder, MTLCreateSystemDefaultDevice, MTLDevice, MTLEvent, MTLSharedEvent,
 };
 
 use crate::{MetalCommandEncoderKind, MetalSupportError};
+
+type DeviceHandle = Retained<ProtocolObject<dyn MTLDevice>>;
 
 /// Return the system default Metal device, or a stable error message.
 ///
@@ -19,15 +18,23 @@ use crate::{MetalCommandEncoderKind, MetalSupportError};
 ///
 /// Returns [`MetalSupportError::MetalUnavailable`] when the host exposes no
 /// default Metal device.
-pub fn system_default_device() -> Result<Device, MetalSupportError> {
-    Device::system_default().ok_or(MetalSupportError::MetalUnavailable)
+pub fn system_default_device() -> Result<DeviceHandle, MetalSupportError> {
+    MTLCreateSystemDefaultDevice().ok_or(MetalSupportError::MetalUnavailable)
 }
 
 /// Shared lazy Metal runtime session used by backend adapter crates.
 pub struct MetalRuntimeSession<R, E> {
-    device: Device,
+    device: DeviceHandle,
     runtime: Arc<OnceLock<Result<R, E>>>,
 }
+
+// SAFETY: Apple Metal device objects support cross-thread use, and this type
+// exposes the lazily initialized runtime only through `OnceLock`. The generic
+// runtime and error must themselves be safe to share and move.
+unsafe impl<R: Send + Sync, E: Send + Sync> Send for MetalRuntimeSession<R, E> {}
+// SAFETY: The same device/`OnceLock` argument applies to shared references;
+// initialization is serialized by `OnceLock` and `R`/`E` are `Sync`.
+unsafe impl<R: Send + Sync, E: Send + Sync> Sync for MetalRuntimeSession<R, E> {}
 
 impl<R, E> Clone for MetalRuntimeSession<R, E> {
     fn clone(&self) -> Self {
@@ -41,7 +48,7 @@ impl<R, E> Clone for MetalRuntimeSession<R, E> {
 impl<R, E> MetalRuntimeSession<R, E> {
     /// Create a session bound to an existing Metal device.
     #[must_use]
-    pub fn new(device: Device) -> Self {
+    pub fn new(device: DeviceHandle) -> Self {
         Self {
             device,
             runtime: Arc::new(OnceLock::new()),
@@ -60,13 +67,13 @@ impl<R, E> MetalRuntimeSession<R, E> {
 
     /// Metal device used by this session.
     #[must_use]
-    pub fn device(&self) -> &DeviceRef {
-        self.device.as_ref()
+    pub fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
+        &self.device
     }
 
     /// Metal device handle used when constructing a crate-specific runtime.
     #[must_use]
-    pub fn device_handle(&self) -> &Device {
+    pub fn device_handle(&self) -> &DeviceHandle {
         &self.device
     }
 
@@ -83,20 +90,11 @@ impl<R, E> MetalRuntimeSession<R, E> {
     }
 
     /// Initialize or reuse the crate-specific runtime for this Metal device.
-    pub fn get_or_init_runtime(&self, init: impl FnOnce(&Device) -> Result<R, E>) -> &Result<R, E> {
+    pub fn get_or_init_runtime(
+        &self,
+        init: impl FnOnce(&DeviceHandle) -> Result<R, E>,
+    ) -> &Result<R, E> {
         self.runtime.get_or_init(|| init(&self.device))
-    }
-}
-
-pub(crate) unsafe fn checked_command_queue_from_retained_ptr(
-    raw: *mut MTLCommandQueue,
-) -> Result<CommandQueue, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::CommandQueueUnavailable)
-    } else {
-        // SAFETY: The caller guarantees that a non-null pointer is a retained
-        // MTLCommandQueue result whose ownership transfers here.
-        Ok(unsafe { CommandQueue::from_ptr(raw) })
     }
 }
 
@@ -104,33 +102,14 @@ pub(crate) unsafe fn checked_command_queue_from_retained_ptr(
 ///
 /// # Errors
 ///
-/// Returns [`MetalSupportError::CommandQueue`] if Objective-C queue creation
-/// fails, or [`MetalSupportError::CommandQueueUnavailable`] for a null queue.
-pub fn checked_command_queue(device: &DeviceRef) -> Result<CommandQueue, MetalSupportError> {
-    // SAFETY: The selector takes no arguments and the retained result is
-    // checked before ownership is transferred to a Rust handle.
-    let queue: *mut MTLCommandQueue = unsafe {
-        device
-            .send_message(Sel::register("newCommandQueue"), ())
-            .map_err(|error| MetalSupportError::CommandQueue {
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: `newCommandQueue` returns either nil or a retained queue pointer.
-    unsafe { checked_command_queue_from_retained_ptr(queue) }
-}
-
-pub(crate) unsafe fn checked_command_buffer_from_autoreleased_ptr(
-    raw: *mut MTLCommandBuffer,
-) -> Result<CommandBuffer, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::CommandBufferUnavailable)
-    } else {
-        // SAFETY: The caller guarantees that a non-null pointer is a valid
-        // autoreleased MTLCommandBuffer. `to_owned` retains it before the
-        // surrounding autorelease pool can drain.
-        Ok(unsafe { CommandBufferRef::from_ptr(raw) }.to_owned())
-    }
+/// Returns [`MetalSupportError::CommandQueueUnavailable`] when Metal returns
+/// no command queue for the selected device.
+pub fn checked_command_queue(
+    device: &ProtocolObject<dyn MTLDevice>,
+) -> Result<Retained<ProtocolObject<dyn MTLCommandQueue>>, MetalSupportError> {
+    device
+        .newCommandQueue()
+        .ok_or(MetalSupportError::CommandQueueUnavailable)
 }
 
 /// Create a command buffer and reject a null Objective-C result.
@@ -139,33 +118,14 @@ pub(crate) unsafe fn checked_command_buffer_from_autoreleased_ptr(
 ///
 /// Returns a typed construction error when Objective-C dispatch fails or Metal
 /// returns nil.
-pub fn checked_command_buffer(queue: &CommandQueueRef) -> Result<CommandBuffer, MetalSupportError> {
-    // SAFETY: The selector takes no arguments and returns an autoreleased
-    // MTLCommandBuffer. The raw result is checked before creating a reference.
-    let raw: *mut MTLCommandBuffer = unsafe {
-        queue
-            .send_message(Sel::register("commandBuffer"), ())
-            .map_err(|error| MetalSupportError::CommandBufferCreation {
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: `commandBuffer` returns either nil or a valid autoreleased object;
-    // the helper retains it before returning an owned Rust handle.
-    unsafe { checked_command_buffer_from_autoreleased_ptr(raw) }
-}
-
-pub(crate) unsafe fn checked_compute_encoder_from_autoreleased_ptr(
-    raw: *mut MTLComputeCommandEncoder,
-) -> Result<ComputeCommandEncoder, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::CommandEncoderUnavailable {
-            kind: MetalCommandEncoderKind::Compute,
-        })
-    } else {
-        // SAFETY: The caller guarantees that a non-null pointer is a valid
-        // autoreleased MTLComputeCommandEncoder. `to_owned` retains it.
-        Ok(unsafe { ComputeCommandEncoderRef::from_ptr(raw) }.to_owned())
-    }
+pub fn checked_command_buffer(
+    queue: &ProtocolObject<dyn MTLCommandQueue>,
+) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, MetalSupportError> {
+    // `commandBuffer` is the retaining variant. objc2 retains the autoreleased
+    // result before returning it, so it remains valid after a pool drains.
+    queue
+        .commandBuffer()
+        .ok_or(MetalSupportError::CommandBufferUnavailable)
 }
 
 /// Create a compute command encoder and reject a null Objective-C result.
@@ -175,35 +135,13 @@ pub(crate) unsafe fn checked_compute_encoder_from_autoreleased_ptr(
 /// Returns a typed construction error when Objective-C dispatch fails or Metal
 /// returns nil.
 pub fn checked_compute_command_encoder(
-    command_buffer: &CommandBufferRef,
-) -> Result<ComputeCommandEncoder, MetalSupportError> {
-    // SAFETY: The selector takes no arguments and returns an autoreleased
-    // MTLComputeCommandEncoder. The raw result is checked before borrowing it.
-    let raw: *mut MTLComputeCommandEncoder = unsafe {
-        command_buffer
-            .send_message(Sel::register("computeCommandEncoder"), ())
-            .map_err(|error| MetalSupportError::CommandEncoderCreation {
-                kind: MetalCommandEncoderKind::Compute,
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: `computeCommandEncoder` returns either nil or a valid
-    // autoreleased object; the helper retains it before returning ownership.
-    unsafe { checked_compute_encoder_from_autoreleased_ptr(raw) }
-}
-
-pub(crate) unsafe fn checked_blit_encoder_from_autoreleased_ptr(
-    raw: *mut MTLBlitCommandEncoder,
-) -> Result<BlitCommandEncoder, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::CommandEncoderUnavailable {
-            kind: MetalCommandEncoderKind::Blit,
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>, MetalSupportError> {
+    command_buffer
+        .computeCommandEncoder()
+        .ok_or(MetalSupportError::CommandEncoderUnavailable {
+            kind: MetalCommandEncoderKind::Compute,
         })
-    } else {
-        // SAFETY: The caller guarantees that a non-null pointer is a valid
-        // autoreleased MTLBlitCommandEncoder. `to_owned` retains it.
-        Ok(unsafe { BlitCommandEncoderRef::from_ptr(raw) }.to_owned())
-    }
 }
 
 /// Create a blit command encoder and reject a null Objective-C result.
@@ -213,21 +151,39 @@ pub(crate) unsafe fn checked_blit_encoder_from_autoreleased_ptr(
 /// Returns a typed construction error when Objective-C dispatch fails or Metal
 /// returns nil.
 pub fn checked_blit_command_encoder(
-    command_buffer: &CommandBufferRef,
-) -> Result<BlitCommandEncoder, MetalSupportError> {
-    // SAFETY: The selector takes no arguments and returns an autoreleased
-    // MTLBlitCommandEncoder. The raw result is checked before borrowing it.
-    let raw: *mut MTLBlitCommandEncoder = unsafe {
-        command_buffer
-            .send_message(Sel::register("blitCommandEncoder"), ())
-            .map_err(|error| MetalSupportError::CommandEncoderCreation {
-                kind: MetalCommandEncoderKind::Blit,
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: `blitCommandEncoder` returns either nil or a valid autoreleased
-    // object; the helper retains it before returning ownership.
-    unsafe { checked_blit_encoder_from_autoreleased_ptr(raw) }
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>, MetalSupportError> {
+    command_buffer
+        .blitCommandEncoder()
+        .ok_or(MetalSupportError::CommandEncoderUnavailable {
+            kind: MetalCommandEncoderKind::Blit,
+        })
+}
+
+/// Create a single-device event and reject a nil Objective-C result.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::EventUnavailable`] when Metal cannot create
+/// the event.
+pub fn checked_event(
+    device: &ProtocolObject<dyn MTLDevice>,
+) -> Result<Retained<ProtocolObject<dyn MTLEvent>>, MetalSupportError> {
+    device.newEvent().ok_or(MetalSupportError::EventUnavailable)
+}
+
+/// Create a shared event and reject a nil Objective-C result.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::SharedEventUnavailable`] when Metal cannot
+/// create the event.
+pub fn checked_shared_event(
+    device: &ProtocolObject<dyn MTLDevice>,
+) -> Result<Retained<ProtocolObject<dyn MTLSharedEvent>>, MetalSupportError> {
+    device
+        .newSharedEvent()
+        .ok_or(MetalSupportError::SharedEventUnavailable)
 }
 
 /// Commit a command buffer, wait for completion, and surface failed completion.
@@ -236,7 +192,9 @@ pub fn checked_blit_command_encoder(
 ///
 /// Returns [`MetalSupportError::CommandBuffer`] when Metal does not report a
 /// successful final status.
-pub fn commit_and_wait(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
+pub fn commit_and_wait(
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<(), MetalSupportError> {
     command_buffer.commit();
     wait_for_completion(command_buffer)
 }
@@ -247,8 +205,10 @@ pub fn commit_and_wait(command_buffer: &CommandBufferRef) -> Result<(), MetalSup
 ///
 /// Returns [`MetalSupportError::CommandBuffer`] when Metal does not report a
 /// successful final status.
-pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
-    command_buffer.wait_until_completed();
+pub fn wait_for_completion(
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<(), MetalSupportError> {
+    command_buffer.waitUntilCompleted();
     ensure_completed(command_buffer)
 }
 
@@ -264,11 +224,12 @@ pub(crate) const fn classify_command_buffer_status(
 ) -> CommandBufferCompletion {
     match status {
         MTLCommandBufferStatus::Completed => CommandBufferCompletion::Completed,
-        MTLCommandBufferStatus::Error => CommandBufferCompletion::Failed,
         MTLCommandBufferStatus::NotEnqueued
         | MTLCommandBufferStatus::Enqueued
         | MTLCommandBufferStatus::Committed
         | MTLCommandBufferStatus::Scheduled => CommandBufferCompletion::Incomplete,
+        // `Error` and any future status value fail closed.
+        _ => CommandBufferCompletion::Failed,
     }
 }
 
@@ -278,7 +239,9 @@ pub(crate) const fn classify_command_buffer_status(
 ///
 /// Returns [`MetalSupportError::CommandBuffer`] unless the final status is
 /// [`MTLCommandBufferStatus::Completed`].
-pub fn ensure_completed(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
+pub fn ensure_completed(
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<(), MetalSupportError> {
     let status = command_buffer.status();
     match classify_command_buffer_status(status) {
         CommandBufferCompletion::Completed => Ok(()),

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::super::{
     checked_metal_surface_len, decode_region_scaled_to_surface, j2k_pack_kernel_name_for,
     j2k_pack_scale_arrays, output_shape_for, reset_shared_buffer_pool_misses_for_test,
@@ -10,7 +11,6 @@ use j2k_core::PixelFormat;
 use j2k_native::{
     encode_htj2k, ColorSpace as NativeColorSpace, DecodeSettings, EncodeOptions, Image,
 };
-use metal::{foreign_types::ForeignType, Device};
 
 pub(super) fn should_run_metal_runtime() -> bool {
     j2k_test_support::metal_runtime_gate(module_path!())
@@ -86,16 +86,17 @@ fn with_runtime_for_device_scopes_runtime_to_requested_device() {
         return;
     }
 
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
 
-    let runtime_device =
-        with_runtime_for_device(&device, |runtime| Ok(runtime.device.as_ptr() as usize))
-            .expect("Metal runtime");
+    let runtime_device = with_runtime_for_device(&device, |runtime| {
+        Ok(objc2::rc::Retained::as_ptr(&runtime.device).addr())
+    })
+    .expect("Metal runtime");
 
-    assert_eq!(runtime_device, device.as_ptr() as usize);
+    assert_eq!(runtime_device, objc2::rc::Retained::as_ptr(&device).addr());
 }
 
 #[test]
@@ -104,7 +105,7 @@ fn runtime_reuses_recycled_shared_buffers() -> Result<(), crate::Error> {
         return Ok(());
     }
 
-    let Some(device) = Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return Ok(());
     };

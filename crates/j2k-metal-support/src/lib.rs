@@ -2,6 +2,12 @@
 
 //! Shared Metal runtime, allocation, access, and dispatch helpers for J2K
 //! adapter crates.
+//!
+//! As of 0.9, this crate is the ownership and runtime boundary for every J2K
+//! Metal adapter. Owned Objective-C protocol objects use
+//! `Retained<ProtocolObject<dyn MTL...>>`; borrowed expert API values use
+//! `&ProtocolObject<dyn MTL...>`. No `metal-rs` compatibility surface is
+//! provided.
 
 #![warn(unreachable_pub)]
 mod error;
@@ -33,7 +39,7 @@ mod runtime;
 pub use allocation::{
     checked_private_buffer, checked_private_buffer_for_len, checked_shared_buffer,
     checked_shared_buffer_for_len, checked_shared_buffer_with_bytes,
-    checked_shared_buffer_with_slice, checked_texture, checked_texture_descriptor,
+    checked_shared_buffer_with_slice, checked_texture,
 };
 #[cfg(target_os = "macos")]
 pub use buffer_access::{
@@ -53,8 +59,8 @@ pub use resident::{
 #[cfg(target_os = "macos")]
 pub use runtime::{
     checked_blit_command_encoder, checked_command_buffer, checked_command_queue,
-    checked_compute_command_encoder, commit_and_wait, ensure_completed, system_default_device,
-    wait_for_completion, MetalRuntimeSession,
+    checked_compute_command_encoder, checked_event, checked_shared_event, commit_and_wait,
+    ensure_completed, system_default_device, wait_for_completion, MetalRuntimeSession,
 };
 
 #[cfg(all(test, target_os = "macos"))]

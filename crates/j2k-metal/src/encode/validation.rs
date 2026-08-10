@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use j2k::J2kLosslessSamples;
 use j2k_core::PixelFormat;
 
@@ -75,10 +77,7 @@ pub(super) fn validate_metal_encode_tile(
         .ok_or_else(|| crate::Error::MetalKernel {
             message: "J2K Metal encode input byte range overflow".to_string(),
         })?;
-    let buffer_len =
-        usize::try_from(tile.buffer.length()).map_err(|_| crate::Error::MetalKernel {
-            message: "J2K Metal encode buffer length exceeds usize".to_string(),
-        })?;
+    let buffer_len = tile.buffer.length();
     if required_end > buffer_len {
         return Err(crate::Error::MetalKernel {
             message: format!(

@@ -35,12 +35,12 @@ use super::{
     new_blit_command_encoder, new_compute_command_encoder, new_private_buffer, new_shared_buffer,
     pack_j2k_code_block_scalar_from_tier1_tokens, record_completed_resident_encode_gpu_stages,
     recycle_private_buffers, recycle_shared_buffers, take_recyclable_private_buffer,
-    wait_for_completion_metal, Buffer, CommandBuffer, CommandBufferRef, ComputePipelineState,
-    EncodeProgressionOrder, Error, IntoParallelIterator, J2kClassicEncodePipelineKind,
-    J2kPacketizationPacketDescriptor, J2kPendingResidentLosslessCodestream,
-    J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentLosslessCodestream, J2kResidentLosslessCodestreamBatchResult, J2kTier1TokenSegment,
-    MTLSize, MetalRuntime, ParallelIterator,
+    wait_for_completion_metal, Buffer, BufferRef, CommandBuffer, CommandBufferRef,
+    ComputePipelineState, EncodeProgressionOrder, Error, IntoParallelIterator,
+    J2kClassicEncodePipelineKind, J2kPacketizationPacketDescriptor,
+    J2kPendingResidentLosslessCodestream, J2kResidentEncodeGpuStageCommandBuffer,
+    J2kResidentEncodeStageStats, J2kResidentLosslessCodestream,
+    J2kResidentLosslessCodestreamBatchResult, J2kTier1TokenSegment, MetalRuntime, ParallelIterator,
 };
 
 mod counter_validation;

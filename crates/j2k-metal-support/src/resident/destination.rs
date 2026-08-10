@@ -3,7 +3,8 @@
 use std::fmt;
 
 use j2k_core::PixelFormat;
-use metal::{Buffer, DeviceRef};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{MTLBuffer, MTLDevice, MTLResource};
 
 use super::{buffer_len, validate_bounds, validate_registry_id};
 use crate::MetalSupportError;
@@ -31,11 +32,19 @@ const METAL_BUFFER_OFFSET_ALIGNMENT: usize = 4;
 /// framework holding another `MTLBuffer` reference will honor exclusive GPU
 /// write access to the selected subrange.
 pub struct MetalImageDestination {
-    buffer: Buffer,
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     device_registry_id: u64,
     buffer_len: usize,
     layout: MetalImageLayout,
 }
+
+// SAFETY: The destination owns a retained Metal resource and only exposes safe
+// immutable metadata. Moving it preserves the constructor's exclusive-access
+// contract, while raw binding remains an unsafe operation for the caller.
+unsafe impl Send for MetalImageDestination {}
+// SAFETY: Shared references cannot safely mutate the resource; callers must
+// cross the documented unsafe raw-buffer boundary and synchronize any access.
+unsafe impl Sync for MetalImageDestination {}
 
 impl fmt::Debug for MetalImageDestination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -66,10 +75,10 @@ impl MetalImageDestination {
     /// Returns a typed bounds or alignment error when the image subrange cannot
     /// be safely bound as a Metal kernel destination.
     pub unsafe fn from_exclusive_buffer(
-        buffer: Buffer,
+        buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
         layout: MetalImageLayout,
     ) -> Result<Self, MetalSupportError> {
-        let buffer_len = buffer_len(&buffer)?;
+        let buffer_len = buffer_len(&buffer);
         validate_bounds(layout, buffer_len)?;
         if !layout
             .byte_offset()
@@ -81,7 +90,7 @@ impl MetalImageDestination {
             });
         }
         Ok(Self {
-            device_registry_id: buffer.device().registry_id(),
+            device_registry_id: buffer.device().registryID(),
             buffer,
             buffer_len,
             layout,
@@ -112,8 +121,11 @@ impl MetalImageDestination {
     ///
     /// Returns [`MetalSupportError::MetalImageDeviceMismatch`] when the
     /// destination allocation belongs to another Metal device.
-    pub fn validate_device(&self, device: &DeviceRef) -> Result<(), MetalSupportError> {
-        validate_registry_id(self.device_registry_id, device.registry_id())
+    pub fn validate_device(
+        &self,
+        device: &ProtocolObject<dyn MTLDevice>,
+    ) -> Result<(), MetalSupportError> {
+        validate_registry_id(self.device_registry_id, device.registryID())
     }
 
     /// Validate the dimensions and pixel format expected by a decoder store.
@@ -169,7 +181,7 @@ impl MetalImageDestination {
     /// under the exclusive-access and completion guarantees established by the
     /// constructor. It must not escape the audited backend operation.
     #[must_use]
-    pub unsafe fn raw_buffer(&self) -> &Buffer {
+    pub unsafe fn raw_buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
 }

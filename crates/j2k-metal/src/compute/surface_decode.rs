@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::Device;
+#[cfg(target_os = "macos")]
 use j2k_core::{PixelFormat, Rect};
 use j2k_native::{
     ColorSpace as NativeColorSpace, DecodeSettings as NativeDecodeSettings,
     DecodedComponents as NativeDecodedComponents, DecoderContext as NativeDecoderContext,
     Image as NativeImage,
 };
-use metal::Device;
 
 use super::{
     with_runtime, with_runtime_for_device, MetalCodeBlockDecoder, MetalRuntime, PlaneStage,

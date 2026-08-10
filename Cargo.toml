@@ -27,12 +27,8 @@ members = [
     "crates/j2k-cli",
     "xtask",
 ]
-exclude = [
-    "third_party/block-0.1.6-patched",
-]
-
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition      = "2021"
 rust-version = "1.96"
 license      = "MIT OR Apache-2.0"
@@ -50,7 +46,34 @@ tar = "0.4"
 zstd = { version = "0.13" }
 weezl = { version = "0.1.12" }
 libloading = "0.9"
-metal  = "0.33"
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSError",
+    "NSRange",
+    "NSString",
+    "NSURL",
+] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "MTLAllocation",
+    "MTLBlitCommandEncoder",
+    "MTLBuffer",
+    "MTLCaptureManager",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLComputeCommandEncoder",
+    "MTLComputePipeline",
+    "MTLDevice",
+    "MTLEvent",
+    "MTLLibrary",
+    "MTLPixelFormat",
+    "MTLResource",
+    "MTLTexture",
+    "MTLTypes",
+] }
 rayon  = "1"
 cc     = "1.2"
 libc   = "0.2"
@@ -83,12 +106,6 @@ burn-cubecl = { version = "0.21.0", default-features = false, features = ["fusio
 burn-fusion = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-ir = { version = "0.21.0", default-features = false, features = ["std"] }
 
-[patch.crates-io]
-# `metal 0.33.0` still depends on `block 0.1.6`. The crates.io copy declares
-# `_NSConcreteStackBlock` with an uninhabited opaque enum, which is a future
-# Rust hard error. Keep this patch minimal and remove it when `metal` publishes
-# a fixed dependency path.
-block = { path = "third_party/block-0.1.6-patched" }
 # Shared strict-lint policy for safe crates. Crates with genuinely different
 # needs (SIMD/FFI crates that use `unsafe`, crates with documented temporary
 # allow lists) keep their own [lints] tables until later cleanup phases

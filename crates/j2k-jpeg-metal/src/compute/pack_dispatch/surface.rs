@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
 use crate::buffers::new_shared_buffer;
 
@@ -77,18 +77,14 @@ pub(in crate::compute) fn encode_jpeg_pack_to_surface_in_command_buffer(
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
-    encoder.set_buffer(0, Some(plane0), 0);
-    encoder.set_buffer(1, plane1.map(std::convert::AsRef::as_ref), 0);
-    encoder.set_buffer(2, plane2.map(std::convert::AsRef::as_ref), 0);
-    encoder.set_buffer(3, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        4,
-        size_of::<JpegPackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.setComputePipelineState(&runtime.pack_pipeline);
+    encoder.bind_buffer(0, Some(plane0), 0);
+    encoder.bind_buffer(1, plane1.map(std::convert::AsRef::as_ref), 0);
+    encoder.bind_buffer(2, plane2.map(std::convert::AsRef::as_ref), 0);
+    encoder.bind_buffer(3, Some(&out_buffer), 0);
+    encoder.bind_bytes::<JpegPackParams>(4, &params);
     dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, dims);
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Surface::from_metal_buffer(out_buffer, dims, fmt)
 }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use std::mem::size_of;
 
-use metal::Buffer;
+use crate::metal_types::Buffer;
 
 use crate::compute::direct_grayscale_execute::extend_preallocated_retained_buffers;
 

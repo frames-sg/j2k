@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use core::mem::size_of;
 use std::sync::Arc;
-
-use j2k_native::{DecodeSettings, DecoderContext, EncodeOptions, Image};
-use metal::foreign_types::ForeignType;
 
 use super::super::{
     default_metal_ht_chunk_limits, encode_metal_ht_batches_in_encoder,
@@ -16,6 +16,7 @@ use crate::compute::{
     prepare_direct_grayscale_plan, validate_direct_status, wait_for_completion_metal,
     DirectStatusCheck, MetalRuntime, PreparedHtExecutionOwner,
 };
+use j2k_native::{DecodeSettings, DecoderContext, EncodeOptions, Image};
 
 #[test]
 fn completed_ht_status_storage_returns_to_the_shared_pool() {
@@ -68,7 +69,7 @@ fn completed_ht_status_storage_returns_to_the_shared_pool() {
             default_metal_ht_chunk_limits(),
         )
         .expect("status-pool encode");
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer).expect("status-pool completion");
         validate_direct_status(&runtime, status).expect("status-pool validation");
         drop(retained);
@@ -131,7 +132,7 @@ fn reused_ht_status_storage_is_overwritten_by_every_dispatched_job() {
         default_metal_ht_chunk_limits(),
     )
     .expect("invalid status encode");
-    invalid_encoder.end_encoding();
+    invalid_encoder.endEncoding();
     commit_and_wait_metal(&invalid_command).expect("invalid status completion");
     let DirectStatusCheck::Ht {
         buffer: invalid_status_buffer,
@@ -140,7 +141,7 @@ fn reused_ht_status_storage_is_overwritten_by_every_dispatched_job() {
     else {
         panic!("invalid distinct submission must retain HT status")
     };
-    let invalid_status_ptr = invalid_status_buffer.as_ptr();
+    let invalid_status_ptr = objc2::rc::Retained::as_ptr(invalid_status_buffer);
     assert!(
         validate_direct_status(&runtime, invalid_status).is_err(),
         "invalid first submission must seed every status slot with a failure"
@@ -166,7 +167,7 @@ fn reused_ht_status_storage_is_overwritten_by_every_dispatched_job() {
         default_metal_ht_chunk_limits(),
     )
     .expect("valid status encode");
-    valid_encoder.end_encoding();
+    valid_encoder.endEncoding();
     commit_and_wait_metal(&valid_command).expect("valid status completion");
     let DirectStatusCheck::Ht {
         buffer: valid_status_buffer,
@@ -176,7 +177,7 @@ fn reused_ht_status_storage_is_overwritten_by_every_dispatched_job() {
         panic!("valid distinct submission must retain HT status")
     };
     assert_eq!(
-        valid_status_buffer.as_ptr(),
+        objc2::rc::Retained::as_ptr(valid_status_buffer),
         invalid_status_ptr,
         "valid distinct dispatch must overwrite the recycled failure-status allocation"
     );
@@ -244,7 +245,7 @@ fn reused_repeated_ht_status_storage_is_overwritten_by_every_dispatched_job() {
     else {
         panic!("invalid repeated submission must retain HT status")
     };
-    let invalid_status_ptr = invalid_status_buffer.as_ptr();
+    let invalid_status_ptr = objc2::rc::Retained::as_ptr(invalid_status_buffer);
     assert!(
         validate_direct_status(&runtime, invalid_status).is_err(),
         "invalid repeated submission must seed every status slot with a failure"
@@ -278,7 +279,7 @@ fn reused_repeated_ht_status_storage_is_overwritten_by_every_dispatched_job() {
         panic!("valid repeated submission must retain HT status")
     };
     assert_eq!(
-        valid_status_buffer.as_ptr(),
+        objc2::rc::Retained::as_ptr(valid_status_buffer),
         invalid_status_ptr,
         "valid repeated dispatch must overwrite the recycled failure-status allocation"
     );
@@ -343,7 +344,7 @@ fn overlapping_prepared_ht_submissions_keep_distinct_status_owners() {
         default_metal_ht_chunk_limits(),
     )
     .expect("first overlapping encode");
-    first_encoder.end_encoding();
+    first_encoder.endEncoding();
     first_command.commit();
 
     let second_output =
@@ -361,7 +362,7 @@ fn overlapping_prepared_ht_submissions_keep_distinct_status_owners() {
         default_metal_ht_chunk_limits(),
     )
     .expect("second overlapping encode");
-    second_encoder.end_encoding();
+    second_encoder.endEncoding();
     second_command.commit();
 
     let DirectStatusCheck::Ht {
@@ -379,8 +380,8 @@ fn overlapping_prepared_ht_submissions_keep_distinct_status_owners() {
         panic!("second prepared HT submission must retain HT status")
     };
     assert_ne!(
-        first_buffer.as_ptr(),
-        second_buffer.as_ptr(),
+        objc2::rc::Retained::as_ptr(first_buffer),
+        objc2::rc::Retained::as_ptr(second_buffer),
         "overlapping submissions must not alias in-flight status storage"
     );
 

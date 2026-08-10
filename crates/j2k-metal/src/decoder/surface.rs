@@ -66,7 +66,7 @@ pub(super) fn upload_surface_to_metal_with_device(
     bytes: &[u8],
     dimensions: (u32, u32),
     fmt: PixelFormat,
-    device: &metal::DeviceRef,
+    device: &crate::metal_types::DeviceRef,
 ) -> Result<Surface, Error> {
     let buffer =
         j2k_metal_support::checked_shared_buffer_with_bytes(device, bytes).map_err(|source| {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::Buffer;
+use crate::metal_types::Buffer;
 
 use crate::{buffer_pool::PooledBuffer, Error, MetalDirectFallbackReason};
 

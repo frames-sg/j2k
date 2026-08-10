@@ -1,34 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{accelerator::GpuAbi, DEFAULT_MAX_HOST_ALLOCATION_BYTES};
-use metal::{
-    foreign_types::{ForeignType, ForeignTypeRef},
-    objc::{
-        runtime::{Class, Sel},
-        Message,
-    },
-    Buffer, DeviceRef, MTLBuffer, MTLResourceOptions, MTLTexture, MTLTextureDescriptor, Texture,
-    TextureDescriptor, TextureDescriptorRef,
-};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions, MTLTexture, MTLTextureDescriptor};
 
 use crate::MetalSupportError;
 
 pub(crate) fn checked_buffer_allocation_length(
     requested: usize,
-    max_buffer_length: u64,
-) -> Result<u64, MetalSupportError> {
-    let cap = usize::try_from(max_buffer_length)
-        .unwrap_or(usize::MAX)
-        .min(DEFAULT_MAX_HOST_ALLOCATION_BYTES);
+    max_buffer_length: usize,
+) -> Result<usize, MetalSupportError> {
+    let cap = max_buffer_length.min(DEFAULT_MAX_HOST_ALLOCATION_BYTES);
     if requested > cap {
         return Err(MetalSupportError::BufferAllocationTooLarge { requested, cap });
     }
-    u64::try_from(requested)
-        .map_err(|_| MetalSupportError::BufferAllocationTooLarge { requested, cap })
+    Ok(requested)
 }
 
 fn checked_typed_buffer_bytes<T: GpuAbi>(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     len: usize,
 ) -> Result<usize, MetalSupportError> {
     let element_size = core::mem::size_of::<T>();
@@ -38,75 +28,45 @@ fn checked_typed_buffer_bytes<T: GpuAbi>(
     len.checked_mul(element_size)
         .ok_or(MetalSupportError::BufferAllocationTooLarge {
             requested: usize::MAX,
-            cap: usize::try_from(device.max_buffer_length())
-                .unwrap_or(usize::MAX)
+            cap: device
+                .maxBufferLength()
                 .min(DEFAULT_MAX_HOST_ALLOCATION_BYTES),
         })
 }
 
-pub(crate) unsafe fn checked_buffer_from_retained_ptr(
-    raw: *mut MTLBuffer,
-    requested: usize,
-) -> Result<Buffer, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::BufferAllocationFailed { requested })
-    } else {
-        // SAFETY: The caller guarantees that a non-null pointer is a retained
-        // MTLBuffer result whose ownership transfers to this wrapper.
-        Ok(unsafe { Buffer::from_ptr(raw) })
-    }
-}
-
 fn allocate_buffer(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: usize,
     options: MTLResourceOptions,
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     let requested = bytes.max(1);
-    let length = checked_buffer_allocation_length(requested, device.max_buffer_length())?;
-    // SAFETY: The selector and argument ABI match MTLDevice's
-    // newBufferWithLength:options:. The retained result is checked for nil.
-    let raw: *mut MTLBuffer = unsafe {
-        device
-            .send_message(
-                Sel::register("newBufferWithLength:options:"),
-                (length, options.bits()),
-            )
-            .map_err(|error| MetalSupportError::BufferAllocation {
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: The selector returns either nil or a retained MTLBuffer.
-    unsafe { checked_buffer_from_retained_ptr(raw, requested) }
+    let length = checked_buffer_allocation_length(requested, device.maxBufferLength())?;
+    device
+        .newBufferWithLength_options(length, options)
+        .ok_or(MetalSupportError::BufferAllocationFailed { requested })
 }
 
 fn allocate_shared_buffer_with_bytes(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: &[u8],
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     if bytes.is_empty() {
         return allocate_buffer(device, 1, MTLResourceOptions::StorageModeShared);
     }
     let requested = bytes.len();
-    let length = checked_buffer_allocation_length(requested, device.max_buffer_length())?;
-    // SAFETY: The non-empty slice remains live for the synchronous copy. The
-    // selector ABI is exact, and the retained result is checked before wrap.
-    let raw: *mut MTLBuffer = unsafe {
-        device
-            .send_message(
-                Sel::register("newBufferWithBytes:length:options:"),
-                (
-                    bytes.as_ptr().cast::<core::ffi::c_void>(),
-                    length,
-                    MTLResourceOptions::StorageModeShared.bits(),
-                ),
-            )
-            .map_err(|error| MetalSupportError::BufferAllocation {
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: The selector returns either nil or a retained MTLBuffer.
-    unsafe { checked_buffer_from_retained_ptr(raw, requested) }
+    let length = checked_buffer_allocation_length(requested, device.maxBufferLength())?;
+    let pointer = core::ptr::NonNull::new(bytes.as_ptr().cast_mut().cast::<core::ffi::c_void>())
+        .expect("a non-empty slice has a non-null data pointer");
+    // SAFETY: `pointer` addresses exactly `length == bytes.len()` initialized
+    // bytes, and Metal copies them synchronously before this call returns.
+    unsafe {
+        device.newBufferWithBytes_length_options(
+            pointer,
+            length,
+            MTLResourceOptions::StorageModeShared,
+        )
+    }
+    .ok_or(MetalSupportError::BufferAllocationFailed { requested })
 }
 
 /// Allocate a shared Metal buffer while checking limits and a nil result.
@@ -117,9 +77,9 @@ fn allocate_shared_buffer_with_bytes(
 ///
 /// Returns a typed allocation error for limit, dispatch, or nil failures.
 pub fn checked_shared_buffer(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: usize,
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     allocate_buffer(device, bytes, MTLResourceOptions::StorageModeShared)
 }
 
@@ -131,9 +91,9 @@ pub fn checked_shared_buffer(
 ///
 /// Returns a typed allocation error for limit, dispatch, or nil failures.
 pub fn checked_private_buffer(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: usize,
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     allocate_buffer(device, bytes, MTLResourceOptions::StorageModePrivate)
 }
 
@@ -143,9 +103,9 @@ pub fn checked_private_buffer(
 ///
 /// Returns a typed allocation error for limit, dispatch, or nil failures.
 pub fn checked_shared_buffer_with_bytes(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: &[u8],
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     allocate_shared_buffer_with_bytes(device, bytes)
 }
 
@@ -155,9 +115,9 @@ pub fn checked_shared_buffer_with_bytes(
 ///
 /// Returns a typed ABI or allocation error.
 pub fn checked_shared_buffer_with_slice<T: GpuAbi>(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     values: &[T],
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     checked_typed_buffer_bytes::<T>(device, values.len())?;
     allocate_shared_buffer_with_bytes(device, T::slice_as_bytes(values))
 }
@@ -168,9 +128,9 @@ pub fn checked_shared_buffer_with_slice<T: GpuAbi>(
 ///
 /// Returns a typed ABI or allocation error.
 pub fn checked_shared_buffer_for_len<T: GpuAbi>(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     len: usize,
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     let bytes = checked_typed_buffer_bytes::<T>(device, len)?;
     checked_shared_buffer(device, bytes)
 }
@@ -181,82 +141,33 @@ pub fn checked_shared_buffer_for_len<T: GpuAbi>(
 ///
 /// Returns a typed ABI or allocation error.
 pub fn checked_private_buffer_for_len<T: GpuAbi>(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     len: usize,
-) -> Result<Buffer, MetalSupportError> {
+) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, MetalSupportError> {
     let bytes = checked_typed_buffer_bytes::<T>(device, len)?;
     checked_private_buffer(device, bytes)
 }
 
-pub(crate) unsafe fn checked_texture_descriptor_from_retained_ptr(
-    raw: *mut MTLTextureDescriptor,
-) -> Result<TextureDescriptor, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::TextureDescriptorUnavailable)
-    } else {
-        // SAFETY: The caller guarantees a retained descriptor pointer.
-        Ok(unsafe { TextureDescriptor::from_ptr(raw) })
-    }
-}
-
-/// Create a texture descriptor and reject a null Objective-C allocation.
-///
-/// # Errors
-///
-/// Returns [`MetalSupportError::TextureDescriptorUnavailable`] when the
-/// descriptor factory returns nil.
-pub fn checked_texture_descriptor() -> Result<TextureDescriptor, MetalSupportError> {
-    let class = Class::get("MTLTextureDescriptor")
-        .ok_or(MetalSupportError::TextureDescriptorUnavailable)?;
-    // SAFETY: `new` returns a retained descriptor pointer checked before wrap.
-    let raw: *mut MTLTextureDescriptor = unsafe {
-        class
-            .send_message(Sel::register("new"), ())
-            .map_err(|error| MetalSupportError::TextureAllocation {
-                message: format!("Metal texture descriptor creation failed: {error}"),
-            })?
-    };
-    // SAFETY: `new` returns either nil or a retained descriptor pointer.
-    unsafe { checked_texture_descriptor_from_retained_ptr(raw) }
-}
-
-pub(crate) unsafe fn checked_texture_from_retained_ptr(
-    raw: *mut MTLTexture,
-    dimensions: (u64, u64, u64, u64),
-) -> Result<Texture, MetalSupportError> {
-    if raw.is_null() {
-        Err(MetalSupportError::TextureAllocationFailed {
-            width: dimensions.0,
-            height: dimensions.1,
-            depth: dimensions.2,
-            array_length: dimensions.3,
-        })
-    } else {
-        // SAFETY: The caller guarantees a retained MTLTexture pointer.
-        Ok(unsafe { Texture::from_ptr(raw) })
-    }
-}
-
 fn checked_texture_descriptor_geometry(
-    descriptor: &TextureDescriptorRef,
+    descriptor: &MTLTextureDescriptor,
 ) -> Result<(u64, u64, u64, u64), MetalSupportError> {
     let dimensions = (
-        descriptor.width(),
-        descriptor.height(),
-        descriptor.depth(),
-        descriptor.array_length(),
+        u64::try_from(descriptor.width()).unwrap_or(u64::MAX),
+        u64::try_from(descriptor.height()).unwrap_or(u64::MAX),
+        u64::try_from(descriptor.depth()).unwrap_or(u64::MAX),
+        u64::try_from(descriptor.arrayLength()).unwrap_or(u64::MAX),
     );
     if dimensions.0 == 0 || dimensions.1 == 0 || dimensions.2 == 0 || dimensions.3 == 0 {
         return Err(MetalSupportError::TextureDescriptorInvalid {
             reason: "width, height, depth, and array length must be nonzero",
         });
     }
-    if descriptor.mipmap_level_count() == 0 {
+    if descriptor.mipmapLevelCount() == 0 {
         return Err(MetalSupportError::TextureDescriptorInvalid {
             reason: "mipmap level count must be nonzero",
         });
     }
-    if descriptor.sample_count() == 0 {
+    if descriptor.sampleCount() == 0 {
         return Err(MetalSupportError::TextureDescriptorInvalid {
             reason: "sample count must be nonzero",
         });
@@ -264,30 +175,32 @@ fn checked_texture_descriptor_geometry(
     Ok(dimensions)
 }
 
-pub(crate) fn checked_texture_planned_bytes(planned: u64) -> Result<usize, MetalSupportError> {
+pub(crate) fn checked_texture_planned_bytes(planned: usize) -> Result<usize, MetalSupportError> {
     let cap = DEFAULT_MAX_HOST_ALLOCATION_BYTES;
-    let requested =
-        usize::try_from(planned).map_err(|_| MetalSupportError::TextureAllocationTooLarge {
-            requested: usize::MAX,
-            cap,
-        })?;
-    if requested == 0 {
+    if planned == 0 {
         return Err(MetalSupportError::TextureDescriptorInvalid {
             reason: "device reported a zero-byte texture allocation plan",
         });
     }
-    if requested > cap {
-        return Err(MetalSupportError::TextureAllocationTooLarge { requested, cap });
+    if planned > cap {
+        return Err(MetalSupportError::TextureAllocationTooLarge {
+            requested: planned,
+            cap,
+        });
     }
-    Ok(requested)
+    Ok(planned)
 }
 
 fn checked_texture_allocation_plan(
-    device: &DeviceRef,
-    descriptor: &TextureDescriptorRef,
+    device: &ProtocolObject<dyn MTLDevice>,
+    descriptor: &MTLTextureDescriptor,
 ) -> Result<(u64, u64, u64, u64), MetalSupportError> {
     let dimensions = checked_texture_descriptor_geometry(descriptor)?;
-    checked_texture_planned_bytes(device.heap_texture_size_and_align(descriptor).size)?;
+    checked_texture_planned_bytes(
+        device
+            .heapTextureSizeAndAlignWithDescriptor(descriptor)
+            .size,
+    )?;
     Ok(dimensions)
 }
 
@@ -298,22 +211,16 @@ fn checked_texture_allocation_plan(
 ///
 /// Returns a typed allocation error when dispatch fails or Metal returns nil.
 pub fn checked_texture(
-    device: &DeviceRef,
-    descriptor: &TextureDescriptorRef,
-) -> Result<Texture, MetalSupportError> {
+    device: &ProtocolObject<dyn MTLDevice>,
+    descriptor: &MTLTextureDescriptor,
+) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, MetalSupportError> {
     let dimensions = checked_texture_allocation_plan(device, descriptor)?;
-    // SAFETY: The selector ABI is exact; the descriptor remains live and the
-    // retained result is checked before ownership is transferred.
-    let raw: *mut MTLTexture = unsafe {
-        device
-            .send_message(
-                Sel::register("newTextureWithDescriptor:"),
-                (descriptor.as_ptr(),),
-            )
-            .map_err(|error| MetalSupportError::TextureAllocation {
-                message: error.to_string(),
-            })?
-    };
-    // SAFETY: The selector returns either nil or a retained texture pointer.
-    unsafe { checked_texture_from_retained_ptr(raw, dimensions) }
+    device
+        .newTextureWithDescriptor(descriptor)
+        .ok_or(MetalSupportError::TextureAllocationFailed {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth: dimensions.2,
+            array_length: dimensions.3,
+        })
 }

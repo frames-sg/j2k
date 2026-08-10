@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     codestream_progression_order_code, copied_slice_buffer, dispatch_single_thread,
     lossless_codestream_assembly_capacity, new_command_buffer, new_compute_command_encoder,
@@ -10,7 +13,7 @@ use super::{
     J2kPacketDescriptor, J2kPacketEncodeParams, J2kPacketEncodeStatus, J2kPacketResolution,
     J2kPacketStateBlock, J2kPacketSubband, J2kPendingResidentLosslessCodestream,
     J2kResidentLosslessCodestream, J2kResidentPacketBlock, J2kResidentPacketBlockParams,
-    J2kResidentPacketizationEncodeJob, MTLSize, MetalRuntime, ResidentLosslessTier1Metal,
+    J2kResidentPacketizationEncodeJob, MetalRuntime, ResidentLosslessTier1Metal,
 };
 
 #[cfg(target_os = "macos")]
@@ -767,35 +770,27 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     let command_buffer = new_command_buffer(&runtime.queue)?;
     if !resident_blocks.is_empty() {
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(T::packet_block_prepare_pipeline(runtime));
+        encoder.setComputePipelineState(T::packet_block_prepare_pipeline(runtime));
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(tier1.job_buffer()), 0);
         encoder.set_buffer(2, Some(tier1.status_buffer()), 0);
         encoder.set_buffer(3, Some(&packet_block_buffer), 0);
-        encoder.set_bytes(
-            4,
-            size_of::<J2kResidentPacketBlockParams>() as u64,
-            (&raw const resident_block_params).cast(),
+        encoder.set_bytes::<J2kResidentPacketBlockParams>(4, &resident_block_params);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(resident_blocks.len() as u64, 1, 1),
+            j2k_metal_support::mtl_size(
+                T::packet_block_prepare_pipeline(runtime)
+                    .threadExecutionWidth()
+                    .max(1) as u64,
+                1,
+                1,
+            ),
         );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: resident_blocks.len() as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: T::packet_block_prepare_pipeline(runtime)
-                    .thread_execution_width()
-                    .max(1),
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
+        encoder.endEncoding();
     }
 
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.packet_encode);
+    encoder.setComputePipelineState(&runtime.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
     encoder.set_buffer(2, Some(&packet_block_buffer), 0);
@@ -803,30 +798,22 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     encoder.set_buffer(4, Some(&output_buffer), 0);
     encoder.set_buffer(5, Some(&header_buffer), 0);
     encoder.set_buffer(6, Some(&scratch_buffer), 0);
-    encoder.set_bytes(
-        7,
-        size_of::<J2kPacketEncodeParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kPacketEncodeParams>(7, &params);
     encoder.set_buffer(8, Some(&status_buffer), 0);
     encoder.set_buffer(9, Some(&descriptor_buffer), 0);
     encoder.set_buffer(10, Some(&state_block_buffer), 0);
     dispatch_single_thread(&encoder);
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble);
+    encoder.setComputePipelineState(&runtime.lossless_codestream_assemble);
     encoder.set_buffer(0, Some(&output_buffer), 0);
     encoder.set_buffer(1, Some(&status_buffer), 0);
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
-    encoder.set_bytes(
-        3,
-        size_of::<J2kLosslessCodestreamAssemblyParams>() as u64,
-        (&raw const codestream_params).cast(),
-    );
+    encoder.set_bytes::<J2kLosslessCodestreamAssemblyParams>(3, &codestream_params);
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
     dispatch_single_thread(&encoder);
-    encoder.end_encoding();
+    encoder.endEncoding();
     command_buffer.commit();
 
     Ok(J2kPendingResidentLosslessCodestream {

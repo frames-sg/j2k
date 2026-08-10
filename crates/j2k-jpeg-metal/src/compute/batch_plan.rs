@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::Buffer;
 use j2k_core::{BackendRequest, Rect};
 use j2k_jpeg::adapter::{
     JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
 };
-use metal::Buffer;
 
 use super::{entropy_checkpoints_buffer, new_shared_buffer_with_data, pixel_format_to_out_format};
 use super::{MetalRuntime, PlaneMode};

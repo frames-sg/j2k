@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::Surface;
 use crate::Error;
-#[cfg(target_os = "macos")]
-use metal::foreign_types::ForeignTypeRef;
 
 /// Read a group of completed Metal-resident surfaces into one tightly packed
 /// host allocation using a single Metal staging buffer.
@@ -45,7 +46,8 @@ pub fn download_surfaces_packed(
                     message: "J2K Metal packed surface readback received a host surface"
                         .to_string(),
                 })?;
-        if buffer.device().as_ptr() != session.device().as_ptr() {
+        let buffer_device = buffer.device();
+        if !core::ptr::eq(buffer_device.as_ref(), session.device()) {
             return Err(Error::MetalKernel {
                 message: "J2K Metal packed surface belongs to a different device".to_string(),
             });
@@ -71,7 +73,7 @@ pub fn download_surfaces_packed(
                     message: "J2K Metal packed destination offset overflow".to_string(),
                 })?;
     }
-    blit.end_encoding();
+    blit.endEncoding();
     commit_and_wait(&command).map_err(map_support)?;
     // SAFETY: the blit completed above and the local staging buffer has no
     // overlapping writer for the duration of this owned copy.

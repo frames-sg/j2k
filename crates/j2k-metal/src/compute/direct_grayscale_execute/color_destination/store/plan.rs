@@ -12,7 +12,7 @@ pub(super) struct NativeColorStorePlan<'a> {
     pub(super) channels: usize,
     pub(super) destination_offset: usize,
     pub(super) params: J2kNativeColorBatchStoreParams,
-    pub(super) pipeline: &'a metal::ComputePipelineState,
+    pub(super) pipeline: &'a crate::metal_types::ComputePipelineState,
 }
 
 pub(super) fn plan_exact_native_color_store<'a>(
@@ -126,7 +126,7 @@ pub(super) fn plan_exact_native_color_store<'a>(
 fn native_color_store_pipeline(
     runtime: &MetalRuntime,
     format: PixelFormat,
-) -> Result<&metal::ComputePipelineState, Error> {
+) -> Result<&crate::metal_types::ComputePipelineState, Error> {
     match format {
         PixelFormat::Rgb8 => Ok(&runtime.store_native_rgb_batch_u8),
         PixelFormat::Rgb16 => Ok(&runtime.store_native_rgb_batch_u16),

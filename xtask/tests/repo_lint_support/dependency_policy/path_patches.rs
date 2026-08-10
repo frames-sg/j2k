@@ -25,17 +25,7 @@ struct PathPatch {
     files: &'static [PatchedFile],
 }
 
-const PATH_PATCHES: &[PathPatch] = &[PathPatch {
-    name: "block",
-    directory: "third_party/block-0.1.6-patched",
-    archive_sha256: "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a",
-    tree_sha256: "ed11b5084e7c790c36466b1ea4033b9b8b1378739c38346b888d7c55178b3214",
-    files: &[PatchedFile {
-        path: "src/lib.rs",
-        upstream_sha256: "eb31678adf63b53109d9b94eba23699fd5f9ebfdb950f6e1a57ad51bb6a146fa",
-        patched_sha256: "bf799f4d01bb497fdcffe7a5e28d998e721ed45c1be866ed1b454df39ce876a9",
-    }],
-}];
+const PATH_PATCHES: &[PathPatch] = &[];
 
 static NEXT_PATCH_TREE_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -88,21 +78,23 @@ fn all_workspace_path_patches_have_pinned_provenance_and_local_digests() {
     let root = repo_root();
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
     let manifest = toml::from_str::<toml::Value>(&workspace).expect("parse workspace manifest");
-    let patches = manifest
+    let actual = manifest
         .get("patch")
         .and_then(|patch| patch.get("crates-io"))
         .and_then(toml::Value::as_table)
-        .expect("workspace [patch.crates-io] table");
-    let actual = patches
-        .iter()
-        .map(|(name, value)| {
-            let path = value
-                .get("path")
-                .and_then(toml::Value::as_str)
-                .unwrap_or_else(|| panic!("path patch `{name}` must have a string path"));
-            (name.as_str(), path)
+        .map(|patches| {
+            patches
+                .iter()
+                .map(|(name, value)| {
+                    let path = value
+                        .get("path")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or_else(|| panic!("path patch `{name}` must have a string path"));
+                    (name.as_str(), path)
+                })
+                .collect::<BTreeSet<_>>()
         })
-        .collect::<BTreeSet<_>>();
+        .unwrap_or_default();
     let expected = PATH_PATCHES
         .iter()
         .map(|patch| (patch.name, patch.directory))
@@ -116,10 +108,13 @@ fn all_workspace_path_patches_have_pinned_provenance_and_local_digests() {
         .get("workspace")
         .and_then(|workspace| workspace.get("exclude"))
         .and_then(toml::Value::as_array)
-        .expect("workspace.exclude array")
-        .iter()
-        .filter_map(toml::Value::as_str)
-        .collect::<BTreeSet<_>>();
+        .map(|excluded| {
+            excluded
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     for patch in PATH_PATCHES {
         assert!(
             excluded.contains(patch.directory),

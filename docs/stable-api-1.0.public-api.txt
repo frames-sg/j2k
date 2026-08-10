@@ -2026,6 +2026,12 @@ pub use j2k_tilecodec::TileDecompress
 impl core::clone::Clone for j2k_jpeg_metal::MetalTextureTile
 impl core::fmt::Debug for j2k_jpeg_metal::MetalBackendSession
 impl core::fmt::Debug for j2k_jpeg_metal::MetalSession
+impl core::marker::Send for j2k_jpeg_metal::MetalBatchOutputBuffer
+impl core::marker::Send for j2k_jpeg_metal::MetalBatchTextureOutput
+impl core::marker::Send for j2k_jpeg_metal::Surface
+impl core::marker::Sync for j2k_jpeg_metal::MetalBatchOutputBuffer
+impl core::marker::Sync for j2k_jpeg_metal::MetalBatchTextureOutput
+impl core::marker::Sync for j2k_jpeg_metal::Surface
 impl j2k_jpeg_metal::Codec
 impl j2k_jpeg_metal::JpegTileBatch
 impl j2k_jpeg_metal::MetalBackendSession
@@ -2073,9 +2079,9 @@ pub fn j2k_jpeg_metal::JpegTileBatch::push_shared_tile_request(&mut self, alloc:
 pub fn j2k_jpeg_metal::JpegTileBatch::push_tile_request(&mut self, &[u8], j2k_jpeg_metal::MetalDecodeRequest) -> core::result::Result<usize, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::JpegTileBatch::submissions(&self) -> core::result::Result<u64, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::JpegTileBatch::with_capacity(usize) -> Self
-pub fn j2k_jpeg_metal::MetalBackendSession::device(&self) -> &metal::device::DeviceRef
+pub fn j2k_jpeg_metal::MetalBackendSession::device(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>
 pub fn j2k_jpeg_metal::MetalBackendSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn j2k_jpeg_metal::MetalBackendSession::new(metal::device::Device) -> Self
+pub fn j2k_jpeg_metal::MetalBackendSession::new(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_jpeg_metal::MetalBackendSession::system_default() -> core::result::Result<Self, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::MetalBatchOutputBuffer::byte_len(&self) -> usize
 pub fn j2k_jpeg_metal::MetalBatchOutputBuffer::dimensions(&self) -> (u32, u32)
@@ -2091,7 +2097,7 @@ pub fn j2k_jpeg_metal::MetalBatchTextureOutput::dimensions(&self) -> (u32, u32)
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_region_scaled_tiles(&mut self, &j2k_jpeg_metal::MetalBackendSession, j2k_core::types::Rect, j2k_core::scale::Downscale, usize) -> core::result::Result<(), j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_scaled_tiles(&mut self, &j2k_jpeg_metal::MetalBackendSession, (u32, u32), j2k_core::scale::Downscale, usize) -> core::result::Result<(), j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_tiles(&mut self, &j2k_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<(), j2k_jpeg_metal::Error>
-pub fn j2k_jpeg_metal::MetalBatchTextureOutput::metal_pixel_format(&self) -> metal::constants::MTLPixelFormat
+pub fn j2k_jpeg_metal::MetalBatchTextureOutput::metal_pixel_format(&self) -> objc2_metal::generated::__MTLPixelFormat::MTLPixelFormat
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::new_rgba8_tiles(&j2k_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<Self, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub fn j2k_jpeg_metal::MetalBatchTextureOutput::tile_capacity(&self) -> usize
@@ -2180,12 +2186,12 @@ pub struct j2k_jpeg_metal::Rgb8MetalBatchRequest<'a, 'b>
 pub struct j2k_jpeg_metal::Surface
 pub struct j2k_jpeg_metal::ViewportTile
 pub struct j2k_jpeg_metal::ViewportWorkload
-pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::buffer(&self) -> &metal::buffer::BufferRef
-pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::new(&'a metal::buffer::Buffer, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self
-pub unsafe fn j2k_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &metal::buffer::BufferRef
-pub unsafe fn j2k_jpeg_metal::MetalBatchTextureOutput::texture(&self, usize) -> core::option::Option<&metal::texture::TextureRef>
-pub unsafe fn j2k_jpeg_metal::MetalTextureTile::texture(&self) -> &metal::texture::TextureRef
-pub unsafe fn j2k_jpeg_metal::Surface::metal_buffer(&self) -> core::option::Option<(&metal::buffer::Buffer, usize)>
+pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::new(&'a objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self
+pub unsafe fn j2k_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_jpeg_metal::MetalBatchTextureOutput::texture(&self, usize) -> core::option::Option<&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLTexture::MTLTexture>>
+pub unsafe fn j2k_jpeg_metal::MetalTextureTile::texture(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLTexture::MTLTexture>
+pub unsafe fn j2k_jpeg_metal::Surface::metal_buffer(&self) -> core::option::Option<(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize)>
 pub use j2k_jpeg_metal::DecoderContext
 pub use j2k_jpeg_metal::Info
 pub use j2k_jpeg_metal::JpegDownscale
@@ -2252,11 +2258,11 @@ pub fn j2k_metal::J2kDecoder<'a>::from_view(j2k::view::J2kView<'a>) -> core::res
 pub fn j2k_metal::J2kDecoder<'a>::inner(&self) -> &j2k::view::J2kDecoder<'a>
 pub fn j2k_metal::J2kDecoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k_metal::Error>
 pub fn j2k_metal::MetalBackendSession::buffer_pool_diagnostics(&self) -> core::result::Result<j2k_metal::MetalBufferPoolsDiagnostics, j2k_metal::Error>
-pub fn j2k_metal::MetalBackendSession::device(&self) -> &metal::device::DeviceRef
+pub fn j2k_metal::MetalBackendSession::device(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>
 pub fn j2k_metal::MetalBackendSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn j2k_metal::MetalBackendSession::new(metal::device::Device) -> Self
+pub fn j2k_metal::MetalBackendSession::new(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_metal::MetalBackendSession::system_default() -> core::result::Result<Self, j2k_metal::Error>
-pub fn j2k_metal::MetalBackendSession::with_command_queue(metal::device::Device, metal::commandqueue::CommandQueue) -> core::result::Result<Self, j2k_metal::Error>
+pub fn j2k_metal::MetalBackendSession::with_command_queue(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>, objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>>) -> core::result::Result<Self, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecodeResult::errors(&self) -> &[j2k::owned_batch::errors::IndexedBatchError]
 pub fn j2k_metal::MetalBatchDecodeResult::group_errors(&self) -> &[j2k_metal::MetalBatchGroupError]
 pub fn j2k_metal::MetalBatchDecodeResult::groups(&self) -> &[j2k_metal::MetalBatchGroup]
@@ -2276,7 +2282,7 @@ pub fn j2k_metal::MetalBatchDecoder::submissions(&self) -> core::result::Result<
 pub fn j2k_metal::MetalBatchDecoder::submit_batch(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_metal::SubmittedMetalPreparedBatch, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_metal::SubmittedMetalPreparedBatch, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>
-pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into_for_consumer_queue(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination, &metal::commandqueue::CommandQueueRef) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>
+pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into_for_consumer_queue(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::system_default() -> core::result::Result<Self, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::system_default_with_options(j2k::owned_batch::contracts::BatchDecodeOptions) -> core::result::Result<Self, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::validate_destination(&self, &j2k_metal_support::resident::destination::MetalImageDestination, (u32, u32), j2k_core::pixel::PixelFormat) -> core::result::Result<(), j2k_metal::Error>
@@ -2336,7 +2342,7 @@ pub fn j2k_metal::MetalTileBatch::submissions(&self) -> core::result::Result<u64
 pub fn j2k_metal::MetalTileBatch::with_capacity(usize) -> Self
 pub fn j2k_metal::NativeBackendError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal::NativeBackendError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-pub fn j2k_metal::SubmittedMetalGroupDecodeInto::enqueue_consumer_wait(&mut self, &metal::commandqueue::CommandQueueRef) -> core::result::Result<(), j2k_metal::Error>
+pub fn j2k_metal::SubmittedMetalGroupDecodeInto::enqueue_consumer_wait(&mut self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<(), j2k_metal::Error>
 pub fn j2k_metal::SubmittedMetalGroupDecodeInto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal::SubmittedMetalGroupDecodeInto::wait(self) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_metal::SubmittedMetalGroupDecodeInto::wait(self) -> core::result::Result<j2k_metal::MetalBatchGroupCompletion, j2k_metal::Error>
@@ -2460,11 +2466,11 @@ pub type j2k_metal::SubmittedMetalGroupDecodeInto::Error = j2k_metal::Error
 pub type j2k_metal::SubmittedMetalGroupDecodeInto::Output = j2k_metal::MetalBatchGroupCompletion
 pub type j2k_metal::SubmittedMetalPreparedBatch::Error = j2k_metal::Error
 pub type j2k_metal::SubmittedMetalPreparedBatch::Output = j2k_metal::MetalBatchDecodeResult
-pub unsafe fn j2k_metal::MetalEncodedJ2k::from_raw_parts(metal::buffer::Buffer, core::ops::range::Range<usize>, usize, (u32, u32), u8, u8, bool) -> core::result::Result<Self, j2k_metal::Error>
-pub unsafe fn j2k_metal::MetalEncodedJ2k::into_codestream_buffer(self) -> metal::buffer::Buffer
-pub unsafe fn j2k_metal::MetalLosslessEncodeTile<'a>::from_buffer(&'a metal::buffer::Buffer, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self
-pub unsafe fn j2k_metal::MetalResidentBatch::metal_buffer(&self) -> &metal::buffer::Buffer
-pub unsafe fn j2k_metal::Surface::metal_buffer(&self) -> core::option::Option<(&metal::buffer::Buffer, usize)>
+pub unsafe fn j2k_metal::MetalEncodedJ2k::from_raw_parts(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, core::ops::range::Range<usize>, usize, (u32, u32), u8, u8, bool) -> core::result::Result<Self, j2k_metal::Error>
+pub unsafe fn j2k_metal::MetalEncodedJ2k::into_codestream_buffer(self) -> objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>
+pub unsafe fn j2k_metal::MetalLosslessEncodeTile<'a>::from_buffer(&'a objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self
+pub unsafe fn j2k_metal::MetalResidentBatch::metal_buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_metal::Surface::metal_buffer(&self) -> core::option::Option<(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize)>
 pub use j2k_metal::J2kContext
 pub use j2k_metal::J2kScratchPool
 pub use j2k_metal::MetalImageDestination
@@ -3298,6 +3304,12 @@ impl core::fmt::Debug for j2k_metal_support::ResidentMetalImage
 impl core::fmt::Debug for j2k_metal_support::SubmittedMetalImages
 impl core::fmt::Display for j2k_metal_support::MetalCommandEncoderKind
 impl core::fmt::Display for j2k_metal_support::MetalSupportError
+impl core::marker::Send for j2k_metal_support::MetalImageDestination
+impl core::marker::Send for j2k_metal_support::ResidentMetalImage
+impl core::marker::Send for j2k_metal_support::SubmittedMetalImages
+impl core::marker::Sync for j2k_metal_support::MetalImageDestination
+impl core::marker::Sync for j2k_metal_support::ResidentMetalImage
+impl core::marker::Sync for j2k_metal_support::SubmittedMetalImages
 impl core::ops::drop::Drop for j2k_metal_support::SubmittedMetalImages
 impl j2k_core::traits::DeviceSubmission for j2k_metal_support::SubmittedMetalImages
 impl j2k_metal_support::MetalImageDestination
@@ -3309,6 +3321,8 @@ impl j2k_metal_support::ResidentMetalImage
 impl j2k_metal_support::SubmittedMetalImages
 impl<R, E> core::clone::Clone for j2k_metal_support::MetalRuntimeSession<R, E>
 impl<R, E> j2k_metal_support::MetalRuntimeSession<R, E>
+impl<R: core::marker::Send + core::marker::Sync, E: core::marker::Send + core::marker::Sync> core::marker::Send for j2k_metal_support::MetalRuntimeSession<R, E>
+impl<R: core::marker::Send + core::marker::Sync, E: core::marker::Send + core::marker::Sync> core::marker::Sync for j2k_metal_support::MetalRuntimeSession<R, E>
 pub const fn j2k_metal_support::MetalImageDestination::buffer_len(&self) -> usize
 pub const fn j2k_metal_support::MetalImageDestination::device_registry_id(&self) -> u64
 pub const fn j2k_metal_support::MetalImageDestination::layout(&self) -> j2k_metal_support::MetalImageLayout
@@ -3331,59 +3345,60 @@ pub const fn j2k_metal_support::ResidentMetalImage::pixel_format(&self) -> j2k_c
 pub const fn j2k_metal_support::cpu_host_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::metal_kernel_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::metal_unavailable_route() -> j2k_metal_support::MetalRouteProfileLabels
-pub const fn j2k_metal_support::mtl_size(u64, u64, u64) -> metal::types::MTLSize
-pub const fn j2k_metal_support::one_d_threads_per_group(u64) -> metal::types::MTLSize
+pub const fn j2k_metal_support::mtl_size(u64, u64, u64) -> objc2_metal::generated::__MTLTypes::MTLSize
+pub const fn j2k_metal_support::one_d_threads_per_group(u64) -> objc2_metal::generated::__MTLTypes::MTLSize
 pub const fn j2k_metal_support::reject_explicit_metal_route(&'static str) -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::reject_unsupported_backend_route() -> j2k_metal_support::MetalRouteProfileLabels
-pub const fn j2k_metal_support::two_d_threads_per_group(u64, u64) -> metal::types::MTLSize
+pub const fn j2k_metal_support::two_d_threads_per_group(u64, u64) -> objc2_metal::generated::__MTLTypes::MTLSize
 pub fn j2k_metal_support::MetalCommandEncoderKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal_support::MetalImageDestination::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal_support::MetalImageDestination::validate_batch(&self, (u32, u32), j2k_core::pixel::PixelFormat, usize) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::MetalImageDestination::validate_device(&self, &metal::device::DeviceRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::MetalImageDestination::validate_device(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalImageDestination::validate_image(&self, (u32, u32), j2k_core::pixel::PixelFormat) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalImageLayout::new(usize, (u32, u32), usize, j2k_core::pixel::PixelFormat) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalImageLayout::new_batch(usize, (u32, u32), usize, j2k_core::pixel::PixelFormat, usize, usize) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::MetalPipelineLoader::library(&self) -> &metal::library::Library
-pub fn j2k_metal_support::MetalPipelineLoader::new(&metal::device::DeviceRef, &str) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::MetalPipelineLoader::pipeline(&self, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::MetalPipelineLoader::library(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLLibrary::MTLLibrary>
+pub fn j2k_metal_support::MetalPipelineLoader::new(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &str) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::MetalPipelineLoader::pipeline(&self, &str) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputePipeline::MTLComputePipelineState>>, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::clone(&self) -> Self
-pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device(&self) -> &metal::device::DeviceRef
-pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device_handle(&self) -> &metal::device::Device
-pub fn j2k_metal_support::MetalRuntimeSession<R, E>::get_or_init_runtime(&self, impl core::ops::function::FnOnce(&metal::device::Device) -> core::result::Result<R, E>) -> &core::result::Result<R, E>
-pub fn j2k_metal_support::MetalRuntimeSession<R, E>::new(metal::device::Device) -> Self
+pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>
+pub fn j2k_metal_support::MetalRuntimeSession<R, E>::device_handle(&self) -> &objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>
+pub fn j2k_metal_support::MetalRuntimeSession<R, E>::get_or_init_runtime(&self, impl core::ops::function::FnOnce(&objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> core::result::Result<R, E>) -> &core::result::Result<R, E>
+pub fn j2k_metal_support::MetalRuntimeSession<R, E>::new(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::runtime_initialized(&self) -> bool
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::runtime_result(&self) -> core::option::Option<&core::result::Result<R, E>>
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::system_default() -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalSupportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal_support::ResidentMetalImage::device_registry_id(&self) -> u64
 pub fn j2k_metal_support::ResidentMetalImage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn j2k_metal_support::ResidentMetalImage::validate_device(&self, &metal::device::DeviceRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::ResidentMetalImage::validate_device(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::ResidentMetalImage::view(&self, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::SubmittedMetalImages::drop(&mut self)
 pub fn j2k_metal_support::SubmittedMetalImages::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_metal_support::SubmittedMetalImages::wait(self) -> core::result::Result<Self::Output, Self::Error>
-pub fn j2k_metal_support::checked_blit_command_encoder(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<metal::encoder::BlitCommandEncoder, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_command_buffer(&metal::commandqueue::CommandQueueRef) -> core::result::Result<metal::commandbuffer::CommandBuffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_command_queue(&metal::device::DeviceRef) -> core::result::Result<metal::commandqueue::CommandQueue, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_compute_command_encoder(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<metal::encoder::ComputeCommandEncoder, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_private_buffer(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_private_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_shared_buffer(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_shared_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, usize) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_shared_buffer_with_bytes(&metal::device::DeviceRef, &[u8]) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_shared_buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(&metal::device::DeviceRef, &[T]) -> core::result::Result<metal::buffer::Buffer, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_texture(&metal::device::DeviceRef, &metal::texture::TextureDescriptorRef) -> core::result::Result<metal::texture::Texture, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::checked_texture_descriptor() -> core::result::Result<metal::texture::TextureDescriptor, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::commit_and_wait(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::dispatch_1d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, u64)
-pub fn j2k_metal_support::dispatch_2d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32))
-pub fn j2k_metal_support::dispatch_3d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32, u32))
-pub fn j2k_metal_support::dispatch_single_thread(&metal::encoder::ComputeCommandEncoderRef)
-pub fn j2k_metal_support::ensure_completed(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::named_pipeline(&metal::device::DeviceRef, &metal::library::Library, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::shader_library(&metal::device::DeviceRef, &str) -> core::result::Result<metal::library::Library, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::system_default_device() -> core::result::Result<metal::device::Device, j2k_metal_support::MetalSupportError>
-pub fn j2k_metal_support::wait_for_completion(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_blit_command_encoder(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBlitCommandEncoder::MTLBlitCommandEncoder>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_command_buffer(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_command_queue(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_compute_command_encoder(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputeCommandEncoder::MTLComputeCommandEncoder>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_event(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLEvent::MTLEvent>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_private_buffer(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, usize) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_private_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, usize) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_shared_buffer(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, usize) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_shared_buffer_for_len<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, usize) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_shared_buffer_with_bytes(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &[u8]) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_shared_buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &[T]) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_shared_event(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLEvent::MTLSharedEvent>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::checked_texture(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &objc2_metal::generated::__MTLTexture::MTLTextureDescriptor) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLTexture::MTLTexture>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::commit_and_wait(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::dispatch_1d_pipeline(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputeCommandEncoder::MTLComputeCommandEncoder>, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputePipeline::MTLComputePipelineState>, u64)
+pub fn j2k_metal_support::dispatch_2d_pipeline(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputeCommandEncoder::MTLComputeCommandEncoder>, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputePipeline::MTLComputePipelineState>, (u32, u32))
+pub fn j2k_metal_support::dispatch_3d_pipeline(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputeCommandEncoder::MTLComputeCommandEncoder>, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputePipeline::MTLComputePipelineState>, (u32, u32, u32))
+pub fn j2k_metal_support::dispatch_single_thread(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputeCommandEncoder::MTLComputeCommandEncoder>)
+pub fn j2k_metal_support::ensure_completed(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::named_pipeline(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLLibrary::MTLLibrary>, &str) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLComputePipeline::MTLComputePipelineState>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::shader_library(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, &str) -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLLibrary::MTLLibrary>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::system_default_device() -> core::result::Result<objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::wait_for_completion(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub j2k_metal_support::MetalCommandEncoderKind::Blit
 pub j2k_metal_support::MetalCommandEncoderKind::Compute
 pub j2k_metal_support::MetalRouteProfileLabels::decision: &'static str
@@ -3391,8 +3406,6 @@ pub j2k_metal_support::MetalRouteProfileLabels::reason: &'static str
 pub j2k_metal_support::MetalSupportError::BufferAlignment
 pub j2k_metal_support::MetalSupportError::BufferAlignment::align: usize
 pub j2k_metal_support::MetalSupportError::BufferAlignment::offset_bytes: usize
-pub j2k_metal_support::MetalSupportError::BufferAllocation
-pub j2k_metal_support::MetalSupportError::BufferAllocation::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::BufferAllocationFailed
 pub j2k_metal_support::MetalSupportError::BufferAllocationFailed::requested: usize
 pub j2k_metal_support::MetalSupportError::BufferAllocationTooLarge
@@ -3411,17 +3424,11 @@ pub j2k_metal_support::MetalSupportError::BufferZeroSizedType::abi_name: &'stati
 pub j2k_metal_support::MetalSupportError::CommandBuffer
 pub j2k_metal_support::MetalSupportError::CommandBuffer::label: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandBuffer::status: alloc::string::String
-pub j2k_metal_support::MetalSupportError::CommandBufferCreation
-pub j2k_metal_support::MetalSupportError::CommandBufferCreation::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandBufferUnavailable
-pub j2k_metal_support::MetalSupportError::CommandEncoderCreation
-pub j2k_metal_support::MetalSupportError::CommandEncoderCreation::kind: j2k_metal_support::MetalCommandEncoderKind
-pub j2k_metal_support::MetalSupportError::CommandEncoderCreation::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandEncoderUnavailable
 pub j2k_metal_support::MetalSupportError::CommandEncoderUnavailable::kind: j2k_metal_support::MetalCommandEncoderKind
-pub j2k_metal_support::MetalSupportError::CommandQueue
-pub j2k_metal_support::MetalSupportError::CommandQueue::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandQueueUnavailable
+pub j2k_metal_support::MetalSupportError::EventUnavailable
 pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch
 pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch::image_registry_id: u64
 pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch::requested_registry_id: u64
@@ -3436,8 +3443,7 @@ pub j2k_metal_support::MetalSupportError::PipelineState::function_name: alloc::s
 pub j2k_metal_support::MetalSupportError::PipelineState::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::ShaderLibrary
 pub j2k_metal_support::MetalSupportError::ShaderLibrary::message: alloc::string::String
-pub j2k_metal_support::MetalSupportError::TextureAllocation
-pub j2k_metal_support::MetalSupportError::TextureAllocation::message: alloc::string::String
+pub j2k_metal_support::MetalSupportError::SharedEventUnavailable
 pub j2k_metal_support::MetalSupportError::TextureAllocationFailed
 pub j2k_metal_support::MetalSupportError::TextureAllocationFailed::array_length: u64
 pub j2k_metal_support::MetalSupportError::TextureAllocationFailed::depth: u64
@@ -3448,7 +3454,6 @@ pub j2k_metal_support::MetalSupportError::TextureAllocationTooLarge::cap: usize
 pub j2k_metal_support::MetalSupportError::TextureAllocationTooLarge::requested: usize
 pub j2k_metal_support::MetalSupportError::TextureDescriptorInvalid
 pub j2k_metal_support::MetalSupportError::TextureDescriptorInvalid::reason: &'static str
-pub j2k_metal_support::MetalSupportError::TextureDescriptorUnavailable
 pub mod j2k_metal_support
 pub struct j2k_metal_support::MetalImageDestination
 pub struct j2k_metal_support::MetalImageLayout
@@ -3458,15 +3463,15 @@ pub struct j2k_metal_support::ResidentMetalImage
 pub struct j2k_metal_support::SubmittedMetalImages
 pub type j2k_metal_support::SubmittedMetalImages::Error = j2k_metal_support::MetalSupportError
 pub type j2k_metal_support::SubmittedMetalImages::Output = alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>
-pub unsafe fn j2k_metal_support::MetalImageDestination::from_exclusive_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::MetalImageDestination::raw_buffer(&self) -> &metal::buffer::Buffer
-pub unsafe fn j2k_metal_support::ResidentMetalImage::from_completed_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::ResidentMetalImage::raw_buffer(&self) -> &metal::buffer::Buffer
-pub unsafe fn j2k_metal_support::SubmittedMetalImages::from_uncommitted(&metal::device::DeviceRef, metal::commandbuffer::CommandBuffer, alloc::vec::Vec<(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout)>, alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::checked_buffer_fill_bytes(&metal::buffer::Buffer, usize, usize, u8) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::checked_buffer_read<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize) -> core::result::Result<T, j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::checked_buffer_read_vec<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, usize) -> core::result::Result<alloc::vec::Vec<T>, j2k_metal_support::MetalSupportError>
-pub unsafe fn j2k_metal_support::checked_buffer_write<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, &[T]) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::MetalImageDestination::from_exclusive_buffer(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::MetalImageDestination::raw_buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::from_completed_buffer(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::raw_buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
+pub unsafe fn j2k_metal_support::SubmittedMetalImages::from_uncommitted(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>, objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandBuffer::MTLCommandBuffer>>, alloc::vec::Vec<(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>>, j2k_metal_support::MetalImageLayout)>, alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::checked_buffer_fill_bytes(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, usize, u8) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::checked_buffer_read<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize) -> core::result::Result<T, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::checked_buffer_read_vec<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, usize) -> core::result::Result<alloc::vec::Vec<T>, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::checked_buffer_write<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, &[T]) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 ```
 
 ## `j2k-transcode-metal`
@@ -3512,11 +3517,11 @@ pub enum j2k_transcode_metal::MetalTranscodeFallbackReason
 pub fn j2k_transcode::transcode_stage_error::TranscodeStageError::from(j2k_transcode_metal::MetalTranscodeError) -> Self
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53_batch(&mut self, &[j2k_transcode::DctGridToReversibleDwt53Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::ReversibleDwt53FirstLevel>>, j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::default() -> Self
-pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto_with_device(metal::device::Device) -> Self
+pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto_with_device(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto_with_session(j2k_transcode_metal::MetalTranscodeSession) -> Self
-pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit_with_device(metal::device::Device) -> Self
+pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit_with_device(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit_with_session(j2k_transcode_metal::MetalTranscodeSession) -> Self
-pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::with_device(self, metal::device::Device) -> Self
+pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::with_device(self, objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::with_session(self, j2k_transcode_metal::MetalTranscodeSession) -> Self
 pub fn j2k_transcode_metal::MetalRuntimeFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_transcode_metal::MetalRuntimeFailure::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
@@ -3525,7 +3530,7 @@ pub fn j2k_transcode_metal::MetalTranscodeError::fmt(&self, &mut core::fmt::Form
 pub fn j2k_transcode_metal::MetalTranscodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_transcode_metal::MetalTranscodeFallbackReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_transcode_metal::MetalTranscodeSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn j2k_transcode_metal::MetalTranscodeSession::new(metal::device::Device) -> Self
+pub fn j2k_transcode_metal::MetalTranscodeSession::new(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>) -> Self
 pub fn j2k_transcode_metal::MetalTranscodeSession::system_default() -> core::result::Result<Self, j2k_transcode_metal::MetalTranscodeError>
 pub fn j2k_transcode_metal::jpeg_to_htj2k_batch_with_metal_route(&[j2k_transcode::jpeg_to_htj2k::output::JpegTileBatchInput<'_>], &j2k_transcode::jpeg_to_htj2k::options::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscodeBatch, j2k_transcode::jpeg_to_htj2k::error::JpegToHtj2kError>
 pub fn j2k_transcode_metal::jpeg_to_htj2k_with_metal_route(&[u8], &j2k_transcode::jpeg_to_htj2k::options::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscode, j2k_transcode::jpeg_to_htj2k::error::JpegToHtj2kError>

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, hybrid_stage_signpost,
-    new_command_buffer, new_compute_command_encoder, size_of, with_runtime, Buffer,
-    CommandBufferRef, Error, J2kInverseMctJob, J2kInverseMctParams, J2kWaveletTransform, MTLSize,
-    MetalRuntime, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
+    new_command_buffer, new_compute_command_encoder, with_runtime, Buffer, CommandBufferRef, Error,
+    J2kInverseMctJob, J2kInverseMctParams, J2kWaveletTransform, MetalRuntime,
+    SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
 };
 
 #[cfg(target_os = "macos")]
@@ -47,33 +50,17 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.set_compute_pipeline_state(&runtime.inverse_mct);
+        encoder.setComputePipelineState(&runtime.inverse_mct);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
         encoder.set_buffer(2, Some(&plane2_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kInverseMctParams>() as u64,
-            (&raw const params).cast(),
+        encoder.set_bytes::<J2kInverseMctParams>(3, &params);
+        let width = runtime.inverse_mct.threadExecutionWidth().max(1).min(len);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(len as u64, 1, 1),
+            j2k_metal_support::mtl_size(width as u64, 1, 1),
         );
-        let width = runtime
-            .inverse_mct
-            .thread_execution_width()
-            .max(1)
-            .min(len as u64);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: len as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
+        encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let plane0_host = checked_buffer_slice::<f32>(&plane0_buffer, len, "inverse MCT plane 0")?;
@@ -119,33 +106,17 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
     };
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(&runtime.inverse_mct);
+    encoder.setComputePipelineState(&runtime.inverse_mct);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
-    encoder.set_bytes(
-        3,
-        size_of::<J2kInverseMctParams>() as u64,
-        (&raw const params).cast(),
+    encoder.set_bytes::<J2kInverseMctParams>(3, &params);
+    let width = runtime.inverse_mct.threadExecutionWidth().max(1).min(len);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(len as u64, 1, 1),
+        j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
-    let width = runtime
-        .inverse_mct
-        .thread_execution_width()
-        .max(1)
-        .min(len as u64);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: len as u64,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
-    );
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     Ok(())
 }

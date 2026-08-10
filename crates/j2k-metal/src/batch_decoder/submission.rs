@@ -43,7 +43,7 @@ impl SubmittedMetalGroupDecodeInto {
     /// performs no CPU wait.
     pub fn enqueue_consumer_wait(
         &mut self,
-        consumer_queue: &metal::CommandQueueRef,
+        consumer_queue: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
     ) -> Result<(), Error> {
         self.submission.enqueue_consumer_wait(consumer_queue)
     }

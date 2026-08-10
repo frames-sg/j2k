@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::sync::Arc;
 
 use j2k::EncodedImage;
@@ -19,7 +22,7 @@ fn known_cross_queue_submissions_reuse_one_monotonic_event_timeline() {
         return;
     }
 
-    let device = metal::Device::system_default().expect("system Metal device");
+    let device = j2k_metal_support::system_default_device().expect("system Metal device");
     let producer_queue =
         j2k_metal_support::checked_command_queue(&device).expect("producer command queue");
     let consumer_queue =
@@ -71,7 +74,7 @@ fn known_cross_queue_wait_orders_subsequent_consumer_work() {
     }
 
     let encoded = Arc::<[u8]>::from(j2k_test_support::htj2k_gray8_fixture(4, 4));
-    let device = metal::Device::system_default().expect("system Metal device");
+    let device = j2k_metal_support::system_default_device().expect("system Metal device");
     let producer_queue =
         j2k_metal_support::checked_command_queue(&device).expect("producer command queue");
     let consumer_queue =
@@ -107,7 +110,7 @@ fn known_cross_queue_wait_orders_subsequent_consumer_work() {
     let blit =
         j2k_metal_support::checked_blit_command_encoder(&consumer_command).expect("consumer blit");
     blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16);
-    blit.end_encoding();
+    blit.endEncoding();
     consumer_command.commit();
 
     pending.wait().expect("producer completion");
@@ -142,7 +145,7 @@ fn cloned_sessions_assign_cross_queue_values_in_commit_order() {
         return;
     }
 
-    let device = metal::Device::system_default().expect("system Metal device");
+    let device = j2k_metal_support::system_default_device().expect("system Metal device");
     let producer_queue =
         j2k_metal_support::checked_command_queue(&device).expect("producer command queue");
     let consumer_queue =
@@ -198,7 +201,7 @@ fn cloned_sessions_assign_cross_queue_values_in_commit_order() {
                 let blit = j2k_metal_support::checked_blit_command_encoder(&consumer_command)
                     .expect("worker consumer blit");
                 blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16);
-                blit.end_encoding();
+                blit.endEncoding();
                 consumer_command.commit();
                 pending.wait().expect("worker completion");
                 j2k_metal_support::wait_for_completion(&consumer_command)

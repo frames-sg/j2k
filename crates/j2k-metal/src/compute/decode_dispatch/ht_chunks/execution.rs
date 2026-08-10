@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use j2k_core::{HtGpuJobChunkLimits, HtGpuJobPassBucket};
 
 use crate::compute::resident_codestream::{
@@ -35,7 +38,7 @@ pub(in crate::compute) fn encode_metal_ht_batches_in_encoder(
         .ok_or_else(|| Error::MetalKernel {
             message: "HTJ2K Metal output arena byte length overflow".to_string(),
         })?;
-    if u64::try_from(output_bytes).map_or(true, |bytes| bytes > decoded.length()) {
+    if output_bytes > decoded.length() {
         return Err(Error::MetalStateInvariant {
             state: "HTJ2K Metal output arena",
             reason: "logical coefficient arena exceeds the destination buffer",
@@ -165,7 +168,7 @@ pub(in crate::compute) fn encode_repeated_metal_ht_batch_in_command_buffer(
     dispatch_zero_u32_buffer_in_encoder(runtime, &encoder, decoded, decoded_word_count)?;
     encoder.memory_barrier_with_resources(&[decoded]);
     if total_job_count == 0 {
-        encoder.end_encoding();
+        encoder.endEncoding();
         let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             crate::batch_allocation::try_vec_from_array(
@@ -218,7 +221,7 @@ pub(in crate::compute) fn encode_repeated_metal_ht_batch_in_command_buffer(
         status_buffer: &status_buffer,
     }
     .encode(&mut retained_buffers, &mut source_indices)?;
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     if status_offset_bytes != status_bytes || source_indices.len() != total_job_count {
         return Err(Error::MetalStateInvariant {

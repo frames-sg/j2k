@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::{Buffer, CommandBuffer};
+#[cfg(target_os = "macos")]
 use j2k_native::J2kPacketizationPacketDescriptor;
-use metal::{Buffer, CommandBuffer};
 
 use super::abi::{
     J2kBatchedCodestreamAssemblyJob, J2kBatchedPacketEncodeJob, J2kPacketDescriptor,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use std::time::Instant;
 
 use crate::compute::abi::J2kRepeatedStoreParams;
@@ -40,7 +42,7 @@ impl SubmissionContext<'_, '_, '_> {
                     reason: "later tile store changed the final component plane shape",
                 });
             }
-            if output.buffer.length() < required_bytes {
+            if u64::try_from(output.buffer.length()).map_or(true, |len| len < required_bytes) {
                 return Err(Error::MetalStateInvariant {
                     state: "J2K MetalDirect stacked component tile store",
                     reason: "retained final component plane is smaller than the validated store",

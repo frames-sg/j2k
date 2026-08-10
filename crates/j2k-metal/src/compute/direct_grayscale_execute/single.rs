@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use j2k_metal_support::MetalImageDestination;
 
 use super::{
@@ -68,7 +71,7 @@ pub(in crate::compute) fn encode_prepared_direct_grayscale_plan_in_command_buffe
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn encode_prepared_direct_grayscale_plan_into_in_encoder(
     request: DirectGrayscaleDestinationExecutionRequest<'_>,
-    encoder: &metal::ComputeCommandEncoderRef,
+    encoder: &crate::metal_types::ComputeCommandEncoderRef,
 ) -> Result<(), Error> {
     let DirectGrayscaleDestinationExecutionRequest {
         runtime,
@@ -106,7 +109,7 @@ pub(in crate::compute) fn encode_prepared_direct_grayscale_plan_into_in_encoder(
 #[cfg(target_os = "macos")]
 fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
     request: GrayscalePlanExecutionRequest<'_>,
-    existing_encoder: Option<&metal::ComputeCommandEncoderRef>,
+    existing_encoder: Option<&crate::metal_types::ComputeCommandEncoderRef>,
 ) -> Result<Option<Surface>, Error> {
     let GrayscalePlanExecutionRequest {
         runtime,
@@ -168,7 +171,7 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         execution.finish()
     })();
     if let Some(encoder) = owned_encoder {
-        encoder.end_encoding();
+        encoder.endEncoding();
     }
     result
 }

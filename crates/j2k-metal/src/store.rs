@@ -2,9 +2,9 @@
 
 #[cfg(target_os = "macos")]
 use crate::compute;
-use j2k_native::{HtCodeBlockDecoder, J2kStoreComponentJob, Result};
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+use crate::metal_types::Buffer;
+use j2k_native::{HtCodeBlockDecoder, J2kStoreComponentJob, Result};
 
 #[derive(Default)]
 pub(crate) struct MetalStoreDecoder {

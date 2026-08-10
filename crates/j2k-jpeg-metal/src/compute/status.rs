@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{Buffer, Device};
+use crate::metal_types::{Buffer, Device};
 
 use crate::{
     abi::{

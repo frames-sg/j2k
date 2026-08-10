@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::Buffer;
+#[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k::J2kLosslessEncodeOptions;
@@ -9,7 +12,7 @@ use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::FallibleSubmissionQueue;
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+use objc2::Message as _;
 
 use super::MetalLosslessBufferEncodeBatchOutcome;
 #[cfg(target_os = "macos")]
@@ -72,7 +75,7 @@ pub(super) struct OwnedMetalLosslessEncodeTile {
 impl OwnedMetalLosslessEncodeTile {
     pub(super) fn from_tile(tile: MetalLosslessEncodeTile<'_>) -> Self {
         Self {
-            buffer: tile.buffer.to_owned(),
+            buffer: tile.buffer.retain(),
             byte_offset: tile.byte_offset,
             width: tile.width,
             height: tile.height,

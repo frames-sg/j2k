@@ -818,7 +818,7 @@ fn metal_available() -> bool {
     let required = std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_some();
     #[cfg(target_os = "macos")]
     {
-        let available = metal::Device::system_default().is_some();
+        let available = j2k_metal_support::system_default_device().is_ok();
         assert!(
             !required || available,
             "J2K_REQUIRE_METAL_BENCH is set but no default Metal device is available"

@@ -3,30 +3,24 @@
 #![cfg(target_os = "macos")]
 
 use crate::{
-    allocation::{
-        checked_buffer_allocation_length, checked_buffer_from_retained_ptr,
-        checked_texture_descriptor_from_retained_ptr, checked_texture_from_retained_ptr,
-        checked_texture_planned_bytes,
-    },
+    allocation::{checked_buffer_allocation_length, checked_texture_planned_bytes},
     buffer_access::checked_buffer_typed_range,
     checked_blit_command_encoder, checked_buffer_fill_bytes, checked_buffer_read_vec,
     checked_buffer_write, checked_command_buffer, checked_command_queue,
     checked_compute_command_encoder, checked_private_buffer, checked_shared_buffer_for_len,
-    checked_shared_buffer_with_slice, checked_texture, checked_texture_descriptor, commit_and_wait,
-    one_d_threads_per_group,
-    pipeline::checked_compile_options_from_retained_ptr,
-    runtime::{
-        checked_blit_encoder_from_autoreleased_ptr, checked_command_buffer_from_autoreleased_ptr,
-        checked_command_queue_from_retained_ptr, checked_compute_encoder_from_autoreleased_ptr,
-        classify_command_buffer_status, CommandBufferCompletion,
-    },
-    system_default_device, two_d_threads_per_group, MetalCommandEncoderKind, MetalSupportError,
+    checked_shared_buffer_with_slice, checked_texture, commit_and_wait, one_d_threads_per_group,
+    runtime::{classify_command_buffer_status, CommandBufferCompletion},
+    system_default_device, two_d_threads_per_group, MetalSupportError,
+};
+use objc2::rc::autoreleasepool;
+use objc2_metal::{
+    MTLBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLTexture, MTLTextureDescriptor,
 };
 mod resident;
 
 #[test]
 fn command_buffer_status_classification_covers_every_metal_state() {
-    use metal::MTLCommandBufferStatus as Status;
+    use MTLCommandBufferStatus as Status;
 
     assert_eq!(
         classify_command_buffer_status(Status::Completed),
@@ -93,51 +87,10 @@ fn buffer_allocation_length_enforces_device_and_process_caps() {
 
     let process_cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
     assert!(matches!(
-        checked_buffer_allocation_length(process_cap + 1, u64::MAX),
+        checked_buffer_allocation_length(process_cap + 1, usize::MAX),
         Err(MetalSupportError::BufferAllocationTooLarge { requested, cap })
             if requested == process_cap + 1 && cap == process_cap
     ));
-}
-
-#[test]
-fn nil_retained_buffer_is_rejected_before_foreign_handle_construction() {
-    // SAFETY: Nil is an explicitly handled error branch; no handle is built.
-    let error = unsafe { checked_buffer_from_retained_ptr(core::ptr::null_mut(), 4096) }
-        .expect_err("nil Metal buffer");
-    assert_eq!(
-        error,
-        MetalSupportError::BufferAllocationFailed { requested: 4096 }
-    );
-}
-
-#[test]
-fn nil_owned_metal_objects_are_rejected_before_foreign_handle_construction() {
-    // SAFETY: Each nil pointer takes an explicitly handled error branch.
-    let compile_options =
-        unsafe { checked_compile_options_from_retained_ptr(core::ptr::null_mut()) }
-            .expect_err("nil compile options");
-    // SAFETY: See the nil-branch guarantee above.
-    let descriptor = unsafe { checked_texture_descriptor_from_retained_ptr(core::ptr::null_mut()) }
-        .expect_err("nil texture descriptor");
-    // SAFETY: See the nil-branch guarantee above.
-    let texture = unsafe { checked_texture_from_retained_ptr(core::ptr::null_mut(), (2, 3, 1, 1)) }
-        .expect_err("nil texture");
-
-    assert!(matches!(
-        compile_options,
-        MetalSupportError::ShaderLibrary { message }
-            if message.contains("compile-options") && message.contains("nil")
-    ));
-    assert_eq!(descriptor, MetalSupportError::TextureDescriptorUnavailable);
-    assert_eq!(
-        texture,
-        MetalSupportError::TextureAllocationFailed {
-            width: 2,
-            height: 3,
-            depth: 1,
-            array_length: 1,
-        }
-    );
 }
 
 #[test]
@@ -158,6 +111,12 @@ fn checked_allocators_reject_zero_sized_abi_and_keep_empty_buffers_real() {
     ));
     let private = checked_private_buffer(&device, 0).expect("empty private placeholder");
     assert_eq!(private.length(), 1);
+
+    // SAFETY: The accessor checks the private storage mode before obtaining or
+    // dereferencing the buffer's CPU contents pointer.
+    let error = unsafe { checked_buffer_read_vec::<u8>(&private, 0, 1) }
+        .expect_err("private storage is not CPU-visible");
+    assert_eq!(error, MetalSupportError::BufferContentsUnavailable);
 }
 
 #[test]
@@ -169,10 +128,14 @@ fn checked_texture_returns_a_real_texture() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
-    let descriptor = checked_texture_descriptor().expect("Metal texture descriptor");
-    descriptor.set_width(2);
-    descriptor.set_height(3);
-    descriptor.set_depth(1);
+    let descriptor = MTLTextureDescriptor::new();
+    // SAFETY: This fresh descriptor is confined to the current thread, and the
+    // dimensions are valid nonzero texture geometry.
+    unsafe {
+        descriptor.setWidth(2);
+        descriptor.setHeight(3);
+        descriptor.setDepth(1);
+    }
     let texture = checked_texture(&device, &descriptor).expect("bounded texture allocation");
     assert_eq!((texture.width(), texture.height()), (2, 3));
 }
@@ -180,9 +143,9 @@ fn checked_texture_returns_a_real_texture() {
 #[test]
 fn texture_planned_bytes_enforce_exact_repository_cap() {
     let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
-    assert_eq!(checked_texture_planned_bytes(cap as u64), Ok(cap));
+    assert_eq!(checked_texture_planned_bytes(cap), Ok(cap));
     assert_eq!(
-        checked_texture_planned_bytes(cap as u64 + 1),
+        checked_texture_planned_bytes(cap + 1),
         Err(MetalSupportError::TextureAllocationTooLarge {
             requested: cap + 1,
             cap,
@@ -205,10 +168,14 @@ fn checked_texture_rejects_zero_geometry_before_allocation() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
-    let descriptor = checked_texture_descriptor().expect("Metal texture descriptor");
-    descriptor.set_width(0);
-    descriptor.set_height(3);
-    descriptor.set_depth(1);
+    let descriptor = MTLTextureDescriptor::new();
+    // SAFETY: This fresh descriptor is confined to the current thread. Zero is
+    // deliberately set so repository validation can reject it before allocation.
+    unsafe {
+        descriptor.setWidth(0);
+        descriptor.setHeight(3);
+        descriptor.setDepth(1);
+    }
 
     assert!(matches!(
         checked_texture(&device, &descriptor),
@@ -244,9 +211,9 @@ fn checked_command_resources_create_real_encoders() {
     let queue = checked_command_queue(&device).expect("Metal command queue");
     let command_buffer = checked_command_buffer(&queue).expect("Metal command buffer");
     let compute = checked_compute_command_encoder(&command_buffer).expect("Metal compute encoder");
-    compute.end_encoding();
+    compute.endEncoding();
     let blit = checked_blit_command_encoder(&command_buffer).expect("Metal blit encoder");
-    blit.end_encoding();
+    blit.endEncoding();
     commit_and_wait(&command_buffer).expect("empty encoder completion");
 }
 
@@ -260,50 +227,18 @@ fn checked_command_resources_survive_their_creation_autorelease_pool() {
         return;
     };
     let queue = checked_command_queue(&device).expect("Metal command queue");
-    let command_buffer = metal::objc::rc::autoreleasepool(|| {
-        checked_command_buffer(&queue).expect("retained Metal command buffer")
-    });
-    let compute = metal::objc::rc::autoreleasepool(|| {
+    let command_buffer =
+        autoreleasepool(|_| checked_command_buffer(&queue).expect("retained Metal command buffer"));
+    let compute = autoreleasepool(|_| {
         checked_compute_command_encoder(&command_buffer).expect("retained Metal compute encoder")
     });
-    compute.end_encoding();
-    let blit = metal::objc::rc::autoreleasepool(|| {
+    compute.endEncoding();
+    let blit = autoreleasepool(|_| {
         checked_blit_command_encoder(&command_buffer).expect("retained Metal blit encoder")
     });
-    blit.end_encoding();
+    blit.endEncoding();
 
     commit_and_wait(&command_buffer).expect("retained command resources remain valid");
-}
-
-#[test]
-fn nil_command_resources_are_rejected_before_reference_construction() {
-    // SAFETY: Each nil pointer takes an explicitly handled error branch.
-    let queue = unsafe { checked_command_queue_from_retained_ptr(core::ptr::null_mut()) }
-        .expect_err("nil command queue");
-    // SAFETY: See the nil-branch guarantee above.
-    let command = unsafe { checked_command_buffer_from_autoreleased_ptr(core::ptr::null_mut()) }
-        .expect_err("nil command buffer");
-    // SAFETY: See the nil-branch guarantee above.
-    let compute = unsafe { checked_compute_encoder_from_autoreleased_ptr(core::ptr::null_mut()) }
-        .expect_err("nil compute encoder");
-    // SAFETY: See the nil-branch guarantee above.
-    let blit = unsafe { checked_blit_encoder_from_autoreleased_ptr(core::ptr::null_mut()) }
-        .expect_err("nil blit encoder");
-
-    assert_eq!(queue, MetalSupportError::CommandQueueUnavailable);
-    assert_eq!(command, MetalSupportError::CommandBufferUnavailable);
-    assert_eq!(
-        compute,
-        MetalSupportError::CommandEncoderUnavailable {
-            kind: MetalCommandEncoderKind::Compute,
-        }
-    );
-    assert_eq!(
-        blit,
-        MetalSupportError::CommandEncoderUnavailable {
-            kind: MetalCommandEncoderKind::Blit,
-        }
-    );
 }
 
 #[test]

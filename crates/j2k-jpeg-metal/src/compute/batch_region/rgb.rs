@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::*;
+
 use super::super::{
     batch, batch_entropy_buffers, batch_output_buffer_or_new, bind_three_plane_pack, checked_u32,
     commit_and_wait_jpeg, copy_grouped_surfaces_to_output, dispatch_3d_pipeline,
@@ -359,7 +361,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
     )?;
 
     let pack_encoder = new_compute_command_encoder(&command_buffer)?;
-    pack_encoder.set_compute_pipeline_state(P::pack_windowed_rgb_batch_pipeline(runtime));
+    pack_encoder.setComputePipelineState(P::pack_windowed_rgb_batch_pipeline(runtime));
     bind_three_plane_pack::<JpegWindowedPackBatchParams>(
         &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
@@ -375,7 +377,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
             shape.tile_count_u32,
         ),
     );
-    pack_encoder.end_encoding();
+    pack_encoder.endEncoding();
 
     commit_and_wait_jpeg(&command_buffer)?;
     drop(batch_scratch);

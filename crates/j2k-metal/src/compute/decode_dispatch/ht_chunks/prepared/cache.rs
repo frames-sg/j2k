@@ -2,11 +2,12 @@
 
 //! Session cache policy for immutable prepared HT executions.
 
+#[cfg(target_os = "macos")]
 use core::mem::size_of;
 use std::sync::Arc;
 
+use crate::metal_types::Device;
 use j2k_core::HtGpuJobChunkLimits;
-use metal::Device;
 
 use super::super::HtBatchInput;
 use super::PreparedMetalHtExecution;

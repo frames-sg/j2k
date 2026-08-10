@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+use crate::metal_types::prelude::*;
 
 use crate::buffers::new_shared_buffer;
 
@@ -95,7 +95,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
 
     let decode_pipeline = P::region_decode_pipeline(runtime);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -111,7 +111,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let out_len = crate::batch_allocation::checked_count_product(
         pack_params.out_stride as usize,
@@ -121,7 +121,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
     let out_buffer = new_shared_buffer(&runtime.device, out_len)?;
     let pack_encoder = new_compute_command_encoder(command_buffer)?;
     let pack_pipeline = P::pack_windowed_pipeline_for_format(runtime, fmt);
-    pack_encoder.set_compute_pipeline_state(pack_pipeline);
+    pack_encoder.setComputePipelineState(pack_pipeline);
     bind_three_plane_pack::<JpegFast420WindowedPackParams>(
         &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
@@ -129,7 +129,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
         &pack_params,
     );
     dispatch_2d_pipeline(&pack_encoder, pack_pipeline, (roi.w, roi.h));
-    pack_encoder.end_encoding();
+    pack_encoder.endEncoding();
 
     Ok(BatchedDecodeItem {
         surface: Surface::from_metal_buffer(out_buffer, (roi.w, roi.h), fmt)?,
@@ -188,7 +188,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
 
     let decode_pipeline = P::scaled_decode_pipeline(runtime);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -204,7 +204,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let out_buffer = if fmt == PixelFormat::Gray8 {
         None
@@ -254,22 +254,18 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
             });
         };
         let pack_encoder = new_compute_command_encoder(command_buffer)?;
-        pack_encoder.set_compute_pipeline_state(pack_pipeline);
-        pack_encoder.set_buffer(0, Some(&y_plane), 0);
-        pack_encoder.set_buffer(1, Some(&cb_plane), 0);
-        pack_encoder.set_buffer(2, Some(&cr_plane), 0);
-        pack_encoder.set_buffer(3, Some(out_buffer), 0);
-        pack_encoder.set_bytes(
-            4,
-            size_of::<JpegFast420Params>() as u64,
-            (&raw const pack_params).cast(),
-        );
+        pack_encoder.setComputePipelineState(pack_pipeline);
+        pack_encoder.bind_buffer(0, Some(&y_plane), 0);
+        pack_encoder.bind_buffer(1, Some(&cb_plane), 0);
+        pack_encoder.bind_buffer(2, Some(&cr_plane), 0);
+        pack_encoder.bind_buffer(3, Some(out_buffer), 0);
+        pack_encoder.bind_bytes::<JpegFast420Params>(4, &pack_params);
         dispatch_2d_pipeline(
             &pack_encoder,
             pack_pipeline,
             (params.scaled_width, params.scaled_height),
         );
-        pack_encoder.end_encoding();
+        pack_encoder.endEncoding();
     }
 
     let surface = match out_buffer {
@@ -406,7 +402,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
 
     let decode_pipeline = P::scaled_region_decode_pipeline(runtime);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -422,7 +418,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let out_len = crate::batch_allocation::checked_count_product(
         pack_params.out_stride as usize,
@@ -432,7 +428,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
     let out_buffer = new_shared_buffer(&runtime.device, out_len)?;
     let pack_encoder = new_compute_command_encoder(command_buffer)?;
     let pack_pipeline = P::pack_windowed_pipeline_for_format(runtime, fmt);
-    pack_encoder.set_compute_pipeline_state(pack_pipeline);
+    pack_encoder.setComputePipelineState(pack_pipeline);
     bind_three_plane_pack::<JpegFast420WindowedPackParams>(
         &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
@@ -440,7 +436,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
         &pack_params,
     );
     dispatch_2d_pipeline(&pack_encoder, pack_pipeline, (scaled_roi.w, scaled_roi.h));
-    pack_encoder.end_encoding();
+    pack_encoder.endEncoding();
 
     Ok(BatchedDecodeItem {
         surface: Surface::from_metal_buffer(out_buffer, (scaled_roi.w, scaled_roi.h), fmt)?,
@@ -490,7 +486,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
 
     let decode_pipeline = P::decode_pipeline(runtime);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.set_compute_pipeline_state(decode_pipeline);
+    decoder_encoder.setComputePipelineState(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -506,7 +502,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
         },
     );
     dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
-    decoder_encoder.end_encoding();
+    decoder_encoder.endEncoding();
 
     let surface = if fmt == PixelFormat::Gray8 {
         Surface::from_metal_buffer(y_plane.clone(), packet.dimensions(), fmt)
@@ -526,7 +522,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
         )?;
         let out_buffer = new_shared_buffer(&runtime.device, out_len)?;
         let pack_encoder = new_compute_command_encoder(command_buffer)?;
-        pack_encoder.set_compute_pipeline_state(pack_pipeline);
+        pack_encoder.setComputePipelineState(pack_pipeline);
         bind_three_plane_pack::<JpegFast420Params>(
             &pack_encoder,
             [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
@@ -534,7 +530,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
             &params,
         );
         dispatch_2d_pipeline(&pack_encoder, pack_pipeline, packet.dimensions());
-        pack_encoder.end_encoding();
+        pack_encoder.endEncoding();
         Surface::from_metal_buffer(out_buffer, packet.dimensions(), fmt)
     }?;
 

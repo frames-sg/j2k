@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use objc2_metal::MTLDevice as _;
+
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::Device;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendRequest, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{DecodeSettings as NativeDecodeSettings, Image as NativeImage};
-#[cfg(target_os = "macos")]
-use metal::Device;
 
 #[cfg(target_os = "macos")]
 use super::surface::CPU_STAGED_METAL_REQUIRES_EXPLICIT_API;
@@ -46,7 +49,7 @@ macro_rules! define_ensure_prepared_direct_plan {
             fmt: PixelFormat,
             session: &MetalBackendSession,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
-            let device_registry_id = session.device().registry_id();
+            let device_registry_id = session.device().registryID();
             if self.$prepared_field.is_some()
                 && self.$prepared_device_field != Some(device_registry_id)
             {

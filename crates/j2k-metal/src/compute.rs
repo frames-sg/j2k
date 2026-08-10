@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::{
+    Buffer, BufferRef, CommandBuffer, CommandBufferRef, ComputeCommandEncoderRef,
+    ComputePipelineState, Device,
+};
+#[cfg(target_os = "macos")]
 use j2k_core::{PixelFormat, Rect};
 #[cfg(target_os = "macos")]
 use j2k_native::{
@@ -14,11 +20,6 @@ use j2k_native::{
     J2kPacketizationPacketDescriptor, J2kQuantizeSubbandJob, J2kRequiredBandRegion,
     J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob,
     J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
-};
-#[cfg(target_os = "macos")]
-use metal::{
-    foreign_types::ForeignType, Buffer, CommandBuffer, CommandBufferRef, ComputeCommandEncoderRef,
-    ComputePipelineState, Device, MTLSize,
 };
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;

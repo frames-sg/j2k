@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::{
     should_use_resident_htj2k_host_shape_for_auto, Buffer, EncodeBackendPreference,
     J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, MetalEncodeInputStaging,

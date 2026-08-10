@@ -2,6 +2,11 @@
 
 //! Direct decode into caller-owned Metal group storage.
 
+use objc2::Message as _;
+
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::{
     validate_group_contract, BatchColor, Error, MetalBatchDecoder, MetalBatchGroupCompletion,
     MetalImageDestination, PreparedBatchGroup, SubmittedMetalGroupDecodeInto,
@@ -119,16 +124,16 @@ impl MetalBatchDecoder {
         &mut self,
         group: &PreparedBatchGroup,
         destination: MetalImageDestination,
-        consumer_queue: &metal::CommandQueueRef,
+        consumer_queue: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
-        let producer_registry_id = self.backend_session().device().registry_id();
-        let consumer_registry_id = consumer_queue.device().registry_id();
+        let producer_registry_id = self.backend_session().device().registryID();
+        let consumer_registry_id = consumer_queue.device().registryID();
         validate_consumer_registry_ids(producer_registry_id, consumer_registry_id)?;
         self.submit_prepared_group_into_with_ordering(
             group,
             destination,
             crate::compute::DirectDestinationConsumerOrdering::Known {
-                consumer_queue: consumer_queue.to_owned(),
+                consumer_queue: consumer_queue.retain(),
                 timeline: self.backend_session().consumer_event_timeline(),
             },
         )

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of;
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
 
 use j2k_core::checked_surface_len;
 use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
@@ -112,7 +113,7 @@ pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
         bit_depth,
         fmt,
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     result
 }
 
@@ -148,17 +149,13 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
         u16_scales,
     };
 
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(plane), plane_offset_bytes as u64);
     encoder.set_buffer(1, None, 0);
     encoder.set_buffer(2, None, 0);
     encoder.set_buffer(3, None, 0);
     encoder.set_buffer(4, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        5,
-        size_of::<J2kPackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kPackParams>(5, &params);
     dispatch_2d_pipeline(encoder, pipeline, dims);
 
     Surface::from_metal_buffer(out_buffer, dims, fmt)
@@ -209,16 +206,12 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.set_compute_pipeline_state(pipeline);
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(plane), 0);
     encoder.set_buffer(1, Some(&out_buffer), 0);
-    encoder.set_bytes(
-        2,
-        size_of::<J2kRepeatedGrayPackParams>() as u64,
-        (&raw const params).cast(),
-    );
+    encoder.set_bytes::<J2kRepeatedGrayPackParams>(2, &params);
     dispatch_3d_pipeline(&encoder, pipeline, (dims.0, dims.1, count_u32));
-    encoder.end_encoding();
+    encoder.endEncoding();
 
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K Metal repeated grayscale surface collection",

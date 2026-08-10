@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use super::super::resident_packet_plan::PreparedLosslessBatchTile;
 use super::super::resident_tier1::J2kResidentTier1StatusReadback;
 use super::{
@@ -14,7 +17,7 @@ use super::{
     J2kCodestreamAssemblyStatus, J2kHtPacketOutputCapacityMode, J2kPacketBlock,
     J2kPacketEncodeStatus, J2kPacketPayloadCopyJob, J2kPendingResidentLosslessCodestreamBatch,
     J2kResidentBatchEncodeItem, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer,
-    J2kResidentEncodeStageStats, J2kResidentPacketBlockParams, MTLSize, MetalRuntime,
+    J2kResidentEncodeStageStats, J2kResidentPacketBlockParams, MetalRuntime,
     ResidentBatchPacketPlan, ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
     PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
@@ -238,32 +241,24 @@ fn submit_ht_packet_stages(
             hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE);
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "HTJ2K packet block prep");
-        encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
+        encoder.setComputePipelineState(&runtime.packet_block_prepare_resident_ht);
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
         encoder.set_buffer(2, Some(&tier1_status_buffer), 0);
         encoder.set_buffer(3, Some(&packet_block_buffer), 0);
-        encoder.set_bytes(
-            4,
-            size_of::<J2kResidentPacketBlockParams>() as u64,
-            (&raw const resident_block_params).cast(),
-        );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: resident_blocks.len() as u64,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: runtime
+        encoder.set_bytes::<J2kResidentPacketBlockParams>(4, &resident_block_params);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(resident_blocks.len() as u64, 1, 1),
+            j2k_metal_support::mtl_size(
+                runtime
                     .packet_block_prepare_resident_ht
-                    .thread_execution_width()
-                    .max(1),
-                height: 1,
-                depth: 1,
-            },
+                    .threadExecutionWidth()
+                    .max(1) as u64,
+                1,
+                1,
+            ),
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         drop(signpost);
         if let Some(started) = command_encode_started {
             packet_block_prep_duration =
@@ -285,7 +280,7 @@ fn submit_ht_packet_stages(
     let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K packetization");
-    encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
+    encoder.setComputePipelineState(&runtime.packet_encode_batched);
     encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
     encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
     encoder.set_buffer(2, Some(&packet_block_buffer), 0);
@@ -298,22 +293,15 @@ fn submit_ht_packet_stages(
     encoder.set_buffer(9, Some(&packet_descriptor_buffer), 0);
     encoder.set_buffer(10, Some(&state_block_buffer), 0);
     encoder.set_buffer(11, Some(&packet_payload_copy_job_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: tile_count,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
-                .packet_encode_batched
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(tile_count, 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime.packet_encode_batched.threadExecutionWidth().max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     drop(signpost);
     if let Some(started) = command_encode_started {
         packetization_duration = packetization_duration.saturating_add(started.elapsed());
@@ -361,28 +349,24 @@ fn submit_ht_packet_stages(
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K codestream assembly");
-    encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
+    encoder.setComputePipelineState(&runtime.lossless_codestream_assemble_batched);
     encoder.set_buffer(0, Some(&codestream_buffer), 0);
     encoder.set_buffer(1, Some(&packet_status_buffer), 0);
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
     encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: tile_count,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: runtime
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(tile_count, 1, 1),
+        j2k_metal_support::mtl_size(
+            runtime
                 .lossless_codestream_assemble_batched
-                .thread_execution_width()
-                .max(1),
-            height: 1,
-            depth: 1,
-        },
+                .threadExecutionWidth()
+                .max(1) as u64,
+            1,
+            1,
+        ),
     );
-    encoder.end_encoding();
+    encoder.endEncoding();
     drop(signpost);
     let max_packet_output_capacity = packet_jobs
         .iter()

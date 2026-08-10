@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::time::Duration;
 
-use metal::{
-    foreign_types::{ForeignType, ForeignTypeRef},
-    objc::{runtime::Sel, Message},
-    CommandBuffer, CommandBufferRef,
-};
+use crate::metal_types::{CommandBuffer, CommandBufferRef};
 
 pub(super) fn completed_command_buffers_gpu_duration(
     retained: &[CommandBuffer],
@@ -24,11 +23,9 @@ pub(super) fn completed_command_buffers_gpu_duration_and_elapsed_window(
     let mut min_start = f64::INFINITY;
     let mut max_end = f64::NEG_INFINITY;
     for (index, command_buffer) in retained.iter().enumerate() {
-        let ptr = command_buffer.as_ptr();
-        if retained[..index]
-            .iter()
-            .any(|previous| previous.as_ptr() == ptr)
-        {
+        if retained[..index].iter().any(|previous| {
+            objc2::rc::Retained::as_ptr(previous) == objc2::rc::Retained::as_ptr(command_buffer)
+        }) {
             continue;
         }
         let (start, end) = completed_command_buffer_gpu_times(command_buffer)?;
@@ -36,10 +33,9 @@ pub(super) fn completed_command_buffers_gpu_duration_and_elapsed_window(
         min_start = min_start.min(start);
         max_end = max_end.max(end);
     }
-    let final_ptr = final_buffer.as_ptr();
     if !retained
         .iter()
-        .any(|command_buffer| command_buffer.as_ptr() == final_ptr)
+        .any(|command_buffer| core::ptr::eq(command_buffer.as_ref(), final_buffer))
     {
         let (start, end) = completed_command_buffer_gpu_times(final_buffer)?;
         total = total.saturating_add(Duration::from_secs_f64(end - start));
@@ -64,18 +60,8 @@ fn completed_command_buffer_gpu_times(command_buffer: &CommandBufferRef) -> Opti
     #[cfg(test)]
     super::test_counters::record_resident_gpu_timestamp_query();
 
-    // SAFETY: Objective-C timestamp access is queried after command-buffer completion.
-    let start: f64 = unsafe {
-        command_buffer
-            .send_message::<(), f64>(Sel::register("GPUStartTime"), ())
-            .ok()?
-    };
-    // SAFETY: Objective-C timestamp access is queried after command-buffer completion.
-    let end: f64 = unsafe {
-        command_buffer
-            .send_message::<(), f64>(Sel::register("GPUEndTime"), ())
-            .ok()?
-    };
+    let start = command_buffer.GPUStartTime();
+    let end = command_buffer.GPUEndTime();
     if start.is_finite() && end.is_finite() && end > start {
         Some((start, end))
     } else {

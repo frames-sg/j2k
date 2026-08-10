@@ -169,7 +169,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
             0,
             token_segment_byte_len as u64,
         );
-        blit.end_encoding();
+        blit.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
         let counters = checked_buffer_slice::<J2kClassicTier1SymbolPlanCounters>(

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
 use super::super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kRepeatedGrayStoreParams};
 use super::super::decode_dispatch::store::repeated_gray_store_is_contiguous_full_surface;
 use super::super::decode_dispatch::{
@@ -19,7 +20,6 @@ use j2k_native::{
     J2kDirectGrayscaleStep as NativeDirectGrayscaleStep, J2kOwnedCodeBlockBatchJob,
     J2kOwnedSubBandPlan, J2kSubBandDecodeJob,
 };
-use metal::Device;
 use std::sync::Arc;
 
 #[test]
@@ -120,7 +120,7 @@ fn cpu_upload_color_prepare_skips_tier1_metal_input_buffers() {
         return;
     }
 
-    if Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }

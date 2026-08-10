@@ -5,8 +5,6 @@ use j2k_metal_support::MetalSupportError;
 
 #[test]
 fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacity() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -14,19 +12,25 @@ fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacit
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
-    let original_buffer = output.buffer_trusted().as_ptr();
+    let original_buffer = core::ptr::from_ref(output.buffer_trusted());
 
     output
         .ensure_rgb8_tiles(&session, (16, 16), 1)
         .expect("ensure smaller matching output");
-    assert_eq!(output.buffer_trusted().as_ptr(), original_buffer);
+    assert!(core::ptr::eq(
+        core::ptr::from_ref(output.buffer_trusted()),
+        original_buffer
+    ));
     assert_eq!(output.dimensions(), (16, 16));
     assert_eq!(output.tile_capacity(), 2);
 
     output
         .ensure_rgb8_tiles(&session, (16, 16), 3)
         .expect("ensure larger output");
-    assert_ne!(output.buffer_trusted().as_ptr(), original_buffer);
+    assert!(!core::ptr::eq(
+        core::ptr::from_ref(output.buffer_trusted()),
+        original_buffer
+    ));
     assert_eq!(output.dimensions(), (16, 16));
     assert_eq!(output.tile_capacity(), 3);
     assert_eq!(
@@ -156,8 +160,6 @@ fn reusable_output_surface_as_bytes_retains_typed_range_source() {
 
 #[test]
 fn metal_batch_texture_output_ensure_reuses_matching_textures_and_grows_capacity() {
-    use metal::foreign_types::ForeignTypeRef;
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -165,25 +167,25 @@ fn metal_batch_texture_output_ensure_reuses_matching_textures_and_grows_capacity
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2).expect("texture output");
-    let original_texture = output.texture_trusted(0).expect("texture").as_ptr();
+    let original_texture = core::ptr::from_ref(output.texture_trusted(0).expect("texture"));
 
     output
         .ensure_rgba8_tiles(&session, (16, 16), 1)
         .expect("ensure smaller matching texture output");
-    assert_eq!(
-        output.texture_trusted(0).expect("texture").as_ptr(),
+    assert!(core::ptr::eq(
+        core::ptr::from_ref(output.texture_trusted(0).expect("texture")),
         original_texture
-    );
+    ));
     assert_eq!(output.dimensions(), (16, 16));
     assert_eq!(output.tile_capacity(), 2);
 
     output
         .ensure_rgba8_tiles(&session, (16, 16), 3)
         .expect("ensure larger texture output");
-    assert_ne!(
-        output.texture_trusted(0).expect("texture").as_ptr(),
+    assert!(!core::ptr::eq(
+        core::ptr::from_ref(output.texture_trusted(0).expect("texture")),
         original_texture
-    );
+    ));
     assert_eq!(output.dimensions(), (16, 16));
     assert_eq!(output.tile_capacity(), 3);
     assert_eq!(output.pixel_format(), PixelFormat::Rgba8);

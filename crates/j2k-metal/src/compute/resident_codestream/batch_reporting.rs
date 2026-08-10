@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use metal::{Buffer, CommandBuffer};
+use crate::metal_types::{Buffer, CommandBuffer};
 
 use super::super::resident_packet_plan::PreparedLosslessBatchTile;
-use super::{ForeignType, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer};
+use super::{J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer};
 
 fn prepared_command_buffer_count(tile: &PreparedLosslessBatchTile) -> Result<usize, crate::Error> {
     crate::batch_allocation::checked_count_sum(
@@ -64,7 +64,7 @@ fn record_profiled_prepare_command_buffers(
             ),
         ] {
             if let Some(command_buffer) = command_buffer {
-                let ptr = command_buffer.as_ptr();
+                let ptr = objc2::rc::Retained::as_ptr(command_buffer);
                 if seen.contains(&ptr) {
                     continue;
                 }
@@ -87,7 +87,7 @@ fn record_profiled_prepare_command_buffers(
             ),
         ] {
             for command_buffer in command_buffers {
-                let ptr = command_buffer.as_ptr();
+                let ptr = objc2::rc::Retained::as_ptr(command_buffer);
                 if seen.contains(&ptr) {
                     continue;
                 }
@@ -101,7 +101,7 @@ fn record_profiled_prepare_command_buffers(
         }
         if !pushed_split_prepare {
             let command_buffer = &tile.prepare_command_buffer;
-            let ptr = command_buffer.as_ptr();
+            let ptr = objc2::rc::Retained::as_ptr(command_buffer);
             if !seen.contains(&ptr) {
                 seen.push(ptr);
                 gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {

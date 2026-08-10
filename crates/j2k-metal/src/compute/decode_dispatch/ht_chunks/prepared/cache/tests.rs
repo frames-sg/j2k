@@ -38,7 +38,7 @@ fn cleanup_job(output_offset: u32) -> J2kHtCleanupBatchJob {
 
 #[test]
 fn host_pressure_evicts_the_oldest_prepared_execution_instead_of_bypassing_cache() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let limits = HtGpuJobChunkLimits::new(
@@ -107,7 +107,7 @@ fn prepared_execution_key_weight_uses_allocated_capacity() {
 
 #[test]
 fn otherwise_identical_prepared_inputs_are_isolated_by_owner_identity() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let limits = HtGpuJobChunkLimits::new(
@@ -197,7 +197,7 @@ fn oversized_prepared_execution_is_not_cacheable() {
 
 #[test]
 fn thousand_prepared_cache_hits_keep_retained_memory_stable() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let limits = HtGpuJobChunkLimits::new(

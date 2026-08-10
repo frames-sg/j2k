@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+
 use std::sync::Arc;
 
 use crate::profile_env::{label_command_buffer, metal_profile_decode_split_commands_enabled};

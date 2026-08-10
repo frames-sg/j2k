@@ -31,7 +31,6 @@ use workspace::{
 };
 
 pub(super) const GENERATED_DWT_DISPOSITION: &str = "generated-codec-math-fragment";
-pub(super) const VENDORED_BLOCK_DISPOSITION: &str = "vendored-block-ffi-binding";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SourceRole {
     Production,
@@ -40,7 +39,6 @@ pub(super) enum SourceRole {
     TestTarget,
     ExampleBenchFuzz,
     Generated(&'static str),
-    VendoredReviewed(&'static str),
 }
 
 impl SourceRole {
@@ -51,7 +49,7 @@ impl SourceRole {
             Self::TestOnly => "syntax-test-only",
             Self::TestTarget => "test-target",
             Self::ExampleBenchFuzz => "example-bench-fuzz",
-            Self::Generated(id) | Self::VendoredReviewed(id) => id,
+            Self::Generated(id) => id,
         }
     }
 

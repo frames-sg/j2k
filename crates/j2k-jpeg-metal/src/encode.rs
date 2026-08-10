@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::{BufferRef, DeviceRef};
+#[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::{encode_jpeg_baseline_gpu_batch, encode_jpeg_baseline_gpu_tile};
 use j2k_jpeg::{EncodedJpeg, JpegEncodeOptions};
 #[cfg(target_os = "macos")]
-use metal::{Buffer, BufferRef};
+use objc2_metal::{MTLDevice, MTLResource};
 
 #[cfg(target_os = "macos")]
 mod adapter;
@@ -19,7 +21,7 @@ mod resident_tile;
 #[derive(Debug, Clone, Copy)]
 /// Metal buffer and layout metadata for one baseline JPEG encode tile.
 pub struct JpegBaselineMetalEncodeTile<'a> {
-    buffer: &'a Buffer,
+    buffer: &'a BufferRef,
     byte_offset: usize,
     width: u32,
     height: u32,
@@ -43,7 +45,7 @@ impl<'a> JpegBaselineMetalEncodeTile<'a> {
     /// returning. The buffer must be usable by the device behind each session
     /// passed to the safe encode functions.
     pub unsafe fn new(
-        buffer: &'a Buffer,
+        buffer: &'a objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
         byte_offset: usize,
         dimensions: (u32, u32),
         pitch_bytes: usize,
@@ -93,17 +95,17 @@ impl<'a> JpegBaselineMetalEncodeTile<'a> {
     ///
     /// The caller must preserve the synchronization and immutability contract
     /// established by [`JpegBaselineMetalEncodeTile::new`].
-    pub unsafe fn buffer(&self) -> &BufferRef {
-        self.buffer_trusted().as_ref()
+    pub unsafe fn buffer(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer> {
+        self.buffer_trusted()
     }
 
-    pub(crate) fn buffer_trusted(&self) -> &'a Buffer {
+    pub(crate) fn buffer_trusted(&self) -> &'a BufferRef {
         self.buffer
     }
 
-    fn validate_device(&self, device: &metal::DeviceRef) -> Result<(), crate::Error> {
-        let image_registry_id = self.buffer.device().registry_id();
-        let requested_registry_id = device.registry_id();
+    fn validate_device(&self, device: &DeviceRef) -> Result<(), crate::Error> {
+        let image_registry_id = self.buffer.device().registryID();
+        let requested_registry_id = device.registryID();
         if image_registry_id == requested_registry_id {
             Ok(())
         } else {
