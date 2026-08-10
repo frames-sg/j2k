@@ -1,6 +1,15 @@
 [advisories]
 yanked     = "deny"
 ignore     = [
+    # Transitive via Burn 0.21's CubeCL and GEMM dependency stacks.
+    # RUSTSEC-2024-0436 is an unmaintained advisory for paste, not a known
+    # memory-safety or code-execution vulnerability, and it has no safe
+    # upgrade. Re-evaluate when Burn removes its transitive paste dependency.
+    # Review-by: 2027-01-31.
+    # Sources:
+    # - https://rustsec.org/advisories/RUSTSEC-2024-0436.html
+    # - https://github.com/tracel-ai/burn/tree/v0.21.0
+    "RUSTSEC-2024-0436",
     # Transitive via burn-core 0.21. RUSTSEC-2025-0141 records that bincode is
     # unmaintained; it does not report a memory-safety or code-execution flaw,
     # and the advisory has no safe upgrade. Re-evaluate when Burn changes its

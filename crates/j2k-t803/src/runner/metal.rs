@@ -11,6 +11,7 @@ use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage};
 use j2k_core::SurfaceResidency;
 #[cfg(target_os = "macos")]
 use j2k_metal::{MetalBatchDecoder, MetalDecodeDispatchReport};
+#[cfg(target_os = "macos")]
 use objc2_metal::MTLDevice as _;
 
 #[cfg(target_os = "macos")]

@@ -2,7 +2,6 @@
 
 #[cfg(target_os = "macos")]
 use crate::metal_types::Buffer;
-#[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k::J2kLosslessEncodeOptions;

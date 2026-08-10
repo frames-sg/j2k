@@ -27,3 +27,6 @@ TPsot = "TPsot"
 YTO = "YTO"
 siz = "siz"
 yto = "yto"
+
+[default.extend-identifiers]
+BSETs = "BSETs"
