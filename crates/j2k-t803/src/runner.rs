@@ -19,10 +19,6 @@ mod oracle;
 pub use archive::{extract_selected_archive, verify_corpus, ArchiveLimits, RunnerError};
 pub use cli::run_cli;
 
-#[cfg(any(
-    feature = "cuda-runner",
-    all(feature = "metal-runner", target_os = "macos")
-))]
 const fn adapter_claim(suite: crate::T803Suite) -> &'static str {
     match suite {
         crate::T803Suite::Part1 => "Profile-1 Cclass-1 adapter IUT; Profile-1 Cclass-1HF adapter IUT; Annex G JP2 reader adapter IUT (candidate evidence)",

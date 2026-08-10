@@ -2,6 +2,8 @@
 
 use crate::{CaseReport, T803Manifest, T803Suite};
 
+use super::super::adapter_claim;
+
 pub(super) fn verify_decoder_evidence(
     iut_name: &str,
     suite: T803Suite,
@@ -23,13 +25,19 @@ pub(super) fn verify_decoder_evidence(
         "HTJ2K Cclass-1HFh, MMAGB 20",
         "Annex G JPH reader",
     ];
-    if required_claim_points
-        .iter()
-        .any(|required| !claim.contains(required))
-        || ["full Part 1", "full Part 15"]
-            .iter()
-            .any(|forbidden| claim.contains(forbidden))
-    {
+    let valid_claim = match iut_name {
+        "j2k" => {
+            required_claim_points
+                .iter()
+                .all(|required| claim.contains(required))
+                && ["full Part 1", "full Part 15"]
+                    .iter()
+                    .all(|forbidden| !claim.contains(forbidden))
+        }
+        "j2k-cuda" | "j2k-metal" => claim == adapter_claim(T803Suite::All),
+        _ => false,
+    };
+    if !valid_claim {
         return Err(format!("{iut_name} report uses an invalid claim label"));
     }
 
@@ -109,6 +117,29 @@ mod tests {
 
         verify_decoder_evidence("j2k", T803Suite::All, ALL_CLAIM, &cases, &manifest)
             .expect("the release verifier must accept the complete all-suite inventory");
+    }
+
+    #[test]
+    fn all_suite_accepts_adapter_claims() {
+        let manifest = committed_manifest();
+        let cases = all_cases(&manifest);
+
+        for iut_name in ["j2k-cuda", "j2k-metal"] {
+            verify_decoder_evidence(
+                iut_name,
+                T803Suite::All,
+                adapter_claim(T803Suite::All),
+                &cases,
+                &manifest,
+            )
+            .expect("the release verifier must accept the canonical adapter-IUT claim");
+        }
+
+        assert!(
+            verify_decoder_evidence("j2k-cuda", T803Suite::All, ALL_CLAIM, &cases, &manifest,)
+                .is_err(),
+            "an adapter report must not use the standalone CPU claim"
+        );
     }
 
     #[test]
