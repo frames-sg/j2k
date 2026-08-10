@@ -2,10 +2,12 @@
 
 use j2k::{
     EncodedHtJ2kCodeBlock, J2kEncodeStageError, J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob,
+    J2kResidentHtj2kTileEncodeJob,
 };
 use j2k_cuda_runtime::{
-    CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
+    CudaContext, CudaDeviceBuffer, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
     CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaJ2kQuantizeJob,
+    CudaJ2kQuantizeSubbandRegionJob,
 };
 
 use crate::allocation::{try_vec_push, try_vec_with_capacity, HostPhaseBudget};
@@ -13,7 +15,10 @@ use crate::encode::stage_error::{arithmetic_overflow, runtime_error, CudaStageRe
 
 use super::super::{time_cuda_stage, CudaEncodeStageTimings};
 use super::htj2k_allocation_error;
-use super::types::CudaEncodedHtSubband;
+use super::types::{
+    CudaEncodedHtSubband, CudaEncodedHtj2kSubband, CudaHtj2kEncodeRuntime,
+    CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
+};
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) fn cuda_encode_ht_code_block(
@@ -235,6 +240,131 @@ fn cuda_ht_subband_region_jobs(
         job.code_block_height,
         job.total_bitplanes,
     )
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn cuda_encode_tile_subband_region(
+    runtime: CudaHtj2kEncodeRuntime<'_>,
+    source: &CudaDeviceBuffer,
+    region: CudaTileSubbandRegion,
+    quantization_step: (u16, u16),
+    job: J2kResidentHtj2kTileEncodeJob<'_>,
+    subband_kind: CudaTileSubbandKind,
+    stats: &mut CudaHtj2kTileEncodeStats,
+) -> CudaStageResult<CudaEncodedHtj2kSubband> {
+    if region.width == 0 || region.height == 0 {
+        return Ok(CudaEncodedHtj2kSubband {
+            code_blocks: Vec::new(),
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+        });
+    }
+
+    let (step_exponent, step_mantissa) = quantization_step;
+    let step_exponent_u8 = u8::try_from(step_exponent).map_err(|_| {
+        J2kEncodeStageError::invalid_request("CUDA HTJ2K tile quantization exponent exceeds u8")
+    })?;
+    let total_bitplanes = job
+        .guard_bits
+        .saturating_add(step_exponent_u8)
+        .saturating_sub(1);
+    let (quantized, quantize_us) = time_cuda_stage(
+        "j2k.htj2k.encode.tile.quantize",
+        runtime.context,
+        stats.collect_profile,
+        || {
+            runtime.context.j2k_quantize_subband_region_resident(
+                source,
+                CudaJ2kQuantizeSubbandRegionJob {
+                    x0: region.x0,
+                    y0: region.y0,
+                    width: region.width,
+                    height: region.height,
+                    stride: region.stride,
+                    quantization: CudaJ2kQuantizeJob {
+                        step_exponent,
+                        step_mantissa,
+                        range_bits: cuda_tile_subband_range_bits(
+                            job.input.bit_depth(),
+                            subband_kind,
+                        ),
+                        reversible: job.reversible,
+                    },
+                },
+            )
+        },
+    )
+    .map_err(|error| runtime_error("quantize CUDA HTJ2K tile subband", error))?;
+    stats.quantize_jobs = stats.quantize_jobs.saturating_add(1);
+    stats.quantize_dispatches = stats
+        .quantize_dispatches
+        .saturating_add(quantized.execution().kernel_dispatches());
+    stats.timings.quantize_us = stats.timings.quantize_us.saturating_add(quantize_us);
+
+    let region_jobs = cuda_ht_region_jobs(
+        region.width,
+        region.height,
+        job.code_block_width,
+        job.code_block_height,
+        total_bitplanes,
+    )?;
+    stats.ht_code_block_jobs = stats.ht_code_block_jobs.saturating_add(region_jobs.len());
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K tile region jobs");
+    host_budget
+        .account_vec(&region_jobs)
+        .map_err(htj2k_allocation_error)?;
+    let encoded = runtime
+        .context
+        .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
+            quantized.buffer(),
+            quantized.coefficient_count(),
+            &region_jobs,
+            runtime.resources,
+            runtime.pool,
+            host_budget.live_bytes(),
+        )
+        .map_err(|error| runtime_error("encode CUDA HTJ2K tile code blocks", error))?;
+    stats.ht_code_block_dispatches = stats
+        .ht_code_block_dispatches
+        .saturating_add(encoded.execution().kernel_dispatches());
+    stats.timings.ht_encode_us = stats
+        .timings
+        .ht_encode_us
+        .saturating_add(encoded.stage_timings().ht_encode_us);
+    let maximum_cleanup_magnitude = encoded
+        .code_blocks()
+        .iter()
+        .map(|block| u64::from(block.status().detail))
+        .max()
+        .unwrap_or(0);
+    let required_ht_magnitude_bound = j2k_native::htj2k_required_magnitude_bound(
+        maximum_cleanup_magnitude,
+        job.reversible,
+        region.decomposition_level,
+    );
+    stats.required_ht_magnitude_bound = Some(
+        stats
+            .required_ht_magnitude_bound
+            .map_or(required_ht_magnitude_bound, |current| {
+                current.max(required_ht_magnitude_bound)
+            }),
+    );
+
+    Ok(CudaEncodedHtj2kSubband {
+        code_blocks: encoded_ht_code_blocks_from_cuda(encoded)?,
+        num_cbs_x: region.width.div_ceil(job.code_block_width),
+        num_cbs_y: region.height.div_ceil(job.code_block_height),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_tile_subband_range_bits(bit_depth: u8, subband_kind: CudaTileSubbandKind) -> u8 {
+    let log_gain = match subband_kind {
+        CudaTileSubbandKind::LowLow => 0,
+        CudaTileSubbandKind::HighLow | CudaTileSubbandKind::LowHigh => 1,
+        CudaTileSubbandKind::HighHigh => 2,
+    };
+    bit_depth.saturating_add(log_gain)
 }
 
 #[cfg(feature = "cuda-runtime")]

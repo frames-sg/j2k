@@ -2,14 +2,15 @@
 
 use super::{
     add_roi_shift_to_bitplanes, bail, build, classic_decode_job_parameters,
-    code_block_required_by_index, component_unsigned_level_shift, ht_block_decode,
-    ht_code_block_has_decodable_passes, progression_iterator, segment, sub_band_decode_parameters,
-    tile, BitReader, ColorError, ComponentInfo, ComponentTile, DecodeAllocationBudget,
-    DecoderContext, DecodingError, DecompositionStorage, DirectPlanUnsupportedReason, Header,
-    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kWaveletTransform, ResolutionTile,
-    Result, RoiPlan, SubBand, SubBandDecodeParameters, Tile, ValidationError, Vec,
+    code_block_required_by_index, component_unsigned_level_shift, count_classic_code_blocks,
+    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes,
+    progression_iterator, segment, sub_band_decode_parameters, tile, BitReader, ColorError,
+    ComponentInfo, ComponentTile, DecodeAllocationBudget, DecoderContext, DecodingError,
+    DecompositionStorage, DirectPlanUnsupportedReason, Header, HtOwnedCodeBlockBatchJob,
+    HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
+    J2kOwnedSubBandPlan, J2kRect, J2kWaveletTransform, ResolutionTile, Result, RoiPlan, SubBand,
+    SubBandDecodeParameters, Tile, ValidationError, Vec,
 };
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::tile_intersects_output_region;
@@ -371,15 +372,20 @@ fn color_plan_rects<const COMPONENT_COUNT: usize>(
 
 fn validate_and_strip_referenced_payload_owners(
     component_plans: &mut [J2kDirectGrayscalePlan],
-    payload_count: usize,
+    payloads: &[HtCodeBlockPayloadRanges],
 ) -> Result<()> {
-    let mut job_count = 0_usize;
+    let mut record_count = 0_usize;
     for component in component_plans {
-        job_count = job_count
-            .checked_add(strip_grayscale_payload_owners(component)?)
+        record_count = record_count
+            .checked_add(strip_grayscale_payload_owners(
+                component,
+                payloads
+                    .get(record_count..)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            )?)
             .ok_or(ValidationError::ImageTooLarge)?;
     }
-    if job_count != payload_count {
+    if record_count != payloads.len() {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
     Ok(())

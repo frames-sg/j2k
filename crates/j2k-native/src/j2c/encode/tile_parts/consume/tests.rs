@@ -22,6 +22,7 @@ fn packetized_fixture() -> PacketizedTileData {
         data: exact_vec(&[1, 2, 3, 4]),
         packet_lengths: exact_vec(&[2, 2]),
         packet_headers: vec![exact_vec(&[0xA1]), exact_vec(&[0xB1, 0xB2])],
+        required_ht_magnitude_bound: None,
     }
 }
 
@@ -138,6 +139,7 @@ fn malformed_packet_metadata_is_a_typed_internal_invariant() {
         data: exact_vec(&[1, 2]),
         packet_lengths: Vec::new(),
         packet_headers: Vec::new(),
+        required_ht_magnitude_bound: None,
     };
     let split_error =
         consume_packetized_tile_into_tile_parts(3, missing_lengths, Some(1), 0, &session)

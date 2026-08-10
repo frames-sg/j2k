@@ -421,7 +421,14 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     session: &mut CudaTranscodeSession,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(Vec<PreencodedHtj2k97Component>, Dwt97BatchStageTimings), CudaTranscodeError> {
+) -> Result<
+    (
+        Vec<PreencodedHtj2k97Component>,
+        Vec<u8>,
+        Dwt97BatchStageTimings,
+    ),
+    CudaTranscodeError,
+> {
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
@@ -429,7 +436,7 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     let context = session.context()?;
 
     let Some(first) = jobs.first() else {
-        return Ok((Vec::new(), Dwt97BatchStageTimings::default()));
+        return Ok((Vec::new(), Vec::new(), Dwt97BatchStageTimings::default()));
     };
 
     let uniform = jobs.iter().all(|job| {
@@ -481,15 +488,16 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     let mut timings = map_batch_timings(cuda_timings);
 
     let resources = session.encode_resources(&context)?;
-    let (components, ht_timings, ht_dispatches) = device_bands_to_preencoded_components(
-        &context,
-        resources.as_ref(),
-        &pool,
-        &device_bands,
-        jobs,
-        options,
-    )?;
+    let (components, required_magnitude_bounds, ht_timings, ht_dispatches) =
+        device_bands_to_preencoded_components(
+            &context,
+            resources.as_ref(),
+            &pool,
+            &device_bands,
+            jobs,
+            options,
+        )?;
     set_ht_encode_timings(&mut timings, ht_timings);
     timings.ht_codeblock_dispatches = ht_dispatches;
-    Ok((components, timings))
+    Ok((components, required_magnitude_bounds, timings))
 }

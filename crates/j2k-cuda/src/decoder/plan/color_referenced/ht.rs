@@ -72,9 +72,15 @@ fn build_referenced_ht_color_tile(
     }
     let payload_start = shared_payload.len();
     let flatten_start = profile::profile_now(true);
+    CudaHtj2kDecodePlan::validate_referenced_classic_payload_sequence(
+        tile.classic_payloads(),
+        tile.classic_ranges(),
+    )?;
     let components = flatten_referenced_cuda_color_tile_components(
         component_plans,
         payloads,
+        tile.classic_payloads(),
+        tile.classic_ranges(),
         input,
         fmt,
         (output_rect.x0, output_rect.y0),
@@ -82,14 +88,20 @@ fn build_referenced_ht_color_tile(
         shared_payload,
         host_budget,
     )?;
-    let block_count = components
+    let ht_block_count = components
         .iter()
-        .map(CudaHtj2kDecodePlan::block_count)
+        .map(|component| component.code_blocks().len())
         .sum::<usize>();
+    let classic_block_count = components
+        .iter()
+        .map(|component| component.classic_code_blocks().len())
+        .sum::<usize>();
+    let block_count = ht_block_count.saturating_add(classic_block_count);
     let report = CudaHtj2kProfileReport {
         flatten_us: profile::elapsed_us(flatten_start),
         block_count,
-        ht_block_count: block_count,
+        classic_block_count,
+        ht_block_count,
         payload_bytes: shared_payload.len().saturating_sub(payload_start),
         residency: crate::SurfaceResidency::CudaResidentDecode,
         detail: CudaHtj2kDecodeProfileDetail::default(),

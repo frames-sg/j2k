@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
-use crate::{J2kPacketizationCodeBlock, J2kPacketizationSubband, J2kSubBandType};
+use crate::{
+    CpuOnlyJ2kEncodeStageAccelerator, J2kPacketizationCodeBlock, J2kPacketizationSubband,
+    J2kSubBandType,
+};
 use alloc::vec;
 
 fn vector_with_capacity<T>(capacity: usize) -> Vec<T> {
@@ -23,6 +26,87 @@ fn basic_compact_request_image() -> PreencodedHtj2k97CompactImage {
             resolutions: Vec::new(),
         }],
     }
+}
+
+#[test]
+fn compact_plan_accepts_an_observed_cleanup_bound_override() {
+    let options = EncodeOptions {
+        num_decomposition_levels: 0,
+        reversible: false,
+        guard_bits: 2,
+        use_ht_block_coding: true,
+        code_block_width_exp: 2,
+        code_block_height_exp: 2,
+        ..EncodeOptions::default()
+    };
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        12,
+        0,
+        false,
+        options.guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    let total_bitplanes = options
+        .guard_bits
+        .saturating_add(u8::try_from(step_sizes[0].exponent).expect("test exponent fits u8"))
+        .saturating_sub(1);
+    let encoded = crate::j2c::ht_block_encode::encode_code_block(&[1], 1, 1, total_bitplanes)
+        .expect("encode compact test block");
+    let payload_len = encoded.data.len();
+    let image = PreencodedHtj2k97CompactImage {
+        width: 1,
+        height: 1,
+        bit_depth: 12,
+        signed: false,
+        payload: encoded.data,
+        components: vec![PreencodedHtj2k97CompactComponent {
+            x_rsiz: 1,
+            y_rsiz: 1,
+            resolutions: vec![PreencodedHtj2k97CompactResolution {
+                subbands: vec![PreencodedHtj2k97CompactSubband {
+                    sub_band_type: J2kSubBandType::LowLow,
+                    num_cbs_x: 1,
+                    num_cbs_y: 1,
+                    total_bitplanes,
+                    code_blocks: vec![PreencodedHtj2k97CompactCodeBlock {
+                        width: 1,
+                        height: 1,
+                        payload_range: 0..payload_len,
+                        cleanup_length: encoded.ht_cleanup_length,
+                        refinement_length: encoded.ht_refinement_length,
+                        num_coding_passes: encoded.num_coding_passes,
+                        num_zero_bitplanes: encoded.num_zero_bitplanes,
+                    }],
+                }],
+            }],
+        }],
+    };
+    let retained_input_bytes = compact_image_retained_bytes(&image).expect("retained input bytes");
+    {
+        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::from_owner_bytes(
+            &image,
+            retained_input_bytes,
+        ))
+        .expect("compact plan session");
+        let plan = Compact97PacketPlan::try_new(&image, &options, retained_input_bytes, &session)
+            .expect("build compact packet plan");
+
+        assert_eq!(plan.params.required_ht_magnitude_bound, Some(8));
+    }
+
+    let codestream = encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+        image,
+        &options,
+        &mut CpuOnlyJ2kEncodeStageAccelerator,
+        crate::DEFAULT_MAX_CODEC_BYTES,
+        Some(9),
+    )
+    .expect("encode compact payload with observed magnitude bound");
+    let capabilities = crate::inspect_htj2k_capabilities(&codestream)
+        .expect("inspect compact HTJ2K capabilities")
+        .expect("compact codestream advertises Part 15");
+    assert_eq!(capabilities.magnitude_bound(), 9);
 }
 
 #[test]

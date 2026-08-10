@@ -5,7 +5,7 @@
 use j2k_core::BatchInfrastructureError;
 use j2k_native::HtCodeBlockPayloadRanges;
 
-use super::super::{BatchCodecRoute, PreparedBatchGroup, PreparedHtj2kPlan};
+use super::super::{BatchCodecRoute, PreparedBatchGroup};
 use super::plan::{
     append_input_range, empty_range, ht_bucket, ht_bucket_index, ht_group_requirements,
     reserve_reused, visit_ht_jobs,
@@ -18,6 +18,18 @@ impl CpuGroupFastWorkspace {
         group: &PreparedBatchGroup,
     ) -> Result<(), BatchInfrastructureError> {
         let (payload_count, payload_bytes) = ht_group_requirements(group)?;
+        self.initialize_ht_storage(group, payload_count, payload_bytes)?;
+        self.collect_ht_jobs(group, payload_count)?;
+        self.materialize_ht_payloads(group)?;
+        self.finish_group(BatchCodecRoute::Htj2k, payload_bytes)
+    }
+
+    fn initialize_ht_storage(
+        &mut self,
+        group: &PreparedBatchGroup,
+        payload_count: usize,
+        payload_bytes: usize,
+    ) -> Result<(), BatchInfrastructureError> {
         self.prepare_storage::<HtCodeBlockPayloadRanges>(
             group.images.len(),
             payload_count,
@@ -36,11 +48,18 @@ impl CpuGroupFastWorkspace {
             },
         );
         self.assign_image_spans(group, |image| {
-            image
+            let plan = image
                 .htj2k_plan()
-                .map_or(0, PreparedHtj2kPlan::payload_count)
-        })?;
+                .ok_or(BatchInfrastructureError::MissingResult { index: 0 })?;
+            visit_ht_jobs(plan.native_plan(), |_, _, _, _| {})
+        })
+    }
 
+    fn collect_ht_jobs(
+        &mut self,
+        group: &PreparedBatchGroup,
+        payload_count: usize,
+    ) -> Result<(), BatchInfrastructureError> {
         for bucket in [
             CpuPayloadBucket::Cleanup,
             CpuPayloadBucket::SigProp,
@@ -54,7 +73,7 @@ impl CpuGroupFastWorkspace {
                 let mut bucket_ordinals = [0_usize; 3];
                 visit_ht_jobs(
                     plan.native_plan(),
-                    |payload_index, block_index, coding_passes| {
+                    |job_index, payload_records, block_index, coding_passes| {
                         if ht_bucket(coding_passes) == bucket {
                             let bucket_index = ht_bucket_index(bucket);
                             let bucket_ordinal = bucket_ordinals[bucket_index];
@@ -62,15 +81,16 @@ impl CpuGroupFastWorkspace {
                             self.jobs.push(CpuFlattenedPayloadJob {
                                 source_index: group.source_indices[image_slot],
                                 image_slot,
-                                payload_index,
-                                destination_index: span.start + payload_index,
+                                payload_index: payload_records.first_record,
+                                payload_record_count: payload_records.record_count,
+                                destination_index: span.start + job_index,
                                 block_index,
                                 bucket,
                                 bucket_ordinal,
                             });
                         }
                     },
-                );
+                )?;
             }
         }
         self.jobs.sort_unstable_by_key(|job| {
@@ -85,6 +105,13 @@ impl CpuGroupFastWorkspace {
                 index: self.jobs.len(),
             });
         }
+        Ok(())
+    }
+
+    fn materialize_ht_payloads(
+        &mut self,
+        group: &PreparedBatchGroup,
+    ) -> Result<(), BatchInfrastructureError> {
         for job in &self.jobs {
             if group.source_indices.get(job.image_slot).copied() != Some(job.source_index) {
                 return Err(BatchInfrastructureError::ResultIndexOutOfBounds {
@@ -93,30 +120,60 @@ impl CpuGroupFastWorkspace {
                 });
             }
             let image = &group.images[job.image_slot];
-            let payload = image
+            let payload_end = job
+                .payload_index
+                .checked_add(job.payload_record_count)
+                .ok_or(BatchInfrastructureError::ResultIndexOutOfBounds {
+                    index: job.payload_index,
+                    job_count: image.bytes().len(),
+                })?;
+            let payloads = image
                 .htj2k_plan()
-                .and_then(|plan| plan.native_plan().payloads().get(job.payload_index))
-                .copied()
+                .and_then(|plan| {
+                    plan.native_plan()
+                        .payloads()
+                        .get(job.payload_index..payload_end)
+                })
                 .ok_or(BatchInfrastructureError::MissingResult {
                     index: job.source_index,
                 })?;
+            let payload =
+                payloads
+                    .first()
+                    .copied()
+                    .ok_or(BatchInfrastructureError::MissingResult {
+                        index: job.source_index,
+                    })?;
             let cleanup = append_input_range(
                 &mut self.compressed_arena,
                 image,
                 payload.cleanup,
                 job.source_index,
             )?;
-            let refinement = payload
-                .refinement
-                .map(|range| {
-                    append_input_range(&mut self.compressed_arena, image, range, job.source_index)
-                })
-                .transpose()?;
+            let refinement_start = self.compressed_arena.len();
+            for (record_index, payload) in payloads.iter().enumerate() {
+                if record_index != 0 {
+                    append_input_range(
+                        &mut self.compressed_arena,
+                        image,
+                        payload.cleanup,
+                        job.source_index,
+                    )?;
+                }
+                if let Some(range) = payload.refinement {
+                    append_input_range(&mut self.compressed_arena, image, range, job.source_index)?;
+                }
+            }
+            let refinement_length = self.compressed_arena.len() - refinement_start;
+            let refinement = (refinement_length != 0).then_some(j2k_native::J2kCodestreamRange {
+                offset: refinement_start,
+                length: refinement_length,
+            });
             self.ht_payloads[job.destination_index] = HtCodeBlockPayloadRanges {
                 cleanup,
                 refinement,
             };
         }
-        self.finish_group(BatchCodecRoute::Htj2k, payload_bytes)
+        Ok(())
     }
 }

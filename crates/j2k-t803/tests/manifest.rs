@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use j2k_t803::T803Manifest;
+use j2k_t803::{T803Manifest, T803Suite};
 
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -12,7 +12,7 @@ fn repo_root() -> &'static Path {
 }
 
 #[test]
-fn committed_manifest_covers_the_complete_part1_and_jp2_scope() {
+fn committed_manifest_covers_part1_and_the_formal_part15_scope() {
     let text = fs::read_to_string(repo_root().join("corpus/j2k-conformance/t803-v3.toml"))
         .expect("read committed T.803 manifest");
 
@@ -20,7 +20,13 @@ fn committed_manifest_covers_the_complete_part1_and_jp2_scope() {
 
     assert_eq!(manifest.decoder_cases.len(), 81);
     assert_eq!(manifest.jp2_cases.len(), 9);
-    assert_eq!(manifest.files.len(), 123);
+    assert_eq!(manifest.ht_bsets.len(), 26);
+    assert_eq!(manifest.jph_bsets.len(), 10);
+    assert_eq!(manifest.files.len(), 189);
+    assert!(manifest
+        .files
+        .windows(2)
+        .all(|pair| pair[0].path < pair[1].path));
     assert_eq!(manifest.table_case_count("C.1"), 18);
     assert_eq!(manifest.table_case_count("C.4"), 8);
     assert_eq!(manifest.table_case_count("C.6"), 35);
@@ -30,6 +36,52 @@ fn committed_manifest_covers_the_complete_part1_and_jp2_scope() {
         .decoder_cases
         .iter()
         .all(|case| !case.codestream.contains("htj2k")));
+
+    let selected = manifest
+        .decoder_cases_for_suite(T803Suite::Part15)
+        .expect("select official Part 15 cases");
+    assert_eq!(selected.len(), 60);
+
+    let selected_case = |bset: &str| {
+        selected
+            .iter()
+            .find(|case| {
+                case.part15
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.bset == bset)
+            })
+            .expect("selected BSET comparison")
+    };
+    assert_eq!(
+        selected_case("p0-06-ds0-ht").codestream,
+        "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b15.j2k"
+    );
+    assert_eq!(
+        selected_case("p0-06-ds0-hm").codestream,
+        "files/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b11.j2k"
+    );
+    let high_fidelity = selected_case("hifi-ht1-02")
+        .part15
+        .as_ref()
+        .expect("Part 15 metadata");
+    assert_eq!(high_fidelity.mmagb, 20);
+    assert_eq!(high_fidelity.bmagb, 14);
+    let selected_jph = |id: &str| {
+        manifest
+            .jph_bsets
+            .iter()
+            .find(|bset| bset.id == id)
+            .and_then(|bset| bset.selected_candidate())
+            .expect("selected JPH BSET candidate")
+    };
+    assert_eq!(
+        selected_jph("jph-7").path,
+        "files/testfiles_jph/file7_b15.jph"
+    );
+    assert_eq!(
+        selected_jph("jph-10").path,
+        "files/testfiles_jph/file10_b12.jph"
+    );
 }
 
 #[test]
@@ -79,7 +131,7 @@ fn minimal_manifest(file_fields: &str) -> String {
         format!("sha256 = \"{}\"", "0".repeat(64))
     };
     format!(
-        r#"schema_version = 1
+        r#"schema_version = 2
 standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
 
 [source]

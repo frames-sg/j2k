@@ -81,6 +81,15 @@ impl GrayscaleGroupEncoder<'_> {
                 status.remap_sources(sources)?;
             }
         }
+        self.metadata.dispatch_report.idwt = self.metadata.dispatch_report.idwt.saturating_add(
+            first
+                .steps
+                .iter()
+                .filter(|step| matches!(step, super::super::PreparedDirectGrayscaleStep::Idwt(_)))
+                .count(),
+        );
+        self.metadata.dispatch_report.color_output =
+            self.metadata.dispatch_report.color_output.saturating_add(1);
         Ok(())
     }
 
@@ -105,6 +114,16 @@ impl GrayscaleGroupEncoder<'_> {
             for status in &mut self.metadata.status_checks[status_start..] {
                 status.remap_source(source_index)?;
             }
+            self.metadata.dispatch_report.idwt = self.metadata.dispatch_report.idwt.saturating_add(
+                plan.steps
+                    .iter()
+                    .filter(|step| {
+                        matches!(step, super::super::PreparedDirectGrayscaleStep::Idwt(_))
+                    })
+                    .count(),
+            );
+            self.metadata.dispatch_report.color_output =
+                self.metadata.dispatch_report.color_output.saturating_add(1);
         }
         Ok(())
     }

@@ -32,10 +32,14 @@ pub struct CudaHtj2kDecodeProfileDetail {
     pub output_d2h_us: u128,
     /// HT cleanup/refinement CUDA dispatch count.
     pub ht_dispatch_count: usize,
+    /// HT CUDA dispatches that completed at least one refinement job.
+    pub ht_refinement_dispatch_count: usize,
     /// Classic Tier-1 CUDA dispatch count.
     pub classic_dispatch_count: usize,
     /// Dequantization CUDA dispatch count.
     pub dequant_dispatch_count: usize,
+    /// Tier-1 CUDA dispatches that also completed fused dequantization.
+    pub fused_dequant_dispatch_count: usize,
     /// Inverse DWT CUDA dispatch count.
     pub idwt_dispatch_count: usize,
     /// Inverse MCT CUDA dispatch count.

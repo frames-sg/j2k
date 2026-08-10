@@ -10,12 +10,15 @@ use crate::j2k_decode::{
 fn explicit_tail_fields_preserve_cuda_host_abi_sizes_and_offsets() {
     assert_eq!(size_of::<CudaJpegEntropyCheckpoint>(), 40);
     assert_eq!(offset_of!(CudaJpegEntropyCheckpoint, reserved_tail), 36);
+    assert_eq!(size_of::<CudaHtj2kCodeBlockKernelJob>(), 56);
+    assert_eq!(offset_of!(CudaHtj2kCodeBlockKernelJob, reconstruction), 32);
     assert_eq!(size_of::<CudaHtj2kCleanupMultiKernelJob>(), 64);
     assert_eq!(
-        offset_of!(CudaHtj2kCleanupMultiKernelJob, reserved_tail),
+        offset_of!(CudaHtj2kCleanupMultiKernelJob, reconstruction),
         60
     );
     assert_eq!(size_of::<CudaHtj2kDequantizeKernelJob>(), 40);
+    assert_eq!(offset_of!(CudaHtj2kDequantizeKernelJob, reconstruction), 28);
     assert_eq!(offset_of!(CudaHtj2kDequantizeKernelJob, reserved_tail), 36);
     assert_eq!(size_of::<CudaClassicKernelJob>(), 80);
     assert_eq!(offset_of!(CudaClassicKernelJob, dequantization_step), 72);
@@ -77,7 +80,7 @@ fn explicit_cuda_tail_fields_are_part_of_safe_byte_views() {
         output_stride: 4,
         output_offset: 5,
         num_bitplanes: 6,
-        reserved: 0,
+        reconstruction: 0,
         dequantization_step: 1.0,
         reserved_tail: 0x8877_6655,
     }];

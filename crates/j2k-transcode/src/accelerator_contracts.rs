@@ -569,6 +569,12 @@ pub trait DctToWaveletStageAccelerator {
     fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
         None
     }
+
+    /// Return exact Part 15 magnitude bounds for the most recent successful
+    /// preencoded batch, in flattened output-component order.
+    fn last_htj2k97_required_magnitude_bounds(&self) -> &[u8] {
+        &[]
+    }
 }
 
 /// Accelerator that always uses the scalar CPU fallback.

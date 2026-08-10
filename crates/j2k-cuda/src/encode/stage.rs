@@ -108,6 +108,8 @@ pub struct CudaEncodeStageAccelerator {
     prefer_cpu_ht_subband: bool,
     prefer_cpu_quantize_subband: bool,
     prefer_cpu_packetization: bool,
+    ht_subband_maximum_cleanup_magnitude: Option<u64>,
+    ht_tile_required_magnitude_bound: Option<u8>,
     deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
     forward_ict_dispatches: usize,
@@ -501,6 +503,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
     }
 
+    fn ht_subband_maximum_cleanup_magnitude(&self) -> Option<u64> {
+        self.ht_subband_maximum_cleanup_magnitude
+    }
+
+    fn ht_tile_required_magnitude_bound(&self) -> Option<u8> {
+        self.ht_tile_required_magnitude_bound
+    }
+
     fn encode_deinterleave(
         &mut self,
         job: J2kDeinterleaveToF32Job<'_>,
@@ -873,6 +883,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         &mut self,
         job: J2kHtj2kTileEncodeJob<'_>,
     ) -> CudaStageResult<Option<Vec<u8>>> {
+        self.ht_tile_required_magnitude_bound = None;
         self.htj2k_tile_attempts = self.htj2k_tile_attempts.saturating_add(1);
         if self.prefer_cpu_forward_rct || self.prefer_cpu_packetization {
             emit_cuda_encode_route!(
@@ -946,6 +957,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             self.packetization_dispatches = self
                 .packetization_dispatches
                 .saturating_add(encoded.packetization_dispatches);
+            self.ht_tile_required_magnitude_bound = encoded.required_ht_magnitude_bound;
             if self.collect_profile {
                 self.deinterleave_us = self
                     .deinterleave_us
@@ -982,6 +994,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         &mut self,
         job: J2kHtSubbandEncodeJob<'_>,
     ) -> CudaStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
+        self.ht_subband_maximum_cleanup_magnitude = None;
         let code_block_count = ht_subband_code_block_count(job)?;
         self.ht_subband_attempts = self.ht_subband_attempts.saturating_add(1);
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
@@ -1002,6 +1015,12 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let quantize_dispatches = encoded.quantize_dispatches;
             let encode_dispatches = encoded.encode.execution().kernel_dispatches();
             let timings = encoded.timings;
+            self.ht_subband_maximum_cleanup_magnitude = encoded
+                .encode
+                .code_blocks()
+                .iter()
+                .map(|block| u64::from(block.status().detail))
+                .max();
             let outputs = encoded_ht_code_blocks_from_cuda(encoded.encode)?;
             self.ht_subband_dispatches = self.ht_subband_dispatches.saturating_add(1);
             self.quantize_subband_dispatches = self

@@ -79,6 +79,7 @@ impl TypedI64HighBitPlan {
             use_mct: false,
             guard_bits,
             block_coding_mode,
+            required_ht_magnitude_bound: None,
             progression_order: options.progression_order,
             write_tlm: options.write_tlm,
             write_plt: options.write_plt,

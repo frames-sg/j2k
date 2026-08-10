@@ -138,9 +138,14 @@ fn prepare_htj2k_offset_plan(
     let output = plan.output_rect();
     match worker.build_prepared_htj2k_plan(image, (output.x, output.y, output.w, output.h)) {
         Ok(plan) => Ok(Some(PreparedHtj2kPlan::from_native(plan))),
-        Err(j2k_native::DecodeError::Decoding(
-            j2k_native::DecodingError::DirectPlanUnsupported(_),
-        )) => Ok(None),
+        Err(source)
+            if matches!(
+                source.classify(),
+                j2k_native::DecodeErrorClass::Unsupported { .. }
+            ) =>
+        {
+            Ok(None)
+        }
         Err(source) => Err(BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
             source: Arc::new(J2kError::from_native_decode_error(source)),

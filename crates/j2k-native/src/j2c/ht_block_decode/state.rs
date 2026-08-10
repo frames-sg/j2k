@@ -5,8 +5,38 @@ use alloc::vec::Vec;
 use super::super::build::CodeBlock;
 use super::pipeline::prepare_scratch;
 use crate::error::{Result, ValidationError};
-use crate::{checked_decode_sample_count, try_resize_decode_elements};
+use crate::{checked_decode_sample_count, try_reserve_decode_elements, try_resize_decode_elements};
 use core::mem::size_of;
+
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the sign bit is masked before converting the at-most 31-bit coefficient magnitude"
+)]
+pub(crate) fn coefficient_to_i32(value: u32, k_max: u8) -> i32 {
+    let shift = 31_u32.saturating_sub(u32::from(k_max));
+    let magnitude = ((value & 0x7FFF_FFFF) >> shift) as i32;
+
+    if (value & 0x8000_0000) != 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "HT irreversible reconstruction intentionally converts its fixed-point magnitude to the codec f32 domain"
+)]
+pub(crate) fn coefficient_to_f32(value: u32, k_max: u8) -> f32 {
+    let binary_point = 31_i32 - i32::from(k_max);
+    let magnitude = (value & 0x7FFF_FFFF) as f32 * crate::math::pow2i(-binary_point);
+
+    if (value & 0x8000_0000) != 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
 
 mod scratch;
 #[cfg(test)]
@@ -16,18 +46,26 @@ pub(super) use self::scratch::{resized_u16_scratch, resized_u32_scratch, zeroed_
 #[derive(Default)]
 pub(crate) struct HtBlockDecodeContext {
     pub(super) coefficients: Vec<u32>,
+    pub(super) segment_data: Vec<u8>,
     pub(super) scratch: HtBlockDecodeScratch,
     pub(super) width: u32,
     pub(super) height: u32,
 }
 
 impl HtBlockDecodeContext {
-    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+    pub(crate) fn prepare(
+        &mut self,
+        width: u32,
+        height: u32,
+        segment_data_bytes: usize,
+    ) -> Result<()> {
         self.width = width;
         self.height = height;
         let coefficient_count = checked_decode_sample_count(width, height)?;
         self.coefficients.clear();
         try_resize_decode_elements(&mut self.coefficients, coefficient_count, 0)?;
+        self.segment_data.clear();
+        try_reserve_decode_elements(&mut self.segment_data, segment_data_bytes)?;
         prepare_scratch(&mut self.scratch, width, height)
     }
 
@@ -37,13 +75,16 @@ impl HtBlockDecodeContext {
             .capacity()
             .checked_mul(size_of::<u32>())
             .ok_or(ValidationError::ImageTooLarge)?;
+        let segment_bytes = self.segment_data.capacity();
         coefficient_bytes
+            .checked_add(segment_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?
             .checked_add(self.scratch.allocated_bytes()?)
             .ok_or(ValidationError::ImageTooLarge.into())
     }
 
     pub(super) fn reset(&mut self, code_block: &CodeBlock) -> Result<()> {
-        self.prepare(code_block.rect.width(), code_block.rect.height())
+        self.prepare(code_block.rect.width(), code_block.rect.height(), 0)
     }
 
     pub(crate) fn coefficient_rows(&self) -> impl Iterator<Item = &[u32]> {

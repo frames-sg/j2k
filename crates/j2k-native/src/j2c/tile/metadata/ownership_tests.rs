@@ -24,6 +24,7 @@ fn coding_parameters(capacity: usize, precincts: &[(u8, u8)]) -> CodingStylePara
             vertically_causal_context: false,
             segmentation_symbols: true,
             high_throughput_block_coding: false,
+            mixed_block_coding: false,
         },
         transformation: WaveletTransform::Irreversible97,
         precinct_exponents,

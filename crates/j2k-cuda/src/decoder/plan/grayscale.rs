@@ -126,6 +126,10 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
     let mut plans = host_budget.try_vec_with_capacity(referenced.tiles().len())?;
     let mut next_payload = 0usize;
     for tile in referenced.tiles() {
+        CudaHtj2kDecodePlan::validate_referenced_classic_payload_sequence(
+            tile.classic_payloads(),
+            tile.classic_ranges(),
+        )?;
         let geometry = tile
             .grayscale_geometry()
             .ok_or(Error::UnsupportedCudaRequest {
@@ -151,6 +155,8 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
         let cuda_plan = CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_into_shared(
             geometry,
             payloads,
+            tile.classic_payloads(),
+            tile.classic_ranges(),
             input,
             fmt,
             (output_rect.x0, output_rect.y0),
@@ -164,7 +170,7 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
             flatten_us: profile::elapsed_us(flatten_start),
             total_us: profile::elapsed_us(total_start),
             block_count: cuda_plan.block_count(),
-            classic_block_count: 0,
+            classic_block_count: cuda_plan.classic_code_blocks().len(),
             ht_block_count: cuda_plan.code_blocks().len(),
             payload_bytes: shared_payload.len().saturating_sub(payload_start),
             dispatch_count: 0,

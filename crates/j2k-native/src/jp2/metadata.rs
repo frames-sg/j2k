@@ -249,6 +249,30 @@ pub struct Jp2ChannelDefinition {
     pub association: Jp2ChannelAssociation,
 }
 
+impl Jp2ChannelDefinition {
+    /// Raw CDEF channel-type value, including application-defined values.
+    #[must_use]
+    pub const fn channel_type_raw(&self) -> u16 {
+        match self.channel_type {
+            Jp2ChannelType::Color => 0,
+            Jp2ChannelType::Opacity => 1,
+            Jp2ChannelType::PremultipliedOpacity => 2,
+            Jp2ChannelType::Unspecified => u16::MAX,
+            Jp2ChannelType::Unknown { value } => value,
+        }
+    }
+
+    /// Raw CDEF channel-association value, including application-defined values.
+    #[must_use]
+    pub const fn association_raw(&self) -> u16 {
+        match self.association {
+            Jp2ChannelAssociation::WholeImage => 0,
+            Jp2ChannelAssociation::Color { index } => index,
+            Jp2ChannelAssociation::Unspecified => u16::MAX,
+        }
+    }
+}
+
 /// JP2/JPH channel type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Jp2ChannelType {

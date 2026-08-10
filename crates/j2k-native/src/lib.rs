@@ -206,9 +206,12 @@ pub use direct_roi::{
     J2kIdwtRequiredInputWindows, J2kRequiredBandRegion,
 };
 pub use inspect::{
-    inspect_j2k_codestream_header, looks_like_j2k_codestream, J2kCodestreamComponentHeader,
-    J2kCodestreamHeaderError, J2kCodestreamHeaderMetadata,
+    inspect_htj2k_capabilities, inspect_j2k_codestream_header, looks_like_j2k_codestream,
+    J2kCodestreamComponentHeader, J2kCodestreamHeaderError, J2kCodestreamHeaderMetadata,
 };
+#[doc(hidden)]
+pub use j2c::capabilities::required_magnitude_bound as htj2k_required_magnitude_bound;
+pub use j2c::capabilities::{Htj2kCapabilities, Htj2kCapabilityMode, J2kCorrespondingProfile};
 #[doc(hidden)]
 pub use jp2::{
     extract_jp2_codestream_payload, inspect_jp2_container, Jp2ChannelAssociation,
@@ -219,8 +222,8 @@ pub use jp2::{
 #[doc(hidden)]
 pub use roi::idwt_band_index;
 pub(crate) use roi::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    validate_roi,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
+    apply_roi_maxshift_inverse_i64, validate_roi,
 };
 
 pub use error::{
@@ -243,8 +246,10 @@ pub use j2c::encode::{
     encode_precomputed_j2k_53_with_mct_and_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_owned_with_accelerator,
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
     encode_prequantized_htj2k_97_with_accelerator,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
@@ -398,6 +403,8 @@ mod scalar;
 pub use scalar::{
     collect_ht_cleanup_encode_distribution, decode_ht_code_block_scalar,
     decode_ht_code_block_scalar_until_phase, decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_ht_code_block_scalar_with_workspace_midpoint_profiled,
     decode_ht_code_block_scalar_with_workspace_profiled, decode_j2k_code_block_scalar,
     decode_j2k_code_block_scalar_profiled, decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint,

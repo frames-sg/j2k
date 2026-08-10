@@ -59,13 +59,20 @@ pub(crate) fn prepare_referenced_htj2k_grayscale_plan(
             referenced.payloads().len(),
             "HTJ2K grayscale tile",
         )?;
+        let mut classic_payloads = ReferencedClassicPayloadCursor::new(
+            input,
+            tile.classic_payloads(),
+            tile.classic_ranges(),
+        );
         append_referenced_htj2k_component_steps(
             geometry,
             input,
             referenced.payloads(),
             &mut payload_cursor,
+            &mut classic_payloads,
             &mut steps,
         )?;
+        classic_payloads.ensure_exhausted()?;
         if payload_cursor != expected_end {
             return Err(Error::MetalStateInvariant {
                 state: "HTJ2K grayscale tile payload traversal",
@@ -112,7 +119,8 @@ pub(crate) fn prepare_referenced_classic_grayscale_plan(
         step_count,
         "J2K MetalDirect referenced classic grayscale tile steps",
     )?;
-    let mut payloads = ReferencedClassicPayloadCursor::new(input, referenced);
+    let mut payloads =
+        ReferencedClassicPayloadCursor::new(input, referenced.payloads(), referenced.ranges());
     for tile in referenced.tiles() {
         let geometry = tile
             .grayscale_geometry()

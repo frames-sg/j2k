@@ -2549,7 +2549,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
 }
 
 #[test]
-fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
+fn accelerator_facade_ht_lossless_quality_layers_keep_cleanup_only() {
     #[derive(Default)]
     struct RefinementHtAccelerator {
         max_target_coding_passes: u8,
@@ -2600,7 +2600,7 @@ fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
     )
     .expect("HT lossless layered encode should dispatch");
 
-    assert_eq!(accelerator.max_target_coding_passes, 3);
+    assert_eq!(accelerator.max_target_coding_passes, 1);
     assert!(accelerator.ht_code_block > 0);
     assert_eq!(decode_native(&encoded.codestream).data, pixels);
 }

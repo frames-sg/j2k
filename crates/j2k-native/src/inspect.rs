@@ -7,12 +7,14 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::j2c::capabilities::{CapabilityMarkerError, CapabilityMarkerState, Htj2kCapabilities};
 use crate::{MAX_J2K_IMAGE_DIMENSION, MAX_J2K_SPEC_COMPONENTS, MAX_J2K_TILE_COUNT};
 
 const MARKER_SOC: u8 = 0x4F;
 const MARKER_CAP: u8 = 0x50;
 const MARKER_SIZ: u8 = 0x51;
 const MARKER_COD: u8 = 0x52;
+const MARKER_CPF: u8 = 0x59;
 const MARKER_SOT: u8 = 0x90;
 const MARKER_SOD: u8 = 0x93;
 const MARKER_EOC: u8 = 0xD9;
@@ -102,6 +104,16 @@ pub enum J2kCodestreamHeaderError {
         /// Description of the invalid COD segment.
         what: &'static str,
     },
+    /// The CAP marker segment was malformed or internally inconsistent.
+    InvalidCap {
+        /// Description of the invalid CAP segment.
+        what: &'static str,
+    },
+    /// The CPF marker segment was malformed.
+    InvalidCpf {
+        /// Description of the invalid CPF segment.
+        what: &'static str,
+    },
     /// The header is valid, but outside the public inspection contract.
     Unsupported {
         /// Description of the unsupported feature.
@@ -135,6 +147,8 @@ impl fmt::Display for J2kCodestreamHeaderError {
             Self::InvalidSegment { what, .. } => write!(f, "invalid marker segment: {what}"),
             Self::InvalidSiz { what } => write!(f, "invalid SIZ segment: {what}"),
             Self::InvalidCod { what } => write!(f, "invalid COD segment: {what}"),
+            Self::InvalidCap { what } => write!(f, "invalid CAP segment: {what}"),
+            Self::InvalidCpf { what } => write!(f, "invalid CPF segment: {what}"),
             Self::Unsupported { what } => write!(f, "unsupported codestream header: {what}"),
             Self::HostAllocationFailed { bytes } => {
                 write!(f, "codestream header allocation failed for {bytes} bytes")
@@ -157,6 +171,31 @@ impl core::error::Error for J2kCodestreamHeaderError {}
 pub fn inspect_j2k_codestream_header(
     input: &[u8],
 ) -> Result<J2kCodestreamHeaderMetadata, J2kCodestreamHeaderError> {
+    inspect_main_header(input).map(|inspected| inspected.metadata)
+}
+
+/// Inspect Part 15 CAP/CPF and main COD style facts without decoding tile data.
+///
+/// Returns `Ok(None)` for a valid codestream that does not advertise `Pcap15`.
+/// The existing [`inspect_j2k_codestream_header`] metadata layout remains
+/// unchanged; this expert API carries the additional Part 15 facts.
+///
+/// # Errors
+///
+/// Returns an error when required main-header markers or CAP/CPF values are
+/// missing, truncated, duplicated, reserved, or internally inconsistent.
+pub fn inspect_htj2k_capabilities(
+    input: &[u8],
+) -> Result<Option<Htj2kCapabilities>, J2kCodestreamHeaderError> {
+    inspect_main_header(input).map(|inspected| inspected.htj2k)
+}
+
+struct InspectedMainHeader {
+    metadata: J2kCodestreamHeaderMetadata,
+    htj2k: Option<Htj2kCapabilities>,
+}
+
+fn inspect_main_header(input: &[u8]) -> Result<InspectedMainHeader, J2kCodestreamHeaderError> {
     if input.len() < 2 {
         return Err(J2kCodestreamHeaderError::TooShort {
             need: 2,
@@ -173,7 +212,7 @@ pub fn inspect_j2k_codestream_header(
     let mut offset = 2usize;
     let mut siz = None;
     let mut cod = None;
-    let mut high_throughput_cap = false;
+    let mut capabilities = CapabilityMarkerState::default();
     let mut terminated = false;
 
     while offset < input.len() {
@@ -192,8 +231,16 @@ pub fn inspect_j2k_codestream_header(
                 cod = Some(parse_cod(payload)?);
             }
             MARKER_CAP => {
-                let _ = read_segment_payload(input, &mut offset, "CAP")?;
-                high_throughput_cap = true;
+                let payload = read_segment_payload(input, &mut offset, "CAP")?;
+                capabilities
+                    .record_cap(payload)
+                    .map_err(map_capability_error)?;
+            }
+            MARKER_CPF => {
+                let payload = read_segment_payload(input, &mut offset, "CPF")?;
+                capabilities
+                    .record_cpf(payload)
+                    .map_err(map_capability_error)?;
             }
             0x30..=0x3F => {}
             _ => {
@@ -210,22 +257,46 @@ pub fn inspect_j2k_codestream_header(
     }
 
     let siz = siz.ok_or(J2kCodestreamHeaderError::MissingRequiredMarker { marker: "SIZ" })?;
+    capabilities
+        .validate_rsiz(siz.rsiz)
+        .map_err(map_capability_error)?;
+    let high_throughput_cap = capabilities.high_throughput();
     let cod = cod
         .ok_or(J2kCodestreamHeaderError::MissingRequiredMarker { marker: "COD" })?
         .with_high_throughput_cap(high_throughput_cap);
+    let htj2k = capabilities
+        .to_public(
+            cod.quality_layers,
+            cod.default_ht_block_coding,
+            cod.default_mixed_block_coding,
+        )
+        .map_err(map_capability_error)?;
 
-    Ok(J2kCodestreamHeaderMetadata {
-        dimensions: siz.dimensions,
-        components: siz.components,
-        bit_depth: siz.bit_depth,
-        tile_size: siz.tile_size,
-        tile_count: siz.tile_count,
-        component_info: siz.component_info,
-        resolution_levels: cod.resolution_levels,
-        has_mct: cod.has_mct,
-        reversible: cod.reversible,
-        high_throughput: cod.high_throughput,
+    Ok(InspectedMainHeader {
+        metadata: J2kCodestreamHeaderMetadata {
+            dimensions: siz.dimensions,
+            components: siz.components,
+            bit_depth: siz.bit_depth,
+            tile_size: siz.tile_size,
+            tile_count: siz.tile_count,
+            component_info: siz.component_info,
+            resolution_levels: cod.resolution_levels,
+            has_mct: cod.has_mct,
+            reversible: cod.reversible,
+            high_throughput: cod.high_throughput,
+        },
+        htj2k,
     })
+}
+
+fn map_capability_error(error: CapabilityMarkerError) -> J2kCodestreamHeaderError {
+    match error {
+        CapabilityMarkerError::Cap(what) => J2kCodestreamHeaderError::InvalidCap { what },
+        CapabilityMarkerError::Cpf(what) => J2kCodestreamHeaderError::InvalidCpf { what },
+        CapabilityMarkerError::Allocation { bytes } => {
+            J2kCodestreamHeaderError::HostAllocationFailed { bytes }
+        }
+    }
 }
 
 /// Return whether bytes start with the raw JPEG 2000 SOC marker.
@@ -236,6 +307,7 @@ pub fn looks_like_j2k_codestream(input: &[u8]) -> bool {
 
 #[derive(Debug, Clone)]
 struct ParsedSiz {
+    rsiz: u16,
     dimensions: (u32, u32),
     components: u16,
     bit_depth: u8,
@@ -245,11 +317,18 @@ struct ParsedSiz {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the flags preserve independent COD and CAP facts for header inspection"
+)]
 struct ParsedCod {
     resolution_levels: u8,
+    quality_layers: u8,
     has_mct: bool,
     reversible: bool,
     high_throughput: bool,
+    default_ht_block_coding: bool,
+    default_mixed_block_coding: bool,
 }
 
 impl ParsedCod {
@@ -382,6 +461,7 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kCodestreamHeaderError> {
     }
 
     Ok(ParsedSiz {
+        rsiz: read_u16(payload, 0),
         dimensions: (width, height),
         components: component_count,
         bit_depth,
@@ -469,11 +549,26 @@ fn parse_cod(payload: &[u8]) -> Result<ParsedCod, J2kCodestreamHeaderError> {
             what: "payload shorter than fixed COD header",
         });
     }
+    let default_ht_block_coding = payload[8] & 0x40 != 0;
+    let default_mixed_block_coding = payload[8] & 0x80 != 0;
+    let quality_layers = read_u16(payload, 2);
+    if quality_layers == 0 || quality_layers > u16::from(crate::j2c::codestream::MAX_LAYER_COUNT) {
+        return Err(J2kCodestreamHeaderError::InvalidCod {
+            what: "quality-layer count is outside the supported range",
+        });
+    }
     Ok(ParsedCod {
         resolution_levels: payload[5].saturating_add(1),
+        quality_layers: u8::try_from(quality_layers).map_err(|_| {
+            J2kCodestreamHeaderError::InvalidCod {
+                what: "quality-layer count does not fit the inspection model",
+            }
+        })?,
         has_mct: payload[4] != 0,
         reversible: payload[9] == 1,
-        high_throughput: payload[8] & 0x40 != 0,
+        high_throughput: default_ht_block_coding,
+        default_ht_block_coding,
+        default_mixed_block_coding,
     })
 }
 

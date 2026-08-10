@@ -9,11 +9,13 @@ struct J2kHtCleanupParams {
     uint refinement_length;
     uint missing_msbs;
     uint num_bitplanes;
+    uint roi_shift;
     uint number_of_coding_passes;
     uint output_stride;
     uint output_offset;
     float dequantization_step;
     uint stripe_causal;
+    uint irreversible_midpoint;
 };
 
 struct J2kHtCleanupBatchJob {
@@ -31,6 +33,7 @@ struct J2kHtCleanupBatchJob {
     uint output_offset;
     float dequantization_step;
     uint stripe_causal;
+    uint irreversible_midpoint;
 };
 
 struct J2kHtRepeatedBatchParams {
@@ -301,12 +304,41 @@ inline int coefficient_to_i32(uint value, uint k_max) {
     return (value & 0x8000'0000u) != 0u ? -magnitude : magnitude;
 }
 
-inline float coefficient_to_float(uint value, uint k_max, float scale) {
-    return float(coefficient_to_i32(value, k_max)) * scale;
+inline float coefficient_to_float(
+    uint value,
+    uint k_max,
+    float scale,
+    uint irreversible_midpoint,
+    uint roi_shift
+) {
+    if (irreversible_midpoint == 0u) {
+        int coefficient = coefficient_to_i32(value, k_max);
+        const uint magnitude = uint(abs(coefficient));
+        if (roi_shift != 0u && magnitude >= (1u << roi_shift)) {
+            const int shifted = int(magnitude >> roi_shift);
+            coefficient = coefficient < 0 ? -shifted : shifted;
+        }
+        return float(coefficient) * scale;
+    }
+    const float magnitude = ldexp(float(value & 0x7FFF'FFFFu), int(k_max) - 31);
+    float coefficient = (value & 0x8000'0000u) != 0u ? -magnitude : magnitude;
+    const float roi_threshold = ldexp(1.0f, int(roi_shift));
+    if (roi_shift != 0u && abs(coefficient) >= roi_threshold) {
+        coefficient = ldexp(coefficient, -int(roi_shift));
+    }
+    return coefficient * scale;
 }
 
-inline uint coefficient_to_float_bits(uint value, uint k_max, float scale) {
-    return as_type<uint>(coefficient_to_float(value, k_max, scale));
+inline uint coefficient_to_float_bits(
+    uint value,
+    uint k_max,
+    float scale,
+    uint irreversible_midpoint,
+    uint roi_shift
+) {
+    return as_type<uint>(
+        coefficient_to_float(value, k_max, scale, irreversible_midpoint, roi_shift)
+    );
 }
 
 inline void decode_mag_sgn_sample_with_vn(
@@ -367,7 +399,8 @@ inline void decode_ht_cleanup_common(
         set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 1u);
         return;
     }
-    if (params.num_bitplanes == 0u || params.num_bitplanes > 31u) {
+    if (params.num_bitplanes == 0u || params.num_bitplanes > 31u ||
+        params.roi_shift > 31u - params.num_bitplanes) {
         set_ht_status(status, J2K_HT_STATUS_FAIL, 2u);
         return;
     }
@@ -990,14 +1023,17 @@ inline void convert_ht_cleanup_coefficients(
     const uint width = params.width;
     const uint height = params.height;
     const uint stride = params.output_stride;
+    const uint coded_bitplanes = params.num_bitplanes + params.roi_shift;
     for (uint y = 0u; y < height; ++y) {
         uint row_offset = params.output_offset + y * stride;
         for (uint x = 0u; x < width; ++x) {
             const uint idx = row_offset + x;
             decoded_data[idx] = coefficient_to_float_bits(
                 decoded_data[idx],
-                params.num_bitplanes,
-                params.dequantization_step
+                coded_bitplanes,
+                params.dequantization_step,
+                params.irreversible_midpoint,
+                params.roi_shift
             );
         }
     }
@@ -1108,11 +1144,13 @@ kernel void j2k_decode_ht_cleanup_batched(
     params.refinement_length = job.refinement_length;
     params.missing_msbs = job.missing_msbs;
     params.num_bitplanes = job.num_bitplanes;
+    params.roi_shift = job.roi_shift;
     params.number_of_coding_passes = job.number_of_coding_passes;
     params.output_stride = job.output_stride;
     params.output_offset = job.output_offset;
     params.dequantization_step = job.dequantization_step;
     params.stripe_causal = job.stripe_causal;
+    params.irreversible_midpoint = job.irreversible_midpoint;
 
     decode_ht_cleanup_impl(
         coded_data + job.coded_offset,
@@ -1139,11 +1177,13 @@ inline J2kHtCleanupParams ht_cleanup_params_from_job(
     params.refinement_length = job.refinement_length;
     params.missing_msbs = job.missing_msbs;
     params.num_bitplanes = job.num_bitplanes;
+    params.roi_shift = job.roi_shift;
     params.number_of_coding_passes = coding_passes;
     params.output_stride = job.output_stride;
     params.output_offset = output_offset;
     params.dequantization_step = job.dequantization_step;
     params.stripe_causal = job.stripe_causal;
+    params.irreversible_midpoint = job.irreversible_midpoint;
     return params;
 }
 

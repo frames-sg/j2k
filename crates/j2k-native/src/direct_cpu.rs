@@ -6,12 +6,13 @@ use crate::j2c::idwt;
 use crate::math::{floor_f32, round_f32};
 use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
-    decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
-    try_resize_decode_elements, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
-    HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId,
-    J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep,
-    J2kDirectStoreStep, J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob,
-    J2kWaveletTransform,
+    decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace, try_resize_decode_elements, HtCodeBlockDecodeJob,
+    HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan, J2kCodeBlockDecodeJob,
+    J2kCodeBlockDecodeWorkspace, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kIdwtBand,
+    J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform,
 };
 
 mod allocation;
@@ -212,6 +213,15 @@ impl DirectComponentBandScratch {
         rect: J2kRect,
         len: usize,
     ) -> Result<usize> {
+        if let Some(index) = self.active_len.checked_sub(1) {
+            let band = &self.bands[index];
+            if band.band_id == band_id {
+                if band.rect != rect || band.coefficients.len() != len {
+                    return Err(DecodingError::CodeBlockDecodeFailure.into());
+                }
+                return Ok(index);
+            }
+        }
         let index = self.active_len;
         if index == self.bands.len() {
             return Err(DecodingError::HostAllocationFailed.into());
@@ -280,6 +290,34 @@ mod tests {
                 ht_workspace_bytes: 0,
             }
         );
+    }
+
+    #[test]
+    fn consecutive_entropy_steps_reuse_one_coefficient_band() {
+        let mut bands = DirectComponentBandScratch {
+            bands: vec![DirectCpuBand::empty()],
+            active_len: 0,
+        };
+        let rect = J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 2,
+            y1: 2,
+        };
+        let first = bands
+            .prepare_band(7, rect, 4)
+            .expect("first entropy step prepares the band");
+        bands.bands[first]
+            .coefficients
+            .copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+
+        let second = bands
+            .prepare_band(7, rect, 4)
+            .expect("second entropy step reuses the band");
+
+        assert_eq!(second, first);
+        assert_eq!(bands.active_len, 1);
+        assert_eq!(bands.bands[second].coefficients, [1.0, 2.0, 3.0, 4.0]);
     }
 
     fn direct_htj2k_rgb_plan() -> (J2kDirectColorPlan, J2kRect) {

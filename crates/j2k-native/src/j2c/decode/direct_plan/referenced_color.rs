@@ -93,6 +93,12 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
             }
             let first_record = payloads.len();
             let mut tile_payloads = Vec::new();
+            let mut tile_classic_payloads = Vec::new();
+            let mut tile_classic_ranges = Vec::new();
+            let mut classic_collector = ClassicPayloadCollector {
+                payloads: &mut tile_classic_payloads,
+                ranges: &mut tile_classic_ranges,
+            };
             let mut plans = build_direct_color_tile_components_plan::<COMPONENT_COUNT>(
                 data,
                 payload_range_owner,
@@ -105,11 +111,15 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
                 Some(output_region),
                 Some(output_region),
                 Some(&mut tile_payloads),
-                None,
+                Some(&mut classic_collector),
             )?;
             validate_and_strip_referenced_payload_owners(
                 &mut plans.component_plans,
-                tile_payloads.len(),
+                &tile_payloads,
+            )?;
+            validate_and_strip_classic_payload_owners(
+                &mut plans.component_plans,
+                tile_classic_payloads.len(),
             )?;
             let record_count = tile_payloads.len();
             append_decode_elements(&mut payloads, &mut tile_payloads)?;
@@ -122,6 +132,8 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
                 decoded_rect,
                 destination_rect,
                 payload_records,
+                tile_classic_payloads,
+                tile_classic_ranges,
                 super::J2kWaveletTransform::from(tile.component_infos[0].wavelet_transform()),
                 geometry,
             ));
@@ -261,6 +273,8 @@ fn build_referenced_classic_color_components_plan<'a, const COMPONENT_COUNT: usi
                 decoded_rect,
                 destination_rect,
                 payload_records,
+                Vec::new(),
+                Vec::new(),
                 super::J2kWaveletTransform::from(tile.component_infos[0].wavelet_transform()),
                 into_geometry(plans),
             ));

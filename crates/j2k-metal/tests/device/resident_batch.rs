@@ -144,7 +144,7 @@ fn metal_prepared_batch_continues_after_one_group_execution_failure() {
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder
         .prepare(vec![
-            EncodedImage::full(unsupported_ht_roi_rgb()),
+            EncodedImage::full(Arc::from(fixture_ht_u8_unsupported_direct_width(3))),
             EncodedImage::full(Arc::from(fixture_ht_gray8())),
         ])
         .expect("prepare two distinct Metal groups");

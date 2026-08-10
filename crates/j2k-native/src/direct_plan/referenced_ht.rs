@@ -3,7 +3,10 @@
 use alloc::vec::Vec;
 
 use super::{J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectRgbaPlan};
-use crate::{HtCodeBlockPayloadRanges, J2kRect, J2kWaveletTransform};
+use crate::{
+    HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange, J2kRect,
+    J2kWaveletTransform,
+};
 
 /// Contiguous range of compressed-payload records belonging to one tile plan.
 ///
@@ -46,6 +49,8 @@ pub struct J2kReferencedTilePlan {
     decoded_rect: J2kRect,
     destination_rect: J2kRect,
     payload_records: J2kReferencedPayloadRecordSpan,
+    pub(super) classic_payloads: Vec<J2kClassicCodeBlockPayload>,
+    pub(super) classic_ranges: Vec<J2kCodestreamRange>,
     wavelet_transform: J2kWaveletTransform,
     geometry: J2kReferencedTileGeometry,
 }
@@ -73,6 +78,18 @@ impl J2kReferencedTilePlan {
     #[must_use]
     pub const fn payload_records(&self) -> J2kReferencedPayloadRecordSpan {
         self.payload_records
+    }
+
+    /// Classic code-block payload descriptors retained by a mixed HTJ2K tile.
+    #[must_use]
+    pub fn classic_payloads(&self) -> &[J2kClassicCodeBlockPayload] {
+        &self.classic_payloads
+    }
+
+    /// Encoded-input fragment ranges retained by a mixed HTJ2K tile.
+    #[must_use]
+    pub fn classic_ranges(&self) -> &[J2kCodestreamRange] {
+        &self.classic_ranges
     }
 
     /// Grayscale geometry, when this tile is grayscale.
@@ -108,11 +125,17 @@ impl J2kReferencedTilePlan {
         self.wavelet_transform
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the tile constructor keeps its geometry, payload ownership, and transform facts explicit"
+    )]
     pub(crate) const fn new(
         tile_index: usize,
         decoded_rect: J2kRect,
         destination_rect: J2kRect,
         payload_records: J2kReferencedPayloadRecordSpan,
+        classic_payloads: Vec<J2kClassicCodeBlockPayload>,
+        classic_ranges: Vec<J2kCodestreamRange>,
         wavelet_transform: J2kWaveletTransform,
         geometry: J2kReferencedTileGeometry,
     ) -> Self {
@@ -121,6 +144,8 @@ impl J2kReferencedTilePlan {
             decoded_rect,
             destination_rect,
             payload_records,
+            classic_payloads,
+            classic_ranges,
             wavelet_transform,
             geometry,
         }
@@ -139,7 +164,7 @@ pub enum J2kReferencedHtj2kPlan {
         full_dimensions: (u32, u32),
         /// Requested output rectangle in reduced full-image coordinates.
         output_rect: J2kRect,
-        /// Payload ranges in HT-step/job traversal order.
+        /// Payload records in HT-step/job traversal order, including refinement continuations.
         payloads: Vec<HtCodeBlockPayloadRanges>,
     },
     /// Three-component RGB plan.
@@ -150,7 +175,7 @@ pub enum J2kReferencedHtj2kPlan {
         full_dimensions: (u32, u32),
         /// Requested output rectangle in reduced full-image coordinates.
         output_rect: J2kRect,
-        /// Payload ranges in component/HT-step/job traversal order.
+        /// Payload records in component/HT-step/job order, including refinement continuations.
         payloads: Vec<HtCodeBlockPayloadRanges>,
     },
     /// Four-component RGBA plan with explicit alpha semantics supplied by the caller.
@@ -161,7 +186,7 @@ pub enum J2kReferencedHtj2kPlan {
         full_dimensions: (u32, u32),
         /// Requested output rectangle in reduced full-image coordinates.
         output_rect: J2kRect,
-        /// Payload ranges in R/G/B/A component, HT-step, and job traversal order.
+        /// Payload records in R/G/B/A component, HT-step, and job traversal order.
         payloads: Vec<HtCodeBlockPayloadRanges>,
     },
 }
@@ -233,7 +258,7 @@ impl J2kReferencedHtj2kPlan {
         }
     }
 
-    /// Referenced payload ranges in geometry traversal order.
+    /// Referenced payload records in geometry traversal order.
     #[must_use]
     pub fn payloads(&self) -> &[HtCodeBlockPayloadRanges] {
         match self {

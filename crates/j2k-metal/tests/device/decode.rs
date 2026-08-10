@@ -117,6 +117,101 @@ fn full_htj2k_decode_to_metal_matches_host_decode() {
 }
 
 #[test]
+fn full_irreversible_htj2k_decode_to_metal_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let pixels = j2k_test_support::gradient_u8(32, 32, 1);
+    let bytes = encode_htj2k(
+        &pixels,
+        32,
+        32,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: false,
+            num_decomposition_levels: 3,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode irreversible HTJ2K gray8");
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut host = vec![0u8; 32 * 32];
+    host_decoder
+        .decode_into(&mut host, 32, PixelFormat::Gray8)
+        .expect("host decode");
+
+    let surface = decoder
+        .decode_to_device(PixelFormat::Gray8, BackendRequest::Metal)
+        .expect("device decode");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.as_bytes().expect("surface byte access"), host);
+}
+
+#[test]
+fn completed_htj2k_batch_exposes_observed_metal_stages() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let options = BatchDecodeOptions {
+        layout: BatchLayout::Nhwc,
+        ..BatchDecodeOptions::default()
+    };
+    let mut decoder =
+        MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
+    let batch = decoder
+        .decode_batch(vec![EncodedImage::full(Arc::from(fixture_ht_gray8()))])
+        .expect("decode HTJ2K batch");
+    assert!(batch.errors().is_empty(), "{:?}", batch.errors());
+    assert!(
+        batch.group_errors().is_empty(),
+        "{:?}",
+        batch.group_errors()
+    );
+
+    let report = batch.groups()[0].dispatch_report();
+    assert!(report.tier1 > 0);
+    assert!(report.ht_tier1 > 0);
+    assert_eq!(report.ht_refinement, 0);
+    assert_eq!(report.classic_tier1, 0);
+    assert!(report.dequantization > 0);
+    assert!(report.idwt > 0);
+    assert_eq!(report.mct, 0);
+    assert!(report.color_output > 0);
+    assert!(report.host_to_device > 0);
+}
+
+#[test]
+fn completed_refinement_batch_exposes_observed_metal_refinement() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let mut decoder = MetalBatchDecoder::system_default().expect("persistent Metal decoder");
+    let batch = decoder
+        .decode_batch(vec![EncodedImage::full(Arc::from(
+            j2k_test_support::openhtj2k_refinement_fixture(),
+        ))])
+        .expect("decode HTJ2K refinement batch");
+    assert!(batch.errors().is_empty(), "{:?}", batch.errors());
+    assert!(
+        batch.group_errors().is_empty(),
+        "{:?}",
+        batch.group_errors()
+    );
+
+    let report = batch.groups()[0].dispatch_report();
+    assert!(report.ht_tier1 > 0);
+    assert!(report.ht_refinement > 0);
+    assert_eq!(report.classic_tier1, 0);
+}
+
+#[test]
 fn htj2k_direct_decode_clears_reused_classic_scratch_buffers() {
     if !should_run_metal_runtime() {
         return;

@@ -7,6 +7,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod part15;
+
+pub use part15::{
+    HtAdditionalError, HtBset, HtClaimSet, HtCodestream, HtComplianceClass, JphBset, JphCodestream,
+    Part15CaseMetadata,
+};
+
 pub(crate) const STANDARD: &str = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3";
 pub(crate) const SOURCE_URL: &str = "https://www.itu.int/wftp3/public/t/testsignal/SpeImage/T803/v2024_02/T.803v3_15444-4ed4-ElecAtt-codestreams.zip";
 const TABLE_COUNTS: [(&str, usize); 5] = [
@@ -42,6 +49,17 @@ const REQUIRED_CODESTREAMS: [&str; 24] = [
     "files/codestreams_profile1/p1_07.j2k",
     "files/codestreams_hifi/hifi_p1_02.j2k",
 ];
+/// T.803 suite selected for one run.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum T803Suite {
+    /// Part 1 J2K decoder and JP2 reader cases.
+    Part1,
+    /// Part 15 HTJ2K decoder and JPH reader cases.
+    Part15,
+    /// Both formal suites.
+    All,
+}
 
 /// Pinned source metadata for the external electronic attachment.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -93,6 +111,9 @@ pub struct DecoderCase {
     pub peak: u64,
     /// Inclusive MSE bound.
     pub mse: f64,
+    /// Resolved Part 15 selection metadata; populated by [`T803Manifest::decoder_cases_for_suite`].
+    #[serde(skip)]
+    pub part15: Option<Part15CaseMetadata>,
 }
 
 /// One Annex G JP2 reader comparison.
@@ -133,6 +154,12 @@ pub struct T803Manifest {
     pub decoder_cases: Vec<DecoderCase>,
     /// Annex G JP2 reader comparisons.
     pub jp2_cases: Vec<Jp2Case>,
+    /// Official HTJ2K BSET inventory linked to the shared comparison rows.
+    #[serde(default)]
+    pub ht_bsets: Vec<HtBset>,
+    /// Official Annex G JPH BSET inventory.
+    #[serde(default)]
+    pub jph_bsets: Vec<JphBset>,
 }
 
 /// Error returned when the pinned manifest is malformed or incomplete.
@@ -149,7 +176,10 @@ pub enum ManifestError {
 impl T803Manifest {
     /// Parse and validate a complete T.803 v3 manifest.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
-        let manifest = toml::from_str::<Self>(text)?;
+        let mut manifest = toml::from_str::<Self>(text)?;
+        manifest
+            .files
+            .sort_unstable_by(|left, right| left.path.cmp(&right.path));
         manifest.validate()?;
         Ok(manifest)
     }
@@ -162,9 +192,13 @@ impl T803Manifest {
             .count()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the manifest root validates schema identity, shared inventory ownership, and exact suite counts together"
+    )]
     fn validate(&self) -> Result<(), ManifestError> {
-        if self.schema_version != 1 {
-            return validation("schema_version must be 1");
+        if self.schema_version != 2 {
+            return validation("schema_version must be 2");
         }
         if self.standard != STANDARD {
             return validation(format!("standard must be {STANDARD:?}"));
@@ -235,6 +269,8 @@ impl T803Manifest {
             used_files.insert(case.input.as_str());
             used_files.insert(case.reference.as_str());
         }
+
+        part15::validate(self, &inventory, &mut used_files)?;
 
         if inventory != used_files {
             let unused = inventory

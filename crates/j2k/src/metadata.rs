@@ -155,6 +155,30 @@ pub struct J2kChannelDefinition {
     pub association: J2kChannelAssociation,
 }
 
+impl J2kChannelDefinition {
+    /// Raw CDEF channel-type value, including application-defined values.
+    #[must_use]
+    pub const fn channel_type_raw(&self) -> u16 {
+        match self.channel_type {
+            J2kChannelType::Color => 0,
+            J2kChannelType::Opacity => 1,
+            J2kChannelType::PremultipliedOpacity => 2,
+            J2kChannelType::Unspecified => u16::MAX,
+            J2kChannelType::Unknown { value } => value,
+        }
+    }
+
+    /// Raw CDEF channel-association value, including application-defined values.
+    #[must_use]
+    pub const fn association_raw(&self) -> u16 {
+        match self.association {
+            J2kChannelAssociation::WholeImage => 0,
+            J2kChannelAssociation::Color { index } => index,
+            J2kChannelAssociation::Unspecified => u16::MAX,
+        }
+    }
+}
+
 /// JP2/JPH channel type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum J2kChannelType {

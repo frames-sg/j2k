@@ -3,6 +3,9 @@ use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
+const HT_ROI_SHIFT_MASK: u32 = 0xff;
+const HT_IRREVERSIBLE_MIDPOINT_FLAG: u32 = 1 << 8;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct J2kHtCleanupBatchJob {
@@ -14,6 +17,7 @@ struct J2kHtCleanupBatchJob {
     refinement_length: u32,
     missing_msbs: u32,
     num_bitplanes: u32,
+    reconstruction: u32,
     number_of_coding_passes: u32,
     output_stride: u32,
     output_offset: u32,
@@ -30,7 +34,7 @@ struct J2kHtDequantizeJob {
     output_stride: u32,
     output_offset: u32,
     num_bitplanes: u32,
-    reserved: u32,
+    reconstruction: u32,
     dequantization_step: f32,
     reserved_tail: u32,
 }
@@ -52,7 +56,7 @@ struct J2kHtCleanupMultiBatchJob {
     output_offset: u32,
     dequantization_step: f32,
     stripe_causal: u32,
-    reserved_tail: u32,
+    reconstruction: u32,
 }
 
 #[inline(always)]
@@ -82,8 +86,39 @@ fn coefficient_to_i32(value: u32, k_max: u32) -> i32 {
 }
 
 #[inline(always)]
-fn coefficient_to_float_bits(value: u32, k_max: u32, scale: f32) -> u32 {
-    ((coefficient_to_i32(value, k_max) as f32) * scale).to_bits()
+fn coefficient_to_float_bits(value: u32, k_max: u32, scale: f32, reconstruction: u32) -> u32 {
+    let roi_shift = reconstruction & HT_ROI_SHIFT_MASK;
+    let irreversible_midpoint = reconstruction & HT_IRREVERSIBLE_MIDPOINT_FLAG != 0;
+    if !irreversible_midpoint {
+        let coefficient = coefficient_to_i32(value, k_max);
+        let magnitude = if coefficient < 0 {
+            (-coefficient) as u32
+        } else {
+            coefficient as u32
+        };
+        let shifted = if roi_shift != 0 && magnitude >= 1 << roi_shift {
+            (magnitude >> roi_shift) as i32
+        } else {
+            magnitude as i32
+        };
+        return ((if coefficient < 0 { -shifted } else { shifted }) as f32 * scale).to_bits();
+    }
+
+    let fixed_scale = f32::from_bits((k_max + 96) << 23);
+    let magnitude = (value & 0x7fff_ffff) as f32 * fixed_scale;
+    let roi_scale = f32::from_bits((127 - roi_shift) << 23);
+    let roi_threshold = f32::from_bits((127 + roi_shift) << 23);
+    let reconstructed = if roi_shift != 0 && magnitude >= roi_threshold {
+        magnitude * roi_scale
+    } else {
+        magnitude
+    };
+    let coefficient = if value & 0x8000_0000 != 0 {
+        -reconstructed
+    } else {
+        reconstructed
+    };
+    (coefficient * scale).to_bits()
 }
 
 #[inline(always)]
@@ -94,6 +129,7 @@ fn dequantize_codeblock(
     output_stride: u32,
     output_offset: u32,
     num_bitplanes: u32,
+    reconstruction: u32,
     dequantization_step: f32,
 ) {
     let sample_count = width * height;
@@ -108,8 +144,9 @@ fn dequantize_codeblock(
             idx,
             coefficient_to_float_bits(
                 load_u32(decoded_data.cast_const(), idx),
-                num_bitplanes,
+                num_bitplanes + (reconstruction & HT_ROI_SHIFT_MASK),
                 dequantization_step,
+                reconstruction,
             ),
         );
         sample += step;
@@ -133,6 +170,7 @@ mod kernels {
             job.output_stride,
             job.output_offset,
             job.num_bitplanes,
+            job.reconstruction,
             job.dequantization_step,
         );
     }
@@ -147,6 +185,7 @@ mod kernels {
             job.output_stride,
             job.output_offset,
             job.num_bitplanes,
+            job.reconstruction,
             job.dequantization_step,
         );
     }
@@ -161,6 +200,7 @@ mod kernels {
             job.output_stride,
             job.output_offset,
             job.num_bitplanes,
+            job.reconstruction,
             job.dequantization_step,
         );
     }

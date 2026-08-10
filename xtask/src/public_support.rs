@@ -211,7 +211,7 @@ const REQUIRED_TEST_REFERENCES: &[&str] = &[
     "ht_cpu_fallback_sigprop_refinement_encodes_new_significance_bits",
     "ht_cpu_fallback_encodes_three_pass_magref_refinement",
     "ht_cpu_fallback_rejects_unsupported_refinement_pass_count",
-    "accelerator_facade_ht_lossless_quality_layers_request_refinement_passes",
+    "accelerator_facade_ht_lossless_quality_layers_keep_cleanup_only",
     "ht_layer_contributions_split_cleanup_and_refinement_across_layers",
     "htj2k_lossy_quality_layers_decode_split_refinement_layer",
     "public_decode_matches_openhtj2k_refinement_fixtures",

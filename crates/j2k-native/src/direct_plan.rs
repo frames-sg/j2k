@@ -99,6 +99,8 @@ pub struct HtOwnedSubBandPlan {
     pub width: u32,
     /// Sub-band height in samples.
     pub height: u32,
+    /// Whether HT coefficients use irreversible fixed-point reconstruction.
+    pub irreversible_midpoint: bool,
     /// Owned code-block jobs for this sub-band.
     pub jobs: Vec<HtOwnedCodeBlockBatchJob>,
 }

@@ -11,6 +11,23 @@ use super::{
     PreencodedHtj2k97Component, TranscodeTimingReport,
 };
 use crate::allocation::{try_extend_from_slice, try_vec_filled, try_vec_with_capacity};
+use crate::PreencodedHtj2k97CompactBatchGroups;
+
+fn exact_required_magnitude_bounds(
+    accelerator: &impl DctToWaveletStageAccelerator,
+    expected_count: usize,
+) -> Result<Option<&[u8]>, JpegToHtj2kError> {
+    let bounds = accelerator.last_htj2k97_required_magnitude_bounds();
+    if bounds.is_empty() {
+        return Ok(None);
+    }
+    if bounds.len() != expected_count {
+        return Err(JpegToHtj2kError::Validation(
+            "9/7 preencoded accelerator returned wrong magnitude-bound count",
+        ));
+    }
+    Ok(Some(bounds))
+}
 
 pub(in super::super) fn store_compact_preencoded_component(
     tile: &mut Float97BatchTile,
@@ -106,6 +123,7 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
         add_dwt97_batch_stage_timings(timings, stage_timings);
     }
     if let Some(compact_grouped_components) = compact_grouped_components {
+        let required_magnitude_bounds = exact_required_magnitude_bounds(accelerator, total_jobs)?;
         timings.dct_to_wavelet_accelerator_us = timings
             .dct_to_wavelet_accelerator_us
             .saturating_add(accelerator_start.elapsed().as_micros());
@@ -114,8 +132,8 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
             &eligible_indices,
             tiles,
             timings,
-            &compact_grouped_components.payload,
-            compact_grouped_components.groups,
+            compact_grouped_components,
+            required_magnitude_bounds,
             &mut handled,
         )?;
         return Ok(handled);
@@ -132,12 +150,14 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
         .saturating_add(accelerator_start.elapsed().as_micros());
 
     if let Some(grouped_components) = grouped_components {
+        let required_magnitude_bounds = exact_required_magnitude_bounds(accelerator, total_jobs)?;
         store_grouped_preencoded_components(
             groups,
             &eligible_indices,
             tiles,
             timings,
             grouped_components,
+            required_magnitude_bounds,
             &mut handled,
         )?;
     }
@@ -149,15 +169,20 @@ fn store_grouped_compact_preencoded_components(
     eligible_indices: &[usize],
     tiles: &mut [Float97BatchTile],
     timings: &mut TranscodeTimingReport,
-    compact_payload: &[u8],
-    compact_groups: Vec<Vec<PreencodedHtj2k97CompactComponent>>,
+    compact_batch: PreencodedHtj2k97CompactBatchGroups,
+    required_magnitude_bounds: Option<&[u8]>,
     handled: &mut [bool],
 ) -> Result<(), JpegToHtj2kError> {
+    let PreencodedHtj2k97CompactBatchGroups {
+        payload,
+        groups: compact_groups,
+    } = compact_batch;
     if compact_groups.len() != eligible_indices.len() {
         return Err(JpegToHtj2kError::Validation(
             "9/7 grouped i16 compact preencoded accelerator returned wrong group count",
         ));
     }
+    let mut required_magnitude_bounds = required_magnitude_bounds.unwrap_or(&[]).iter().copied();
     for (&group_index, components) in eligible_indices.iter().zip(compact_groups) {
         let group = &groups[group_index];
         if components.len() != group.len() {
@@ -169,10 +194,12 @@ fn store_grouped_compact_preencoded_components(
         timings.component_count = timings.component_count.saturating_add(group.len());
         record_batch_dispatch(timings, group.len());
         for (component_ref, component) in group.iter().copied().zip(components) {
+            tiles[component_ref.tile_index]
+                .include_required_ht_magnitude_bound(required_magnitude_bounds.next());
             store_compact_preencoded_component(
                 &mut tiles[component_ref.tile_index],
                 component_ref.component_index,
-                compact_payload,
+                &payload,
                 component,
             )?;
         }
@@ -187,6 +214,7 @@ fn store_grouped_preencoded_components(
     tiles: &mut [Float97BatchTile],
     timings: &mut TranscodeTimingReport,
     grouped_components: Vec<Vec<PreencodedHtj2k97Component>>,
+    required_magnitude_bounds: Option<&[u8]>,
     handled: &mut [bool],
 ) -> Result<(), JpegToHtj2kError> {
     if grouped_components.len() != eligible_indices.len() {
@@ -194,6 +222,7 @@ fn store_grouped_preencoded_components(
             "9/7 grouped i16 preencoded accelerator returned wrong group count",
         ));
     }
+    let mut required_magnitude_bounds = required_magnitude_bounds.unwrap_or(&[]).iter().copied();
     for (&group_index, components) in eligible_indices.iter().zip(grouped_components) {
         let group = &groups[group_index];
         if components.len() != group.len() {
@@ -205,6 +234,8 @@ fn store_grouped_preencoded_components(
         timings.component_count = timings.component_count.saturating_add(group.len());
         record_batch_dispatch(timings, group.len());
         for (component_ref, component) in group.iter().copied().zip(components) {
+            tiles[component_ref.tile_index]
+                .include_required_ht_magnitude_bound(required_magnitude_bounds.next());
             tiles[component_ref.tile_index].preencoded_components[component_ref.component_index] =
                 Some(component);
         }
@@ -275,6 +306,7 @@ fn try_store_i16_preencoded_float97_batch_group<A: DctToWaveletStageAccelerator>
         add_dwt97_batch_stage_timings(timings, stage_timings);
     }
     if let Some(compact_batch) = compact_preencoded_components {
+        let required_magnitude_bounds = exact_required_magnitude_bounds(accelerator, group.len())?;
         timings.dct_to_wavelet_accelerator_us = timings
             .dct_to_wavelet_accelerator_us
             .saturating_add(accelerator_start.elapsed().as_micros());
@@ -286,7 +318,11 @@ fn try_store_i16_preencoded_float97_batch_group<A: DctToWaveletStageAccelerator>
 
         timings.component_count = timings.component_count.saturating_add(group.len());
         record_batch_dispatch(timings, group.len());
+        let mut required_magnitude_bounds =
+            required_magnitude_bounds.unwrap_or(&[]).iter().copied();
         for (component_ref, component) in group.iter().copied().zip(compact_batch.components) {
+            tiles[component_ref.tile_index]
+                .include_required_ht_magnitude_bound(required_magnitude_bounds.next());
             store_compact_preencoded_component(
                 &mut tiles[component_ref.tile_index],
                 component_ref.component_index,
@@ -309,6 +345,7 @@ fn try_store_i16_preencoded_float97_batch_group<A: DctToWaveletStageAccelerator>
     let Some(components) = preencoded_components else {
         return Ok(false);
     };
+    let required_magnitude_bounds = exact_required_magnitude_bounds(accelerator, group.len())?;
     if components.len() != group.len() {
         return Err(JpegToHtj2kError::Validation(
             "9/7 i16 preencoded accelerator returned wrong component count",
@@ -317,7 +354,10 @@ fn try_store_i16_preencoded_float97_batch_group<A: DctToWaveletStageAccelerator>
 
     timings.component_count = timings.component_count.saturating_add(group.len());
     record_batch_dispatch(timings, group.len());
+    let mut required_magnitude_bounds = required_magnitude_bounds.unwrap_or(&[]).iter().copied();
     for (component_ref, component) in group.iter().copied().zip(components) {
+        tiles[component_ref.tile_index]
+            .include_required_ht_magnitude_bound(required_magnitude_bounds.next());
         tiles[component_ref.tile_index].preencoded_components[component_ref.component_index] =
             Some(component);
     }
@@ -373,6 +413,7 @@ fn try_store_f64_prequantized_float97_batch_group<A: DctToWaveletStageAccelerato
         .dct_grid_to_htj2k97_preencoded_batch(&jobs, codeblock_options)
         .map_err(JpegToHtj2kError::Accelerator)?;
     if let Some(components) = preencoded_components {
+        let required_magnitude_bounds = exact_required_magnitude_bounds(accelerator, group.len())?;
         if let Some(stage_timings) = accelerator.last_dwt97_batch_stage_timings() {
             add_dwt97_batch_stage_timings(timings, stage_timings);
         }
@@ -387,7 +428,11 @@ fn try_store_f64_prequantized_float97_batch_group<A: DctToWaveletStageAccelerato
 
         timings.component_count = timings.component_count.saturating_add(group.len());
         record_batch_dispatch(timings, group.len());
+        let mut required_magnitude_bounds =
+            required_magnitude_bounds.unwrap_or(&[]).iter().copied();
         for (component_ref, component) in group.iter().copied().zip(components) {
+            tiles[component_ref.tile_index]
+                .include_required_ht_magnitude_bound(required_magnitude_bounds.next());
             tiles[component_ref.tile_index].preencoded_components[component_ref.component_index] =
                 Some(component);
         }

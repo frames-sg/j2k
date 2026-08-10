@@ -21,6 +21,7 @@ fn packetized_fixture() -> packet_encode::PacketizedTileData {
         data,
         packet_lengths,
         packet_headers: Vec::new(),
+        required_ht_magnitude_bound: None,
     }
 }
 

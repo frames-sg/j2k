@@ -2,9 +2,9 @@
 
 use alloc::{vec, vec::Vec};
 
-use super::auxiliary::rgn_marker;
+use super::auxiliary::{crg_marker, rgn_marker};
 use super::coding::cod_marker;
-use super::model::{Header, SizeData};
+use super::model::{CodeBlockStyle, Header, SizeData};
 use super::progression::poc_marker;
 use super::quantization::qcd_marker;
 use super::size::size_marker;
@@ -27,6 +27,14 @@ fn wavelet_transform_converts_to_external_selector() {
         J2kWaveletTransform::from(WaveletTransform::Irreversible97),
         J2kWaveletTransform::Irreversible97
     );
+}
+
+#[test]
+fn code_block_style_preserves_ht_and_mixed_bits() {
+    let style = CodeBlockStyle::from_u8(0xc0);
+
+    assert!(style.uses_high_throughput_block_coding());
+    assert!(style.allows_mixed_block_coding());
 }
 
 #[test]
@@ -74,6 +82,7 @@ fn poc_marker_accepts_wide_all_components_sentinel() {
 #[test]
 fn checked_image_dimensions_reject_shrink_factor_overflow() {
     let size_data = SizeData {
+        decoder_capabilities: 0,
         reference_grid_width: 1024,
         reference_grid_height: 1024,
         image_area_x_offset: 0,
@@ -147,6 +156,23 @@ fn invalid_rgn_length_only_consumes_the_length_field() {
     assert!(rgn_marker(&mut reader, 3).is_none());
     assert_eq!(reader.offset(), 2);
     assert_eq!(reader.tail(), Some(&data[2..]));
+}
+
+#[test]
+fn crg_marker_requires_one_registration_pair_per_component() {
+    let valid = [0, 10, 0, 1, 0, 2, 0, 3, 0, 4];
+    let mut reader = BitReader::new(&valid);
+    assert_eq!(crg_marker(&mut reader, 2), Some(()));
+    assert_eq!(reader.offset(), valid.len());
+
+    let invalid_length = [0, 9, 0, 1, 0, 2, 0, 3, 0, 4];
+    let mut reader = BitReader::new(&invalid_length);
+    assert_eq!(crg_marker(&mut reader, 2), None);
+    assert_eq!(reader.offset(), 2);
+
+    let truncated = [0, 10, 0, 1, 0, 2, 0, 3];
+    let mut reader = BitReader::new(&truncated);
+    assert_eq!(crg_marker(&mut reader, 2), None);
 }
 
 #[test]
@@ -230,8 +256,10 @@ fn codestream_module_boundaries_stay_focused() {
         ),
         ("header PPM", include_str!("header/ppm.rs"), 130),
         ("header PPM tests", include_str!("header/ppm/tests.rs"), 80),
+        ("header reduction", include_str!("header/reduction.rs"), 90),
         ("markers", include_str!("markers.rs"), 120),
         ("model", include_str!("model.rs"), 460),
+        ("size model", include_str!("model/size.rs"), 160),
         ("progression", include_str!("progression.rs"), 90),
         ("quantization", include_str!("quantization.rs"), 130),
         ("size", include_str!("size.rs"), 220),

@@ -161,6 +161,8 @@ fn native_metadata_conversion_preserves_variants_and_capacity_accounting() {
         metadata.channel_definitions[4].channel_type,
         J2kChannelType::Unknown { value: 99 }
     );
+    assert_eq!(metadata.channel_definitions[4].channel_type_raw(), 99);
+    assert_eq!(metadata.channel_definitions[1].association_raw(), 2);
     assert!(metadata.has_palette);
     assert!(metadata.has_component_mapping);
     assert!(metadata.has_channel_definition);

@@ -128,7 +128,11 @@ pub(super) fn encode_typed_component_planes_53_i64_multitile(
     }
 
     drop(child_options);
-    let (params, quant_params) = execution.into_final_parts();
+    let (mut params, quant_params) = execution.into_final_parts();
+    params.required_ht_magnitude_bound = tile_bodies
+        .iter()
+        .filter_map(|tile| tile.required_ht_magnitude_bound)
+        .max();
     let final_planning_bytes = checked_add_bytes(
         encode_params_retained_bytes(&params)?,
         quantization_retained_bytes(&quant_params)?,

@@ -18,6 +18,10 @@ use super::{
     prepared_metal_ht_execution, HtBatchInput, PackedMetalHtChunk,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the command-encoder boundary keeps Metal buffer lifetimes and status offsets atomic"
+)]
 pub(in crate::compute) fn encode_metal_ht_batches_in_encoder(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
@@ -50,6 +54,8 @@ pub(in crate::compute) fn encode_metal_ht_batches_in_encoder(
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                dispatches: 0,
+                refinement_dispatches: 0,
                 source_indices: Some(Vec::new()),
                 recyclable_status: None,
             },
@@ -120,6 +126,12 @@ pub(in crate::compute) fn encode_metal_ht_batches_in_encoder(
         DirectStatusCheck::Ht {
             buffer: status_buffer,
             len: prepared.job_count(),
+            dispatches: prepared.chunks().len(),
+            refinement_dispatches: prepared
+                .chunks()
+                .iter()
+                .filter(|chunk| chunk.bucket != HtGpuJobPassBucket::CleanupOnly)
+                .count(),
             source_indices: Some(source_indices),
             recyclable_status: Some(status_owner),
         },
@@ -163,6 +175,8 @@ pub(in crate::compute) fn encode_repeated_metal_ht_batch_in_command_buffer(
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                dispatches: 0,
+                refinement_dispatches: 0,
                 source_indices: Some(Vec::new()),
                 recyclable_status: None,
             },
@@ -217,6 +231,12 @@ pub(in crate::compute) fn encode_repeated_metal_ht_batch_in_command_buffer(
         DirectStatusCheck::Ht {
             buffer: status_buffer,
             len: total_job_count,
+            dispatches: prepared.chunks().len(),
+            refinement_dispatches: prepared
+                .chunks()
+                .iter()
+                .filter(|chunk| chunk.bucket != HtGpuJobPassBucket::CleanupOnly)
+                .count(),
             source_indices: Some(source_indices),
             recyclable_status: Some(status_owner),
         },

@@ -7,6 +7,7 @@ use super::super::{
     wait_for_completion_metal, Arc, CommandBuffer, DirectExecutionMetadata,
     DirectStatusRetirementMode, Error, MetalRuntime,
 };
+use crate::MetalDecodeDispatchReport;
 use metal::{foreign_types::ForeignType, CommandQueue, CommandQueueRef, Event, SharedEvent};
 
 pub(crate) enum DirectDestinationConsumerOrdering {
@@ -27,6 +28,7 @@ pub(crate) struct SubmittedDirectDestination {
     pub(in crate::compute::direct_grayscale_execute) runtime: Arc<MetalRuntime>,
     pub(in crate::compute::direct_grayscale_execute) command_buffer: Option<CommandBuffer>,
     pub(in crate::compute::direct_grayscale_execute) metadata: Option<DirectExecutionMetadata>,
+    completed_dispatch_report: Option<MetalDecodeDispatchReport>,
     completion_dependency: Option<DirectDestinationCompletionDependency>,
     pub(in crate::compute::direct_grayscale_execute) consumer_waits: Vec<CommandBuffer>,
     #[cfg(test)]
@@ -116,13 +118,18 @@ impl SubmittedDirectDestination {
         (statuses, scratch)
     }
 
-    pub(crate) fn wait(mut self) -> Result<(), Error> {
+    pub(crate) fn wait(mut self) -> Result<MetalDecodeDispatchReport, Error> {
         self.finish()
     }
 
-    fn finish(&mut self) -> Result<(), Error> {
+    fn finish(&mut self) -> Result<MetalDecodeDispatchReport, Error> {
         let Some(command_buffer) = self.command_buffer.take() else {
-            return Ok(());
+            return self
+                .completed_dispatch_report
+                .ok_or(Error::MetalStateInvariant {
+                    state: "J2K Metal direct destination submission",
+                    reason: "completed submission lost its dispatch report",
+                });
         };
         let completion = wait_for_completion_metal(&command_buffer);
         let metadata = self.metadata.take().ok_or(Error::MetalStateInvariant {
@@ -133,6 +140,7 @@ impl SubmittedDirectDestination {
             retained_buffers,
             status_checks,
             scratch_buffers,
+            dispatch_report,
         } = metadata;
         let status_retirement = retire_direct_status_checks(
             &self.runtime,
@@ -145,7 +153,13 @@ impl SubmittedDirectDestination {
         );
         drop(retained_buffers);
         let scratch_retirement = recycle_scratch_buffers(&self.runtime, scratch_buffers);
-        completion.and(status_retirement).and(scratch_retirement)
+        completion
+            .and(status_retirement)
+            .and(scratch_retirement)
+            .map(|()| {
+                self.completed_dispatch_report = Some(dispatch_report);
+                dispatch_report
+            })
     }
 }
 
@@ -249,6 +263,7 @@ pub(in crate::compute::direct_grayscale_execute) fn commit_direct_destination(
         runtime,
         command_buffer: Some(command_buffer),
         metadata: Some(metadata),
+        completed_dispatch_report: None,
         completion_dependency,
         consumer_waits,
         #[cfg(test)]

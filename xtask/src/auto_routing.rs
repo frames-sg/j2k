@@ -6,10 +6,16 @@ use std::{
     path::{Component as PathComponent, Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::perf_guard::{discover_estimates, BenchEstimate};
+use manifest::{validate_external_manifest, validate_workload_coverage};
+use report::verification_report;
+use schema::{Backend, Cell, Evidence, Execution, Operation, Route, WorkloadKind};
+
+mod manifest;
+mod report;
+mod schema;
 
 const REQUIRED_OPERATIONS: [Operation; 6] = [
     Operation::FullDecode,
@@ -22,107 +28,6 @@ const REQUIRED_OPERATIONS: [Operation; 6] = [
 const MAX_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ESTIMATE_BYTES: u64 = 1024 * 1024;
 const MAX_CELLS: usize = 4_096;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Evidence {
-    schema_version: u32,
-    candidate_sha: String,
-    backend: Backend,
-    platform: Platform,
-    external_manifest_sha256: String,
-    external_case_count: usize,
-    cells: Vec<Cell>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExternalManifest {
-    schema_version: u32,
-    corpus: String,
-    source_url: String,
-    cases: Vec<ExternalCase>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExternalCase {
-    id: String,
-    path: String,
-    kind: WorkloadKind,
-    pixel_format: WorkloadPixelFormat,
-    sha256: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum WorkloadKind {
-    Decode,
-    Encode,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum WorkloadPixelFormat {
-    Gray8,
-    Rgb8,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Backend {
-    Cuda,
-    Metal,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Platform {
-    os: String,
-    arch: String,
-    hardware: String,
-    driver: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cell {
-    id: String,
-    operation: Operation,
-    source: String,
-    workload: String,
-    cpu: Route,
-    hybrid: Route,
-    strict_device_supported: bool,
-    strict_device: Option<Route>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Operation {
-    FullDecode,
-    RoiDecode,
-    ScaledDecode,
-    BatchDecode,
-    LosslessEncode,
-    LossyEncode,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Route {
-    criterion_id: String,
-    execution: Execution,
-    output_sha256: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum Execution {
-    Cpu,
-    Hybrid,
-    DeviceNative,
-}
 
 #[derive(Debug)]
 struct VerifiedEvidence {
@@ -190,7 +95,7 @@ fn verify_evidence(
 ) -> Result<VerifiedEvidence, String> {
     let evidence = read_evidence(evidence_path)?;
     validate_header(&evidence)?;
-    let external_cases = validate_external_manifest(external_manifest_path, &evidence)?;
+    let external_manifest = validate_external_manifest(external_manifest_path, &evidence)?;
     let estimates = discover_estimates(criterion_root)?;
     let estimates = estimates
         .into_iter()
@@ -201,6 +106,7 @@ fn verify_evidence(
     let mut criterion_ids = BTreeSet::new();
     let mut operations = BTreeSet::new();
     let mut used_external_cases = BTreeSet::new();
+    let mut workload_operations = BTreeMap::<&str, BTreeSet<Operation>>::new();
     for cell in &evidence.cells {
         let expected_kind = match cell.operation {
             Operation::FullDecode
@@ -212,7 +118,11 @@ fn verify_evidence(
         if cell.id.is_empty()
             || cell.workload.is_empty()
             || cell.source != "external"
-            || external_cases.get(&cell.workload) != Some(&expected_kind)
+            || external_manifest
+                .cases
+                .get(&cell.workload)
+                .map(|identity| identity.kind)
+                != Some(expected_kind)
             || !cell_ids.insert(cell.id.as_str())
         {
             return Err(format!(
@@ -222,6 +132,10 @@ fn verify_evidence(
         }
         used_external_cases.insert(cell.workload.as_str());
         operations.insert(cell.operation);
+        workload_operations
+            .entry(cell.workload.as_str())
+            .or_default()
+            .insert(cell.operation);
         validate_route(
             &cell.id,
             "CPU",
@@ -260,67 +174,24 @@ fn verify_evidence(
         }
         validate_cell_metrics(cell)?;
     }
-    let required = REQUIRED_OPERATIONS.into_iter().collect::<BTreeSet<_>>();
-    if operations != required {
-        return Err("Auto-routing evidence must cover full, ROI, scaled, batch, lossless encode, and lossy encode workloads".to_string());
-    }
-    if used_external_cases.len() != external_cases.len() {
+    validate_workload_coverage(&external_manifest, &operations, &workload_operations)?;
+    if used_external_cases.len() != external_manifest.cases.len() {
         return Err("Auto-routing evidence must exercise every external manifest case".to_string());
     }
     let artifact_sha256 = artifact_sha256(
+        evidence.schema_version,
         evidence_path,
         external_manifest_path,
         criterion_root,
         &criterion_ids,
     )?;
-    let report_json = verification_report(&evidence, &estimates, &artifact_sha256)?;
+    let report_json =
+        verification_report(&evidence, &external_manifest, &estimates, &artifact_sha256)?;
     Ok(VerifiedEvidence {
         cell_count: evidence.cells.len(),
         artifact_sha256,
         report_json,
     })
-}
-
-fn validate_external_manifest(
-    path: &Path,
-    evidence: &Evidence,
-) -> Result<BTreeMap<String, WorkloadKind>, String> {
-    let bytes = read_bounded_regular_file(path, MAX_EVIDENCE_BYTES, "external manifest")?;
-    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
-    if actual_sha256 != evidence.external_manifest_sha256 {
-        return Err(format!(
-            "external manifest SHA-256 mismatch: expected {}, found {actual_sha256}",
-            evidence.external_manifest_sha256
-        ));
-    }
-    let manifest: ExternalManifest = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("parse external manifest {}: {error}", path.display()))?;
-    if manifest.schema_version != 1
-        || manifest.corpus.is_empty()
-        || !manifest.source_url.starts_with("https://")
-        || manifest.source_url["https://".len()..].is_empty()
-        || manifest
-            .source_url
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace())
-        || manifest.cases.is_empty()
-        || manifest.cases.len() > MAX_CELLS
-        || manifest.cases.len() != evidence.external_case_count
-    {
-        return Err("external manifest identity or case inventory is invalid".to_string());
-    }
-    let mut cases = BTreeMap::new();
-    for case in manifest.cases {
-        if !is_safe_case_id(&case.id)
-            || !is_safe_relative_path(&case.path)
-            || !is_lower_hex(&case.sha256, 64)
-            || cases.insert(case.id, case.kind).is_some()
-        {
-            return Err("external manifest cases must have unique ids, safe relative paths, typed pixel formats, and lowercase SHA-256 hashes".to_string());
-        }
-        let _ = case.pixel_format;
-    }
-    Ok(cases)
 }
 
 fn read_evidence(path: &Path) -> Result<Evidence, String> {
@@ -336,7 +207,7 @@ fn read_evidence(path: &Path) -> Result<Evidence, String> {
 }
 
 fn validate_header(evidence: &Evidence) -> Result<(), String> {
-    if evidence.schema_version != 1
+    if !matches!(evidence.schema_version, 1 | 2)
         || !is_hex(&evidence.candidate_sha, 40)
         || !is_hex(&evidence.external_manifest_sha256, 64)
         || evidence.external_case_count == 0
@@ -452,11 +323,6 @@ fn validate_output_parity(cell: &Cell, expected: &Route, actual: &Route) -> Resu
     Ok(())
 }
 
-fn is_qualifying_win(hybrid: &BenchEstimate, competitor: &BenchEstimate) -> bool {
-    hybrid.median_ns <= competitor.median_ns * 0.9
-        && hybrid.median_upper_ns < competitor.median_lower_ns
-}
-
 fn is_safe_criterion_id(value: &str) -> bool {
     if value.is_empty() || value.contains('\\') {
         return false;
@@ -495,13 +361,18 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
 }
 
 fn artifact_sha256(
+    schema_version: u32,
     evidence_path: &Path,
     external_manifest_path: &Path,
     criterion_root: &Path,
     criterion_ids: &BTreeSet<String>,
 ) -> Result<String, String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"j2k-auto-routing-evidence-v1\0");
+    hasher.update(match schema_version {
+        1 => b"j2k-auto-routing-evidence-v1\0".as_slice(),
+        2 => b"j2k-auto-routing-evidence-v2\0".as_slice(),
+        _ => return Err("unsupported Auto-routing evidence schema version".to_string()),
+    });
     hash_artifact_file(
         &mut hasher,
         "evidence.json",
@@ -549,92 +420,6 @@ fn read_bounded_regular_file(path: &Path, limit: u64, label: &str) -> Result<Vec
         ));
     }
     fs::read(path).map_err(|error| format!("read {label} {}: {error}", path.display()))
-}
-
-fn verification_report(
-    evidence: &Evidence,
-    estimates: &BTreeMap<String, BenchEstimate>,
-    artifact_sha256: &str,
-) -> Result<String, String> {
-    let cells = evidence
-        .cells
-        .iter()
-        .map(|cell| {
-            let cpu = &estimates[&cell.cpu.criterion_id];
-            let hybrid = &estimates[&cell.hybrid.criterion_id];
-            let promotes_hybrid = is_qualifying_win(hybrid, cpu)
-                && cell
-                    .strict_device
-                    .as_ref()
-                    .is_none_or(|route| is_qualifying_win(hybrid, &estimates[&route.criterion_id]));
-            let strict = cell.strict_device.as_ref().map(|route| {
-                let estimate = &estimates[&route.criterion_id];
-                serde_json::json!({
-                    "criterion_id": route.criterion_id,
-                    "median_ns": estimate.median_ns,
-                    "median_lower_ns": estimate.median_lower_ns,
-                    "median_upper_ns": estimate.median_upper_ns,
-                    "hybrid_speedup_percent": speedup_percent(hybrid, estimate),
-                })
-            });
-            serde_json::json!({
-                "id": cell.id,
-                "operation": cell.operation,
-                "source": cell.source,
-                "workload": cell.workload,
-                "decision": if promotes_hybrid { "promote-hybrid" } else { "retain-current" },
-                "output_sha256": cell.hybrid.output_sha256,
-                "cpu": estimate_json(&cell.cpu.criterion_id, cpu),
-                "hybrid": estimate_json(&cell.hybrid.criterion_id, hybrid),
-                "hybrid_speedup_vs_cpu_percent": speedup_percent(hybrid, cpu),
-                "strict_device": strict,
-                "status": if promotes_hybrid { "promoted" } else { "retained" },
-            })
-        })
-        .collect::<Vec<_>>();
-    let promoted_cell_count = evidence
-        .cells
-        .iter()
-        .filter(|cell| {
-            let hybrid = &estimates[&cell.hybrid.criterion_id];
-            is_qualifying_win(hybrid, &estimates[&cell.cpu.criterion_id])
-                && cell
-                    .strict_device
-                    .as_ref()
-                    .is_none_or(|route| is_qualifying_win(hybrid, &estimates[&route.criterion_id]))
-        })
-        .count();
-    let report = serde_json::json!({
-        "schema_version": 1,
-        "candidate_sha": evidence.candidate_sha,
-        "backend": evidence.backend,
-        "platform": evidence.platform,
-        "external_manifest_sha256": evidence.external_manifest_sha256,
-        "external_case_count": evidence.external_case_count,
-        "criterion_confidence_level": 0.95,
-        "minimum_hybrid_speedup_percent": 10.0,
-        "artifact_sha256": artifact_sha256,
-        "promoted_cell_count": promoted_cell_count,
-        "cells": cells,
-        "status": "pass",
-    });
-    let mut json = serde_json::to_string_pretty(&report)
-        .map_err(|error| format!("serialize Auto-routing verification report: {error}"))?;
-    json.push('\n');
-    Ok(json)
-}
-
-fn estimate_json(criterion_id: &str, estimate: &BenchEstimate) -> serde_json::Value {
-    serde_json::json!({
-        "criterion_id": criterion_id,
-        "median_ns": estimate.median_ns,
-        "median_lower_ns": estimate.median_lower_ns,
-        "median_upper_ns": estimate.median_upper_ns,
-    })
-}
-
-fn speedup_percent(hybrid: &BenchEstimate, competitor: &BenchEstimate) -> f64 {
-    (1.0 - hybrid.median_ns / competitor.median_ns) * 100.0
 }
 
 fn usage() -> String {

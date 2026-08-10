@@ -3,6 +3,33 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Extends the shared ISO/IEC 15444-4:2024 / ITU-T T.803 v3 framework with
+  unversioned HTJ2K Part 15 development evidence. The CPU IUT passes all 160
+  selected Part 1 and Part 15 cases with zero skips on macOS arm64, Linux
+  x86-64, and native Windows x86-64/MSVC, including DS1-HM Cclass-1h at MMAGB
+  15, Cclass-1HFh at MMAGB 20, and Annex G JPH at MMAGB 15.
+- Extends the CUDA and Metal adapter-IUT reports to the same selected Part 15
+  points. Each combined Part 1/Part 15 headline is 0/160 device-native, 81/160
+  hybrid, and 79/160 CPU-routed; production-owned counters disclose execution
+  per stage. Exact-clean-SHA Part 15 release evidence remains pending.
+- Fixes HTJ2K decoder defects in irreversible midpoint reconstruction, ROI,
+  packet/header parsing, HT cleanup/refinement, progression, tile parts, and
+  JPH validation without vector-specific exceptions or relaxed tolerances.
+- Versions the Annex D/F encoder ICS matrix for classic and HT modes. CPU passes
+  55/56 cases through the pinned T.804 OpenJPEG decoder; OpenJPEG 2.5.3 rejects
+  HT+RGN, so the mandatory 56th capability case passes through the independently
+  pinned OpenHTJ2K decoder as explicitly supplemental interoperability evidence.
+  The CUDA and Metal matrices pass 35/35 through OpenJPEG. All encoder results
+  are informative evidence, not formal decoder conformance.
+- Adds HTJ2K/JPH routing workloads and promotes only cells with identical
+  output, at least 10% median improvement, and non-overlapping Criterion 95%
+  confidence intervals. The production Metal HTJ2K host-output route now uses
+  Metal coefficient preparation and HT Tier-1 with CPU packetization for the
+  verified RGB8 1,024 x 1,024 and Gray8/RGB8 2,048 x 2,048 cells; measured
+  smaller cells stay on CPU. Explicit CUDA and Metal requests remain strict.
+
 ## [0.8.1] - 2026-08-06
 
 - Adds release-scoped ISO/IEC 15444-4:2024 / ITU-T T.803 v3 decoder evidence.
@@ -19,9 +46,9 @@ and stale roadmap entries have been removed from the public documentation set.
   palettes, CDEF ordering, subsampling, enumerated color spaces, and restricted
   ICC conversion.
 - Fixes Part 1 decoder conformance defects in irreversible midpoint
-  reconstruction, ROI handling, packet/header parsing, progression and tile-part
-  handling, component transforms, and JP2 validation without vector-specific
-  exceptions or relaxed tolerances.
+  reconstruction, ROI handling, packet/header parsing, progression and
+  tile-part handling, component transforms, and JP2 validation without
+  vector-specific exceptions or relaxed tolerances.
 - Adds deterministic Annex D/F encoder ICS matrices. The CPU matrix passes
   28/28 cases and the CUDA and Metal matrices pass 25/25 through the pinned
   T.804 OpenJPEG decoder; this is informative encoder evidence, not the formal

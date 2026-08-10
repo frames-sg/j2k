@@ -7,6 +7,7 @@
 
 use alloc::vec::Vec;
 
+use super::capabilities::encode_magnitude_bound;
 use super::codestream::markers;
 use super::encode::EncodeProgressionOrder;
 
@@ -64,6 +65,7 @@ pub(crate) struct EncodeParams {
     pub(crate) use_mct: bool,
     pub(crate) guard_bits: u8,
     pub(crate) block_coding_mode: BlockCodingMode,
+    pub(crate) required_ht_magnitude_bound: Option<u8>,
     pub(crate) progression_order: EncodeProgressionOrder,
     pub(crate) write_tlm: bool,
     pub(crate) write_plt: bool,
@@ -100,6 +102,7 @@ impl Default for EncodeParams {
             use_mct: false,
             guard_bits: 1,
             block_coding_mode: BlockCodingMode::Classic,
+            required_ht_magnitude_bound: None,
             progression_order: EncodeProgressionOrder::Lrcp,
             write_tlm: false,
             write_plt: false,
@@ -377,17 +380,22 @@ fn write_cap_marker(out: &mut Vec<u8>, params: &EncodeParams) {
 }
 
 fn ht_capability_word(params: &EncodeParams) -> u16 {
-    let magnitude_bits = u16::from(params.max_component_bit_depth().saturating_sub(1));
-    let bp = if magnitude_bits <= 8 {
-        0
-    } else if magnitude_bits < 28 {
-        magnitude_bits - 8
-    } else {
-        13 + (magnitude_bits >> 2)
-    };
-
+    let max_roi_shift = params
+        .roi_component_shifts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let magnitude_bound = params.required_ht_magnitude_bound.unwrap_or_else(|| {
+        params
+            .max_component_bit_depth()
+            .saturating_sub(1)
+            .saturating_add(max_roi_shift)
+    });
+    let bp = encode_magnitude_bound(magnitude_bound);
+    let roi_flag = if max_roi_shift == 0 { 0 } else { 0x1000 };
     let wavelet_flag = if params.reversible { 0u16 } else { 0x0020u16 };
-    wavelet_flag | bp
+    roi_flag | wavelet_flag | bp
 }
 
 /// Write COD marker segment (A.6.1).

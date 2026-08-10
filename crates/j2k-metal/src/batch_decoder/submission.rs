@@ -354,9 +354,10 @@ impl SubmittedMetalResidentGroup {
             output,
             layout,
         } = self;
-        if let Err(source) = submission.wait() {
-            return Err((metadata.source_indices, Box::new(source)));
-        }
+        let dispatch_report = match submission.wait() {
+            Ok(report) => report,
+            Err(source) => return Err((metadata.source_indices, Box::new(source))),
+        };
         drop(destination);
         let expose_surface_views =
             metadata.info.color == BatchColor::Gray || metadata.info.layout == BatchLayout::Nhwc;
@@ -375,6 +376,7 @@ impl SubmittedMetalResidentGroup {
             decoded_rects: metadata.decoded_rects,
             warnings: metadata.warnings,
             surfaces,
+            dispatch_report,
             resident_batch,
         })
     }

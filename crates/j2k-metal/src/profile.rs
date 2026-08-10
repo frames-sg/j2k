@@ -6,6 +6,49 @@ use std::fmt;
 use j2k_core::{BackendRequest, PixelFormat};
 use j2k_profile::{same_summary_labels, ProfileField, ProfileResult};
 
+/// Completed Metal decode-stage dispatches for one production output group.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+#[doc(hidden)]
+pub struct MetalDecodeDispatchReport {
+    /// Tier-1 dispatches completed on Metal.
+    pub tier1: usize,
+    /// HT Tier-1 dispatches completed on Metal.
+    pub ht_tier1: usize,
+    /// HT Tier-1 dispatches that completed at least one refinement job.
+    pub ht_refinement: usize,
+    /// Classic Tier-1 dispatches completed on Metal.
+    pub classic_tier1: usize,
+    /// Dequantization operations completed on Metal, including fused Tier-1 work.
+    pub dequantization: usize,
+    /// Inverse-DWT dispatches completed on Metal.
+    pub idwt: usize,
+    /// Inverse multi-component transforms completed on Metal.
+    pub mct: usize,
+    /// Final color or grayscale output dispatches completed on Metal.
+    pub color_output: usize,
+    /// Host inputs made available to Metal for completed Tier-1 dispatches.
+    pub host_to_device: usize,
+}
+
+impl MetalDecodeDispatchReport {
+    /// Create an empty dispatch report.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            tier1: 0,
+            ht_tier1: 0,
+            ht_refinement: 0,
+            classic_tier1: 0,
+            dequantization: 0,
+            idwt: 0,
+            mct: 0,
+            color_output: 0,
+            host_to_device: 0,
+        }
+    }
+}
+
 thread_local! {
     static METAL_BATCH_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
         RefCell::new(new_metal_batch_profile_summary().emit_on_drop());

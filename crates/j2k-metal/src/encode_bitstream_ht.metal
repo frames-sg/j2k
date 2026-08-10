@@ -938,7 +938,7 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
    j2k_set_ht_encode_status_with_segments(
         status,
         J2K_ENCODE_STATUS_OK,
-        0u,
+        max_magnitude,
         total_len,
         1u,
         missing_msbs,

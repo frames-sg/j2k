@@ -408,20 +408,30 @@ fn reserve_scratch(
 }
 
 fn component_band_count(plan: &J2kDirectGrayscalePlan) -> Result<usize> {
-    plan.steps.iter().try_fold(0usize, |count, step| {
-        if matches!(
-            step,
-            J2kDirectGrayscaleStep::ClassicSubBand(_)
-                | J2kDirectGrayscaleStep::HtSubBand(_)
-                | J2kDirectGrayscaleStep::Idwt(_)
-        ) {
-            count
-                .checked_add(1)
-                .ok_or(ValidationError::ImageTooLarge.into())
-        } else {
-            Ok(count)
+    let mut count = 0usize;
+    let mut previous_entropy_band = None;
+    for step in &plan.steps {
+        let band_id = match step {
+            J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => Some(sub_band.band_id),
+            J2kDirectGrayscaleStep::HtSubBand(sub_band) => Some(sub_band.band_id),
+            J2kDirectGrayscaleStep::Idwt(_) => {
+                previous_entropy_band = None;
+                count = count.checked_add(1).ok_or(ValidationError::ImageTooLarge)?;
+                None
+            }
+            J2kDirectGrayscaleStep::Store(_) => {
+                previous_entropy_band = None;
+                None
+            }
+        };
+        if let Some(band_id) = band_id {
+            if previous_entropy_band != Some(band_id) {
+                count = count.checked_add(1).ok_or(ValidationError::ImageTooLarge)?;
+            }
+            previous_entropy_band = Some(band_id);
         }
-    })
+    }
+    Ok(count)
 }
 
 fn component_plane_len(plan: &J2kDirectGrayscalePlan) -> Result<usize> {
@@ -444,57 +454,42 @@ fn for_each_band_target(
     mut visit: impl FnMut(usize, usize) -> Result<()>,
 ) -> Result<()> {
     let mut band_idx = 0usize;
+    let mut previous_entropy_band = None;
     for step in &plan.steps {
-        let target_len = match step {
-            J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
-                Some(checked_area(sub_band.width, sub_band.height)?)
-            }
-            J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
-                Some(checked_area(sub_band.width, sub_band.height)?)
-            }
+        let (target_len, entropy_band) = match step {
+            J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => (
+                Some(checked_area(sub_band.width, sub_band.height)?),
+                Some(sub_band.band_id),
+            ),
+            J2kDirectGrayscaleStep::HtSubBand(sub_band) => (
+                Some(checked_area(sub_band.width, sub_band.height)?),
+                Some(sub_band.band_id),
+            ),
             J2kDirectGrayscaleStep::Idwt(step) => {
-                Some(checked_area(step.rect.width(), step.rect.height())?)
+                previous_entropy_band = None;
+                (
+                    Some(checked_area(step.rect.width(), step.rect.height())?),
+                    None,
+                )
             }
-            J2kDirectGrayscaleStep::Store(_) => None,
+            J2kDirectGrayscaleStep::Store(_) => {
+                previous_entropy_band = None;
+                (None, None)
+            }
         };
+        if entropy_band.is_some() && entropy_band == previous_entropy_band {
+            continue;
+        }
         if let Some(target_len) = target_len {
             visit(band_idx, target_len)?;
             band_idx = band_idx
                 .checked_add(1)
                 .ok_or(ValidationError::ImageTooLarge)?;
         }
+        previous_entropy_band = entropy_band;
     }
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{DirectAllocationBudget, DirectWorkspaceBudget};
-    use crate::error::{DecodeError, ValidationError};
-    use crate::DEFAULT_MAX_DECODE_BYTES;
-
-    #[test]
-    fn aggregate_budget_has_an_exact_shared_cap_boundary() {
-        let mut budget = DirectAllocationBudget {
-            bytes: DEFAULT_MAX_DECODE_BYTES - 1,
-        };
-        budget.include_bytes(1).expect("exact boundary fits");
-        assert_eq!(
-            budget.include_bytes(1),
-            Err(DecodeError::Validation(ValidationError::ImageTooLarge))
-        );
-    }
-
-    #[test]
-    fn actual_scalar_workspace_uses_the_remaining_direct_budget() {
-        let budget = DirectWorkspaceBudget {
-            base_bytes: DEFAULT_MAX_DECODE_BYTES - 1,
-            peak_bytes: DEFAULT_MAX_DECODE_BYTES - 1,
-        };
-        budget.validate_workspace(1).expect("exact boundary fits");
-        assert_eq!(
-            budget.validate_workspace(2),
-            Err(DecodeError::Validation(ValidationError::ImageTooLarge))
-        );
-    }
-}
+mod tests;

@@ -1735,11 +1735,13 @@ fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required
         refinement_length: 0,
         missing_bit_planes: 0,
         num_bitplanes: 1,
+        roi_shift: 0,
         number_of_coding_passes: 1,
         output_stride: 2,
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: false,
+        irreversible_midpoint: false,
     }];
     let second_jobs = [CudaHtj2kCodeBlockJob {
         payload_offset: 0,
@@ -1750,11 +1752,13 @@ fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required
         refinement_length: 0,
         missing_bit_planes: 0,
         num_bitplanes: 1,
+        roi_shift: 0,
         number_of_coding_passes: 1,
         output_stride: 2,
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: false,
+        irreversible_midpoint: false,
     }];
 
     let pool = context.buffer_pool();
@@ -1819,7 +1823,7 @@ fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_re
             output_offset: 0,
             dequantization_step: 0.5,
             stripe_causal: 0,
-            reserved_tail: 0,
+            reconstruction: 0,
         },
         CudaHtj2kCleanupMultiKernelJob {
             output_ptr: second.device_ptr(),
@@ -1836,7 +1840,7 @@ fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_re
             output_offset: 0,
             dequantization_step: 0.25,
             stripe_causal: 0,
-            reserved_tail: 0,
+            reconstruction: 0,
         },
     ];
     let jobs_buffer = pool
@@ -1889,7 +1893,7 @@ fn htj2k_decode_multi_kernel_routes_cleanup_only_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
-        reserved_tail: 0,
+        reconstruction: 0,
     };
     let (_, cleanup_kernel_name) = super::super::htj2k_decode_multi_kernel_for_jobs(&[cleanup_job]);
     assert_eq!(
@@ -1922,7 +1926,7 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_accepts_cleanup_only_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
-        reserved_tail: 0,
+        reconstruction: 0,
     };
     let (_, cleanup_dequant_kernel_name) =
         super::super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[cleanup_job])
@@ -1950,7 +1954,7 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_rejects_refinement_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
-        reserved_tail: 0,
+        reconstruction: 0,
     };
     assert!(
         super::super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement_job])

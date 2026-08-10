@@ -106,15 +106,27 @@ fn rgb_format(sample_type: NativeSampleType) -> PixelFormat {
     }
 }
 
-fn assert_native_samples(actual: &[u8], expected: &CpuBatchSamples, max_lsb_diff: u8) {
+fn assert_native_samples(
+    profile: ClassicRgbProfile,
+    layout: BatchLayout,
+    source_indices: &[usize],
+    actual: &[u8],
+    expected: &CpuBatchSamples,
+    max_lsb_diff: u8,
+) {
     match expected {
-        CpuBatchSamples::U8(expected) => assert!(
-            actual
+        CpuBatchSamples::U8(expected) => {
+            if let Some((index, (actual, expected))) = actual
                 .iter()
                 .zip(expected)
-                .all(|(actual, expected)| actual.abs_diff(*expected) <= max_lsb_diff),
-            "U8 reconstruction differs by more than {max_lsb_diff} LSB"
-        ),
+                .enumerate()
+                .find(|(_, (actual, expected))| actual.abs_diff(**expected) > max_lsb_diff)
+            {
+                panic!(
+                    "{profile:?} {layout:?} sources {source_indices:?} U8 reconstruction differs at sample {index}: Metal={actual}, CPU={expected}, tolerance={max_lsb_diff} LSB"
+                );
+            }
+        }
         CpuBatchSamples::U16(expected) => {
             let actual = actual
                 .chunks_exact(2)
@@ -229,7 +241,14 @@ fn assert_classic_rgb_layout(
             j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, output_bytes)
                 .expect("classic RGB output samples")
         };
-        assert_native_samples(&actual, expected_group.samples(), 0);
+        assert_native_samples(
+            profile,
+            layout,
+            group.source_indices(),
+            &actual,
+            expected_group.samples(),
+            0,
+        );
     }
 }
 

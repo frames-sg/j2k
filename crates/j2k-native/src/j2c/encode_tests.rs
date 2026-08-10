@@ -754,7 +754,7 @@ fn ht_target_coding_passes_tracks_ht_quality_layers() {
     options.reversible = true;
     assert_eq!(
         ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
-        3
+        1
     );
 
     options.reversible = false;
@@ -762,6 +762,22 @@ fn ht_target_coding_passes_tracks_ht_quality_layers() {
     assert_eq!(
         ht_target_coding_passes_for_options(&options, BlockCodingMode::Classic),
         1
+    );
+}
+
+#[test]
+fn reversible_ht_quality_layers_keep_the_final_cleanup_pass() {
+    let options = EncodeOptions {
+        use_ht_block_coding: true,
+        reversible: true,
+        num_layers: 3,
+        ..EncodeOptions::default()
+    };
+
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        1,
+        "reversible HT encoding must retain the final cleanup bitplane"
     );
 }
 
@@ -2388,6 +2404,31 @@ fn ht_layer_assignment_keeps_refinement_after_cleanup() {
         assignments,
         vec![0, 0],
         "a refinement segment may share the cleanup layer but must not precede it"
+    );
+}
+
+#[test]
+fn ht_layer_assignment_keeps_complete_ht_set_together() {
+    let candidates = vec![
+        HtSegmentAssignmentCandidate {
+            block_index: 0,
+            segment_index: 0,
+            rate: 700,
+        },
+        HtSegmentAssignmentCandidate {
+            block_index: 0,
+            segment_index: 1,
+            rate: 100,
+        },
+    ];
+
+    let assignments = assign_ht_segment_layers_by_budget(&candidates, 2, &[256, 2_000])
+        .expect("HTJ2K segment assignment");
+
+    assert_eq!(
+        assignments,
+        vec![1, 1],
+        "cleanup and refinement from one HT set must remain in the same quality layer"
     );
 }
 

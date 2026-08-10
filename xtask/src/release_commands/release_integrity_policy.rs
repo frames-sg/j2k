@@ -37,7 +37,7 @@ pub(super) fn validate_changelog_state(
         .collect::<Vec<_>>();
 
     if mode == ReleaseIntegrityMode::Publish || !version_headings.is_empty() {
-        return validate_publish_changelog(&markdown_lines, version, &version_headings);
+        return validate_versioned_changelog(&markdown_lines, version, &version_headings, mode);
     }
 
     let unreleased_count = exact_line_count(&markdown_lines, "## [Unreleased]");
@@ -52,10 +52,11 @@ pub(super) fn validate_changelog_state(
     }
 }
 
-fn validate_publish_changelog(
+fn validate_versioned_changelog(
     markdown_lines: &[&str],
     version: &str,
     version_headings: &[&str],
+    mode: ReleaseIntegrityMode,
 ) -> Result<(), String> {
     if version_headings.len() != 1 {
         return Err(format!(
@@ -79,12 +80,19 @@ fn validate_publish_changelog(
     let staged_version = format!("Staged workspace version: `{version}`.");
     let unreleased_count = exact_line_count(markdown_lines, "## [Unreleased]");
     let staged_count = exact_line_count(markdown_lines, &staged_version);
-    if unreleased_count != 0 || staged_count != 0 {
-        return Err(format!(
-            "publish state must not retain provisional Unreleased or staged-version markers; found {unreleased_count} and {staged_count}"
-        ));
+    match mode {
+        ReleaseIntegrityMode::Publish if unreleased_count != 0 || staged_count != 0 => Err(
+            format!(
+                "publish state must not retain provisional Unreleased or staged-version markers; found {unreleased_count} and {staged_count}"
+            ),
+        ),
+        ReleaseIntegrityMode::PreCandidate if unreleased_count != 1 || staged_count != 0 => Err(
+            format!(
+                "post-release development state requires exactly one `## [Unreleased]` heading and no `{staged_version}` line; found {unreleased_count} and {staged_count}"
+            ),
+        ),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 pub(super) fn validate_patch_provenance(provenance: &str) -> Result<(), String> {

@@ -1,15 +1,18 @@
 use j2k_core::PixelFormat;
-use j2k_native::{
-    HtCodeBlockPayloadRanges, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kWaveletTransform,
-};
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{J2kClassicCodeBlockPayload, J2kCodestreamRange};
+use j2k_native::{J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kWaveletTransform};
 
 use crate::{allocation::HostPhaseBudget, Error};
 
 mod accessors;
 mod classic;
 mod ht;
+#[cfg(test)]
+mod reconstruction_tests;
+mod referenced;
+#[cfg(test)]
+mod referenced_tests;
 mod required_regions;
 mod shared;
 #[cfg(test)]
@@ -21,18 +24,19 @@ use self::classic::referenced::{
 };
 use self::{
     classic::append_classic_subband,
-    ht::{append_ht_subband, append_referenced_ht_subband, referenced_payload_bytes},
+    ht::append_ht_subband,
     required_regions::required_regions_for_direct_plan,
     shared::{convert_store_step, CudaPlanOwners},
 };
+
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use self::ht::referenced_ht_payload_record_count;
 
 const EMPTY_CUDA_COEFFICIENT_PLAN: &str = "strict CUDA plan contains no coefficient bands";
 const MIXED_TRANSFORMS_UNSUPPORTED: &str = "strict CUDA HTJ2K plan contains mixed DWT transforms";
 const PLAN_PAYLOAD_TOO_LARGE: &str = "strict CUDA HTJ2K plan payload is too large";
 const PLAN_OUTPUT_RECT_MISMATCH: &str =
     "strict CUDA HTJ2K plan store does not fit the requested output rectangle";
-const REFERENCED_PLAN_CLASSIC_UNSUPPORTED: &str =
-    "prepared CUDA HTJ2K plan unexpectedly contains classic code blocks";
 #[cfg(feature = "cuda-runtime")]
 const REFERENCED_CLASSIC_PLAN_HT_UNSUPPORTED: &str =
     "prepared CUDA classic plan unexpectedly contains HT code blocks";
@@ -91,8 +95,12 @@ pub(crate) struct CudaHtj2kCodeBlock {
     pub(crate) number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
     pub(crate) num_bitplanes: u8,
+    /// Component ROI maxshift applied to coded coefficient magnitudes.
+    pub(crate) roi_shift: u8,
     /// Nonzero when vertically causal context was enabled.
     pub(crate) stripe_causal: u8,
+    /// Whether irreversible coefficients use midpoint reconstruction.
+    pub(crate) irreversible_midpoint: bool,
     /// Dequantization step to apply to decoded coefficients.
     pub(crate) dequantization_step: f32,
 }
@@ -362,62 +370,6 @@ impl CudaHtj2kDecodePlan {
                         encoded,
                         shared_payload,
                     )?;
-                }
-                J2kDirectGrayscaleStep::Idwt(step) => owners.append_idwt(*step)?,
-                J2kDirectGrayscaleStep::Store(step) => {
-                    owners
-                        .store_steps
-                        .push(shared::convert_referenced_tile_store_step(
-                            *step,
-                            output_dimensions,
-                        )?);
-                }
-            }
-        }
-        if payloads.next().is_some() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: REFERENCED_PLAN_PAYLOAD_MISMATCH,
-            });
-        }
-        owners.finish(plan, output_format, output_origin, output_dimensions)
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the tile adapter explicitly carries source bytes, output geometry, shared arena, and allocation budget"
-    )]
-    pub(crate) fn from_referenced_tile_grayscale_plan_into_shared(
-        plan: &J2kDirectGrayscalePlan,
-        payloads: &[HtCodeBlockPayloadRanges],
-        encoded: &[u8],
-        output_format: PixelFormat,
-        output_origin: (u32, u32),
-        output_dimensions: (u32, u32),
-        shared_payload: &mut Vec<u8>,
-        host_budget: &mut HostPhaseBudget,
-    ) -> Result<Self, Error> {
-        let payload_bytes = referenced_payload_bytes(encoded, payloads)?;
-        if payload_bytes != 0 {
-            host_budget.try_vec_reserve(shared_payload, payload_bytes)?;
-        }
-        let (mut owners, _) = CudaPlanOwners::from_referenced_plan(plan)?;
-        let mut payloads = payloads.iter();
-        for step in &plan.steps {
-            match step {
-                J2kDirectGrayscaleStep::HtSubBand(subband) => {
-                    append_referenced_ht_subband(
-                        &mut owners,
-                        subband,
-                        None,
-                        &mut payloads,
-                        encoded,
-                        shared_payload,
-                    )?;
-                }
-                J2kDirectGrayscaleStep::ClassicSubBand(_) => {
-                    return Err(Error::UnsupportedCudaRequest {
-                        reason: REFERENCED_PLAN_CLASSIC_UNSUPPORTED,
-                    });
                 }
                 J2kDirectGrayscaleStep::Idwt(step) => owners.append_idwt(*step)?,
                 J2kDirectGrayscaleStep::Store(step) => {

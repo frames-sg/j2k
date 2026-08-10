@@ -8,7 +8,53 @@ use super::cmap::{ComponentMappingEntry, ComponentMappingType};
 use super::colr::{ColorSpace as NativeColorSpace, ColorSpecificationBox};
 use super::container::{implicit_mapping_budget, parse_jp2_header_box};
 use super::metadata::{public_metadata_from_boxes, Jp2ColorSpec};
-use super::{ComponentDescriptor, ImageBoxes};
+use super::{inspect_jp2_container, ComponentDescriptor, ImageBoxes, Jp2FileKind};
+use crate::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
+
+#[test]
+fn colr_is_optional_for_jph_but_remains_required_for_jp2() {
+    let jph = wrapper_without_colr(*b"jph ", None, &[0]);
+    let container = inspect_jp2_container(&jph).expect("JPH may omit COLR");
+    assert_eq!(container.file_kind, Jp2FileKind::Jph);
+    assert!(container.metadata.color_specs.is_empty());
+
+    let jp2 = wrapper_without_colr(*b"jp2 ", None, &[0]);
+    assert!(matches!(
+        inspect_jp2_container(&jp2),
+        Err(crate::DecodeError::Format(
+            crate::FormatError::MissingRequiredBox("colr")
+        ))
+    ));
+}
+
+#[test]
+fn no_colr_jph_preserves_application_defined_cdef_component_order() {
+    let codestream = encode_htj2k(&[7], 1, 1, 1, 8, false, &EncodeOptions::default())
+        .expect("encode one-component HTJ2K");
+    let mut cdef = Vec::new();
+    cdef.extend_from_slice(&1_u16.to_be_bytes());
+    cdef.extend_from_slice(&0_u16.to_be_bytes());
+    cdef.extend_from_slice(&3_u16.to_be_bytes());
+    cdef.extend_from_slice(&0x476c_u16.to_be_bytes());
+    let jph = wrapper_without_colr(*b"jph ", Some(&cdef), &codestream);
+    let inspected = inspect_jp2_container(&jph).expect("inspect application-defined CDEF");
+    assert_eq!(
+        inspected.metadata.channel_definitions[0].channel_type_raw(),
+        3
+    );
+    assert_eq!(
+        inspected.metadata.channel_definitions[0].association_raw(),
+        0x476c
+    );
+
+    let image = Image::new(&jph, &DecodeSettings::default()).expect("parse no-COLR JPH");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode application-defined native component");
+
+    assert_eq!(decoded.planes().len(), 1);
+    assert_eq!(decoded.planes()[0].data(), &[7]);
+}
 
 #[test]
 fn repeated_metadata_boxes_replace_old_owners_without_losing_accounting() {
@@ -154,6 +200,30 @@ fn required_header_prefix(color_payload: &[u8]) -> Vec<u8> {
     push_child(&mut header, *b"ihdr", &image_header);
     push_child(&mut header, *b"colr", color_payload);
     header
+}
+
+fn wrapper_without_colr(brand: [u8; 4], cdef: Option<&[u8]>, codestream: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    push_child(&mut output, *b"jP  ", &[0x0d, 0x0a, 0x87, 0x0a]);
+    let mut file_type = Vec::new();
+    file_type.extend_from_slice(&brand);
+    file_type.extend_from_slice(&0_u32.to_be_bytes());
+    file_type.extend_from_slice(&brand);
+    push_child(&mut output, *b"ftyp", &file_type);
+
+    let mut image_header = Vec::new();
+    image_header.extend_from_slice(&1_u32.to_be_bytes());
+    image_header.extend_from_slice(&1_u32.to_be_bytes());
+    image_header.extend_from_slice(&1_u16.to_be_bytes());
+    image_header.extend_from_slice(&[7, 7, 0, 0]);
+    let mut header = Vec::new();
+    push_child(&mut header, *b"ihdr", &image_header);
+    if let Some(cdef) = cdef {
+        push_child(&mut header, *b"cdef", cdef);
+    }
+    push_child(&mut output, *b"jp2h", &header);
+    push_child(&mut output, *b"jp2c", codestream);
+    output
 }
 
 fn palette_payload(value: u8) -> Vec<u8> {

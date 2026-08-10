@@ -17,7 +17,6 @@ const STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
 const STYLE_SEGMENTATION_SYMBOLS: u32 = 1 << 3;
 const STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS: u32 = 1 << 4;
 
-#[cfg(feature = "cuda-runtime")]
 pub(super) mod referenced;
 
 pub(super) fn append_classic_subband(

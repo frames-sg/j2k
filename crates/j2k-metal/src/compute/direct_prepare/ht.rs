@@ -56,6 +56,7 @@ pub(in crate::compute) fn prepare_ht_sub_band(
                 })?,
             dequantization_step: block.dequantization_step,
             stripe_causal: u32::from(block.stripe_causal),
+            irreversible_midpoint: u32::from(job.irreversible_midpoint),
         });
     }
 

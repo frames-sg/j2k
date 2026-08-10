@@ -56,6 +56,7 @@ impl j2k::CpuBatchWorkspaceStats
 impl j2k::DecodeSettings
 impl j2k::DeviceDecodePlan
 impl j2k::EncodedImage
+impl j2k::J2kChannelDefinition
 impl j2k::J2kContext
 impl j2k::J2kDecodedNativeComponents
 impl j2k::J2kDecoder<'_>
@@ -122,6 +123,8 @@ pub const fn j2k::DecodeSettings::is_strict(self) -> bool
 pub const fn j2k::DecodeSettings::lenient() -> Self
 pub const fn j2k::DecodeSettings::lenient_tolerance_enabled(self) -> bool
 pub const fn j2k::DecodeSettings::strict() -> Self
+pub const fn j2k::J2kChannelDefinition::association_raw(&self) -> u16
+pub const fn j2k::J2kChannelDefinition::channel_type_raw(&self) -> u16
 pub const fn j2k::J2kCodestreamPayload<'a>::codestream(self) -> &'a [u8]
 pub const fn j2k::J2kCodestreamPayload<'a>::codestream_offset(self) -> usize
 pub const fn j2k::J2kCodestreamPayload<'a>::payload_kind(self) -> j2k_core::passthrough::CompressedPayloadKind
@@ -2887,6 +2890,7 @@ pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_preencod
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53(&mut self, j2k_transcode::DctGridToReversibleDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::ReversibleDwt53FirstLevel>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53_batch(&mut self, &[j2k_transcode::DctGridToReversibleDwt53Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::ReversibleDwt53FirstLevel>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<j2k_transcode::Dwt97BatchStageTimings>
+pub fn j2k_transcode::DctToWaveletStageAccelerator::last_htj2k97_required_magnitude_bounds(&self) -> &[u8]
 pub fn j2k_transcode::DctToWaveletStageAccelerator::supports_dwt97_batch(&self) -> bool
 pub fn j2k_transcode::DctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
 pub fn j2k_transcode::DctToWaveletStageAccelerator::supports_htj2k97_compact_preencoded_batch(&self) -> bool
@@ -3619,6 +3623,8 @@ impl j2k_native::DecodedNativeComponents
 impl j2k_native::DecoderContext<'_>
 impl j2k_native::DecoderWorkspace
 impl j2k_native::DecoderWorkspaceStats
+impl j2k_native::Htj2kCapabilities
+impl j2k_native::J2kCorrespondingProfile
 impl j2k_native::NativeComponentPlane
 impl<'a> j2k_native::ComponentPlane<'a>
 impl<'a> j2k_native::DecodedComponents<'a>
@@ -3638,9 +3644,22 @@ pub const fn j2k_native::DecoderWorkspaceStats::retained_scratch_bytes(self) -> 
 pub const fn j2k_native::DecoderWorkspaceStats::retained_tier1_bytes(self) -> usize
 pub const fn j2k_native::DecoderWorkspaceStats::scratch_capacity_retries(self) -> u64
 pub const fn j2k_native::DecoderWorkspaceStats::tier1_owner_reuses(self) -> u64
+pub const fn j2k_native::Htj2kCapabilities::ccap15(&self) -> u16
+pub const fn j2k_native::Htj2kCapabilities::corresponding_profile(&self) -> core::option::Option<&j2k_native::J2kCorrespondingProfile>
+pub const fn j2k_native::Htj2kCapabilities::default_ht_block_coding(&self) -> bool
+pub const fn j2k_native::Htj2kCapabilities::default_mixed_block_coding(&self) -> bool
+pub const fn j2k_native::Htj2kCapabilities::heterogeneous(&self) -> bool
+pub const fn j2k_native::Htj2kCapabilities::ht_irreversible(&self) -> bool
+pub const fn j2k_native::Htj2kCapabilities::magnitude_bound(&self) -> u8
+pub const fn j2k_native::Htj2kCapabilities::mode(&self) -> j2k_native::Htj2kCapabilityMode
+pub const fn j2k_native::Htj2kCapabilities::multiple_ht_sets(&self) -> bool
+pub const fn j2k_native::Htj2kCapabilities::pcap(&self) -> u32
+pub const fn j2k_native::Htj2kCapabilities::quality_layers(&self) -> u8
+pub const fn j2k_native::Htj2kCapabilities::roi(&self) -> bool
 pub enum j2k_native::ColorSpace
 pub enum j2k_native::CpuDecodeParallelism
 pub enum j2k_native::EncodeProgressionOrder
+pub enum j2k_native::Htj2kCapabilityMode
 pub fn j2k_native::ColorError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::ColorSpace::num_channels(&self) -> u16
 pub fn j2k_native::ComponentPlane<'a>::bit_depth(&self) -> u8
@@ -3697,6 +3716,8 @@ pub fn j2k_native::Image<'a>::new(&'a [u8], &j2k_native::DecodeSettings) -> j2k_
 pub fn j2k_native::Image<'a>::original_bit_depth(&self) -> u8
 pub fn j2k_native::Image<'a>::width(&self) -> u32
 pub fn j2k_native::J2kCodestreamHeaderError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_native::J2kCorrespondingProfile::number_u64(&self) -> core::option::Option<u64>
+pub fn j2k_native::J2kCorrespondingProfile::words(&self) -> &[u16]
 pub fn j2k_native::MarkerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::NativeComponentPlane::bit_depth(&self) -> u8
 pub fn j2k_native::NativeComponentPlane::bytes_per_sample(&self) -> u8
@@ -3711,6 +3732,7 @@ pub fn j2k_native::encode_component_planes_53(&[j2k_native::EncodeComponentPlane
 pub fn j2k_native::encode_htj2k(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_typed_component_planes_53(&[j2k_native::EncodeTypedComponentPlane<'_>], u32, u32, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_with_roi_regions(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &[j2k_native::EncodeRoiRegion]) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
+pub fn j2k_native::inspect_htj2k_capabilities(&[u8]) -> core::result::Result<core::option::Option<j2k_native::Htj2kCapabilities>, j2k_native::J2kCodestreamHeaderError>
 pub fn j2k_native::inspect_j2k_codestream_header(&[u8]) -> core::result::Result<j2k_native::J2kCodestreamHeaderMetadata, j2k_native::J2kCodestreamHeaderError>
 pub fn j2k_native::looks_like_j2k_codestream(&[u8]) -> bool
 pub j2k_native::Bitmap::color_space: j2k_native::ColorSpace
@@ -3766,6 +3788,7 @@ pub j2k_native::DecodingError::InvalidBitplaneCount
 pub j2k_native::DecodingError::InvalidPrecinct
 pub j2k_native::DecodingError::InvalidProgressionIterator
 pub j2k_native::DecodingError::OutputBufferTooSmall
+pub j2k_native::DecodingError::PacketParseFailure(&'static str)
 pub j2k_native::DecodingError::TooManyBitplanes
 pub j2k_native::DecodingError::TooManyCodingPasses
 pub j2k_native::DecodingError::UnexpectedEof
@@ -3779,6 +3802,7 @@ pub j2k_native::DirectPlanUnsupportedReason::ComponentUnitSampled
 pub j2k_native::DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha
 pub j2k_native::DirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream
 pub j2k_native::DirectPlanUnsupportedReason::GrayscaleSingleTileCodestream
+pub j2k_native::DirectPlanUnsupportedReason::MixedCodeBlockCoding
 pub j2k_native::DirectPlanUnsupportedReason::RgbaFourComponentRgbCodestream
 pub j2k_native::DirectPlanUnsupportedReason::RgbaRgbImageWithAlpha
 pub j2k_native::EncodeComponentPlane::data: &'a [u8]
@@ -3857,14 +3881,21 @@ pub j2k_native::FormatError::TruncatedAt
 pub j2k_native::FormatError::TruncatedAt::offset: usize
 pub j2k_native::FormatError::TruncatedAt::segment: &'static str
 pub j2k_native::FormatError::Unsupported
+pub j2k_native::Htj2kCapabilityMode::HtDeclared
+pub j2k_native::Htj2kCapabilityMode::HtOnly
+pub j2k_native::Htj2kCapabilityMode::Mixed
 pub j2k_native::J2kCodestreamComponentHeader::bit_depth: u8
 pub j2k_native::J2kCodestreamComponentHeader::signed: bool
 pub j2k_native::J2kCodestreamComponentHeader::x_rsiz: u8
 pub j2k_native::J2kCodestreamComponentHeader::y_rsiz: u8
 pub j2k_native::J2kCodestreamHeaderError::HostAllocationFailed
 pub j2k_native::J2kCodestreamHeaderError::HostAllocationFailed::bytes: usize
+pub j2k_native::J2kCodestreamHeaderError::InvalidCap
+pub j2k_native::J2kCodestreamHeaderError::InvalidCap::what: &'static str
 pub j2k_native::J2kCodestreamHeaderError::InvalidCod
 pub j2k_native::J2kCodestreamHeaderError::InvalidCod::what: &'static str
+pub j2k_native::J2kCodestreamHeaderError::InvalidCpf
+pub j2k_native::J2kCodestreamHeaderError::InvalidCpf::what: &'static str
 pub j2k_native::J2kCodestreamHeaderError::InvalidMarker
 pub j2k_native::J2kCodestreamHeaderError::InvalidMarker::marker: u8
 pub j2k_native::J2kCodestreamHeaderError::InvalidMarker::offset: usize
@@ -3941,9 +3972,11 @@ pub struct j2k_native::EncodeComponentPlane<'a>
 pub struct j2k_native::EncodeOptions
 pub struct j2k_native::EncodeRoiRegion
 pub struct j2k_native::EncodeTypedComponentPlane<'a>
+pub struct j2k_native::Htj2kCapabilities
 pub struct j2k_native::Image<'a>
 pub struct j2k_native::J2kCodestreamComponentHeader
 pub struct j2k_native::J2kCodestreamHeaderMetadata
+pub struct j2k_native::J2kCorrespondingProfile
 pub struct j2k_native::NativeComponentPlane
 pub struct j2k_native::RawBitmap
 pub struct j2k_native::Reversible53CoefficientImage
@@ -4000,6 +4033,8 @@ pub fn j2k_types::J2kEncodeStageAccelerator::encode_quantize_subband(&mut self, 
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_resident_htj2k_tile(&mut self, J2kResidentHtj2kTileEncodeJob<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<u8>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_tier1_code_block(&mut self, j2k_types::J2kTier1CodeBlockEncodeJob<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::EncodedJ2kCodeBlock>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[j2k_types::J2kTier1CodeBlockEncodeJob<'_>]) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<j2k_types::EncodedJ2kCodeBlock>>>
+pub fn j2k_types::J2kEncodeStageAccelerator::ht_subband_maximum_cleanup_magnitude(&self) -> core::option::Option<u64>
+pub fn j2k_types::J2kEncodeStageAccelerator::ht_tile_required_magnitude_bound(&self) -> core::option::Option<u8>
 pub fn j2k_types::J2kEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool
 pub fn j2k_types::J2kEncodeStageAccelerator::prefer_parallel_cpu_tile_encode(&self) -> bool
 pub fn j2k_types::J2kEncodeStageError::backend(&'static str, &'static str, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self

@@ -13,6 +13,79 @@ use super::super::{
 };
 use super::{htj2k97_quantize_params, validate_i16_block_grid};
 
+type EncodedGroups<C> = Vec<(usize, Vec<C>, Vec<u8>)>;
+type GroupedSinkOutput<X, C> = (X, EncodedGroups<C>, CudaHtj2kEncodeStageTimings, usize);
+type GroupedDispatchOutput<X, C> = (X, Vec<Vec<C>>, Vec<u8>, Dwt97BatchStageTimings);
+type PreencodedGroupDispatchOutput = (
+    Vec<Vec<PreencodedHtj2k97Component>>,
+    Vec<u8>,
+    Dwt97BatchStageTimings,
+);
+type CompactPreencodedGroupDispatchOutput = (
+    PreencodedHtj2k97CompactBatchGroups,
+    Vec<u8>,
+    Dwt97BatchStageTimings,
+);
+
+fn flatten_required_magnitude_bounds(
+    magnitude_bounds: Vec<Vec<u8>>,
+    budget: &mut HostPhaseBudget,
+) -> Result<Vec<u8>, CudaTranscodeError> {
+    let count = magnitude_bounds
+        .iter()
+        .try_fold(0usize, |count, bounds| count.checked_add(bounds.len()))
+        .ok_or(CudaTranscodeError::Kernel(
+            "CUDA grouped 9/7 resident HT magnitude-bound count overflow",
+        ))?;
+    let mut flattened =
+        budget.try_vec_with_capacity(count, "CUDA grouped resident magnitude-bound outputs")?;
+    for bounds in magnitude_bounds {
+        flattened.extend(bounds);
+    }
+    Ok(flattened)
+}
+
+fn store_encoded_groups<C>(
+    encoded_groups: EncodedGroups<C>,
+    outputs: &mut [Vec<C>],
+    magnitude_bounds: &mut [Vec<u8>],
+    output_present: &mut [bool],
+    budget: &mut HostPhaseBudget,
+) -> Result<(), CudaTranscodeError> {
+    for (group_index, components, required_bounds) in encoded_groups {
+        if components.len() != required_bounds.len() {
+            return Err(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT magnitude-bound count mismatch",
+            ));
+        }
+        budget.account_vec(&required_bounds)?;
+        let Some(output) = outputs.get_mut(group_index) else {
+            return Err(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT output group index is out of range",
+            ));
+        };
+        let Some(output_bounds) = magnitude_bounds.get_mut(group_index) else {
+            return Err(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT magnitude-bound group index is out of range",
+            ));
+        };
+        let Some(present) = output_present.get_mut(group_index) else {
+            return Err(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT output presence index is out of range",
+            ));
+        };
+        if *present {
+            return Err(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT output group was returned more than once",
+            ));
+        }
+        *output = components;
+        *output_bounds = required_bounds;
+        *present = true;
+    }
+    Ok(())
+}
+
 fn live_staging_budget<T>(
     live_metadata_bytes: usize,
     staging_element_count: usize,
@@ -113,11 +186,8 @@ fn dispatch_with_sink<'a, 'g, 'j, C, X: Default>(
         &[ResidentDeviceGroup<'j, DctGridI16ToHtj2k97CodeBlockJob<'a>>],
         Htj2k97CodeBlockOptions,
         usize,
-    ) -> Result<
-        (X, Vec<(usize, Vec<C>)>, CudaHtj2kEncodeStageTimings, usize),
-        CudaTranscodeError,
-    >,
-) -> Result<(X, Vec<Vec<C>>, Dwt97BatchStageTimings), CudaTranscodeError> {
+    ) -> Result<GroupedSinkOutput<X, C>, CudaTranscodeError>,
+) -> Result<GroupedDispatchOutput<X, C>, CudaTranscodeError> {
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
@@ -129,6 +199,11 @@ fn dispatch_with_sink<'a, 'g, 'j, C, X: Default>(
     let mut outputs = host_budget
         .try_vec_with_capacity::<Vec<C>>(groups.len(), "CUDA grouped resident output slots")?;
     outputs.resize_with(groups.len(), Vec::new);
+    let mut magnitude_bounds = host_budget.try_vec_with_capacity::<Vec<u8>>(
+        groups.len(),
+        "CUDA grouped resident magnitude-bound slots",
+    )?;
+    magnitude_bounds.resize_with(groups.len(), Vec::new);
     let mut output_present = host_budget
         .try_vec_with_capacity::<bool>(groups.len(), "CUDA grouped resident output presence")?;
     output_present.resize(groups.len(), false);
@@ -167,40 +242,30 @@ fn dispatch_with_sink<'a, 'g, 'j, C, X: Default>(
             .timings
             .ht_codeblock_dispatches
             .saturating_add(ht_dispatches);
-        for (group_index, components) in encoded_groups {
-            let Some(output) = outputs.get_mut(group_index) else {
-                return Err(CudaTranscodeError::Kernel(
-                    "CUDA grouped 9/7 resident HT output group index is out of range",
-                ));
-            };
-            let Some(present) = staging.output_present.get_mut(group_index) else {
-                return Err(CudaTranscodeError::Kernel(
-                    "CUDA grouped 9/7 resident HT output presence index is out of range",
-                ));
-            };
-            if *present {
-                return Err(CudaTranscodeError::Kernel(
-                    "CUDA grouped 9/7 resident HT output group was returned more than once",
-                ));
-            }
-            *output = components;
-            *present = true;
-        }
+        store_encoded_groups(
+            encoded_groups,
+            &mut outputs,
+            &mut magnitude_bounds,
+            &mut staging.output_present,
+            &mut host_budget,
+        )?;
     }
 
     if staging.output_present.iter().any(|present| !present) {
         return Err(CudaTranscodeError::Kernel(missing_group_error));
     }
 
-    Ok((extra, outputs, staging.timings))
+    let flattened_bounds = flatten_required_magnitude_bounds(magnitude_bounds, &mut host_budget)?;
+
+    Ok((extra, outputs, flattened_bounds, staging.timings))
 }
 
 pub(crate) fn dispatch_htj2k97_preencoded_i16_batch_groups(
     session: &mut CudaTranscodeSession,
     groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(Vec<Vec<PreencodedHtj2k97Component>>, Dwt97BatchStageTimings), CudaTranscodeError> {
-    let ((), outputs, timings) = dispatch_with_sink(
+) -> Result<PreencodedGroupDispatchOutput, CudaTranscodeError> {
+    let ((), outputs, required_magnitude_bounds, timings) = dispatch_with_sink(
         session,
         groups,
         options,
@@ -218,15 +283,15 @@ pub(crate) fn dispatch_htj2k97_preencoded_i16_batch_groups(
             Ok(((), encoded_groups, ht_timings, ht_dispatches))
         },
     )?;
-    Ok((outputs, timings))
+    Ok((outputs, required_magnitude_bounds, timings))
 }
 
 pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch_groups(
     session: &mut CudaTranscodeSession,
     groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(PreencodedHtj2k97CompactBatchGroups, Dwt97BatchStageTimings), CudaTranscodeError> {
-    let (payload, groups, timings) = dispatch_with_sink(
+) -> Result<CompactPreencodedGroupDispatchOutput, CudaTranscodeError> {
+    let (payload, groups, required_magnitude_bounds, timings) = dispatch_with_sink(
         session,
         groups,
         options,
@@ -244,6 +309,7 @@ pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch_groups(
     )?;
     Ok((
         PreencodedHtj2k97CompactBatchGroups { payload, groups },
+        required_magnitude_bounds,
         timings,
     ))
 }

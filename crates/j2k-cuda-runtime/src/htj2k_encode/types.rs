@@ -160,7 +160,7 @@ pub(crate) struct CudaHtj2kEncodeCompactJob {
 pub struct CudaHtj2kEncodeStatus {
     /// Zero on success; nonzero values are kernel-defined failures.
     pub code: u32,
-    /// Kernel-defined failure detail.
+    /// Exact maximum cleanup magnitude on success; kernel-defined detail on failure.
     pub detail: u32,
     /// Encoded payload byte length.
     pub data_len: u32,

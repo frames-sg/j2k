@@ -4,7 +4,7 @@
 
 use crate::j2c::encode::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    max_total_bitplanes_for_components, validate_precinct_exponents_for_options,
+    max_total_bitplanes_for_components, validate_precinct_exponents_for_options, BlockCodingMode,
     ComponentRoiEncodePlan, EncodeComponentSampleInfo, NativeEncodePipelineError,
     NativeEncodePipelineResult, QuantStepSize, Vec,
 };
@@ -18,6 +18,7 @@ pub(super) struct EncodeParamOwners {
     pub(super) component_sampling: Vec<(u8, u8)>,
     pub(super) roi_component_shifts: Vec<u8>,
     pub(super) precinct_exponents: Vec<(u8, u8)>,
+    pub(super) required_ht_magnitude_bound: Option<u8>,
 }
 
 pub(super) struct PlanOwners {
@@ -88,6 +89,12 @@ pub(super) fn try_build_plan_owners(
         construction.try_map_slice(&roi_plans, "single-tile ROI shifts", |plan| plan.shift)?;
     let marker_roi_component_shifts =
         construction.try_copy_slice(&roi_component_shifts, "single-tile marker ROI shifts")?;
+    let required_ht_magnitude_bound =
+        (request.block_coding_mode == BlockCodingMode::HighThroughput).then(|| {
+            max_base_bitplanes
+                .saturating_add(roi_component_shifts.iter().copied().max().unwrap_or(0))
+                .saturating_add(u8::from(!request.options.reversible))
+        });
     let component_sample_info = construction.try_copy_slice(
         request.component_sample_info,
         "single-tile component metadata",
@@ -105,6 +112,7 @@ pub(super) fn try_build_plan_owners(
             component_sampling,
             roi_component_shifts: marker_roi_component_shifts,
             precinct_exponents,
+            required_ht_magnitude_bound,
         },
     })
 }

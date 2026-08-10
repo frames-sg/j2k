@@ -52,6 +52,7 @@ pub(crate) struct PacketizedTileData {
     pub(crate) data: Vec<u8>,
     pub(crate) packet_lengths: Vec<u32>,
     pub(crate) packet_headers: Vec<Vec<u8>>,
+    pub(crate) required_ht_magnitude_bound: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

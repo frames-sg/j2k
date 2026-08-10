@@ -155,6 +155,10 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
                 .timings
                 .dequant_dispatch_count
                 .saturating_add(dequant_dispatches);
+            accounting.timings.fused_dequant_dispatch_count = accounting
+                .timings
+                .fused_dequant_dispatch_count
+                .saturating_add(cleanup_dispatches);
             accounting.dispatches = accounting
                 .dispatches
                 .saturating_add(stats.kernel_dispatches());
@@ -207,6 +211,7 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
     };
     drop(cleanup_targets);
     let stage_wall_us = profile::elapsed_us(stage_start);
+    let ht_dispatches = htj2k_batched_cleanup_dispatches(pending_count);
     {
         let accounting = &mut component_work[accounting_index];
         accounting.timings.h2d = accounting
@@ -221,7 +226,11 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
         accounting.timings.ht_dispatch_count = accounting
             .timings
             .ht_dispatch_count
-            .saturating_add(htj2k_batched_cleanup_dispatches(pending_count));
+            .saturating_add(ht_dispatches);
+        accounting.timings.ht_refinement_dispatch_count = accounting
+            .timings
+            .ht_refinement_dispatch_count
+            .saturating_add(ht_dispatches);
         accounting.dispatches = accounting
             .dispatches
             .saturating_add(stats.kernel_dispatches());

@@ -7,6 +7,7 @@ use j2k_native::{
 };
 
 use crate::allocation::HostPhaseBudget;
+use crate::direct_plan::referenced_ht_payload_record_count;
 use crate::{CudaHtj2kDecodePlan, Error};
 
 #[expect(
@@ -15,7 +16,9 @@ use crate::{CudaHtj2kDecodePlan, Error};
 )]
 pub(in crate::decoder::plan) fn flatten_referenced_cuda_color_tile_components(
     component_plans: &[J2kDirectGrayscalePlan],
-    payloads: &[HtCodeBlockPayloadRanges],
+    ht_payloads: &[HtCodeBlockPayloadRanges],
+    classic_payloads: &[J2kClassicCodeBlockPayload],
+    classic_ranges: &[J2kCodestreamRange],
     encoded: &[u8],
     format: PixelFormat,
     output_origin: (u32, u32),
@@ -24,35 +27,54 @@ pub(in crate::decoder::plan) fn flatten_referenced_cuda_color_tile_components(
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kDecodePlan>, Error> {
     let mut components = host_budget.try_vec_with_capacity(component_plans.len())?;
-    let mut payload_offset = 0usize;
+    let mut ht_payload_offset = 0usize;
+    let mut classic_payload_offset = 0usize;
     for component_plan in component_plans {
-        let component_payload_count = component_plan
+        let remaining_ht_payloads =
+            ht_payloads
+                .get(ht_payload_offset..)
+                .ok_or(Error::UnsupportedCudaRequest {
+                    reason: "prepared CUDA color tile payload offset is out of bounds",
+                })?;
+        let component_ht_payload_count =
+            referenced_ht_payload_record_count(component_plan, remaining_ht_payloads, encoded)?;
+        let ht_payload_end = ht_payload_offset
+            .checked_add(component_ht_payload_count)
+            .ok_or(Error::UnsupportedCudaRequest {
+                reason: super::super::super::CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
+            })?;
+        let component_ht_payloads = ht_payloads.get(ht_payload_offset..ht_payload_end).ok_or(
+            Error::UnsupportedCudaRequest {
+                reason: "prepared CUDA color tile payload ranges do not match component geometry",
+            },
+        )?;
+        let component_classic_payload_count = component_plan
             .steps
             .iter()
             .map(|step| match step {
-                J2kDirectGrayscaleStep::HtSubBand(subband) => subband.jobs.len(),
+                J2kDirectGrayscaleStep::ClassicSubBand(subband) => subband.jobs.len(),
                 _ => 0,
             })
             .try_fold(0usize, usize::checked_add)
             .ok_or(Error::UnsupportedCudaRequest {
                 reason: super::super::super::CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
             })?;
-        let payload_end = payload_offset.checked_add(component_payload_count).ok_or(
-            Error::UnsupportedCudaRequest {
+        let classic_payload_end = classic_payload_offset
+            .checked_add(component_classic_payload_count)
+            .ok_or(Error::UnsupportedCudaRequest {
                 reason: super::super::super::CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
-            },
-        )?;
-        let component_payloads =
-            payloads
-                .get(payload_offset..payload_end)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason:
-                        "prepared CUDA color tile payload ranges do not match component geometry",
-                })?;
+            })?;
+        let component_classic_payloads = classic_payloads
+            .get(classic_payload_offset..classic_payload_end)
+            .ok_or(Error::UnsupportedCudaRequest {
+                reason: "prepared CUDA color tile classic payloads do not match component geometry",
+            })?;
         components.push(
             CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_into_shared(
                 component_plan,
-                component_payloads,
+                component_ht_payloads,
+                component_classic_payloads,
+                classic_ranges,
                 encoded,
                 format,
                 output_origin,
@@ -61,9 +83,10 @@ pub(in crate::decoder::plan) fn flatten_referenced_cuda_color_tile_components(
                 host_budget,
             )?,
         );
-        payload_offset = payload_end;
+        ht_payload_offset = ht_payload_end;
+        classic_payload_offset = classic_payload_end;
     }
-    if payload_offset != payloads.len() {
+    if ht_payload_offset != ht_payloads.len() || classic_payload_offset != classic_payloads.len() {
         return Err(Error::UnsupportedCudaRequest {
             reason: "prepared CUDA color tile payload ranges contain trailing jobs",
         });
@@ -186,6 +209,8 @@ mod tests {
         let components = flatten_referenced_cuda_color_tile_components(
             &geometry.component_plans,
             &referenced.payloads()[span.first_record..payload_end],
+            tile.classic_payloads(),
+            tile.classic_ranges(),
             &encoded,
             PixelFormat::Rgb8,
             {

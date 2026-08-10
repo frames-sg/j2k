@@ -244,6 +244,7 @@ fn empty_prepared_subband(request: &F32SubbandEncodeRequest<'_, '_>) -> Prepared
     PreparedEncodeSubband {
         code_blocks: Vec::new(),
         preencoded_ht_code_blocks: None,
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x: 0,
         num_cbs_y: 0,
         code_block_width: request.cb_width,
@@ -289,6 +290,7 @@ fn try_prepare_fused_ht_subband(
     let Some(encoded) = encoded else {
         return Ok(None);
     };
+    let maximum_cleanup_magnitude = accelerator.ht_subband_maximum_cleanup_magnitude();
     let expected_code_blocks = (plan.num_cbs_x as usize)
         .checked_mul(plan.num_cbs_y as usize)
         .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("code-block count"))?;
@@ -319,7 +321,13 @@ fn try_prepare_fused_ht_subband(
         encoded_bytes,
         tracker,
     )?;
-    let prepared = prepared_subband(request, plan, code_blocks, Some(encoded));
+    let prepared = prepared_subband(
+        request,
+        plan,
+        code_blocks,
+        Some(encoded),
+        maximum_cleanup_magnitude,
+    );
     let prepared_bytes =
         prepared_subbands_ownership(core::slice::from_ref(&prepared), 0)?.total()?;
     tracker.check([prepared_bytes], "prepared fused HT subband")?;
@@ -441,7 +449,7 @@ fn prepare_quantized_subband(
         }
     }
 
-    let prepared = prepared_subband(request, plan, code_blocks, None);
+    let prepared = prepared_subband(request, plan, code_blocks, None, None);
     let prepared_bytes =
         prepared_subbands_ownership(core::slice::from_ref(&prepared), 0)?.total()?;
     tracker.check([prepared_bytes], "prepared quantized subband")?;
@@ -453,10 +461,12 @@ fn prepared_subband(
     plan: F32SubbandPlan,
     code_blocks: Vec<PreparedEncodeCodeBlock>,
     preencoded_ht_code_blocks: Option<Vec<super::EncodedHtJ2kCodeBlock>>,
+    preencoded_ht_maximum_cleanup_magnitude: Option<u64>,
 ) -> PreparedEncodeSubband {
     PreparedEncodeSubband {
         code_blocks,
         preencoded_ht_code_blocks,
+        preencoded_ht_maximum_cleanup_magnitude,
         num_cbs_x: plan.num_cbs_x,
         num_cbs_y: plan.num_cbs_y,
         code_block_width: request.cb_width,

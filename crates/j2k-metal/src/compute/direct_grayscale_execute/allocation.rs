@@ -13,6 +13,40 @@ pub(super) struct DirectExecutionMetadata {
     pub(super) retained_buffers: Vec<Buffer>,
     pub(super) status_checks: Vec<DirectStatusCheck>,
     pub(super) scratch_buffers: Vec<DirectScratchBuffer>,
+    pub(super) dispatch_report: crate::MetalDecodeDispatchReport,
+}
+
+impl DirectExecutionMetadata {
+    pub(super) fn record_tier1_dispatches(&mut self) {
+        for status in &self.status_checks {
+            match status {
+                DirectStatusCheck::Classic { len, .. } => {
+                    self.dispatch_report.classic_tier1 = self
+                        .dispatch_report
+                        .classic_tier1
+                        .saturating_add(usize::from(*len != 0));
+                }
+                DirectStatusCheck::Ht {
+                    dispatches,
+                    refinement_dispatches,
+                    ..
+                } => {
+                    self.dispatch_report.ht_tier1 =
+                        self.dispatch_report.ht_tier1.saturating_add(*dispatches);
+                    self.dispatch_report.ht_refinement = self
+                        .dispatch_report
+                        .ht_refinement
+                        .saturating_add(*refinement_dispatches);
+                }
+            }
+        }
+        self.dispatch_report.tier1 = self
+            .dispatch_report
+            .ht_tier1
+            .saturating_add(self.dispatch_report.classic_tier1);
+        self.dispatch_report.dequantization = self.dispatch_report.tier1;
+        self.dispatch_report.host_to_device = self.dispatch_report.tier1;
+    }
 }
 
 pub(super) fn allocate_direct_execution_metadata(
@@ -56,6 +90,7 @@ pub(super) fn allocate_direct_execution_metadata(
         status_checks: budget.try_vec(status_capacity, "J2K Metal direct status metadata")?,
         scratch_buffers: budget
             .try_vec(scratch_capacity, "J2K Metal direct scratch buffer metadata")?,
+        dispatch_report: crate::MetalDecodeDispatchReport::new(),
     })
 }
 

@@ -15,15 +15,23 @@ pub use compare::{
     compare_peak_samples, compare_samples, Comparison, ComparisonError, ErrorBounds, PeakComparison,
 };
 pub use encoder::{
-    EncoderCase, EncoderIcs, EncoderIut, EncoderMarker, EncoderMatrix, EncoderMatrixError,
-    EncoderMode, EncoderProgression,
+    EncoderBlockCoding, EncoderCase, EncoderIcs, EncoderIut, EncoderMarker, EncoderMatrix,
+    EncoderMatrixError, EncoderMode, EncoderOperation, EncoderPayload, EncoderProgression,
+    EncoderReferenceDecoder,
 };
-pub use manifest::{CorpusFile, DecoderCase, Jp2Case, ManifestError, T803Manifest, T803Source};
+pub use manifest::{
+    CorpusFile, DecoderCase, HtAdditionalError, HtBset, HtClaimSet, HtCodestream,
+    HtComplianceClass, Jp2Case, JphBset, JphCodestream, ManifestError, Part15CaseMetadata,
+    T803Manifest, T803Source, T803Suite,
+};
 pub use normalize::{normalize_component, Component, NormalizationError, NormalizationTarget};
 pub use pgx::{parse_pgx, PgxError, PgxImage};
 pub use report::{
-    CaseReport, CaseStatus, DecoderRouteSummary, EncodeRouteStage, EncodeRouteStageName,
-    EncoderCaseReport, EncoderEvidence, EncoderQualityStatus, EncoderReferenceIdentity,
-    ExecutionLocation, IutIdentity, NativeComponentOracleEvidence, PlatformIdentity, ReportError,
+    AcceleratorExecutionEvidence, CaseReport, CaseStatus, DecoderRouteSummary, EncodeRouteStage,
+    EncodeRouteStageName, EncoderCaseReport, EncoderDispatchEvidence, EncoderEvidence,
+    EncoderQualityStatus, EncoderReferenceIdentity, EncoderSupplementalReferenceIdentity,
+    ExecutionLocation, HtCodeBlockSetMode, IutIdentity, NativeComponentOracleEvidence,
+    NativeHtCoverageAxis, NativeHtCoverageCase, NativeHtCoverageEvidence, Part15CaseEvidence,
+    Part15CodestreamEvidence, Part15EvidenceClassification, PlatformIdentity, ReportError,
     ReportStatus, RouteKind, RouteStage, RouteStageName, T803Report,
 };

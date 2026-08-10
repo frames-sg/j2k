@@ -9,9 +9,9 @@ use super::allocation::{
 use super::allocation::{preencoded_97_image_retained_bytes, ConstructionTracker};
 use super::orchestrator::{self, Prepared97Metadata};
 use super::{
-    encode_precomputed_97_single_tile, move_preencoded_payloads_into_skeleton,
-    precomputed_97_level_count, preencoded_97_level_count, prequantized_97_level_count,
-    try_precomputed_options, try_preencoded_owned_skeleton,
+    apply_required_ht_magnitude_bound, encode_precomputed_97_single_tile,
+    move_preencoded_payloads_into_skeleton, precomputed_97_level_count, preencoded_97_level_count,
+    prequantized_97_level_count, try_precomputed_options, try_preencoded_owned_skeleton,
     try_prepared_packets_from_preencoded_component,
     try_prepared_packets_from_prequantized_component, validate_irreversible_quantization_profile,
     validate_precomputed_dwt97_geometry, validate_preencoded_htj2k97_image,
@@ -262,6 +262,7 @@ pub(super) fn prepare_owned_preencoded_plan(
     image: PreencodedHtj2k97Image,
     options: &EncodeOptions,
     max_host_bytes: usize,
+    required_ht_magnitude_bound: Option<u8>,
 ) -> NativeEncodePipelineResult<orchestrator::Prepared97PacketPlan> {
     let OwnedPreencodedHandoff {
         metadata,
@@ -273,7 +274,9 @@ pub(super) fn prepare_owned_preencoded_plan(
         NativeEncodeRetainedInput::none(),
         max_host_bytes,
     )?;
-    orchestrator::finish_plan(metadata, components, options, &session, 0)
+    let mut plan = orchestrator::finish_plan(metadata, components, options, &session, 0)?;
+    apply_required_ht_magnitude_bound(&mut plan.params, required_ht_magnitude_bound)?;
+    Ok(plan)
 }
 
 struct OwnedPreencodedHandoff {

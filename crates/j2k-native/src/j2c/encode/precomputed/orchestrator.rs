@@ -19,6 +19,7 @@ use super::{
     PreparedResolutionPacket, QuantStepSize,
 };
 use crate::j2c::encode::allocation::{checked_add_bytes, checked_element_bytes};
+use crate::j2c::encode::magnitude::required_ht_magnitude_bound;
 use crate::j2c::encode::tier1_allocation::prepared_packets_ownership;
 use crate::EncodeResult;
 
@@ -161,6 +162,7 @@ pub(in crate::j2c::encode) fn try_metadata(
             use_mct: false,
             guard_bits,
             block_coding_mode: BlockCodingMode::HighThroughput,
+            required_ht_magnitude_bound: None,
             progression_order: options.progression_order,
             write_tlm: options.write_tlm,
             write_plt: options.write_plt,
@@ -221,7 +223,7 @@ pub(in crate::j2c::encode) fn finish_plan(
     retained_base_bytes: usize,
 ) -> NativeEncodePipelineResult<Prepared97PacketPlan> {
     let Prepared97Metadata {
-        params,
+        mut params,
         quant_params,
         step_sizes,
         tile_part_packet_limit,
@@ -247,6 +249,11 @@ pub(in crate::j2c::encode) fn finish_plan(
         options,
         session,
         phase_base,
+    )?;
+    params.required_ht_magnitude_bound = required_ht_magnitude_bound(
+        prepared_packets.iter(),
+        params.num_decomposition_levels,
+        params.reversible,
     )?;
     let packet_descriptors = packet_descriptors_for_order_for_session(
         &prepared_packets,

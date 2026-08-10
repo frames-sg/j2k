@@ -65,11 +65,23 @@ pub(crate) fn rgn_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<RgnMar
     })
 }
 
-pub(crate) fn skip_marker_segment(reader: &mut BitReader<'_>) -> Option<()> {
-    let length = reader.read_u16()?.checked_sub(2)?;
-    reader.skip_bytes(length as usize)?;
+/// CRG marker (A.6.2).
+pub(crate) fn crg_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<()> {
+    let length = reader.read_u16()?;
+    let payload_length = usize::from(csiz).checked_mul(4)?;
+    if usize::from(length) != payload_length.checked_add(2)? {
+        return None;
+    }
+    reader.skip_bytes(payload_length)
+}
 
-    Some(())
+pub(crate) fn skip_marker_segment(reader: &mut BitReader<'_>) -> Option<()> {
+    marker_segment_payload(reader).map(|_| ())
+}
+
+pub(crate) fn marker_segment_payload<'a>(reader: &mut BitReader<'a>) -> Option<&'a [u8]> {
+    let length = reader.read_u16()?.checked_sub(2)?;
+    reader.read_bytes(length as usize)
 }
 
 #[cfg(test)]

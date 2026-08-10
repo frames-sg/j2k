@@ -4,7 +4,9 @@ use super::{
     encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
     encoded_transcode_retained_bytes, error_metrics_i32_with_live_budget, map_encode_error,
     transcode_path_name, CpuOnlyJ2kEncodeStageAccelerator, EncodedTranscode, Float97BatchTile,
@@ -363,6 +365,7 @@ struct Float97BatchEncodeInputs {
     preencoded_compact_components: Vec<Option<PreencodedHtj2k97CompactComponent>>,
     preencoded_components: Vec<Option<PreencodedHtj2k97Component>>,
     prequantized_components: Vec<Option<PrequantizedHtj2k97Component>>,
+    required_ht_magnitude_bound: Option<u8>,
 }
 
 fn require_all_components<T>(
@@ -384,7 +387,17 @@ fn encode_float97_batch_components<E: J2kEncodeStageAccelerator>(
 ) -> Result<Vec<u8>, JpegToHtj2kError> {
     let native_encode_options = options.encode_options.to_native()?;
     match select_float97_batch_encoding(inputs)? {
-        Float97BatchEncodingInput::Compact(preencoded) => {
+        (Float97BatchEncodingInput::Compact(preencoded), Some(required_bound)) => {
+            encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound(
+                preencoded,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+                required_bound,
+            )
+            .map_err(map_encode_error)
+        }
+        (Float97BatchEncodingInput::Compact(preencoded), None) => {
             encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes(
                 preencoded,
                 &native_encode_options,
@@ -393,7 +406,17 @@ fn encode_float97_batch_components<E: J2kEncodeStageAccelerator>(
             )
             .map_err(map_encode_error)
         }
-        Float97BatchEncodingInput::Preencoded(preencoded) => {
+        (Float97BatchEncodingInput::Preencoded(preencoded), Some(required_bound)) => {
+            encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound(
+                preencoded,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+                required_bound,
+            )
+            .map_err(map_encode_error)
+        }
+        (Float97BatchEncodingInput::Preencoded(preencoded), None) => {
             encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes(
                 preencoded,
                 &native_encode_options,
@@ -402,7 +425,7 @@ fn encode_float97_batch_components<E: J2kEncodeStageAccelerator>(
             )
             .map_err(map_encode_error)
         }
-        Float97BatchEncodingInput::Prequantized(prequantized) => {
+        (Float97BatchEncodingInput::Prequantized(prequantized), _) => {
             encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes(
                 &prequantized,
                 &native_encode_options,
@@ -411,7 +434,7 @@ fn encode_float97_batch_components<E: J2kEncodeStageAccelerator>(
             )
             .map_err(map_encode_error)
         }
-        Float97BatchEncodingInput::Precomputed(precomputed) => {
+        (Float97BatchEncodingInput::Precomputed(precomputed), _) => {
             encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes(
                 &precomputed,
                 &native_encode_options,
@@ -439,6 +462,7 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
         preencoded_compact_components,
         preencoded_components,
         prequantized_components,
+        required_ht_magnitude_bound,
         float_validation_actual,
         float_validation_expected,
         mut timings,
@@ -467,6 +491,7 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
             preencoded_compact_components,
             preencoded_components,
             prequantized_components,
+            required_ht_magnitude_bound,
         },
         options,
         encode_accelerator,

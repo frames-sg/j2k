@@ -10,6 +10,9 @@ use super::super::{
 };
 use crate::compute::direct_plan_types::PreparedHtExecutionOwner;
 
+#[cfg(all(test, target_os = "macos"))]
+mod tests;
+
 #[cfg(target_os = "macos")]
 pub(in crate::compute::direct_prepare) fn prepare_referenced_ht_sub_band(
     job: &j2k_native::HtOwnedSubBandPlan,
@@ -17,8 +20,16 @@ pub(in crate::compute::direct_prepare) fn prepare_referenced_ht_sub_band(
     payloads: &[HtCodeBlockPayloadRanges],
     payload_cursor: &mut usize,
 ) -> Result<PreparedHtSubBand, Error> {
-    let (job_payloads, payload_end) =
-        referenced_payloads_for_sub_band(payloads, *payload_cursor, job.jobs.len())?;
+    let payload_start = *payload_cursor;
+    let (payload_end, fragmented) =
+        validate_referenced_sub_band_records(job, input, payloads, payload_start)?;
+    let job_payloads =
+        payloads
+            .get(payload_start..payload_end)
+            .ok_or(Error::MetalStateInvariant {
+                state: "HTJ2K referenced prepared sub-band",
+                reason: "validated payload span is outside the retained record table",
+            })?;
     let coded_len = crate::batch_allocation::checked_count_sum(
         job_payloads.iter().flat_map(|payload| {
             core::iter::once(payload.cleanup.length)
@@ -30,23 +41,61 @@ pub(in crate::compute::direct_prepare) fn prepare_referenced_ht_sub_band(
         "HTJ2K MetalDirect referenced prepared sub-band",
     );
     let mut jobs = budget.try_vec(job.jobs.len(), "HTJ2K MetalDirect referenced jobs")?;
-    let mut ranges = budget.try_vec(
-        job.jobs.len(),
-        "HTJ2K MetalDirect referenced payload ranges",
-    )?;
+    let mut ranges = if fragmented {
+        Vec::new()
+    } else {
+        budget.try_vec(
+            job.jobs.len(),
+            "HTJ2K MetalDirect referenced payload ranges",
+        )?
+    };
+    let mut coded_data = if fragmented {
+        budget.try_vec(coded_len, "HTJ2K MetalDirect fragmented payload")?
+    } else {
+        Vec::new()
+    };
     let mut logical_coded_len = 0usize;
-    for (block, payload) in job.jobs.iter().zip(job_payloads.iter().copied()) {
-        append_referenced_ht_job(
-            &mut jobs,
-            &mut ranges,
-            &mut logical_coded_len,
+    let mut record_cursor = payload_start;
+    for block in &job.jobs {
+        let records = referenced_records_for_job(payloads, &mut record_cursor, block)?;
+        let block_coded_len = (block.cleanup_length as usize)
+            .checked_add(block.refinement_length as usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K referenced code-block payload length overflow".to_string(),
+            })?;
+        let coded_offset = u32::try_from(logical_coded_len).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K MetalDirect referenced coded payload exceeds u32".to_string(),
+        })?;
+        logical_coded_len = logical_coded_len
+            .checked_add(block_coded_len)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K referenced prepared payload length overflow".to_string(),
+            })?;
+        if fragmented {
+            for record in records {
+                coded_data.extend_from_slice(referenced_codestream_slice(input, record.cleanup)?);
+                if let Some(refinement) = record.refinement {
+                    coded_data.extend_from_slice(referenced_codestream_slice(input, refinement)?);
+                }
+            }
+        } else {
+            ranges.push(*records.first().ok_or(Error::MetalStateInvariant {
+                state: "HTJ2K referenced prepared sub-band",
+                reason: "validated code block has no payload record",
+            })?);
+        }
+        jobs.push(referenced_ht_job(
             block,
-            payload,
-            input,
+            coded_offset,
+            block_coded_len,
             job.width,
-        )?;
+            job.irreversible_midpoint,
+        )?);
     }
-    if logical_coded_len != coded_len {
+    if logical_coded_len != coded_len
+        || record_cursor != payload_end
+        || (fragmented && coded_data.len() != coded_len)
+    {
         return Err(Error::MetalStateInvariant {
             state: "HTJ2K referenced prepared sub-band",
             reason: "validated payload lengths do not match the planned logical arena",
@@ -58,9 +107,13 @@ pub(in crate::compute::direct_prepare) fn prepare_referenced_ht_sub_band(
         band_id: job.band_id,
         width: job.width,
         height: job.height,
-        payload_source: PreparedHtPayloadSource::Referenced {
-            input: input.clone(),
-            ranges,
+        payload_source: if fragmented {
+            PreparedHtPayloadSource::Contiguous(coded_data)
+        } else {
+            PreparedHtPayloadSource::Referenced {
+                input: input.clone(),
+                ranges,
+            }
         },
         jobs,
         execution_owner: Arc::new(PreparedHtExecutionOwner),
@@ -68,67 +121,95 @@ pub(in crate::compute::direct_prepare) fn prepare_referenced_ht_sub_band(
 }
 
 #[cfg(target_os = "macos")]
-fn referenced_payloads_for_sub_band(
+fn validate_referenced_sub_band_records(
+    sub_band: &j2k_native::HtOwnedSubBandPlan,
+    input: &[u8],
     payloads: &[HtCodeBlockPayloadRanges],
-    payload_cursor: usize,
-    job_count: usize,
-) -> Result<(&[HtCodeBlockPayloadRanges], usize), Error> {
-    let payload_end = payload_cursor
-        .checked_add(job_count)
+    payload_start: usize,
+) -> Result<(usize, bool), Error> {
+    let mut payload_end = payload_start;
+    let mut fragmented = false;
+    for block in &sub_band.jobs {
+        let records = referenced_records_for_job(payloads, &mut payload_end, block)?;
+        validate_referenced_ht_records(block, records, input)?;
+        fragmented |= records.len() > 1;
+    }
+    Ok((payload_end, fragmented))
+}
+
+#[cfg(target_os = "macos")]
+fn referenced_records_for_job<'a>(
+    payloads: &'a [HtCodeBlockPayloadRanges],
+    payload_cursor: &mut usize,
+    block: &j2k_native::HtOwnedCodeBlockBatchJob,
+) -> Result<&'a [HtCodeBlockPayloadRanges], Error> {
+    let first_record = *payload_cursor;
+    let first = payloads
+        .get(first_record)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K referenced plan has fewer payload records than code-block jobs"
+                .to_string(),
+        })?;
+    *payload_cursor = payload_cursor
+        .checked_add(1)
         .ok_or_else(|| Error::MetalKernel {
             message: "HTJ2K referenced payload cursor overflow".to_string(),
         })?;
-    let job_payloads =
-        payloads
-            .get(payload_cursor..payload_end)
+    if first.cleanup.length != block.cleanup_length as usize {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K referenced cleanup length does not match code-block geometry"
+                .to_string(),
+        });
+    }
+    let expected_refinement = block.refinement_length as usize;
+    let mut refinement = first.refinement.map_or(0, |range| range.length);
+    while refinement < expected_refinement {
+        let continuation = payloads
+            .get(*payload_cursor)
             .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K referenced plan has fewer payload ranges than code-block jobs"
+                message: "HTJ2K referenced plan is missing a refinement continuation record"
                     .to_string(),
             })?;
-    Ok((job_payloads, payload_end))
+        *payload_cursor = payload_cursor
+            .checked_add(1)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K referenced payload cursor overflow".to_string(),
+            })?;
+        let length = continuation
+            .refinement
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K refinement continuation record has no refinement range".to_string(),
+            })?
+            .length;
+        if continuation.cleanup.length != 0 || length == 0 {
+            return Err(Error::MetalKernel {
+                message: "HTJ2K refinement continuation record is malformed".to_string(),
+            });
+        }
+        refinement = refinement
+            .checked_add(length)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K referenced refinement length overflow".to_string(),
+            })?;
+    }
+    if refinement != expected_refinement {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K referenced refinement length does not match code-block geometry"
+                .to_string(),
+        });
+    }
+    payloads
+        .get(first_record..*payload_cursor)
+        .ok_or(Error::MetalStateInvariant {
+            state: "HTJ2K referenced prepared sub-band",
+            reason: "validated code-block payload span is outside the retained record table",
+        })
 }
 
 #[cfg(target_os = "macos")]
-fn append_referenced_ht_job(
-    jobs: &mut Vec<J2kHtCleanupBatchJob>,
-    ranges: &mut Vec<HtCodeBlockPayloadRanges>,
-    logical_coded_len: &mut usize,
+fn validate_referenced_ht_records(
     block: &j2k_native::HtOwnedCodeBlockBatchJob,
-    payload: HtCodeBlockPayloadRanges,
-    input: &[u8],
-    output_stride: u32,
-) -> Result<(), Error> {
-    validate_referenced_ht_payload(block, payload, input)?;
-    let refinement_len = payload.refinement.map_or(0, |range| range.length);
-    let block_coded_len = payload
-        .cleanup
-        .length
-        .checked_add(refinement_len)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K referenced code-block payload length overflow".to_string(),
-        })?;
-    let coded_offset = u32::try_from(*logical_coded_len).map_err(|_| Error::MetalKernel {
-        message: "HTJ2K MetalDirect referenced coded payload exceeds u32".to_string(),
-    })?;
-    *logical_coded_len = logical_coded_len
-        .checked_add(block_coded_len)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K referenced prepared payload length overflow".to_string(),
-        })?;
-    ranges.push(payload);
-    jobs.push(referenced_ht_job(
-        block,
-        coded_offset,
-        block_coded_len,
-        output_stride,
-    )?);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn validate_referenced_ht_payload(
-    block: &j2k_native::HtOwnedCodeBlockBatchJob,
-    payload: HtCodeBlockPayloadRanges,
+    records: &[HtCodeBlockPayloadRanges],
     input: &[u8],
 ) -> Result<(), Error> {
     if !block.data.is_empty() {
@@ -137,18 +218,11 @@ fn validate_referenced_ht_payload(
             reason: "referenced plan geometry unexpectedly owns code-block payload bytes",
         });
     }
-    let refinement_len = payload.refinement.map_or(0, |range| range.length);
-    if usize::try_from(block.cleanup_length).ok() != Some(payload.cleanup.length)
-        || usize::try_from(block.refinement_length).ok() != Some(refinement_len)
-    {
-        return Err(Error::MetalKernel {
-            message: "HTJ2K referenced payload lengths do not match code-block geometry"
-                .to_string(),
-        });
-    }
-    referenced_codestream_slice(input, payload.cleanup)?;
-    if let Some(refinement) = payload.refinement {
-        referenced_codestream_slice(input, refinement)?;
+    for record in records {
+        referenced_codestream_slice(input, record.cleanup)?;
+        if let Some(refinement) = record.refinement {
+            referenced_codestream_slice(input, refinement)?;
+        }
     }
     Ok(())
 }
@@ -159,6 +233,7 @@ fn referenced_ht_job(
     coded_offset: u32,
     block_coded_len: usize,
     output_stride: u32,
+    irreversible_midpoint: bool,
 ) -> Result<J2kHtCleanupBatchJob, Error> {
     Ok(J2kHtCleanupBatchJob {
         coded_offset,
@@ -183,11 +258,12 @@ fn referenced_ht_job(
             })?,
         dequantization_step: block.dequantization_step,
         stripe_causal: u32::from(block.stripe_causal),
+        irreversible_midpoint: u32::from(irreversible_midpoint),
     })
 }
 
 #[cfg(target_os = "macos")]
-fn referenced_codestream_slice(
+pub(super) fn referenced_codestream_slice(
     codestream: &[u8],
     range: J2kCodestreamRange,
 ) -> Result<&[u8], Error> {

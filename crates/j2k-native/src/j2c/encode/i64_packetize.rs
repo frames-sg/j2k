@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use super::allocation::{checked_add_bytes, checked_element_bytes};
+use super::magnitude::required_ht_magnitude_bound;
 use super::options::EncodeOptions;
 use super::{
     encode_prepared_resolution_packets_for_session,
@@ -43,6 +44,11 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         retained_base_bytes,
         accelerator,
     } = request;
+    let required_ht_magnitude_bound = required_ht_magnitude_bound(
+        component_resolution_packets.iter().flatten(),
+        num_levels,
+        options.reversible,
+    )?;
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
         component_resolution_packets,
         width,
@@ -103,7 +109,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         retained_base_bytes,
         "retained typed-i64 packetization owners",
     )?;
-    packetize_resolution_packets_with_options_for_session(
+    let mut packetized = packetize_resolution_packets_with_options_for_session(
         &resolution_packets,
         resolution_packets.capacity(),
         &packet_descriptors,
@@ -120,5 +126,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         packetization_requires_scalar(params, options.tile_part_packet_limit),
         &packet_session,
         accelerator,
-    )
+    )?;
+    packetized.required_ht_magnitude_bound = required_ht_magnitude_bound;
+    Ok(packetized)
 }

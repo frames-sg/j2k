@@ -88,6 +88,7 @@ use self::exact::{
     forward_rct_i64, validate_htj2k_codestream, validate_reversible_i64_encode_options,
 };
 mod i64_packetize;
+mod magnitude;
 use self::i64_packetize::{packetize_i64_component_resolution_packets, I64PacketizeRequest};
 mod multitile;
 mod tile_parts;
@@ -112,8 +113,10 @@ pub use self::precomputed::{
     encode_precomputed_j2k_53_with_mct_and_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_owned_with_accelerator,
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
     encode_prequantized_htj2k_97_with_accelerator,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
@@ -586,7 +589,10 @@ fn ht_target_coding_passes_for_options(
     options: &EncodeOptions,
     block_coding_mode: BlockCodingMode,
 ) -> u8 {
-    if block_coding_mode == BlockCodingMode::HighThroughput && options.num_layers > 1 {
+    if block_coding_mode == BlockCodingMode::HighThroughput
+        && !options.reversible
+        && options.num_layers > 1
+    {
         options.num_layers.min(3)
     } else {
         1
@@ -619,6 +625,7 @@ struct PreparedEncodeCodeBlock {
 struct PreparedEncodeSubband {
     code_blocks: Vec<PreparedEncodeCodeBlock>,
     preencoded_ht_code_blocks: Option<Vec<EncodedHtJ2kCodeBlock>>,
+    preencoded_ht_maximum_cleanup_magnitude: Option<u64>,
     num_cbs_x: u32,
     num_cbs_y: u32,
     code_block_width: u32,

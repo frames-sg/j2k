@@ -99,12 +99,20 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
             ProfileField::metric("output_d2h_us", report.detail.output_d2h_us)?,
             ProfileField::metric("ht_dispatch_count", report.detail.ht_dispatch_count)?,
             ProfileField::metric(
+                "ht_refinement_dispatch_count",
+                report.detail.ht_refinement_dispatch_count,
+            )?,
+            ProfileField::metric(
                 "classic_dispatch_count",
                 report.detail.classic_dispatch_count,
             )?,
             ProfileField::metric(
                 "dequant_dispatch_count",
                 report.detail.dequant_dispatch_count,
+            )?,
+            ProfileField::metric(
+                "fused_dequant_dispatch_count",
+                report.detail.fused_dequant_dispatch_count,
             )?,
             ProfileField::metric("idwt_dispatch_count", report.detail.idwt_dispatch_count)?,
             ProfileField::metric("mct_dispatch_count", report.detail.mct_dispatch_count)?,

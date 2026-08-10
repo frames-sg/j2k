@@ -45,8 +45,9 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
         &CudaHtj2k97DeviceCodeblockBands,
         &'j [DctGridI16ToHtj2k97CodeBlockJob<'a>],
         Htj2k97CodeBlockOptions,
-    ) -> Result<(R, CudaHtj2kEncodeStageTimings, usize), CudaTranscodeError>,
-) -> Result<(R, Dwt97BatchStageTimings), CudaTranscodeError> {
+    )
+        -> Result<(R, Vec<u8>, CudaHtj2kEncodeStageTimings, usize), CudaTranscodeError>,
+) -> Result<(R, Vec<u8>, Dwt97BatchStageTimings), CudaTranscodeError> {
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
@@ -54,7 +55,7 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
     let context = session.context()?;
 
     let Some(first) = jobs.first() else {
-        return Ok((empty(), Dwt97BatchStageTimings::default()));
+        return Ok((empty(), Vec::new(), Dwt97BatchStageTimings::default()));
     };
 
     let uniform = jobs.iter().all(|job| {
@@ -103,7 +104,7 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
     let mut timings = map_batch_timings(cuda_timings);
 
     let resources = session.encode_resources(&context)?;
-    let (output, ht_timings, ht_dispatches) = sink(
+    let (output, required_magnitude_bounds, ht_timings, ht_dispatches) = sink(
         &context,
         resources.as_ref(),
         &pool,
@@ -113,14 +114,21 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
     )?;
     set_ht_encode_timings(&mut timings, ht_timings);
     timings.ht_codeblock_dispatches = ht_dispatches;
-    Ok((output, timings))
+    Ok((output, required_magnitude_bounds, timings))
 }
 
 pub(crate) fn dispatch_htj2k97_preencoded_i16_batch(
     session: &mut CudaTranscodeSession,
     jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(Vec<PreencodedHtj2k97Component>, Dwt97BatchStageTimings), CudaTranscodeError> {
+) -> Result<
+    (
+        Vec<PreencodedHtj2k97Component>,
+        Vec<u8>,
+        Dwt97BatchStageTimings,
+    ),
+    CudaTranscodeError,
+> {
     dispatch_htj2k97_preencoded_i16_batch_with_sink(
         session,
         jobs,
@@ -136,7 +144,14 @@ pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch(
     session: &mut CudaTranscodeSession,
     jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(PreencodedHtj2k97CompactBatch, Dwt97BatchStageTimings), CudaTranscodeError> {
+) -> Result<
+    (
+        PreencodedHtj2k97CompactBatch,
+        Vec<u8>,
+        Dwt97BatchStageTimings,
+    ),
+    CudaTranscodeError,
+> {
     dispatch_htj2k97_preencoded_i16_batch_with_sink(
         session,
         jobs,
@@ -185,6 +200,7 @@ pub(super) fn device_bands_to_preencoded_components<J: Htj2k97ComponentJob>(
 ) -> Result<
     (
         Vec<PreencodedHtj2k97Component>,
+        Vec<u8>,
         CudaHtj2kEncodeStageTimings,
         usize,
     ),
@@ -196,13 +212,25 @@ pub(super) fn device_bands_to_preencoded_components<J: Htj2k97ComponentJob>(
         ));
     }
 
-    let (ll_subbands, hl_subbands, lh_subbands, hh_subbands, ht_timings, dispatches) =
-        encode_resident_subbands(context, resources, pool, bands, bands.item_count, options)?;
+    let (
+        ll_subbands,
+        hl_subbands,
+        lh_subbands,
+        hh_subbands,
+        required_magnitude_bounds,
+        ht_timings,
+        dispatches,
+    ) = encode_resident_subbands(context, resources, pool, bands, bands.item_count, options)?;
 
     let components =
         assemble_preencoded_components(jobs, ll_subbands, hl_subbands, lh_subbands, hh_subbands)?;
 
-    Ok((components, ht_timings, dispatches))
+    Ok((
+        components,
+        required_magnitude_bounds,
+        ht_timings,
+        dispatches,
+    ))
 }
 
 #[expect(
@@ -219,6 +247,7 @@ pub(super) fn device_bands_to_compact_preencoded_batch<J: Htj2k97ComponentJob>(
 ) -> Result<
     (
         PreencodedHtj2k97CompactBatch,
+        Vec<u8>,
         CudaHtj2kEncodeStageTimings,
         usize,
     ),
@@ -230,15 +259,23 @@ pub(super) fn device_bands_to_compact_preencoded_batch<J: Htj2k97ComponentJob>(
         ));
     }
 
-    let (payload, ll_subbands, hl_subbands, lh_subbands, hh_subbands, ht_timings, dispatches) =
-        encode_resident_compact_subbands(
-            context,
-            resources,
-            pool,
-            bands,
-            bands.item_count,
-            options,
-        )?;
+    let (
+        payload,
+        ll_subbands,
+        hl_subbands,
+        lh_subbands,
+        hh_subbands,
+        required_magnitude_bounds,
+        ht_timings,
+        dispatches,
+    ) = encode_resident_compact_subbands(
+        context,
+        resources,
+        pool,
+        bands,
+        bands.item_count,
+        options,
+    )?;
 
     let components = assemble_compact_preencoded_components(
         jobs,
@@ -254,6 +291,7 @@ pub(super) fn device_bands_to_compact_preencoded_batch<J: Htj2k97ComponentJob>(
             payload,
             components,
         },
+        required_magnitude_bounds,
         ht_timings,
         dispatches,
     ))

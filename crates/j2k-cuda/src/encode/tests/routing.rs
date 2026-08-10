@@ -187,7 +187,7 @@ fn cuda_lossy_htj2k_facade_require_device_dispatches_supported_stages_when_runti
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn cuda_auto_host_output_lossy_classic_matches_cpu_for_rgb_fixture_when_runtime_required() {
+fn cuda_auto_host_output_lossy_matches_cpu_for_rgb_fixture_when_runtime_required() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
@@ -224,10 +224,10 @@ fn cuda_auto_host_output_lossy_classic_matches_cpu_for_rgb_fixture_when_runtime_
         J2kLossySamples::new(&pixels, width, height, components, 8, false)
             .expect("valid RGB8 samples")
     };
-    let options = |backend| {
+    let options = |backend, block_coding_mode| {
         let mut options = J2kLossyEncodeOptions::default()
             .with_backend(backend)
-            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_block_coding_mode(block_coding_mode)
             .with_max_decomposition_levels(Some(3))
             .with_rate_target(Some(J2kRateTarget::BitsPerPixel(4.0)))
             .with_validation(J2kEncodeValidation::External);
@@ -235,35 +235,28 @@ fn cuda_auto_host_output_lossy_classic_matches_cpu_for_rgb_fixture_when_runtime_
         options
     };
 
-    let cpu = encode_j2k_lossy(samples(), &options(EncodeBackendPreference::CpuOnly))
+    for block_coding_mode in [
+        J2kBlockCodingMode::Classic,
+        J2kBlockCodingMode::HighThroughput,
+    ] {
+        let cpu = encode_j2k_lossy(
+            samples(),
+            &options(EncodeBackendPreference::CpuOnly, block_coding_mode),
+        )
         .expect("CPU lossy encode");
-    let mut accelerator = CudaEncodeStageAccelerator::for_auto_host_output();
-    let hybrid = encode_j2k_lossy_with_accelerator(
-        samples(),
-        &options(EncodeBackendPreference::Auto),
-        BackendKind::Cuda,
-        &mut accelerator,
-    )
-    .expect("hybrid CUDA lossy encode");
+        let mut accelerator = CudaEncodeStageAccelerator::for_auto_host_output();
+        let hybrid = encode_j2k_lossy_with_accelerator(
+            samples(),
+            &options(EncodeBackendPreference::Auto, block_coding_mode),
+            BackendKind::Cuda,
+            &mut accelerator,
+        )
+        .expect("hybrid CUDA lossy encode");
 
-    assert!(hybrid.dispatch_report.total() > 0);
-    if hybrid.codestream != cpu.codestream {
-        let first_difference = hybrid
-            .codestream
-            .iter()
-            .zip(&cpu.codestream)
-            .position(|(hybrid, cpu)| hybrid != cpu)
-            .map(|index| (index, cpu.codestream[index], hybrid.codestream[index]));
-        let mismatch_count = hybrid
-            .codestream
-            .iter()
-            .zip(&cpu.codestream)
-            .filter(|(hybrid, cpu)| hybrid != cpu)
-            .count();
-        panic!(
-            "hybrid lossy codestream differs from CPU: cpu_len={}, hybrid_len={}, mismatch_count={mismatch_count}, first_difference={first_difference:?}",
-            cpu.codestream.len(),
-            hybrid.codestream.len(),
+        assert!(hybrid.dispatch_report.total() > 0);
+        assert_eq!(
+            hybrid.codestream, cpu.codestream,
+            "{block_coding_mode:?} hybrid lossy codestream differs from CPU"
         );
     }
 }

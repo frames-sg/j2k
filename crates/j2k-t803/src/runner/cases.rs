@@ -13,7 +13,7 @@ use j2k::{BatchGroupInfo, BatchLayout, DecodeRequest, NativeSampleType};
     all(feature = "metal-runner", target_os = "macos")
 ))]
 use j2k::{BatchItemError, PreparationDepth, PreparedBatch};
-use j2k::{J2kDecodedNativeComponents, J2kDecoder, J2kNativeComponentPlane, J2kSrgb8Layout};
+use j2k::{J2kDecodedNativeComponents, J2kDecoder, J2kNativeComponentPlane};
 use j2k_codec_math::mct;
 use j2k_core::Colorspace;
 #[cfg(any(
@@ -24,16 +24,20 @@ use j2k_core::Colorspace;
 use j2k_core::Downscale;
 
 use crate::{
-    compare_peak_samples, compare_samples, normalize_component, parse_pgx, CaseReport, CaseStatus,
-    Component, DecoderCase, ErrorBounds, ExecutionLocation, Jp2Case, NormalizationTarget,
-    RouteKind, RouteStage, RouteStageName, T803Manifest,
+    compare_samples, normalize_component, parse_pgx, CaseReport, CaseStatus, Component,
+    DecoderCase, ErrorBounds, NormalizationTarget, Part15CaseEvidence,
+    Part15EvidenceClassification,
 };
 
-#[derive(Clone, Debug)]
-pub(super) struct RouteEvidence {
-    pub(super) kind: RouteKind,
-    pub(super) stages: Vec<RouteStage>,
-}
+mod codestream;
+mod file_format;
+mod route;
+
+pub(super) use codestream::{codestream_requirements, CodestreamRequirements};
+pub(super) use file_format::{run_jp2_cases, run_jph_cases};
+#[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+pub(super) use route::parse_only_route;
+pub(super) use route::{cpu_route, RouteEvidence};
 
 #[derive(Debug)]
 pub(super) struct DecodedPlane {
@@ -47,7 +51,7 @@ pub(super) struct DecodedPlane {
 #[derive(Debug)]
 pub(super) struct DecodedImage {
     pub(super) dimensions: (u32, u32),
-    pub(super) component_transform: Option<Colorspace>,
+    pub(super) requirements: CodestreamRequirements,
     pub(super) planes: Vec<DecodedPlane>,
     pub(super) route: RouteEvidence,
 }
@@ -60,7 +64,7 @@ pub(super) struct DecodedImage {
 pub(super) fn decoded_interleaved(
     info: &BatchGroupInfo,
     bytes: &[u8],
-    component_transform: Option<Colorspace>,
+    requirements: CodestreamRequirements,
     route: RouteEvidence,
 ) -> Result<DecodedImage, String> {
     if info.layout != BatchLayout::Nhwc {
@@ -127,21 +131,10 @@ pub(super) fn decoded_interleaved(
         .collect();
     Ok(DecodedImage {
         dimensions: info.dimensions,
-        component_transform,
+        requirements,
         planes,
         route,
     })
-}
-
-pub(super) fn codestream_component_transform(input: &[u8]) -> Result<Option<Colorspace>, String> {
-    let payload = j2k::extract_j2k_codestream_payload(input).map_err(|error| error.to_string())?;
-    let header = j2k_native::inspect_j2k_codestream_header(payload.codestream())
-        .map_err(|error| error.to_string())?;
-    Ok(header.has_mct.then_some(if header.reversible {
-        Colorspace::Rct
-    } else {
-        Colorspace::Ict
-    }))
 }
 
 #[cfg(any(
@@ -201,31 +194,31 @@ pub(super) fn prepared_requires_cpu(prepared: &PreparedBatch) -> Result<bool, St
 #[derive(Debug)]
 pub(super) struct DecodeFailure {
     message: String,
-    route: RouteEvidence,
+    route: Box<RouteEvidence>,
 }
 
 impl DecodeFailure {
     pub(super) fn new(message: impl Into<String>, route: RouteEvidence) -> Self {
         Self {
             message: message.into(),
-            route,
+            route: Box::new(route),
         }
     }
 }
 
 pub(super) fn run_decoder_cases(
-    manifest: &T803Manifest,
+    cases: &[DecoderCase],
     corpus: &Path,
     mut decode: impl FnMut(Arc<[u8]>, u8) -> Result<DecodedImage, DecodeFailure>,
 ) -> Vec<CaseReport> {
     let mut reports = Vec::new();
     let mut start = 0;
-    while start < manifest.decoder_cases.len() {
-        let first = &manifest.decoder_cases[start];
+    while start < cases.len() {
+        let first = &cases[start];
         let mut end = start + 1;
-        while end < manifest.decoder_cases.len()
-            && manifest.decoder_cases[end].codestream == first.codestream
-            && manifest.decoder_cases[end].reduction_levels == first.reduction_levels
+        while end < cases.len()
+            && cases[end].codestream == first.codestream
+            && cases[end].reduction_levels == first.reduction_levels
         {
             end += 1;
         }
@@ -238,7 +231,7 @@ pub(super) fn run_decoder_cases(
                 )
             })
             .and_then(|input| decode(Arc::from(input), first.reduction_levels));
-        for case in &manifest.decoder_cases[start..end] {
+        for case in &cases[start..end] {
             reports.push(match &decoded {
                 Ok(decoded) => {
                     compare_decoder_case(case, decoded, corpus).unwrap_or_else(|error| {
@@ -249,7 +242,7 @@ pub(super) fn run_decoder_cases(
                     case,
                     Some(case.mse),
                     error.message.clone(),
-                    error.route.clone(),
+                    error.route.as_ref().clone(),
                 ),
             });
         }
@@ -262,8 +255,9 @@ pub(super) fn decode_cpu(
     input: &[u8],
     reduction_levels: u8,
 ) -> Result<DecodedImage, DecodeFailure> {
-    let component_transform = codestream_component_transform(input)
+    let requirements = codestream_requirements(input)
         .map_err(|error| DecodeFailure::new(error, cpu_route(false)))?;
+    let component_transform = requirements.component_transform;
     let mut iut = J2kDecoder::new(input)
         .map_err(|error| DecodeFailure::new(error.to_string(), cpu_route(false)))?;
     let native = iut
@@ -271,14 +265,15 @@ pub(super) fn decode_cpu(
         .map_err(|error| {
             DecodeFailure::new(error.to_string(), cpu_route(component_transform.is_some()))
         })?;
-    decoded_native_components(&native, component_transform)
+    decoded_native_components(&native, requirements)
         .map_err(|error| DecodeFailure::new(error, cpu_route(component_transform.is_some())))
 }
 
 fn decoded_native_components(
     decoded: &J2kDecodedNativeComponents,
-    component_transform: Option<Colorspace>,
+    requirements: CodestreamRequirements,
 ) -> Result<DecodedImage, String> {
+    let component_transform = requirements.component_transform;
     let dimensions = decoded.dimensions();
     let mut planes = Vec::new();
     planes
@@ -295,7 +290,7 @@ fn decoded_native_components(
     }
     Ok(DecodedImage {
         dimensions,
-        component_transform,
+        requirements,
         planes,
         route: cpu_route(component_transform.is_some()),
     })
@@ -312,7 +307,7 @@ fn compare_decoder_case(
         .ok_or_else(|| format!("decoded output has no component {}", case.component))?;
     let decoded_samples = if let (true, Some(component_transform)) = (
         matches!(case.table.as_str(), "C.1" | "C.4"),
-        decoded.component_transform,
+        decoded.requirements.component_transform,
     ) {
         let planes = decoded.planes.get(..3).ok_or_else(|| {
             "multi-component transform output has fewer than three planes".to_string()
@@ -369,6 +364,17 @@ fn compare_decoder_case(
         },
     )
     .map_err(|error| error.to_string())?;
+    let part15 = match (&case.part15, &decoded.requirements.part15) {
+        (Some(selection), Some(codestream)) => Some(Part15CaseEvidence {
+            classification: Part15EvidenceClassification::Formal,
+            selection: selection.clone(),
+            codestream: codestream.clone(),
+        }),
+        (Some(_), None) => {
+            return Err("selected Part 15 case has no parsed CAP/CPF evidence".to_string());
+        }
+        (None, _) => None,
+    };
     Ok(CaseReport {
         id: case.id.clone(),
         table: case.table.clone(),
@@ -384,6 +390,8 @@ fn compare_decoder_case(
         allowed_mse: Some(case.mse),
         error: None,
         stages: decoded.route.stages.clone(),
+        accelerator_execution: decoded.route.accelerator_execution.clone(),
+        part15,
     })
 }
 
@@ -419,109 +427,6 @@ fn post_decode_subsampling(plane: &DecodedPlane, decoded: &DecodedImage) -> (u8,
             1
         },
     )
-}
-
-pub(super) fn run_jp2_cases(manifest: &T803Manifest, corpus: &Path) -> Vec<CaseReport> {
-    manifest
-        .jp2_cases
-        .iter()
-        .map(|case| {
-            compare_jp2_case(case, corpus)
-                .unwrap_or_else(|(error, route)| error_report_jp2(case, error, route))
-        })
-        .collect()
-}
-
-fn compare_jp2_case(case: &Jp2Case, corpus: &Path) -> Result<CaseReport, (String, RouteEvidence)> {
-    let route = cpu_route(false);
-    let compare = || -> Result<CaseReport, String> {
-        let input_path = corpus.join(&case.input);
-        let input = fs::read(&input_path)
-            .map_err(|error| format!("read {}: {error}", input_path.display()))?;
-        let component_transform = codestream_component_transform(&input)?;
-        let support = J2kDecoder::inspect_support(&input).map_err(|error| error.to_string())?;
-        if support.component_count() != u16::from(case.components) {
-            return Err(format!(
-                "codestream has {} components, expected {}",
-                support.component_count(),
-                case.components
-            ));
-        }
-        let mut iut = J2kDecoder::new(&input).map_err(|error| error.to_string())?;
-        let case_route = cpu_route(component_transform.is_some());
-        let normalized = iut.decode_srgb8().map_err(|error| error.to_string())?;
-        if normalized.dimensions() != (case.width, case.height) {
-            return Err(format!(
-                "decoded dimensions are {:?}, expected {}x{}",
-                normalized.dimensions(),
-                case.width,
-                case.height
-            ));
-        }
-        let reference_path = corpus.join(&case.reference);
-        let reference = image::open(&reference_path)
-            .map_err(|error| format!("read {}: {error}", reference_path.display()))?
-            .into_rgb8();
-        if reference.dimensions() != (case.width, case.height) {
-            return Err("TIFF dimensions do not match the pinned case".to_string());
-        }
-        let reference = reference.into_raw();
-        let (expected_samples, actual_samples) = match normalized.layout() {
-            J2kSrgb8Layout::Gray => {
-                let mut gray = Vec::new();
-                gray.try_reserve_exact(reference.len() / 3)
-                    .map_err(|_| "cannot allocate Annex G grayscale reference".to_string())?;
-                for pixel in reference.chunks_exact(3) {
-                    if pixel[0] != pixel[1] || pixel[0] != pixel[2] {
-                        return Err(
-                            "grayscale TIFF reference contains non-neutral pixels".to_string()
-                        );
-                    }
-                    gray.push(i64::from(pixel[0]));
-                }
-                let actual_samples = normalized
-                    .data()
-                    .iter()
-                    .map(|&sample| i64::from(sample))
-                    .collect();
-                (gray, actual_samples)
-            }
-            J2kSrgb8Layout::Rgb => (
-                reference
-                    .iter()
-                    .map(|&sample| i64::from(sample))
-                    .collect::<Vec<_>>(),
-                normalized
-                    .data()
-                    .iter()
-                    .map(|&sample| i64::from(sample))
-                    .collect::<Vec<_>>(),
-            ),
-            J2kSrgb8Layout::Rgba => {
-                return Err("Annex G case unexpectedly produced alpha".to_string());
-            }
-            _ => return Err("Annex G case produced an unknown sRGB8 layout".to_string()),
-        };
-        let comparison = compare_peak_samples(&expected_samples, &actual_samples, case.peak)
-            .map_err(|error| error.to_string())?;
-        Ok(CaseReport {
-            id: case.id.clone(),
-            table: "G.1".to_string(),
-            status: if comparison.passed {
-                CaseStatus::Pass
-            } else {
-                CaseStatus::Fail
-            },
-            route: case_route.kind,
-            peak: Some(comparison.peak),
-            mse: None,
-            allowed_peak: case.peak,
-            allowed_mse: None,
-            error: None,
-            stages: case_route.stages,
-        })
-    };
-    compare().map_err(|error| (error, route))
 }
 
 pub(super) fn unpack_native_plane(plane: &J2kNativeComponentPlane) -> Result<Vec<i64>, String> {
@@ -614,86 +519,8 @@ fn error_report(
         allowed_mse,
         error: Some(error),
         stages: route.stages,
-    }
-}
-
-fn error_report_jp2(case: &Jp2Case, error: String, route: RouteEvidence) -> CaseReport {
-    CaseReport {
-        id: case.id.clone(),
-        table: "G.1".to_string(),
-        status: CaseStatus::Error,
-        route: route.kind,
-        peak: None,
-        mse: None,
-        allowed_peak: case.peak,
-        allowed_mse: None,
-        error: Some(error),
-        stages: route.stages,
-    }
-}
-
-pub(super) fn cpu_route(mct: bool) -> RouteEvidence {
-    route_evidence(ExecutionLocation::Cpu, None, mct)
-}
-
-#[cfg(any(
-    feature = "cuda-runner",
-    all(feature = "metal-runner", target_os = "macos")
-))]
-pub(super) fn device_route(location: ExecutionLocation, mct: bool) -> RouteEvidence {
-    route_evidence(ExecutionLocation::Cpu, Some(location), mct)
-}
-
-fn route_evidence(
-    parsing: ExecutionLocation,
-    device: Option<ExecutionLocation>,
-    mct: bool,
-) -> RouteEvidence {
-    let execution = device.unwrap_or(ExecutionLocation::Cpu);
-    RouteEvidence {
-        kind: if device.is_some() {
-            RouteKind::Hybrid
-        } else {
-            RouteKind::Cpu
-        },
-        stages: Vec::from([
-            RouteStage {
-                stage: RouteStageName::Parsing,
-                location: parsing,
-            },
-            RouteStage {
-                stage: RouteStageName::Tier1,
-                location: execution,
-            },
-            RouteStage {
-                stage: RouteStageName::Dequantization,
-                location: execution,
-            },
-            RouteStage {
-                stage: RouteStageName::Idwt,
-                location: execution,
-            },
-            RouteStage {
-                stage: RouteStageName::Mct,
-                location: if mct {
-                    execution
-                } else {
-                    ExecutionLocation::NotUsed
-                },
-            },
-            RouteStage {
-                stage: RouteStageName::ColorOutput,
-                location: execution,
-            },
-            RouteStage {
-                stage: RouteStageName::HostToDevice,
-                location: device.unwrap_or(ExecutionLocation::NotUsed),
-            },
-            RouteStage {
-                stage: RouteStageName::DeviceToHost,
-                location: device.unwrap_or(ExecutionLocation::NotUsed),
-            },
-        ]),
+        accelerator_execution: route.accelerator_execution,
+        part15: None,
     }
 }
 
@@ -706,8 +533,8 @@ mod tests {
     use j2k_core::{Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Downscale};
 
     use super::{
-        codestream_component_transform, decoded_interleaved, forward_first_component,
-        reduction_request, RouteEvidence,
+        codestream_requirements, decoded_interleaved, forward_first_component, reduction_request,
+        CodestreamRequirements, RouteEvidence,
     };
     use crate::{ExecutionLocation, RouteKind, RouteStage, RouteStageName};
     use j2k::J2kDecoder;
@@ -721,6 +548,16 @@ mod tests {
         RouteEvidence {
             kind: RouteKind::Hybrid,
             stages,
+            accelerator_execution: None,
+        }
+    }
+
+    fn requirements(component_transform: Option<Colorspace>) -> CodestreamRequirements {
+        CodestreamRequirements {
+            component_transform,
+            #[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+            high_throughput: false,
+            part15: None,
         }
     }
 
@@ -755,7 +592,7 @@ mod tests {
         let decoded = decoded_interleaved(
             &info(BatchColor::Rgb, NativeSampleType::U8, 8, false),
             &[1, 2, 3, 4, 5, 6],
-            None,
+            requirements(None),
             route(),
         )
         .expect("decode interleaved RGB bytes");
@@ -774,7 +611,7 @@ mod tests {
         let decoded = decoded_interleaved(
             &info(BatchColor::Gray, NativeSampleType::I16, 12, true),
             &bytes,
-            None,
+            requirements(None),
             route(),
         )
         .expect("decode interleaved signed bytes");
@@ -786,13 +623,15 @@ mod tests {
     fn interleaved_decode_rejects_layout_or_length_mismatch() {
         let mut planar = info(BatchColor::Rgb, NativeSampleType::U8, 8, false);
         planar.layout = BatchLayout::Nchw;
-        assert!(decoded_interleaved(&planar, &[0; 6], None, route())
-            .expect_err("planar input must be rejected")
-            .contains("NHWC"));
+        assert!(
+            decoded_interleaved(&planar, &[0; 6], requirements(None), route())
+                .expect_err("planar input must be rejected")
+                .contains("NHWC")
+        );
         assert!(decoded_interleaved(
             &info(BatchColor::Rgb, NativeSampleType::U8, 8, false),
             &[0; 5],
-            None,
+            requirements(None),
             route(),
         )
         .expect_err("short input must be rejected")
@@ -859,12 +698,16 @@ mod tests {
             Colorspace::IccTagged
         );
         assert_eq!(
-            codestream_component_transform(&codestream).expect("COD transform"),
+            codestream_requirements(&codestream)
+                .expect("COD requirements")
+                .component_transform,
             Some(Colorspace::Rct)
         );
         let jp2 = wrap_jp2_codestream(&codestream, 128, 64, 257, 8, 16);
         assert_eq!(
-            codestream_component_transform(&jp2).expect("wrapped COD transform"),
+            codestream_requirements(&jp2)
+                .expect("wrapped COD requirements")
+                .component_transform,
             Some(Colorspace::Rct)
         );
     }

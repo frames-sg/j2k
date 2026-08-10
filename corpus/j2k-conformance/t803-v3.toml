@@ -1,6 +1,6 @@
-# T.803 v3 / ISO/IEC 15444-4:2024 Part 1 decoder and Annex G JP2 selection.
+# T.803 v3 / ISO/IEC 15444-4:2024 Part 1 and Part 15 decoder selection.
 # The copyrighted electronic attachment remains external and must not be committed.
-schema_version = 1
+schema_version = 2
 standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
 
 [source]
@@ -1730,3 +1730,879 @@ bit_depth = 8
 width = 768
 height = 512
 peak = 4
+
+[[files]]
+path = "files/codestreams_hifi/hifi_ht1_02.j2k"
+sha256 = "8ecb1ddcd469e4b3fda6df01c919e831e16f7c3bc19a0b3c41d72038f2b44e53"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_01_bset/ds0_ht_01_b11.j2k"
+sha256 = "4f81100e4eb3b0ab03d669870034257f73c2abb837fcec1ac02962a9910b4824"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b11.j2k"
+sha256 = "44386273c368b9454210fcef311260db72ce3d5c133f414c5ab9a832a19482fe"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b12.j2k"
+sha256 = "053421d280326f3f11f495b3d9ea1045a822dfbcfa3217c6effbd057e9c7e239"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b11.j2k"
+sha256 = "49acc614f87c135c2741ca3757f86d9aa6421c8d12c9b4c34c68cc2b6f5f95b4"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b14.j2k"
+sha256 = "58e7e443642069081a244e383f1a615f2921ed2f88627c19cb9b9141396525fb"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b11.j2k"
+sha256 = "d4b0b3152f1d606211334bf82cfd8b960eebbbd89b60bf3a04de43bec8d8f78d"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b12.j2k"
+sha256 = "77ff230280d03c02f66ff79d06acae77e92126490d019e2d14de64325a0dd4e8"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b11.j2k"
+sha256 = "2d98f8a241880ea5bfc1d283dc4856ae6dc05aa6f585fdd6280f4254d9bca69b"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b12.j2k"
+sha256 = "e936bceff1ee6465b6b1e0c0169cf442f3053d72bbb2c316589c3968a27745a3"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b11.j2k"
+sha256 = "2ed9119d74bab5e413dc3e8d0612189bbc66d2003784d0cffa18f303fcfb2e1b"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b18.j2k"
+sha256 = "d30ca91bafd02181d8138865414be0a7b58a4e41cb2d091b969a817f0b4abc77"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b11.j2k"
+sha256 = "128cdf462ba518eddac97c6ed7ddefab60f09dd4f47e29b7778386471a8b712f"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b15.j2k"
+sha256 = "59572b57a43a61f2f96da4723965362ce16690a615d6b5ce8b4ad4093eaa21d1"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b18.j2k"
+sha256 = "c1b768338b6fccba480f4d496dc662255ab19d44d98d0cd182cd543cfe42655b"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b11.j2k"
+sha256 = "b40bf07e90b27a9e10bdf65c9f727d9baa233648635c76924c81a41fcf5fd4a8"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b15.j2k"
+sha256 = "14da7e15d3c88c636410ab573b9ceb5d46881e99860bc200636602f59c701da2"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b16.j2k"
+sha256 = "4e11ab229ab4f7d6fe6d5665aa9e1d94712ad58d7b5b5f29bd8265df8762bdf9"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b11.j2k"
+sha256 = "e3261e51c8357e92ba8c8a9f7ed6239bb476f8b3d7c01f7ead31fc562f31abb5"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b15.j2k"
+sha256 = "79aac2e8e85d699b6cc7ba8639d95496c0e3386c64ab58f27bd31ac593bb9680"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b16.j2k"
+sha256 = "da8a5f8e1f99ff0e4092d9017c39dcda01079c5b2b94448a1016421ee5bd4462"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_09_bset/ds0_ht_09_b11.j2k"
+sha256 = "1837d4e37327c4170191852e06ef42a78ccfa82d529f1f6f50faeab409805653"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_10_bset/ds0_ht_10_b11.j2k"
+sha256 = "022679c600ed171a14bb0050f43f59b2543fa48befccc78b977d552918ebbe84"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_11_bset/ds0_ht_11_b10.j2k"
+sha256 = "3a497d436c4a90afe810948e9df9fc1f24adf7e0dbc08d40d121260f4358b31c"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_12_bset/ds0_ht_12_b11.j2k"
+sha256 = "4941137592aa48e41552c4b3bf66ef35f2f4ca915a4ca4a9fe296eabaae8aaf7"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_13_bset/ds0_ht_13_b11.j2k"
+sha256 = "43493c63d3d4affc13337d26fec4eddb7d023bd68f268d182d51013db6c51c0d"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_14_bset/ds0_ht_14_b11.j2k"
+sha256 = "c3b1071873a3c4f03d63a186afde7bdaf87be6f9e5750f74ddebd4f863d11ada"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_hm_15_b8.j2k"
+sha256 = "94378d2c73f1c12c719b6fb53ec66e43e3f6564b49c81de2a13abd5527fa185a"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b11.j2k"
+sha256 = "f19f9deb2007f305d6361319f04506e9c9b02cd1c166d3f18c7a10893e085cb8"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b14.j2k"
+sha256 = "2be3ab7e49eeb941eab1368a1b1594665506bb1e4266b30a4a0cc41b0aaf5bd5"
+
+[[files]]
+path = "files/htj2k_bsets_profile0/p0_16_bset/ds0_ht_16_b11.j2k"
+sha256 = "890e0ba09bbcdf3b7f6647f4cf9c55c69532171bd013d96f93aecce3a370e108"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b11.j2k"
+sha256 = "a8a83d911023df792e942b9d8fa8501d4e5853fb31b7c5f9392ebd4a246bfb4a"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b12.j2k"
+sha256 = "f0b23e38fc93e17edf078e3eac0fef82b81d4894448d536c703ec7588d33965f"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b11.j2k"
+sha256 = "3b172b912ef33af283b2bbd7438fed53ed8d25c7999471c2405d29043db62c15"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b12.j2k"
+sha256 = "281224ca009d514766a06b357928185361d19b2c68b6fbcdc496c7c52a142ce0"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b11.j2k"
+sha256 = "947f2bca24ab3c17e5a0c39b000f2f0b51cc00079f717ebb1ae5051035840165"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b12.j2k"
+sha256 = "b0016d76aaa288fa2450f4d26a21c5403eb4d742eee4fc6633056eeb4eb715eb"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_04_bset/ds1_ht_04_b9.j2k"
+sha256 = "0e578dd62a2d8ca0136a0fd2532701fc72be599843ae8465b4dda293752947f2"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_05_bset/ds1_ht_05_b11.j2k"
+sha256 = "8d29b7d88fd8542d120b120d7edcbe150d05f66a3db7f33a0b07aa524196813a"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_06_bset/ds1_ht_06_b11.j2k"
+sha256 = "7d80ccf6fe9d100437003a68b152c814bf392207f1fe23ebd8dc59923bcf15f8"
+
+[[files]]
+path = "files/htj2k_bsets_profile1/p1_07_bset/ds1_ht_07_b11.j2k"
+sha256 = "15f0309d27a22a65c3b5068e7ebd6443b4f95bb41777d70819342cf01ad4b19d"
+
+[[files]]
+path = "files/reference_jph/jph_10_0.pgm"
+sha256 = "a73b24afadeb9a2c85080c722691357ea28afcdd2756ad3e027fcf75f48e2aba"
+
+[[files]]
+path = "files/reference_jph/jph_10_1.pgm"
+sha256 = "181f464790d293eea0e77a15adff1dbfeafc560c80efc07d8316b12714f2263d"
+
+[[files]]
+path = "files/reference_jph/jph_10_2.pgm"
+sha256 = "1ca1254bfddfccec1f325d32c1145e22a029dbf139053fde164a11e871059237"
+
+[[files]]
+path = "files/reference_jph/jph_10_3.pgm"
+sha256 = "a73b24afadeb9a2c85080c722691357ea28afcdd2756ad3e027fcf75f48e2aba"
+
+[[files]]
+path = "files/reference_jph/jph_10_4.pgm"
+sha256 = "fbf7ced1a860e83d028d68db68e097ad161d0e14d387eff1df8c5772023e1d8d"
+
+[[files]]
+path = "files/testfiles_jph/file10_b11.jph"
+sha256 = "c08b07807d967be41ed86ca444fed6a3761f6c8c889025f0ff036bdb2555e4ed"
+
+[[files]]
+path = "files/testfiles_jph/file10_b12.jph"
+sha256 = "89563adb7883c7d2fae5a8d152241c4c5a854ff88e477ba1fcd25c71841344e0"
+
+[[files]]
+path = "files/testfiles_jph/file1_b11.jph"
+sha256 = "a496952705d380f3e9f88b6f60798c30f4bb05db920c20b45531b7d882804e10"
+
+[[files]]
+path = "files/testfiles_jph/file1_b12.jph"
+sha256 = "8bf8e9aee043da15e95debf9049e2e371640705d949fe51fb0036fe91aac941f"
+
+[[files]]
+path = "files/testfiles_jph/file2_b11.jph"
+sha256 = "2633ed1d831e80e9f849915436a4a9439f60eaa0d6b843523085704ce2cc6d25"
+
+[[files]]
+path = "files/testfiles_jph/file2_b12.jph"
+sha256 = "8b10fd5861ff8c4f76f070597b002d5789392b988006ff1fb358c4aa1a422218"
+
+[[files]]
+path = "files/testfiles_jph/file3_b11.jph"
+sha256 = "f0cd82435088e3c8b86711319a19cc317790eef123a34a9a48d076b3836265ae"
+
+[[files]]
+path = "files/testfiles_jph/file3_b12.jph"
+sha256 = "2bbbe77748a9e2e7e4307b0641cb80875f355c3dfceab814f404a872f3370ea9"
+
+[[files]]
+path = "files/testfiles_jph/file4_b11.jph"
+sha256 = "a278deaf707ece38a995f87991bce80048ec50a2f053ac9eb19eba624009c953"
+
+[[files]]
+path = "files/testfiles_jph/file4_b12.jph"
+sha256 = "a0c6bea72246a0ca1c9627cba9baa075da23ed3c81f3a4159918e2620b0b328e"
+
+[[files]]
+path = "files/testfiles_jph/file5_b11.jph"
+sha256 = "f75db93732731cc3d2351b75de088d87cf98ea6ed91c8d393d51a117ad65b6b6"
+
+[[files]]
+path = "files/testfiles_jph/file5_b12.jph"
+sha256 = "f1b91a88b8bce719e7d41649b71dd33fc8d85d7f61461fd191a967e3549a5c92"
+
+[[files]]
+path = "files/testfiles_jph/file6_b11.jph"
+sha256 = "e55e7530e3b3bdd7b1f7d5a7661da0c3182407a214d24cdae5ef1ecc478b3c6e"
+
+[[files]]
+path = "files/testfiles_jph/file6_b15.jph"
+sha256 = "2c25892a9e881b969ea98625386e975a4d7c403851ccf39cb64a03347d3fca12"
+
+[[files]]
+path = "files/testfiles_jph/file7_b11.jph"
+sha256 = "844a21a93d2e6f15b540ef2fe3465bbc149b4d98796b4075a2ac7f0aedd01793"
+
+[[files]]
+path = "files/testfiles_jph/file7_b15.jph"
+sha256 = "3b8f47b451cac63c09778dfe7829ef890e26dc116a1cd1991999379e3082c22e"
+
+[[files]]
+path = "files/testfiles_jph/file7_b19.jph"
+sha256 = "c20643d17d746134c07849c9457102b793858f4794cf2f37a434e25982b5b859"
+
+[[files]]
+path = "files/testfiles_jph/file8_b11.jph"
+sha256 = "4f5fbe9d74ff3eae9c77efa6cb5d482cbfb8443977918b1e04893f764ead16ee"
+
+[[files]]
+path = "files/testfiles_jph/file9_b11.jph"
+sha256 = "c898f00048917635d28cce9c740db7ada2b9d349e41ff1f4a15d7185445a57f6"
+
+[[files]]
+path = "files/testfiles_jph/file9_b12.jph"
+sha256 = "25f2007778caee9599ddbffb7f267cce91c4e9a35bc2d7f8fe1dcac90ab5061e"
+
+[[ht_bsets]]
+id = "p0-01-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_01.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_01_bset/ds0_ht_01_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-02-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_02.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-03-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_03.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b11.j2k"
+bmagb = 11
+reference_depth = 4
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b14.j2k"
+bmagb = 14
+reference_depth = 4
+
+[[ht_bsets]]
+id = "p0-04-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_04.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-05-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_05.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-06-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_06.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b11.j2k"
+bmagb = 11
+reference_depth = 12
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b15.j2k"
+bmagb = 15
+reference_depth = 12
+
+[[ht_bsets.candidates.additional_errors]]
+component = 3
+peak = 12
+mse = 10.0
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b18.j2k"
+bmagb = 18
+reference_depth = 12
+
+[[ht_bsets]]
+id = "p0-06-ds0-hm"
+base_codestream = "files/codestreams_profile0/p0_06.j2k"
+claim_set = "ds0-hm"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b11.j2k"
+bmagb = 11
+reference_depth = 12
+
+[[ht_bsets.candidates.additional_errors]]
+component = 3
+peak = 200
+mse = 2000.0
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b18.j2k"
+bmagb = 18
+reference_depth = 12
+
+[[ht_bsets]]
+id = "p0-07-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_07.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b11.j2k"
+bmagb = 11
+reference_depth = 12
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b15.j2k"
+bmagb = 15
+reference_depth = 12
+
+[[ht_bsets.candidates.additional_errors]]
+component = 0
+peak = 2
+mse = 0.075
+
+[[ht_bsets.candidates.additional_errors]]
+component = 1
+peak = 2
+mse = 0.05
+
+[[ht_bsets.candidates.additional_errors]]
+component = 2
+peak = 2
+mse = 0.075
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b16.j2k"
+bmagb = 16
+reference_depth = 12
+
+[[ht_bsets]]
+id = "p0-08-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_08.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b11.j2k"
+bmagb = 11
+reference_depth = 12
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b15.j2k"
+bmagb = 15
+reference_depth = 12
+
+[[ht_bsets.candidates.additional_errors]]
+component = 1
+peak = 1
+mse = 0.001
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b16.j2k"
+bmagb = 16
+reference_depth = 12
+
+[[ht_bsets]]
+id = "p0-09-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_09.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_09_bset/ds0_ht_09_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-10-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_10.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_10_bset/ds0_ht_10_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-11-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_11.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_11_bset/ds0_ht_11_b10.j2k"
+bmagb = 10
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-12-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_12.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_12_bset/ds0_ht_12_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-13-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_13.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_13_bset/ds0_ht_13_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-14-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_14.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_14_bset/ds0_ht_14_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p0-15-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_15.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b11.j2k"
+bmagb = 11
+reference_depth = 4
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b14.j2k"
+bmagb = 14
+reference_depth = 4
+
+[[ht_bsets]]
+id = "p0-15-ds0-hm"
+base_codestream = "files/codestreams_profile0/p0_15.j2k"
+claim_set = "ds0-hm"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_15_bset/ds0_hm_15_b8.j2k"
+bmagb = 8
+reference_depth = 4
+
+[[ht_bsets]]
+id = "p0-16-ds0-ht"
+base_codestream = "files/codestreams_profile0/p0_16.j2k"
+claim_set = "ds0-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile0/p0_16_bset/ds0_ht_16_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-01-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_01.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-02-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_02.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-03-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_03.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b12.j2k"
+bmagb = 12
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-04-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_04.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_04_bset/ds1_ht_04_b9.j2k"
+bmagb = 9
+reference_depth = 12
+
+[[ht_bsets]]
+id = "p1-05-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_05.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_05_bset/ds1_ht_05_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-06-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_06.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_06_bset/ds1_ht_06_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "p1-07-ds1-ht"
+base_codestream = "files/codestreams_profile1/p1_07.j2k"
+claim_set = "ds1-ht"
+cclass = "cclass1h"
+mmagb = 15
+
+[[ht_bsets.candidates]]
+path = "files/htj2k_bsets_profile1/p1_07_bset/ds1_ht_07_b11.j2k"
+bmagb = 11
+reference_depth = 8
+
+[[ht_bsets]]
+id = "hifi-ht1-02"
+base_codestream = "files/codestreams_hifi/hifi_p1_02.j2k"
+claim_set = "high-fidelity"
+cclass = "cclass1h-f"
+mmagb = 20
+
+[[ht_bsets.candidates]]
+path = "files/codestreams_hifi/hifi_ht1_02.j2k"
+bmagb = 14
+reference_depth = 12
+
+[[ht_bsets.candidates.additional_errors]]
+component = 0
+peak = 4
+mse = 2.0
+
+[[ht_bsets.candidates.additional_errors]]
+component = 1
+peak = 3
+mse = 3.0
+
+[[ht_bsets.candidates.additional_errors]]
+component = 2
+peak = 4
+mse = 14.0
+
+[[jph_bsets]]
+id = "jph-1"
+base_jp2_case = "jp2-1"
+mmagb = 15
+components = 3
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file1_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file1_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-2"
+base_jp2_case = "jp2-2"
+mmagb = 15
+components = 3
+bit_depth = 8
+width = 480
+height = 640
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file2_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file2_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-3"
+base_jp2_case = "jp2-3"
+mmagb = 15
+components = 3
+bit_depth = 8
+width = 480
+height = 640
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file3_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file3_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-4"
+base_jp2_case = "jp2-4"
+mmagb = 15
+components = 1
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file4_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file4_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-5"
+base_jp2_case = "jp2-5"
+mmagb = 15
+components = 3
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file5_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file5_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-6"
+base_jp2_case = "jp2-6"
+mmagb = 15
+components = 1
+bit_depth = 12
+width = 768
+height = 512
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file6_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file6_b15.jph"
+bmagb = 15
+
+[[jph_bsets]]
+id = "jph-7"
+base_jp2_case = "jp2-7"
+mmagb = 15
+components = 3
+bit_depth = 16
+width = 480
+height = 640
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file7_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file7_b15.jph"
+bmagb = 15
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file7_b19.jph"
+bmagb = 19
+
+[[jph_bsets]]
+id = "jph-8"
+base_jp2_case = "jp2-8"
+mmagb = 15
+components = 1
+bit_depth = 8
+width = 700
+height = 400
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file8_b11.jph"
+bmagb = 11
+
+[[jph_bsets]]
+id = "jph-9"
+base_jp2_case = "jp2-9"
+mmagb = 15
+components = 1
+bit_depth = 8
+width = 768
+height = 512
+peak = 4
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file9_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file9_b12.jph"
+bmagb = 12
+
+[[jph_bsets]]
+id = "jph-10"
+mmagb = 15
+components = 5
+bit_depth = 8
+width = 256
+height = 256
+peak = 4
+native_references = ["files/reference_jph/jph_10_0.pgm", "files/reference_jph/jph_10_1.pgm", "files/reference_jph/jph_10_2.pgm", "files/reference_jph/jph_10_3.pgm", "files/reference_jph/jph_10_4.pgm"]
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file10_b11.jph"
+bmagb = 11
+
+[[jph_bsets.candidates]]
+path = "files/testfiles_jph/file10_b12.jph"
+bmagb = 12

@@ -2,6 +2,7 @@
 
 //! Fallible, phase-checked compact 9/7 packet-plan construction.
 
+use super::magnitude::required_compact_magnitude_bound;
 use super::{
     compact_payload_slice, preencoded_compact_97_level_count, quantize,
     validate_precinct_exponents_for_options, validate_preencoded_compact_htj2k97_image,
@@ -243,6 +244,7 @@ fn try_plan_metadata(
         use_mct: false,
         guard_bits,
         block_coding_mode: BlockCodingMode::HighThroughput,
+        required_ht_magnitude_bound: required_compact_magnitude_bound(image, num_levels)?,
         progression_order: options.progression_order,
         write_tlm: options.write_tlm,
         write_plt: false,

@@ -14,7 +14,7 @@ pub(super) enum Float97BatchEncodingInput {
 
 pub(super) fn select_float97_batch_encoding(
     inputs: Float97BatchEncodeInputs,
-) -> Result<Float97BatchEncodingInput, JpegToHtj2kError> {
+) -> Result<(Float97BatchEncodingInput, Option<u8>), JpegToHtj2kError> {
     let Float97BatchEncodeInputs {
         width,
         height,
@@ -23,6 +23,7 @@ pub(super) fn select_float97_batch_encoding(
         preencoded_compact_components,
         preencoded_components,
         prequantized_components,
+        required_ht_magnitude_bound,
     } = inputs;
 
     if preencoded_compact_components.iter().any(Option::is_some) {
@@ -33,15 +34,16 @@ pub(super) fn select_float97_batch_encoding(
             preencoded_compact_components,
             "9/7 compact preencoded batch transcode did not produce all components",
         )?;
-        return Ok(Float97BatchEncodingInput::Compact(
-            PreencodedHtj2k97CompactImage {
+        return Ok((
+            Float97BatchEncodingInput::Compact(PreencodedHtj2k97CompactImage {
                 width,
                 height,
                 bit_depth: 8,
                 signed: false,
                 payload: preencoded_compact_payload,
                 components,
-            },
+            }),
+            required_ht_magnitude_bound,
         ));
     }
     if preencoded_components.iter().any(Option::is_some) {
@@ -53,14 +55,15 @@ pub(super) fn select_float97_batch_encoding(
             preencoded_components,
             "9/7 preencoded batch transcode did not produce all components",
         )?;
-        return Ok(Float97BatchEncodingInput::Preencoded(
-            PreencodedHtj2k97Image {
+        return Ok((
+            Float97BatchEncodingInput::Preencoded(PreencodedHtj2k97Image {
                 width,
                 height,
                 bit_depth: 8,
                 signed: false,
                 components,
-            },
+            }),
+            required_ht_magnitude_bound,
         ));
     }
     if prequantized_components.iter().any(Option::is_some) {
@@ -72,14 +75,15 @@ pub(super) fn select_float97_batch_encoding(
             prequantized_components,
             "9/7 code-block batch transcode did not produce all components",
         )?;
-        return Ok(Float97BatchEncodingInput::Prequantized(
-            PrequantizedHtj2k97Image {
+        return Ok((
+            Float97BatchEncodingInput::Prequantized(PrequantizedHtj2k97Image {
                 width,
                 height,
                 bit_depth: 8,
                 signed: false,
                 components,
-            },
+            }),
+            required_ht_magnitude_bound,
         ));
     }
 
@@ -91,13 +95,14 @@ pub(super) fn select_float97_batch_encoding(
         precomputed_components,
         "9/7 batch transcode did not produce all components",
     )?;
-    Ok(Float97BatchEncodingInput::Precomputed(
-        PrecomputedHtj2k97Image {
+    Ok((
+        Float97BatchEncodingInput::Precomputed(PrecomputedHtj2k97Image {
             width,
             height,
             bit_depth: 8,
             signed: false,
             components,
-        },
+        }),
+        required_ht_magnitude_bound,
     ))
 }

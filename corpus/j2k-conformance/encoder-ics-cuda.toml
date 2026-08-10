@@ -1,16 +1,17 @@
 # T.803 Annex F encoder implementation compliance statement.
 # This is an adapter IUT: CPU-assisted cases remain labelled CPU or hybrid.
-schema_version = 1
+schema_version = 2
 standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
 iut = "cuda"
-scope = "Informative Annex D/F evidence for public JPEG 2000 Part 1 CUDA adapter encoder surfaces with per-stage route disclosure"
+scope = "Informative Annex D/F evidence for public JPEG 2000 Part 1 and HTJ2K Part 15 CUDA adapter encoder/JPH wrapping surfaces with per-stage route disclosure"
 surfaces = [
   "j2k_cuda::CudaLosslessEncoder",
   "j2k::encode_j2k_lossy_with_accelerator(j2k_cuda::CudaEncodeStageAccelerator)",
+  "j2k::wrap_j2k_codestream(J2kFileWrapOptions::jph)",
 ]
-matrix_path = "corpus/j2k-conformance/encoder-matrix-v1.toml"
-matrix_case_count = 25
-matrix_case_sha256 = "0ed86e8b051afd9b05a8364f4daca421b87add4576e49af543dccca81d4e2138"
+matrix_path = "corpus/j2k-conformance/encoder-matrix-v2.toml"
+matrix_case_count = 35
+matrix_case_sha256 = "c646405c6d0925d6cd68ceca8148e8101b4272042b0563378f4005d87a56adf9"
 reference_decoder_standard = "ISO/IEC 15444-5 / ITU-T T.804"
 reference_decoder_implementation = "OpenJPEG"
 reference_decoder_version = "2.5.3"
@@ -28,13 +29,13 @@ marker = "SOC"
 usage = "always"
 [[markers]]
 marker = "CAP"
-usage = "outside-part1"
+usage = "conditional"
 [[markers]]
 marker = "PRF"
 usage = "not-produced"
 [[markers]]
 marker = "CPF"
-usage = "outside-part1"
+usage = "not-produced"
 [[markers]]
 marker = "SOT"
 usage = "always"

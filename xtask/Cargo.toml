@@ -13,7 +13,6 @@ adoption = [
     "dep:j2k-compare",
     "dep:j2k-native",
     "dep:j2k-profile",
-    "dep:j2k-test-support",
 ]
 
 [dependencies]
@@ -33,7 +32,7 @@ j2k = { path = "../crates/j2k", optional = true }
 j2k-compare = { path = "../crates/j2k-compare", optional = true }
 j2k-native = { path = "../crates/j2k-native", optional = true }
 j2k-profile = { path = "../crates/j2k-profile", optional = true }
-j2k-test-support = { path = "../crates/j2k-test-support", optional = true }
+j2k-test-support = { path = "../crates/j2k-test-support" }
 
 [lints.rust]
 unsafe_code = "forbid"

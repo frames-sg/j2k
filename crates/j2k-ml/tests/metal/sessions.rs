@@ -183,7 +183,7 @@ fn metal_burn_batch_continues_after_one_group_submit_failure() {
         .expect("paired J2K/Burn Metal session");
     let prepared = decoder
         .prepare(vec![
-            EncodedImage::full(unsupported_ht_roi_rgb()),
+            EncodedImage::full(unsupported_ht_direct_width_rgb()),
             EncodedImage::full(valid_gray),
         ])
         .expect("prepare two homogeneous Metal groups");

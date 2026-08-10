@@ -528,9 +528,19 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
                         (Ok(bytes_cuda), Ok(bytes_native)) => {
                             // --- Byte-exact codestream parity assertion ---
                             if bytes_cuda.codestream != bytes_native.codestream {
+                                let differing_offsets = bytes_cuda
+                                    .codestream
+                                    .iter()
+                                    .zip(&bytes_native.codestream)
+                                    .enumerate()
+                                    .filter_map(|(offset, (cuda, cpu))| {
+                                        (cuda != cpu).then_some((offset, *cuda, *cpu))
+                                    })
+                                    .take(8)
+                                    .collect::<Vec<_>>();
                                 failures.push(format!(
                                     "cell={cell:?}: codestream byte mismatch \
-                                     (cuda={} bytes, cpu={} bytes)",
+                                     (cuda={} bytes, cpu={} bytes, first_differences={differing_offsets:?})",
                                     bytes_cuda.codestream.len(),
                                     bytes_native.codestream.len()
                                 ));

@@ -29,12 +29,14 @@ const FINAL_HIGH_WATER: &str = "compact preencoded 9/7 final codestream high-wat
 const MAX_QUANTIZATION_GUARD_BITS: u8 = 7;
 
 mod construction;
+mod magnitude;
 
 pub(super) fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     image: PreencodedHtj2k97CompactImage,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
     cap: usize,
+    required_ht_magnitude_bound: Option<u8>,
 ) -> NativeEncodePipelineResult<Vec<u8>> {
     validate_compact_request(&image, options)?;
     let retained_input_bytes = compact_image_retained_bytes(&image)?;
@@ -42,8 +44,10 @@ pub(super) fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
         let retained_input =
             NativeEncodeRetainedInput::from_owner_bytes(&image, retained_input_bytes);
         let session = NativeEncodeSession::try_with_lowered_cap(retained_input, cap)?;
-        Compact97PacketPlan::try_new(&image, options, retained_input_bytes, &session)?
-            .packetize(&session, accelerator)?
+        let mut plan =
+            Compact97PacketPlan::try_new(&image, options, retained_input_bytes, &session)?;
+        super::apply_required_ht_magnitude_bound(&mut plan.params, required_ht_magnitude_bound)?;
+        plan.packetize(&session, accelerator)?
     };
 
     // Packet metadata only borrows the compact image. Once Tier-2 owns its

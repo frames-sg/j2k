@@ -289,6 +289,11 @@ fn build_final_plan_owners(
         use_mct,
         guard_bits,
         block_coding_mode: request.block_coding_mode,
+        required_ht_magnitude_bound: request
+            .tile_bodies
+            .iter()
+            .filter_map(|tile| tile.required_ht_magnitude_bound)
+            .max(),
         progression_order: request.options.progression_order,
         write_tlm: request.options.write_tlm,
         write_plt: request.options.write_plt,

@@ -105,8 +105,8 @@ fn read_siz_u32(reader: &mut BitReader<'_>) -> Result<u32> {
 fn size_marker_inner(reader: &mut BitReader<'_>, max_component_bytes: usize) -> Result<SizeData> {
     // Length.
     let _ = read_siz_u16(reader)?;
-    // Decoder capabilities.
-    let _ = read_siz_u16(reader)?;
+    // Decoder capabilities/profile (Rsiz).
+    let decoder_capabilities = read_siz_u16(reader)?;
 
     let xsiz = read_siz_u32(reader)?;
     let ysiz = read_siz_u32(reader)?;
@@ -188,6 +188,7 @@ fn size_marker_inner(reader: &mut BitReader<'_>, max_component_bytes: usize) -> 
     }
 
     Ok(SizeData {
+        decoder_capabilities,
         reference_grid_width: xsiz,
         reference_grid_height: ysiz,
         image_area_x_offset: x_osiz,

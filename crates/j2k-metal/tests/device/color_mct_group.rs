@@ -73,6 +73,15 @@ fn mixed_signed_rgb_mct_modes_preserve_each_images_samples() {
             actual_group.source_indices(),
             expected_group.source_indices()
         );
+        let dispatch = actual_group.dispatch_report();
+        assert!(dispatch.tier1 > 0);
+        assert!(dispatch.idwt > 0);
+        assert!(dispatch.color_output > 0);
+        assert_eq!(
+            dispatch.mct > 0,
+            actual_group.source_indices() == [0],
+            "MCT dispatch evidence must follow the completed group, not a shared capability table"
+        );
         let resident = actual_group
             .resident_batch()
             .expect("completed group has resident Metal storage");

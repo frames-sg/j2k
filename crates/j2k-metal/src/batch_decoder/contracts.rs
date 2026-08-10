@@ -9,6 +9,7 @@ use super::{
 use super::{BatchLayout, PixelFormat};
 #[cfg(target_os = "macos")]
 use super::{Buffer, ResidentMetalImage};
+use crate::MetalDecodeDispatchReport;
 
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn validate_group_contract(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
@@ -152,6 +153,7 @@ pub struct MetalBatchGroup {
     pub(super) decoded_rects: Vec<Rect>,
     pub(super) warnings: Vec<Vec<J2kDecodeWarning>>,
     pub(super) surfaces: Vec<Surface>,
+    pub(super) dispatch_report: MetalDecodeDispatchReport,
     #[cfg(target_os = "macos")]
     pub(super) resident_batch: MetalResidentBatch,
 }
@@ -217,6 +219,7 @@ impl core::fmt::Debug for MetalBatchGroup {
             .field("source_indices", &self.source_indices)
             .field("decoded_rects", &self.decoded_rects)
             .field("warnings", &self.warnings)
+            .field("dispatch_report", &self.dispatch_report)
             .field("surface_count", &self.surfaces.len());
         #[cfg(target_os = "macos")]
         debug.field("resident_batch", &self.resident_batch);
@@ -253,6 +256,13 @@ impl MetalBatchGroup {
     /// for their dense planar allocation.
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
+    }
+
+    /// Completed production dispatch observations for this group.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn dispatch_report(&self) -> &MetalDecodeDispatchReport {
+        &self.dispatch_report
     }
 
     /// Completed dense codec-owned Metal storage for this group.

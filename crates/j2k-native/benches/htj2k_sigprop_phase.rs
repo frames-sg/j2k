@@ -1,8 +1,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_native::{
-    decode_ht_code_block_scalar, decode_ht_sigprop_benchmark_state,
-    prepare_ht_sigprop_benchmark_state, DecodeSettings, DecoderContext, HtCodeBlockDecodeJob,
-    HtCodeBlockDecoder, Image, Result,
+    decode_ht_code_block_scalar, decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_ht_sigprop_benchmark_state, prepare_ht_sigprop_benchmark_state, DecodeSettings,
+    DecoderContext, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtCodeBlockDecoder, Image,
+    Result,
 };
 
 const HTJ2K_REFINEMENT_FIXTURE: &[u8] =
@@ -84,16 +85,25 @@ struct CollectingHtDecoder {
 }
 
 impl HtCodeBlockDecoder for CollectingHtDecoder {
-    fn decode_code_block(
+    fn decode_code_block_with_midpoint(
         &mut self,
         job: HtCodeBlockDecodeJob<'_>,
         output: &mut [f32],
+        irreversible_midpoint: bool,
     ) -> Result<()> {
         if job.refinement_length > 0 {
             self.jobs.push(OwnedHtCodeBlockDecodeJob::from_job(job));
         }
 
-        decode_ht_code_block_scalar(job, output)
+        if irreversible_midpoint {
+            decode_ht_code_block_scalar_with_workspace_midpoint(
+                job,
+                output,
+                &mut HtCodeBlockDecodeWorkspace::default(),
+            )
+        } else {
+            decode_ht_code_block_scalar(job, output)
+        }
     }
 }
 

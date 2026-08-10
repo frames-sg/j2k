@@ -2777,6 +2777,7 @@ dependencies = [
 name = "j2k-test-support"
 version = "0.8.1"
 dependencies = [
+ "j2k-core",
  "j2k-native",
  "serde",
  "serde_json",

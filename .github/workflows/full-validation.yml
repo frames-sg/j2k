@@ -314,6 +314,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: stable
+      - name: Prepare pinned OpenHTJ2K interoperability decoder
+        shell: bash
+        run: scripts/prepare-openhtj2k-reference.sh
       - name: Generate exact-reference CPU evidence
         shell: bash
         run: |

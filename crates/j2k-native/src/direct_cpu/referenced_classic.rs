@@ -86,12 +86,8 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
             ht_workspace: _,
             staged_state: _,
         } = scratch;
-        let mut payloads = ClassicPayloadCursor::new(
-            payload_descriptors,
-            payload_ranges,
-            encoded_input,
-            compressed_payload,
-        );
+        let mut payloads =
+            ClassicPayloadCursor::new(payload_descriptors, payload_ranges, encoded_input);
         let mut output_initialized = [false; 4];
 
         for tile in plan.tiles() {
@@ -107,6 +103,7 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
                     bands,
                     output,
                     &mut payloads,
+                    compressed_payload,
                     classic_workspace,
                     &mut output_initialized[0],
                 )?;
@@ -121,6 +118,7 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
                     component_band_sets,
                     component_planes,
                     &mut payloads,
+                    compressed_payload,
                     classic_workspace,
                     &mut output_initialized,
                     tile.destination_rect(),
@@ -140,6 +138,7 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
                     component_band_sets,
                     component_planes,
                     &mut payloads,
+                    compressed_payload,
                     classic_workspace,
                     &mut output_initialized,
                     tile.destination_rect(),
@@ -167,7 +166,8 @@ fn execute_color_components_referenced(
     signed: bool,
     component_band_sets: &mut [DirectComponentBandScratch],
     reconstructed_planes: &mut [DirectComponentPlane],
-    payloads: &mut ClassicPayloadCursor<'_, '_>,
+    payloads: &mut ClassicPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
     classic_workspace: &mut J2kCodeBlockDecodeWorkspace,
     output_initialized: &mut [bool; 4],
     destination: crate::J2kRect,
@@ -185,6 +185,7 @@ fn execute_color_components_referenced(
             &mut component_band_sets[component_index],
             &mut reconstructed_planes[component_index],
             payloads,
+            compressed_payload,
             classic_workspace,
             &mut output_initialized[component_index],
         )?;
@@ -210,7 +211,8 @@ fn execute_component_plan_referenced(
     plan: &J2kDirectGrayscalePlan,
     bands: &mut DirectComponentBandScratch,
     output: &mut DirectComponentPlane,
-    payloads: &mut ClassicPayloadCursor<'_, '_>,
+    payloads: &mut ClassicPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
     classic_workspace: &mut J2kCodeBlockDecodeWorkspace,
     output_initialized: &mut bool,
 ) -> Result<()> {
@@ -219,7 +221,13 @@ fn execute_component_plan_referenced(
     for step in &plan.steps {
         match step {
             J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
-                execute_classic_sub_band_referenced(sub_band, bands, payloads, classic_workspace)?;
+                execute_classic_sub_band_referenced(
+                    sub_band,
+                    bands,
+                    payloads,
+                    compressed_payload,
+                    classic_workspace,
+                )?;
             }
             J2kDirectGrayscaleStep::HtSubBand(_) => {
                 bail!(DecodingError::UnsupportedFeature(
@@ -240,10 +248,11 @@ fn execute_component_plan_referenced(
     }
 }
 
-fn execute_classic_sub_band_referenced(
+pub(super) fn execute_classic_sub_band_referenced(
     plan: &J2kOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
-    payloads: &mut ClassicPayloadCursor<'_, '_>,
+    payloads: &mut ClassicPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
     workspace: &mut J2kCodeBlockDecodeWorkspace,
 ) -> Result<()> {
     let (output, sub_band_width) =
@@ -263,7 +272,7 @@ fn execute_classic_sub_band_referenced(
             plan_height: plan.height,
             output_len: output.len(),
         })?;
-        let data = payloads.next_data()?;
+        let data = payloads.next_data(compressed_payload)?;
         let code_block = J2kCodeBlockDecodeJob {
             data,
             segments: &job.segments,
@@ -289,7 +298,7 @@ fn execute_classic_sub_band_referenced(
     Ok(())
 }
 
-fn validate_payload_ranges(
+pub(super) fn validate_payload_ranges(
     encoded_input: &[u8],
     payloads: &[crate::J2kClassicCodeBlockPayload],
     ranges: &[crate::J2kCodestreamRange],
@@ -323,31 +332,31 @@ fn validate_payload_ranges(
     Ok(())
 }
 
-struct ClassicPayloadCursor<'plan, 'scratch> {
+pub(super) struct ClassicPayloadCursor<'plan> {
     encoded_input: &'plan [u8],
     payloads: &'plan [crate::J2kClassicCodeBlockPayload],
     ranges: &'plan [crate::J2kCodestreamRange],
-    combined: &'scratch mut alloc::vec::Vec<u8>,
     next: usize,
 }
 
-impl<'plan, 'scratch> ClassicPayloadCursor<'plan, 'scratch> {
-    fn new(
+impl<'plan> ClassicPayloadCursor<'plan> {
+    pub(super) fn new(
         payloads: &'plan [crate::J2kClassicCodeBlockPayload],
         ranges: &'plan [crate::J2kCodestreamRange],
         encoded_input: &'plan [u8],
-        combined: &'scratch mut alloc::vec::Vec<u8>,
     ) -> Self {
         Self {
             encoded_input,
             payloads,
             ranges,
-            combined,
             next: 0,
         }
     }
 
-    fn next_data(&mut self) -> Result<&[u8]> {
+    fn next_data<'scratch>(
+        &'scratch mut self,
+        combined: &'scratch mut alloc::vec::Vec<u8>,
+    ) -> Result<&'scratch [u8]> {
         let payload = self
             .payloads
             .get(self.next)
@@ -371,19 +380,18 @@ impl<'plan, 'scratch> ClassicPayloadCursor<'plan, 'scratch> {
             return payload_slice(self.encoded_input, *range);
         }
 
-        self.combined.clear();
-        try_reserve_decode_elements(self.combined, payload.combined_length)?;
+        combined.clear();
+        try_reserve_decode_elements(combined, payload.combined_length)?;
         for range in fragments {
-            self.combined
-                .extend_from_slice(payload_slice(self.encoded_input, *range)?);
+            combined.extend_from_slice(payload_slice(self.encoded_input, *range)?);
         }
-        if self.combined.len() != payload.combined_length {
+        if combined.len() != payload.combined_length {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
-        Ok(self.combined)
+        Ok(combined)
     }
 
-    fn ensure_exhausted(&self) -> Result<()> {
+    pub(super) fn ensure_exhausted(&self) -> Result<()> {
         if self.next == self.payloads.len() {
             Ok(())
         } else {

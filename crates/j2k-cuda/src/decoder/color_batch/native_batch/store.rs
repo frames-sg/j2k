@@ -9,9 +9,9 @@ use j2k_core::PixelFormat;
 use j2k_cuda_runtime::CudaExternalDeviceBufferViewMut;
 
 use submission::store_targets;
-use targets::build_store_targets;
+use targets::{build_store_targets, NativeColorStoreTargets};
 
-use super::StoredNativeColorBatch;
+use super::{NativeColorBatchOutput, StoredNativeColorBatch};
 use crate::decoder::color_batch::{
     finish_cuda_component_decode, CudaComponentDecodeWork, CudaDecodedComponent,
     CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport,
@@ -44,8 +44,39 @@ pub(super) fn finish_and_store_native_color(
             what: "j2k CUDA exact color decoded component count",
         })?,
     )?;
-    let (targets, reports) = build_store_targets(colors, &decoded, fmt, layout)?;
+    let (targets, mut reports) = build_store_targets(colors, &decoded, fmt, layout)?;
+    let fused_mct = match &targets {
+        NativeColorStoreTargets::Rgb(targets) => {
+            targets.iter().any(|target| target.job.transform != 0)
+        }
+        NativeColorStoreTargets::Rgba(targets) => {
+            targets.iter().any(|target| target.job.transform != 0)
+        }
+    };
     let stored = store_targets(context, fmt, external, enqueue_external, &targets)?;
+    let store_execution = match (&stored.output, stored.queued.as_ref()) {
+        (_, Some(queued)) => queued.execution(),
+        (NativeColorBatchOutput::Owned(output), None) => output.execution,
+        (NativeColorBatchOutput::External(_), None) => {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "CUDA exact RGB external store lost its execution counters",
+            });
+        }
+    };
+    if let Some(report) = reports.first_mut() {
+        let store_dispatches = store_execution.kernel_dispatches();
+        report.dispatch_count = report.dispatch_count.saturating_add(store_dispatches);
+        report.detail.store_dispatch_count = report
+            .detail
+            .store_dispatch_count
+            .saturating_add(store_dispatches);
+        if fused_mct {
+            report.detail.mct_dispatch_count = report
+                .detail
+                .mct_dispatch_count
+                .saturating_add(store_dispatches);
+        }
+    }
     Ok((stored, reports, decoded))
 }
 

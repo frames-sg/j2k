@@ -3,8 +3,7 @@
 //! Referenced classic JPEG 2000 payload traversal.
 
 use super::super::{
-    DirectTier1Mode, Error, J2kClassicCodeBlockPayload, J2kCodestreamRange,
-    J2kReferencedClassicPlan, PreparedClassicSubBand,
+    DirectTier1Mode, Error, J2kClassicCodeBlockPayload, J2kCodestreamRange, PreparedClassicSubBand,
 };
 use super::sub_band::prepare_classic_sub_band_with_payloads;
 
@@ -21,12 +20,13 @@ pub(in crate::compute::direct_prepare) struct ReferencedClassicPayloadCursor<'a>
 impl<'a> ReferencedClassicPayloadCursor<'a> {
     pub(in crate::compute::direct_prepare) fn new(
         input: &'a [u8],
-        plan: &'a J2kReferencedClassicPlan,
+        payloads: &'a [J2kClassicCodeBlockPayload],
+        ranges: &'a [J2kCodestreamRange],
     ) -> Self {
         Self {
             input,
-            payloads: plan.payloads(),
-            ranges: plan.ranges(),
+            payloads,
+            ranges,
             next_payload: 0,
             next_range: 0,
         }

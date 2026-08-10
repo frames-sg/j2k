@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    decode_ht_code_block_scalar, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType, Result,
+    decode_ht_code_block_scalar, decode_ht_code_block_scalar_with_workspace_midpoint,
+    HtCodeBlockDecodeWorkspace, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType, Result,
 };
 
 define_ht_code_block_job! {
@@ -357,6 +358,29 @@ pub trait HtCodeBlockDecoder {
         Ok(false)
     }
 
+    /// Optionally decode a full HTJ2K sub-band with the requested coefficient
+    /// reconstruction rule.
+    ///
+    /// The default delegates reversible work to [`Self::decode_sub_band`] and
+    /// declines irreversible reconstruction so legacy adapters cannot silently
+    /// truncate HT fixed-point coefficients.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
+    fn decode_sub_band_with_midpoint(
+        &mut self,
+        job: HtSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        if irreversible_midpoint {
+            Ok(false)
+        } else {
+            self.decode_sub_band(job, output)
+        }
+    }
+
     /// Optionally decode one single-decomposition IDWT level on a backend.
     ///
     /// Implementations should return `Ok(true)` if they handled the request
@@ -411,5 +435,31 @@ pub trait HtCodeBlockDecoder {
         output: &mut [f32],
     ) -> Result<()> {
         decode_ht_code_block_scalar(job, output)
+    }
+
+    /// Decode one HTJ2K code block with the requested coefficient
+    /// reconstruction rule.
+    ///
+    /// The default delegates reversible work to [`Self::decode_code_block`]
+    /// and uses the portable scalar midpoint path for irreversible work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the code block is malformed or decoding fails.
+    fn decode_code_block_with_midpoint(
+        &mut self,
+        job: HtCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<()> {
+        if irreversible_midpoint {
+            decode_ht_code_block_scalar_with_workspace_midpoint(
+                job,
+                output,
+                &mut HtCodeBlockDecodeWorkspace::default(),
+            )
+        } else {
+            self.decode_code_block(job, output)
+        }
     }
 }

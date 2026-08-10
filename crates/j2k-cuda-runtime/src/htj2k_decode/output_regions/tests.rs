@@ -12,11 +12,13 @@ fn job(output_offset: u32, width: u32, height: u32, output_stride: u32) -> CudaH
         refinement_length: 0,
         missing_bit_planes: 0,
         num_bitplanes: 1,
+        roi_shift: 0,
         number_of_coding_passes: 1,
         output_stride,
         output_offset,
         dequantization_step: 1.0,
         stripe_causal: false,
+        irreversible_midpoint: false,
     }
 }
 

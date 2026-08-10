@@ -12,6 +12,14 @@ use crate::{EncodeError, EncodeResult};
 
 pub(super) const MAX_HT_BITPLANES: u8 = 31;
 
+pub(crate) const fn effective_coding_passes(total_bitplanes: u8, requested: u8) -> u8 {
+    if requested >= 2 && total_bitplanes > 1 {
+        requested
+    } else {
+        1
+    }
+}
+
 pub(crate) fn try_encode_code_block(
     coefficients: &[i32],
     width: u32,
@@ -75,11 +83,7 @@ pub(crate) fn try_encode_code_block_view(
         });
     }
 
-    let effective_coding_passes = if target_coding_passes >= 2 && total_bitplanes > 1 {
-        target_coding_passes
-    } else {
-        1
-    };
+    let effective_coding_passes = effective_coding_passes(total_bitplanes, target_coding_passes);
     let cleanup_bitplanes = if effective_coding_passes >= 2 { 2 } else { 1 };
     let missing_msbs = total_bitplanes.saturating_sub(cleanup_bitplanes);
     let cleanup =

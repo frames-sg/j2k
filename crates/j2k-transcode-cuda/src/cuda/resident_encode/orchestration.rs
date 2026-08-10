@@ -2,16 +2,17 @@
 
 use super::super::{
     checked_element_sum, CudaBufferPool, CudaContext, CudaHtj2k97DeviceCodeblockBands,
-    CudaHtj2kEncodeResources, CudaTranscodeError, Htj2k97CodeBlockOptions, J2kSubBandType,
+    CudaHtj2kEncodeResources, CudaTranscodeError, Htj2k97CodeBlockOptions,
     ResidentCompactPreencodedGroups, ResidentPreencodedGroups,
 };
+use super::magnitude::{required_magnitude_bounds_for_groups, required_magnitude_bounds_for_plans};
 use super::output::{
     assemble_compact_preencoded_components_with_budget, assemble_preencoded_components_with_budget,
     split_resident_compact_subband_blocks, split_resident_subband_blocks, Htj2k97ComponentJob,
 };
 use super::planning::{
     build_resident_subband_group_plans, resident_group_block_count, resident_group_targets,
-    resident_subband_encode_plan, resident_targets, ResidentDeviceGroup, ResidentMetadataBudget,
+    resident_subband_encode_plans, resident_targets, ResidentDeviceGroup, ResidentMetadataBudget,
 };
 use super::{CompactResidentSubbands, ResidentSubbands};
 
@@ -24,44 +25,7 @@ pub(in crate::cuda) fn encode_resident_subbands(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<ResidentSubbands, CudaTranscodeError> {
     let mut budget = ResidentMetadataBudget::new("CUDA resident aggregate metadata");
-    let plans = [
-        resident_subband_encode_plan(
-            &bands.ll,
-            item_count,
-            bands.low_width,
-            bands.low_height,
-            J2kSubBandType::LowLow,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.hl,
-            item_count,
-            bands.high_width,
-            bands.low_height,
-            J2kSubBandType::HighLow,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.lh,
-            item_count,
-            bands.low_width,
-            bands.high_height,
-            J2kSubBandType::LowHigh,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.hh,
-            item_count,
-            bands.high_width,
-            bands.high_height,
-            J2kSubBandType::HighHigh,
-            options,
-            &mut budget,
-        )?,
-    ];
+    let plans = resident_subband_encode_plans(bands, item_count, options, &mut budget)?;
     let targets = resident_targets(&plans, &mut budget)?;
     let encoded = context
         .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool_and_live_host_bytes(
@@ -87,6 +51,15 @@ pub(in crate::cuda) fn encode_resident_subbands(
             "CUDA resident multi-input HTJ2K encode returned wrong block count",
         ));
     }
+    let required_magnitude_bounds = required_magnitude_bounds_for_plans(
+        item_count,
+        &plans,
+        encoded
+            .code_blocks()
+            .iter()
+            .map(|block| block.status().detail),
+        &mut budget,
+    )?;
     let ht_timings = encoded.stage_timings();
     let dispatches = encoded.execution().kernel_dispatches();
     let encoded_blocks = encoded.into_code_blocks();
@@ -107,7 +80,15 @@ pub(in crate::cuda) fn encode_resident_subbands(
         ));
     }
 
-    Ok((ll, hl, lh, hh, ht_timings, dispatches))
+    Ok((
+        ll,
+        hl,
+        lh,
+        hh,
+        required_magnitude_bounds,
+        ht_timings,
+        dispatches,
+    ))
 }
 
 pub(in crate::cuda) fn encode_resident_compact_subbands(
@@ -119,44 +100,7 @@ pub(in crate::cuda) fn encode_resident_compact_subbands(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<CompactResidentSubbands, CudaTranscodeError> {
     let mut budget = ResidentMetadataBudget::new("CUDA compact resident aggregate metadata");
-    let plans = [
-        resident_subband_encode_plan(
-            &bands.ll,
-            item_count,
-            bands.low_width,
-            bands.low_height,
-            J2kSubBandType::LowLow,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.hl,
-            item_count,
-            bands.high_width,
-            bands.low_height,
-            J2kSubBandType::HighLow,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.lh,
-            item_count,
-            bands.low_width,
-            bands.high_height,
-            J2kSubBandType::LowHigh,
-            options,
-            &mut budget,
-        )?,
-        resident_subband_encode_plan(
-            &bands.hh,
-            item_count,
-            bands.high_width,
-            bands.high_height,
-            J2kSubBandType::HighHigh,
-            options,
-            &mut budget,
-        )?,
-    ];
+    let plans = resident_subband_encode_plans(bands, item_count, options, &mut budget)?;
     let targets = resident_targets(&plans, &mut budget)?;
     let encoded = context
         .encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool_and_live_host_bytes(
@@ -182,6 +126,15 @@ pub(in crate::cuda) fn encode_resident_compact_subbands(
             "CUDA resident compact multi-input HTJ2K encode returned wrong block count",
         ));
     }
+    let required_magnitude_bounds = required_magnitude_bounds_for_plans(
+        item_count,
+        &plans,
+        encoded
+            .code_blocks()
+            .iter()
+            .map(|block| block.status().detail),
+        &mut budget,
+    )?;
     let ht_timings = encoded.stage_timings();
     let dispatches = encoded.execution().kernel_dispatches();
     let (payload, encoded_blocks) = encoded.into_payload_and_code_blocks();
@@ -219,7 +172,16 @@ pub(in crate::cuda) fn encode_resident_compact_subbands(
         ));
     }
 
-    Ok((payload, ll, hl, lh, hh, ht_timings, dispatches))
+    Ok((
+        payload,
+        ll,
+        hl,
+        lh,
+        hh,
+        required_magnitude_bounds,
+        ht_timings,
+        dispatches,
+    ))
 }
 
 pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97ComponentJob>(
@@ -249,6 +211,14 @@ pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97Com
             "CUDA grouped resident multi-input HTJ2K encode returned wrong block count",
         ));
     }
+    let required_magnitude_bounds = required_magnitude_bounds_for_groups(
+        &group_plans,
+        encoded
+            .code_blocks()
+            .iter()
+            .map(|block| block.status().detail),
+        &mut budget,
+    )?;
     let ht_timings = encoded.stage_timings();
     let dispatches = encoded.execution().kernel_dispatches();
     let encoded_blocks = encoded.into_code_blocks();
@@ -257,7 +227,7 @@ pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97Com
     let mut outputs =
         budget.try_vec_with_capacity(group_plans.len(), "CUDA grouped resident encoded outputs")?;
 
-    for group in &group_plans {
+    for (group, required_magnitude_bounds) in group_plans.iter().zip(required_magnitude_bounds) {
         let item_count = group.jobs.len();
         let ll =
             split_resident_subband_blocks(&group.ll, item_count, &mut encoded_blocks, &mut budget)?;
@@ -269,7 +239,7 @@ pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97Com
             split_resident_subband_blocks(&group.hh, item_count, &mut encoded_blocks, &mut budget)?;
         let components =
             assemble_preencoded_components_with_budget(group.jobs, ll, hl, lh, hh, &mut budget)?;
-        outputs.push((group.group_index, components));
+        outputs.push((group.group_index, components, required_magnitude_bounds));
     }
     if encoded_blocks.next().is_some() {
         return Err(CudaTranscodeError::Kernel(
@@ -312,6 +282,14 @@ pub(in crate::cuda) fn device_band_groups_to_compact_preencoded_components<
             "CUDA grouped resident compact multi-input HTJ2K encode returned wrong block count",
         ));
     }
+    let required_magnitude_bounds = required_magnitude_bounds_for_groups(
+        &group_plans,
+        encoded
+            .code_blocks()
+            .iter()
+            .map(|block| block.status().detail),
+        &mut budget,
+    )?;
     let ht_timings = encoded.stage_timings();
     let dispatches = encoded.execution().kernel_dispatches();
     let (payload, encoded_blocks) = encoded.into_payload_and_code_blocks();
@@ -323,7 +301,7 @@ pub(in crate::cuda) fn device_band_groups_to_compact_preencoded_components<
         "CUDA grouped compact resident encoded outputs",
     )?;
 
-    for group in &group_plans {
+    for (group, required_magnitude_bounds) in group_plans.iter().zip(required_magnitude_bounds) {
         let item_count = group.jobs.len();
         let ll = split_resident_compact_subband_blocks(
             &group.ll,
@@ -357,7 +335,7 @@ pub(in crate::cuda) fn device_band_groups_to_compact_preencoded_components<
             hh,
             &mut budget,
         )?;
-        outputs.push((group.group_index, components));
+        outputs.push((group.group_index, components, required_magnitude_bounds));
     }
     if encoded_blocks.next().is_some() {
         return Err(CudaTranscodeError::Kernel(

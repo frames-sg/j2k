@@ -52,7 +52,7 @@ pub(super) fn try_encode_complete_ht_tile(
     options: &EncodeOptions,
     component_sample_info: &[EncodeComponentSampleInfo],
     roi_regions: &[EncodeRoiRegion],
-    plan: &SingleTilePlan,
+    plan: &mut SingleTilePlan,
     profile_enabled: bool,
     session: &NativeEncodeSession<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -95,6 +95,9 @@ pub(super) fn try_encode_complete_ht_tile(
             })?
         {
             phase.reconcile_accelerator_vec(&tile_data, "accelerator whole-tile HTJ2K output")?;
+            if let Some(bound) = accelerator.ht_tile_required_magnitude_bound() {
+                plan.params.required_ht_magnitude_bound = Some(bound);
+            }
             return Ok(Some((tile_data, profile::elapsed_us(stage_start))));
         }
     }
@@ -105,7 +108,7 @@ pub(super) fn try_encode_complete_ht_tile(
 pub(super) fn encode_complete_resident_ht_tile(
     input: J2kResidentEncodeInput,
     options: &EncodeOptions,
-    plan: &SingleTilePlan,
+    plan: &mut SingleTilePlan,
     profile_enabled: bool,
     session: &NativeEncodeSession<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -137,6 +140,9 @@ pub(super) fn encode_complete_resident_ht_tile(
                     "resident accelerator whole-tile HTJ2K output",
                 )
                 .map_err(resident_error_from_encode_error)?;
+            if let Some(bound) = accelerator.ht_tile_required_magnitude_bound() {
+                plan.params.required_ht_magnitude_bound = Some(bound);
+            }
             Ok((tile_data, profile::elapsed_us(stage_start)))
         }
         None => Err(ResidentHtj2kEncodeError::Declined),

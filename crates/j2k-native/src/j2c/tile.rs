@@ -716,6 +716,7 @@ mod tests {
         };
 
         let size_data = SizeData {
+            decoder_capabilities: 0,
             reference_grid_width: 1432,
             reference_grid_height: 954,
             image_area_x_offset: 152,

@@ -22,10 +22,12 @@ pub(in crate::decoder) fn cuda_code_block_job_from_plan_block(
         refinement_length: block.refinement_length,
         missing_bit_planes: block.missing_bit_planes,
         num_bitplanes: block.num_bitplanes,
+        roi_shift: block.roi_shift,
         number_of_coding_passes: block.number_of_coding_passes,
         output_stride: block.output_stride,
         output_offset,
         dequantization_step: block.dequantization_step,
         stripe_causal: block.stripe_causal != 0,
+        irreversible_midpoint: block.irreversible_midpoint,
     })
 }

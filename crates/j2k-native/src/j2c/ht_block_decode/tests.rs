@@ -5,7 +5,6 @@ use alloc::{vec, vec::Vec};
 use super::cleanup::{
     cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
 };
-use super::facade::coefficient_to_i32;
 use super::magnitude::decode_magnitude_sign_phase;
 use super::pipeline::{decode_impl, prepare_scratch, PHASE_LIMIT_MAGREF};
 use super::readers::{ForwardBitReader, ReverseBitReader};
@@ -20,6 +19,7 @@ use super::stats::{HtBlockDecodeStats, NoHtDecodeStats};
 use super::validation::{
     decode_combined_validated_with_scratch, decode_segments_validated_with_scratch,
 };
+use super::{coefficient_to_f32, coefficient_to_i32};
 use super::{
     decode_combined_validated, decode_segments_validated_for_phase,
     decode_segments_validated_with_scratch_for_phase,
@@ -46,6 +46,17 @@ fn test_coefficient_to_i32_shifted_alignment() {
     let aligned = 3u32 << (31 - 5);
     assert_eq!(coefficient_to_i32(aligned, 5), 3);
     assert_eq!(coefficient_to_i32(0x8000_0000 | aligned, 5), -3);
+}
+
+#[test]
+fn irreversible_coefficient_preserves_the_ht_midpoint_fraction() {
+    let midpoint = 3u32 << (31 - 5 - 1);
+
+    assert_eq!(coefficient_to_f32(midpoint, 5).to_bits(), 1.5_f32.to_bits());
+    assert_eq!(
+        coefficient_to_f32(0x8000_0000 | midpoint, 5).to_bits(),
+        (-1.5_f32).to_bits()
+    );
 }
 
 #[test]

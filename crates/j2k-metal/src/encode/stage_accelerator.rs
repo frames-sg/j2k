@@ -38,6 +38,7 @@ pub struct MetalEncodeStageAccelerator {
     parallel_cpu_code_block_fallback: bool,
     auto_host_output_force_cpu_fallback: bool,
     host_output_stages_enabled: bool,
+    ht_tile_required_magnitude_bound: Option<u8>,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
     forward_ict_attempts: usize,
@@ -66,6 +67,7 @@ impl Default for MetalEncodeStageAccelerator {
             parallel_cpu_code_block_fallback: false,
             auto_host_output_force_cpu_fallback: false,
             host_output_stages_enabled: false,
+            ht_tile_required_magnitude_bound: None,
             deinterleave_attempts: 0,
             forward_rct_attempts: 0,
             forward_ict_attempts: 0,
@@ -160,9 +162,10 @@ impl MetalEncodeStageAccelerator {
     /// Create the host-output hybrid route without applying the Auto size gate.
     ///
     /// This is intended for reproducible route benchmarks and adapter-IUT
-    /// conformance evidence. It runs the same Metal preparation stages as
-    /// [`Self::for_auto_host_output`] while keeping code-block coding and
-    /// packetization on the CPU. It does not change the public Auto policy.
+    /// conformance evidence. For supported lossless HT inputs it runs Metal
+    /// coefficient preparation and HT Tier-1 with CPU packetization, matching
+    /// the production host-output route without applying its size gate. It does
+    /// not change the public Auto policy.
     #[must_use]
     #[doc(hidden)]
     pub fn for_host_output_benchmark() -> Self {
@@ -355,6 +358,7 @@ pub(super) fn metal_dispatch_option<T>(
 impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn begin_encode(&mut self, context: J2kEncodeContext) -> J2kEncodeStageResult<()> {
         self.auto_host_output_force_cpu_fallback = false;
+        self.ht_tile_required_magnitude_bound = None;
         self.host_output_stages_enabled = match self.route_profile {
             MetalEncodeRouteProfile::Explicit => true,
             MetalEncodeRouteProfile::AutoHostOutput => auto_host_output_should_dispatch(context),
@@ -381,6 +385,10 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
         self.parallel_cpu_code_block_fallback
+    }
+
+    fn ht_tile_required_magnitude_bound(&self) -> Option<u8> {
+        self.ht_tile_required_magnitude_bound
     }
 
     fn encode_deinterleave(
@@ -739,16 +747,22 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         #[cfg(target_os = "macos")]
         {
-            if self.route_profile != MetalEncodeRouteProfile::AutoHostOutput {
+            if !matches!(
+                self.route_profile,
+                MetalEncodeRouteProfile::AutoHostOutput
+                    | MetalEncodeRouteProfile::HostOutputEvidence
+            ) {
                 let _ = job;
                 return Ok(None);
             }
-            let native_job = job;
             self.auto_host_output_force_cpu_fallback = false;
-            let Some(options) = lossless_options_for_resident_htj2k_tile_job(native_job) else {
+            self.ht_tile_required_magnitude_bound = None;
+            let Some(options) = lossless_options_for_resident_htj2k_tile_job(job) else {
                 return Ok(None);
             };
-            if !should_use_resident_htj2k_host_tile_for_auto(native_job) {
+            if self.route_profile == MetalEncodeRouteProfile::AutoHostOutput
+                && !should_use_resident_htj2k_host_tile_for_auto(job)
+            {
                 self.auto_host_output_force_cpu_fallback = true;
                 return Ok(None);
             }
@@ -757,27 +771,19 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 3 => PixelFormat::Rgb8,
                 _ => return Ok(None),
             };
-            let session = match crate::MetalBackendSession::system_default() {
-                Ok(session) => session,
-                Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(source) => {
-                    return Err(J2kEncodeStageError::backend(
-                        "metal",
-                        "HTJ2K hybrid session creation",
-                        source,
-                    ))
-                }
+            let Some(session) = metal_dispatch_option(
+                crate::MetalBackendSession::system_default(),
+                "HTJ2K hybrid session creation",
+            )?
+            else {
+                return Ok(None);
             };
-            let source_buffer = match copy_padded_metal_buffer_from_bytes(&session, job.pixels) {
-                Ok(buffer) => buffer,
-                Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(source) => {
-                    return Err(J2kEncodeStageError::backend(
-                        "metal",
-                        "HTJ2K hybrid input upload",
-                        source,
-                    ))
-                }
+            let Some(source_buffer) = metal_dispatch_option(
+                copy_padded_metal_buffer_from_bytes(&session, job.pixels),
+                "HTJ2K hybrid input upload",
+            )?
+            else {
+                return Ok(None);
             };
             let pitch_bytes = (job.width as usize)
                 .checked_mul(usize::from(job.num_components))
@@ -794,23 +800,19 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 output_height: job.height,
                 format,
             };
-            let encoded = match encode_resident_ht_tile_body_with_cpu_packetization(
-                tile,
-                options,
-                &session,
-                MetalEncodeInputStaging::AlreadyPaddedContiguous,
-                job.code_block_width,
-                job.code_block_height,
-            ) {
-                Ok(Some(encoded)) => encoded,
-                Ok(None) | Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(source) => {
-                    return Err(J2kEncodeStageError::backend(
-                        "metal",
-                        "resident HTJ2K hybrid tile encode",
-                        source,
-                    ))
-                }
+            let Some(Some(encoded)) = metal_dispatch_option(
+                encode_resident_ht_tile_body_with_cpu_packetization(
+                    tile,
+                    options,
+                    &session,
+                    MetalEncodeInputStaging::AlreadyPaddedContiguous,
+                    job.code_block_width,
+                    job.code_block_height,
+                ),
+                "resident HTJ2K hybrid tile encode",
+            )?
+            else {
+                return Ok(None);
             };
 
             self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
@@ -831,6 +833,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             self.ht_code_block_dispatches = self
                 .ht_code_block_dispatches
                 .saturating_add(encoded.ht_code_block_dispatches);
+            self.ht_tile_required_magnitude_bound = Some(encoded.required_ht_magnitude_bound);
             Ok(Some(encoded.tile_data))
         }
         #[cfg(not(target_os = "macos"))]

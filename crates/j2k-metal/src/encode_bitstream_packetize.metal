@@ -231,7 +231,12 @@ kernel void j2k_assemble_lossless_classic_codestream(
     ok = ok && j2k_codestream_write_marker(out, params.output_capacity, cursor, 0x51u);
     const uint siz_len = 38u + 3u * params.num_components;
     ok = ok && j2k_codestream_write_u16(out, params.output_capacity, cursor, siz_len);
-    ok = ok && j2k_codestream_write_u16(out, params.output_capacity, cursor, 0u);
+    ok = ok && j2k_codestream_write_u16(
+        out,
+        params.output_capacity,
+        cursor,
+        params.high_throughput != 0u ? 0x4000u : 0u
+    );
     ok = ok && j2k_codestream_write_u32(out, params.output_capacity, cursor, params.width);
     ok = ok && j2k_codestream_write_u32(out, params.output_capacity, cursor, params.height);
     ok = ok && j2k_codestream_write_u32(out, params.output_capacity, cursor, 0u);
@@ -370,7 +375,12 @@ kernel void j2k_assemble_lossless_codestream_batched(
     ok = ok && j2k_codestream_write_marker(tile_out, job.output_capacity, cursor, 0x51u);
     const uint siz_len = 38u + 3u * job.num_components;
     ok = ok && j2k_codestream_write_u16(tile_out, job.output_capacity, cursor, siz_len);
-    ok = ok && j2k_codestream_write_u16(tile_out, job.output_capacity, cursor, 0u);
+    ok = ok && j2k_codestream_write_u16(
+        tile_out,
+        job.output_capacity,
+        cursor,
+        job.high_throughput != 0u ? 0x4000u : 0u
+    );
     ok = ok && j2k_codestream_write_u32(tile_out, job.output_capacity, cursor, job.width);
     ok = ok && j2k_codestream_write_u32(tile_out, job.output_capacity, cursor, job.height);
     ok = ok && j2k_codestream_write_u32(tile_out, job.output_capacity, cursor, 0u);

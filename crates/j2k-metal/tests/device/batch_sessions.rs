@@ -176,14 +176,14 @@ fn submitted_shared_batch_continues_after_nonfatal_group_submit_failure() {
     }
 
     let valid_gray = Arc::<[u8]>::from(fixture_ht_gray8());
-    let unsupported_roi_rgb = unsupported_ht_roi_rgb();
+    let unsupported_wide_rgb = Arc::<[u8]>::from(fixture_ht_u8_unsupported_direct_width(3));
     let options = BatchDecodeOptions::default();
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder
         .prepare(vec![
             EncodedImage::full(valid_gray),
-            EncodedImage::full(unsupported_roi_rgb),
+            EncodedImage::full(unsupported_wide_rgb),
         ])
         .expect("prepare mixed shared Metal batch");
     let submitted = decoder

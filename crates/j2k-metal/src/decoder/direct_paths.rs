@@ -388,13 +388,16 @@ impl J2kDecoder<'_> {
             return Ok(Vec::new());
         }
         let dims = self.inner.info().dimensions;
-        let Some(transfer_syntax) = j2k::J2kDecoder::inspect_support(self.bytes)
-            .ok()
-            .map(|support| support.transfer_syntax)
-        else {
+        let Some(support) = j2k::J2kDecoder::inspect_support(self.bytes).ok() else {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         };
-        if !crate::routing::auto_repeated_decode_uses_metal(dims, fmt, count, transfer_syntax) {
+        if !crate::routing::auto_repeated_decode_uses_metal(
+            dims,
+            fmt,
+            count,
+            support.transfer_syntax,
+            support.payload_kind,
+        ) {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }
         let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
@@ -440,17 +443,15 @@ impl J2kDecoder<'_> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        let Some(transfer_syntax) = j2k::J2kDecoder::inspect_support(self.bytes)
-            .ok()
-            .map(|support| support.transfer_syntax)
-        else {
+        let Some(support) = j2k::J2kDecoder::inspect_support(self.bytes).ok() else {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         };
         if !crate::routing::auto_repeated_decode_uses_metal(
             self.inner.info().dimensions,
             fmt,
             count,
-            transfer_syntax,
+            support.transfer_syntax,
+            support.payload_kind,
         ) {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }

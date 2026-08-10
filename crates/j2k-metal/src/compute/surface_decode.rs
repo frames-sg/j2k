@@ -62,19 +62,6 @@ pub(crate) fn decode_image_region_to_surface<'a>(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_image_region_to_surface_with_device<'a>(
-    image: &NativeImage<'a>,
-    context: &mut NativeDecoderContext<'a>,
-    fmt: PixelFormat,
-    roi: Rect,
-    device: &Device,
-) -> Result<Surface, Error> {
-    with_runtime_for_device(device, |_| {
-        decode_image_region_to_surface(image, context, fmt, roi)
-    })
-}
-
-#[cfg(target_os = "macos")]
 fn select_plane_stage(
     runtime: &MetalRuntime,
     image: &NativeImage<'_>,
@@ -110,26 +97,6 @@ fn select_plane_stage(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_scaled_to_surface(
-    bytes: &[u8],
-    dims: (u32, u32),
-    fmt: PixelFormat,
-    scale: j2k_core::Downscale,
-) -> Result<Surface, Error> {
-    let target_dims = (
-        dims.0.div_ceil(scale.denominator()),
-        dims.1.div_ceil(scale.denominator()),
-    );
-    let settings = NativeDecodeSettings {
-        target_resolution: Some(target_dims),
-        ..NativeDecodeSettings::default()
-    };
-    let image = NativeImage::new(bytes, &settings).map_err(native_decode_error)?;
-    let mut context = NativeDecoderContext::default();
-    decode_image_to_surface(&image, &mut context, fmt)
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn decode_region_scaled_to_surface(
     bytes: &[u8],
     dims: (u32, u32),
@@ -148,19 +115,6 @@ pub(crate) fn decode_region_scaled_to_surface(
     let image = NativeImage::new(bytes, &settings).map_err(native_decode_error)?;
     let mut context = NativeDecoderContext::default();
     decode_image_region_to_surface(&image, &mut context, fmt, roi.scaled_covering(scale))
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn decode_scaled_to_surface_with_device(
-    bytes: &[u8],
-    dims: (u32, u32),
-    fmt: PixelFormat,
-    scale: j2k_core::Downscale,
-    device: &Device,
-) -> Result<Surface, Error> {
-    with_runtime_for_device(device, |_| {
-        decode_scaled_to_surface(bytes, dims, fmt, scale)
-    })
 }
 
 #[cfg(target_os = "macos")]

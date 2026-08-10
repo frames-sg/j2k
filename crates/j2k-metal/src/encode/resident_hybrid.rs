@@ -12,6 +12,7 @@ use super::{
 #[cfg(target_os = "macos")]
 pub(super) struct ResidentHybridHtTileBody {
     pub(super) tile_data: Vec<u8>,
+    pub(super) required_ht_magnitude_bound: u8,
     pub(super) code_block_count: usize,
     pub(super) num_decomposition_levels: u8,
     pub(super) used_fused_rct: bool,
@@ -57,7 +58,6 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
 
     let coefficient_count = lossless_device_coefficient_count(&plan.code_blocks)?;
     let code_block_count = plan.code_blocks.len();
-    let resolution_count = plan.resolutions.len();
     let code_blocks = plan.take_code_blocks();
     let prepared = compute::prepare_lossless_device_code_blocks(
         session,
@@ -79,22 +79,23 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
     )?;
     let resident_tier1 =
         compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
-    let encoded_blocks = compute::read_resident_ht_tier1_code_blocks_for_cpu_packetization(
-        session,
-        &resident_tier1,
-    )?;
+    let (encoded_blocks, required_ht_magnitude_bound) =
+        compute::read_resident_ht_tier1_code_blocks_for_cpu_packetization(
+            session,
+            &resident_tier1,
+        )?;
     let packetization_resolutions = cpu_packetization_resolutions_from_lossless_device_plan(
         &plan,
         code_block_count,
         &encoded_blocks,
     )?;
     let packet_descriptors = packet_descriptors_for_lossless_device_order(
-        resolution_count,
+        plan.resolutions.len(),
         plan.components,
         plan.progression_order,
     )?;
     let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: u32::try_from(resolution_count).map_err(|_| {
+        resolution_count: u32::try_from(plan.resolutions.len()).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident hybrid resolution count exceeds u32".to_string(),
             }
@@ -119,6 +120,7 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
 
     Ok(Some(ResidentHybridHtTileBody {
         tile_data,
+        required_ht_magnitude_bound,
         code_block_count,
         num_decomposition_levels: plan.num_decomposition_levels,
         used_fused_rct: plan.use_mct && tile.format == PixelFormat::Rgb8,

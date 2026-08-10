@@ -44,6 +44,15 @@ impl MetalHtBlockDecoder {
 
 impl HtCodeBlockDecoder for MetalHtBlockDecoder {
     fn decode_sub_band(&mut self, job: HtSubBandDecodeJob<'_>, output: &mut [f32]) -> Result<bool> {
+        self.decode_sub_band_with_midpoint(job, output, false)
+    }
+
+    fn decode_sub_band_with_midpoint(
+        &mut self,
+        job: HtSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
         #[cfg(target_os = "macos")]
         if job.jobs.len() > 1
             && job
@@ -51,7 +60,7 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
                 .iter()
                 .all(|job| supports_metal_ht_kernel(&job.code_block))
         {
-            compute::decode_ht_cleanup_sub_band(job, output)
+            compute::decode_ht_cleanup_sub_band(job, output, irreversible_midpoint)
                 .map_err(metal_ht_sub_band_decode_error)?;
             self.sub_band_batches = self.sub_band_batches.saturating_add(1);
             self.batched_kernel_dispatches = self.batched_kernel_dispatches.saturating_add(1);
@@ -68,15 +77,32 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
         job: HtCodeBlockDecodeJob<'_>,
         output: &mut [f32],
     ) -> Result<()> {
+        self.decode_code_block_with_midpoint(job, output, false)
+    }
+
+    fn decode_code_block_with_midpoint(
+        &mut self,
+        job: HtCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<()> {
         self.blocks_decoded = self.blocks_decoded.saturating_add(1);
         #[cfg(target_os = "macos")]
         if supports_metal_ht_kernel(&job) {
-            compute::decode_ht_cleanup_code_block(job, output)
+            compute::decode_ht_cleanup_code_block(job, output, irreversible_midpoint)
                 .map_err(metal_ht_code_block_decode_error)?;
             self.kernel_dispatches = self.kernel_dispatches.saturating_add(1);
             return Ok(());
         }
-        decode_ht_code_block_scalar(job, output)
+        if irreversible_midpoint {
+            j2k_native::decode_ht_code_block_scalar_with_workspace_midpoint(
+                job,
+                output,
+                &mut j2k_native::HtCodeBlockDecodeWorkspace::default(),
+            )
+        } else {
+            decode_ht_code_block_scalar(job, output)
+        }
     }
 }
 
@@ -100,10 +126,13 @@ fn supports_metal_ht_kernel(job: &HtCodeBlockDecodeJob<'_>) -> bool {
     if !supports_metal_ht_geometry(job.width, job.height) {
         return false;
     }
-    if job.roi_shift != 0 {
-        return false;
-    }
-    if job.num_bitplanes == 0 || job.num_bitplanes > 31 || job.missing_bit_planes >= 30 {
+    if job.num_bitplanes == 0
+        || job
+            .num_bitplanes
+            .checked_add(job.roi_shift)
+            .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
+        || job.missing_bit_planes >= 30
+    {
         return false;
     }
     if job.number_of_coding_passes == 0 || job.number_of_coding_passes > 3 {
@@ -517,7 +546,8 @@ mod tests {
         decode_ht_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode");
 
         let mut actual = vec![13_579.0f32; job.output_len()];
-        compute::decode_ht_cleanup_code_block(job.as_job(), &mut actual).expect("metal decode");
+        compute::decode_ht_cleanup_code_block(job.as_job(), &mut actual, false)
+            .expect("metal decode");
 
         assert_eq!(actual, expected);
     }

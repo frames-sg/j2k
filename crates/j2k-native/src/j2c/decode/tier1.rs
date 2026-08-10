@@ -9,6 +9,7 @@ use super::{
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
+use crate::j2c::build::CodeBlockCoding;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
 use core::mem::size_of;
 
@@ -24,6 +25,7 @@ struct Tier1Requirements {
     classic_boundaries: usize,
     ht_width: u32,
     ht_height: u32,
+    ht_data_bytes: usize,
     has_classic: bool,
     has_ht: bool,
 }
@@ -69,10 +71,26 @@ impl Tier1Requirements {
         Ok(())
     }
 
-    fn observe_ht(&mut self, code_block: &CodeBlock) {
+    fn observe_ht(
+        &mut self,
+        code_block: &CodeBlock,
+        storage: &DecompositionStorage<'_>,
+    ) -> Result<()> {
         self.has_ht = true;
         self.ht_width = self.ht_width.max(code_block.rect.width());
         self.ht_height = self.ht_height.max(code_block.rect.height());
+        if code_block.number_of_coding_passes != 0 {
+            let (cleanup_bytes, refinement_bytes) =
+                crate::j2c::ht_block_decode::selected_code_block_segment_lengths(
+                    code_block, storage,
+                )?;
+            self.ht_data_bytes = self.ht_data_bytes.max(
+                cleanup_bytes
+                    .checked_add(refinement_bytes)
+                    .ok_or(ValidationError::ImageTooLarge)?,
+            );
+        }
+        Ok(())
     }
 
     fn logical_bytes(&self) -> Result<usize> {
@@ -92,6 +110,7 @@ impl Tier1Requirements {
             bytes = bytes
                 .checked_add(ht_decode_workspace_bytes(self.ht_width, self.ht_height)?)
                 .ok_or(ValidationError::ImageTooLarge)?;
+            include_elements::<u8>(&mut bytes, self.ht_data_bytes)?;
         }
         Ok(bytes)
     }
@@ -120,9 +139,11 @@ pub(super) fn prepare_tier1_workspace(
             )?;
         }
         if requirements.has_ht {
-            tile_ctx
-                .ht_block_decode_context
-                .prepare(requirements.ht_width, requirements.ht_height)?;
+            tile_ctx.ht_block_decode_context.prepare(
+                requirements.ht_width,
+                requirements.ht_height,
+                requirements.ht_data_bytes,
+            )?;
         }
 
         let actual_bytes = tile_ctx.tier1_capacity_bytes()?;
@@ -164,7 +185,7 @@ fn collect_requirements(
     storage: &DecompositionStorage<'_>,
 ) -> Result<Tier1Requirements> {
     let mut requirements = Tier1Requirements::default();
-    for (component_idx, component_info) in tile.component_infos.iter().enumerate() {
+    for component_idx in 0..tile.component_infos.len() {
         let tile_decompositions = storage
             .tile_decompositions
             .get(component_idx)
@@ -178,26 +199,12 @@ fn collect_requirements(
             .saturating_sub(header.skipped_resolution_levels as usize);
         observe_sub_band(
             tile_decompositions.first_ll_sub_band,
-            component_info
-                .coding_style
-                .parameters
-                .code_block_style
-                .uses_high_throughput_block_coding(),
             storage,
             &mut requirements,
         )?;
         for decomposition in decompositions.iter().take(active_decompositions) {
             for &sub_band_idx in &decomposition.sub_bands {
-                observe_sub_band(
-                    sub_band_idx,
-                    component_info
-                        .coding_style
-                        .parameters
-                        .code_block_style
-                        .uses_high_throughput_block_coding(),
-                    storage,
-                    &mut requirements,
-                )?;
+                observe_sub_band(sub_band_idx, storage, &mut requirements)?;
             }
         }
     }
@@ -206,7 +213,6 @@ fn collect_requirements(
 
 fn observe_sub_band(
     sub_band_idx: usize,
-    high_throughput: bool,
     storage: &DecompositionStorage<'_>,
     requirements: &mut Tier1Requirements,
 ) -> Result<()> {
@@ -227,10 +233,15 @@ fn observe_sub_band(
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                 continue;
             }
-            if high_throughput {
-                requirements.observe_ht(code_block);
-            } else {
-                requirements.observe_classic(code_block, storage)?;
+            match code_block.coding {
+                Some(CodeBlockCoding::Classic) => {
+                    requirements.observe_classic(code_block, storage)?;
+                }
+                Some(CodeBlockCoding::HighThroughput) => {
+                    requirements.observe_ht(code_block, storage)?;
+                }
+                None if code_block.number_of_coding_passes == 0 => {}
+                None => return Err(DecodingError::CodeBlockDecodeFailure.into()),
             }
         }
     }

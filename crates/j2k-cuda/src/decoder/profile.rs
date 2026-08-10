@@ -114,9 +114,11 @@ pub(super) struct CudaDecodeStageTimings {
     pub(super) classic_tier1: u128,
     pub(super) dequant: u128,
     pub(super) ht_dispatch_count: usize,
+    pub(super) ht_refinement_dispatch_count: usize,
     pub(super) classic_dispatch_count: usize,
     pub(super) idwt: u128,
     pub(super) dequant_dispatch_count: usize,
+    pub(super) fused_dequant_dispatch_count: usize,
     pub(super) idwt_dispatch_count: usize,
 }
 
@@ -143,6 +145,10 @@ impl CudaDecodeStageTimings {
             .detail
             .ht_dispatch_count
             .saturating_add(self.ht_dispatch_count);
+        report.detail.ht_refinement_dispatch_count = report
+            .detail
+            .ht_refinement_dispatch_count
+            .saturating_add(self.ht_refinement_dispatch_count);
         report.detail.classic_dispatch_count = report
             .detail
             .classic_dispatch_count
@@ -151,6 +157,10 @@ impl CudaDecodeStageTimings {
             .detail
             .dequant_dispatch_count
             .saturating_add(self.dequant_dispatch_count);
+        report.detail.fused_dequant_dispatch_count = report
+            .detail
+            .fused_dequant_dispatch_count
+            .saturating_add(self.fused_dequant_dispatch_count);
         report.detail.idwt_dispatch_count = report
             .detail
             .idwt_dispatch_count
@@ -225,6 +235,10 @@ pub(super) fn add_decode_report(
         .detail
         .ht_dispatch_count
         .saturating_add(report.detail.ht_dispatch_count);
+    aggregate.detail.ht_refinement_dispatch_count = aggregate
+        .detail
+        .ht_refinement_dispatch_count
+        .saturating_add(report.detail.ht_refinement_dispatch_count);
     aggregate.detail.classic_dispatch_count = aggregate
         .detail
         .classic_dispatch_count
@@ -233,6 +247,10 @@ pub(super) fn add_decode_report(
         .detail
         .dequant_dispatch_count
         .saturating_add(report.detail.dequant_dispatch_count);
+    aggregate.detail.fused_dequant_dispatch_count = aggregate
+        .detail
+        .fused_dequant_dispatch_count
+        .saturating_add(report.detail.fused_dequant_dispatch_count);
     aggregate.detail.idwt_dispatch_count = aggregate
         .detail
         .idwt_dispatch_count

@@ -3,9 +3,14 @@
 use alloc::vec::Vec;
 
 use super::super::build::CodeBlock;
-use super::super::decode::{DecodeAllocationBudget, DecompositionStorage};
+use super::super::decode::DecompositionStorage;
 use crate::error::{bail, DecodingError, Result};
-use crate::try_reserve_decode_elements;
+
+mod owned;
+
+pub(crate) use owned::{
+    collect_code_block_data, collect_code_block_data_into, selected_code_block_segment_lengths,
+};
 
 pub(crate) struct CombinedCodeBlockData {
     pub(crate) data: Vec<u8>,
@@ -51,12 +56,19 @@ impl CombinedCodeBlockData {
     }
 }
 
-pub(crate) fn collect_code_block_segments<'a>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HtCodeBlockSegmentKind {
+    Cleanup,
+    Refinement,
+}
+
+pub(crate) fn visit_code_block_segments<'a>(
     code_block: &CodeBlock,
     storage: &'a DecompositionStorage<'a>,
-) -> Result<HtCodeBlockSegments<'a>> {
-    let mut cleanup = None;
-    let mut refinement = None;
+    mut visit: impl FnMut(HtCodeBlockSegmentKind, &'a [u8]) -> Result<()>,
+) -> Result<()> {
+    let (cleanup_index, refinement_index) = selected_segment_indices(code_block)?;
+    let mut cleanup_seen = false;
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
         let Some(range) = layer.segments.clone() else {
@@ -65,54 +77,44 @@ pub(crate) fn collect_code_block_segments<'a>(
 
         for segment in &storage.segments[range] {
             match segment.idx {
-                0 if cleanup.is_none() => {
-                    cleanup = Some(segment.data);
+                idx if idx == cleanup_index && !cleanup_seen => {
+                    cleanup_seen = true;
+                    visit(HtCodeBlockSegmentKind::Cleanup, segment.data)?;
                 }
-                1 if refinement.is_none() => {
-                    refinement = Some(segment.data);
+                idx if idx == refinement_index && cleanup_seen => {
+                    visit(HtCodeBlockSegmentKind::Refinement, segment.data)?;
                 }
-                _ => bail!(DecodingError::UnsupportedFeature(
-                    "unexpected HTJ2K segment layout"
+                idx if idx < cleanup_index => {}
+                idx if idx == cleanup_index => bail!(DecodingError::UnsupportedFeature(
+                    "fragmented HTJ2K cleanup segment"
                 )),
+                idx if idx == refinement_index => bail!(DecodingError::UnsupportedFeature(
+                    "fragmented HTJ2K refinement segment"
+                )),
+                _ => bail!(DecodingError::CodeBlockDecodeFailure),
             }
         }
     }
 
-    let Some(cleanup) = cleanup else {
+    if !cleanup_seen {
         bail!(DecodingError::CodeBlockDecodeFailure);
-    };
+    }
 
-    Ok(HtCodeBlockSegments {
-        cleanup,
-        refinement: refinement.unwrap_or(&[]),
-    })
+    Ok(())
 }
 
-pub(crate) fn collect_code_block_data<'a>(
-    code_block: &CodeBlock,
-    storage: &'a DecompositionStorage<'a>,
-    budget: &mut DecodeAllocationBudget,
-) -> Result<CombinedCodeBlockData> {
-    let segments = collect_code_block_segments(code_block, storage)?;
-    let cleanup_length =
-        u32::try_from(segments.cleanup.len()).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let refinement_length = u32::try_from(segments.refinement.len())
-        .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let data_len = segments
-        .cleanup
-        .len()
-        .checked_add(segments.refinement.len())
+pub(super) fn selected_segment_indices(code_block: &CodeBlock) -> Result<(u8, u8)> {
+    let selected_set = code_block
+        .ht_selected_set
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    budget.include_elements::<u8>(data_len)?;
-    let mut data = Vec::new();
-    try_reserve_decode_elements(&mut data, data_len)?;
-    budget.include_capacity_overage::<u8>(data_len, data.capacity())?;
-    data.extend_from_slice(segments.cleanup);
-    data.extend_from_slice(segments.refinement);
-
-    Ok(CombinedCodeBlockData {
-        data,
-        cleanup_length,
-        refinement_length,
-    })
+    let cleanup_index = selected_set
+        .checked_mul(2)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let refinement_index = cleanup_index
+        .checked_add(1)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    Ok((cleanup_index, refinement_index))
 }
+
+#[cfg(test)]
+mod tests;

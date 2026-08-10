@@ -225,7 +225,7 @@ fn prepare_validated_single_tile(
     profile_enabled: bool,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<PreparedSingleTile> {
-    let plan = build_single_tile_plan(
+    let mut plan = build_single_tile_plan(
         validated,
         width,
         height,
@@ -278,7 +278,7 @@ fn prepare_validated_single_tile(
         options,
         component_sample_info,
         roi_regions,
-        &plan,
+        &mut plan,
         profile_enabled,
         session,
         accelerator,
@@ -288,6 +288,7 @@ fn prepare_validated_single_tile(
                 data: tile_data,
                 packet_lengths: Vec::new(),
                 packet_headers: Vec::new(),
+                required_ht_magnitude_bound: plan.params.required_ht_magnitude_bound,
             },
             final_plan: plan.into_codestream_final_plan(),
             tile_body_us,
@@ -328,7 +329,7 @@ fn prepare_validated_single_tile(
 
 fn finish_staged_preparation(
     encoded: EncodedTilePackets,
-    plan: SingleTilePlan,
+    mut plan: SingleTilePlan,
     prepared: PreparedComponentTransforms,
 ) -> PreparedSingleTile {
     let transform_timings = TransformStageTimings {
@@ -337,6 +338,7 @@ fn finish_staged_preparation(
         dwt: prepared.dwt_us,
     };
     drop(prepared);
+    plan.params.required_ht_magnitude_bound = encoded.packetized_tile.required_ht_magnitude_bound;
     PreparedSingleTile::Staged {
         encoded,
         final_plan: plan.into_codestream_final_plan(),

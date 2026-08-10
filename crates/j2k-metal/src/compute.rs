@@ -433,8 +433,6 @@ mod surface_decode;
 mod tests;
 #[cfg(target_os = "macos")]
 pub(crate) use self::surface_decode::{
-    decode_image_region_to_surface, decode_image_region_to_surface_with_device,
     decode_image_to_surface, decode_image_to_surface_with_device, decode_region_scaled_to_surface,
-    decode_region_scaled_to_surface_with_device, decode_scaled_to_surface,
-    decode_scaled_to_surface_with_device,
+    decode_region_scaled_to_surface_with_device,
 };

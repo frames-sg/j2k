@@ -193,6 +193,7 @@ version = "0.8.1"
 name = "j2k-test-support"
 version = "0.8.1"
 dependencies = [
+ "j2k-core",
  "serde",
  "serde_json",
  "sha2",

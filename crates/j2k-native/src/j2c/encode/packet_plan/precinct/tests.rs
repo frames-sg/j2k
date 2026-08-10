@@ -42,6 +42,7 @@ fn prepared_precinct_fixture() -> Vec<Vec<PreparedResolutionPacket>> {
     subbands.push(PreparedEncodeSubband {
         code_blocks,
         preencoded_ht_code_blocks: Some(preencoded),
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x: 4,
         num_cbs_y: 2,
         code_block_width: 2,

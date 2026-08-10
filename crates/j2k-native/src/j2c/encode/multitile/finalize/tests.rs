@@ -27,6 +27,7 @@ fn part(tile_index: u16, payload: &[u8], header: &[u8]) -> EncodedTilePart {
         tile_index,
         tile_part_index: 0,
         num_tile_parts: 1,
+        required_ht_magnitude_bound: None,
         data,
         packet_lengths,
         packet_headers,

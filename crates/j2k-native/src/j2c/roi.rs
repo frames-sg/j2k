@@ -293,6 +293,7 @@ mod tests {
         resolution_shrink: (u32, u32),
     ) -> SizeData {
         SizeData {
+            decoder_capabilities: 0,
             reference_grid_width: 515,
             reference_grid_height: 389,
             image_area_x_offset: image_offset.0,

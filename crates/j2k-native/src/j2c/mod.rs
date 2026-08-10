@@ -3,6 +3,7 @@ pub(crate) mod arithmetic_encoder;
 pub(crate) mod bitplane;
 pub(crate) mod bitplane_encode;
 pub(crate) mod build;
+pub(crate) mod capabilities;
 pub(crate) mod codestream;
 pub(crate) mod codestream_write;
 pub(crate) mod coefficient_view;

@@ -1,5 +1,7 @@
 use super::{
-    bail, decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
+    bail, decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint, idwt, try_resize_decode_elements,
     DecodingError, DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand,
     DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan,
@@ -131,11 +133,12 @@ fn execute_ht_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_ht_code_block_scalar_with_workspace(
-            code_block,
-            &mut output[output_range],
-            &mut workspace,
-        )?;
+        let decode = if plan.irreversible_midpoint {
+            decode_ht_code_block_scalar_with_workspace_midpoint
+        } else {
+            decode_ht_code_block_scalar_with_workspace
+        };
+        decode(code_block, &mut output[output_range], &mut workspace)?;
     }
     Ok(())
 }

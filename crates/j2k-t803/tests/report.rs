@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_t803::{
-    CaseReport, CaseStatus, CorpusFile, EncodeRouteStage, EncodeRouteStageName, EncoderCaseReport,
-    EncoderEvidence, EncoderMode, EncoderQualityStatus, EncoderReferenceIdentity,
-    ExecutionLocation, IutIdentity, NativeComponentOracleEvidence, PlatformIdentity, ReportStatus,
-    RouteKind, RouteStage, RouteStageName, T803Report,
+    AcceleratorExecutionEvidence, CaseReport, CaseStatus, CorpusFile, EncodeRouteStage,
+    EncodeRouteStageName, EncoderCaseReport, EncoderDispatchEvidence, EncoderEvidence, EncoderMode,
+    EncoderQualityStatus, EncoderReferenceDecoder, EncoderReferenceIdentity,
+    EncoderSupplementalReferenceIdentity, ExecutionLocation, IutIdentity,
+    NativeComponentOracleEvidence, PlatformIdentity, ReportStatus, RouteKind, RouteStage,
+    RouteStageName, T803Report, T803Suite,
 };
 
 fn report(cases: Vec<CaseReport>) -> T803Report {
     T803Report::new(
+        T803Suite::Part1,
         IutIdentity {
             name: "j2k".to_string(),
             version: "0.8.0".to_string(),
@@ -58,7 +61,7 @@ fn encoder_evidence() -> EncoderEvidence {
     EncoderEvidence::new(
         "corpus/j2k-conformance/encoder-ics-cpu.toml".to_string(),
         "1".repeat(64),
-        "corpus/j2k-conformance/encoder-matrix-v1.toml".to_string(),
+        "corpus/j2k-conformance/encoder-matrix-v2.toml".to_string(),
         1,
         "2".repeat(64),
         EncoderReferenceIdentity {
@@ -66,11 +69,13 @@ fn encoder_evidence() -> EncoderEvidence {
             implementation: "OpenJPEG".to_string(),
             version: "2.5.3".to_string(),
         },
+        Vec::new(),
         Vec::from([EncoderCaseReport {
             id: "pairwise-01".to_string(),
             mode: EncoderMode::Lossless,
             status: CaseStatus::Pass,
             route: RouteKind::Cpu,
+            reference_decoder: EncoderReferenceDecoder::OpenJpeg,
             reference_decode_success: true,
             lossless_exact: Some(true),
             encoded_bytes: Some(123),
@@ -82,6 +87,7 @@ fn encoder_evidence() -> EncoderEvidence {
             quality_error: None,
             error: None,
             stages: cpu_encode_stages(),
+            accelerator_dispatches: Some(EncoderDispatchEvidence::default()),
         }]),
     )
     .expect("valid encoder evidence")
@@ -129,6 +135,8 @@ fn passing_case(stages: Vec<RouteStage>) -> CaseReport {
         allowed_mse: Some(0.0),
         error: None,
         stages,
+        accelerator_execution: None,
+        part15: None,
     }
 }
 
@@ -161,17 +169,165 @@ fn cpu_stages() -> Vec<RouteStage> {
 fn report_json_is_deterministic_versioned_and_round_trips() {
     let report = report([passing_case(cpu_stages())].into_iter().collect());
 
+    assert_eq!(report.suite, T803Suite::Part1);
+
     let first = report.to_json().expect("serialize report");
     let second = report.to_json().expect("serialize report again");
 
     assert_eq!(first, second);
     assert!(first.ends_with('\n'));
-    assert!(first.contains("\"schema_version\": 3"));
+    assert!(first.contains("\"schema_version\": 7"));
     assert!(first.contains("ISO/IEC 15444-4:2024 / ITU-T T.803 v3"));
     assert!(first.contains("ISO/IEC 15444-5 / ITU-T T.804"));
     let reparsed = T803Report::from_json(&first).expect("parse report");
     assert_eq!(reparsed, report);
     assert_eq!(reparsed.to_json().expect("reserialize report"), first);
+}
+
+#[test]
+fn current_report_publishes_encoder_dispatch_counters() {
+    let json = report(Vec::from([passing_case(cpu_stages())]))
+        .to_json()
+        .expect("serialize report");
+
+    assert!(json.contains("\"accelerator_dispatches\""));
+    assert!(json.contains("\"ht_code_block\": 0"));
+
+    let mut missing = serde_json::from_str::<serde_json::Value>(&json).expect("report JSON");
+    missing["encoder"]["cases"][0]
+        .as_object_mut()
+        .expect("encoder case object")
+        .remove("accelerator_dispatches");
+    let missing = serde_json::to_string_pretty(&missing).expect("report JSON");
+    let error = T803Report::from_json(&missing)
+        .expect_err("the current schema requires per-case dispatch counters");
+    assert!(error.to_string().contains("dispatch counters"));
+
+    let mut historical = serde_json::from_str::<serde_json::Value>(&missing).expect("report JSON");
+    historical["schema_version"] = 6.into();
+    let historical = serde_json::to_string_pretty(&historical).expect("historical report JSON");
+    T803Report::from_json(&historical).expect("schema six remains readable");
+}
+
+#[test]
+fn encoder_dispatch_counters_must_match_reported_stage_locations() {
+    let json = report(Vec::from([passing_case(cpu_stages())]))
+        .to_json()
+        .expect("serialize report");
+    let mut contradictory = serde_json::from_str::<serde_json::Value>(&json).expect("report JSON");
+    contradictory["encoder"]["cases"][0]["accelerator_dispatches"]["deinterleave"] = 1.into();
+
+    let contradictory =
+        serde_json::to_string_pretty(&contradictory).expect("contradictory report JSON");
+    let error = T803Report::from_json(&contradictory)
+        .expect_err("a device dispatch cannot be reported as CPU work");
+
+    assert!(error.to_string().contains("InputPreparation"));
+}
+
+#[test]
+fn historical_schema_is_verifiable_but_cannot_be_reemitted() {
+    let current = report(Vec::from([passing_case(cpu_stages())]))
+        .to_json()
+        .expect("current report");
+    let mut historical = serde_json::from_str::<serde_json::Value>(&current).expect("report JSON");
+    historical["schema_version"] = 3.into();
+    for case in historical["cases"]
+        .as_array_mut()
+        .expect("report case array")
+    {
+        case.as_object_mut()
+            .expect("report case object")
+            .remove("accelerator_execution");
+    }
+    let historical = serde_json::to_string_pretty(&historical).expect("historical JSON");
+
+    let parsed = T803Report::from_json(&historical).expect("read historical report");
+    assert_eq!(parsed.schema_version, 3);
+    let error = parsed
+        .to_json()
+        .expect_err("historical report schemas are read-only");
+    assert!(error.to_string().contains("read-only"));
+}
+
+#[test]
+fn schema_five_defaults_to_openjpeg_reference_evidence() {
+    let current = report(Vec::from([passing_case(cpu_stages())]))
+        .to_json()
+        .expect("current report");
+    let mut historical = serde_json::from_str::<serde_json::Value>(&current).expect("report JSON");
+    historical["schema_version"] = 5.into();
+    historical["encoder"]
+        .as_object_mut()
+        .expect("encoder evidence object")
+        .remove("supplemental_reference_decoders");
+    for case in historical["encoder"]["cases"]
+        .as_array_mut()
+        .expect("encoder case array")
+    {
+        case.as_object_mut()
+            .expect("encoder case object")
+            .remove("reference_decoder");
+    }
+
+    let historical = serde_json::to_string_pretty(&historical).expect("historical JSON");
+    let parsed = T803Report::from_json(&historical).expect("read schema-five report");
+
+    assert_eq!(parsed.schema_version, 5);
+    assert_eq!(
+        parsed.encoder.cases[0].reference_decoder,
+        EncoderReferenceDecoder::OpenJpeg
+    );
+    assert!(parsed.encoder.supplemental_reference_decoders.is_empty());
+}
+
+#[test]
+fn supplemental_reference_selection_requires_a_pinned_identity() {
+    let mut evidence = encoder_evidence();
+    evidence.cases[0].reference_decoder = EncoderReferenceDecoder::OpenHtj2k;
+
+    let error = EncoderEvidence::new(
+        evidence.ics_path,
+        evidence.ics_sha256,
+        evidence.matrix_path,
+        evidence.matrix_case_count,
+        evidence.matrix_case_sha256,
+        evidence.reference_decoder,
+        Vec::new(),
+        evidence.cases,
+    )
+    .expect_err("supplemental decoder selection needs executable provenance");
+
+    assert!(error.to_string().contains("OpenHTJ2K identity"));
+}
+
+#[test]
+fn supplemental_reference_identity_is_accepted_when_selected() {
+    let mut evidence = encoder_evidence();
+    evidence.cases[0].reference_decoder = EncoderReferenceDecoder::OpenHtj2k;
+    let supplemental = EncoderSupplementalReferenceIdentity {
+        decoder: EncoderReferenceDecoder::OpenHtj2k,
+        scope: "independent Part 15 interoperability evidence; not T.804".to_string(),
+        implementation: "OpenHTJ2K".to_string(),
+        version: "0.19.0".to_string(),
+        source_url: "https://github.com/osamu620/OpenHTJ2K".to_string(),
+        source_commit: "e0f7ae853220d1e359c438b0bb6ad6cb2b3899db".to_string(),
+        executable_sha256: "4".repeat(64),
+    };
+
+    let rebuilt = EncoderEvidence::new(
+        evidence.ics_path,
+        evidence.ics_sha256,
+        evidence.matrix_path,
+        evidence.matrix_case_count,
+        evidence.matrix_case_sha256,
+        evidence.reference_decoder,
+        Vec::from([supplemental]),
+        evidence.cases,
+    )
+    .expect("selected supplemental decoder has complete provenance");
+
+    assert_eq!(rebuilt.supplemental_reference_decoders.len(), 1);
 }
 
 #[test]
@@ -227,6 +383,7 @@ fn report_rejects_route_labels_that_hide_cpu_assistance() {
     .collect();
 
     let error = T803Report::new(
+        T803Suite::Part1,
         IutIdentity {
             name: "j2k-cuda".to_string(),
             version: "0.8.0".to_string(),
@@ -298,7 +455,7 @@ fn one_report_can_disclose_cpu_and_hybrid_cases() {
             (RouteStageName::Dequantization, ExecutionLocation::Cuda),
             (RouteStageName::Idwt, ExecutionLocation::Cuda),
             (RouteStageName::Mct, ExecutionLocation::Cuda),
-            (RouteStageName::ColorOutput, ExecutionLocation::Cpu),
+            (RouteStageName::ColorOutput, ExecutionLocation::Cuda),
             (RouteStageName::HostToDevice, ExecutionLocation::Cuda),
             (RouteStageName::DeviceToHost, ExecutionLocation::Cuda),
         ]
@@ -308,6 +465,19 @@ fn one_report_can_disclose_cpu_and_hybrid_cases() {
     );
     hybrid.id = "c6-c1p0-02-0".to_string();
     hybrid.route = RouteKind::Hybrid;
+    hybrid.accelerator_execution = Some(AcceleratorExecutionEvidence {
+        backend: ExecutionLocation::Cuda,
+        ht_tier1_dispatches: 3,
+        ht_refinement_dispatches: 1,
+        classic_tier1_dispatches: 0,
+        dequantization_dispatches: 2,
+        idwt_dispatches: 1,
+        mct_dispatches: 1,
+        color_output_dispatches: 1,
+        uploaded_payload_bytes: Some(4096),
+        metal_host_inputs: None,
+        device_to_host_completed: true,
+    });
 
     let report = report([cpu, hybrid].into_iter().collect());
 
@@ -316,6 +486,61 @@ fn one_report_can_disclose_cpu_and_hybrid_cases() {
     assert_eq!(report.decoder_routes.device_native, 0);
     assert_eq!(report.decoder_routes.hybrid, 1);
     assert_eq!(report.decoder_routes.cpu, 1);
+    let json = report.to_json().expect("serialize observed execution");
+    assert!(json.contains("\"ht_refinement_dispatches\": 1"));
+    assert!(json.contains("\"uploaded_payload_bytes\": 4096"));
+}
+
+#[test]
+fn hybrid_report_rejects_missing_or_mismatched_accelerator_observations() {
+    let mut hybrid = passing_case(
+        [
+            (RouteStageName::Parsing, ExecutionLocation::Cpu),
+            (RouteStageName::Tier1, ExecutionLocation::Cuda),
+            (RouteStageName::Dequantization, ExecutionLocation::Cuda),
+            (RouteStageName::Idwt, ExecutionLocation::Cuda),
+            (RouteStageName::Mct, ExecutionLocation::NotUsed),
+            (RouteStageName::ColorOutput, ExecutionLocation::Cuda),
+            (RouteStageName::HostToDevice, ExecutionLocation::Cuda),
+            (RouteStageName::DeviceToHost, ExecutionLocation::Cuda),
+        ]
+        .into_iter()
+        .map(|(stage, location)| RouteStage { stage, location })
+        .collect(),
+    );
+    hybrid.route = RouteKind::Hybrid;
+
+    let error = T803Report::new(
+        T803Suite::Part1,
+        IutIdentity {
+            name: "j2k-cuda".to_string(),
+            version: "0.8.1".to_string(),
+            candidate_sha: "abc".to_string(),
+            claim: "adapter IUT candidate".to_string(),
+        },
+        PlatformIdentity {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            hardware: "test gpu".to_string(),
+            driver: "test driver".to_string(),
+        },
+        "0".repeat(64),
+        Vec::new(),
+        Vec::from([CorpusFile {
+            path: "files/input.j2k".to_string(),
+            sha256: "0".repeat(64),
+        }]),
+        Vec::from([{
+            let mut oracle = oracle_evidence();
+            oracle.codestream_path = "files/input.j2k".to_string();
+            oracle
+        }]),
+        Vec::from([hybrid]),
+        encoder_evidence(),
+    )
+    .expect_err("hybrid routes require completed accelerator observations");
+
+    assert!(error.to_string().contains("accelerator execution"));
 }
 
 #[test]
@@ -325,6 +550,7 @@ fn report_rejects_an_oracle_that_does_not_match_component_for_component() {
     oracle.openjpeg_components_sha256 = "4".repeat(64);
 
     let error = T803Report::new(
+        T803Suite::Part1,
         IutIdentity {
             name: "j2k".to_string(),
             version: "0.8.0".to_string(),
@@ -367,7 +593,7 @@ fn encoder_evidence_accepts_a_metadata_failure_after_reference_decode() {
     EncoderEvidence::new(
         "corpus/j2k-conformance/encoder-ics-cpu.toml".to_string(),
         "1".repeat(64),
-        "corpus/j2k-conformance/encoder-matrix-v1.toml".to_string(),
+        "corpus/j2k-conformance/encoder-matrix-v2.toml".to_string(),
         1,
         "2".repeat(64),
         EncoderReferenceIdentity {
@@ -375,6 +601,7 @@ fn encoder_evidence_accepts_a_metadata_failure_after_reference_decode() {
             implementation: "OpenJPEG".to_string(),
             version: "2.5.3".to_string(),
         },
+        Vec::new(),
         Vec::from([case]),
     )
     .expect("a completed reference decode can still expose a standards failure");

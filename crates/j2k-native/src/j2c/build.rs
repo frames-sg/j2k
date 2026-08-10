@@ -309,6 +309,10 @@ fn build_code_blocks(
                     missing_bit_planes: 0,
                     l_block: 3,
                     number_of_coding_passes: 0,
+                    ht_total_coding_passes: 0,
+                    ht_first_cleanup_pass: None,
+                    ht_selected_set: None,
+                    coding: None,
                     layers: start..end,
                     non_empty_layer_count: 0,
                 },
@@ -375,6 +379,12 @@ pub(crate) struct PrecinctData {
     pub(crate) idx: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodeBlockCoding {
+    Classic,
+    HighThroughput,
+}
+
 #[derive(Clone)]
 pub(crate) struct CodeBlock {
     pub(crate) rect: IntRect,
@@ -384,6 +394,14 @@ pub(crate) struct CodeBlock {
     pub(crate) has_been_included: bool,
     pub(crate) missing_bit_planes: u8,
     pub(crate) number_of_coding_passes: u8,
+    /// Total packet-header passes, including HT placeholder passes and skipped HT sets.
+    pub(crate) ht_total_coding_passes: u8,
+    /// Global pass index of the first non-empty HT cleanup contribution.
+    pub(crate) ht_first_cleanup_pass: Option<u8>,
+    /// Zero-based HT set currently selected for decoding.
+    pub(crate) ht_selected_set: Option<u8>,
+    /// Entropy coder selected from packet syntax; absent until a codeword is identified.
+    pub(crate) coding: Option<CodeBlockCoding>,
     pub(crate) l_block: u32,
     pub(crate) non_empty_layer_count: u8,
 }

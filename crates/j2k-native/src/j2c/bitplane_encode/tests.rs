@@ -124,6 +124,7 @@ fn pack_classic_selective_bypass_tokens_matches_scalar_single_cleanup_block() {
         vertically_causal_context: false,
         segmentation_symbols: false,
         high_throughput_block_coding: false,
+        mixed_block_coding: false,
     };
     let coefficients = [1i32];
     let scalar =

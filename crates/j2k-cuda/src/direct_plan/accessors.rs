@@ -155,7 +155,7 @@ impl CudaHtj2kDecodePlan {
     }
 
     #[cfg_attr(
-        not(feature = "cuda-runtime"),
+        all(not(feature = "cuda-runtime"), not(test)),
         expect(
             dead_code,
             reason = "classic block metadata is consumed only by CUDA decode routes"

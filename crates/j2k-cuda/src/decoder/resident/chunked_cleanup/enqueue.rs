@@ -211,6 +211,7 @@ fn account_chunk_dispatches(
     };
     let cleanup_dispatches = owner.chunk_count;
     let dequant_dispatches = owner.dequant_chunk_count;
+    let fused_dequant_dispatches = cleanup_dispatches.saturating_sub(dequant_dispatches);
     let Some(accounting) = component_work.get_mut(first.work) else {
         return;
     };
@@ -225,8 +226,16 @@ fn account_chunk_dispatches(
         .timings
         .ht_dispatch_count
         .saturating_add(cleanup_dispatches);
+    accounting.timings.ht_refinement_dispatch_count = accounting
+        .timings
+        .ht_refinement_dispatch_count
+        .saturating_add(dequant_dispatches);
     accounting.timings.dequant_dispatch_count = accounting
         .timings
         .dequant_dispatch_count
         .saturating_add(dequant_dispatches);
+    accounting.timings.fused_dequant_dispatch_count = accounting
+        .timings
+        .fused_dequant_dispatch_count
+        .saturating_add(fused_dequant_dispatches);
 }

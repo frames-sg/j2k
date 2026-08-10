@@ -11,6 +11,26 @@ use super::{
     },
 };
 
+const HTJ2K_IRREVERSIBLE_MIDPOINT_FLAG: u32 = 1 << 8;
+
+fn htj2k_reconstruction(job: &CudaHtj2kCodeBlockJob) -> Result<u32, CudaError> {
+    if job
+        .num_bitplanes
+        .checked_add(job.roi_shift)
+        .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
+    {
+        return Err(CudaError::InvalidArgument {
+            message: "HTJ2K coded bitplanes plus ROI maxshift exceed 31".to_string(),
+        });
+    }
+    Ok(u32::from(job.roi_shift)
+        | if job.irreversible_midpoint {
+            HTJ2K_IRREVERSIBLE_MIDPOINT_FLAG
+        } else {
+            0
+        })
+}
+
 pub(super) fn htj2k_kernel_jobs(
     jobs: &[CudaHtj2kCodeBlockJob],
     payload_len: usize,
@@ -57,6 +77,7 @@ fn htj2k_kernel_jobs_with_budget(
                 refinement_length: job.refinement_length,
                 missing_msbs: u32::from(job.missing_bit_planes),
                 num_bitplanes: u32::from(job.num_bitplanes),
+                reconstruction: htj2k_reconstruction(job)?,
                 number_of_coding_passes: u32::from(job.number_of_coding_passes),
                 output_stride: job.output_stride,
                 output_offset: job.output_offset,
@@ -102,7 +123,7 @@ pub(crate) fn htj2k_dequantize_kernel_jobs_with_live_host_bytes(
                 output_stride: job.output_stride,
                 output_offset: job.output_offset,
                 num_bitplanes: u32::from(job.num_bitplanes),
-                reserved: 0,
+                reconstruction: htj2k_reconstruction(job)?,
                 dequantization_step: job.dequantization_step,
                 reserved_tail: 0,
             });
@@ -160,7 +181,7 @@ pub(crate) fn htj2k_cleanup_multi_kernel_jobs_with_live_host_bytes(
                 output_offset: job.output_offset,
                 dequantization_step: job.dequantization_step,
                 stripe_causal: job.stripe_causal,
-                reserved_tail: 0,
+                reconstruction: job.reconstruction,
             });
         }
     }
@@ -203,4 +224,40 @@ pub(crate) fn htj2k_decode_needs_zero_fill(
     output_words: usize,
 ) -> Result<bool, CudaError> {
     validate_htj2k_output_layout(jobs, output_words).map(|layout| layout.needs_zero_fill)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconstruction_metadata_packs_roi_and_midpoint_and_rejects_overflow() {
+        let mut job = CudaHtj2kCodeBlockJob {
+            payload_offset: 0,
+            width: 1,
+            height: 1,
+            payload_len: 0,
+            cleanup_length: 0,
+            refinement_length: 0,
+            missing_bit_planes: 0,
+            num_bitplanes: 8,
+            roi_shift: 7,
+            number_of_coding_passes: 1,
+            output_stride: 1,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: false,
+            irreversible_midpoint: true,
+        };
+        assert_eq!(
+            htj2k_reconstruction(&job).expect("valid reconstruction metadata"),
+            HTJ2K_IRREVERSIBLE_MIDPOINT_FLAG | 7
+        );
+
+        job.num_bitplanes = 25;
+        assert!(matches!(
+            htj2k_reconstruction(&job),
+            Err(CudaError::InvalidArgument { .. })
+        ));
+    }
 }

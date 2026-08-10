@@ -289,8 +289,10 @@ mod tests {
             missing_bit_planes: 1,
             number_of_coding_passes: 1,
             num_bitplanes: 8,
+            roi_shift: 0,
             stripe_causal: 0,
             dequantization_step: 1.0,
+            irreversible_midpoint: false,
         };
 
         let job = cuda_code_block_job_from_plan_block(&block, 64)
@@ -370,7 +372,9 @@ mod tests {
 
         assert_eq!(surfaces.len(), 2);
         assert_eq!(report.detail.ht_dispatch_count, 1);
+        assert_eq!(report.detail.ht_refinement_dispatch_count, 0);
         assert_eq!(report.detail.dequant_dispatch_count, 0);
+        assert_eq!(report.detail.fused_dequant_dispatch_count, 1);
         assert_eq!(report.detail.store_dispatch_count, 1);
         let batch_pixels_tight =
             crate::Surface::download_batch_tight(&surfaces).expect("download tight CUDA batch");
@@ -448,6 +452,8 @@ mod tests {
             job_upload: 10,
             status_d2h: 5,
             classic_tier1: 11,
+            ht_refinement_dispatch_count: 3,
+            fused_dequant_dispatch_count: 3,
             ..CudaDecodeStageTimings::default()
         };
 
@@ -458,6 +464,8 @@ mod tests {
         assert_eq!(report.detail.job_upload_us, 10);
         assert_eq!(report.detail.status_d2h_us, 5);
         assert_eq!(report.classic_tier1_us, 11);
+        assert_eq!(report.detail.ht_refinement_dispatch_count, 3);
+        assert_eq!(report.detail.fused_dequant_dispatch_count, 3);
     }
 
     fn cuda_runtime_gate() -> bool {

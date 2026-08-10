@@ -2,8 +2,9 @@
 use std::sync::Arc;
 
 use j2k::{
-    BatchCodecRoute, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples,
-    DecodeRequest, EncodedImage, J2kContext, NativeSampleType, PreparationDepth,
+    wrap_j2k_codestream, BatchCodecRoute, BatchDecodeOptions, BatchLayout, CpuBatchDecoder,
+    CpuBatchSamples, DecodeRequest, EncodedImage, J2kContext, J2kFileWrapOptions, NativeSampleType,
+    PreparationDepth,
 };
 use j2k_core::{
     BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
@@ -42,7 +43,7 @@ fn should_run_metal_runtime() -> bool {
     j2k_test_support::metal_runtime_gate(module_path!())
 }
 
-fn unsupported_ht_roi_rgb() -> Arc<[u8]> {
+fn fixture_ht_roi_rgb() -> Arc<[u8]> {
     let pixels = (0..4_u8)
         .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
         .collect::<Vec<_>>();
@@ -54,7 +55,7 @@ fn unsupported_ht_roi_rgb() -> Arc<[u8]> {
     };
     Arc::from(
         encode_htj2k(&pixels, 2, 2, 3, 8, false, &options)
-            .expect("encode HTJ2K RGB8 with unsupported RGN maxshift"),
+            .expect("encode HTJ2K RGB8 with RGN maxshift"),
     )
 }
 
@@ -185,13 +186,16 @@ fn fixture_classic_multitile_rgb8() -> (Vec<u8>, Vec<u8>) {
     (encoded, pixels)
 }
 
-fn fixture_ht_gray8_unsupported_direct_width() -> Vec<u8> {
+fn fixture_ht_u8_unsupported_direct_width(num_components: u16) -> Vec<u8> {
     let width = 512u32;
     let height = 8u32;
-    let mut pixels = Vec::with_capacity(width as usize * height as usize);
+    let mut pixels =
+        Vec::with_capacity(width as usize * height as usize * usize::from(num_components));
     for y in 0..height {
         for x in 0..width {
-            pixels.push(((x * 7 + y * 11 + x / 3) & 0xFF) as u8);
+            for component in 0..u32::from(num_components) {
+                pixels.push(((x * 7 + y * 11 + x / 3 + component * 29) & 0xFF) as u8);
+            }
         }
     }
     let options = EncodeOptions {
@@ -202,7 +206,8 @@ fn fixture_ht_gray8_unsupported_direct_width() -> Vec<u8> {
         guard_bits: 2,
         ..EncodeOptions::default()
     };
-    encode_htj2k(&pixels, width, height, 1, 8, false, &options).expect("encode wide ht gray8")
+    encode_htj2k(&pixels, width, height, num_components, 8, false, &options)
+        .expect("encode HTJ2K with an unsupported direct code-block width")
 }
 
 fn fixture_gray8_reversed() -> Vec<u8> {
@@ -458,6 +463,8 @@ fn fixture_direct_rgb8_variant(seed: u8) -> Vec<u8> {
     encode(&pixels, 8, 8, 3, 8, false, &options).expect("encode direct rgb8 variant")
 }
 
+#[path = "device/auto_single_routing.rs"]
+mod auto_single_routing;
 #[path = "device/auto_tile_batch.rs"]
 mod auto_tile_batch;
 #[path = "device/batch_sessions.rs"]
@@ -478,6 +485,8 @@ mod direct_rgb_requests;
 mod external_batch;
 #[path = "device/grayscale_external.rs"]
 mod grayscale_external;
+#[path = "device/ht_roi.rs"]
+mod ht_roi;
 #[path = "device/legacy_batch.rs"]
 mod legacy_batch;
 #[path = "device/multitile_color.rs"]

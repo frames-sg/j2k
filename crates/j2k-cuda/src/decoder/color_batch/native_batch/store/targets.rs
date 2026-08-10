@@ -40,7 +40,7 @@ pub(super) fn build_store_targets(
         Vec::new()
     };
     let mut component_offset = 0usize;
-    for (image_index, mut color) in colors.into_iter().enumerate() {
+    for mut color in colors {
         let components =
             decoded_color_components(decoded, &mut component_offset, color.components.len())?;
         if rgba {
@@ -48,7 +48,7 @@ pub(super) fn build_store_targets(
         } else {
             three_channel_targets.push(rgb_store_target(&color, components, fmt, layout)?);
         }
-        update_color_report(&mut color, components, image_index);
+        update_color_report(&mut color, components);
         reports.push(color.report);
     }
     if rgba {
@@ -182,16 +182,11 @@ fn rgba_store_target<'a>(
     })
 }
 
-fn update_color_report(
-    color: &mut CudaHtj2kColorDecodePlans,
-    components: &[CudaDecodedComponent],
-    image_index: usize,
-) {
+fn update_color_report(color: &mut CudaHtj2kColorDecodePlans, components: &[CudaDecodedComponent]) {
     color.report.dispatch_count = components
         .iter()
         .map(|component| component.dispatches)
-        .sum::<usize>()
-        + usize::from(image_index == 0);
+        .sum::<usize>();
     for component in components {
         component.timings.add_to_report(&mut color.report);
     }

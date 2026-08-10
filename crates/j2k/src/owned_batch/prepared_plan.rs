@@ -170,13 +170,13 @@ impl PreparedHtj2kPlan {
                 .all(|tile| tile.rgba_geometry().is_some())
     }
 
-    /// Number of referenced HTJ2K code-block payloads.
+    /// Number of referenced HTJ2K payload records, including refinement continuations.
     #[must_use]
     pub fn payload_count(&self) -> usize {
         self.plan.payloads().len()
     }
 
-    /// Whether the plan has no referenced HTJ2K code-block payloads.
+    /// Whether the plan has no referenced HTJ2K payload records.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.plan.payloads().is_empty()
@@ -186,13 +186,13 @@ impl PreparedHtj2kPlan {
         uniform_wavelet_transform(self.plan.tiles())
     }
 
-    /// Return one referenced code-block payload range by traversal index.
+    /// Return one referenced payload record by traversal index.
     #[must_use]
     pub fn payload(&self, index: usize) -> Option<Htj2kPayloadRanges> {
         self.plan.payloads().get(index).copied()
     }
 
-    /// Iterate over referenced code-block payload ranges in geometry order.
+    /// Iterate over referenced payload records in geometry order.
     pub fn payloads(&self) -> impl ExactSizeIterator<Item = Htj2kPayloadRanges> + '_ {
         self.plan.payloads().iter().copied()
     }

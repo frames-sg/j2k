@@ -50,6 +50,8 @@ macro_rules! lossless_options {
     }};
 }
 
+#[cfg(target_os = "macos")]
+mod auto_ht_host_output;
 mod batch;
 #[cfg(target_os = "macos")]
 mod dwt_parity;

@@ -762,7 +762,11 @@ impl<'a> Image<'a> {
                 resolve_palette_indices(components, decoded_image.boxes, retained_baseline_bytes)?;
         }
 
-        if let Some(cdef) = &decoded_image.boxes.channel_definition {
+        if let Some(cdef) = decoded_image
+            .boxes
+            .primary_color_specification()
+            .and(decoded_image.boxes.channel_definition.as_ref())
+        {
             validate_and_reorder_channels(
                 cdef,
                 decoded_image.decoded_components,

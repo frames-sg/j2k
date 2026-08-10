@@ -451,11 +451,13 @@ pub(crate) struct J2kHtCleanupParams {
     pub(crate) refinement_length: u32,
     pub(crate) missing_msbs: u32,
     pub(crate) num_bitplanes: u32,
+    pub(crate) roi_shift: u32,
     pub(crate) number_of_coding_passes: u32,
     pub(crate) output_stride: u32,
     pub(crate) output_offset: u32,
     pub(crate) dequantization_step: f32,
     pub(crate) stripe_causal: u32,
+    pub(crate) irreversible_midpoint: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -476,6 +478,7 @@ pub(crate) struct J2kHtCleanupBatchJob {
     pub(crate) output_offset: u32,
     pub(crate) dequantization_step: f32,
     pub(crate) stripe_causal: u32,
+    pub(crate) irreversible_midpoint: u32,
 }
 
 #[cfg(target_os = "macos")]
