@@ -3,9 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.9.0`.
+## [0.9.0] - 2026-08-10
 
 - Breaking: all expert Metal APIs in `j2k-metal-support`, `j2k-metal`,
   `j2k-jpeg-metal`, and `j2k-transcode-metal` now use objc2 ownership directly:

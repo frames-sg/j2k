@@ -86,9 +86,9 @@ fn validate_versioned_changelog(
                 "publish state must not retain provisional Unreleased or staged-version markers; found {unreleased_count} and {staged_count}"
             ),
         ),
-        ReleaseIntegrityMode::PreCandidate if unreleased_count != 1 || staged_count != 0 => Err(
+        ReleaseIntegrityMode::PreCandidate if unreleased_count > 1 || staged_count != 0 => Err(
             format!(
-                "post-release development state requires exactly one `## [Unreleased]` heading and no `{staged_version}` line; found {unreleased_count} and {staged_count}"
+                "versioned changelog state permits at most one `## [Unreleased]` heading and no `{staged_version}` line; found {unreleased_count} and {staged_count}"
             ),
         ),
         _ => Ok(()),

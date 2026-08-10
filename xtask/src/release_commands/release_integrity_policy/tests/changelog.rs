@@ -25,6 +25,15 @@ fn pre_candidate_changelog_accepts_unversioned_work_after_the_current_release() 
 }
 
 #[test]
+fn pre_candidate_changelog_accepts_frozen_release_state() {
+    let changelog = "# Changelog\n\n## [0.7.0] - 2026-07-10\n";
+    assert_eq!(
+        validate_changelog_state(changelog, VERSION, ReleaseIntegrityMode::PreCandidate),
+        Ok(())
+    );
+}
+
+#[test]
 fn pre_candidate_changelog_rejects_inline_examples_and_duplicates() {
     let inline = "At release use `## [0.7.0] - 2026-07-10`.\n";
     assert!(validate_changelog_state(inline, VERSION, ReleaseIntegrityMode::PreCandidate).is_err());
