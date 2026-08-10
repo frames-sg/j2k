@@ -4,7 +4,8 @@
 
 | Version | Status |
 | --- | --- |
-| `0.8.0` | Latest published and security-supported release |
+| `0.8.1` | Latest published and security-supported release |
+| `0.8.0` | Previous published release line; security-supported |
 | `0.7.5` | Previous published release line; security-supported, except for the documented `j2k-ml` CUDA and Metal packaging defect |
 | `0.7.3` | Previous published release line; security-supported |
 | `0.7.2` | Previous published release line; security-supported |

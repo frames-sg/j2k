@@ -1,8 +1,7 @@
 # Release Policy
 
-The `j2k` 0.8.0 public crate release is published and security-supported.
-Version `0.8.1` is the prepared release candidate and carries the
-release-scoped T.803 decoder evidence described in
+The `j2k` 0.8.1 public crate release is published and security-supported. It
+carries the release-scoped Part 1 T.803 decoder evidence described in
 [`T.803 conformance`](t803-conformance.md).
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
@@ -12,8 +11,8 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.8.1` | Prepared candidate; publication is allowed only from annotated tag `v0.8.1` after all exact-SHA CPU, CUDA, Metal, package, and release-integrity gates pass. | Becomes the latest supported release when published. |
-| `0.8.0` | Published on crates.io from annotated tag `v0.8.0`. | Latest supported release. |
+| `0.8.1` | Published on crates.io from annotated tag `v0.8.1`. | Latest supported release. |
+| `0.8.0` | Previous crates.io release from annotated tag `v0.8.0`. | Supported. |
 | `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
 | `0.7.3` | Previous published release line. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
@@ -22,11 +21,11 @@ evidence.
 | `0.6.x` | Previous published release line. | Supported for security fixes during the pre-1.0 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-Version `0.8.1` is published only from annotated tag `v0.8.1`. The tag must
-peel to the exact candidate SHA recorded by all three CPU T.803 reports and the
-CUDA and Metal adapter reports. The tag-triggered workflow verifies those five
-report contents before publishing any crate; the GitHub release attachments,
-tag, workflow runs, and crates.io records are the publication evidence.
+Version `0.8.1` was published from annotated tag `v0.8.1`, which peels to
+commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. The tag-triggered workflow
+verified the three CPU T.803 reports and the CUDA and Metal adapter reports
+before publishing the crates. The GitHub release attachments, tag, workflow
+runs, and crates.io records are the publication evidence.
 
 Version `0.8.0` was published from annotated tag `v0.8.0`, which peels to commit
 `53e0ad3d4f75f492af55413e0dab5a5834bd09c6`. The
@@ -105,13 +104,13 @@ claim; it does not invalidate or suppress a complete CPU result. The optional
 of CPU compliance. Current status is recorded in
 [`docs/t803-conformance.md`](t803-conformance.md).
 
-During remediation, the changelog keeps a real `## [Unreleased]` heading and a
-structured staged-version line. As the final release-preparation edit before
-candidate freeze, replace that heading with `## [<workspace-version>] - YYYY-MM-DD` using the
-actual intended tag date and update every staged-document reference that still
-says the notes are under `Unreleased`. Do not guess the date early. Any later
-date or note change creates a new candidate and requires the exact-SHA gates
-again.
+During release preparation, the changelog keeps a real `## [Unreleased]`
+heading and a structured staged-version line. As the final release-preparation
+edit before candidate freeze, replace that heading with
+`## [<workspace-version>] - YYYY-MM-DD` using the actual intended tag date and
+update every staged-document reference that still says the notes are under
+`Unreleased`. Do not guess the date early. Any later date or note change creates
+a new candidate and requires the exact-SHA gates again.
 
 Move the intended protected `origin/main` tip to exactly `RC_SHA` through the
 repository's normal reviewed push/merge workflow. Let `full-validation.yml`

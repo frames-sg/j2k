@@ -22,58 +22,6 @@ its pinned manifest and summarized by the `adoption-report` subcommand.
 | CLIC | Modern high-resolution photographic compression benchmark. | `https://www.compression.cc/` | User-supplied dataset. Encode to J2K/HTJ2K with recorded command/options. |
 | Domain WSI/DICOM/medical tiles | Most relevant adoption workload for this project. | Internal, partner, public TCIA/IDC-style exports, or scanner-derived tiles. | User-supplied. Do not commit protected health information or restricted datasets. |
 
-## External Benchmark Survey
-
-The harness is intentionally not a single Kodak-only benchmark. Public JPEG 2000
-and image-compression practice points to several distinct evidence classes:
-
-| Source | What they use or measure | Rule for this repo |
-| --- | --- | --- |
-| OpenJPEG test suite and `openjpeg-data` | Standards conformance files, non-regression files, header dumps, and baseline comparisons. `openjpeg-data` states that it contains conformance, non-regression, and unit-test files used by the OpenJPEG test suite. | Use OpenJPEG conformance/nonregression fixtures as native decode interoperability and regression coverage. Do not use them alone as speed marketing; keep conformance claims separate from throughput claims. |
-| OpenJPH | HTJ2K / JPEG 2000 Part 15 implementation and interoperability surface. | Include OpenJPH/JPH-compatible fixtures for HTJ2K-specific decode coverage and optional OpenJPH context rows, clearly labeled by CLI/file-output method. |
-| JPEG committee HTJ2K white paper | HTJ2K is framed as a throughput improvement for JPEG 2000, especially at lossless and moderate-to-high bitrates. | Hardware marketing claims must separate classic J2K CPU comparisons from J2K CPU-vs-GPU HTJ2K acceleration rows and must state codec/profile. |
-| OpenBenchmarking / Phoronix OpenJPEG profile | Large single-image encode stress using a NASA/JPL-Caltech/MSSS Curiosity panorama TIFF, reported as an OpenJPEG processor benchmark. | Add large source-image encode stress in addition to Kodak-sized images. Record source-image staging and exclude file I/O from codec timing. |
-| IIIF HTJ2K evaluation | Real access workload over large cultural-heritage images, including tile/region-size effects and OpenJPEG/Kakadu/HTJ2K comparisons. | Keep ROI/region-scaled decode rows and domain tile batches. Report method labels for native versus emulated operations. |
-| Lossless image compression benchmarks | Corpora such as CLIC2021, LPCB, and GDCC2020; metrics include compressed size plus compress/decompress time. | For lossless encode/decode adoption claims, report throughput and output size, and use larger modern RGB/gray corpora where license terms allow. |
-| GPU JPEG 2000 encoder benchmarks | CPU and GPU encoders compared with MB/s, FPS, PSNR/MSE or compression ratio, and explicit note that host I/O is outside timing for batch mode. | GPU rows must report MiB/s/FPS-style throughput, profile, compression mode, batch size, and timing policy; staged input loading and output file I/O must stay outside the timed loop. |
-
-Survey references consulted on 2026-06-24:
-
-- `https://github.com/uclouvain/openjpeg/wiki/TestSuiteDocumentation`
-- `https://github.com/uclouvain/openjpeg-data`
-- `https://github.com/aous72/OpenJPH`
-- `https://ds.jpeg.org/whitepapers/jpeg-htj2k-whitepaper.pdf`
-- `https://openbenchmarking.org/test/pts/openjpeg`
-- `https://journal.code4lib.org/articles/17596`
-- `https://github.com/WangXuan95/Image-Compression-Benchmark`
-- `https://www.fastcompression.com/benchmarks/benchmarks-j2k.htm`
-
-## Additional Optional Corpora
-
-| Corpus | Use | Source | Caveat |
-| --- | --- | --- | --- |
-| USC-SIPI Image Database | Classic image-processing benchmark images with textures, aerials, and natural scenes. | `https://sipi.usc.edu/database/` | Older and small by modern standards; encode to J2K/HTJ2K first. |
-| Waterloo Exploration / Waterloo image sets | Legacy compression and image-analysis benchmark material. | Waterloo image-database mirrors and derivative benchmark sets. | Licensing/source stability varies by mirror. |
-| DIV2K / Flickr2K | High-resolution RGB natural images used heavily in restoration and compression papers. | `https://data.vision.ee.ethz.ch/cvl/DIV2K/` and Flickr2K mirrors. | Source images are not J2K; record encode settings before decode benchmarking. |
-| ImageCompression.info New Test Images | Modern high-resolution RGB and grayscale compression stress set with explicit redistribution terms. | `https://imagecompression.info/test_images/` | Large files; keep corpus source and notice with local artifacts. Good for gray/RGB and dimension diversity. |
-| Imazen codec-corpus | Curated codec validation and compression benchmark corpus with sparse-checkout-friendly subdatasets. | `https://github.com/imazen/codec-corpus` | Dataset licenses vary by subfolder; pin the selected subset and license status in manifests. |
-| WangXuan95 lossless image compression benchmark corpora | Public benchmark framing for lossless compression speed/size using CLIC2021, LPCB, and GDCC2020. | `https://github.com/WangXuan95/Image-Compression-Benchmark` | Use as methodology/corpus inspiration; verify upstream dataset terms before redistributing. |
-| USTC-TD | 4K image and 1080p video coding challenge dataset for modern codec stress. | USTC-TD project/paper mirrors. | Source images require documented conversion before J2K/HTJ2K throughput runs. |
-| LIVE, CSIQ, TID2013, KADID-10k | Objective quality / perceptual distortion evaluation. | Dataset project pages. | Better for quality metrics than raw codec throughput. |
-| IIIF / cultural heritage JP2 collections | Real JP2 preservation/access workloads such as newspapers, books, maps, and manuscripts. | Institution-specific IIIF repositories and preservation masters. | Access and redistribution terms vary; many collections provide derivatives, not masters. |
-| DICOM WSI / radiology HTJ2K samples | Standards-relevant medical imaging containers and transfer syntaxes. | DICOM sample data, TCIA/IDC exports, Orthanc WSI examples, partner datasets. | Must preserve DICOM transfer syntax, tile shape, and metadata in reports. |
-| CAMELYON, PANDA, TCGA/TCIA pathology | Whole-slide domain representativeness and huge tiled batches. | Public challenge/data portals. | Usually SVS/TIFF/DICOM rather than JP2/JPH; extract or transcode tiles with recorded commands. |
-| Remote sensing / satellite datasets | Large, high-detail imagery with different texture statistics than photos. | WHU-RS19, SpaceNet, Sentinel/Landsat-derived products. | Often multi-band or high bit depth; ensure supported component/bit-depth coverage is explicit. |
-| NASA/JPL Curiosity panorama-style large TIFF | Large single-image CPU encode stress, matching the style used by the Phoronix/OpenBenchmarking OpenJPEG profile. | NASA/JPL-Caltech/MSSS public imagery or a local equivalent TIFF. | Encode-source corpus, not native J2K; record conversion and staging commands. |
-| Spot / Pleiades style geospatial imagery | Remote-sensing decode/region workflows similar to Grok's published JP2Grok/JP2KAK/OpenJPEG benchmark framing. | Public or licensed satellite imagery exports. | Licensing and redistribution vary; report storage locality, region selection, and extraction route. |
-| OpenSlide test data | Vendor WSI file diversity and tile extraction workflows. | `https://openslide.cs.cmu.edu/download/openslide-testdata/` | Usually source WSI formats rather than standalone J2K; extract compressed tiles or transcode with recorded commands. |
-| Bio-Formats sample images | Scientific microscopy and life-sciences format diversity. | OME/Bio-Formats sample repositories and public OME data. | Use when testing file ingestion/transcode paths; not all inputs are J2K. |
-| OsiriX JPEG 2000 DICOM samples | Quick DICOM JPEG2000 transfer syntax smoke coverage. | OsiriX DICOM image library. | Research/teaching terms; do not redistribute. |
-| DICOM/NEMA compressed transfer syntax examples | Transfer-syntax interoperability for JPEG2000, JPEG-LS, JPEG, and related DICOM wrappers. | NEMA/DICOM sample sets and David Clunie references. | DICOM encapsulated codestreams may omit JP2 headers; benchmark decoder path must match DICOM extraction semantics. |
-| Library of Congress / NDNP-style JP2 collections | Real cultural-heritage JP2 preservation/access workload. | Library of Congress and National Digital Newspaper Program style collections. | Public access varies by collection; prefer local authorized exports and record source terms. |
-| JP2 structure/checker sample sets | JP2 box/metadata parser edge cases. | jp2StructCheck and related preservation-tool samples. | Parser/robustness corpus, not throughput evidence unless files are valid and representative. |
-| NITF / geospatial JP2 | JP2 wrapped in geospatial/government imagery workflows. | GDAL JP2OpenJPEG/JP2Grok test data, public NITF samples, agency datasets. | Container handling may be outside raw J2K decode; track extraction route. |
-
 ## Starter Acquisition Recipes
 
 Keep downloaded corpora under `target/` or another ignored/vendor directory

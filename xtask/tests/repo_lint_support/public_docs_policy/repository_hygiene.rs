@@ -161,6 +161,11 @@ fn release_facing_docs_match_the_latest_release_tag() {
             "{relative} must describe latest release tag v{version} with `{expected}`"
         );
     }
+}
+
+#[test]
+fn static_site_release_status_uses_canonical_sources() {
+    let root = repo_root();
 
     for relative in [
         "docs/index.html",
@@ -172,11 +177,14 @@ fn release_facing_docs_match_the_latest_release_tag() {
     ] {
         let source = fs::read_to_string(root.join(relative))
             .unwrap_or_else(|err| panic!("read {relative}: {err}"));
-        let expected =
-            format!("<strong>Release status:</strong> j2k {version} is published on crates.io");
         assert!(
-            source.contains(&expected),
-            "{relative} must describe latest release tag v{version}"
+            source.contains("https://github.com/frames-sg/j2k/blob/main/docs/release.md")
+                && source.contains("https://crates.io/crates/j2k"),
+            "{relative} must point to the canonical release policy and crates.io"
+        );
+        assert!(
+            !source.contains("<strong>Release status:</strong> j2k "),
+            "{relative} must not duplicate a mutable release number"
         );
     }
 }
