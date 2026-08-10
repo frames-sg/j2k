@@ -188,3 +188,16 @@ fn static_site_release_status_uses_canonical_sources() {
         );
     }
 }
+
+#[test]
+fn static_metal_page_documents_the_objc2_boundary() {
+    let root = repo_root();
+    let source = fs::read_to_string(root.join("docs/metal-jpeg2000-rust/index.html"))
+        .expect("read Metal landing page");
+
+    assert!(
+        source.contains("<code>objc2-metal</code>")
+            && source.contains("no longer depend on <code>metal-rs</code>"),
+        "the Metal landing page must document the 0.9 expert-API dependency migration"
+    );
+}
