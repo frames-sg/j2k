@@ -291,11 +291,13 @@ manifest, docs.rs metadata, published-library semver/doc gates, or release
 docs; if an API tier does not match its Cargo targets; if an internal
 requirement is not exact; or if dependency order is invalid.
 
-The ordinary integrity mode is an offline pre-candidate check and accepts the
-structured `Unreleased` changelog state. `--publish` remains offline but
-requires exactly one dated heading for the workspace version, rejects the
-provisional changelog markers, and requires completed patch-review approval
-fields. The tag workflow separately uses the authenticated GitHub verifier to
+The ordinary integrity mode is an offline pre-candidate check. It accepts the
+structured `Unreleased` state before a candidate, the frozen dated state used
+while validating a release commit, and a fresh `Unreleased` section above the
+dated release after publication. `--publish` remains offline but requires
+exactly one dated heading for the workspace version, rejects the provisional
+changelog markers, and requires completed patch-review approval fields. The tag
+workflow separately uses the authenticated GitHub verifier to
 confirm private vulnerability reporting, the annotated tag, and exact-SHA
 hosted/GPU evidence. A direct real invocation of `scripts/publish-crate.sh`
 independently requires the expected annotated Git tag to exist and peel exactly
