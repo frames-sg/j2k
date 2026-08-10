@@ -8,7 +8,7 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.8.0` is published and security-supported. See the
+**Release status:** `0.8.1` is published and security-supported. See the
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
@@ -225,7 +225,7 @@ The living codec support matrix is
 adapter has a narrower, explicit boundary in
 [docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
 qualifications are recorded separately in
-[docs/benchmark-evidence.md](docs/benchmark-evidence.md). Candidate Part 1
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md). Release-scoped Part 1
 decoder conformance evidence is tracked separately in
 [docs/t803-conformance.md](docs/t803-conformance.md).
 
@@ -293,7 +293,7 @@ Reference files:
   environment variables
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
   HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
-- [docs/t803-conformance.md](docs/t803-conformance.md) - candidate T.803 v3
+- [docs/t803-conformance.md](docs/t803-conformance.md) - release-scoped T.803 v3
   decoder claims, encoder procedure, blockers, and release evidence rules
 - [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
   prepared reuse, and explicit accelerator decode/upload adapters

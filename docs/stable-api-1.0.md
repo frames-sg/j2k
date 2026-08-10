@@ -43,7 +43,7 @@ compatibility escape hatch.
 The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
 with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
 report compares its ordinary inventory with 0.7.5. The 0.8.1 report compares
-the candidate directly with published 0.8.0. Both reports also record each
+that release directly with published 0.8.0. Both reports also record each
 package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
