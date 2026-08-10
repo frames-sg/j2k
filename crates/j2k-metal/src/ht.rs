@@ -67,7 +67,7 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
             return Ok(true);
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (job, output);
+        let _ = (job, output, irreversible_midpoint);
 
         Ok(false)
     }

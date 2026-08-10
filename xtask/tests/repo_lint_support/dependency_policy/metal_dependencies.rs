@@ -72,6 +72,28 @@ fn metal_crates_use_the_pinned_objc2_stack_without_legacy_metal_or_block() {
         }
     }
 
+    let t803_source = fs::read_to_string(root.join("crates/j2k-t803/Cargo.toml"))
+        .expect("read j2k-t803 manifest");
+    let t803 = toml::from_str::<toml::Value>(&t803_source).expect("parse j2k-t803 manifest");
+    let t803_dependencies = t803
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .expect("j2k-t803 dependencies");
+    assert!(
+        !t803_dependencies.contains_key("objc2-metal"),
+        "j2k-t803 must not compile objc2-metal on non-macOS targets"
+    );
+    let t803_macos_dependencies = t803
+        .get("target")
+        .and_then(|target| target.get("cfg(target_os = \"macos\")"))
+        .and_then(|target| target.get("dependencies"))
+        .and_then(toml::Value::as_table)
+        .expect("j2k-t803 macOS dependencies");
+    assert!(
+        t803_macos_dependencies.contains_key("objc2-metal"),
+        "j2k-t803 Metal runner must reuse the macOS-only objc2-metal dependency"
+    );
+
     let lock_source = fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
     let lock = toml::from_str::<toml::Value>(&lock_source).expect("parse Cargo.lock");
     let packages = lock

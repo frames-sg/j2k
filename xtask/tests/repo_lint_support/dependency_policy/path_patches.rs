@@ -149,17 +149,20 @@ fn all_workspace_path_patches_have_pinned_provenance_and_local_digests() {
         .iter()
         .map(|(_, path)| *path)
         .collect::<BTreeSet<_>>();
-    let discovered_directories = fs::read_dir(root.join("third_party"))
-        .expect("read third_party")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            name.to_str()
-                .filter(|name| name.ends_with("-patched"))
-                .map(|name| format!("third_party/{name}"))
-        })
-        .collect::<BTreeSet<_>>();
+    let discovered_directories = match fs::read_dir(root.join("third_party")) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                name.to_str()
+                    .filter(|name| name.ends_with("-patched"))
+                    .map(|name| format!("third_party/{name}"))
+            })
+            .collect::<BTreeSet<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+        Err(error) => panic!("read third_party: {error}"),
+    };
     assert_eq!(
         discovered_directories,
         governed_directories
