@@ -82,6 +82,7 @@ pub(super) fn try_copy_part(
         tile_index,
         tile_part_index,
         num_tile_parts,
+        required_ht_magnitude_bound: packetized.required_ht_magnitude_bound,
         data,
         packet_lengths,
         packet_headers,

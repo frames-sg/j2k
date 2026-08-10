@@ -8,6 +8,7 @@ use super::{
     DecompositionStorage, Header, Result, SubBand, Vec,
 };
 use crate::error::ValidationError;
+use crate::j2c::build::CodeBlockCoding;
 use crate::J2kCodeBlockSegment;
 
 pub(super) struct PendingHtBlock {
@@ -31,7 +32,7 @@ pub(super) struct PendingClassicBlock {
     pub(super) number_of_coding_passes: u8,
 }
 
-pub(super) fn count_classic_code_blocks(
+pub(in crate::j2c::decode) fn count_classic_code_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
     storage: &DecompositionStorage<'_>,
@@ -44,7 +45,9 @@ pub(super) fn count_classic_code_blocks(
     {
         for code_block_idx in precinct.code_blocks.clone() {
             let code_block = &storage.code_blocks[code_block_idx];
-            if code_block_required_by_index(storage, sub_band_idx, code_block) {
+            if code_block.coding == Some(CodeBlockCoding::Classic)
+                && code_block_required_by_index(storage, sub_band_idx, code_block)
+            {
                 count = count.checked_add(1).ok_or(ValidationError::ImageTooLarge)?;
             }
         }
@@ -72,6 +75,9 @@ pub(super) fn collect_pending_classic_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if code_block.coding != Some(CodeBlockCoding::Classic) {
+                continue;
+            }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                 continue;
             }
@@ -96,7 +102,7 @@ pub(super) fn collect_pending_classic_blocks(
     Ok(pending_blocks)
 }
 
-pub(super) fn count_ht_code_blocks(
+pub(in crate::j2c::decode) fn count_ht_code_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
     storage: &DecompositionStorage<'_>,
@@ -109,7 +115,8 @@ pub(super) fn count_ht_code_blocks(
     {
         for code_block_idx in precinct.code_blocks.clone() {
             let code_block = &storage.code_blocks[code_block_idx];
-            if code_block_required_by_index(storage, sub_band_idx, code_block)
+            if code_block.coding == Some(CodeBlockCoding::HighThroughput)
+                && code_block_required_by_index(storage, sub_band_idx, code_block)
                 && code_block.number_of_coding_passes > 0
             {
                 count = count.checked_add(1).ok_or(ValidationError::ImageTooLarge)?;
@@ -142,6 +149,9 @@ pub(super) fn collect_pending_ht_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
+                continue;
+            }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                 continue;
             }

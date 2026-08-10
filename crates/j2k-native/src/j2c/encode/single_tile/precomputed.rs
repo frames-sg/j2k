@@ -37,7 +37,7 @@ pub(in crate::j2c::encode) fn encode_precomputed_53_single_tile(
     })?;
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
-    let plan = build_single_tile_plan(
+    let mut plan = build_single_tile_plan(
         validated,
         image.width,
         image.height,
@@ -64,6 +64,7 @@ pub(in crate::j2c::encode) fn encode_precomputed_53_single_tile(
         session,
         accelerator,
     )?;
+    plan.params.required_ht_magnitude_bound = encoded.packetized_tile.required_ht_magnitude_bound;
     let final_plan = plan.into_codestream_final_plan();
     finalize_precomputed_codestream(
         options,
@@ -98,7 +99,7 @@ pub(in crate::j2c::encode) fn encode_precomputed_97_single_tile(
     })?;
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
-    let plan = build_single_tile_plan(
+    let mut plan = build_single_tile_plan(
         validated,
         image.width,
         image.height,
@@ -125,6 +126,7 @@ pub(in crate::j2c::encode) fn encode_precomputed_97_single_tile(
         session,
         accelerator,
     )?;
+    plan.params.required_ht_magnitude_bound = encoded.packetized_tile.required_ht_magnitude_bound;
     let final_plan = plan.into_codestream_final_plan();
     finalize_precomputed_codestream(
         options,

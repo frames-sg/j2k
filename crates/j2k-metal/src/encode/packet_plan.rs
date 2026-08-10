@@ -78,11 +78,14 @@ pub(super) fn should_use_resident_htj2k_host_shape_for_auto(width: u32, height: 
 }
 
 pub(super) fn should_use_resident_htj2k_host_tile_for_auto(job: J2kHtj2kTileEncodeJob<'_>) -> bool {
-    let _ = job;
-    // The encode-stage tile callback represents one host-output frame. Keep
-    // Auto on CPU here; callers that can amortize resident setup should use
-    // the batch Metal-buffer APIs.
-    false
+    // Fixed Apple M4 Pro cells from verified artifact
+    // c8defb820b55a99e94acdd5849b4597bce0a1718fd7e0d2bc0aa926bc0e130d4.
+    // Both the single-frame and batch-16 observations passed the 10% and
+    // non-overlapping 95% confidence-interval gates. Do not extrapolate.
+    matches!(
+        (job.num_components, job.width, job.height),
+        (3, 1024, 1024) | (1 | 3, 2048, 2048)
+    )
 }
 
 pub(super) fn packet_descriptors_for_lossless_device_order(
@@ -291,4 +294,50 @@ pub(super) fn cpu_packetization_resolutions_from_lossless_device_plan<'a>(
         resolutions.push(J2kPacketizationResolution { subbands });
     }
     Ok(resolutions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_host_output_gate_matches_only_verified_lossless_cells() {
+        let mut job = J2kHtj2kTileEncodeJob {
+            pixels: &[],
+            width: 512,
+            height: 512,
+            num_components: 1,
+            bit_depth: 8,
+            signed: false,
+            num_decomposition_levels: 3,
+            reversible: true,
+            use_mct: false,
+            guard_bits: 1,
+            code_block_width: 64,
+            code_block_height: 64,
+            progression_order: J2kPacketizationProgressionOrder::Lrcp,
+            component_sampling: &[],
+            quantization_steps: &[],
+        };
+
+        assert!(!should_use_resident_htj2k_host_tile_for_auto(job));
+        job.width = 1024;
+        job.height = 1024;
+        assert!(!should_use_resident_htj2k_host_tile_for_auto(job));
+        job.num_components = 3;
+        assert!(should_use_resident_htj2k_host_tile_for_auto(job));
+        job.width = 2048;
+        job.height = 2048;
+        assert!(should_use_resident_htj2k_host_tile_for_auto(job));
+        job.num_components = 1;
+        assert!(should_use_resident_htj2k_host_tile_for_auto(job));
+
+        job.width = 4096;
+        job.height = 4096;
+        assert!(!should_use_resident_htj2k_host_tile_for_auto(job));
+        job.width = 1024;
+        job.height = 2048;
+        job.num_components = 3;
+        assert!(!should_use_resident_htj2k_host_tile_for_auto(job));
+    }
 }

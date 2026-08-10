@@ -105,6 +105,8 @@ override it.
 | `J2K_OPENJPEG_BIN` | Override for OpenJPEG `opj_decompress` in J2K parity tests. | `opj_decompress` on `PATH` | Test/CI |
 | `J2K_OPENJPEG_DECOMPRESS_BIN` | Override for OpenJPEG `opj_decompress` in benchmark reports. | `opj_decompress` on `PATH` | Benchmark |
 | `J2K_OPENJPEG_COMPRESS_BIN` | Override for OpenJPEG `opj_compress` in J2K parity tests and encoder benchmark reports. | `opj_compress` on `PATH` | Benchmark |
+| `J2K_OPENHTJ2K_DEC_BIN` | Absolute path to the pinned `open_htj2k_dec` executable used by the T.803 CPU encoder matrix's HT+RGN interoperability case. `scripts/prepare-openhtj2k-reference.sh` sets it in CI. | Required when the selected matrix contains the OpenHTJ2K case | Test/CI |
+| `J2K_OPENHTJ2K_SOURCE_DIR` | Absolute path to the clean official OpenHTJ2K 0.19.0 source checkout at the pinned commit. The runner verifies its origin, tag, commit, and tracked-file status before executing the decoder. | Required with `J2K_OPENHTJ2K_DEC_BIN` | Test/CI |
 | `J2K_OPENJPH_EXPAND_BIN` | Override for OpenJPH `ojph_expand` in optional fixture comparator rows. | `ojph_expand` on `PATH`, `/opt/homebrew/bin/ojph_expand`, or `/usr/local/bin/ojph_expand` | Benchmark |
 | `J2K_KDU_EXPAND_BIN` | Override for Kakadu `kdu_expand` in optional fixture comparator rows. | `kdu_expand` on `PATH`, `/opt/homebrew/bin/kdu_expand`, or `/usr/local/bin/kdu_expand` | Benchmark |
 | `J2K_KDU_COMPRESS_BIN` | Override for Kakadu `kdu_compress` in optional encoder comparator rows. | `kdu_compress` on `PATH`, `/opt/homebrew/bin/kdu_compress`, or `/usr/local/bin/kdu_compress` | Benchmark |

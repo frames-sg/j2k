@@ -27,6 +27,7 @@ pub(super) fn distribute_owned_subband(
     let PreparedEncodeSubband {
         code_blocks,
         preencoded_ht_code_blocks,
+        preencoded_ht_maximum_cleanup_magnitude,
         ..
     } = subband;
     let source_code_block_capacity = code_blocks.capacity();
@@ -45,6 +46,7 @@ pub(super) fn distribute_owned_subband(
         subband_grid,
         resolution_grid,
         preencoded_ht_code_blocks.is_some(),
+        preencoded_ht_maximum_cleanup_magnitude,
         accounting,
     )?;
 
@@ -90,6 +92,7 @@ fn append_split_subbands(
     subband_grid: SubbandPrecinctGrid,
     resolution_grid: ResolutionPrecinctGrid,
     include_preencoded: bool,
+    preencoded_ht_maximum_cleanup_magnitude: Option<u64>,
     accounting: &mut PrecinctSplitAccounting<'_, '_>,
 ) -> NativeEncodePipelineResult<usize> {
     let mut distributed_block_count = 0usize;
@@ -135,6 +138,7 @@ fn append_split_subbands(
             PreparedEncodeSubband {
                 code_blocks,
                 preencoded_ht_code_blocks,
+                preencoded_ht_maximum_cleanup_magnitude,
                 num_cbs_x: geometry.block_columns,
                 num_cbs_y: geometry.block_rows,
                 code_block_width: shape.code_block_horizontal_span,

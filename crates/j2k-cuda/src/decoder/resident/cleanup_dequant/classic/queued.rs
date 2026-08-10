@@ -111,6 +111,7 @@ pub(in crate::decoder) fn enqueue_component_classic_batches(
     }
     .map_err(cuda_error)?;
     let stats = queued.execution();
+    let dispatches = stats.kernel_dispatches();
     if let Some(accounting) = component_work
         .iter_mut()
         .find(|work| !work.pending_classic_bands.is_empty())
@@ -118,10 +119,12 @@ pub(in crate::decoder) fn enqueue_component_classic_batches(
         accounting.timings.classic_dispatch_count = accounting
             .timings
             .classic_dispatch_count
-            .saturating_add(stats.kernel_dispatches());
-        accounting.dispatches = accounting
-            .dispatches
-            .saturating_add(stats.kernel_dispatches());
+            .saturating_add(dispatches);
+        accounting.timings.fused_dequant_dispatch_count = accounting
+            .timings
+            .fused_dequant_dispatch_count
+            .saturating_add(dispatches);
+        accounting.dispatches = accounting.dispatches.saturating_add(dispatches);
         accounting.decode_dispatches = accounting
             .decode_dispatches
             .saturating_add(stats.decode_kernel_dispatches());

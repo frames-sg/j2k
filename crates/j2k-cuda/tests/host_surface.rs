@@ -451,8 +451,10 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_cuda_runtime_required() 
     assert_resident_cuda_surface(&surface);
     assert!(report.dispatch_count > 0);
     assert!(report.ht_cleanup_us > 0);
+    assert_eq!(report.detail.ht_refinement_dispatch_count, 0);
     assert_eq!(report.dequant_us, 0);
     assert_eq!(report.detail.dequant_dispatch_count, 0);
+    assert_eq!(report.detail.fused_dequant_dispatch_count, 1);
     assert!(report.idwt_us > 0);
     assert!(report.store_us > 0);
     assert_eq!(report.residency, SurfaceResidency::CudaResidentDecode);
@@ -474,6 +476,11 @@ fn explicit_cuda_classic_profile_splits_entropy_route_timings_when_cuda_runtime_
     assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
     assert_resident_cuda_surface(&surface);
     assert!(report.classic_tier1_us > 0);
+    assert!(report.detail.classic_dispatch_count > 0);
+    assert_eq!(
+        report.detail.fused_dequant_dispatch_count,
+        report.detail.classic_dispatch_count
+    );
     assert_eq!(report.ht_cleanup_us, 0);
     assert!(report.detail.job_upload_us > 0);
     assert!(report.detail.table_upload_us > 0);
@@ -1183,6 +1190,7 @@ fn explicit_cuda_refinement_fixture_profile_reports_refine_when_cuda_runtime_req
     assert_eq!(report.block_count, 14);
     assert!(report.ht_cleanup_us > 0);
     assert!(report.ht_refine_us > 0);
+    assert!(report.detail.ht_refinement_dispatch_count > 0);
     assert!(report.dequant_us > 0);
     assert!(report.idwt_us > 0);
     assert!(report.store_us > 0);

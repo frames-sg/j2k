@@ -38,9 +38,21 @@ pub(in super::super) struct Float97BatchTile {
         Vec<Option<PreencodedHtj2k97CompactComponent>>,
     pub(in super::super) preencoded_components: Vec<Option<PreencodedHtj2k97Component>>,
     pub(in super::super) prequantized_components: Vec<Option<PrequantizedHtj2k97Component>>,
+    pub(in super::super) required_ht_magnitude_bound: Option<u8>,
     pub(in super::super) float_validation_actual: Vec<i32>,
     pub(in super::super) float_validation_expected: Vec<i32>,
     pub(in super::super) timings: TranscodeTimingReport,
+}
+
+impl Float97BatchTile {
+    pub(in super::super) fn include_required_ht_magnitude_bound(&mut self, bound: Option<u8>) {
+        if let Some(bound) = bound {
+            self.required_ht_magnitude_bound = Some(
+                self.required_ht_magnitude_bound
+                    .map_or(bound, |current| current.max(bound)),
+            );
+        }
+    }
 }
 
 pub(in super::super) struct Float97PrecomputedBatchRecord {
@@ -183,6 +195,7 @@ pub(in super::super) fn prepare_float97_batch_tile(
         preencoded_compact_components,
         preencoded_components,
         prequantized_components,
+        required_ht_magnitude_bound: None,
         float_validation_actual: Vec::new(),
         float_validation_expected: Vec::new(),
         timings,

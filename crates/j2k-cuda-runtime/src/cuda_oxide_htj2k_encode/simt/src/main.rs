@@ -1744,7 +1744,7 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
     set_status_with_segments(
         status,
         ENCODE_STATUS_OK,
-        0,
+        max_magnitude,
         total_len,
         pass_span,
         missing_msbs,

@@ -21,7 +21,9 @@ use j2k_native::{
     encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
 };
 use rayon::prelude::*;

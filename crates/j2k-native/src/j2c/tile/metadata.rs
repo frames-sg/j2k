@@ -564,6 +564,7 @@ mod tests {
     ) -> Header<'static> {
         Header {
             size_data: SizeData {
+                decoder_capabilities: 0,
                 reference_grid_width,
                 reference_grid_height,
                 image_area_x_offset: 0,

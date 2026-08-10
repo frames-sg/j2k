@@ -173,7 +173,11 @@ fn decode_classic_sub_band(plan: &J2kOwnedSubBandPlan, output: &mut [f32]) -> Re
 fn decode_ht_sub_band(plan: &HtOwnedSubBandPlan, output: &mut [f32]) -> Result<(), Error> {
     if let [block] = plan.jobs.as_slice() {
         let start = block.output_y as usize * plan.width as usize + block.output_x as usize;
-        return compute::decode_ht_cleanup_code_block(ht_job(block), &mut output[start..]);
+        return compute::decode_ht_cleanup_code_block(
+            ht_job(block),
+            &mut output[start..],
+            plan.irreversible_midpoint,
+        );
     }
 
     let jobs: Vec<_> = plan
@@ -192,6 +196,7 @@ fn decode_ht_sub_band(plan: &HtOwnedSubBandPlan, output: &mut [f32]) -> Result<(
             jobs: &jobs,
         },
         output,
+        plan.irreversible_midpoint,
     )
 }
 

@@ -74,6 +74,8 @@ pub use self::decoder::{
 pub use self::error::{
     Error, MetalDirectFallbackReason, MetalKernelRetryClass, NativeBackendError,
 };
+#[doc(hidden)]
+pub use self::profile::MetalDecodeDispatchReport;
 pub use self::session::{MetalBackendSession, MetalSession};
 pub use self::surface::download_surfaces_packed;
 pub(crate) use self::surface::Storage;

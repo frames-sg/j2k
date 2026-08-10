@@ -22,7 +22,8 @@ mod pixels;
 pub use auto_routing::{
     append_auto_routing_output, auto_routing_operation_label, auto_routing_route_cell,
     auto_routing_sha256, load_auto_routing_manifest, load_auto_routing_pnm,
-    write_auto_routing_evidence, AutoRoutingBackend, AutoRoutingCell, AutoRoutingEvidence,
+    validate_auto_routing_decode_identity, write_auto_routing_evidence, AutoRoutingBackend,
+    AutoRoutingCell, AutoRoutingCodec, AutoRoutingContainer, AutoRoutingEvidence,
     AutoRoutingExecution, AutoRoutingManifest, AutoRoutingManifestCase, AutoRoutingOperation,
     AutoRoutingPixelFormat, AutoRoutingPlatform, AutoRoutingPnm, AutoRoutingRoute,
     AutoRoutingWorkload, AutoRoutingWorkloadKind, AutoRoutingWorkloadSet,

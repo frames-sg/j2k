@@ -108,7 +108,8 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
         },
     )?;
     drop(high_bit_options);
-    let (params, quant_params) = execution.into_final_parts();
+    let (mut params, quant_params) = execution.into_final_parts();
+    params.required_ht_magnitude_bound = packetized_tile.required_ht_magnitude_bound;
     let final_planning_bytes = checked_add_bytes(
         encode_params_retained_bytes(&params)?,
         quantization_retained_bytes(&quant_params)?,

@@ -16,6 +16,7 @@ pub(super) struct EncodedTilePart {
     pub(super) tile_index: u16,
     pub(super) tile_part_index: u8,
     pub(super) num_tile_parts: u8,
+    pub(super) required_ht_magnitude_bound: Option<u8>,
     pub(super) data: Vec<u8>,
     pub(super) packet_lengths: Vec<u32>,
     pub(super) packet_headers: Vec<Vec<u8>>,

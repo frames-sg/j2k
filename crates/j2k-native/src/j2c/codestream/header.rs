@@ -3,26 +3,29 @@
 use alloc::vec::Vec;
 
 use super::super::DecodeSettings;
-use super::auxiliary::{com_marker, plm_marker, ppm_marker, tlm_marker};
+use super::auxiliary::{com_marker, crg_marker, plm_marker, ppm_marker, tlm_marker};
 use super::markers;
 use super::size::size_marker;
-use super::validation::{skipped_levels_to_reach_target, validate};
+use super::validation::validate;
 use super::{
-    coc_marker, cod_marker, poc_marker, qcc_marker, qcd_marker, rgn_marker, skip_marker_segment,
+    coc_marker, cod_marker, marker_segment_payload, poc_marker, qcc_marker, qcd_marker, rgn_marker,
     CodingStyleComponent, ComponentSizeInfo, Header, QuantizationInfo,
 };
 use crate::error::{bail, DecodingError, MarkerError, Result, ValidationError};
+use crate::j2c::capabilities::CapabilityMarkerState;
 use crate::reader::BitReader;
 
 mod allocation;
 mod components;
 mod ppm;
+mod reduction;
 
 use allocation::{
     try_extend_progression_changes, try_flatten_packet_lengths, try_none_vec, HeaderMarkerBudget,
 };
 use components::build_component_infos;
 use ppm::try_flatten_ppm_packets;
+use reduction::apply_resolution_reduction;
 
 #[expect(
     clippy::similar_names,
@@ -60,12 +63,25 @@ pub(crate) fn read_header<'a>(
     let mut progression_changes = Vec::new();
     let mut plm_markers = Vec::new();
     let mut ppm_markers = Vec::new();
+    let mut capabilities = CapabilityMarkerState::default();
     loop {
         match reader.peek_marker().ok_or(MarkerError::Invalid)? {
             markers::SOT => break,
-            markers::CAP | markers::CPF => {
+            markers::CAP => {
                 reader.read_marker()?;
-                skip_marker_segment(reader).ok_or(MarkerError::ParseFailure("CAP/CPF"))?;
+                let payload =
+                    marker_segment_payload(reader).ok_or(MarkerError::ParseFailure("CAP"))?;
+                capabilities
+                    .record_cap(payload)
+                    .map_err(|error| MarkerError::ParseFailure(error.marker_label()))?;
+            }
+            markers::CPF => {
+                reader.read_marker()?;
+                let payload =
+                    marker_segment_payload(reader).ok_or(MarkerError::ParseFailure("CPF"))?;
+                capabilities
+                    .record_cpf(payload)
+                    .map_err(|error| MarkerError::ParseFailure(error.marker_label()))?;
             }
             markers::COD => {
                 reader.read_marker()?;
@@ -177,7 +193,7 @@ pub(crate) fn read_header<'a>(
             }
             markers::CRG => {
                 reader.read_marker()?;
-                skip_marker_segment(reader);
+                crg_marker(reader, num_components).ok_or(MarkerError::ParseFailure("CRG"))?;
             }
             (0x30..=0x3F) => {
                 // "All markers with the marker code between 0xFF30 and 0xFF3F
@@ -194,6 +210,9 @@ pub(crate) fn read_header<'a>(
 
     let cod = cod.ok_or(MarkerError::Missing("COD"))?;
     let qcd = qcd.ok_or(MarkerError::Missing("QCD"))?;
+    capabilities
+        .validate_rsiz(size_data.decoder_capabilities)
+        .map_err(|error| MarkerError::ParseFailure(error.marker_label()))?;
 
     let component_infos = build_component_infos(
         &size_data.component_sizes,
@@ -205,56 +224,12 @@ pub(crate) fn read_header<'a>(
         &mut marker_budget,
     )?;
 
-    // Components can have different number of resolution levels. In that case, we
-    // can only skip as many resolution levels as the component with the smallest
-    // number of resolution levels.
-    let min_num_resolution_levels = component_infos
-        .iter()
-        .map(super::model::ComponentInfo::num_resolution_levels)
-        .min()
-        .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let max_skipped_resolution_levels = min_num_resolution_levels
-        .checked_sub(1)
-        .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let skipped_resolution_levels = if let Some(requested) = exact_reduction_levels {
-        if requested > max_skipped_resolution_levels {
-            bail!(DecodingError::UnsupportedFeature(
-                "requested reduction exceeds the codestream resolution ladder",
-            ));
-        }
-        requested
-    } else if let Some((target_width, target_height)) = settings.target_resolution {
-        if target_width == 0 || target_height == 0 {
-            bail!(ValidationError::InvalidDimensions);
-        }
-        let width_log =
-            skipped_levels_to_reach_target(size_data.checked_image_width()?, target_width);
-        let height_log =
-            skipped_levels_to_reach_target(size_data.checked_image_height()?, target_height);
-
-        width_log.min(height_log).min(max_skipped_resolution_levels)
-    } else {
-        0
-    };
-
-    // If the user defined a maximum resolution level that is lower than the
-    // maximum available one, the final image needs to be shrunk further.
-    let Some(resolution_shrink_factor) = 1u32.checked_shl(u32::from(skipped_resolution_levels))
-    else {
-        bail!(DecodingError::UnsupportedFeature(
-            "requested reduction exceeds supported image geometry",
-        ));
-    };
-    size_data.x_resolution_shrink_factor = size_data
-        .x_resolution_shrink_factor
-        .checked_mul(resolution_shrink_factor)
-        .ok_or(ValidationError::InvalidDimensions)?;
-    size_data.y_resolution_shrink_factor = size_data
-        .y_resolution_shrink_factor
-        .checked_mul(resolution_shrink_factor)
-        .ok_or(ValidationError::InvalidDimensions)?;
-    size_data.checked_image_width()?;
-    size_data.checked_image_height()?;
+    let skipped_resolution_levels = apply_resolution_reduction(
+        &mut size_data,
+        &component_infos,
+        settings,
+        exact_reduction_levels,
+    )?;
 
     ppm_markers.sort_by_key(|ppm_marker| ppm_marker.sequence_idx);
     plm_markers.sort_by_key(|plm_marker| plm_marker.sequence_idx);

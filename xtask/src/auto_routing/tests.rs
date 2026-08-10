@@ -1,9 +1,13 @@
-use std::{fs, path::Path, time::SystemTime};
+use std::fs;
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
-use super::{auto_routing, verify_evidence};
+use super::auto_routing;
+use fixture::{
+    read_json, rewrite_manifest_hash, upgrade_fixture_to_part15, write_fixture, write_json,
+};
+
+mod fixture;
 
 const OPERATIONS: [&str; 6] = [
     "full-decode",
@@ -158,6 +162,62 @@ fn every_workload_class_and_exact_confidence_level_are_required() {
 }
 
 #[test]
+fn schema_v2_requires_and_reports_htj2k_codestream_jph_and_encode_workloads() {
+    let fixture = write_fixture("part15", false, false);
+    upgrade_fixture_to_part15(&fixture);
+
+    let verified = fixture.verify().expect("complete Part 15 route evidence");
+    let report: Value = serde_json::from_str(&verified.report_json).expect("verified report JSON");
+
+    assert_eq!(verified.cell_count, 10);
+    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["workload_formats"]["htj2k-codestream"], 1);
+    assert_eq!(report["workload_formats"]["jph"], 1);
+    assert_eq!(report["workload_formats"]["htj2k-encode"], 1);
+    assert!(report["cells"]
+        .as_array()
+        .expect("report cells")
+        .iter()
+        .any(|cell| cell["codec"] == "htj2k-part-15" && cell["container"] == "jph"));
+}
+
+#[test]
+fn schema_v2_rejects_missing_jph_and_partial_per_case_operation_coverage() {
+    let missing_jph = write_fixture("part15-missing-jph", false, false);
+    let mut manifest = read_json(&missing_jph.manifest);
+    manifest["schema_version"] = json!(2);
+    for case in manifest["cases"].as_array_mut().expect("manifest cases") {
+        case["codec"] = json!("htj2k-part-15");
+        case["container"] = json!("codestream");
+    }
+    write_json(&missing_jph.manifest, &manifest);
+    let mut evidence = read_json(&missing_jph.evidence);
+    evidence["schema_version"] = json!(2);
+    write_json(&missing_jph.evidence, &evidence);
+    rewrite_manifest_hash(&missing_jph);
+    let error = missing_jph
+        .verify()
+        .expect_err("Part 15 evidence must include JPH");
+    assert!(
+        error.contains("HTJ2K codestream, JPH, and HTJ2K encode"),
+        "{error}"
+    );
+
+    let partial = write_fixture("part15-partial", false, false);
+    upgrade_fixture_to_part15(&partial);
+    let mut evidence = read_json(&partial.evidence);
+    evidence["cells"]
+        .as_array_mut()
+        .expect("evidence cells")
+        .retain(|cell| cell["workload"] != "jph-case" || cell["operation"] != "scaled-decode");
+    write_json(&partial.evidence, &evidence);
+    let error = partial
+        .verify()
+        .expect_err("every decode case needs every decode operation");
+    assert!(error.contains("every required operation"), "{error}");
+}
+
+#[test]
 fn criterion_ids_cannot_escape_the_artifact_root() {
     let fixture = write_fixture("unsafe-path", false, false);
     let mut evidence = read_json(&fixture.evidence);
@@ -235,165 +295,4 @@ fn command_writes_the_verified_report_and_requires_an_output() {
     )
     .expect_err("missing output must fail");
     assert!(error.contains("--out FILE"), "{error}");
-}
-
-struct Fixture {
-    root: std::path::PathBuf,
-    evidence: std::path::PathBuf,
-    manifest: std::path::PathBuf,
-    criterion: std::path::PathBuf,
-}
-
-impl Fixture {
-    fn verify(&self) -> Result<super::VerifiedEvidence, String> {
-        verify_evidence(&self.evidence, &self.manifest, &self.criterion)
-    }
-}
-
-fn write_fixture(label: &str, overlap: bool, slow_hybrid: bool) -> Fixture {
-    let root = temp_dir(label);
-    let criterion = root.join("criterion");
-    let evidence_path = root.join("evidence.json");
-    let manifest_path = root.join("external-manifest.json");
-    let manifest = json!({
-        "schema_version": 1,
-        "corpus": "external-test-corpus",
-        "source_url": "https://example.invalid/j2k-routing-corpus",
-        "cases": [
-            {
-                "id": "decode-case",
-                "path": "decode/decode-case.j2k",
-                "kind": "decode",
-                "pixel_format": "rgb8",
-                "sha256": "d".repeat(64)
-            },
-            {
-                "id": "encode-case",
-                "path": "encode/encode-case.ppm",
-                "kind": "encode",
-                "pixel_format": "rgb8",
-                "sha256": "e".repeat(64)
-            }
-        ]
-    });
-    let manifest_bytes = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&manifest).expect("serialize manifest fixture")
-    )
-    .into_bytes();
-    fs::create_dir_all(&root).expect("create fixture root");
-    fs::write(&manifest_path, &manifest_bytes).expect("write manifest fixture");
-    let manifest_sha256 = format!("{:x}", Sha256::digest(&manifest_bytes));
-
-    let mut cells = Vec::new();
-    for operation in OPERATIONS {
-        let workload = if operation.ends_with("encode") {
-            "encode-case"
-        } else {
-            "decode-case"
-        };
-        let base = format!("auto-routing/{operation}/{workload}");
-        let cpu_id = format!("{base}/cpu");
-        let hybrid_id = format!("{base}/hybrid");
-        let strict_id = format!("{base}/strict-device");
-        write_estimate(&criterion, &cpu_id, 100.0, 98.0, 102.0);
-        let (median, lower, upper) = if slow_hybrid {
-            (91.0, 89.0, 93.0)
-        } else if overlap {
-            (80.0, 78.0, 99.0)
-        } else {
-            (80.0, 78.0, 82.0)
-        };
-        write_estimate(&criterion, &hybrid_id, median, lower, upper);
-        write_estimate(&criterion, &strict_id, 110.0, 108.0, 112.0);
-        cells.push(json!({
-            "id": format!("{operation}-{workload}"),
-            "operation": operation,
-            "source": "external",
-            "workload": workload,
-            "cpu": route(&cpu_id, "cpu"),
-            "hybrid": route(&hybrid_id, "hybrid"),
-            "strict_device_supported": true,
-            "strict_device": route(&strict_id, "device-native")
-        }));
-    }
-    let evidence = json!({
-        "schema_version": 1,
-        "candidate_sha": "a".repeat(40),
-        "backend": "metal",
-        "platform": {
-            "os": "macos",
-            "arch": "aarch64",
-            "hardware": "Apple M4 Pro",
-            "driver": "macOS Metal"
-        },
-        "external_manifest_sha256": manifest_sha256,
-        "external_case_count": 2,
-        "cells": cells
-    });
-    write_json(&evidence_path, &evidence);
-    Fixture {
-        root,
-        evidence: evidence_path,
-        manifest: manifest_path,
-        criterion,
-    }
-}
-
-fn rewrite_manifest_hash(fixture: &Fixture) {
-    let manifest_bytes = fs::read(&fixture.manifest).expect("read altered manifest");
-    let mut evidence = read_json(&fixture.evidence);
-    evidence["external_manifest_sha256"] = json!(format!("{:x}", Sha256::digest(&manifest_bytes)));
-    write_json(&fixture.evidence, &evidence);
-}
-
-fn route(criterion_id: &str, execution: &str) -> Value {
-    json!({
-        "criterion_id": criterion_id,
-        "execution": execution,
-        "output_sha256": "c".repeat(64)
-    })
-}
-
-fn write_estimate(root: &Path, id: &str, median: f64, lower: f64, upper: f64) {
-    let path = root.join(id).join("new/estimates.json");
-    fs::create_dir_all(path.parent().expect("estimate parent")).expect("create estimate path");
-    let estimate = json!({
-        "median": {
-            "confidence_interval": {
-                "confidence_level": 0.95,
-                "lower_bound": lower,
-                "upper_bound": upper
-            },
-            "point_estimate": median,
-            "standard_error": 1.0
-        }
-    });
-    write_json(&path, &estimate);
-}
-
-fn read_json(path: &Path) -> Value {
-    serde_json::from_slice(&fs::read(path).expect("read JSON fixture")).expect("parse JSON fixture")
-}
-
-fn write_json(path: &Path, value: &Value) {
-    fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(value).expect("serialize JSON fixture")
-        ),
-    )
-    .expect("write JSON fixture");
-}
-
-fn temp_dir(label: &str) -> std::path::PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("system clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "j2k-auto-routing-{label}-{}-{nonce}",
-        std::process::id()
-    ))
 }

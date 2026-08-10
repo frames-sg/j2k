@@ -8,7 +8,7 @@ use super::super::super::{
     bitplane_encode, BlockCodingMode, CodeBlockPacketData, NativeEncodePipelineError,
     NativeEncodePipelineResult, Vec,
 };
-use super::{ht_segment_count, ht_target_layer, layer_pass_count};
+use super::{ht_segment_count, ht_target_layer};
 
 mod layout;
 use layout::{ht_contribution_layout, HtContributionLayout};
@@ -123,31 +123,9 @@ pub(in crate::j2c::encode) fn ht_unbudgeted_segment_layers_accounted(
             "HTJ2K layer allocation requires at least one quality layer",
         ));
     }
-    if encoded.num_coding_passes == 1 {
-        segment_layers.push(ht_target_layer(block_idx, block_count, layer_count)?);
-        return Ok(segment_layers);
-    }
-    let mut min_layer = 0usize;
-    for end_pass in [1, encoded.num_coding_passes] {
-        let mut assigned = None;
-        for layer_idx in min_layer..layer_count {
-            let cumulative_passes = if layer_idx + 1 == layer_count {
-                encoded.num_coding_passes
-            } else {
-                layer_pass_count(encoded.num_coding_passes, layer_idx + 1, num_layers)?
-            };
-            if end_pass <= cumulative_passes {
-                assigned = Some(layer_idx);
-                break;
-            }
-        }
-        let assigned = assigned.ok_or_else(|| {
-            NativeEncodePipelineError::internal_invariant(
-                "HTJ2K quality layer split must align to segment boundaries",
-            )
-        })?;
-        segment_layers.push(assigned);
-        min_layer = assigned;
+    let target_layer = ht_target_layer(block_idx, block_count, layer_count)?;
+    for _ in 0..segment_count {
+        segment_layers.push(target_layer);
     }
     Ok(segment_layers)
 }

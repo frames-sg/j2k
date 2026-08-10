@@ -4,7 +4,8 @@
 
 use super::super::{
     add_roi_shift_to_bitplanes, bail, classic_decode_job_parameters, code_block_required_by_index,
-    collect_classic_code_block_data, collect_referenced_classic_code_block_data, ht_block_decode,
+    collect_classic_code_block_data, collect_referenced_classic_code_block_data,
+    count_classic_code_blocks, count_ht_code_blocks, ht_block_decode,
     ht_code_block_has_decodable_passes, sub_band_decode_parameters, ClassicPayloadCollector,
     ComponentInfo, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
     HtCodeBlockPayloadRanges, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
@@ -12,14 +13,21 @@ use super::super::{
     J2kDirectGrayscaleStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
     PayloadRangeOwner, Result, SubBand, SubBandDecodeParameters, ValidationError, Vec,
 };
-use crate::j2c::build::CodeBlock;
+use crate::j2c::build::{CodeBlock, CodeBlockCoding};
 use crate::{J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType};
+
+mod ht;
+use self::ht::build_ht_sub_band_step;
 
 #[expect(
     clippy::too_many_arguments,
     reason = "the sub-band boundary keeps validated band identity, storage, and payload collectors explicit"
 )]
-pub(super) fn build_grayscale_sub_band_step(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered mixed-codec branch keeps one validated sub-band decision atomic"
+)]
+pub(super) fn build_grayscale_sub_band_steps(
     payload_range_owner: PayloadRangeOwner<'_>,
     sub_band: &SubBand,
     sub_band_idx: usize,
@@ -31,20 +39,84 @@ pub(super) fn build_grayscale_sub_band_step(
     budget: &mut DecodeAllocationBudget,
     ht_payloads: Option<&mut Vec<HtCodeBlockPayloadRanges>>,
     classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
-) -> Result<Option<J2kDirectGrayscaleStep>> {
+) -> Result<[Option<J2kDirectGrayscaleStep>; 2]> {
     let SubBandDecodeParameters {
         dequantization_step,
         irreversible_midpoint,
         num_bitplanes,
     } = sub_band_decode_parameters(sub_band, resolution, component_info)?;
 
-    if component_info
-        .coding_style
-        .parameters
-        .code_block_style
-        .uses_high_throughput_block_coding()
-    {
-        return build_ht_sub_band_step(
+    let code_block_style = component_info.coding_style.parameters.code_block_style;
+    if code_block_style.allows_mixed_block_coding() {
+        let classic_count = count_classic_code_blocks(sub_band_idx, sub_band, storage)?;
+        let ht_count = count_ht_code_blocks(sub_band_idx, sub_band, storage)?;
+        if classic_count > 0 && ht_count > 0 {
+            let classic = build_classic_sub_band_step(
+                payload_range_owner,
+                sub_band,
+                sub_band_idx,
+                band_id,
+                component_info,
+                storage,
+                header,
+                budget,
+                classic_payloads,
+                dequantization_step,
+                irreversible_midpoint,
+                num_bitplanes,
+            )?;
+            let ht = build_ht_sub_band_step(
+                payload_range_owner,
+                sub_band,
+                sub_band_idx,
+                band_id,
+                component_info,
+                storage,
+                header,
+                budget,
+                ht_payloads,
+                dequantization_step,
+                irreversible_midpoint,
+                num_bitplanes,
+            )?;
+            return Ok([Some(classic), Some(ht)]);
+        }
+        if ht_count > 0 {
+            return build_ht_sub_band_step(
+                payload_range_owner,
+                sub_band,
+                sub_band_idx,
+                band_id,
+                component_info,
+                storage,
+                header,
+                budget,
+                ht_payloads,
+                dequantization_step,
+                irreversible_midpoint,
+                num_bitplanes,
+            )
+            .map(|step| [Some(step), None]);
+        }
+        return build_classic_sub_band_step(
+            payload_range_owner,
+            sub_band,
+            sub_band_idx,
+            band_id,
+            component_info,
+            storage,
+            header,
+            budget,
+            classic_payloads,
+            dequantization_step,
+            irreversible_midpoint,
+            num_bitplanes,
+        )
+        .map(|step| [Some(step), None]);
+    }
+
+    if code_block_style.uses_high_throughput_block_coding() {
+        build_ht_sub_band_step(
             payload_range_owner,
             sub_band,
             sub_band_idx,
@@ -55,109 +127,27 @@ pub(super) fn build_grayscale_sub_band_step(
             budget,
             ht_payloads,
             dequantization_step,
+            irreversible_midpoint,
             num_bitplanes,
         )
-        .map(Some);
+        .map(|step| [Some(step), None])
+    } else {
+        build_classic_sub_band_step(
+            payload_range_owner,
+            sub_band,
+            sub_band_idx,
+            band_id,
+            component_info,
+            storage,
+            header,
+            budget,
+            classic_payloads,
+            dequantization_step,
+            irreversible_midpoint,
+            num_bitplanes,
+        )
+        .map(|step| [Some(step), None])
     }
-
-    build_classic_sub_band_step(
-        payload_range_owner,
-        sub_band,
-        sub_band_idx,
-        band_id,
-        component_info,
-        storage,
-        header,
-        budget,
-        classic_payloads,
-        dequantization_step,
-        irreversible_midpoint,
-        num_bitplanes,
-    )
-    .map(Some)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "HT job construction needs the validated band geometry, decode parameters, range owner, and shared budget"
-)]
-fn build_ht_sub_band_step(
-    payload_range_owner: PayloadRangeOwner<'_>,
-    sub_band: &SubBand,
-    sub_band_idx: usize,
-    band_id: J2kDirectBandId,
-    component_info: &ComponentInfo,
-    storage: &DecompositionStorage<'_>,
-    header: &Header<'_>,
-    budget: &mut DecodeAllocationBudget,
-    mut ht_payloads: Option<&mut Vec<HtCodeBlockPayloadRanges>>,
-    dequantization_step: f32,
-    num_bitplanes: u8,
-) -> Result<J2kDirectGrayscaleStep> {
-    let coded_bitplanes = add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
-    let stripe_causal = component_info
-        .coding_style
-        .parameters
-        .code_block_style
-        .vertically_causal_context;
-    let job_capacity = direct_sub_band_job_capacity(sub_band, storage)?;
-    let mut jobs = Vec::new();
-    budget.reserve_new(&mut jobs, job_capacity)?;
-
-    for precinct in sub_band
-        .precincts
-        .clone()
-        .map(|idx| &storage.precincts[idx])
-    {
-        for code_block in precinct
-            .code_blocks
-            .clone()
-            .map(|idx| &storage.code_blocks[idx])
-        {
-            if !code_block_required_by_index(storage, sub_band_idx, code_block)
-                || !ht_code_block_has_decodable_passes(code_block, coded_bitplanes, header.strict)?
-            {
-                continue;
-            }
-
-            if let Some(payloads) = ht_payloads.as_deref_mut() {
-                let segments = ht_block_decode::collect_code_block_segments(code_block, storage)?;
-                payloads.push(HtCodeBlockPayloadRanges {
-                    cleanup: encoded_input_range(payload_range_owner, segments.cleanup)?,
-                    refinement: (!segments.refinement.is_empty())
-                        .then(|| encoded_input_range(payload_range_owner, segments.refinement))
-                        .transpose()?,
-                });
-            }
-
-            let combined = ht_block_decode::collect_code_block_data(code_block, storage, budget)?;
-            jobs.push(HtOwnedCodeBlockBatchJob {
-                output_x: code_block.rect.x0 - sub_band.rect.x0,
-                output_y: code_block.rect.y0 - sub_band.rect.y0,
-                data: combined.data,
-                cleanup_length: combined.cleanup_length,
-                refinement_length: combined.refinement_length,
-                width: code_block.rect.width(),
-                height: code_block.rect.height(),
-                output_stride: sub_band.rect.width() as usize,
-                missing_bit_planes: code_block.missing_bit_planes,
-                number_of_coding_passes: code_block.number_of_coding_passes,
-                num_bitplanes,
-                roi_shift: component_info.roi_shift,
-                stripe_causal,
-                strict: header.strict,
-                dequantization_step,
-            });
-        }
-    }
-
-    Ok(J2kDirectGrayscaleStep::HtSubBand(HtOwnedSubBandPlan {
-        band_id,
-        rect: J2kRect::from(sub_band.rect),
-        width: sub_band.rect.width(),
-        height: sub_band.rect.height(),
-        jobs,
-    }))
 }
 
 #[expect(
@@ -194,7 +184,9 @@ fn build_classic_sub_band_step(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
-            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+            if code_block.coding != Some(CodeBlockCoding::Classic)
+                || !code_block_required_by_index(storage, sub_band_idx, code_block)
+            {
                 continue;
             }
             jobs.push(build_classic_code_block_job(
@@ -306,27 +298,57 @@ fn collect_classic_payload(
 
 pub(in crate::j2c::decode::direct_plan) fn strip_grayscale_payload_owners(
     plan: &mut J2kDirectGrayscalePlan,
+    payloads: &[HtCodeBlockPayloadRanges],
 ) -> Result<usize> {
-    let mut job_count = 0_usize;
+    let mut next_record = 0_usize;
     for step in &mut plan.steps {
         match step {
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
-                job_count = job_count
-                    .checked_add(sub_band.jobs.len())
-                    .ok_or(ValidationError::ImageTooLarge)?;
                 for job in &mut sub_band.jobs {
+                    let first = *payloads
+                        .get(next_record)
+                        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                    next_record = next_record
+                        .checked_add(1)
+                        .ok_or(ValidationError::ImageTooLarge)?;
+                    if first.cleanup.length != job.cleanup_length as usize {
+                        bail!(DecodingError::CodeBlockDecodeFailure);
+                    }
+                    let expected_refinement = job.refinement_length as usize;
+                    let mut refinement = first.refinement.map_or(0, |range| range.length);
+                    if refinement > expected_refinement {
+                        bail!(DecodingError::CodeBlockDecodeFailure);
+                    }
+                    while refinement < expected_refinement {
+                        let continuation = *payloads
+                            .get(next_record)
+                            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                        next_record = next_record
+                            .checked_add(1)
+                            .ok_or(ValidationError::ImageTooLarge)?;
+                        let length = continuation
+                            .refinement
+                            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+                            .length;
+                        if continuation.cleanup.length != 0 || length == 0 {
+                            bail!(DecodingError::CodeBlockDecodeFailure);
+                        }
+                        refinement = refinement
+                            .checked_add(length)
+                            .ok_or(ValidationError::ImageTooLarge)?;
+                        if refinement > expected_refinement {
+                            bail!(DecodingError::CodeBlockDecodeFailure);
+                        }
+                    }
                     job.data = Vec::new();
                 }
             }
-            J2kDirectGrayscaleStep::ClassicSubBand(_) => {
-                bail!(DecodingError::UnsupportedFeature(
-                    "referenced HTJ2K plan encountered classic code blocks"
-                ));
-            }
-            J2kDirectGrayscaleStep::Idwt(_) | J2kDirectGrayscaleStep::Store(_) => {}
+            J2kDirectGrayscaleStep::ClassicSubBand(_)
+            | J2kDirectGrayscaleStep::Idwt(_)
+            | J2kDirectGrayscaleStep::Store(_) => {}
         }
     }
-    Ok(job_count)
+    Ok(next_record)
 }
 
 pub(in crate::j2c::decode::direct_plan) fn strip_classic_payload_owners(
@@ -343,12 +365,9 @@ pub(in crate::j2c::decode::direct_plan) fn strip_classic_payload_owners(
                     job.data = Vec::new();
                 }
             }
-            J2kDirectGrayscaleStep::HtSubBand(_) => {
-                bail!(DecodingError::UnsupportedFeature(
-                    "referenced classic plan encountered HT code blocks"
-                ));
-            }
-            J2kDirectGrayscaleStep::Idwt(_) | J2kDirectGrayscaleStep::Store(_) => {}
+            J2kDirectGrayscaleStep::HtSubBand(_)
+            | J2kDirectGrayscaleStep::Idwt(_)
+            | J2kDirectGrayscaleStep::Store(_) => {}
         }
     }
     Ok(job_count)
@@ -405,3 +424,6 @@ fn direct_sub_band_job_capacity(
                 .ok_or(ValidationError::ImageTooLarge.into())
         })
 }
+
+#[cfg(test)]
+mod tests;

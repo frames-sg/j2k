@@ -11,6 +11,9 @@ use super::super::{
 };
 use crate::compute::direct_plan_types::PreparedHtExecutionOwner;
 
+#[cfg(all(test, target_os = "macos"))]
+mod tests;
+
 #[cfg(target_os = "macos")]
 struct HtGroupOwners {
     members: Vec<PreparedHtSubBandGroupMember>,
@@ -90,17 +93,29 @@ fn allocate_ht_group_owners(sub_bands: &[&PreparedHtSubBand]) -> Result<HtGroupO
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "HTJ2K MetalDirect prepared sub-band group",
     );
-    let payload_source = match &first.payload_source {
-        PreparedHtPayloadSource::Contiguous(_) => PreparedHtPayloadSource::Contiguous(
+    let payload_source = if sub_bands.iter().any(|sub_band| {
+        matches!(
+            sub_band.payload_source,
+            PreparedHtPayloadSource::Contiguous(_)
+        )
+    }) {
+        PreparedHtPayloadSource::Contiguous(
             budget.try_vec(planned_coded_len, "HTJ2K MetalDirect grouped coded payload")?,
-        ),
-        PreparedHtPayloadSource::Referenced { input, .. } => PreparedHtPayloadSource::Referenced {
+        )
+    } else {
+        let PreparedHtPayloadSource::Referenced { input, .. } = &first.payload_source else {
+            return Err(Error::MetalStateInvariant {
+                state: "HTJ2K MetalDirect prepared sub-band group",
+                reason: "group payload ownership classification changed during preparation",
+            });
+        };
+        PreparedHtPayloadSource::Referenced {
             input: input.clone(),
             ranges: budget.try_vec(
                 planned_job_count,
                 "HTJ2K MetalDirect grouped referenced payload ranges",
             )?,
-        },
+        }
     };
     Ok(HtGroupOwners {
         members: budget.try_vec(sub_bands.len(), "HTJ2K MetalDirect grouped members")?,
@@ -154,6 +169,50 @@ fn append_grouped_ht_payload(
             PreparedHtPayloadSource::Contiguous(source),
         ) => grouped.extend_from_slice(source),
         (
+            PreparedHtPayloadSource::Contiguous(grouped),
+            PreparedHtPayloadSource::Referenced { input, ranges },
+        ) => {
+            if ranges.len() != sub_band.jobs.len() {
+                return Err(Error::MetalStateInvariant {
+                    state: "HTJ2K MetalDirect referenced sub-band group",
+                    reason: "payload range count does not match grouped job count",
+                });
+            }
+            let payload_start = grouped.len();
+            for range in ranges {
+                grouped.extend_from_slice(super::referenced::referenced_codestream_slice(
+                    input,
+                    range.cleanup,
+                )?);
+                if let Some(refinement) = range.refinement {
+                    grouped.extend_from_slice(super::referenced::referenced_codestream_slice(
+                        input, refinement,
+                    )?);
+                }
+            }
+            let appended =
+                grouped
+                    .len()
+                    .checked_sub(payload_start)
+                    .ok_or(Error::MetalStateInvariant {
+                        state: "HTJ2K MetalDirect referenced sub-band group",
+                        reason: "grouped payload length decreased while materializing ranges",
+                    })?;
+            let expected = sub_band.jobs.iter().try_fold(0usize, |total, job| {
+                total
+                    .checked_add(job.coded_len as usize)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K MetalDirect grouped coded payload overflow".to_string(),
+                    })
+            })?;
+            if appended != expected {
+                return Err(Error::MetalStateInvariant {
+                    state: "HTJ2K MetalDirect referenced sub-band group",
+                    reason: "materialized payload length does not match grouped jobs",
+                });
+            }
+        }
+        (
             PreparedHtPayloadSource::Referenced {
                 input: grouped_input,
                 ranges: grouped_ranges,
@@ -177,10 +236,10 @@ fn append_grouped_ht_payload(
             }
             grouped_ranges.extend_from_slice(source_ranges);
         }
-        _ => {
+        (PreparedHtPayloadSource::Referenced { .. }, PreparedHtPayloadSource::Contiguous(_)) => {
             return Err(Error::MetalStateInvariant {
                 state: "HTJ2K MetalDirect prepared sub-band group",
-                reason: "group mixes contiguous and referenced payload ownership",
+                reason: "group selected referenced ownership despite a contiguous member",
             });
         }
     }

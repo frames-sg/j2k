@@ -16,6 +16,7 @@ fn part_with_capacities(data: usize, lengths: usize) -> EncodedTilePart {
         tile_index: 0,
         tile_part_index: 0,
         num_tile_parts: 1,
+        required_ht_magnitude_bound: None,
         data: payload,
         packet_lengths,
         packet_headers: Vec::new(),

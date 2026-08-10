@@ -80,7 +80,36 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes(
     accelerator: &mut impl J2kEncodeStageAccelerator,
     max_host_bytes: usize,
 ) -> crate::EncodeResult<Vec<u8>> {
-    prepare_owned_preencoded_plan(image, options, max_host_bytes)
+    encode_owned_preencoded_with_bound(image, options, accelerator, max_host_bytes, None)
+}
+
+/// Encode moved preencoded 9/7 payloads with an observed Part 15 magnitude
+/// bound under a lowered native host ceiling.
+#[doc(hidden)]
+pub fn encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound(
+    image: PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+    max_host_bytes: usize,
+    required_ht_magnitude_bound: u8,
+) -> crate::EncodeResult<Vec<u8>> {
+    encode_owned_preencoded_with_bound(
+        image,
+        options,
+        accelerator,
+        max_host_bytes,
+        Some(required_ht_magnitude_bound),
+    )
+}
+
+fn encode_owned_preencoded_with_bound(
+    image: PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+    max_host_bytes: usize,
+    required_ht_magnitude_bound: Option<u8>,
+) -> crate::EncodeResult<Vec<u8>> {
+    prepare_owned_preencoded_plan(image, options, max_host_bytes, required_ht_magnitude_bound)
         .and_then(|plan| {
             let session = NativeEncodeSession::try_with_lowered_cap(
                 NativeEncodeRetainedInput::none(),
@@ -105,6 +134,27 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_by
         options,
         accelerator,
         max_host_bytes,
+        None,
+    )
+    .map_err(NativeEncodePipelineError::into_encode_error)
+}
+
+/// Encode moved compact preencoded 9/7 payloads with an observed Part 15
+/// magnitude bound under a lowered native host ceiling.
+#[doc(hidden)]
+pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound(
+    image: PreencodedHtj2k97CompactImage,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+    max_host_bytes: usize,
+    required_ht_magnitude_bound: u8,
+) -> crate::EncodeResult<Vec<u8>> {
+    super::compact97::encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+        image,
+        options,
+        accelerator,
+        max_host_bytes,
+        Some(required_ht_magnitude_bound),
     )
     .map_err(NativeEncodePipelineError::into_encode_error)
 }

@@ -18,10 +18,14 @@ fn options() -> EncodeOptions {
 }
 
 fn image(value: f32) -> PrecomputedHtj2k97Image {
+    image_with_bit_depth(value, 8)
+}
+
+fn image_with_bit_depth(value: f32, bit_depth: u8) -> PrecomputedHtj2k97Image {
     PrecomputedHtj2k97Image {
         width: 1,
         height: 1,
-        bit_depth: 8,
+        bit_depth,
         signed: false,
         components: vec![PrecomputedHtj2k97Component {
             x_rsiz: 1,
@@ -33,6 +37,26 @@ fn image(value: f32) -> PrecomputedHtj2k97Image {
                 levels: Vec::new(),
             },
         }],
+    }
+}
+
+#[test]
+fn batch_plans_preserve_actual_cleanup_magnitude_bound() {
+    let images = vec![image_with_bit_depth(0.0, 12), image_with_bit_depth(0.0, 12)];
+    let mut accelerator = BatchCountingAccelerator::default();
+
+    let codestreams = encode_precomputed_htj2k_97_batch_owned_with_accelerator(
+        images,
+        &options(),
+        &mut accelerator,
+    )
+    .expect("encode precomputed 9/7 batch");
+
+    for codestream in codestreams {
+        let capabilities = crate::inspect_htj2k_capabilities(&codestream)
+            .expect("inspect batch HTJ2K capabilities")
+            .expect("CAP advertises Part 15");
+        assert_eq!(capabilities.magnitude_bound(), 8);
     }
 }
 

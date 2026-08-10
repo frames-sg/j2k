@@ -163,6 +163,11 @@ fn include_referenced_tiles(
 ) -> Result<()> {
     budget.include_capacity::<J2kReferencedTilePlan>(retained_capacity)?;
     for tile in tiles {
+        include_classic_references(
+            budget,
+            tile.classic_payloads.capacity(),
+            tile.classic_ranges.capacity(),
+        )?;
         if let Some(geometry) = tile.grayscale_geometry() {
             include_grayscale_plan(budget, geometry)?;
         } else if let Some(geometry) = tile.color_geometry() {

@@ -59,10 +59,23 @@ pub(super) fn prepare_classic_sub_band_with_payloads(
             reason: "appended payload bytes do not match the preflight allocation",
         });
     }
-    let zero_fill = owners
-        .jobs
-        .iter()
-        .any(|job| job.coded_len == 0 || job.number_of_coding_passes == 0);
+    let decoded_coefficients = crate::batch_allocation::checked_count_sum(
+        owners
+            .jobs
+            .iter()
+            .map(|job| job.width as usize * job.height as usize),
+        "classic J2K MetalDirect decoded coefficient coverage",
+    )?;
+    let sub_band_coefficients = crate::batch_allocation::checked_count_product(
+        job.width as usize,
+        job.height as usize,
+        "classic J2K MetalDirect sub-band coefficient coverage",
+    )?;
+    let zero_fill = decoded_coefficients != sub_band_coefficients
+        || owners
+            .jobs
+            .iter()
+            .any(|job| job.coded_len == 0 || job.number_of_coding_passes == 0);
     finish_classic_sub_band(job, tier1_prepare_mode, zero_fill, owners)
 }
 

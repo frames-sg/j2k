@@ -684,6 +684,21 @@ pub trait J2kEncodeStageAccelerator {
         J2kEncodeDispatchReport::default()
     }
 
+    /// Report the exact maximum cleanup magnitude from the most recent
+    /// successful fused HT sub-band encode, when the backend observed it.
+    ///
+    /// Native encoding uses this value for the Part 15 CAP magnitude bound.
+    /// Backends that do not report it retain the conservative fallback.
+    fn ht_subband_maximum_cleanup_magnitude(&self) -> Option<u64> {
+        None
+    }
+
+    /// Report the exact Part 15 magnitude bound derived by the most recent
+    /// successful complete HT tile encode, when the backend observed it.
+    fn ht_tile_required_magnitude_bound(&self) -> Option<u8> {
+        None
+    }
+
     /// Optionally deinterleave interleaved pixel bytes into f32 component planes.
     ///
     /// Return `Ok(Some(components))` with one plane per component. Return

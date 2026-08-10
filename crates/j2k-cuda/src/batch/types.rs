@@ -8,6 +8,7 @@ use super::{
     BatchGroupInfo, BatchInfrastructureError, Error, IndexedBatchError, J2kDecodeWarning,
     PreparedBatchGroup, Rect, Surface,
 };
+use crate::CudaHtj2kProfileReport;
 
 /// Failure while preparing or executing an owned CUDA batch.
 #[derive(Debug, thiserror::Error)]
@@ -153,6 +154,7 @@ pub struct CudaBatchGroup {
     pub(super) decoded_rects: Vec<Rect>,
     pub(super) warnings: Vec<Vec<J2kDecodeWarning>>,
     pub(super) surfaces: Vec<Surface>,
+    pub(super) profile_report: CudaHtj2kProfileReport,
     #[cfg(feature = "cuda-runtime")]
     pub(super) dense_output: CudaResidentBatchBuffer,
 }
@@ -217,6 +219,13 @@ impl CudaBatchGroup {
     #[must_use]
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
+    }
+
+    /// Completed production dispatch observations for this group.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn profile_report(&self) -> &CudaHtj2kProfileReport {
+        &self.profile_report
     }
 
     /// Dense codec-owned allocation for exact-native grayscale or color output.

@@ -904,10 +904,10 @@ pub(super) fn read_ht_encoded_code_block(
 pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
     session: &crate::MetalBackendSession,
     tier1: &J2kResidentLosslessHtCodeBlocks,
-) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
+) -> Result<(Vec<EncodedHtJ2kCodeBlock>, u8), Error> {
     with_runtime_for_session(session, |runtime| {
         if tier1.batch_jobs.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 8));
         }
         let output_bytes = tier1.output_capacity_total.max(1);
         let status_bytes = tier1
@@ -932,6 +932,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             tier1.batch_jobs.len(),
             "HTJ2K Metal resident Tier-1 encoded block results",
         )?;
+        let mut required_magnitude_bound = 8u8;
         let output = new_shared_buffer(&runtime.device, output_bytes)?;
         let status_buffer = zeroed_shared_buffer(&runtime.device, status_bytes)?;
 
@@ -961,7 +962,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             "resident HT encode statuses",
         )?;
         for (batch_job, status) in tier1.batch_jobs.iter().zip(statuses.iter().copied()) {
-            encoded_blocks.push(read_ht_encoded_code_block(
+            let encoded = read_ht_encoded_code_block(
                 status,
                 &output,
                 usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
@@ -970,9 +971,15 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
                 usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
                     message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
                 })?,
-            )?);
+            )?;
+            // Successful HT statuses expose the exact maximum that the existing
+            // kernel already computes, matching the CUDA HT status contract.
+            required_magnitude_bound = required_magnitude_bound.max(
+                j2k_native::htj2k_required_magnitude_bound(u64::from(status.detail), true, 0),
+            );
+            encoded_blocks.push(encoded);
         }
-        Ok(encoded_blocks)
+        Ok((encoded_blocks, required_magnitude_bound.min(74)))
     })
 }
 

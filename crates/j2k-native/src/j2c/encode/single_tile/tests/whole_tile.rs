@@ -13,6 +13,7 @@ use super::super::plan::{
 struct FakeWholeTileAccelerator {
     output: Option<Vec<u8>>,
     error: Option<&'static str>,
+    required_bound: Option<u8>,
     calls: usize,
 }
 
@@ -27,6 +28,10 @@ impl FakeWholeTileAccelerator {
 }
 
 impl crate::J2kEncodeStageAccelerator for FakeWholeTileAccelerator {
+    fn ht_tile_required_magnitude_bound(&self) -> Option<u8> {
+        self.required_bound
+    }
+
     fn encode_htj2k_tile(
         &mut self,
         _job: crate::J2kHtj2kTileEncodeJob<'_>,
@@ -96,8 +101,15 @@ fn whole_tile_fixture() -> (Vec<u8>, EncodeOptions, SingleTilePlan) {
 }
 
 #[test]
+fn whole_tile_plan_carries_a_conservative_transform_bound() {
+    let (_, _, plan) = whole_tile_fixture();
+
+    assert_eq!(plan.params.required_ht_magnitude_bound, Some(10));
+}
+
+#[test]
 fn whole_tile_accelerator_output_accepts_exact_cap_without_copying() {
-    let (pixels, options, plan) = whole_tile_fixture();
+    let (pixels, options, mut plan) = whole_tile_fixture();
     let mut output = vector_with_capacity::<u8>(17);
     output.extend_from_slice(&[1, 4, 9]);
     let output_capacity = output.capacity();
@@ -111,6 +123,7 @@ fn whole_tile_accelerator_output_accepts_exact_cap_without_copying() {
     let mut accelerator = FakeWholeTileAccelerator {
         output: Some(output),
         error: None,
+        required_bound: Some(8),
         calls: 0,
     };
 
@@ -124,7 +137,7 @@ fn whole_tile_accelerator_output_accepts_exact_cap_without_copying() {
         &options,
         &[],
         &[],
-        &plan,
+        &mut plan,
         false,
         &session,
         &mut accelerator,
@@ -136,11 +149,12 @@ fn whole_tile_accelerator_output_accepts_exact_cap_without_copying() {
     assert_eq!(tile_data.as_ptr(), output_ptr);
     assert_eq!(tile_data.capacity(), output_capacity);
     assert_eq!(tile_data, [1, 4, 9]);
+    assert_eq!(plan.params.required_ht_magnitude_bound, Some(8));
 }
 
 #[test]
 fn whole_tile_accelerator_output_rejects_one_byte_over_without_fallback() {
-    let (pixels, options, plan) = whole_tile_fixture();
+    let (pixels, options, mut plan) = whole_tile_fixture();
     let output = vector_with_capacity::<u8>(19);
     let output_capacity = output.capacity();
     let plan_bytes = single_tile_plan_retained_bytes(&plan).expect("plan bytes");
@@ -150,6 +164,7 @@ fn whole_tile_accelerator_output_rejects_one_byte_over_without_fallback() {
     let mut accelerator = FakeWholeTileAccelerator {
         output: Some(output),
         error: None,
+        required_bound: None,
         calls: 0,
     };
 
@@ -163,7 +178,7 @@ fn whole_tile_accelerator_output_rejects_one_byte_over_without_fallback() {
         &options,
         &[],
         &[],
-        &plan,
+        &mut plan,
         false,
         &session,
         &mut accelerator,
@@ -183,12 +198,13 @@ fn whole_tile_accelerator_output_rejects_one_byte_over_without_fallback() {
 
 #[test]
 fn whole_tile_accelerator_decline_and_failure_keep_distinct_categories() {
-    let (pixels, options, plan) = whole_tile_fixture();
+    let (pixels, options, mut plan) = whole_tile_fixture();
     let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
         .expect("whole-tile session");
     let mut decline = FakeWholeTileAccelerator {
         output: None,
         error: None,
+        required_bound: None,
         calls: 0,
     };
     assert!(try_encode_complete_ht_tile(
@@ -201,7 +217,7 @@ fn whole_tile_accelerator_decline_and_failure_keep_distinct_categories() {
         &options,
         &[],
         &[],
-        &plan,
+        &mut plan,
         false,
         &session,
         &mut decline,
@@ -212,6 +228,7 @@ fn whole_tile_accelerator_decline_and_failure_keep_distinct_categories() {
     let mut failure = FakeWholeTileAccelerator {
         output: None,
         error: Some("synthetic whole-tile backend failure"),
+        required_bound: None,
         calls: 0,
     };
     let error = try_encode_complete_ht_tile(
@@ -224,7 +241,7 @@ fn whole_tile_accelerator_decline_and_failure_keep_distinct_categories() {
         &options,
         &[],
         &[],
-        &plan,
+        &mut plan,
         false,
         &session,
         &mut failure,
@@ -245,7 +262,7 @@ fn whole_tile_accelerator_decline_and_failure_keep_distinct_categories() {
 
 #[test]
 fn resident_whole_tile_over_cap_keeps_resource_category() {
-    let (_, options, plan) = whole_tile_fixture();
+    let (_, options, mut plan) = whole_tile_fixture();
     let input = J2kResidentEncodeInput::new(8, 8, 1, 8, false).expect("resident input");
     let output = vector_with_capacity::<u8>(23);
     let output_capacity = output.capacity();
@@ -256,12 +273,19 @@ fn resident_whole_tile_over_cap_keeps_resource_category() {
     let mut accelerator = FakeWholeTileAccelerator {
         output: Some(output),
         error: None,
+        required_bound: None,
         calls: 0,
     };
 
-    let error =
-        encode_complete_resident_ht_tile(input, &options, &plan, false, &session, &mut accelerator)
-            .expect_err("resident output exceeds cap");
+    let error = encode_complete_resident_ht_tile(
+        input,
+        &options,
+        &mut plan,
+        false,
+        &session,
+        &mut accelerator,
+    )
+    .expect_err("resident output exceeds cap");
 
     assert_eq!(accelerator.calls, 1);
     assert_eq!(

@@ -12,8 +12,8 @@
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
-**A general-purpose JPEG 2000 and HTJ2K codec with safe Rust APIs, a portable
-CPU baseline, and optional CUDA and Metal acceleration.**
+**A general-purpose, GPU-accelerated JPEG 2000 and HTJ2K codec with safe Rust
+APIs, a portable CPU baseline, and production CUDA and Metal paths.**
 
 J2K provides JPEG 2000 / HTJ2K decode, encode, recode, and
 JPEG-to-HTJ2K coefficient-domain transcoding. Its public APIs cover whole-image,
@@ -25,21 +25,52 @@ Region and reduced-resolution decoding plus retained tiled batch plans avoid
 whole-image work for slide-scale and other large-image readers; those are codec
 capabilities, not domain-specific APIs.
 
-Formal decoder claim for `0.8.1`: the `j2k` CPU IUT is ISO/IEC 15444-4:2024 /
-ITU-T T.803 v3 **Profile-1 Cclass-1 compliant**,
-**Profile-1 Cclass-1HF compliant**, and **Annex G JP2 reader compliant**.
-Exact-SHA macOS arm64,
-Linux x86-64, and Windows x86-64 reports each contain all 90 selected cases
-with zero skips and outputs within the applicable peak-error and MSE bounds.
+Measured product GPU decode paths keep parsing on CPU while moving supported
+Tier-1, dequantization, IDWT, MCT, output, and transfer work to CUDA or Metal.
+On the current external HTJ2K/JPH routing matrix, fixed `Auto` policy qualifies
+8 of 10 CUDA cells and 3 of 10 Metal cells; every promoted cell produced the
+same bytes as CPU, exceeded the required 10% median speedup, and had a
+non-overlapping 95% confidence interval. A **formal device-native** route would
+require every reported stage to execute on the device; the current public
+pipelines make no such claim.
 
-The real-hardware adapter-IUT headlines are **CUDA: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**
-and **Metal: 0/90 device-native, 48/90 hybrid, 42/90 CPU-routed**. Both pass
-the selected Profile-1 Cclass-1 and Cclass-1HF
-cases, but neither is a device-native conformance result. Every parser,
-Tier-1, transform, color/output, and transfer stage is disclosed per case. The
-exact scope, evidence rules, report inventory, and informative encoder results
-are in [docs/t803-conformance.md](docs/t803-conformance.md). T.803 does not
-establish robustness, security, adoption, or performance.
+Current-tree Metal host-output encode evidence additionally qualifies lossless
+HTJ2K RGB8 at 1024 x 1024 and Gray8/RGB8 at 2048 x 2048. Those hybrid routes
+run coefficient preparation and HT Tier-1 on Metal, then packetize on CPU.
+Other measured 512 x 512 and Gray8 1024 x 1024 cells remain CPU-routed. The
+performance scope is the measured Apple M4 Pro; exact results and qualifications
+are in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+
+Release `0.8.1` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
+**Profile-1 Cclass-1**, **Profile-1 Cclass-1HF**, and **Annex G JP2 reader**
+compliance for the CPU IUT. Its exact-SHA macOS arm64, Linux x86-64, and
+Windows x86-64 reports each pass all 90 selected Part 1 cases with zero skips.
+The published CUDA and Metal adapter-IUT reports each record 0/90
+device-native, 48/90 hybrid, and 42/90 CPU-routed cases.
+
+Unversioned development evidence extends that same framework to the following
+HTJ2K Part 15 CPU scope:
+
+- HTJ2K Part 15: **DS1-HM Cclass-1h, MMAGB 15**, including DS1-HT, DS0-HM,
+  and DS0-HT subset evidence; **Cclass-1HFh, MMAGB 20**; and **Annex G JPH
+  reader at MMAGB 15**.
+
+The current CPU development reports pass all 160 selected cases—90 Part 1 and
+70 Part 15—with zero skips on all three platforms. CUDA and Metal pass the same
+160 cases on real hardware with the truthful combined headline **0/160 device-native, 81/160
+hybrid, 79/160 CPU-routed** for each backend. The Part 15 split is 33 hybrid and
+37 CPU-routed. Production-owned dispatch counters, not capability-table
+predictions, substantiate every stage label.
+
+These are development-dirty-worktree reports tied to base commit `f92646d0`.
+They are not part of the published `0.8.1` claim and are not yet a formal Part
+15 release claim: the release verifier rejects development evidence, and the
+complete CPU/CUDA/Metal suite must be rerun from the exact clean future
+candidate SHA. CPU encoder evidence passes 56/56 cases; CUDA and Metal each
+pass 35/35. Encoder results are informative Annex D/F evidence, not formal
+decoder conformance. The exact scope, report rules, and hashes are in
+[docs/t803-conformance.md](docs/t803-conformance.md). T.803 does not establish
+robustness, security, adoption, or performance.
 
 Speed matters, but it is not the reason this project exists. The strategic
 gap is a memory-safety-oriented Rust codec with a portable CPU baseline,
@@ -144,11 +175,12 @@ scale.
 
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
-and benchmark evidence. Single-frame HTJ2K host-output encode stays CPU by
-default; resident Metal encode performance claims are batch claims. Explicit
+and benchmark evidence. Lossless HTJ2K host-output encode uses the qualified
+Metal hybrid cells above and stays CPU for other measured shapes. Full-resident
+Metal-buffer encode remains a separate batch API and evidence class. Explicit
 device requests are strict. Unsupported device shapes return errors instead of
-silently changing the requested backend. `Auto` is an optimization policy, not a
-promise to use a device whenever one is available.
+silently changing the requested backend. `Auto` is an optimization policy, not
+a promise to use a device whenever one is available.
 
 A new fixed hybrid threshold is eligible for `Auto` only when identical-output
 external-corpus Criterion evidence shows a median at least 10% faster than CPU
@@ -226,7 +258,7 @@ adapter has a narrower, explicit boundary in
 [docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
 qualifications are recorded separately in
 [docs/benchmark-evidence.md](docs/benchmark-evidence.md). Release-scoped Part 1
-decoder conformance evidence is tracked separately in
+and development Part 15 decoder conformance evidence is tracked separately in
 [docs/t803-conformance.md](docs/t803-conformance.md).
 
 The previous `j2k-ml 0.7.5` accelerator features were defective. That release
@@ -293,7 +325,8 @@ Reference files:
   environment variables
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
   HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
-- [docs/t803-conformance.md](docs/t803-conformance.md) - release-scoped T.803 v3
+- [docs/t803-conformance.md](docs/t803-conformance.md) - release-scoped and
+  development T.803 v3
   decoder claims, encoder procedure, blockers, and release evidence rules
 - [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
   prepared reuse, and explicit accelerator decode/upload adapters

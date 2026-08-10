@@ -17,7 +17,15 @@ fn empty_cache(label: &str) -> PathBuf {
 fn run_fails_closed_when_the_pinned_corpus_is_absent() {
     let cache = empty_cache("missing");
     let output = Command::new(env!("CARGO_BIN_EXE_j2k-t803-runner"))
-        .args(["run", "--iut", "cpu", "--development", "--cache-dir"])
+        .args([
+            "run",
+            "--iut",
+            "cpu",
+            "--suite",
+            "part15",
+            "--development",
+            "--cache-dir",
+        ])
         .arg(&cache)
         .output()
         .expect("run T.803 CLI");
@@ -29,6 +37,21 @@ fn run_fails_closed_when_the_pinned_corpus_is_absent() {
         "unexpected stderr: {stderr}"
     );
     fs::remove_dir_all(cache).expect("remove test cache");
+}
+
+#[test]
+fn run_rejects_an_unknown_suite_before_touching_the_corpus() {
+    let output = Command::new(env!("CARGO_BIN_EXE_j2k-t803-runner"))
+        .args(["run", "--iut", "cpu", "--suite", "jpeg"])
+        .output()
+        .expect("run T.803 CLI");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown T.803 suite \"jpeg\"; expected part1|part15|all"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 #[test]

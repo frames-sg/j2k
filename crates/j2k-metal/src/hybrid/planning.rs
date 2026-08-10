@@ -72,11 +72,17 @@ fn build_region_scaled_direct_plan_with_cache(
             }
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
-            Ok(Some(PreparedRegionScaledDirectPlan::Color(
-                build_region_scaled_direct_color_plan_cached_with_cache(
-                    input, fmt, roi, scale, cache,
-                )?,
-            )))
+            match build_region_scaled_direct_color_plan_cached_with_cache(
+                input, fmt, roi, scale, cache,
+            ) {
+                Ok(plan) => Ok(Some(PreparedRegionScaledDirectPlan::Color(plan))),
+                Err(Error::UnsupportedMetalRequest { reason })
+                    if reason == RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
         }
         _ => Ok(None),
     }

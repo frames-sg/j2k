@@ -201,6 +201,9 @@ fn assert_exact_resident(
     let [resident_group] = resident.groups() else {
         panic!("expected one resident RGB group")
     };
+    let profile = resident_group.profile_report();
+    assert_eq!(profile.detail.store_dispatch_count, 1);
+    assert_eq!(profile.detail.mct_dispatch_count, 1);
     let dense = resident_group.dense_output();
     assert_eq!(dense.ranges().len(), 1);
     let mut dense_bytes = vec![0_u8; expected.len()];

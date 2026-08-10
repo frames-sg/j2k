@@ -275,6 +275,8 @@ pub enum DecodingError {
     InvalidBitplaneCount,
     /// A precinct was invalid.
     InvalidPrecinct,
+    /// A packet header or its declared body could not be parsed completely.
+    PacketParseFailure(&'static str),
     /// A progression iterator ver invalid.
     InvalidProgressionIterator,
     /// Unexpected end of data.
@@ -325,6 +327,8 @@ pub enum DirectPlanUnsupportedReason {
     ComponentUnitSampled,
     /// A direct component decomposition index did not exist.
     ComponentDecompositionIndexOutOfRange,
+    /// Direct device plans do not yet represent classic and HT code-blocks in one sub-band.
+    MixedCodeBlockCoding,
 }
 
 impl fmt::Display for DecodeError {
@@ -482,6 +486,9 @@ impl fmt::Display for DecodingError {
             }
             Self::InvalidBitplaneCount => write!(f, "invalid number of bitplanes"),
             Self::InvalidPrecinct => write!(f, "a precinct was invalid"),
+            Self::PacketParseFailure(context) => {
+                write!(f, "failed to parse JPEG 2000 packet data: {context}")
+            }
             Self::InvalidProgressionIterator => {
                 write!(f, "a progression iterator was invalid")
             }
@@ -532,6 +539,9 @@ const fn direct_plan_unsupported_what(reason: DirectPlanUnsupportedReason) -> &'
         }
         DirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange => {
             "direct component decomposition index is out of range"
+        }
+        DirectPlanUnsupportedReason::MixedCodeBlockCoding => {
+            "direct device plan does not support mixed classic and HT code-block coding in one sub-band"
         }
     }
 }

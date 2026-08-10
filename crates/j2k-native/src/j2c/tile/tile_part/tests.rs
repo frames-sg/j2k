@@ -45,6 +45,7 @@ pub(super) fn header() -> Header<'static> {
 
     Header {
         size_data: SizeData {
+            decoder_capabilities: 0,
             reference_grid_width: 1,
             reference_grid_height: 1,
             image_area_x_offset: 0,

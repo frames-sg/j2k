@@ -15,12 +15,20 @@ The deterministic encoder procedure is described by:
 - `encoder-ics-cpu.toml`
 - `encoder-ics-cuda.toml`
 - `encoder-ics-metal.toml`
-- `encoder-matrix-v1.toml`
+- `encoder-matrix-v2.toml`
 
 Those Annex D/F results are informative under T.803 and are not decoder
-conformance claims. `support-inventory.tsv` is the feature-support ledger used
-by `cargo xtask public-support`; it contains no corpus paths, is not consumed by
-the T.803 runner, and must not be cited as exact-reference evidence.
+conformance claims. Supported cases use the vendored OpenJPEG 2.5.3 T.804
+decoder. OpenJPEG rejects HT code-blocks carrying RGN before decoding, so the
+retained HT+RGN capability case uses a clean, pinned OpenHTJ2K 0.19.0
+executable for explicitly labelled Part 15 interoperability evidence. Run
+`scripts/prepare-openhtj2k-reference.sh` before the CPU matrix; the report pins
+the OpenHTJ2K source revision and platform-specific executable hash and states
+that this supplemental result is not T.804 evidence.
+
+`support-inventory.tsv` is the feature-support ledger used by `cargo xtask
+public-support`; it contains no corpus paths, is not consumed by the T.803
+runner, and must not be cited as exact-reference evidence.
 
 Generated JSON and Markdown reports, not narrative summaries, are the release
 evidence. The claim policy and current blocker are documented in

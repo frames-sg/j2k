@@ -106,5 +106,11 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget(
         }
     }
 
+    for (candidate, assignment) in candidates.iter().zip(&mut assignments) {
+        *assignment = *block_min_layers
+            .get(candidate.block_index)
+            .ok_or("HTJ2K segment candidate block index mismatch")?;
+    }
+
     Ok(assignments)
 }

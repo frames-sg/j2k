@@ -136,6 +136,7 @@ fn consume_single_part(
         tile_index,
         tile_part_index: 0,
         num_tile_parts: 1,
+        required_ht_magnitude_bound: packetized.required_ht_magnitude_bound,
         data: packetized.data,
         packet_lengths: packetized.packet_lengths,
         packet_headers: packetized.packet_headers,

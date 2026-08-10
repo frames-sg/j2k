@@ -3,8 +3,7 @@
 use j2k::{J2kEncodeStageError, J2kHtj2kTileEncodeJob, J2kResidentHtj2kTileEncodeJob};
 use j2k_cuda_runtime::{
     CudaContext, CudaDeviceBuffer, CudaDwt53LevelShape, CudaHtj2kEncodeResources,
-    CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kResidentComponents,
-    CudaJ2kStridedInterleavedPixels,
+    CudaJ2kResidentComponents, CudaJ2kStridedInterleavedPixels,
 };
 
 use crate::allocation::HostPhaseBudget;
@@ -16,14 +15,14 @@ use super::super::{
     cuda_component_count_u8, cuda_encode_format, time_cuda_stage, CudaEncodeStageTimings,
     CudaLosslessEncodeTile,
 };
-use super::code_blocks::{cuda_ht_region_jobs, encoded_ht_code_blocks_from_cuda};
+use super::code_blocks::cuda_encode_tile_subband_region;
 use super::host_budget::account_encoded_resolution_owners;
 use super::htj2k_allocation_error;
 use super::ordering::cuda_order_component_resolution_packets;
 use super::tile_packets::cuda_packetize_tile_body;
 use super::types::{
-    CudaEncodedHtj2kResolution, CudaEncodedHtj2kSubband, CudaEncodedHtj2kTile,
-    CudaHtj2kEncodeRuntime, CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
+    CudaEncodedHtj2kResolution, CudaEncodedHtj2kTile, CudaHtj2kEncodeRuntime,
+    CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
 };
 use super::validation::{resident_job_from_host, validate_cuda_htj2k_tile_job};
 
@@ -204,6 +203,7 @@ fn cuda_encode_htj2k_resident_components_body(
                     width: job.input.width(),
                     height: job.input.height(),
                     stride: job.input.width(),
+                    decomposition_level: 0,
                 },
                 job.quantization_steps[0],
                 job,
@@ -313,6 +313,7 @@ fn cuda_encode_htj2k_resident_components_body(
     stats.timings.packetize_us = stats.timings.packetize_us.saturating_add(packetize_us);
     Ok(Some(CudaEncodedHtj2kTile {
         tile_data,
+        required_ht_magnitude_bound: stats.required_ht_magnitude_bound,
         deinterleave_dispatches: stats.deinterleave_dispatches,
         forward_rct_dispatches: stats.forward_rct_dispatches,
         forward_ict_dispatches: stats.forward_ict_dispatches,
@@ -358,6 +359,7 @@ fn cuda_encode_dwt_component_packets(
             width: ll_width,
             height: ll_height,
             stride: full_width,
+            decomposition_level: job.num_decomposition_levels,
         },
         job.quantization_steps[0],
         job,
@@ -373,6 +375,12 @@ fn cuda_encode_dwt_component_packets(
     });
 
     for (level_idx, level) in levels.iter().rev().enumerate() {
+        let decomposition_level = job
+            .num_decomposition_levels
+            .checked_sub(u8::try_from(level_idx).map_err(|_| {
+                internal_invariant("CUDA HTJ2K decomposition level index exceeds u8")
+            })?)
+            .ok_or_else(|| internal_invariant("CUDA HTJ2K decomposition level underflow"))?;
         let step_base = 1usize
             .checked_add(level_idx.saturating_mul(3))
             .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile quantization step index"))?;
@@ -385,6 +393,7 @@ fn cuda_encode_dwt_component_packets(
                 width: level.high_width,
                 height: level.low_height,
                 stride: full_width,
+                decomposition_level,
             },
             job.quantization_steps[step_base],
             job,
@@ -400,6 +409,7 @@ fn cuda_encode_dwt_component_packets(
                 width: level.low_width,
                 height: level.high_height,
                 stride: full_width,
+                decomposition_level,
             },
             job.quantization_steps[step_base + 1],
             job,
@@ -415,6 +425,7 @@ fn cuda_encode_dwt_component_packets(
                 width: level.high_width,
                 height: level.high_height,
                 stride: full_width,
+                decomposition_level,
             },
             job.quantization_steps[step_base + 2],
             job,
@@ -429,111 +440,4 @@ fn cuda_encode_dwt_component_packets(
     }
 
     Ok(packets)
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_encode_tile_subband_region(
-    runtime: CudaHtj2kEncodeRuntime<'_>,
-    source: &CudaDeviceBuffer,
-    region: CudaTileSubbandRegion,
-    quantization_step: (u16, u16),
-    job: J2kResidentHtj2kTileEncodeJob<'_>,
-    subband_kind: CudaTileSubbandKind,
-    stats: &mut CudaHtj2kTileEncodeStats,
-) -> CudaStageResult<CudaEncodedHtj2kSubband> {
-    if region.width == 0 || region.height == 0 {
-        return Ok(CudaEncodedHtj2kSubband {
-            code_blocks: Vec::new(),
-            num_cbs_x: 0,
-            num_cbs_y: 0,
-        });
-    }
-
-    let (step_exponent, step_mantissa) = quantization_step;
-    let step_exponent_u8 = u8::try_from(step_exponent).map_err(|_| {
-        J2kEncodeStageError::invalid_request("CUDA HTJ2K tile quantization exponent exceeds u8")
-    })?;
-    let total_bitplanes = job
-        .guard_bits
-        .saturating_add(step_exponent_u8)
-        .saturating_sub(1);
-    let (quantized, quantize_us) = time_cuda_stage(
-        "j2k.htj2k.encode.tile.quantize",
-        runtime.context,
-        stats.collect_profile,
-        || {
-            runtime.context.j2k_quantize_subband_region_resident(
-                source,
-                CudaJ2kQuantizeSubbandRegionJob {
-                    x0: region.x0,
-                    y0: region.y0,
-                    width: region.width,
-                    height: region.height,
-                    stride: region.stride,
-                    quantization: CudaJ2kQuantizeJob {
-                        step_exponent,
-                        step_mantissa,
-                        range_bits: cuda_tile_subband_range_bits(
-                            job.input.bit_depth(),
-                            subband_kind,
-                        ),
-                        reversible: job.reversible,
-                    },
-                },
-            )
-        },
-    )
-    .map_err(|error| runtime_error("quantize CUDA HTJ2K tile subband", error))?;
-    stats.quantize_jobs = stats.quantize_jobs.saturating_add(1);
-    stats.quantize_dispatches = stats
-        .quantize_dispatches
-        .saturating_add(quantized.execution().kernel_dispatches());
-    stats.timings.quantize_us = stats.timings.quantize_us.saturating_add(quantize_us);
-
-    let region_jobs = cuda_ht_region_jobs(
-        region.width,
-        region.height,
-        job.code_block_width,
-        job.code_block_height,
-        total_bitplanes,
-    )?;
-    stats.ht_code_block_jobs = stats.ht_code_block_jobs.saturating_add(region_jobs.len());
-    let mut host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K tile region jobs");
-    host_budget
-        .account_vec(&region_jobs)
-        .map_err(htj2k_allocation_error)?;
-    let encoded = runtime
-        .context
-        .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
-            quantized.buffer(),
-            quantized.coefficient_count(),
-            &region_jobs,
-            runtime.resources,
-            runtime.pool,
-            host_budget.live_bytes(),
-        )
-        .map_err(|error| runtime_error("encode CUDA HTJ2K tile code blocks", error))?;
-    stats.ht_code_block_dispatches = stats
-        .ht_code_block_dispatches
-        .saturating_add(encoded.execution().kernel_dispatches());
-    stats.timings.ht_encode_us = stats
-        .timings
-        .ht_encode_us
-        .saturating_add(encoded.stage_timings().ht_encode_us);
-
-    Ok(CudaEncodedHtj2kSubband {
-        code_blocks: encoded_ht_code_blocks_from_cuda(encoded)?,
-        num_cbs_x: region.width.div_ceil(job.code_block_width),
-        num_cbs_y: region.height.div_ceil(job.code_block_height),
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_tile_subband_range_bits(bit_depth: u8, subband_kind: CudaTileSubbandKind) -> u8 {
-    let log_gain = match subband_kind {
-        CudaTileSubbandKind::LowLow => 0,
-        CudaTileSubbandKind::HighLow | CudaTileSubbandKind::LowHigh => 1,
-        CudaTileSubbandKind::HighHigh => 2,
-    };
-    bit_depth.saturating_add(log_gain)
 }

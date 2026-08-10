@@ -31,6 +31,7 @@ pub(super) struct CpuFlattenedPayloadJob {
     pub(super) source_index: usize,
     pub(super) image_slot: usize,
     pub(super) payload_index: usize,
+    pub(super) payload_record_count: usize,
     pub(super) destination_index: usize,
     pub(super) block_index: J2kDirectCodeBlockIndex,
     bucket: CpuPayloadBucket,
@@ -217,11 +218,11 @@ impl CpuGroupFastWorkspace {
     fn assign_image_spans(
         &mut self,
         group: &PreparedBatchGroup,
-        payload_count: impl Fn(&PreparedImage) -> usize,
+        payload_count: impl Fn(&PreparedImage) -> Result<usize, BatchInfrastructureError>,
     ) -> Result<(), BatchInfrastructureError> {
         let mut start = 0usize;
         for image in &group.images {
-            let len = payload_count(image);
+            let len = payload_count(image)?;
             self.image_spans.push(CpuImagePayloadSpan { start });
             start = start
                 .checked_add(len)

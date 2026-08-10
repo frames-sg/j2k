@@ -55,23 +55,44 @@ pub(super) fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(bytes: V
             assert!(referenced_job.data.is_empty());
             let payload = referenced
                 .payload(payload_cursor)
-                .expect("payload range for referenced HT job");
+                .expect("first payload record for referenced HT job");
             payload_cursor += 1;
+            assert_eq!(payload.cleanup.length, owned_job.cleanup_length as usize);
             let cleanup_end = payload.cleanup.end().expect("cleanup range end");
             let mut reconstructed = prepared_image
                 .bytes()
                 .get(payload.cleanup.offset..cleanup_end)
                 .expect("cleanup range inside retained encoded owner")
                 .to_vec();
+            let mut refinement_bytes = 0usize;
             if let Some(refinement) = payload.refinement {
                 let refinement_end = refinement.end().expect("refinement range end");
-                reconstructed.extend_from_slice(
-                    prepared_image
-                        .bytes()
-                        .get(refinement.offset..refinement_end)
-                        .expect("refinement range inside retained encoded owner"),
-                );
+                let bytes = prepared_image
+                    .bytes()
+                    .get(refinement.offset..refinement_end)
+                    .expect("refinement range inside retained encoded owner");
+                refinement_bytes += bytes.len();
+                reconstructed.extend_from_slice(bytes);
             }
+            while refinement_bytes < owned_job.refinement_length as usize {
+                let continuation = referenced
+                    .payload(payload_cursor)
+                    .expect("continuation record for referenced HT job");
+                payload_cursor += 1;
+                assert_eq!(continuation.cleanup.length, 0);
+                let refinement = continuation
+                    .refinement
+                    .expect("continuation record carries refinement bytes");
+                let refinement_end = refinement.end().expect("continuation range end");
+                let bytes = prepared_image
+                    .bytes()
+                    .get(refinement.offset..refinement_end)
+                    .expect("continuation range inside retained encoded owner");
+                assert!(!bytes.is_empty());
+                refinement_bytes += bytes.len();
+                reconstructed.extend_from_slice(bytes);
+            }
+            assert_eq!(refinement_bytes, owned_job.refinement_length as usize);
             assert_eq!(reconstructed, owned_job.data);
         }
     }

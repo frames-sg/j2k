@@ -8,6 +8,10 @@ use super::{
 
 /// Enqueue the HT cleanup/dequantization portion of a batch without a host
 /// completion boundary. Classic blocks retain their existing completed path.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the enqueue boundary keeps one CUDA buffer-lifetime and fallback transaction atomic"
+)]
 pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
     context: &j2k_cuda_runtime::CudaContext,
     decode_resources: &CudaHtj2kDecodeResources,
@@ -112,10 +116,22 @@ pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
             .timings
             .ht_dispatch_count
             .saturating_add(cleanup_stats.kernel_dispatches());
+        if has_refinement {
+            accounting.timings.ht_refinement_dispatch_count = accounting
+                .timings
+                .ht_refinement_dispatch_count
+                .saturating_add(cleanup_stats.kernel_dispatches());
+        }
         accounting.timings.dequant_dispatch_count = accounting
             .timings
             .dequant_dispatch_count
             .saturating_add(dequant_stats.kernel_dispatches());
+        if !has_refinement {
+            accounting.timings.fused_dequant_dispatch_count = accounting
+                .timings
+                .fused_dequant_dispatch_count
+                .saturating_add(cleanup_stats.kernel_dispatches());
+        }
     }
     for work in component_work {
         work.pending_dequant_bands.clear();

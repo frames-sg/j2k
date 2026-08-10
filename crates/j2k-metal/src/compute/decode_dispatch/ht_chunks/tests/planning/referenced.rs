@@ -32,6 +32,7 @@ fn job(
         output_offset,
         dequantization_step: 1.0,
         stripe_causal: 0,
+        irreversible_midpoint: 0,
     }
 }
 

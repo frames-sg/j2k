@@ -77,5 +77,6 @@ pub(crate) fn submit_prepared_direct_grayscale_plan_batch_into_group(
     .encode();
     compute_encoder.end_encoding();
     result?;
+    metadata.record_tier1_dispatches();
     commit_direct_destination(runtime, command_buffer, metadata, consumer_ordering)
 }

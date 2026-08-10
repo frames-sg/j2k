@@ -1,9 +1,10 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_native::{
     collect_ht_cleanup_encode_distribution, decode_ht_code_block_scalar,
-    decode_j2k_code_block_scalar, encode_ht_code_block_scalar,
-    encode_j2k_code_block_scalar_with_style, DecodeSettings, DecoderContext, HtCodeBlockDecodeJob,
-    HtCodeBlockDecoder, Image, J2kCodeBlockDecodeJob, J2kCodeBlockStyle, J2kSubBandType, Result,
+    decode_ht_code_block_scalar_with_workspace_midpoint, decode_j2k_code_block_scalar,
+    encode_ht_code_block_scalar, encode_j2k_code_block_scalar_with_style, DecodeSettings,
+    DecoderContext, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtCodeBlockDecoder, Image,
+    J2kCodeBlockDecodeJob, J2kCodeBlockStyle, J2kSubBandType, Result,
 };
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -78,16 +79,25 @@ struct CollectingHtDecoder {
 }
 
 impl HtCodeBlockDecoder for CollectingHtDecoder {
-    fn decode_code_block(
+    fn decode_code_block_with_midpoint(
         &mut self,
         job: HtCodeBlockDecodeJob<'_>,
         output: &mut [f32],
+        irreversible_midpoint: bool,
     ) -> Result<()> {
         if job.refinement_length > 0 {
             self.jobs.push(OwnedHtCodeBlockDecodeJob::from_job(job));
         }
 
-        decode_ht_code_block_scalar(job, output)
+        if irreversible_midpoint {
+            decode_ht_code_block_scalar_with_workspace_midpoint(
+                job,
+                output,
+                &mut HtCodeBlockDecodeWorkspace::default(),
+            )
+        } else {
+            decode_ht_code_block_scalar(job, output)
+        }
     }
 }
 

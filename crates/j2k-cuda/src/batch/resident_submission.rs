@@ -11,6 +11,7 @@ use super::{
     validate_layout, CudaBatchDecodeResult, CudaBatchDecoder, CudaBatchError, CudaBatchGroup,
     CudaBatchGroupError, CudaResidentBatchBuffer, Error, Surface,
 };
+use crate::CudaHtj2kProfileReport;
 
 struct ResidentGroupMetadata {
     info: j2k::BatchGroupInfo,
@@ -40,6 +41,7 @@ impl ResidentGroupMetadata {
         self,
         surfaces: Vec<Surface>,
         dense_output: CudaResidentBatchBuffer,
+        profile_report: CudaHtj2kProfileReport,
     ) -> CudaBatchGroup {
         CudaBatchGroup {
             info: self.info,
@@ -47,6 +49,7 @@ impl ResidentGroupMetadata {
             decoded_rects: self.decoded_rects,
             warnings: self.warnings,
             surfaces,
+            profile_report,
             dense_output,
         }
     }
@@ -68,22 +71,31 @@ impl SubmittedResidentCodecGroup {
     fn finish(
         self,
         info: &j2k::BatchGroupInfo,
-    ) -> Result<(Vec<Surface>, CudaResidentBatchBuffer), Error> {
+    ) -> Result<
+        (
+            Vec<Surface>,
+            CudaResidentBatchBuffer,
+            CudaHtj2kProfileReport,
+        ),
+        Error,
+    > {
         match self {
             Self::Grayscale(pending) => {
-                let (output, _report) = pending.finish()?;
+                let (output, report) = pending.finish()?;
                 Ok((
                     output.surfaces,
                     CudaResidentBatchBuffer {
                         buffer: output.buffer,
                         ranges: output.ranges,
                     },
+                    report,
                 ))
             }
             Self::Color(pending) => {
-                let (output, _report) = pending.finish()?;
+                let (output, report) = pending.finish()?;
                 let fmt = group_pixel_format(info)?;
-                Ok(native_color_group_storage(info, fmt, output))
+                let (surfaces, dense_output) = native_color_group_storage(info, fmt, output);
+                Ok((surfaces, dense_output, report))
             }
         }
     }
@@ -158,8 +170,8 @@ impl SubmittedCudaResidentBatch {
             let SubmittedResidentGroup { metadata, pending } = submitted;
             let source_indices = metadata.source_indices.clone();
             match pending.finish(&metadata.info) {
-                Ok((surfaces, dense_output)) => {
-                    groups.push(metadata.finish(surfaces, dense_output));
+                Ok((surfaces, dense_output, profile_report)) => {
+                    groups.push(metadata.finish(surfaces, dense_output, profile_report));
                 }
                 Err(source) if source.session_is_unusable() => {
                     if fatal.is_none() {

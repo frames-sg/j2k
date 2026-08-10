@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::T803Suite;
+
 #[cfg(feature = "cuda-runner")]
 use super::cuda;
 #[cfg(feature = "metal-runner")]
@@ -22,7 +24,12 @@ pub fn run_cli(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                 .as_deref()
                 .ok_or_else(|| "t803 run requires --iut cpu|cuda|metal".to_string())?;
             match iut {
-                "cpu" => cpu::run(&options.cache_dir, options.output_dir, options.development),
+                "cpu" => cpu::run(
+                    &options.cache_dir,
+                    options.output_dir,
+                    options.development,
+                    options.suite,
+                ),
                 "cuda" => run_cuda(&options),
                 "metal" => run_metal(&options),
                 _ => Err(format!("unknown T.803 IUT {iut:?}")),
@@ -49,6 +56,7 @@ fn run_cuda(options: &Options) -> Result<(), String> {
         &options.cache_dir,
         options.output_dir.clone(),
         options.development,
+        options.suite,
     )
 }
 
@@ -63,6 +71,7 @@ fn run_metal(options: &Options) -> Result<(), String> {
         &options.cache_dir,
         options.output_dir.clone(),
         options.development,
+        options.suite,
     )
 }
 
@@ -80,6 +89,7 @@ struct Options {
     reports: Vec<PathBuf>,
     candidate_sha: Option<String>,
     scope: Option<String>,
+    suite: T803Suite,
 }
 
 fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -91,6 +101,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         reports: Vec::new(),
         candidate_sha: None,
         scope: None,
+        suite: T803Suite::All,
     };
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
@@ -106,6 +117,18 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
                 .push(PathBuf::from(next_value(&mut args, &argument)?)),
             "--candidate-sha" => options.candidate_sha = Some(next_value(&mut args, &argument)?),
             "--scope" => options.scope = Some(next_value(&mut args, &argument)?),
+            "--suite" => {
+                options.suite = match next_value(&mut args, &argument)?.as_str() {
+                    "part1" => T803Suite::Part1,
+                    "part15" => T803Suite::Part15,
+                    "all" => T803Suite::All,
+                    other => {
+                        return Err(format!(
+                            "unknown T.803 suite {other:?}; expected part1|part15|all"
+                        ));
+                    }
+                };
+            }
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown T.803 argument {other:?}\n{}", usage())),
         }
@@ -119,5 +142,5 @@ fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<S
 }
 
 fn usage() -> String {
-    "usage: cargo xtask t803 fetch [--cache-dir DIR]\n       cargo xtask t803 run --iut cpu|cuda|metal [--out-dir DIR] [--development] [--cache-dir DIR]\n       cargo xtask t803 verify --scope cpu|cuda|metal|all --candidate-sha SHA --report FILE [--report FILE...] [--cache-dir DIR]".to_string()
+    "usage: cargo xtask t803 fetch [--cache-dir DIR]\n       cargo xtask t803 run --iut cpu|cuda|metal [--suite part1|part15|all] [--out-dir DIR] [--development] [--cache-dir DIR]\n       cargo xtask t803 verify --scope cpu|cuda|metal|all --candidate-sha SHA --report FILE [--report FILE...] [--cache-dir DIR]".to_string()
 }

@@ -3,17 +3,17 @@
 //! Component-plan assembly from parsed decomposition storage.
 
 use super::{
-    bail, ClassicPayloadCollector, ComponentInfo, ComponentTile, DecodeAllocationBudget,
-    DecodingError, DecompositionStorage, DirectPlanUnsupportedReason, Header,
-    HtCodeBlockPayloadRanges, IntRect, J2kDirectBandId, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect, J2kWaveletTransform,
-    PayloadRangeOwner, ResolutionTile, Result, Tile, ValidationError, Vec,
+    bail, count_classic_code_blocks, count_ht_code_blocks, ClassicPayloadCollector, ComponentInfo,
+    ComponentTile, DecodeAllocationBudget, DecodingError, DecompositionStorage,
+    DirectPlanUnsupportedReason, Header, HtCodeBlockPayloadRanges, IntRect, J2kDirectBandId,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
+    J2kWaveletTransform, PayloadRangeOwner, ResolutionTile, Result, Tile, ValidationError, Vec,
 };
 use crate::j2c::decode::TileDecompositions;
 use crate::j2c::roi::output_region_rect;
 
 pub(super) mod sub_band;
-use self::sub_band::build_grayscale_sub_band_step;
+use self::sub_band::build_grayscale_sub_band_steps;
 
 #[expect(
     clippy::too_many_arguments,
@@ -130,14 +130,30 @@ fn component_step_capacity(
         .decompositions
         .len()
         .saturating_sub(skipped_resolution_levels as usize);
+    let allows_mixed = component_info
+        .coding_style
+        .parameters
+        .code_block_style
+        .allows_mixed_block_coding();
     let sub_band_step_count = (0..component_info.num_resolution_levels()
         - skipped_resolution_levels)
         .try_fold(0_usize, |total, resolution| {
             tile_decompositions
                 .sub_band_iter(resolution, &storage.decompositions)
-                .count()
-                .checked_add(total)
-                .ok_or(ValidationError::ImageTooLarge)
+                .try_fold(total, |total, sub_band_idx| -> Result<usize> {
+                    let sub_band = &storage.sub_bands[sub_band_idx];
+                    let step_count = if allows_mixed
+                        && count_classic_code_blocks(sub_band_idx, sub_band, storage)? > 0
+                        && count_ht_code_blocks(sub_band_idx, sub_band, storage)? > 0
+                    {
+                        2
+                    } else {
+                        1
+                    };
+                    total
+                        .checked_add(step_count)
+                        .ok_or(ValidationError::ImageTooLarge.into())
+                })
         })?;
     let step_capacity = sub_band_step_count
         .checked_add(active_decomposition_count)
@@ -165,7 +181,7 @@ fn append_sub_band_steps(
 ) -> Result<()> {
     for resolution in 0..component_info.num_resolution_levels() - header.skipped_resolution_levels {
         for sub_band_idx in tile_decompositions.sub_band_iter(resolution, &storage.decompositions) {
-            let Some(step) = build_grayscale_sub_band_step(
+            let sub_band_steps = build_grayscale_sub_band_steps(
                 payload_range_owner,
                 &storage.sub_bands[sub_band_idx],
                 sub_band_idx,
@@ -177,15 +193,12 @@ fn append_sub_band_steps(
                 budget,
                 ht_payloads.as_deref_mut(),
                 classic_payloads.as_deref_mut(),
-            )?
-            else {
-                continue;
-            };
+            )?;
             sub_band_ids[sub_band_idx] = Some(*next_band_id);
             *next_band_id = next_band_id
                 .checked_add(1)
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            steps.push(step);
+            steps.extend(sub_band_steps.into_iter().flatten());
         }
     }
     Ok(())

@@ -32,6 +32,7 @@ fn classic_packet_fixture() -> Vec<PreparedResolutionPacket> {
     subbands.push(PreparedEncodeSubband {
         code_blocks: blocks,
         preencoded_ht_code_blocks: None,
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x: 1,
         num_cbs_y: 1,
         code_block_width: 4,

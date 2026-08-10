@@ -1,0 +1,1048 @@
+# Informative T.803 Annex D encoder procedure for the public Part 1 and Part 15 surfaces.
+# Cases are synthetic and distributable; no T.803 attachment content is embedded here.
+schema_version = 2
+standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
+
+[[inventories]]
+iut = "cpu"
+case_count = 56
+case_sha256 = "90c133e21990100bdc8aa98deb578ce9e839d114feffb534bf4393c28669eeae"
+
+[[inventories]]
+iut = "cuda"
+case_count = 35
+case_sha256 = "c646405c6d0925d6cd68ceca8148e8101b4272042b0563378f4005d87a56adf9"
+
+[[inventories]]
+iut = "metal"
+case_count = 35
+case_sha256 = "c646405c6d0925d6cd68ceca8148e8101b4272042b0563378f4005d87a56adf9"
+
+[[cases]]
+id = "boundary-components-2"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 37
+height = 29
+components = 2
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 2
+
+[[cases]]
+id = "boundary-components-4"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 37
+height = 29
+components = 4
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 2
+
+[[cases]]
+id = "boundary-components-5"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 37
+height = 29
+components = 5
+bit_depth = 8
+signed = true
+pattern = "deterministic-noise"
+progression = "cprl"
+decomposition_levels = 2
+
+[[cases]]
+id = "boundary-gray1-singleton"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 1
+height = 1
+components = 1
+bit_depth = 1
+signed = false
+pattern = "impulse"
+progression = "lrcp"
+decomposition_levels = 0
+
+[[cases]]
+id = "boundary-gray16-large"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 513
+height = 513
+components = 1
+bit_depth = 16
+signed = false
+pattern = "gradient"
+progression = "rpcl"
+decomposition_levels = 5
+
+[[cases]]
+id = "boundary-gray31-signed"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 17
+height = 19
+components = 1
+bit_depth = 31
+signed = true
+pattern = "deterministic-noise"
+progression = "pcrl"
+decomposition_levels = 2
+
+[[cases]]
+id = "layers-lossless-3"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 65
+height = 49
+components = 3
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 3
+lossless_quality_layers = 3
+
+[[cases]]
+id = "layers-lossy-3"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 96
+height = 80
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+lossy_quality_layers = [
+  { kind = "bits-per-pixel", value = 1.0 },
+  { kind = "bits-per-pixel", value = 2.0 },
+  { kind = "bits-per-pixel", value = 4.0 },
+]
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+
+[[cases]]
+id = "marker-ppm"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 73
+height = 57
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["PPM"]
+
+[[cases]]
+id = "marker-ppt"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 73
+height = 57
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 3
+markers = ["PPT"]
+
+[[cases]]
+id = "marker-table-f1-optionals"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 80
+height = 64
+components = 3
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["TLM", "PLM", "PLT", "SOP", "EPH"]
+
+[[cases]]
+id = "pairwise-01"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 32
+height = 32
+components = 1
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 1
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-02"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 63
+height = 47
+components = 3
+bit_depth = 12
+signed = true
+pattern = "checkerboard"
+progression = "rlcp"
+decomposition_levels = 3
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-03"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 32
+height = 32
+components = 3
+bit_depth = 12
+signed = false
+pattern = "deterministic-noise"
+progression = "rpcl"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 12.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-04"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 63
+height = 47
+components = 1
+bit_depth = 8
+signed = true
+pattern = "impulse"
+progression = "pcrl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-05"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 32
+height = 32
+components = 3
+bit_depth = 8
+signed = true
+pattern = "deterministic-noise"
+progression = "cprl"
+decomposition_levels = 1
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-06"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 63
+height = 47
+components = 1
+bit_depth = 12
+signed = false
+pattern = "gradient"
+progression = "cprl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-07"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 32
+height = 32
+components = 3
+bit_depth = 12
+signed = false
+pattern = "checkerboard"
+progression = "pcrl"
+decomposition_levels = 1
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-08"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 63
+height = 47
+components = 1
+bit_depth = 8
+signed = true
+pattern = "impulse"
+progression = "rpcl"
+decomposition_levels = 3
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-09"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 32
+height = 32
+components = 1
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+pairwise_scope = "part1"
+
+[[cases]]
+id = "pairwise-10"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 63
+height = 47
+components = 3
+bit_depth = 12
+signed = true
+pattern = "deterministic-noise"
+progression = "lrcp"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+pairwise_scope = "part1"
+
+[[cases]]
+id = "part15-boundary-components-2"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 37
+height = 29
+components = 2
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-boundary-components-4"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 37
+height = 29
+components = 4
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-boundary-components-5"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 37
+height = 29
+components = 5
+bit_depth = 8
+signed = true
+pattern = "deterministic-noise"
+progression = "cprl"
+decomposition_levels = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-boundary-gray1-singleton"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 1
+height = 1
+components = 1
+bit_depth = 1
+signed = false
+pattern = "impulse"
+progression = "lrcp"
+decomposition_levels = 0
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-boundary-gray16-large"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 513
+height = 513
+components = 1
+bit_depth = 16
+signed = false
+pattern = "gradient"
+progression = "rpcl"
+decomposition_levels = 5
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-boundary-gray30-signed"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 17
+height = 19
+components = 1
+bit_depth = 30
+signed = true
+pattern = "deterministic-noise"
+progression = "pcrl"
+decomposition_levels = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-layers-lossless-3"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 65
+height = 65
+components = 3
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 3
+lossless_quality_layers = 3
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-layers-lossy-3"
+iuts = ["cpu"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 96
+height = 80
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+lossy_quality_layers = [
+  { kind = "bits-per-pixel", value = 2.0 },
+  { kind = "bits-per-pixel", value = 4.0 },
+  { kind = "bits-per-pixel", value = 12.0 },
+]
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-marker-ppm"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 73
+height = 57
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["CAP", "PPM"]
+
+[[cases]]
+id = "part15-marker-ppt"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 73
+height = 57
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 3
+markers = ["CAP", "PPT"]
+
+[[cases]]
+id = "part15-marker-table-f1-optionals"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 80
+height = 64
+components = 3
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["CAP", "TLM", "PLM", "PLT", "SOP", "EPH"]
+
+[[cases]]
+id = "part15-pairwise-01"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 32
+height = 32
+components = 1
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 1
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-02"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 63
+height = 47
+components = 3
+bit_depth = 12
+signed = true
+pattern = "checkerboard"
+progression = "rlcp"
+decomposition_levels = 3
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-03"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 32
+height = 32
+components = 3
+bit_depth = 12
+signed = false
+pattern = "deterministic-noise"
+progression = "rpcl"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 16.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-04"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 63
+height = 47
+components = 1
+bit_depth = 8
+signed = true
+pattern = "impulse"
+progression = "pcrl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-05"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 32
+height = 32
+components = 3
+bit_depth = 8
+signed = true
+pattern = "deterministic-noise"
+progression = "cprl"
+decomposition_levels = 1
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-06"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 63
+height = 47
+components = 1
+bit_depth = 12
+signed = false
+pattern = "gradient"
+progression = "cprl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-07"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 32
+height = 32
+components = 3
+bit_depth = 12
+signed = false
+pattern = "checkerboard"
+progression = "pcrl"
+decomposition_levels = 1
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-08"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 63
+height = 47
+components = 1
+bit_depth = 8
+signed = true
+pattern = "impulse"
+progression = "rpcl"
+decomposition_levels = 3
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-09"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 32
+height = 32
+components = 1
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 12.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+[[cases]]
+id = "part15-pairwise-10"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 63
+height = 47
+components = 3
+bit_depth = 12
+signed = true
+pattern = "deterministic-noise"
+progression = "lrcp"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+pairwise_scope = "part15"
+
+
+[[cases]]
+id = "part15-planar-sampled"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+input = "component-planes"
+width = 65
+height = 65
+components = 3
+bit_depth = 12
+signed = false
+pattern = "gradient"
+sampling = [[1, 1], [2, 2], [2, 2]]
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-planar-typed"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+input = "typed-component-planes"
+width = 65
+height = 65
+components = 3
+bit_depth = 16
+signed = false
+pattern = "deterministic-noise"
+sampling = [[1, 1], [2, 1], [1, 2]]
+component_bit_depths = [8, 12, 16]
+component_signedness = [false, true, false]
+progression = "rlcp"
+decomposition_levels = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-precinct-lossy"
+iuts = ["cpu"]
+mode = "lossy"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 129
+height = 97
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rpcl"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 8.0 }
+precinct_exponents = [[6, 6], [7, 7]]
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-recode-classic-j2k-to-htj2k"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "recode"
+block_coding = "high-throughput"
+payload = "codestream"
+source_payload = "codestream"
+width = 64
+height = 64
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-recode-jp2-to-jph"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "recode"
+block_coding = "high-throughput"
+payload = "jph"
+source_payload = "jp2"
+width = 64
+height = 64
+components = 1
+bit_depth = 16
+signed = false
+pattern = "checkerboard"
+progression = "rlcp"
+decomposition_levels = 3
+markers = ["CAP"]
+
+[[cases]]
+id = "part15-roi-lossless"
+iuts = ["cpu"]
+reference_decoder = "open-htj2k"
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "codestream"
+width = 97
+height = 81
+components = 3
+bit_depth = 12
+signed = false
+pattern = "deterministic-noise"
+progression = "lrcp"
+decomposition_levels = 3
+roi = { component = 1, x = 13, y = 11, width = 31, height = 27, shift = 15 }
+markers = ["CAP", "RGN"]
+
+[[cases]]
+id = "part15-tile-multitile"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "high-throughput"
+payload = "jph"
+width = 103
+height = 79
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rlcp"
+decomposition_levels = 2
+tile_size = [40, 32]
+tile_part_packet_limit = 2
+markers = ["CAP"]
+
+[[cases]]
+id = "planar-sampled"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+input = "component-planes"
+width = 65
+height = 49
+components = 3
+bit_depth = 12
+signed = false
+pattern = "gradient"
+sampling = [[1, 1], [2, 2], [2, 2]]
+progression = "lrcp"
+decomposition_levels = 3
+
+[[cases]]
+id = "planar-typed"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+input = "typed-component-planes"
+width = 41
+height = 35
+components = 3
+bit_depth = 16
+signed = false
+pattern = "deterministic-noise"
+sampling = [[1, 1], [2, 1], [1, 2]]
+component_bit_depths = [8, 12, 16]
+component_signedness = [false, true, false]
+progression = "rlcp"
+decomposition_levels = 2
+
+[[cases]]
+id = "precinct-lossy"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 129
+height = 97
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "rpcl"
+decomposition_levels = 1
+lossy_rate_target = { kind = "bits-per-pixel", value = 4.0 }
+precinct_exponents = [[6, 6], [7, 7]]
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 25.0
+
+[[cases]]
+id = "rate-bytes"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 96
+height = 80
+components = 3
+bit_depth = 8
+signed = false
+pattern = "checkerboard"
+progression = "pcrl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "bytes", value = 3072 }
+minimum_psnr_db = 20.0
+maximum_rate_overshoot_percent = 10.0
+
+[[cases]]
+id = "rate-psnr"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossy"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 96
+height = 80
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "cprl"
+decomposition_levels = 3
+lossy_rate_target = { kind = "psnr-db", value = 36.0 }
+minimum_psnr_db = 35.75
+
+[[cases]]
+id = "roi-lossless"
+iuts = ["cpu"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 81
+height = 67
+components = 3
+bit_depth = 8
+signed = false
+pattern = "gradient"
+progression = "lrcp"
+decomposition_levels = 3
+roi = { component = 1, x = 13, y = 11, width = 31, height = 27, shift = 12 }
+markers = ["RGN"]
+
+[[cases]]
+id = "tile-multitile"
+iuts = ["cpu", "cuda", "metal"]
+mode = "lossless"
+operation = "encode"
+block_coding = "classic"
+payload = "codestream"
+width = 96
+height = 73
+components = 3
+bit_depth = 8
+signed = false
+pattern = "deterministic-noise"
+progression = "rpcl"
+decomposition_levels = 2
+tile_size = [40, 32]
+tile_part_packet_limit = 2

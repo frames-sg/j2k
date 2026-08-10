@@ -37,6 +37,8 @@ pub(in crate::compute) fn encode_distinct_ht_sub_bands_to_buffer_in_encoder(
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                dispatches: 0,
+                refinement_dispatches: 0,
                 source_indices: None,
                 recyclable_status: None,
             },
@@ -96,6 +98,8 @@ pub(in crate::compute) fn encode_distinct_ht_sub_band_groups_to_buffer_in_encode
             DirectStatusCheck::Ht {
                 buffer: empty,
                 len: 0,
+                dispatches: 0,
+                refinement_dispatches: 0,
                 source_indices: None,
                 recyclable_status: None,
             },

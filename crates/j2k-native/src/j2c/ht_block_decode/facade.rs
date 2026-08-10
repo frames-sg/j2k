@@ -2,27 +2,12 @@
 
 use super::super::build::CodeBlock;
 use super::super::decode::DecompositionStorage;
-use super::collect_code_block_segments;
 use super::pipeline::PHASE_LIMIT_MAGREF;
 use super::state::HtBlockDecodeContext;
 use super::stats::HtBlockDecodeStats;
 use super::validation::decode_segments_validated_with_scratch_for_phase;
+use super::{collect_code_block_data_into, HtCodeBlockSegments};
 use crate::error::{bail, DecodingError, Result};
-
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "the sign bit is masked before converting the at-most 31-bit coefficient magnitude"
-)]
-pub(crate) fn coefficient_to_i32(value: u32, k_max: u8) -> i32 {
-    let shift = 31_u32.saturating_sub(u32::from(k_max));
-    let magnitude = ((value & 0x7FFF_FFFF) >> shift) as i32;
-
-    if (value & 0x8000_0000) != 0 {
-        -magnitude
-    } else {
-        magnitude
-    }
-}
 
 #[expect(
     clippy::too_many_arguments,
@@ -70,7 +55,13 @@ pub(crate) fn decode_with_stats(
         return Ok(());
     }
 
-    let segments = collect_code_block_segments(code_block, storage)?;
+    let (cleanup_length, refinement_length) =
+        collect_code_block_data_into(code_block, storage, &mut ctx.segment_data)?;
+    let segments = HtCodeBlockSegments::from_combined_payload(
+        &ctx.segment_data,
+        cleanup_length,
+        refinement_length,
+    )?;
     decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT_MAGREF>(
         &segments,
         code_block.missing_bit_planes,

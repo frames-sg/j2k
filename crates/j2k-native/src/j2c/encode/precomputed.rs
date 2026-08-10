@@ -42,7 +42,9 @@ pub use self::api53::{
     encode_precomputed_j2k_53, encode_precomputed_j2k_53_with_accelerator,
     encode_precomputed_j2k_53_with_mct, encode_precomputed_j2k_53_with_mct_and_accelerator,
 };
-use self::options::{try_precomputed_options, PrecomputedOptionMode};
+use self::options::{
+    apply_required_ht_magnitude_bound, try_precomputed_options, PrecomputedOptionMode,
+};
 mod api97;
 pub use self::api97::{
     encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_with_accelerator,
@@ -62,7 +64,9 @@ pub use self::limits::{
     encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
 };
 mod packets;

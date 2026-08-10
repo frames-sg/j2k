@@ -230,7 +230,7 @@ fn explicit_metal_region_scaled_htj2k_falls_back_when_direct_width_is_unsupporte
     }
 
     assert_region_scaled_grayscale_matches_host(
-        &fixture_ht_gray8_unsupported_direct_width(),
+        &fixture_ht_u8_unsupported_direct_width(1),
         Rect {
             x: 48,
             y: 2,

@@ -3,156 +3,26 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod identity;
+mod schema;
+
+pub use identity::validate_auto_routing_decode_identity;
+pub use schema::{
+    AutoRoutingBackend, AutoRoutingCell, AutoRoutingCodec, AutoRoutingContainer,
+    AutoRoutingEvidence, AutoRoutingExecution, AutoRoutingManifest, AutoRoutingManifestCase,
+    AutoRoutingOperation, AutoRoutingPixelFormat, AutoRoutingPlatform, AutoRoutingPnm,
+    AutoRoutingRoute, AutoRoutingWorkload, AutoRoutingWorkloadKind, AutoRoutingWorkloadSet,
+};
 
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CASE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TOTAL_CASE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_CASES: usize = 4_096;
-
-/// A pinned external workload manifest for Auto-routing benchmarks.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingManifest {
-    pub schema_version: u32,
-    pub corpus: String,
-    pub source_url: String,
-    pub cases: Vec<AutoRoutingManifestCase>,
-}
-
-/// One hash-pinned input in an Auto-routing workload manifest.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingManifestCase {
-    pub id: String,
-    pub path: String,
-    pub kind: AutoRoutingWorkloadKind,
-    pub pixel_format: AutoRoutingPixelFormat,
-    pub sha256: String,
-}
-
-/// Whether a workload is a compressed decode input or an uncompressed encode input.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AutoRoutingWorkloadKind {
-    Decode,
-    Encode,
-}
-
-/// Pixel layout used for route-parity comparisons.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AutoRoutingPixelFormat {
-    Gray8,
-    Rgb8,
-}
-
-/// One validated, in-memory external workload.
-#[derive(Clone, Debug)]
-pub struct AutoRoutingWorkload {
-    pub id: String,
-    pub path: PathBuf,
-    pub kind: AutoRoutingWorkloadKind,
-    pub pixel_format: AutoRoutingPixelFormat,
-    pub bytes: Vec<u8>,
-}
-
-/// A validated manifest, its exact hash, and the inputs it names.
-#[derive(Clone, Debug)]
-pub struct AutoRoutingWorkloadSet {
-    pub manifest: AutoRoutingManifest,
-    pub manifest_sha256: String,
-    pub workloads: Vec<AutoRoutingWorkload>,
-}
-
-/// Validated 8-bit PGM/PPM input for an encode benchmark cell.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AutoRoutingPnm {
-    pub id: String,
-    pub pixels: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    pub components: u16,
-}
-
-/// Accelerator lane that produced route evidence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AutoRoutingBackend {
-    Cuda,
-    Metal,
-}
-
-/// Hardware and software identity for one benchmark lane.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingPlatform {
-    pub os: String,
-    pub arch: String,
-    pub hardware: String,
-    pub driver: String,
-}
-
-/// Workload class evaluated for a fixed Auto-routing decision.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AutoRoutingOperation {
-    FullDecode,
-    RoiDecode,
-    ScaledDecode,
-    BatchDecode,
-    LosslessEncode,
-    LossyEncode,
-}
-
-/// Actual execution class of a measured route.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AutoRoutingExecution {
-    Cpu,
-    Hybrid,
-    DeviceNative,
-}
-
-/// Criterion result identity and exact output produced by one route.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingRoute {
-    pub criterion_id: String,
-    pub execution: AutoRoutingExecution,
-    pub output_sha256: String,
-}
-
-/// CPU, hybrid, and optional device-native measurements for one workload class.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingCell {
-    pub id: String,
-    pub operation: AutoRoutingOperation,
-    pub source: String,
-    pub workload: String,
-    pub cpu: AutoRoutingRoute,
-    pub hybrid: AutoRoutingRoute,
-    pub strict_device_supported: bool,
-    pub strict_device: Option<AutoRoutingRoute>,
-}
-
-/// Versioned route evidence emitted beside Criterion estimates.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoRoutingEvidence {
-    pub schema_version: u32,
-    pub candidate_sha: String,
-    pub backend: AutoRoutingBackend,
-    pub platform: AutoRoutingPlatform,
-    pub external_manifest_sha256: String,
-    pub external_case_count: usize,
-    pub cells: Vec<AutoRoutingCell>,
-}
 
 /// Load and hash-check every case named by an external Auto-routing manifest.
 ///
@@ -194,6 +64,7 @@ pub fn load_auto_routing_manifest(
     for case in &manifest.cases {
         workloads.push(load_auto_routing_case(
             case,
+            manifest.schema_version,
             &canonical_root,
             &mut ids,
             &mut total_bytes,
@@ -209,6 +80,7 @@ pub fn load_auto_routing_manifest(
 
 fn load_auto_routing_case(
     case: &AutoRoutingManifestCase,
+    schema_version: u32,
     canonical_root: &Path,
     ids: &mut BTreeSet<String>,
     total_bytes: &mut u64,
@@ -284,13 +156,48 @@ fn load_auto_routing_case(
             case.id, case.sha256
         ));
     }
+    let (codec, container) = case_format(case, schema_version)?;
     Ok(AutoRoutingWorkload {
         id: case.id.clone(),
         path,
         kind: case.kind,
+        codec,
+        container,
         pixel_format: case.pixel_format,
         bytes,
     })
+}
+
+fn case_format(
+    case: &AutoRoutingManifestCase,
+    schema_version: u32,
+) -> Result<(AutoRoutingCodec, AutoRoutingContainer), String> {
+    let format = match (schema_version, case.codec, case.container) {
+        (1, None, None) => (AutoRoutingCodec::Jpeg2000Part1, AutoRoutingContainer::Codestream),
+        (2, Some(codec), Some(container)) => (codec, container),
+        _ => {
+            return Err(format!(
+                "Auto-routing case {} must use codec and container fields required by its schema version",
+                case.id
+            ))
+        }
+    };
+    if !matches!(
+        format,
+        (
+            AutoRoutingCodec::Jpeg2000Part1,
+            AutoRoutingContainer::Codestream | AutoRoutingContainer::Jp2
+        ) | (
+            AutoRoutingCodec::Htj2kPart15,
+            AutoRoutingContainer::Codestream | AutoRoutingContainer::Jph
+        )
+    ) {
+        return Err(format!(
+            "Auto-routing case {} has an invalid codec/container pair",
+            case.id
+        ));
+    }
+    Ok(format)
 }
 
 /// Serialize validated route evidence deterministically with a trailing newline.
@@ -333,12 +240,18 @@ pub fn auto_routing_sha256(bytes: &[u8]) -> String {
 ///
 /// # Errors
 ///
-/// Returns an error when the workload is not an encode input, the PNM is
-/// malformed, or its declared pixel layout disagrees with the payload.
+/// Returns an error when the workload is not a codestream encode input, the
+/// PNM is malformed, or its declared pixel layout disagrees with the payload.
 pub fn load_auto_routing_pnm(workload: &AutoRoutingWorkload) -> Result<AutoRoutingPnm, String> {
     if workload.kind != AutoRoutingWorkloadKind::Encode {
         return Err(format!(
             "Auto-routing workload {} is not an encode input",
+            workload.id
+        ));
+    }
+    if workload.container != AutoRoutingContainer::Codestream {
+        return Err(format!(
+            "Auto-routing encode workload {} currently measures codestream output only",
             workload.id
         ));
     }
@@ -360,6 +273,7 @@ pub fn load_auto_routing_pnm(workload: &AutoRoutingWorkload) -> Result<AutoRouti
     }
     Ok(AutoRoutingPnm {
         id: workload.id.clone(),
+        codec: workload.codec,
         pixels: image.pixels,
         width: image.width,
         height: image.height,
@@ -422,7 +336,7 @@ pub const fn auto_routing_operation_label(operation: AutoRoutingOperation) -> &'
 }
 
 fn validate_manifest_header(manifest: &AutoRoutingManifest) -> Result<(), String> {
-    if manifest.schema_version != 1
+    if !matches!(manifest.schema_version, 1 | 2)
         || manifest.corpus.is_empty()
         || manifest.cases.is_empty()
         || manifest.cases.len() > MAX_CASES
@@ -436,7 +350,7 @@ fn validate_manifest_header(manifest: &AutoRoutingManifest) -> Result<(), String
 }
 
 fn validate_evidence(evidence: &AutoRoutingEvidence) -> Result<(), String> {
-    if evidence.schema_version != 1
+    if !matches!(evidence.schema_version, 1 | 2)
         || !is_lower_hex(&evidence.candidate_sha, 40)
         || !is_lower_hex(&evidence.external_manifest_sha256, 64)
         || evidence.external_case_count == 0
@@ -575,160 +489,4 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use serde_json::json;
-    use sha2::{Digest, Sha256};
-
-    use super::{
-        auto_routing_route_cell, load_auto_routing_manifest, load_auto_routing_pnm,
-        write_auto_routing_evidence, AutoRoutingBackend, AutoRoutingEvidence, AutoRoutingExecution,
-        AutoRoutingOperation, AutoRoutingPlatform,
-    };
-
-    #[test]
-    fn manifest_loader_hashes_and_classifies_bounded_external_inputs() {
-        let root = temp_dir("manifest");
-        let decode = root.join("decode/sample.j2k");
-        let encode = root.join("encode/sample.ppm");
-        fs::create_dir_all(decode.parent().unwrap()).unwrap();
-        fs::create_dir_all(encode.parent().unwrap()).unwrap();
-        fs::write(&decode, b"decode bytes").unwrap();
-        fs::write(&encode, b"P6\n1 1\n255\n\x01\x02\x03").unwrap();
-        let manifest = root.join("manifest.json");
-        let manifest_value = json!({
-            "schema_version": 1,
-            "corpus": "routing-fixture",
-            "source_url": "https://example.invalid/routing-fixture",
-            "cases": [
-                {
-                    "id": "decode-case",
-                    "path": "decode/sample.j2k",
-                    "kind": "decode",
-                    "pixel_format": "rgb8",
-                    "sha256": sha256(b"decode bytes")
-                },
-                {
-                    "id": "encode-case",
-                    "path": "encode/sample.ppm",
-                    "kind": "encode",
-                    "pixel_format": "rgb8",
-                    "sha256": sha256(b"P6\n1 1\n255\n\x01\x02\x03")
-                }
-            ]
-        });
-        fs::write(
-            &manifest,
-            serde_json::to_vec_pretty(&manifest_value).unwrap(),
-        )
-        .unwrap();
-
-        let loaded = load_auto_routing_manifest(&manifest, &root).unwrap();
-
-        assert_eq!(loaded.manifest.corpus, "routing-fixture");
-        assert_eq!(loaded.workloads.len(), 2);
-        assert_eq!(loaded.workloads[0].bytes, b"decode bytes");
-        assert_eq!(loaded.workloads[1].bytes, b"P6\n1 1\n255\n\x01\x02\x03");
-        assert_eq!(
-            loaded.manifest_sha256,
-            sha256(&fs::read(&manifest).unwrap())
-        );
-        let pnm = load_auto_routing_pnm(&loaded.workloads[1]).unwrap();
-        assert_eq!((pnm.width, pnm.height, pnm.components), (1, 1, 3));
-        assert_eq!(pnm.pixels, [1, 2, 3]);
-    }
-
-    #[test]
-    fn manifest_loader_rejects_escape_hash_mismatch_and_duplicate_ids() {
-        let root = temp_dir("invalid");
-        fs::write(root.join("sample.j2k"), b"sample").unwrap();
-        let manifest = root.join("manifest.json");
-        let base = json!({
-            "schema_version": 1,
-            "corpus": "routing-fixture",
-            "source_url": "https://example.invalid/routing-fixture",
-            "cases": [{
-                "id": "case",
-                "path": "../outside.j2k",
-                "kind": "decode",
-                "pixel_format": "gray8",
-                "sha256": sha256(b"sample")
-            }]
-        });
-        fs::write(&manifest, serde_json::to_vec(&base).unwrap()).unwrap();
-        assert!(load_auto_routing_manifest(&manifest, &root)
-            .unwrap_err()
-            .contains("safe relative path"));
-
-        let mut mismatch = base.clone();
-        mismatch["cases"][0]["path"] = json!("sample.j2k");
-        mismatch["cases"][0]["sha256"] = json!("0".repeat(64));
-        fs::write(&manifest, serde_json::to_vec(&mismatch).unwrap()).unwrap();
-        assert!(load_auto_routing_manifest(&manifest, &root)
-            .unwrap_err()
-            .contains("SHA-256 mismatch"));
-
-        let mut duplicate = mismatch;
-        duplicate["cases"][0]["sha256"] = json!(sha256(b"sample"));
-        let repeated = duplicate["cases"][0].clone();
-        duplicate["cases"].as_array_mut().unwrap().push(repeated);
-        fs::write(&manifest, serde_json::to_vec(&duplicate).unwrap()).unwrap();
-        assert!(load_auto_routing_manifest(&manifest, &root)
-            .unwrap_err()
-            .contains("unique ids"));
-    }
-
-    #[test]
-    fn evidence_writer_is_deterministic_and_refuses_invalid_route_labels() {
-        let root = temp_dir("evidence");
-        let output = root.join("nested/evidence.json");
-        let mut evidence = AutoRoutingEvidence {
-            schema_version: 1,
-            candidate_sha: "1".repeat(40),
-            backend: AutoRoutingBackend::Metal,
-            platform: AutoRoutingPlatform {
-                os: "macos".to_string(),
-                arch: "aarch64".to_string(),
-                hardware: "Apple M fixture".to_string(),
-                driver: "fixture driver".to_string(),
-            },
-            external_manifest_sha256: "2".repeat(64),
-            external_case_count: 2,
-            cells: vec![auto_routing_route_cell(
-                "decode-case",
-                AutoRoutingOperation::FullDecode,
-                "auto-routing_full-decode_decode-case",
-                "3".repeat(64),
-            )],
-        };
-
-        write_auto_routing_evidence(&output, &evidence).unwrap();
-        let first = fs::read(&output).unwrap();
-        write_auto_routing_evidence(&output, &evidence).unwrap();
-        assert_eq!(fs::read(&output).unwrap(), first);
-        assert!(first.ends_with(b"\n"));
-
-        evidence.cells[0].hybrid.execution = AutoRoutingExecution::Cpu;
-        assert!(write_auto_routing_evidence(&output, &evidence)
-            .unwrap_err()
-            .contains("hybrid route"));
-    }
-
-    fn sha256(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
-    }
-
-    fn temp_dir(label: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "j2k-test-support-auto-routing-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-}
+mod tests;

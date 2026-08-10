@@ -160,7 +160,11 @@ fn ht_prepared_job_supports_runtime(job: &J2kHtCleanupBatchJob) -> bool {
     if job.width == 0 || job.height == 0 {
         return true;
     }
-    job.roi_shift == 0
+    job.num_bitplanes > 0
+        && job
+            .num_bitplanes
+            .checked_add(job.roi_shift)
+            .is_some_and(|coded_bitplanes| coded_bitplanes <= 31)
         && job.output_stride >= job.width
         && crate::ht::supports_metal_ht_geometry(job.width, job.height)
 }

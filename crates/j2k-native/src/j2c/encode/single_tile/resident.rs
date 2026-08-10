@@ -49,7 +49,7 @@ pub(in crate::j2c::encode) fn encode_resident_impl(
     .map_err(NativeEncodePipelineError::into_resident_error)?;
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
-    let plan = build_single_tile_plan(
+    let mut plan = build_single_tile_plan(
         validated,
         input.width(),
         input.height(),
@@ -66,7 +66,7 @@ pub(in crate::j2c::encode) fn encode_resident_impl(
     let (tile_data, tile_body_us) = encode_complete_resident_ht_tile(
         input,
         options,
-        &plan,
+        &mut plan,
         profile_enabled,
         &session,
         accelerator,

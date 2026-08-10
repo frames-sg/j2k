@@ -149,6 +149,7 @@ impl BitPlaneDecodeContext {
                 vertically_causal_context: false,
                 segmentation_symbols: false,
                 high_throughput_block_coding: false,
+                mixed_block_coding: false,
             },
             bitplanes: 0,
             max_coding_passes: 0,

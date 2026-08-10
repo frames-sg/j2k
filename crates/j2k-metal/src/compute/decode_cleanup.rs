@@ -241,6 +241,7 @@ pub(crate) fn decode_classic_cleanup_sub_band_with_midpoint(
 pub(crate) fn decode_ht_cleanup_code_block(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) -> Result<(), Error> {
     let required_len = required_ht_output_len(job)?;
     if output.len() < required_len {
@@ -264,6 +265,7 @@ pub(crate) fn decode_ht_cleanup_code_block(
             refinement_length: job.refinement_length,
             missing_msbs: u32::from(job.missing_bit_planes),
             num_bitplanes: u32::from(job.num_bitplanes),
+            roi_shift: u32::from(job.roi_shift),
             number_of_coding_passes: u32::from(job.number_of_coding_passes),
             output_stride: u32::try_from(job.output_stride).map_err(|_| Error::MetalKernel {
                 message: "HTJ2K Metal output stride exceeds u32".to_string(),
@@ -271,6 +273,7 @@ pub(crate) fn decode_ht_cleanup_code_block(
             output_offset: 0,
             dequantization_step: job.dequantization_step,
             stripe_causal: u32::from(job.stripe_causal),
+            irreversible_midpoint: u32::from(irreversible_midpoint),
         };
         let decoded = copied_slice_buffer(&runtime.device, output)?;
         dispatch_ht_cleanup(runtime, job.data, params, &decoded)?;
@@ -286,6 +289,7 @@ pub(crate) fn decode_ht_cleanup_code_block(
 pub(crate) fn decode_ht_cleanup_sub_band(
     job: HtSubBandDecodeJob<'_>,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) -> Result<(), Error> {
     let required_len = (job.width as usize)
         .checked_mul(job.height as usize)
@@ -345,6 +349,7 @@ pub(crate) fn decode_ht_cleanup_sub_band(
                     })?,
                 dequantization_step: block.code_block.dequantization_step,
                 stripe_causal: u32::from(block.code_block.stripe_causal),
+                irreversible_midpoint: u32::from(irreversible_midpoint),
             });
 
             let end_x = block

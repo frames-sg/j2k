@@ -40,6 +40,7 @@ fn job(coded_offset: u32, coded_len: u32, passes: u32, output_offset: u32) -> J2
         output_offset,
         dequantization_step: 1.0,
         stripe_causal: 0,
+        irreversible_midpoint: 0,
     }
 }
 

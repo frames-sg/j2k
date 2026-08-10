@@ -177,27 +177,26 @@ impl<'a> J2kDecoder<'a> {
                         self.inner.info().dimensions,
                         DeviceDecodeRequest::Region { roi },
                     )?;
-                    crate::compute::with_runtime_for_session(session, |_| {
-                        self.decode_region_to_metal_surface_with_device(
-                            request.fmt,
-                            plan,
-                            session.device_handle(),
-                        )
-                    })
+                    self.decode_region_scaled_to_metal_surface_with_session(
+                        request.fmt,
+                        roi,
+                        j2k_core::Downscale::None,
+                        plan,
+                        session,
+                    )
                 }
                 MetalDecodeOp::Scaled(scale) => {
                     let plan = DeviceDecodePlan::for_image(
                         self.inner.info().dimensions,
                         DeviceDecodeRequest::Scaled { scale },
                     )?;
-                    crate::compute::with_runtime_for_session(session, |_| {
-                        self.decode_scaled_to_metal_surface_with_device(
-                            request.fmt,
-                            scale,
-                            plan,
-                            session.device_handle(),
-                        )
-                    })
+                    self.decode_region_scaled_to_metal_surface_with_session(
+                        request.fmt,
+                        plan.source_rect(),
+                        scale,
+                        plan,
+                        session,
+                    )
                 }
                 MetalDecodeOp::RegionScaled { roi, scale } => {
                     let plan = DeviceDecodePlan::for_image(

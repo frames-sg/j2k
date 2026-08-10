@@ -42,9 +42,9 @@ impl CpuGroupFastWorkspace {
         );
         self.classic_ranges.resize(payload_count, empty_range());
         self.assign_image_spans(group, |image| {
-            image
+            Ok(image
                 .classic_plan()
-                .map_or(0, PreparedClassicPlan::payload_count)
+                .map_or(0, PreparedClassicPlan::payload_count))
         })?;
 
         for (image_slot, image) in group.images.iter().enumerate() {
@@ -57,6 +57,7 @@ impl CpuGroupFastWorkspace {
                     source_index: group.source_indices[image_slot],
                     image_slot,
                     payload_index,
+                    payload_record_count: 1,
                     destination_index: span.start + payload_index,
                     block_index,
                     bucket: CpuPayloadBucket::Classic,

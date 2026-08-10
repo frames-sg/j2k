@@ -92,7 +92,8 @@ fn prepare_referenced_classic_color_tiles(
         )?;
         component_steps.push(budget.try_vec(step_count, context)?);
     }
-    let mut payloads = ReferencedClassicPayloadCursor::new(input, referenced);
+    let mut payloads =
+        ReferencedClassicPayloadCursor::new(input, referenced.payloads(), referenced.ranges());
     for tile in referenced.tiles() {
         let geometry =
             referenced_color_geometry(tile, expected_component_count)
@@ -322,15 +323,22 @@ fn prepare_referenced_htj2k_color_tiles(
             referenced.payloads().len(),
             "HTJ2K color tile",
         )?;
+        let mut classic_payloads = ReferencedClassicPayloadCursor::new(
+            input,
+            tile.classic_payloads(),
+            tile.classic_ranges(),
+        );
         for (component, steps) in geometry.component_plans.iter().zip(&mut component_steps) {
             append_referenced_htj2k_component_steps(
                 component,
                 input,
                 referenced.payloads(),
                 &mut payload_cursor,
+                &mut classic_payloads,
                 steps,
             )?;
         }
+        classic_payloads.ensure_exhausted()?;
         if payload_cursor != expected_end {
             return Err(Error::MetalStateInvariant {
                 state: "HTJ2K color tile payload traversal",

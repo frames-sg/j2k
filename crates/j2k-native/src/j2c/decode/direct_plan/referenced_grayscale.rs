@@ -36,6 +36,12 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
             }
             let first_record = payloads.len();
             let mut tile_payloads = Vec::new();
+            let mut tile_classic_payloads = Vec::new();
+            let mut tile_classic_ranges = Vec::new();
+            let mut classic_collector = ClassicPayloadCollector {
+                payloads: &mut tile_classic_payloads,
+                ranges: &mut tile_classic_ranges,
+            };
             let mut geometry = build_direct_grayscale_tile_plan(
                 data,
                 payload_range_owner,
@@ -47,20 +53,26 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
                 Some(output_region),
                 Some(output_region),
                 Some(&mut tile_payloads),
-                None,
+                Some(&mut classic_collector),
             )?;
-            let job_count = strip_grayscale_payload_owners(&mut geometry)?;
-            if job_count != tile_payloads.len() {
+            let record_count = strip_grayscale_payload_owners(&mut geometry, &tile_payloads)?;
+            if record_count != tile_payloads.len() {
+                bail!(DecodingError::CodeBlockDecodeFailure);
+            }
+            let classic_job_count = strip_classic_payload_owners(&mut geometry)?;
+            if classic_job_count != tile_classic_payloads.len() {
                 bail!(DecodingError::CodeBlockDecodeFailure);
             }
             append_decode_elements(&mut payloads, &mut tile_payloads)?;
-            let payload_records = payload_record_span(first_record, job_count)?;
+            let payload_records = payload_record_span(first_record, record_count)?;
             let (decoded_rect, destination_rect) = grayscale_plan_rects(&geometry, output_rect)?;
             tile_plans.push(J2kReferencedTilePlan::new(
                 usize::try_from(tile.idx).map_err(|_| ValidationError::ImageTooLarge)?,
                 decoded_rect,
                 destination_rect,
                 payload_records,
+                tile_classic_payloads,
+                tile_classic_ranges,
                 super::J2kWaveletTransform::from(tile.component_infos[0].wavelet_transform()),
                 J2kReferencedTileGeometry::Grayscale(geometry),
             ));
@@ -141,6 +153,8 @@ pub(crate) fn build_referenced_classic_grayscale_plan<'a>(
                 decoded_rect,
                 destination_rect,
                 payload_records,
+                Vec::new(),
+                Vec::new(),
                 super::J2kWaveletTransform::from(tile.component_infos[0].wavelet_transform()),
                 J2kReferencedTileGeometry::Grayscale(geometry),
             ));

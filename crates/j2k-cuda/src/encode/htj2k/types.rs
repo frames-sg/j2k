@@ -8,6 +8,7 @@ use super::super::CudaEncodeStageTimings;
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) struct CudaEncodedHtj2kTile {
     pub(in crate::encode) tile_data: Vec<u8>,
+    pub(in crate::encode) required_ht_magnitude_bound: Option<u8>,
     pub(in crate::encode) deinterleave_dispatches: usize,
     pub(in crate::encode) forward_rct_dispatches: usize,
     pub(in crate::encode) forward_ict_dispatches: usize,
@@ -25,6 +26,7 @@ pub(in crate::encode) struct CudaEncodedHtj2kTile {
 #[derive(Default)]
 pub(super) struct CudaHtj2kTileEncodeStats {
     pub(super) collect_profile: bool,
+    pub(super) required_ht_magnitude_bound: Option<u8>,
     pub(super) deinterleave_dispatches: usize,
     pub(super) forward_rct_dispatches: usize,
     pub(super) forward_ict_dispatches: usize,
@@ -57,6 +59,7 @@ pub(super) struct CudaTileSubbandRegion {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) stride: u32,
+    pub(super) decomposition_level: u8,
 }
 
 #[cfg(feature = "cuda-runtime")]

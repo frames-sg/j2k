@@ -61,26 +61,34 @@ fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
     .expect("wrap explicit HTJ2K RGBA image")
 }
 
-fn unsupported_ht_roi_rgb() -> Arc<[u8]> {
-    let pixels = (0..4_u8)
-        .flat_map(|index| [index * 17, index * 29 + 3, index * 41 + 5])
-        .collect::<Vec<_>>();
+fn unsupported_ht_direct_width_rgb() -> Arc<[u8]> {
+    let width = 512_u32;
+    let height = 8_u32;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+    for y in 0..height {
+        for x in 0..width {
+            for component in 0..3_u32 {
+                pixels.push(((x * 7 + y * 11 + x / 3 + component * 29) & 0xff) as u8);
+            }
+        }
+    }
     Arc::from(
         encode_htj2k(
             &pixels,
-            2,
-            2,
+            width,
+            height,
             3,
             8,
             false,
             &EncodeOptions {
                 reversible: true,
-                num_decomposition_levels: 1,
-                roi_component_shifts: vec![3, 0, 0],
+                num_decomposition_levels: 0,
+                code_block_width_exp: 7,
+                code_block_height_exp: 1,
                 ..EncodeOptions::default()
             },
         )
-        .expect("encode HTJ2K RGB8 with unsupported RGN maxshift"),
+        .expect("encode HTJ2K RGB8 with an unsupported direct code-block width"),
     )
 }
 

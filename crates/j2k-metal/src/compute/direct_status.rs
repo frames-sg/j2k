@@ -20,6 +20,8 @@ pub(super) enum DirectStatusCheck {
     Ht {
         buffer: Buffer,
         len: usize,
+        dispatches: usize,
+        refinement_dispatches: usize,
         source_indices: Option<Vec<usize>>,
         recyclable_status: Option<PooledBuffer>,
     },
@@ -313,6 +315,8 @@ mod retirement_tests {
         DirectStatusCheck::Ht {
             buffer: owner.buffer().clone(),
             len: 1,
+            dispatches: 1,
+            refinement_dispatches: 0,
             source_indices: Some(vec![0]),
             recyclable_status: Some(owner),
         }

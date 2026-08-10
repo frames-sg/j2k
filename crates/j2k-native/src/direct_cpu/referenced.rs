@@ -14,6 +14,9 @@ use crate::error::{bail, DecodingError, Result};
 use crate::{HtCodeBlockPayloadRanges, J2kReferencedHtj2kPlan};
 
 use super::allocation::prepare_referenced_direct_scratch;
+use super::referenced_classic::{
+    validate_payload_ranges as validate_classic_payload_ranges, ClassicPayloadCursor,
+};
 use super::J2kDirectCpuScratch;
 use component::{execute_color_components_referenced, execute_component_plan_referenced};
 use payload::{validate_payload_ranges, ReferencedPayloadCursor};
@@ -65,21 +68,32 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
     validate_payload_ranges(encoded_input, payload_ranges)?;
+    for tile in plan.tiles() {
+        validate_classic_payload_ranges(
+            encoded_input,
+            tile.classic_payloads(),
+            tile.classic_ranges(),
+        )?;
+    }
     prepare_referenced_direct_scratch(plan, scratch)?;
     {
         let J2kDirectCpuScratch {
             component_band_sets,
             component_planes,
             compressed_payload,
-            classic_workspace: _,
+            classic_workspace,
             ht_workspace,
             staged_state: _,
         } = scratch;
-        let mut payloads =
-            ReferencedPayloadCursor::new(encoded_input, payload_ranges, compressed_payload);
+        let mut payloads = ReferencedPayloadCursor::new(encoded_input, payload_ranges);
         let mut output_initialized = [false; 4];
 
         for tile in plan.tiles() {
+            let mut classic_payloads = ClassicPayloadCursor::new(
+                tile.classic_payloads(),
+                tile.classic_ranges(),
+                encoded_input,
+            );
             if let Some(geometry) = tile.grayscale_geometry() {
                 let bands = component_band_sets
                     .first_mut()
@@ -92,6 +106,9 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     bands,
                     output,
                     &mut payloads,
+                    &mut classic_payloads,
+                    compressed_payload,
+                    classic_workspace,
                     ht_workspace,
                     &mut output_initialized[0],
                 )?;
@@ -106,6 +123,9 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     component_band_sets,
                     component_planes,
                     &mut payloads,
+                    &mut classic_payloads,
+                    compressed_payload,
+                    classic_workspace,
                     ht_workspace,
                     &mut output_initialized,
                     tile.destination_rect(),
@@ -125,6 +145,9 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     component_band_sets,
                     component_planes,
                     &mut payloads,
+                    &mut classic_payloads,
+                    compressed_payload,
+                    classic_workspace,
                     ht_workspace,
                     &mut output_initialized,
                     tile.destination_rect(),
@@ -132,6 +155,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             } else {
                 bail!(DecodingError::CodeBlockDecodeFailure);
             }
+            classic_payloads.ensure_exhausted()?;
         }
         payloads.ensure_exhausted()?;
     }

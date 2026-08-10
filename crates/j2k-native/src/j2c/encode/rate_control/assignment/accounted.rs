@@ -60,6 +60,16 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget_accounted(
         workspace.assignments[candidate_idx] = layer;
         workspace.block_min_layers[candidate.block_index] = layer;
     }
+    for (candidate, assignment) in candidates.iter().zip(&mut workspace.assignments) {
+        *assignment = *workspace
+            .block_min_layers
+            .get(candidate.block_index)
+            .ok_or_else(|| {
+                NativeEncodePipelineError::internal_invariant(
+                    "HTJ2K segment candidate block index mismatch",
+                )
+            })?;
+    }
     Ok(workspace.assignments)
 }
 

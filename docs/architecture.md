@@ -63,7 +63,7 @@ still-image correctness. Keep row-level status synchronized with
 ```text
 j2k -> j2k-codec-math, j2k-core, j2k-native, j2k-types
 j2k-native -> j2k-codec-math, j2k-types, j2k-profile
-j2k-test-support -> j2k-native
+j2k-test-support -> j2k-core, j2k-native
 j2k-transcode-test-support -> j2k-transcode, j2k-types
 j2k-cuda -> j2k-core, j2k-cuda-runtime, j2k, j2k-native, j2k-profile
 j2k-metal -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-metal-support, j2k-profile

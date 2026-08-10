@@ -11,7 +11,7 @@ fn j2k_conformance_manifests_have_platform_stable_line_endings() {
         "corpus/j2k-conformance/encoder-ics-cpu.toml",
         "corpus/j2k-conformance/encoder-ics-cuda.toml",
         "corpus/j2k-conformance/encoder-ics-metal.toml",
-        "corpus/j2k-conformance/encoder-matrix-v1.toml",
+        "corpus/j2k-conformance/encoder-matrix-v2.toml",
         "corpus/j2k-conformance/t803-v3.toml",
     ];
     let output = Command::new("git")

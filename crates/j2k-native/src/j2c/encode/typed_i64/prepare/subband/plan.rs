@@ -69,6 +69,7 @@ pub(super) fn empty_prepared_subband(
     PreparedEncodeSubband {
         code_blocks: Vec::new(),
         preencoded_ht_code_blocks: None,
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x: 0,
         num_cbs_y: 0,
         code_block_width: request.settings.cb_width,
@@ -90,6 +91,7 @@ pub(super) fn prepared_subband(
     PreparedEncodeSubband {
         code_blocks,
         preencoded_ht_code_blocks: None,
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x: plan.num_cbs_x,
         num_cbs_y: plan.num_cbs_y,
         code_block_width: request.settings.cb_width,

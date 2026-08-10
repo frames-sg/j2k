@@ -61,6 +61,19 @@ pub(crate) fn apply_roi_maxshift_inverse_i32(coefficient: i32, roi_shift: u8) ->
     i32::try_from(shifted).unwrap_or(if shifted < 0 { i32::MIN } else { i32::MAX })
 }
 
+pub(crate) fn apply_roi_maxshift_inverse_f32(coefficient: f32, roi_shift: u8) -> f32 {
+    if roi_shift == 0 || coefficient == 0.0 {
+        return coefficient;
+    }
+
+    let threshold = crate::math::pow2i(i32::from(roi_shift));
+    if coefficient.abs() < threshold {
+        coefficient
+    } else {
+        coefficient * crate::math::pow2i(-i32::from(roi_shift))
+    }
+}
+
 pub(crate) fn validate_roi(dims: (u32, u32), roi: (u32, u32, u32, u32)) -> Result<()> {
     let (image_width, image_height) = dims;
     let (x, y, width, height) = roi;

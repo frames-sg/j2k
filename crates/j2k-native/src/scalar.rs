@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 
 use crate::error::bail;
 use crate::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    checked_decode_byte_len3, j2c, profile, DecodingError, EncodedHtJ2kCodeBlock,
-    EncodedJ2kCodeBlock, HtCleanupEncodeDistribution, HtCodeBlockDecodeJob,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
+    apply_roi_maxshift_inverse_i64, checked_decode_byte_len3, j2c, profile, DecodingError,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, HtCleanupEncodeDistribution, HtCodeBlockDecodeJob,
     HtCodeBlockDecodePhaseLimit, J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kCodeBlockStyle,
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
     J2kPacketizationEncodeJob, J2kSubBandDecodeJob, J2kSubBandType, J2kTier1TokenSegment, Result,
@@ -35,6 +35,8 @@ mod ht_decode;
 pub use self::ht_decode::{
     decode_ht_code_block_scalar, decode_ht_code_block_scalar_until_phase,
     decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_ht_code_block_scalar_with_workspace_midpoint_profiled,
     decode_ht_code_block_scalar_with_workspace_profiled, HtCodeBlockDecodeProfile,
     HtCodeBlockDecodeWorkspace,
 };
@@ -56,5 +58,6 @@ fn internal_j2k_code_block_style(style: J2kCodeBlockStyle) -> j2c::codestream::C
         vertically_causal_context: style.vertically_causal_context,
         segmentation_symbols: style.segmentation_symbols,
         high_throughput_block_coding: false,
+        mixed_block_coding: false,
     }
 }

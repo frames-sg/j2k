@@ -19,12 +19,18 @@ impl J2kCodestreamRange {
     }
 }
 
-/// Cleanup and optional refinement byte ranges for one HTJ2K code block.
+/// One retained cleanup/refinement record for an HTJ2K code block.
+///
+/// The first record for a code block contains its cleanup range and may
+/// contain the first refinement fragment. When refinement bytes are split
+/// across packets, immediately following continuation records have an empty
+/// cleanup range and a non-empty refinement range. Consumers use the code
+/// block's declared refinement length to determine where the next block starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HtCodeBlockPayloadRanges {
     /// Cleanup-pass payload range.
     pub cleanup: J2kCodestreamRange,
-    /// Concatenated SigProp/MagRef payload range, when refinement is present.
+    /// SigProp/MagRef payload fragment, when refinement is present.
     pub refinement: Option<J2kCodestreamRange>,
 }
 

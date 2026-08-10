@@ -20,6 +20,9 @@ use crate::{batch, Error, Storage, Surface, SurfaceResidency};
 use crate::{hybrid, MetalBackendSession, MetalDirectFallbackReason};
 
 #[cfg(target_os = "macos")]
+mod region_scaled_routing;
+
+#[cfg(target_os = "macos")]
 fn should_run_metal_runtime() -> bool {
     j2k_test_support::metal_runtime_gate(module_path!())
 }

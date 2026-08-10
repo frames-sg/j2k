@@ -22,6 +22,7 @@ pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
             mut retained_buffers,
             mut status_checks,
             mut scratch_buffers,
+            dispatch_report: _,
         } = allocate_direct_execution_metadata(
             plan.steps.len(),
             direct_ht_job_count([plan], "J2K Metal repeated direct execution HT jobs")?,
@@ -76,6 +77,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
             mut retained_buffers,
             mut status_checks,
             mut scratch_buffers,
+            dispatch_report: _,
         } = allocate_direct_execution_metadata(
             step_count,
             direct_ht_job_count(

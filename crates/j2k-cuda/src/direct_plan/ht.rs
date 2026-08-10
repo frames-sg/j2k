@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_native::{HtCodeBlockPayloadRanges, HtOwnedSubBandPlan, J2kCodestreamRange};
+use j2k_native::{
+    HtCodeBlockPayloadRanges, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kCodestreamRange,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+};
 
 use super::{
     required_regions::RequiredBandRegions, shared::CudaPlanOwners, CudaHtj2kCodeBlock,
@@ -9,8 +12,11 @@ use super::{
 
 const PLAN_BLOCK_LENGTH_MISMATCH: &str =
     "strict CUDA HTJ2K plan block lengths do not match payload bytes";
-const ROI_MAXSHIFT_UNSUPPORTED: &str =
-    "strict CUDA HTJ2K plan does not support ROI maxshift decode";
+const PLAN_BITPLANES_UNSUPPORTED: &str =
+    "strict CUDA HTJ2K plan has invalid coded bitplane or ROI maxshift metadata";
+
+#[cfg(test)]
+mod tests;
 
 pub(super) fn append_ht_subband(
     owners: &mut CudaPlanOwners,
@@ -40,9 +46,13 @@ pub(super) fn append_ht_subband(
                 reason: PLAN_BLOCK_LENGTH_MISMATCH,
             });
         }
-        if job.roi_shift != 0 {
+        if job
+            .num_bitplanes
+            .checked_add(job.roi_shift)
+            .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
+        {
             return Err(Error::UnsupportedCudaRequest {
-                reason: ROI_MAXSHIFT_UNSUPPORTED,
+                reason: PLAN_BITPLANES_UNSUPPORTED,
             });
         }
         let output_stride = checked_u32(job.output_stride)?;
@@ -61,7 +71,9 @@ pub(super) fn append_ht_subband(
             missing_bit_planes: job.missing_bit_planes,
             number_of_coding_passes: job.number_of_coding_passes,
             num_bitplanes: job.num_bitplanes,
+            roi_shift: job.roi_shift,
             stripe_causal: u8::from(job.stripe_causal),
+            irreversible_midpoint: subband.irreversible_midpoint,
             dequantization_step: job.dequantization_step,
         });
     }
@@ -90,54 +102,36 @@ pub(super) fn append_referenced_ht_subband<'a>(
     let subband_index = checked_u32(owners.subbands.len())?;
     let code_block_start = checked_u32(owners.code_blocks.len())?;
     for job in &subband.jobs {
-        let ranges = payloads.next().ok_or(Error::UnsupportedCudaRequest {
-            reason: PLAN_BLOCK_LENGTH_MISMATCH,
-        })?;
-        if required_regions.is_some_and(|regions| {
+        let required = !required_regions.is_some_and(|regions| {
             !regions.get(subband.band_id).is_some_and(|required| {
                 required.intersects(job.output_x, job.output_y, job.width, job.height)
             })
-        }) {
-            continue;
-        }
-        if !job.data.is_empty() || job.roi_shift != 0 {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: if job.roi_shift != 0 {
-                    ROI_MAXSHIFT_UNSUPPORTED
-                } else {
-                    PLAN_BLOCK_LENGTH_MISMATCH
-                },
-            });
-        }
-        let cleanup = referenced_slice(encoded, ranges.cleanup)?;
-        let refinement = match (job.refinement_length, ranges.refinement) {
-            (0, None) => &[][..],
-            (0, Some(range)) if range.length == 0 => &[][..],
-            (_, Some(range)) => referenced_slice(encoded, range)?,
-            (_, None) => {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
-                });
-            }
-        };
-        if cleanup.len() != job.cleanup_length as usize
-            || refinement.len() != job.refinement_length as usize
-        {
+        });
+        if !job.data.is_empty() {
             return Err(Error::UnsupportedCudaRequest {
                 reason: PLAN_BLOCK_LENGTH_MISMATCH,
             });
         }
+        if job
+            .num_bitplanes
+            .checked_add(job.roi_shift)
+            .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
+        {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: PLAN_BITPLANES_UNSUPPORTED,
+            });
+        }
         let payload_offset = checked_u64(shared_payload.len())?;
-        let payload_len =
-            cleanup
-                .len()
-                .checked_add(refinement.len())
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_PAYLOAD_TOO_LARGE,
-                })?;
+        let (payload_len, _) = consume_referenced_ht_payload(
+            payloads,
+            job,
+            encoded,
+            required.then_some(shared_payload),
+        )?;
+        if !required {
+            continue;
+        }
         let payload_len = checked_u32(payload_len)?;
-        shared_payload.extend_from_slice(cleanup);
-        shared_payload.extend_from_slice(refinement);
         owners.code_blocks.push(CudaHtj2kCodeBlock {
             subband_index,
             payload_offset,
@@ -152,7 +146,9 @@ pub(super) fn append_referenced_ht_subband<'a>(
             missing_bit_planes: job.missing_bit_planes,
             number_of_coding_passes: job.number_of_coding_passes,
             num_bitplanes: job.num_bitplanes,
+            roi_shift: job.roi_shift,
             stripe_causal: u8::from(job.stripe_causal),
+            irreversible_midpoint: subband.irreversible_midpoint,
             dequantization_step: job.dequantization_step,
         });
     }
@@ -168,6 +164,123 @@ pub(super) fn append_referenced_ht_subband<'a>(
         code_block_count: checked_u32(owners.code_blocks.len() - code_block_start as usize)?,
     });
     Ok(())
+}
+
+fn consume_referenced_ht_payload<'a>(
+    payloads: &mut impl Iterator<Item = &'a HtCodeBlockPayloadRanges>,
+    job: &HtOwnedCodeBlockBatchJob,
+    encoded: &[u8],
+    mut output: Option<&mut Vec<u8>>,
+) -> Result<(usize, usize), Error> {
+    let output_start = output.as_ref().map_or(0, |bytes| bytes.len());
+    let result = (|| {
+        let first = payloads.next().ok_or(Error::UnsupportedCudaRequest {
+            reason: PLAN_BLOCK_LENGTH_MISMATCH,
+        })?;
+        let mut record_count = 1usize;
+        let cleanup = referenced_slice(encoded, first.cleanup)?;
+        if cleanup.len() != job.cleanup_length as usize {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: PLAN_BLOCK_LENGTH_MISMATCH,
+            });
+        }
+        if let Some(bytes) = output.as_deref_mut() {
+            bytes.extend_from_slice(cleanup);
+        }
+
+        let expected_refinement = job.refinement_length as usize;
+        let mut refinement_len = 0usize;
+        if let Some(range) = first.refinement {
+            let refinement = referenced_slice(encoded, range)?;
+            refinement_len = refinement.len();
+            if let Some(bytes) = output.as_deref_mut() {
+                bytes.extend_from_slice(refinement);
+            }
+        }
+        while refinement_len < expected_refinement {
+            let continuation = payloads.next().ok_or(Error::UnsupportedCudaRequest {
+                reason: PLAN_BLOCK_LENGTH_MISMATCH,
+            })?;
+            record_count = record_count
+                .checked_add(1)
+                .ok_or(Error::UnsupportedCudaRequest {
+                    reason: PLAN_PAYLOAD_TOO_LARGE,
+                })?;
+            if continuation.cleanup.length != 0 {
+                return Err(Error::UnsupportedCudaRequest {
+                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
+                });
+            }
+            referenced_slice(encoded, continuation.cleanup)?;
+            let range = continuation
+                .refinement
+                .ok_or(Error::UnsupportedCudaRequest {
+                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
+                })?;
+            let refinement = referenced_slice(encoded, range)?;
+            if refinement.is_empty() {
+                return Err(Error::UnsupportedCudaRequest {
+                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
+                });
+            }
+            refinement_len = refinement_len.checked_add(refinement.len()).ok_or(
+                Error::UnsupportedCudaRequest {
+                    reason: PLAN_PAYLOAD_TOO_LARGE,
+                },
+            )?;
+            if refinement_len > expected_refinement {
+                return Err(Error::UnsupportedCudaRequest {
+                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
+                });
+            }
+            if let Some(bytes) = output.as_deref_mut() {
+                bytes.extend_from_slice(refinement);
+            }
+        }
+        if refinement_len != expected_refinement {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: PLAN_BLOCK_LENGTH_MISMATCH,
+            });
+        }
+        let payload_len =
+            cleanup
+                .len()
+                .checked_add(refinement_len)
+                .ok_or(Error::UnsupportedCudaRequest {
+                    reason: PLAN_PAYLOAD_TOO_LARGE,
+                })?;
+        Ok((payload_len, record_count))
+    })();
+    if result.is_err() {
+        if let Some(bytes) = output {
+            bytes.truncate(output_start);
+        }
+    }
+    result
+}
+
+pub(crate) fn referenced_ht_payload_record_count(
+    plan: &J2kDirectGrayscalePlan,
+    payloads: &[HtCodeBlockPayloadRanges],
+    encoded: &[u8],
+) -> Result<usize, Error> {
+    let mut records = payloads.iter();
+    let mut record_count = 0usize;
+    for step in &plan.steps {
+        if let J2kDirectGrayscaleStep::HtSubBand(subband) = step {
+            for job in &subband.jobs {
+                let (_, consumed) =
+                    consume_referenced_ht_payload(&mut records, job, encoded, None)?;
+                record_count =
+                    record_count
+                        .checked_add(consumed)
+                        .ok_or(Error::UnsupportedCudaRequest {
+                            reason: PLAN_PAYLOAD_TOO_LARGE,
+                        })?;
+            }
+        }
+    }
+    Ok(record_count)
 }
 
 pub(super) fn referenced_payload_bytes(

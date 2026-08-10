@@ -6,6 +6,7 @@ use super::{
 };
 use j2k_transcode::Htj2k97CodeBlockOptionsError;
 
+mod magnitude;
 mod orchestration;
 mod output;
 mod planning;
@@ -25,6 +26,7 @@ pub(super) type ResidentSubbands = (
     Vec<PreencodedHtj2k97Subband>,
     Vec<PreencodedHtj2k97Subband>,
     Vec<PreencodedHtj2k97Subband>,
+    Vec<u8>,
     CudaHtj2kEncodeStageTimings,
     usize,
 );
@@ -35,6 +37,7 @@ pub(super) type CompactResidentSubbands = (
     Vec<PreencodedHtj2k97CompactSubband>,
     Vec<PreencodedHtj2k97CompactSubband>,
     Vec<PreencodedHtj2k97CompactSubband>,
+    Vec<u8>,
     CudaHtj2kEncodeStageTimings,
     usize,
 );

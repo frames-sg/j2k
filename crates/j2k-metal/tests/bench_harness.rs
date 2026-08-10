@@ -77,9 +77,55 @@ fn j2k_metal_benches_directory_contains_only_auto_routing() {
 
     assert_eq!(
         sources,
-        [manifest_dir().join("benches/auto_routing.rs")],
+        [
+            manifest_dir().join("benches/auto_routing/decode.rs"),
+            manifest_dir().join("benches/auto_routing/encode.rs"),
+            manifest_dir().join("benches/auto_routing/runner.rs"),
+            manifest_dir().join("benches/auto_routing.rs"),
+        ],
         "j2k-metal benchmark sources must stay limited to release routing evidence"
     );
+}
+
+#[test]
+fn metal_auto_routing_bench_uses_versioned_part15_workload_identity() {
+    let bench = bench_sources_under(&manifest_dir().join("benches/auto_routing"))
+        .into_iter()
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for expected in [
+        "schema_version: workloads.manifest.schema_version",
+        "validate_auto_routing_decode_identity",
+        "case.codec.is_high_throughput()",
+        "J2kBlockCodingMode::HighThroughput",
+        "const BATCH_SIZE: usize = 16",
+        "bench_batch_cell",
+        "for_host_output_benchmark",
+        "verify_lossless_output",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "Metal Auto-routing benchmark is missing `{expected}`"
+        );
+    }
+
+    for duplicate in [
+        "AUTO_GRAY8_MIN_PIXELS",
+        "AUTO_RGB8_BATCH_MIN_PIXELS",
+        "AUTO_RGB8_LARGE_MIN_PIXELS",
+        "expected_auto_decode_backend",
+        "expected_auto_encode_dispatch",
+    ] {
+        assert!(
+            !bench.contains(duplicate),
+            "Metal benchmark must not duplicate production routing policy `{duplicate}`"
+        );
+    }
 }
 
 #[test]

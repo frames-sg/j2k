@@ -2,10 +2,13 @@
 
 use crate::error::{bail, DecodingError, Result};
 use crate::{
-    decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
-    HtOwnedSubBandPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kWaveletTransform,
+    decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint, HtCodeBlockDecodeJob,
+    HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kWaveletTransform,
 };
 
+use super::super::referenced_classic::{execute_classic_sub_band_referenced, ClassicPayloadCursor};
 use super::super::{
     apply_inverse_mct_region, checked_sub_band_job_output_range, execute_idwt_step,
     prepare_sub_band_output, store_component, DirectComponentBandScratch, DirectComponentPlane,
@@ -26,7 +29,10 @@ pub(super) fn execute_color_components_referenced(
     signed: bool,
     component_band_sets: &mut [DirectComponentBandScratch],
     reconstructed_planes: &mut [DirectComponentPlane],
-    payloads: &mut ReferencedPayloadCursor<'_, '_>,
+    payloads: &mut ReferencedPayloadCursor<'_>,
+    classic_payloads: &mut ClassicPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
+    classic_workspace: &mut crate::J2kCodeBlockDecodeWorkspace,
     ht_workspace: &mut HtCodeBlockDecodeWorkspace,
     output_initialized: &mut [bool; 4],
     destination: crate::J2kRect,
@@ -44,6 +50,9 @@ pub(super) fn execute_color_components_referenced(
             &mut component_band_sets[component_index],
             &mut reconstructed_planes[component_index],
             payloads,
+            classic_payloads,
+            compressed_payload,
+            classic_workspace,
             ht_workspace,
             &mut output_initialized[component_index],
         )?;
@@ -65,11 +74,18 @@ pub(super) fn execute_color_components_referenced(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mixed HT/classic execution keeps both validated payload cursors and retained decode workspaces explicit"
+)]
 pub(super) fn execute_component_plan_referenced(
     plan: &J2kDirectGrayscalePlan,
     bands: &mut DirectComponentBandScratch,
     output: &mut DirectComponentPlane,
-    payloads: &mut ReferencedPayloadCursor<'_, '_>,
+    payloads: &mut ReferencedPayloadCursor<'_>,
+    classic_payloads: &mut ClassicPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
+    classic_workspace: &mut crate::J2kCodeBlockDecodeWorkspace,
     ht_workspace: &mut HtCodeBlockDecodeWorkspace,
     output_initialized: &mut bool,
 ) -> Result<()> {
@@ -77,13 +93,23 @@ pub(super) fn execute_component_plan_referenced(
     let mut stored = false;
     for step in &plan.steps {
         match step {
-            J2kDirectGrayscaleStep::ClassicSubBand(_) => {
-                bail!(DecodingError::UnsupportedFeature(
-                    "referenced HTJ2K CPU plan encountered classic code blocks"
-                ));
+            J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+                execute_classic_sub_band_referenced(
+                    sub_band,
+                    bands,
+                    classic_payloads,
+                    compressed_payload,
+                    classic_workspace,
+                )?;
             }
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
-                execute_ht_sub_band_referenced(sub_band, bands, payloads, ht_workspace)?;
+                execute_ht_sub_band_referenced(
+                    sub_band,
+                    bands,
+                    payloads,
+                    compressed_payload,
+                    ht_workspace,
+                )?;
             }
             J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
             J2kDirectGrayscaleStep::Store(store) => {
@@ -102,7 +128,8 @@ pub(super) fn execute_component_plan_referenced(
 fn execute_ht_sub_band_referenced(
     plan: &HtOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
-    payloads: &mut ReferencedPayloadCursor<'_, '_>,
+    payloads: &mut ReferencedPayloadCursor<'_>,
+    compressed_payload: &mut alloc::vec::Vec<u8>,
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<()> {
     let (output, sub_band_width) =
@@ -119,7 +146,11 @@ fn execute_ht_sub_band_referenced(
             plan_height: plan.height,
             output_len: output.len(),
         })?;
-        let data = payloads.next_data(job.cleanup_length, job.refinement_length)?;
+        let data = payloads.next_data(
+            job.cleanup_length,
+            job.refinement_length,
+            compressed_payload,
+        )?;
         let code_block = HtCodeBlockDecodeJob {
             data,
             cleanup_length: job.cleanup_length,
@@ -135,11 +166,12 @@ fn execute_ht_sub_band_referenced(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_ht_code_block_scalar_with_workspace(
-            code_block,
-            &mut output[output_range],
-            workspace,
-        )?;
+        let decode = if plan.irreversible_midpoint {
+            decode_ht_code_block_scalar_with_workspace_midpoint
+        } else {
+            decode_ht_code_block_scalar_with_workspace
+        };
+        decode(code_block, &mut output[output_range], workspace)?;
     }
     Ok(())
 }

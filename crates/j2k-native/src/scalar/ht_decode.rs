@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, checked_code_block_output_layout,
-    j2c, CodeBlockOutputLayout, HtCodeBlockDecodeJob, HtCodeBlockDecodePhaseLimit, Result, Vec,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
+    checked_code_block_output_layout, j2c, CodeBlockOutputLayout, HtCodeBlockDecodeJob,
+    HtCodeBlockDecodePhaseLimit, Result, Vec,
 };
 use crate::try_reserve_decode_elements;
 
@@ -154,9 +155,21 @@ pub fn decode_ht_code_block_scalar_with_workspace(
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<()> {
-    decode_ht_code_block_scalar_for_phase_with_workspace::<
+    decode_ht_code_block_scalar_for_phase_with_workspace_inner::<
         { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
-    >(job, output, workspace)
+    >(job, output, workspace, false)
+}
+
+/// Adapter scalar HTJ2K decoder helper using irreversible midpoint reconstruction.
+#[doc(hidden)]
+pub fn decode_ht_code_block_scalar_with_workspace_midpoint(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+) -> Result<()> {
+    decode_ht_code_block_scalar_for_phase_with_workspace_inner::<
+        { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
+    >(job, output, workspace, true)
 }
 
 /// Adapter scalar HTJ2K decoder helper that reuses scratch and records phase timings.
@@ -169,7 +182,21 @@ pub fn decode_ht_code_block_scalar_with_workspace_profiled(
 ) -> Result<()> {
     decode_ht_code_block_scalar_for_phase_with_workspace_profiled::<
         { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
-    >(job, output, workspace, profile)
+    >(job, output, workspace, profile, false)
+}
+
+/// Adapter scalar HTJ2K decoder helper using irreversible midpoint
+/// reconstruction while recording phase timings.
+#[doc(hidden)]
+pub fn decode_ht_code_block_scalar_with_workspace_midpoint_profiled(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    profile: &mut HtCodeBlockDecodeProfile,
+) -> Result<()> {
+    decode_ht_code_block_scalar_for_phase_with_workspace_profiled::<
+        { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
+    >(job, output, workspace, profile, true)
 }
 
 fn decode_ht_code_block_scalar_for_phase<const PHASE_LIMIT: u8>(
@@ -184,6 +211,17 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
+) -> Result<()> {
+    decode_ht_code_block_scalar_for_phase_with_workspace_inner::<PHASE_LIMIT>(
+        job, output, workspace, false,
+    )
+}
+
+fn decode_ht_code_block_scalar_for_phase_with_workspace_inner<const PHASE_LIMIT: u8>(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    irreversible_midpoint: bool,
 ) -> Result<()> {
     let layout =
         checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
@@ -216,6 +254,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         layout,
         coded_bitplanes,
         output,
+        irreversible_midpoint,
     );
 
     Ok(())
@@ -226,6 +265,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
     profile: &mut HtCodeBlockDecodeProfile,
+    irreversible_midpoint: bool,
 ) -> Result<()> {
     let layout =
         checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
@@ -260,6 +300,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
         layout,
         coded_bitplanes,
         output,
+        irreversible_midpoint,
     );
 
     Ok(())
@@ -275,6 +316,7 @@ fn write_ht_code_block_output(
     layout: CodeBlockOutputLayout,
     coded_bitplanes: u8,
     output: &mut [f32],
+    irreversible_midpoint: bool,
 ) {
     for (row_idx, coeff_row) in coefficients
         .chunks_exact(layout.stride)
@@ -284,17 +326,54 @@ fn write_ht_code_block_output(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + layout.stride];
         for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
-            let coefficient =
-                j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
-            let coefficient = apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift);
-            *sample = coefficient as f32 * job.dequantization_step;
+            *sample = if irreversible_midpoint {
+                let coefficient =
+                    j2c::ht_block_decode::coefficient_to_f32(coefficient, coded_bitplanes);
+                apply_roi_maxshift_inverse_f32(coefficient, job.roi_shift)
+            } else {
+                let coefficient =
+                    j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
+                apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift) as f32
+            } * job.dequantization_step;
         }
     }
 }
 
 #[cfg(test)]
-mod reservation_tests {
-    use super::HtCodeBlockDecodeWorkspace;
+mod tests {
+    use super::{
+        write_ht_code_block_output, CodeBlockOutputLayout, HtCodeBlockDecodeJob,
+        HtCodeBlockDecodeWorkspace,
+    };
+
+    #[test]
+    fn irreversible_output_retains_the_ht_midpoint_before_dequantization() {
+        let job = HtCodeBlockDecodeJob {
+            data: &[],
+            cleanup_length: 0,
+            refinement_length: 0,
+            width: 1,
+            height: 1,
+            output_stride: 1,
+            missing_bit_planes: 0,
+            number_of_coding_passes: 1,
+            num_bitplanes: 5,
+            roi_shift: 0,
+            stripe_causal: false,
+            strict: true,
+            dequantization_step: 2.0,
+        };
+        let coefficients = [3_u32 << 25];
+        let layout = CodeBlockOutputLayout { stride: 1 };
+        let mut reversible = [0.0];
+        let mut irreversible = [0.0];
+
+        write_ht_code_block_output(&coefficients, job, layout, 5, &mut reversible, false);
+        write_ht_code_block_output(&coefficients, job, layout, 5, &mut irreversible, true);
+
+        assert_eq!(reversible.map(f32::to_bits), [2.0_f32.to_bits()]);
+        assert_eq!(irreversible.map(f32::to_bits), [3.0_f32.to_bits()]);
+    }
 
     #[test]
     fn reserved_workspace_initialization_does_not_grow_allocations() {

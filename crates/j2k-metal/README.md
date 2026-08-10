@@ -7,21 +7,25 @@ supported workloads. It uses `j2k-metal-support` for runtime setup while
 keeping codec-specific kernels local.
 
 Encode support is stage-oriented unless a documented resident path accepts the
-shape. `Auto` keeps single-frame HTJ2K host-output encode on CPU because the
-measured resident path only clearly wins after batching amortizes setup cost.
-Full resident host-output packetization/assembly is a batch path: batched Gray8
-can use it at the 512 x 512 stage gate, while batched RGB8 requires 1,024 x
-1,024 or larger resident input. Explicit Metal requests are strict: supported
-shapes dispatch, and unsupported direct Metal requests return
-`UnsupportedMetalRequest` instead of silently changing backend.
+shape. For lossless HTJ2K host-output, fixed `Auto` cells use Metal coefficient
+preparation and HT Tier-1 followed by CPU packetization: RGB8 at 1,024 x 1,024
+and Gray8/RGB8 at 2,048 x 2,048. The measured 512 x 512 cells and Gray8 at
+1,024 x 1,024 stay on CPU. These thresholds apply to supported Metal devices;
+the performance evidence is scoped to the measured Apple M4 Pro.
+
+Full resident host-output packetization/assembly is a separate batch path:
+batched Gray8 can use it at the 512 x 512 stage gate, while batched RGB8
+requires 1,024 x 1,024 or larger resident input. Explicit Metal requests are
+strict: supported shapes dispatch, and unsupported direct Metal requests
+return `UnsupportedMetalRequest` instead of silently changing backend.
 
 Metal routing is deliberately selective. `Auto` may decline small tiles,
 irregular packet shapes, or stages where host/device transfer and dispatch
-overhead dominate. Stage-by-stage host-output `Auto` currently limits Metal to
-deinterleave, forward RCT/ICT, forward 5/3 and 9/7 DWT, and subband
-quantization. Classic Tier-1, HT code-block encode, packetization, and
-codestream assembly stay CPU for that route unless a documented resident path
-supports the shape with parity and benchmark evidence.
+overhead dominate. Stage-by-stage host-output `Auto` can use deinterleave,
+forward RCT/ICT, forward 5/3 and 9/7 DWT, subband quantization, and HT Tier-1
+for the qualified cells above. Classic Tier-1, packetization, and codestream
+assembly stay CPU for that route unless a documented resident path supports
+the shape with parity and benchmark evidence.
 
 ## Full Resident Encode Path
 

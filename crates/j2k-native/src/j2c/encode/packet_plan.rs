@@ -237,6 +237,7 @@ fn try_packetization_accelerator(
         data,
         packet_lengths: Vec::new(),
         packet_headers: Vec::new(),
+        required_ht_magnitude_bound: None,
     };
     phase.reconcile_accelerator_output_bytes(
         packet_encode::packetized_tile_retained_bytes(&packetized)?,

@@ -35,12 +35,58 @@ pub(super) struct ResidentSubbandGroupPlans<'a, J> {
 }
 
 impl<'a, J> ResidentSubbandGroupPlans<'a, J> {
-    fn plans(&self) -> [&ResidentSubbandEncodePlan<'a>; 4] {
+    pub(super) fn plans(&self) -> [&ResidentSubbandEncodePlan<'a>; 4] {
         [&self.ll, &self.hl, &self.lh, &self.hh]
     }
 }
 
 pub(super) type ResidentMetadataBudget = HostPhaseBudget;
+
+pub(super) fn resident_subband_encode_plans<'a>(
+    bands: &'a CudaHtj2k97DeviceCodeblockBands,
+    item_count: usize,
+    options: Htj2k97CodeBlockOptions,
+    budget: &mut ResidentMetadataBudget,
+) -> Result<[ResidentSubbandEncodePlan<'a>; 4], CudaTranscodeError> {
+    Ok([
+        resident_subband_encode_plan(
+            &bands.ll,
+            item_count,
+            bands.low_width,
+            bands.low_height,
+            J2kSubBandType::LowLow,
+            options,
+            budget,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hl,
+            item_count,
+            bands.high_width,
+            bands.low_height,
+            J2kSubBandType::HighLow,
+            options,
+            budget,
+        )?,
+        resident_subband_encode_plan(
+            &bands.lh,
+            item_count,
+            bands.low_width,
+            bands.high_height,
+            J2kSubBandType::LowHigh,
+            options,
+            budget,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hh,
+            item_count,
+            bands.high_width,
+            bands.high_height,
+            J2kSubBandType::HighHigh,
+            options,
+            budget,
+        )?,
+    ])
+}
 
 pub(super) fn reserve_component_assembly_budget<Component, Resolution, Subband>(
     budget: &mut ResidentMetadataBudget,
@@ -83,45 +129,19 @@ pub(super) fn build_resident_subband_group_plans<'a, J>(
                 "CUDA grouped resident 9/7 band item count mismatch",
             ));
         }
+        let [ll, hl, lh, hh] = resident_subband_encode_plans(
+            &group.bands,
+            group.bands.item_count,
+            options,
+            &mut budget,
+        )?;
         group_plans.push(ResidentSubbandGroupPlans {
             group_index: group.group_index,
             jobs: group.jobs,
-            ll: resident_subband_encode_plan(
-                &group.bands.ll,
-                group.bands.item_count,
-                group.bands.low_width,
-                group.bands.low_height,
-                J2kSubBandType::LowLow,
-                options,
-                &mut budget,
-            )?,
-            hl: resident_subband_encode_plan(
-                &group.bands.hl,
-                group.bands.item_count,
-                group.bands.high_width,
-                group.bands.low_height,
-                J2kSubBandType::HighLow,
-                options,
-                &mut budget,
-            )?,
-            lh: resident_subband_encode_plan(
-                &group.bands.lh,
-                group.bands.item_count,
-                group.bands.low_width,
-                group.bands.high_height,
-                J2kSubBandType::LowHigh,
-                options,
-                &mut budget,
-            )?,
-            hh: resident_subband_encode_plan(
-                &group.bands.hh,
-                group.bands.item_count,
-                group.bands.high_width,
-                group.bands.high_height,
-                J2kSubBandType::HighHigh,
-                options,
-                &mut budget,
-            )?,
+            ll,
+            hl,
+            lh,
+            hh,
         });
     }
     Ok((group_plans, budget))

@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command, sync::Arc};
 
-use crate::{EncoderEvidence, IutIdentity, PlatformIdentity, ReportStatus, T803Report};
+use crate::{EncoderEvidence, IutIdentity, PlatformIdentity, ReportStatus, T803Report, T803Suite};
 
 use super::{cache, cases, oracle};
 
@@ -18,8 +18,9 @@ pub(super) fn run(
     cache_dir: &Path,
     output_dir: Option<PathBuf>,
     development: bool,
+    suite: T803Suite,
     mut config: IutConfig,
-    encoder: EncoderEvidence,
+    encoder: impl FnOnce() -> Result<EncoderEvidence, String>,
     decode: impl FnMut(Arc<[u8]>, u8) -> Result<cases::DecodedImage, cases::DecodeFailure>,
 ) -> Result<(), String> {
     let (manifest, corpus) = cache::verify_cached(cache_dir)?;
@@ -28,12 +29,21 @@ pub(super) fn run(
     if dirty && !development {
         return Err(
             "the source tree is dirty; commit the exact candidate or pass --development for non-release evidence"
-                .to_string(),
+            .to_string(),
         );
     }
+    let encoder = encoder()?;
 
-    let mut cases = cases::run_decoder_cases(&manifest, &corpus, decode);
-    cases.extend(cases::run_jp2_cases(&manifest, &corpus));
+    let decoder_cases = manifest
+        .decoder_cases_for_suite(suite)
+        .map_err(|error| error.to_string())?;
+    let mut cases = cases::run_decoder_cases(&decoder_cases, &corpus, decode);
+    if matches!(suite, T803Suite::Part1 | T803Suite::All) {
+        cases.extend(cases::run_jp2_cases(&manifest, &corpus));
+    }
+    if matches!(suite, T803Suite::Part15 | T803Suite::All) {
+        cases.extend(cases::run_jph_cases(&manifest, &corpus));
+    }
     let native_component_oracles = oracle::run(&manifest, &corpus)?;
     if dirty {
         config
@@ -43,6 +53,7 @@ pub(super) fn run(
     config.features.sort_unstable();
     config.features.dedup();
     let report = T803Report::new(
+        suite,
         IutIdentity {
             name: config.name.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),

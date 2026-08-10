@@ -3,7 +3,22 @@
 //! Fallible option ownership for direct precomputed coefficient encoders.
 
 use super::allocation::ConstructionTracker;
-use super::{EncodeOptions, NativeEncodePipelineError, NativeEncodePipelineResult};
+use super::{EncodeOptions, EncodeParams, NativeEncodePipelineError, NativeEncodePipelineResult};
+
+pub(super) fn apply_required_ht_magnitude_bound(
+    params: &mut EncodeParams,
+    required_bound: Option<u8>,
+) -> NativeEncodePipelineResult<()> {
+    if let Some(required_bound) = required_bound {
+        if !(8..=74).contains(&required_bound) {
+            return Err(NativeEncodePipelineError::invalid_input(
+                "HTJ2K magnitude bound must be between 8 and 74",
+            ));
+        }
+        params.required_ht_magnitude_bound = Some(required_bound);
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct PrecomputedOptionMode {

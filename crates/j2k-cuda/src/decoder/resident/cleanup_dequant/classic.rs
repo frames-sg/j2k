@@ -79,6 +79,10 @@ pub(in crate::decoder) fn run_component_classic_batches(
         .saturating_add(runtime_timings.kernel_us);
     accounting.timings.classic_dispatch_count =
         accounting.timings.classic_dispatch_count.saturating_add(1);
+    accounting.timings.fused_dequant_dispatch_count = accounting
+        .timings
+        .fused_dequant_dispatch_count
+        .saturating_add(1);
     accounting.dispatches = accounting.dispatches.saturating_add(1);
     accounting.decode_dispatches = accounting.decode_dispatches.saturating_add(1);
     for work in component_work {

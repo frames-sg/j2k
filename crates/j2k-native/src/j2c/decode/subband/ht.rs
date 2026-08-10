@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    code_block_required_by_index, collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
-    ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, ComponentInfo,
-    CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
-    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result,
-    SubBand, TileDecodeContext, Vec,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
+    apply_roi_maxshift_inverse_i64, code_block_required_by_index, collect_pending_ht_blocks,
+    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes,
+    should_decode_ht_sub_band_in_parallel, ComponentInfo, CpuDecodeParallelism,
+    DecodeAllocationBudget, DecodingError, DecompositionStorage, Header, HtCodeBlockBatchJob,
+    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result, SubBand,
+    TileDecodeContext, Vec,
 };
+use crate::j2c::build::CodeBlockCoding;
 
 #[cfg(feature = "parallel")]
-use super::{copy_decoded_ht_blocks_to_sub_band, decode_ht_sub_band_blocks_parallel};
+use super::{
+    copy_decoded_ht_blocks_to_sub_band, decode_ht_sub_band_blocks_parallel, HtParallelParameters,
+};
 
 #[expect(
     clippy::too_many_arguments,
@@ -43,6 +47,9 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
+                continue;
+            }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                 tile_ctx.debug_counters.skipped_code_blocks += 1;
                 continue;
@@ -112,6 +119,7 @@ pub(super) fn decode_sub_band_ht_blocks(
     cpu_decode_parallelism: CpuDecodeParallelism,
     num_bitplanes: u8,
     dequantization_step: f32,
+    irreversible_midpoint: bool,
     profile_enabled: bool,
 ) -> Result<()> {
     let coded_bitplanes = add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
@@ -158,13 +166,14 @@ pub(super) fn decode_sub_band_ht_blocks(
         }
 
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-        if ht_decoder.decode_sub_band(
+        if ht_decoder.decode_sub_band_with_midpoint(
             HtSubBandDecodeJob {
                 width: sub_band.rect.width(),
                 height: sub_band.rect.height(),
                 jobs: &batch_jobs,
             },
             base_store,
+            irreversible_midpoint,
         )? {
             tile_ctx.debug_counters.decoded_code_blocks += batch_jobs.len();
             return Ok(());
@@ -182,9 +191,10 @@ pub(super) fn decode_sub_band_ht_blocks(
                     .and_then(|prefix| prefix.checked_add(job.code_block.width as usize))
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?
             };
-            ht_decoder.decode_code_block(
+            ht_decoder.decode_code_block_with_midpoint(
                 job.code_block,
                 &mut base_store[base_idx..base_idx + output_len],
+                irreversible_midpoint,
             )?;
         }
 
@@ -209,11 +219,14 @@ pub(super) fn decode_sub_band_ht_blocks(
             )?;
             let decoded_blocks = decode_ht_sub_band_blocks_parallel(
                 &pending_blocks,
-                header.strict,
-                num_bitplanes,
-                component_info.roi_shift,
-                stripe_causal,
-                dequantization_step,
+                HtParallelParameters {
+                    strict: header.strict,
+                    num_bitplanes,
+                    roi_shift: component_info.roi_shift,
+                    stripe_causal,
+                    dequantization_step,
+                    irreversible_midpoint,
+                },
                 &mut budget,
             )?;
             tile_ctx.debug_counters.decoded_code_blocks += decoded_blocks.len();
@@ -232,6 +245,9 @@ pub(super) fn decode_sub_band_ht_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
+                continue;
+            }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                 tile_ctx.debug_counters.skipped_code_blocks += 1;
                 continue;
@@ -258,11 +274,15 @@ pub(super) fn decode_sub_band_ht_blocks(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    let coefficient =
-                        ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
-                    let coefficient =
-                        apply_roi_maxshift_inverse_i32(coefficient, component_info.roi_shift);
-                    *output = coefficient as f32;
+                    *output = if irreversible_midpoint {
+                        let coefficient =
+                            ht_block_decode::coefficient_to_f32(coefficient, coded_bitplanes);
+                        apply_roi_maxshift_inverse_f32(coefficient, component_info.roi_shift)
+                    } else {
+                        let coefficient =
+                            ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
+                        apply_roi_maxshift_inverse_i32(coefficient, component_info.roi_shift) as f32
+                    };
                     *output *= dequantization_step;
                 }
 

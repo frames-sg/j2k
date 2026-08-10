@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    checked_metal_surface_len, decode_scaled_to_surface, j2k_pack_kernel_name_for,
+    checked_metal_surface_len, decode_region_scaled_to_surface, j2k_pack_kernel_name_for,
     j2k_pack_scale_arrays, output_shape_for, reset_shared_buffer_pool_misses_for_test,
     runtime_initialization_error, shared_buffer_pool_misses_for_test, with_runtime_for_device,
     MetalRuntime, MetalSupportError,
@@ -203,10 +203,16 @@ fn scaled_htj2k_decode_runs_through_metal_compute_path() {
     .expect("image");
     let host = image.decode().expect("host scaled decode");
 
-    let surface = decode_scaled_to_surface(
+    let surface = decode_region_scaled_to_surface(
         &bytes,
         (4, 4),
         PixelFormat::Gray8,
+        j2k_core::Rect {
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 4,
+        },
         j2k_core::Downscale::Half,
     )
     .expect("metal scaled decode");

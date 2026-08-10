@@ -1,19 +1,21 @@
 # T.803 Annex F encoder implementation compliance statement.
 # Encoder testing is informative and is not a decoder conformance claim.
-schema_version = 1
+schema_version = 2
 standard = "ISO/IEC 15444-4:2024 / ITU-T T.803 v3"
 iut = "cpu"
-scope = "Informative Annex D/F evidence for the listed public JPEG 2000 Part 1 encoder surfaces"
+scope = "Informative Annex D/F evidence for the listed public JPEG 2000 Part 1 and HTJ2K Part 15 encoder, coefficient-recode, and JPH wrapping surfaces"
 surfaces = [
   "j2k::encode_j2k_lossless",
   "j2k::encode_j2k_lossless_components",
   "j2k::encode_j2k_lossless_typed_components",
   "j2k::encode_j2k_lossless_with_roi_regions",
   "j2k::encode_j2k_lossy",
+  "j2k::recode_j2k_to_htj2k_lossless",
+  "j2k::wrap_j2k_codestream(J2kFileWrapOptions::jph)",
 ]
-matrix_path = "corpus/j2k-conformance/encoder-matrix-v1.toml"
-matrix_case_count = 28
-matrix_case_sha256 = "6168ada6be73822b06b8b1b8564af009be17592b5b6d8b2e6bd0d578a69af4d5"
+matrix_path = "corpus/j2k-conformance/encoder-matrix-v2.toml"
+matrix_case_count = 56
+matrix_case_sha256 = "90c133e21990100bdc8aa98deb578ce9e839d114feffb534bf4393c28669eeae"
 reference_decoder_standard = "ISO/IEC 15444-5 / ITU-T T.804"
 reference_decoder_implementation = "OpenJPEG"
 reference_decoder_version = "2.5.3"
@@ -23,6 +25,8 @@ public_max_components = 16384
 component_sampling = true
 reference_limitations = [
   "OpenJPEG stores decoded component samples in 32-bit signed integers, so 32-38 bit public encoder inputs are outside this matrix",
+  "OpenJPEG 2.5.3 rejects HT code-block precision above 30 bitplanes, so the HT reference-decoded boundary is 30-bit while the classic matrix retains a 31-bit case",
+  "OpenJPEG 2.5.3 rejects every HT code-block carrying an RGN shift before decoding; the retained HT+RGN capability case therefore selects the independently pinned OpenHTJ2K decoder and records that identity explicitly",
   "The matrix samples the declared API range; Annex D does not define an exhaustive encoder corpus",
 ]
 
@@ -31,13 +35,13 @@ marker = "SOC"
 usage = "always"
 [[markers]]
 marker = "CAP"
-usage = "outside-part1"
+usage = "conditional"
 [[markers]]
 marker = "PRF"
 usage = "not-produced"
 [[markers]]
 marker = "CPF"
-usage = "outside-part1"
+usage = "not-produced"
 [[markers]]
 marker = "SOT"
 usage = "always"

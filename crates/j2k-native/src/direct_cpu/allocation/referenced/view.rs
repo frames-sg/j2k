@@ -152,25 +152,33 @@ fn for_each_staged_band_target(
 ) -> Result<()> {
     let mut band_index = 0usize;
     for entropy_phase in [true, false] {
+        let mut previous_entropy_band = None;
         for step in &plan.steps {
-            let target_len = match (entropy_phase, step) {
-                (true, J2kDirectGrayscaleStep::ClassicSubBand(sub_band)) => {
-                    Some(checked_area(sub_band.width, sub_band.height)?)
-                }
-                (true, J2kDirectGrayscaleStep::HtSubBand(sub_band)) => {
-                    Some(checked_area(sub_band.width, sub_band.height)?)
-                }
-                (false, J2kDirectGrayscaleStep::Idwt(step)) => {
-                    Some(checked_area(step.rect.width(), step.rect.height())?)
-                }
-                _ => None,
+            let (target_len, entropy_band) = match (entropy_phase, step) {
+                (true, J2kDirectGrayscaleStep::ClassicSubBand(sub_band)) => (
+                    Some(checked_area(sub_band.width, sub_band.height)?),
+                    Some(sub_band.band_id),
+                ),
+                (true, J2kDirectGrayscaleStep::HtSubBand(sub_band)) => (
+                    Some(checked_area(sub_band.width, sub_band.height)?),
+                    Some(sub_band.band_id),
+                ),
+                (false, J2kDirectGrayscaleStep::Idwt(step)) => (
+                    Some(checked_area(step.rect.width(), step.rect.height())?),
+                    None,
+                ),
+                _ => (None, None),
             };
+            if entropy_band.is_some() && entropy_band == previous_entropy_band {
+                continue;
+            }
             if let Some(target_len) = target_len {
                 visit(band_index, target_len)?;
                 band_index = band_index
                     .checked_add(1)
                     .ok_or(ValidationError::ImageTooLarge)?;
             }
+            previous_entropy_band = entropy_band;
         }
     }
     Ok(())
@@ -187,14 +195,23 @@ pub(super) fn referenced_temporary_workspace_bytes(plan: ReferencedPlanView<'_>)
 }
 
 pub(super) fn max_referenced_payload_bytes(plan: &J2kReferencedHtj2kPlan) -> Result<usize> {
-    plan.payloads().iter().try_fold(0usize, |maximum, payload| {
-        payload
-            .cleanup
-            .length
-            .checked_add(payload.refinement.map_or(0, |range| range.length))
-            .map(|length| maximum.max(length))
-            .ok_or(ValidationError::ImageTooLarge.into())
-    })
+    let ht = plan
+        .payloads()
+        .iter()
+        .try_fold(0usize, |maximum, payload| -> Result<usize> {
+            payload
+                .cleanup
+                .length
+                .checked_add(payload.refinement.map_or(0, |range| range.length))
+                .map(|length| maximum.max(length))
+                .ok_or(ValidationError::ImageTooLarge.into())
+        })?;
+    Ok(plan
+        .tiles()
+        .iter()
+        .flat_map(crate::J2kReferencedTilePlan::classic_payloads)
+        .map(|payload| payload.combined_length)
+        .fold(ht, usize::max))
 }
 
 pub(super) fn max_referenced_classic_payload_bytes(plan: &J2kReferencedClassicPlan) -> usize {
@@ -217,7 +234,10 @@ pub(in super::super::super) fn max_referenced_ht_dimensions(
     max_referenced_dimensions(ReferencedPlanView::Htj2k(plan), true)
 }
 
-fn max_referenced_dimensions(plan: ReferencedPlanView<'_>, ht: bool) -> Option<(u32, u32)> {
+pub(super) fn max_referenced_dimensions(
+    plan: ReferencedPlanView<'_>,
+    ht: bool,
+) -> Option<(u32, u32)> {
     let mut dimensions = None;
     for tile_index in 0..plan.tile_count() {
         for component_index in 0..plan.component_count() {

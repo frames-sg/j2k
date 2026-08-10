@@ -2,7 +2,8 @@
 
 The `j2k` 0.8.1 public crate release is published and security-supported. It
 carries the release-scoped Part 1 T.803 decoder evidence described in
-[`T.803 conformance`](t803-conformance.md).
+[`T.803 conformance`](t803-conformance.md). Unreleased Part 15 evidence remains
+development-only until it is regenerated from a future exact clean candidate.
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -22,10 +23,13 @@ evidence.
 | `<0.6` | Historical releases. | Unsupported. |
 
 Version `0.8.1` was published from annotated tag `v0.8.1`, which peels to
-commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. The tag-triggered workflow
-verified the three CPU T.803 reports and the CUDA and Metal adapter reports
-before publishing the crates. The GitHub release attachments, tag, workflow
-runs, and crates.io records are the publication evidence.
+commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. The
+[CPU validation](https://github.com/frames-sg/j2k/actions/runs/31140212203)
+and [CUDA/Metal adapter validation](https://github.com/frames-sg/j2k/actions/runs/31141587695)
+produced the exact-SHA evidence attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.8.1). The
+tag-triggered workflow verified all five T.803 reports before publishing the
+crates.
 
 Version `0.8.0` was published from annotated tag `v0.8.0`, which peels to commit
 `53e0ad3d4f75f492af55413e0dab5a5834bd09c6`. The

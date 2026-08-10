@@ -2,32 +2,39 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use crate::PlatformIdentity;
+use crate::{PlatformIdentity, T803Suite};
 
 use super::{cases, encoder, execute};
 
-const CPU_CLAIM: &str =
+const PART1_CLAIM: &str =
     "Profile-1 Cclass-1; Profile-1 Cclass-1HF; Annex G JP2 reader (candidate evidence)";
+const PART15_CLAIM: &str = "HTJ2K DS1-HM Cclass-1h, MMAGB 15, including DS1-HT, DS0-HM, and DS0-HT subset evidence; HTJ2K Cclass-1HFh, MMAGB 20; Annex G JPH reader at MMAGB 15 (candidate evidence)";
+const ALL_CLAIM: &str = "Profile-1 Cclass-1; Profile-1 Cclass-1HF; Annex G JP2 reader; HTJ2K DS1-HM Cclass-1h, MMAGB 15, including DS1-HT, DS0-HM, and DS0-HT subset evidence; HTJ2K Cclass-1HFh, MMAGB 20; Annex G JPH reader at MMAGB 15 (candidate evidence)";
 
 pub(super) fn run(
     cache_dir: &Path,
     output_dir: Option<PathBuf>,
     development: bool,
+    suite: T803Suite,
 ) -> Result<(), String> {
-    let encoder = encoder::run_cpu()?;
     let features = Vec::from(["cpu".to_string()]);
     execute::run(
         cache_dir,
         output_dir,
         development,
+        suite,
         execute::IutConfig {
             name: "j2k",
-            claim: CPU_CLAIM,
+            claim: match suite {
+                T803Suite::Part1 => PART1_CLAIM,
+                T803Suite::Part15 => PART15_CLAIM,
+                T803Suite::All => ALL_CLAIM,
+            },
             report_stem: "cpu",
             features,
             platform: cpu_platform(),
         },
-        encoder,
+        encoder::run_cpu,
         |input, reduction_levels| cases::decode_cpu(&input, reduction_levels),
     )
 }

@@ -37,7 +37,7 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
         bit_depth,
         signed,
         options,
-        plan,
+        mut plan,
         session,
         accelerator,
     } = request;
@@ -77,5 +77,6 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
             accelerator,
         },
     )?;
+    plan.params.required_ht_magnitude_bound = packetized_tile.required_ht_magnitude_bound;
     Ok((packetized_tile, plan))
 }

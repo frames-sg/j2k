@@ -5,7 +5,7 @@
 use crate::error::{bail, FormatError, Result};
 use crate::reader::BitReader;
 
-use super::read_recoverable_metadata_box;
+use super::{read_recoverable_metadata_box, Jp2FileKind};
 use crate::jp2::allocation;
 use crate::jp2::cdef;
 use crate::jp2::cmap;
@@ -26,13 +26,17 @@ pub(in crate::jp2) fn parse_jp2_header_box(
     strict: bool,
     retained_baseline_bytes: usize,
 ) -> Result<ImageBoxes> {
-    Ok(parse_jp2_header_box_tracked(data, strict, retained_baseline_bytes)?.boxes)
+    Ok(
+        parse_jp2_header_box_tracked(data, strict, retained_baseline_bytes, Jp2FileKind::Jp2)?
+            .boxes,
+    )
 }
 
 pub(super) fn parse_jp2_header_box_tracked(
     data: &[u8],
     strict: bool,
     retained_baseline_bytes: usize,
+    file_kind: Jp2FileKind,
 ) -> Result<ParsedJp2Header> {
     let (color_spec_count, mut used_lenient_metadata_recovery) =
         count_color_specification_boxes(data, strict)?;
@@ -101,7 +105,7 @@ pub(super) fn parse_jp2_header_box_tracked(
     if !saw_image_header {
         bail!(FormatError::MissingRequiredBox("ihdr"));
     }
-    if boxes.primary_color_specification().is_none() {
+    if file_kind == Jp2FileKind::Jp2 && boxes.primary_color_specification().is_none() {
         bail!(FormatError::MissingRequiredBox("colr"));
     }
     Ok(ParsedJp2Header {

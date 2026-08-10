@@ -209,7 +209,7 @@ fn locally_inspectable_codestream_without_decode_headers() -> Vec<u8> {
 
     bytes.extend_from_slice(&[0xFF, 0x52]);
     bytes.extend_from_slice(&12_u16.to_be_bytes());
-    bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    bytes.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
 
     bytes.extend_from_slice(&[0xFF, 0x90]);
     bytes
@@ -284,7 +284,7 @@ fn decoder_new_rejects_codestream_that_only_header_inspection_accepts() {
     assert_eq!(context, "native JPEG 2000 backend failed");
     assert!(matches!(
         std::error::Error::source(&source).and_then(|source| source.downcast_ref::<DecodeError>()),
-        Some(DecodeError::Marker(MarkerError::ParseFailure("COD")))
+        Some(DecodeError::Marker(MarkerError::Missing("QCD")))
     ));
 }
 

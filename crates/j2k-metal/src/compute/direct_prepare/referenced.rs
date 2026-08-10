@@ -10,6 +10,9 @@ use super::{
     PreparedDirectGrayscaleStep, PreparedDirectIdwt, ReferencedClassicPayloadCursor,
 };
 
+#[cfg(all(test, target_os = "macos"))]
+mod tests;
+
 pub(super) fn validate_payload_record_span(
     span: j2k_native::J2kReferencedPayloadRecordSpan,
     cursor: usize,
@@ -49,7 +52,6 @@ pub(super) fn validate_referenced_component_metadata(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 #[cfg(target_os = "macos")]
 pub(super) fn append_referenced_classic_component_steps(
     geometry: &NativeGrayscalePlan,
@@ -111,15 +113,15 @@ pub(super) fn append_referenced_htj2k_component_steps(
     input: &Arc<[u8]>,
     payloads: &[HtCodeBlockPayloadRanges],
     payload_cursor: &mut usize,
+    classic_payloads: &mut ReferencedClassicPayloadCursor<'_>,
     steps: &mut Vec<PreparedDirectGrayscaleStep>,
 ) -> Result<(), Error> {
     for step in &geometry.steps {
         match step {
-            J2kDirectGrayscaleStep::ClassicSubBand(_) => {
-                return Err(Error::MetalStateInvariant {
-                    state: "HTJ2K referenced direct plan",
-                    reason: "HTJ2K referenced plan contains a classic code-block step",
-                });
+            J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+                steps.push(PreparedDirectGrayscaleStep::ClassicSubBand(
+                    prepare_referenced_classic_sub_band(sub_band, classic_payloads)?,
+                ));
             }
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
                 steps.push(PreparedDirectGrayscaleStep::HtSubBand(

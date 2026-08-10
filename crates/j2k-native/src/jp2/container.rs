@@ -268,6 +268,7 @@ fn parse_jp2_container_with_strict_and_retained_baseline(
                     current_box.data,
                     strict,
                     retained_baseline_bytes,
+                    file_kind,
                 )?;
                 used_lenient_metadata_recovery |= parsed_header.used_lenient_metadata_recovery;
                 image_boxes = Some(parsed_header.boxes);

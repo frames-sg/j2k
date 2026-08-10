@@ -87,6 +87,28 @@ fn cuda_classic_decode_bench_obeys_generated_and_format_filters() {
 }
 
 #[test]
+fn cuda_auto_routing_bench_uses_versioned_part15_workload_identity() {
+    let bench = concat!(
+        include_str!("../benches/auto_routing.rs"),
+        include_str!("../benches/auto_routing/decode.rs"),
+        include_str!("../benches/auto_routing/encode.rs"),
+        include_str!("../benches/auto_routing/runner.rs"),
+    );
+
+    for expected in [
+        "schema_version: workloads.manifest.schema_version",
+        "validate_auto_routing_decode_identity",
+        "case.codec.is_high_throughput()",
+        "J2kBlockCodingMode::HighThroughput",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "CUDA Auto-routing benchmark is missing `{expected}`"
+        );
+    }
+}
+
+#[test]
 fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
     let bench = include_str!("../benches/htj2k_decode.rs");
 

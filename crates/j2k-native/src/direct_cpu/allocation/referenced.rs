@@ -15,7 +15,8 @@ use super::{
 use budget::validate_referenced_aggregate_plan;
 use storage::{normalize_referenced_scratch, reserve_referenced_scratch};
 use view::{
-    max_referenced_classic_payload_bytes, max_referenced_payload_bytes, ReferencedPlanView,
+    max_referenced_classic_payload_bytes, max_referenced_dimensions, max_referenced_payload_bytes,
+    ReferencedPlanView,
 };
 
 pub(in super::super) fn prepare_referenced_direct_scratch(
@@ -27,8 +28,8 @@ pub(in super::super) fn prepare_referenced_direct_scratch(
         view,
         plan.retained_allocation_bytes()?,
         max_referenced_payload_bytes(plan)?,
-        None,
-        max_referenced_ht_dimensions(plan),
+        max_referenced_dimensions(view, false),
+        max_referenced_dimensions(view, true),
         scratch,
     )
 }

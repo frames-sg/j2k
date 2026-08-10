@@ -86,7 +86,26 @@ impl ColorGroupEncoder<'_> {
             },
             self.destination,
         )?;
-        self.remap_coalesced_status(status_start, broadcast)
+        self.remap_coalesced_status(status_start, broadcast)?;
+        for component in &self.plans[0].component_plans {
+            self.metadata.dispatch_report.idwt = self.metadata.dispatch_report.idwt.saturating_add(
+                component
+                    .steps
+                    .iter()
+                    .filter(|step| {
+                        matches!(step, super::super::PreparedDirectGrayscaleStep::Idwt(_))
+                    })
+                    .count(),
+            );
+        }
+        self.metadata.dispatch_report.mct = self
+            .metadata
+            .dispatch_report
+            .mct
+            .saturating_add(usize::from(self.plans[0].mct));
+        self.metadata.dispatch_report.color_output =
+            self.metadata.dispatch_report.color_output.saturating_add(1);
+        Ok(())
     }
 
     fn encode_repeated_planes(&mut self, planes: &mut Vec<Buffer>) -> Result<(), Error> {
@@ -201,6 +220,25 @@ impl ColorGroupEncoder<'_> {
             for status in &mut self.metadata.status_checks[status_start..] {
                 status.remap_source(source)?;
             }
+            for component in &plan.component_plans {
+                self.metadata.dispatch_report.idwt =
+                    self.metadata.dispatch_report.idwt.saturating_add(
+                        component
+                            .steps
+                            .iter()
+                            .filter(|step| {
+                                matches!(step, super::super::PreparedDirectGrayscaleStep::Idwt(_))
+                            })
+                            .count(),
+                    );
+            }
+            self.metadata.dispatch_report.mct = self
+                .metadata
+                .dispatch_report
+                .mct
+                .saturating_add(usize::from(plan.mct));
+            self.metadata.dispatch_report.color_output =
+                self.metadata.dispatch_report.color_output.saturating_add(1);
         }
         Ok(())
     }

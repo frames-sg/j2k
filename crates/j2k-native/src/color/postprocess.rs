@@ -31,10 +31,22 @@ pub(crate) fn validate_and_reorder_channels(
     let mut validation_budget =
         DecodeOwnerBudget::for_components(retained_image_bytes, components, components.capacity())?;
     validation_budget.include_elements::<u64>(word_count)?;
-    let mut seen_color_associations = Vec::new();
-    try_resize_decode_elements(&mut seen_color_associations, word_count, 0_u64)?;
-    validation_budget
-        .include_capacity_overage::<u64>(word_count, seen_color_associations.capacity())?;
+    let mut seen = Vec::new();
+    try_resize_decode_elements(&mut seen, word_count, 0_u64)?;
+    validation_budget.include_capacity_overage::<u64>(word_count, seen.capacity())?;
+    for definition in &cdef.channel_definitions {
+        let index = usize::from(definition.channel_index);
+        if index >= component_count {
+            bail!(ValidationError::InvalidChannelDefinition);
+        }
+        let word = index / BITS_PER_ASSOCIATION_WORD;
+        let mask = 1_u64 << (index % BITS_PER_ASSOCIATION_WORD);
+        if seen[word] & mask != 0 {
+            bail!(ValidationError::InvalidChannelDefinition);
+        }
+        seen[word] |= mask;
+    }
+    seen.fill(0);
     for definition in &cdef.channel_definitions {
         if let ChannelAssociation::Colour(association) = definition.association {
             let Some(index) = association.checked_sub(1).map(usize::from) else {
@@ -45,13 +57,13 @@ pub(crate) fn validate_and_reorder_channels(
             }
             let word = index / BITS_PER_ASSOCIATION_WORD;
             let mask = 1_u64 << (index % BITS_PER_ASSOCIATION_WORD);
-            if seen_color_associations[word] & mask != 0 {
+            if seen[word] & mask != 0 {
                 bail!(ValidationError::InvalidChannelDefinition);
             }
-            seen_color_associations[word] |= mask;
+            seen[word] |= mask;
         }
     }
-    drop(seen_color_associations);
+    drop(seen);
 
     let mut reorder_budget =
         DecodeOwnerBudget::for_components(retained_image_bytes, components, components.capacity())?;
@@ -65,12 +77,16 @@ pub(crate) fn validate_and_reorder_channels(
     reorder_budget
         .include_capacity_overage::<usize>(component_count, destination_by_source.capacity())?;
     source_order.extend(0..component_count);
-    source_order.sort_unstable_by_key(|&source_idx| {
+    source_order.sort_unstable_by_key(|&entry_idx| {
+        let definition = &cdef.channel_definitions[entry_idx];
         (
-            channel_association_sort_key(cdef.channel_definitions[source_idx].association),
-            source_idx,
+            channel_association_sort_key(definition.association),
+            definition.channel_index,
         )
     });
+    for entry_idx in &mut source_order {
+        *entry_idx = usize::from(cdef.channel_definitions[*entry_idx].channel_index);
+    }
     for (destination, &source) in source_order.iter().enumerate() {
         destination_by_source[source] = destination;
     }
@@ -338,6 +354,38 @@ mod tests {
         assert_eq!(components[0].container.truncated().as_ptr(), pointers[2]);
         assert_eq!(components[1].container.truncated().as_ptr(), pointers[0]);
         assert_eq!(components[2].container.truncated().as_ptr(), pointers[1]);
+    }
+
+    #[test]
+    fn channel_reorder_uses_channel_indices_when_cdef_entries_are_reversed() {
+        let mut components = vec![component(10.0), component(20.0), component(30.0)];
+        let cdef = ChannelDefinitionBox {
+            channel_definitions: vec![
+                ChannelDefinition {
+                    channel_index: 2,
+                    channel_type: ChannelType::Colour,
+                    association: ChannelAssociation::Colour(1),
+                },
+                ChannelDefinition {
+                    channel_index: 1,
+                    channel_type: ChannelType::Colour,
+                    association: ChannelAssociation::Colour(2),
+                },
+                ChannelDefinition {
+                    channel_index: 0,
+                    channel_type: ChannelType::Colour,
+                    association: ChannelAssociation::Colour(3),
+                },
+            ],
+        };
+
+        validate_and_reorder_channels(&cdef, &mut components, 0).expect("valid channel mapping");
+
+        let values = components
+            .iter()
+            .map(|component| component.container.truncated()[0])
+            .collect::<Vec<_>>();
+        assert_eq!(values, [30.0, 20.0, 10.0]);
     }
 
     #[test]

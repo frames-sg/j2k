@@ -31,6 +31,8 @@ pub struct CudaHtj2kCodeBlockJob {
     pub missing_bit_planes: u8,
     /// Total coded bitplanes for this code block's sub-band.
     pub num_bitplanes: u8,
+    /// Component ROI maxshift applied to coded coefficient magnitudes.
+    pub roi_shift: u8,
     /// Number of HT coding passes present.
     pub number_of_coding_passes: u8,
     /// Output row stride, in coefficients.
@@ -41,6 +43,8 @@ pub struct CudaHtj2kCodeBlockJob {
     pub dequantization_step: f32,
     /// Vertically causal context mode flag.
     pub stripe_causal: bool,
+    /// Whether irreversible coefficients use midpoint reconstruction.
+    pub irreversible_midpoint: bool,
 }
 
 #[repr(C)]
@@ -54,6 +58,7 @@ pub(crate) struct CudaHtj2kCodeBlockKernelJob {
     pub(crate) refinement_length: u32,
     pub(crate) missing_msbs: u32,
     pub(crate) num_bitplanes: u32,
+    pub(crate) reconstruction: u32,
     pub(crate) number_of_coding_passes: u32,
     pub(crate) output_stride: u32,
     pub(crate) output_offset: u32,
@@ -90,7 +95,7 @@ pub(crate) struct CudaHtj2kCleanupMultiKernelJob {
     pub(crate) output_offset: u32,
     pub(crate) dequantization_step: f32,
     pub(crate) stripe_causal: u32,
-    pub(crate) reserved_tail: u32,
+    pub(crate) reconstruction: u32,
 }
 
 /// Device descriptor bytes used by one multi-target HTJ2K cleanup job.
@@ -121,7 +126,7 @@ pub(crate) struct CudaHtj2kDequantizeKernelJob {
     pub(crate) output_stride: u32,
     pub(crate) output_offset: u32,
     pub(crate) num_bitplanes: u32,
-    pub(crate) reserved: u32,
+    pub(crate) reconstruction: u32,
     pub(crate) dequantization_step: f32,
     pub(crate) reserved_tail: u32,
 }

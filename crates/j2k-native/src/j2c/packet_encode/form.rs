@@ -498,6 +498,7 @@ fn finish_tracked(
         data,
         packet_lengths,
         packet_headers,
+        required_ht_magnitude_bound: None,
     })
 }
 

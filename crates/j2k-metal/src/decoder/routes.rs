@@ -2,13 +2,9 @@
 
 use j2k::{DeviceDecodePlan, DeviceDecodeRequest};
 use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
-#[cfg(target_os = "macos")]
-use metal::Device;
 
 use super::surface::{allocate_cpu_surface, upload_surface};
 use super::J2kDecoder;
-#[cfg(target_os = "macos")]
-use crate::error::adapter_backend_error;
 #[cfg(target_os = "macos")]
 use crate::MetalBackendSession;
 use crate::{routing, Error, Surface};
@@ -67,19 +63,7 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         plan: DeviceDecodePlan,
     ) -> Result<Surface, Error> {
-        self.ensure_native_image()?;
-        let (Some(image), native_context) = (self.native_image.as_ref(), &mut self.native_context)
-        else {
-            return Err(Error::Decode(adapter_backend_error(
-                "native image cache missing".to_string(),
-            )));
-        };
-        crate::compute::decode_image_region_to_surface(
-            image,
-            native_context,
-            fmt,
-            plan.source_rect(),
-        )
+        self.decode_region_scaled_to_metal_surface(fmt, plan.source_rect(), Downscale::None, plan)
     }
 
     #[cfg(target_os = "macos")]
@@ -89,7 +73,7 @@ impl J2kDecoder<'_> {
         scale: Downscale,
         plan: DeviceDecodePlan,
     ) -> Result<Surface, Error> {
-        crate::compute::decode_scaled_to_surface(self.bytes, plan.source_dims(), fmt, scale)
+        self.decode_region_scaled_to_metal_surface(fmt, plan.source_rect(), scale, plan)
     }
 
     #[cfg(target_os = "macos")]
@@ -111,46 +95,6 @@ impl J2kDecoder<'_> {
             fmt,
             roi,
             scale,
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(super) fn decode_region_to_metal_surface_with_device(
-        &mut self,
-        fmt: PixelFormat,
-        plan: DeviceDecodePlan,
-        device: &Device,
-    ) -> Result<Surface, Error> {
-        self.ensure_native_image()?;
-        let (Some(image), native_context) = (self.native_image.as_ref(), &mut self.native_context)
-        else {
-            return Err(Error::Decode(adapter_backend_error(
-                "native image cache missing".to_string(),
-            )));
-        };
-        crate::compute::decode_image_region_to_surface_with_device(
-            image,
-            native_context,
-            fmt,
-            plan.source_rect(),
-            device,
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(super) fn decode_scaled_to_metal_surface_with_device(
-        &mut self,
-        fmt: PixelFormat,
-        scale: Downscale,
-        plan: DeviceDecodePlan,
-        device: &Device,
-    ) -> Result<Surface, Error> {
-        crate::compute::decode_scaled_to_surface_with_device(
-            self.bytes,
-            plan.source_dims(),
-            fmt,
-            scale,
-            device,
         )
     }
 
@@ -243,15 +187,35 @@ impl J2kDecoder<'_> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
-        let route = routing::decide_route(backend, fmt);
-        if let Some(error) = routing::decision_error(route) {
-            return Err(error);
-        }
-
         let plan = DeviceDecodePlan::for_image(
             self.inner.info().dimensions,
             DeviceDecodeRequest::Scaled { scale },
         )?;
+        #[cfg(target_os = "macos")]
+        let selected = if backend == BackendRequest::Auto
+            && j2k::J2kDecoder::inspect_support(self.bytes)
+                .ok()
+                .is_some_and(|support| {
+                    routing::auto_scaled_decode_uses_metal(
+                        plan.output_dims(),
+                        support.component_count(),
+                        fmt,
+                        support.transfer_syntax,
+                        support.payload_kind,
+                        scale,
+                    )
+                }) {
+            BackendRequest::Metal
+        } else {
+            backend
+        };
+        #[cfg(not(target_os = "macos"))]
+        let selected = backend;
+        let route = routing::decide_route(selected, fmt);
+        if let Some(error) = routing::decision_error(route) {
+            return Err(error);
+        }
+
         match route {
             routing::RouteDecision::CpuHost => self.decode_scaled_to_cpu_surface(fmt, scale, plan),
             #[cfg(target_os = "macos")]

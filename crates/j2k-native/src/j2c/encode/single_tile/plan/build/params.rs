@@ -36,6 +36,7 @@ pub(super) fn build_encode_params(
         use_mct: geometry.use_mct,
         guard_bits: geometry.guard_bits,
         block_coding_mode: request.block_coding_mode,
+        required_ht_magnitude_bound: owners.required_ht_magnitude_bound,
         progression_order: request.options.progression_order,
         write_tlm: request.options.write_tlm,
         write_plt: request.options.write_plt,

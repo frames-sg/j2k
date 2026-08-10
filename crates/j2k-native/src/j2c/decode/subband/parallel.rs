@@ -7,7 +7,10 @@ use super::{DecodeAllocationBudget, DecompositionStorage, SubBand};
 use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
-use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
+use crate::scalar::{
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace_midpoint,
+};
 use crate::{
     decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
     try_reserve_decode_elements, try_resize_decode_elements, HtCodeBlockDecodeJob,
@@ -40,6 +43,16 @@ pub(super) struct ClassicParallelParameters {
     pub(super) strict: bool,
     pub(super) total_bitplanes: u8,
     pub(super) roi_shift: u8,
+    pub(super) dequantization_step: f32,
+    pub(super) irreversible_midpoint: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HtParallelParameters {
+    pub(super) strict: bool,
+    pub(super) num_bitplanes: u8,
+    pub(super) roi_shift: u8,
+    pub(super) stripe_causal: bool,
     pub(super) dequantization_step: f32,
     pub(super) irreversible_midpoint: bool,
 }
@@ -198,11 +211,7 @@ fn preallocate_classic_workspaces(
 
 pub(super) fn decode_ht_sub_band_blocks_parallel(
     pending_blocks: &[PendingHtBlock],
-    strict: bool,
-    num_bitplanes: u8,
-    roi_shift: u8,
-    stripe_causal: bool,
-    dequantization_step: f32,
+    parameters: HtParallelParameters,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<Vec<DecodedHtBlock>> {
     let mut decoded_blocks = preallocate_ht_outputs(pending_blocks, budget)?;
@@ -216,7 +225,12 @@ pub(super) fn decode_ht_sub_band_blocks_parallel(
                 &mut decoded.coefficients,
                 block_coefficient_count(pending.width, pending.height)?,
             )?;
-            decode_ht_code_block_scalar_with_workspace(
+            let decode = if parameters.irreversible_midpoint {
+                decode_ht_code_block_scalar_with_workspace_midpoint
+            } else {
+                decode_ht_code_block_scalar_with_workspace
+            };
+            decode(
                 HtCodeBlockDecodeJob {
                     data: &pending.combined.data,
                     cleanup_length: pending.combined.cleanup_length,
@@ -226,11 +240,11 @@ pub(super) fn decode_ht_sub_band_blocks_parallel(
                     output_stride: pending.width as usize,
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
-                    num_bitplanes,
-                    roi_shift,
-                    stripe_causal,
-                    strict,
-                    dequantization_step,
+                    num_bitplanes: parameters.num_bitplanes,
+                    roi_shift: parameters.roi_shift,
+                    stripe_causal: parameters.stripe_causal,
+                    strict: parameters.strict,
+                    dequantization_step: parameters.dequantization_step,
                 },
                 &mut decoded.coefficients,
                 workspace,

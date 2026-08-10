@@ -53,6 +53,7 @@ pub struct CudaDctToWaveletStageAccelerator {
     min_auto_dwt97_batch_samples: usize,
     counters: DctToWaveletStageCounters,
     last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
+    last_htj2k97_required_magnitude_bounds: Vec<u8>,
     resident_ht_encode: bool,
     #[cfg(feature = "cuda-runtime")]
     session: Option<cuda::CudaTranscodeSession>,
@@ -99,6 +100,7 @@ impl CudaDctToWaveletStageAccelerator {
             min_auto_dwt97_batch_samples: 0,
             counters: DctToWaveletStageCounters::new(),
             last_dwt97_batch_stage_timings: None,
+            last_htj2k97_required_magnitude_bounds: Vec::new(),
             resident_ht_encode: false,
             #[cfg(feature = "cuda-runtime")]
             session: None,
@@ -485,6 +487,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
+        self.last_htj2k97_required_magnitude_bounds.clear();
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -513,11 +516,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_preencoded_batch(self.cuda_session(), jobs, options) {
-                Ok((output, timings)) => {
+                Ok((output, required_magnitude_bounds, timings)) => {
                     self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
                     self.counters
                         .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
+                    self.last_htj2k97_required_magnitude_bounds = required_magnitude_bounds;
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -530,6 +534,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
+        self.last_htj2k97_required_magnitude_bounds.clear();
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -559,11 +564,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_preencoded_i16_batch(self.cuda_session(), jobs, options) {
-                Ok((output, timings)) => {
+                Ok((output, required_magnitude_bounds, timings)) => {
                     self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
                     self.counters
                         .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
+                    self.last_htj2k97_required_magnitude_bounds = required_magnitude_bounds;
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -576,6 +582,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<PreencodedHtj2k97CompactBatch>, TranscodeStageError> {
+        self.last_htj2k97_required_magnitude_bounds.clear();
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -612,11 +619,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 jobs,
                 options,
             ) {
-                Ok((output, timings)) => {
+                Ok((output, required_magnitude_bounds, timings)) => {
                     self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
                     self.counters
                         .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
+                    self.last_htj2k97_required_magnitude_bounds = required_magnitude_bounds;
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -629,6 +637,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, TranscodeStageError> {
+        self.last_htj2k97_required_magnitude_bounds.clear();
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -664,7 +673,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 groups,
                 options,
             ) {
-                Ok((output, timings)) => {
+                Ok((output, required_magnitude_bounds, timings)) => {
                     self.counters
                         .record(CounterEvent::Dwt97BatchDispatch, groups.len());
                     self.counters.record(
@@ -672,6 +681,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                         timings.ht_codeblock_dispatches,
                     );
                     self.last_dwt97_batch_stage_timings = Some(timings);
+                    self.last_htj2k97_required_magnitude_bounds = required_magnitude_bounds;
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -684,6 +694,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, TranscodeStageError> {
+        self.last_htj2k97_required_magnitude_bounds.clear();
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -722,7 +733,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 groups,
                 options,
             ) {
-                Ok((output, timings)) => {
+                Ok((output, required_magnitude_bounds, timings)) => {
                     self.counters
                         .record(CounterEvent::Dwt97BatchDispatch, groups.len());
                     self.counters.record(
@@ -730,6 +741,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                         timings.ht_codeblock_dispatches,
                     );
                     self.last_dwt97_batch_stage_timings = Some(timings);
+                    self.last_htj2k97_required_magnitude_bounds = required_magnitude_bounds;
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -739,6 +751,10 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
     fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
         self.last_dwt97_batch_stage_timings
+    }
+
+    fn last_htj2k97_required_magnitude_bounds(&self) -> &[u8] {
+        &self.last_htj2k97_required_magnitude_bounds
     }
 }
 

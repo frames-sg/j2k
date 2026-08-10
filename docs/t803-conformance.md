@@ -1,55 +1,113 @@
 # ISO/IEC 15444-4 / ITU-T T.803 Conformance
 
-Status: **0.8.1 release-scoped**
+Status: **Part 1 published for 0.8.1; Part 15 unversioned development evidence;
+exact-clean-SHA future release claim pending**
 
-Formal decoder claim:
+Published formal decoder wording for release `0.8.1`:
 
-- `j2k` CPU IUT: **Profile-1 Cclass-1 compliant; Profile-1 Cclass-1HF
-  compliant; Annex G JP2 reader compliant.**
-- `j2k-cuda` adapter IUT: **Profile-1 Cclass-1 compliant and Profile-1
-  Cclass-1HF compliant as an adapter IUT**, with every CPU, CUDA, hybrid, and
-  transfer stage disclosed per case.
-- `j2k-metal` adapter IUT: **Profile-1 Cclass-1 compliant and Profile-1
-  Cclass-1HF compliant as an adapter IUT**, with every CPU, Metal, hybrid, and
-  transfer stage disclosed per case.
+- `j2k` CPU IUT:
+  - JPEG 2000 Part 1: **Profile-1 Cclass-1 compliant; Profile-1 Cclass-1HF compliant; Annex G JP2 reader compliant.**
+- `j2k-cuda` and `j2k-metal`: separate adapter-IUT results for the same Part 1
+  compliance points, with every CPU, device, hybrid, and transfer stage
+  disclosed per case. Neither adapter is described as device-native.
+
+Planned Part 15 decoder wording after a future exact-clean-SHA verification:
+
+- `j2k` CPU IUT:
+  - HTJ2K Part 15: **DS1-HM Cclass-1h, MMAGB 15**, including DS1-HT,
+    DS0-HM, and DS0-HT subset evidence; **Cclass-1HFh, MMAGB 20**; and
+    **Annex G JPH reader compliant at MMAGB 15**.
+- `j2k-cuda` and `j2k-metal`: separate adapter-IUT results for the same formal
+  Part 15 compliance points, with every CPU, device, hybrid, and transfer stage
+  disclosed per case. Neither adapter is described as device-native.
 
 The implemented harness targets ISO/IEC 15444-4:2024 / ITU-T T.803 v3. Part 4
 defines JPEG 2000 conformance-testing procedures and reference comparisons; it
-is not another codestream syntax or a performance benchmark. These claims are
-limited to release `0.8.1` and require the attached reports to identify the
-same immutable release SHA as the annotated tag.
+is not another codestream syntax or a performance benchmark. The current
+Part 1 wording above is tied to the exact `v0.8.1` reports attached to the
+published release. The current combined Part 1/Part 15 reports contain the
+`development-dirty-worktree` feature and are deliberately rejected by release
+verification. The planned Part 15 wording becomes a release claim only after
+all required reports identify the same immutable future candidate SHA and
+contain no development-only feature evidence.
 
-## Claimed decoder scope
+## Decoder evidence scope
 
-| IUT | Release wording | Route boundary |
+| IUT | Evidence wording | Route boundary |
 | --- | --- | --- |
-| `j2k` CPU | Profile-1 Cclass-1 compliant; Profile-1 Cclass-1HF compliant; Annex G JP2 reader compliant | CPU implementation under test. |
-| `j2k-cuda` | Profile-1 Cclass-1 compliant adapter IUT; Profile-1 Cclass-1HF compliant adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, CUDA, or not used. |
-| `j2k-metal` | Profile-1 Cclass-1 compliant adapter IUT; Profile-1 Cclass-1HF compliant adapter IUT | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, Metal, or not used. |
+| `j2k` CPU | Published `0.8.1` Part 1 Profile-1 Cclass-1, Profile-1 Cclass-1HF, and Annex G JP2 reader wording. Unversioned development evidence for Part 15 DS1-HM Cclass-1h at MMAGB 15, Cclass-1HFh at MMAGB 20, and Annex G JPH reader at MMAGB 15. | CPU implementation under test. |
+| `j2k-cuda` | Published `0.8.1` adapter-IUT evidence for the Part 1 points; unversioned development adapter evidence for the Part 15 points. | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, CUDA, or not used. |
+| `j2k-metal` | Published `0.8.1` adapter-IUT evidence for the Part 1 points; unversioned development adapter evidence for the Part 15 points. | Parsing, Tier-1, transforms, output, and transfers are reported per case as CPU, Metal, or not used. |
 
 CPU assistance is permitted for the adapter IUTs. Any such route is labelled
 `hybrid`; it is not described as device-native. Annex G JP2 color and component
 normalization currently runs through disclosed CPU stages for the GPU adapters.
 JPX / Part 2 is outside this scope, except for JP2-compatible JPX input required
-by Annex G.
+by Annex G. T.803 v3 provides no Cclass-2h ETS, so this project makes no formal
+Cclass-2h claim; Cclass-2h-scale resource and boundary checks are extended
+project evidence only.
 
-The project does not use a generic “full Part 1 compliant” label. The exact
-Profile/Cclass wording above is tied to the published reports for one immutable
-release SHA.
+The project does not use generic “full Part 1 compliant” or “full Part 15
+compliant” labels. Every exact Profile/Cclass/MMAGB claim must be tied to
+published reports for one immutable release SHA.
 
-## Release result
+## Published 0.8.1 Part 1 result
 
-The macOS arm64, Linux x86-64, and Windows x86-64 CPU reports each pass all 90
-selected decoder/JP2 cases with zero skips. Both real-hardware adapter reports
-record **0/90 device-native, 48/90 hybrid, and 42/90 CPU-routed cases**: CUDA
-on an NVIDIA GeForce RTX 4070 SUPER and Metal on an Apple M4 Pro. All selected
-outputs are within their applicable bounds, but neither adapter result is
-device-native conformance evidence.
+The three CPU reports attached to [release 0.8.1](https://github.com/frames-sg/j2k/releases/tag/v0.8.1)
+each pass all 90 selected Part 1 decoder/JP2 cases with zero skips at exact SHA
+`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. Its CUDA and Metal adapter
+reports each pass the same 90 cases and record 0 device-native, 48 hybrid, and
+42 CPU-routed cases. The published CPU Annex D/F encoder matrix passes 28/28;
+the CUDA and Metal matrices each pass 25/25. The encoder results are
+informative evidence, not the formal decoder claim.
 
-The CPU Annex D/F encoder matrix passes 28 of 28 cases. The CUDA and Metal
-matrices each pass 25 of 25; CUDA records 24 hybrid encoder routes and one
-CPU-routed case, while Metal records 23 hybrid routes and two CPU-routed cases.
+## Current development result
+
+The macOS arm64, Linux x86-64, and native Windows x86-64/MSVC CPU reports each
+pass all **160 selected cases with zero skips**: 90 Part 1 decoder/JP2 cases and
+70 Part 15 decoder/JPH cases. The Part 15 total comprises 60 formal codestream
+comparisons plus all ten Annex G JPH families. For each BSET, the harness
+selects the largest BMAGB not exceeding the claimed MMAGB.
+
+Both real-hardware adapter reports also pass 160/160 and record the same honest
+aggregate: **0/160 device-native, 81/160 hybrid, and 79/160 CPU-routed**. The
+Part 1 split is 48 hybrid and 42 CPU-routed; the Part 15 split is 33 hybrid and
+37 CPU-routed. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER and Metal on an
+Apple M4 Pro. Parsing ran on CPU in every case. Hybrid cases moved supported
+Tier-1, dequantization, IDWT, MCT, color/output, and transfer work to the named
+device. Although the aggregate splits coincide, the reports contain
+backend-specific production dispatch counters—for example, CUDA uploaded byte
+counts while Metal records host-input counts, and per-case dispatch counts
+differ. The stage labels are observed execution, not capability-table
+predictions.
+
+The CPU Annex D/F encoder matrix passes 56/56 cases: 55 pass through the pinned
+T.804 OpenJPEG decoder, while the mandatory HT+RGN capability case that
+OpenJPEG 2.5.3 rejects passes through the independently pinned OpenHTJ2K decoder
+as supplemental interoperability evidence. The CUDA and Metal matrices each
+pass 35/35 through OpenJPEG; CUDA records 34 hybrid encoder routes and one
+CPU-routed case, while Metal records 33 hybrid routes and two CPU-routed cases.
 These encoder results are informative evidence, not the formal decoder claim.
+
+All five development reports identify base commit
+`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. Because they also identify the
+dirty development tree, they establish the current implementation result but
+cannot be attached as release evidence. A clean-candidate rerun remains
+mandatory before the planned Part 15 wording is activated for any future
+release.
+
+The current schema-7 development JSON digests are:
+
+| IUT/platform | Report SHA-256 |
+| --- | --- |
+| CPU/macOS arm64 | `2f40f825d01bff8e63dd5b7727bbc119b9157da73ed1497ef8d9cef7f848b346` |
+| CPU/Linux x86-64 | `e5e4ef45ecc86a061cfbe3355516b1c0a70a77a47e3cd81c7d6598bbe3d9eeea` |
+| CPU/Windows x86-64 MSVC | `1f047427fb16f30c09f09b64a1a49b3faa593941ac06cbab36315721f7e6545a` |
+| CUDA/Linux x86-64, RTX 4070 SUPER | `7cce6bf18cd18c158e750d8c95a9afdb34a7a004a51b501cafc2f3a6b7257a30` |
+| Metal/macOS arm64, M4 Pro | `c9b248ff987c15a3d77c109d481432348a3bacdea648ec7c145bcc5967cb73dc` |
+
+These hashes are audit anchors for the development result only. The clean
+candidate will produce a new five-report inventory for release attachment.
 
 The former `c1-c0p0-13` failure was an IUT harness defect. The codestream has
 257 components and enables the reversible component transform. T.803 B.2.5
@@ -85,15 +143,19 @@ The official corpus is fetched only from the URL and archive digest pinned in
 
 ```bash
 cargo xtask t803 fetch
-cargo xtask t803 run --iut cpu
-cargo xtask t803 run --iut cuda
-cargo xtask t803 run --iut metal
+cargo xtask t803 run --iut cpu --suite all
+cargo xtask t803 run --iut cuda --suite all
+cargo xtask t803 run --iut metal --suite all
 ```
 
 `fetch` rejects unapproved redirects, archive or file hash drift, unsafe archive
 entries, duplicate paths, unexpected required-case names, and resource-limit
 violations. The copyrighted corpus stays under `target/t803/`. Only versioned
 JSON/Markdown reports and hashes may be retained.
+
+Add `--development` only while iterating on a dirty tree. Development runs use
+the same corpus and comparisons, but their reports are intentionally ineligible
+for release verification. The exact clean candidate runs omit that flag.
 
 Release eligibility is scoped independently. CPU wording requires the three
 CPU operating-system reports; each adapter wording requires only that
@@ -111,24 +173,27 @@ cargo xtask t803 verify --scope metal --candidate-sha "$RC_SHA" \
   --report path/to/metal.json
 ```
 
-`--scope all` verifies all five reports together. Release `0.8.1` uses that
-coordinated scope in the tag-publish workflow; independently, an unavailable
-adapter invalidates only its own adapter claim and does not erase a complete
-CPU result.
+`--scope all` verifies all five reports together. A future release that carries
+the Part 15 wording uses that coordinated scope in the tag-publish workflow;
+independently, an unavailable adapter invalidates only its own adapter claim
+and does not erase a complete CPU result.
 
-All 90 selected decoder/JP2 cases must be present with no skips, every report
-must pass, source and corpus hashes must match, and the IUT/platform/route
-identity must match the required lane. Reports are rejected when a route labels
-CPU-assisted work as device-native.
+All 160 selected Part 1/Part 15 decoder and JP2/JPH cases must be present with
+no skips, every report must pass, source and corpus hashes must match, and the
+IUT/platform/route identity must match the required lane. Reports are rejected
+when a route labels CPU-assisted work as device-native.
 
 ## Encoder evidence
 
 The CPU, CUDA, and Metal Annex F implementation compliance statements and the
-stable pairwise/boundary matrix live in `corpus/j2k-conformance/`. Selected
-codestreams are decoded by the pinned T.804 OpenJPEG reference implementation.
-Reference-decode success is the Annex D legality result; lossless output must
-also match the source exactly. Lossy rate and PSNR checks are separate project
-quality gates.
+stable pairwise/boundary matrix live in `corpus/j2k-conformance/`. The pinned
+T.804 OpenJPEG reference implementation decodes 55/56 CPU cases and all 35
+CUDA and Metal cases. OpenJPEG 2.5.3 rejects HT code-blocks carrying RGN before
+decoding, so the retained CPU HT+RGN capability case uses the independently
+pinned OpenHTJ2K decoder and is labelled supplemental interoperability evidence,
+not T.804 evidence. Reference-decode success is the Annex D legality result;
+lossless output must also match the source exactly. Lossy rate and PSNR checks
+are separate project quality gates.
 
 Encoder testing is informative under T.803 and is not the same formal claim as
 decoder compliance. Accelerator dispatch and fallback stages are reported for

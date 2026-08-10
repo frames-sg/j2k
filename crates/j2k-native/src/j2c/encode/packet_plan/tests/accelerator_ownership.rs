@@ -165,6 +165,7 @@ fn packetized_accelerator_output_counts_nested_metadata_capacities() {
         data,
         packet_lengths,
         packet_headers,
+        required_ht_magnitude_bound: None,
     };
 
     assert_eq!(

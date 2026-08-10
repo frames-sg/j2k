@@ -37,6 +37,7 @@ fn test_ht_job(output_x: u32, output_y: u32, width: u32, height: u32) -> J2kHtCl
             .expect("test output offset"),
         dequantization_step: 1.0,
         stripe_causal: 0,
+        irreversible_midpoint: 0,
     }
 }
 

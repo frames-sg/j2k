@@ -14,6 +14,7 @@ use crate::direct_plan::{
 };
 
 impl CudaHtj2kDecodePlan {
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn validate_referenced_classic_payload_sequence(
         payloads: &[J2kClassicCodeBlockPayload],
         ranges: &[J2kCodestreamRange],
@@ -86,7 +87,8 @@ pub(in crate::direct_plan) fn referenced_classic_payload_bytes(
     })
 }
 
-pub(in crate::direct_plan) fn validate_referenced_classic_payload_sequence(
+#[cfg(feature = "cuda-runtime")]
+fn validate_referenced_classic_payload_sequence(
     payloads: &[J2kClassicCodeBlockPayload],
     ranges: &[J2kCodestreamRange],
 ) -> Result<(), Error> {

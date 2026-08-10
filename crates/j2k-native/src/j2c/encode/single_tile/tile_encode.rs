@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::allocation::{checked_add_bytes, checked_element_bytes};
+use super::super::magnitude::required_ht_magnitude_bound;
 use super::super::{
     encode_prepared_resolution_packets_for_session,
     encode_prepared_resolution_packets_layered_for_session,
@@ -69,6 +70,11 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
             session,
         },
         accelerator,
+    )?;
+    let required_ht_magnitude_bound = required_ht_magnitude_bound(
+        component_resolution_packets.iter().flatten(),
+        plan.num_levels,
+        options.reversible,
     )?;
 
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
@@ -156,7 +162,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         retained_base_bytes,
         "retained transform and single-tile plan owners",
     )?;
-    let packetized_tile = packetize_resolution_packets_with_options_for_session(
+    let mut packetized_tile = packetize_resolution_packets_with_options_for_session(
         &resolution_packets,
         resolution_packets.capacity(),
         &packet_descriptors,
@@ -174,6 +180,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         &packet_session,
         accelerator,
     )?;
+    packetized_tile.required_ht_magnitude_bound = required_ht_magnitude_bound;
     let packetize_us = profile::elapsed_us(stage_start);
 
     Ok(EncodedTilePackets {

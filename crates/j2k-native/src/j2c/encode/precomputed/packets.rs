@@ -285,6 +285,7 @@ fn prepared_subband_metadata(
         height,
         code_blocks,
         preencoded_ht_code_blocks: encoded,
+        preencoded_ht_maximum_cleanup_magnitude: None,
         num_cbs_x,
         num_cbs_y,
         sub_band_type: internal_sub_band_type(sub_band_type),

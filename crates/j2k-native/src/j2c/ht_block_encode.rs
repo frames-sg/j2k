@@ -11,6 +11,7 @@ mod writers;
 
 pub(crate) use allocation::ht_worker_allocation;
 pub(crate) use distribution::collect_encode_distribution;
+pub(crate) use facade::effective_coding_passes;
 #[cfg(test)]
 pub(crate) use facade::{encode_code_block, encode_code_block_with_passes};
 pub(crate) use facade::{try_encode_code_block, try_encode_code_block_with_passes};

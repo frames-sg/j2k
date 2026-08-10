@@ -3,9 +3,11 @@
 use crate::error::{bail, DecodingError, Result};
 use crate::scalar::decode_j2k_code_block_scalar_with_workspace_midpoint;
 use crate::{
-    decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
-    HtCodeBlockDecodeJob, HtCodeBlockPayloadRanges, J2kCodeBlockDecodeJob, J2kDirectGrayscaleStep,
-    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
+    decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace, HtCodeBlockDecodeJob, HtCodeBlockPayloadRanges,
+    J2kCodeBlockDecodeJob, J2kDirectGrayscaleStep, J2kReferencedClassicPlan,
+    J2kReferencedHtj2kPlan,
 };
 
 use super::super::referenced::payload_slice;
@@ -58,7 +60,12 @@ pub fn execute_referenced_htj2k_entropy_job(
         job.width,
         job.height,
     )?;
-    decode_ht_code_block_scalar_with_workspace(
+    let decode = if sub_band.irreversible_midpoint {
+        decode_ht_code_block_scalar_with_workspace_midpoint
+    } else {
+        decode_ht_code_block_scalar_with_workspace
+    };
+    decode(
         HtCodeBlockDecodeJob {
             data,
             cleanup_length: job.cleanup_length,

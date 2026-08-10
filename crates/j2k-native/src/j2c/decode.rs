@@ -25,8 +25,8 @@ use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::profile;
 use crate::reader::BitReader;
 use crate::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    decode_j2k_code_block_scalar_with_workspace,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
+    apply_roi_maxshift_inverse_i64, decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint, HtCodeBlockBatchJob,
     HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
     HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
@@ -55,7 +55,10 @@ pub(crate) use self::direct_plan::{
     build_referenced_htj2k_rgba_plan,
 };
 use self::store::{apply_sign_shift_after_mct, component_unsigned_level_shift, store};
-use self::subband::{code_block_required_by_index, decode_component_tile_bit_planes};
+use self::subband::{
+    code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks,
+    decode_component_tile_bit_planes,
+};
 #[cfg(all(test, feature = "parallel"))]
 use self::subband::{
     copy_decoded_classic_blocks_to_sub_band, copy_decoded_ht_blocks_to_sub_band,
@@ -711,6 +714,7 @@ mod tests {
             vertically_causal_context: false,
             segmentation_symbols: false,
             high_throughput_block_coding: false,
+            mixed_block_coding: false,
         }
     }
 
@@ -723,6 +727,10 @@ mod tests {
             has_been_included: true,
             missing_bit_planes: 0,
             number_of_coding_passes: 3,
+            ht_total_coding_passes: 0,
+            ht_first_cleanup_pass: None,
+            ht_selected_set: None,
+            coding: Some(crate::j2c::build::CodeBlockCoding::Classic),
             l_block: 3,
             non_empty_layer_count: 1,
         }

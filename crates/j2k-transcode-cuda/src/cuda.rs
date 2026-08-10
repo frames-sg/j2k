@@ -70,8 +70,9 @@ use self::resident_encode::{
 const NOT_WIRED: CudaTranscodeError =
     CudaTranscodeError::UnsupportedJob("j2k-transcode-cuda kernel not yet wired");
 
-type GroupedPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97Component>)>;
-type GroupedCompactPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97CompactComponent>)>;
+type GroupedPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97Component>, Vec<u8>)>;
+type GroupedCompactPreencodedComponents =
+    Vec<(usize, Vec<PreencodedHtj2k97CompactComponent>, Vec<u8>)>;
 type ResidentPreencodedGroups = (
     GroupedPreencodedComponents,
     CudaHtj2kEncodeStageTimings,
