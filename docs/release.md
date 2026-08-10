@@ -1,11 +1,9 @@
 # Release Policy
 
-The `j2k` 0.9.0 workspace is the next release candidate; it is not yet
-published or security-supported. The `j2k` 0.8.1 public crate release is published and security-supported.
-It remains the latest published line and carries the release-scoped
-Part 1 T.803 decoder evidence described in
-[`T.803 conformance`](t803-conformance.md). Unreleased Part 15 evidence remains
-development-only until it is regenerated from a future exact clean candidate.
+The `j2k` 0.9.0 public crate release is published and security-supported. It is
+the latest published line and carries the release-scoped Part 1 and selected
+Part 15 T.803 decoder evidence described in
+[`T.803 conformance`](t803-conformance.md).
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -14,8 +12,8 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.9.0` | Unpublished release candidate with reviewed `objc2-metal` API-break evidence. | Not supported until publication and final exact-SHA validation. |
-| `0.8.1` | Published on crates.io from annotated tag `v0.8.1`. | Latest supported release. |
+| `0.9.0` | Published on crates.io from annotated tag `v0.9.0`, with reviewed `objc2-metal` API-break evidence. | Latest supported release. |
+| `0.8.1` | Previous crates.io release from annotated tag `v0.8.1`. | Supported. |
 | `0.8.0` | Previous crates.io release from annotated tag `v0.8.0`. | Supported. |
 | `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
 | `0.7.3` | Previous published release line. | Supported. |
@@ -24,6 +22,15 @@ evidence.
 | `0.7.0` | Previous published release line. | Supported. |
 | `0.6.x` | Previous published release line. | Supported for security fixes during the pre-1.0 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
+
+Version `0.9.0` was published from annotated tag `v0.9.0`, which peels to
+commit `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The
+[hosted validation](https://github.com/frames-sg/j2k/actions/runs/31427966052)
+and [CUDA/Metal full validation](https://github.com/frames-sg/j2k/actions/runs/31427977279)
+produced the exact-SHA evidence attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.9.0). The
+[tag-triggered publish workflow](https://github.com/frames-sg/j2k/actions/runs/31434104062)
+verified all five T.803 reports and published all 19 crates to crates.io.
 
 Version `0.8.1` was published from annotated tag `v0.8.1`, which peels to
 commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. The
@@ -70,7 +77,7 @@ record an additive-only public surface: exact-resolution and sRGB/ICC decode
 APIs, encode-stage context, and the shared irreversible midpoint calculation.
 The one-time `0.7.5` to `0.8.0` transition allowance has been removed.
 
-Candidate `0.9.0` compares directly with published `v0.8.1`. Its [reviewed API
+Version `0.9.0` compares directly with published `v0.8.1`. Its [reviewed API
 report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md) and
 [review configuration](release-evidence/public-api/public-api-review-0.9.0.yml)
 record the intentional expert Metal API break: `metal-rs` device, queue,
@@ -78,9 +85,8 @@ buffer, texture, descriptor, size, and pixel-format types become retained or
 borrowed `objc2-metal` objects and values. Callers construct texture descriptors
 directly; the obsolete helper and unreachable raw-message-send errors are
 removed. The break ledger enumerates every removed item in the four affected
-Metal crates. The transition is valid
-only for `0.9.0`; after publication the semver baseline must rotate to tagged
-`v0.9.0` before another candidate is accepted.
+Metal crates. The one-time transition was consumed by `0.9.0`; the semver
+baseline must rotate to tagged `v0.9.0` before another candidate is accepted.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
@@ -378,7 +384,7 @@ are failures. These checks retain the per-backend minimum test count floors and
 named runtime sentinels for every Metal-facing package. J2K Metal Criterion
 bench signoff is reset until new narrow profiling benches are added.
 
-Candidate 0.9.0 replaces the deprecated `metal-rs` host binding with the pinned
+Version 0.9.0 replaces the deprecated `metal-rs` host binding with the pinned
 `objc2`, `objc2-foundation`, and `objc2-metal` stack. The workspace and
 published Metal adapters no longer require a top-level crates.io patch or the
 unmaintained `block 0.1.6` crate. Release review must keep the objc2 versions
