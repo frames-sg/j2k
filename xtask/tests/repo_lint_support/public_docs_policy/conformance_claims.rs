@@ -19,6 +19,7 @@ fn t803_candidate_claims_remain_exact_and_release_scoped() {
             FilePatternCheck::new("README.md")
                 .required(&[
                     "docs/t803-conformance.md",
+                    "Release `0.9.0` formally claims",
                     "Profile-1 Cclass-1",
                     "Profile-1 Cclass-1HF",
                     "Annex G JP2 reader",
@@ -26,13 +27,15 @@ fn t803_candidate_claims_remain_exact_and_release_scoped() {
                     "Cclass-1HFh, MMAGB 20",
                     "Annex G JPH",
                     "0/160 device-native, 81/160",
-                    "development-dirty-worktree",
-                    "not part of the published `0.8.1` claim",
+                    "b197f01ab4b9271f1cbc36921755a5b9d588bd5a",
+                    "releases/tag/v0.9.0",
                 ])
                 .forbidden(&[
                     "full JPEG 2000 Part 1 codestream support",
                     "Formal decoder claim for `0.8.1`",
                     "planned `0.8.1` release",
+                    "development-dirty-worktree",
+                    "not part of the published `0.8.1` claim",
                 ]),
             FilePatternCheck::new("docs/public-support.md")
                 .required(&["docs/t803-conformance.md", "support-inventory.tsv"])
@@ -40,9 +43,8 @@ fn t803_candidate_claims_remain_exact_and_release_scoped() {
             FilePatternCheck::new("docs/t803-conformance.md")
                 .required(&[
                     "ISO/IEC 15444-4:2024 / ITU-T T.803 v3",
-                    "Status: **Part 1 published for 0.8.1; Part 15 unversioned development evidence;",
-                    "Published formal decoder wording for release `0.8.1`:",
-                    "Planned Part 15 decoder wording after a future exact-clean-SHA verification:",
+                    "Status: **Part 1 and selected Part 15 points published for 0.9.0",
+                    "Published formal decoder wording for release `0.9.0`:",
                     "Profile-1 Cclass-1 compliant",
                     "Profile-1 Cclass-1HF compliant",
                     "Annex G JP2 reader compliant",
@@ -50,7 +52,8 @@ fn t803_candidate_claims_remain_exact_and_release_scoped() {
                     "Cclass-1HFh, MMAGB 20",
                     "Annex G JPH reader compliant at MMAGB 15",
                     "0/160 device-native, 81/160 hybrid, and 79/160 CPU-routed",
-                    "development-dirty-worktree",
+                    "b197f01ab4b9271f1cbc36921755a5b9d588bd5a",
+                    "releases/tag/v0.9.0",
                     "zero skips",
                     "c1-c0p0-13",
                     "adapter IUT",
@@ -60,6 +63,8 @@ fn t803_candidate_claims_remain_exact_and_release_scoped() {
                 .forbidden(&[
                     "Formal claim: **not made**",
                     "0.8.1 candidate development evidence",
+                    "future exact-clean-SHA",
+                    "development-dirty-worktree",
                 ]),
             FilePatternCheck::new("corpus/j2k-conformance/README.md").required(&[
                 "t803-v3.toml",

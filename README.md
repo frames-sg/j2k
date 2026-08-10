@@ -8,7 +8,7 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.8.1` is published and security-supported. See the
+**Release status:** `0.9.0` is published and security-supported. See the
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
@@ -41,34 +41,29 @@ Other measured 512 x 512 and Gray8 1024 x 1024 cells remain CPU-routed. The
 performance scope is the measured Apple M4 Pro; exact results and qualifications
 are in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
-Release `0.8.1` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
+Release `0.9.0` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
 **Profile-1 Cclass-1**, **Profile-1 Cclass-1HF**, and **Annex G JP2 reader**
-compliance for the CPU IUT. Its exact-SHA macOS arm64, Linux x86-64, and
-Windows x86-64 reports each pass all 90 selected Part 1 cases with zero skips.
-The published CUDA and Metal adapter-IUT reports each record 0/90
-device-native, 48/90 hybrid, and 42/90 CPU-routed cases.
-
-Unversioned development evidence extends that same framework to the following
-HTJ2K Part 15 CPU scope:
+compliance for the CPU IUT. The same published release evidence covers these
+selected HTJ2K Part 15 points:
 
 - HTJ2K Part 15: **DS1-HM Cclass-1h, MMAGB 15**, including DS1-HT, DS0-HM,
   and DS0-HT subset evidence; **Cclass-1HFh, MMAGB 20**; and **Annex G JPH
   reader at MMAGB 15**.
 
-The current CPU development reports pass all 160 selected cases—90 Part 1 and
-70 Part 15—with zero skips on all three platforms. CUDA and Metal pass the same
-160 cases on real hardware with the truthful combined headline **0/160 device-native, 81/160
-hybrid, 79/160 CPU-routed** for each backend. The Part 15 split is 33 hybrid and
-37 CPU-routed. Production-owned dispatch counters, not capability-table
-predictions, substantiate every stage label.
+The exact-SHA macOS arm64, Linux x86-64, and Windows x86-64 CPU reports each
+pass all 160 selected cases—90 Part 1 and 70 Part 15—with zero skips. The CUDA
+and Metal adapter-IUT reports pass the same 160 cases on real hardware with the
+truthful combined headline **0/160 device-native, 81/160 hybrid, 79/160
+CPU-routed** for each backend. The Part 15 split is 33 hybrid and 37 CPU-routed.
+Production-owned dispatch counters, not capability-table predictions,
+substantiate every stage label.
 
-These are development-dirty-worktree reports tied to base commit `f92646d0`.
-They are not part of the published `0.8.1` claim and are not yet a formal Part
-15 release claim: the release verifier rejects development evidence, and the
-complete CPU/CUDA/Metal suite must be rerun from the exact clean future
-candidate SHA. CPU encoder evidence passes 56/56 cases; CUDA and Metal each
-pass 35/35. Encoder results are informative Annex D/F evidence, not formal
-decoder conformance. The exact scope, report rules, and hashes are in
+All five reports identify exact release SHA
+`b197f01ab4b9271f1cbc36921755a5b9d588bd5a` and are attached to the
+[v0.9.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.9.0). CPU
+encoder evidence passes 56/56 cases; CUDA and Metal each pass 35/35. Encoder
+results are informative Annex D/F evidence, not formal decoder conformance.
+The exact scope, report rules, and hashes are in
 [docs/t803-conformance.md](docs/t803-conformance.md). T.803 does not establish
 robustness, security, adoption, or performance.
 

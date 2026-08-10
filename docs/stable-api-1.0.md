@@ -44,7 +44,7 @@ The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
 with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
 report compares its ordinary inventory with 0.7.5, and the 0.8.1 report
 compares that release directly with published 0.8.0. The 0.9.0 report compares
-the candidate directly with published 0.8.1. All reports also record each
+the published release directly with published 0.8.1. All reports also record each
 package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
@@ -81,20 +81,20 @@ contract expectations. Manual prose in this file must not duplicate that
 inventory. The completed 0.7.5-to-0.8.0 comparison is in the generated
 [`0.8.0` reviewed API report][v0.8.0-api-report].
 That report became release evidence after source freeze and the exact-SHA
-local, hosted, Metal, and CUDA gates completed. The current comparison is in
-the generated
+local, hosted, Metal, and CUDA gates completed. The completed 0.9.0 comparison
+is in the generated
 [`0.9.0` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md),
 with its human review in
 [`public-api-review-0.9.0.yml`](release-evidence/public-api/public-api-review-0.9.0.yml).
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
-The currently published stable contract is the `0.8.x` line. Version `0.8.0`
+The currently published stable contract is the `0.9.x` line. Version `0.8.0`
 intentionally changed the strict-decoding behavior and one warning variant
 under Cargo's pre-1.0 compatibility rules. It does not claim source or behavior
 compatibility with `0.7.x`; its exact breaks and migrations are in the review
 file. Version `0.8.1` adds exact-resolution and sRGB/ICC decode APIs plus
-encode-stage context without removing or changing a 0.8.0 item. Candidate
+encode-stage context without removing or changing a 0.8.0 item. Version
 `0.9.0` intentionally breaks the experimental and implementation-facing Metal
 expert APIs by replacing `metal-rs` owners and `*Ref` wrappers with retained or
 borrowed `objc2-metal` protocol objects. Texture descriptors are constructed
@@ -145,11 +145,12 @@ exception applied only to `0.7.5`.
 
 The completed historical transition lock was intentionally narrow: `0.8.0`
 was the only candidate permitted to compare against `v0.7.5` as an intentional
-pre-1.0 break. The active baseline is published `v0.8.1` at peeled commit
-`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. A new one-time lock permits only
-candidate `0.9.0` to compare against that baseline for this reviewed Metal API
-break. Before any later candidate is checked, the baseline must rotate to the
-published `v0.9.0` tag and version.
+pre-1.0 break. The currently configured semver baseline remains published
+`v0.8.1` at peeled commit
+`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b` solely for the completed 0.9.0
+report. Its one-time lock permits only `0.9.0` to compare against that baseline
+for the reviewed Metal API break. Before any later candidate is checked, the
+baseline must rotate to the published `v0.9.0` tag and version.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.
