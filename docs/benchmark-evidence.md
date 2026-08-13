@@ -28,6 +28,114 @@ external bundle and identify any missing evidence. Generated repo-local
 fixtures and passing codec self-checks remain implementation evidence; use
 manifest-backed external rows for adoption-facing speed reports.
 
+## CPU JPEG safe-SIMD development run - 2026-08-12
+
+The CPU JPEG safe-SIMD refactor was measured before and after on the same Apple
+M4 Pro host running macOS 26.5.2 build `25F84`, with Rust/Cargo 1.96.0 and LLVM
+22.1.2. Criterion used 95% confidence, 50 samples, a three-second warm-up, and
+a ten-second measurement. Benchmark JPEGs were generated deterministically
+before timing; setup decoded every case to validate geometry and output
+checksums. The commands were:
+
+```bash
+cargo bench -p j2k-jpeg --bench decode_cpu -- --save-baseline safe-simd-before
+cargo bench -p j2k-jpeg --features bench-internals --bench micro -- --save-baseline safe-simd-before
+cargo bench -p j2k-jpeg --bench decode_cpu -- --baseline safe-simd-before
+cargo bench -p j2k-jpeg --features bench-internals --bench micro -- --baseline safe-simd-before
+```
+
+The final end-to-end decode comparison was:
+
+| Case | Before 95% interval | After 95% interval | Criterion change interval |
+| --- | ---: | ---: | ---: |
+| Gray8 512 x 512 | 1.2084–1.2649 ms | 1.1740–1.1822 ms | -12.903% to -5.046% |
+| RGB8 512 x 512 4:4:4 | 2.7072–2.8042 ms | 2.6190–2.6301 ms | -5.201% to -2.813% |
+| RGB8 512 x 512 4:2:2 | 2.4961–2.5115 ms | 2.4447–2.4634 ms | -2.473% to -1.302% |
+| RGB8 512 x 512 4:2:0 | 1.9161–1.9243 ms | 1.8769–1.8839 ms | -2.651% to -1.946% |
+| RGB8 257 x 263 4:2:0 | 508.92–510.58 us | 500.94–502.03 us | -1.652% to -1.149% |
+| RGB8 512 x 512 4:2:0 rows | 1.9360–1.9420 ms | 1.8981–1.9022 ms | -2.403% to -1.966% |
+
+No affected microbenchmark exceeded the 2% regression criterion; every final
+95% confidence interval was lower than the saved baseline. This includes general and
+bottom-half-zero NEON IDCT, 255/256/cropped 4:2:0 row pairs, gray and planar-RGB
+rows, and 255/256/unaligned YCbCr rows. An intermediate build did confirm
+1.7–3.3% regressions in the color decode cases at doubled measurement time.
+Generated-code inspection traced those to per-chunk bounds checks and a lost
+4:2:0 helper inline. Safe array chunking plus a fixed ten-byte overlapping-load
+leaf restored the code shape; safe dispatch was not reverted.
+
+This is dirty-tree development evidence, not an exact-release-SHA publication
+run. The uniform gains in some unrelated microbenchmarks also make the exact
+improvement magnitudes susceptible to host-state and code-layout bias; the
+supported conclusion is that the final AArch64 run cleared the stated
+regression thresholds. Native x86-64 evidence is recorded below.
+
+### Native Windows AVX2 validation
+
+The same refactor was measured natively with the MSVC target on Windows 11 Pro
+10.0.22631, an AMD Ryzen 7 5800X3D with AVX2, and Rust/Cargo 1.96.0. The Linux
+VM on that host was used only as the remote transport; every test and timed
+process was a native `x86_64-pc-windows-msvc` executable. Baseline and
+candidate used the same benchmark sources, `fearless_simd 0.5.0`, shared build
+settings, and deterministic inputs. The final paired run pinned each process
+to the same logical processor and used High process priority. Criterion used
+the same 95% confidence, 50 samples, three-second warm-up, and ten-second
+measurement settings. The sole inconclusive 4:4:4 case was repeated with a
+20-second measurement as required.
+
+| Case | Before 95% interval | After 95% interval | Criterion change interval |
+| --- | ---: | ---: | ---: |
+| Gray8 512 x 512 | 1.8990–1.9206 ms | 1.8712–1.8975 ms | -2.192% to -0.449% |
+| RGB8 512 x 512 4:4:4 (20 s repeat) | 4.7098–4.7265 ms | 4.7236–4.7483 ms | +0.003% to +0.495% |
+| RGB8 512 x 512 4:2:2 | 4.2607–4.2973 ms | 4.1895–4.2214 ms | -2.295% to -1.171% |
+| RGB8 512 x 512 4:2:0 | 4.8575–4.8962 ms | 4.7957–4.8259 ms | -1.825% to -0.862% |
+| RGB8 257 x 263 4:2:0 | 1.2906–1.3418 ms | 1.2740–1.2827 ms | -4.832% to -0.826% |
+| RGB8 512 x 512 4:2:0 rows | 4.8291–4.8550 ms | 4.7672–4.8029 ms | -1.646% to -0.717% |
+
+Every affected AVX2 microbenchmark also cleared the 2% upper-bound criterion.
+The upper confidence bounds were +0.329% for general AVX2 IDCT, -0.829% for
+4:2:0 upsampling, -0.445% to -1.065% for full row pairs, +1.000% for cropped
+4:2:0, +0.662% for gray rows, +1.366% for planar RGB rows, and +0.176% or
+better for full, tail, and unaligned YCbCr rows.
+
+An additional unchanged reduced 2x2 scalar-IDCT diagnostic measured a
+confirmed +5.119% to +5.971% shift at an absolute candidate time of
+11.780–11.859 ns. Baseline and candidate source and generated x86-64 function
+bodies are identical (235 instructions), so this is attributed to whole-binary
+placement/cache effects rather than more algorithmic work. It is outside the
+CPU SIMD change and its predeclared affected-microbenchmark criterion; the
+end-to-end decode matrix above contains no confirmed regression. As with the
+AArch64 measurements, these are dirty-tree development results rather than an
+exact release-SHA publication run.
+
+### `fearless_simd` 0.7 upgrade validation - 2026-08-13
+
+The staged 0.9.1 dependency graph resolves `fearless_simd 0.7.0` in the
+workspace and every affected fuzz lockfile. `cargo xtask release-cpu` passed
+with that version on the Apple M4 Pro AArch64 host, the Linux x86-64 VM, and
+the native Windows x86-64 MSVC host described above.
+
+The dependency is AArch64-only for `j2k-jpeg`. In an adjacent
+version-isolation control from one otherwise unchanged intermediate source
+tree on Windows, changing only the workspace requirement and lockfile between
+0.5.0 and 0.7.0 caused Cargo to reuse the exact benchmark executable (SHA-256
+`2e37a5ffa851964a5e3ca4fafb6f819372071ba8f033e94bb83dda297d51ea80`).
+An adjacent 20-second 4:4:4 control nevertheless moved by -1.916% to -1.069%,
+demonstrating that the earlier apparent x86 dependency-version regressions
+were run-to-run host variation rather than changed executable code.
+
+On AArch64, normalized inspection of the unstripped release-benchmark output
+found identical instruction bodies for the compared JPEG NEON IDCT, row
+conversion, and 4:2:0 kernels under 0.5.0 and 0.7.0; relocation targets,
+constant-pool offsets, and whole-binary placement were excluded from that
+comparison. The host was not idle enough for an acceptance-quality direct
+0.7.0 timing rerun: repeated Criterion attempts contained severe scheduling
+outliers while WindowServer and other interactive processes remained busy.
+The 0.5.0 safe-SIMD timing above therefore remains historical refactor
+evidence, and a quiet same-host 0.7.0 Criterion rerun is still required before
+claiming direct measured AArch64 no-regression evidence for the dependency
+upgrade.
+
 ## Fixed Auto-routing promotion evidence
 
 `BackendRequest::Auto` uses committed thresholds; it does not calibrate on a

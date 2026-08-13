@@ -25,7 +25,7 @@ This task must run on macOS with `cargo-public-api` `0.52.0` installed
 silently change with the runner host or floating nightly channel.
 
 The ordinary snapshot uses `RUSTDOCFLAGS=-D warnings` so its comparison with
-the published 0.8.1 snapshot keeps the same scope. A second pass adds
+the published 0.9.0 snapshot keeps the same scope. A second pass adds
 `--document-hidden-items` and records only the extra rustdoc-hidden items in
 the implementation snapshot. Rustdoc can rewrite equivalent re-export paths
 when hidden modules become visible, so the generator forms a conservative full
@@ -34,7 +34,7 @@ sorted difference from the ordinary pass. This guarantees that the combined
 inventory remains a superset of the ordinary contract while retaining rewritten
 path variants for review rather than silently dropping reachable API. An empty
 full cargo-public-api pass fails the gate; an empty per-package hidden-only
-difference is recorded truthfully. The 0.8.1 baseline comparison continues to
+difference is recorded truthfully. The 0.9.0 baseline comparison continues to
 use only the ordinary snapshot. Those
 adapters are implementation-facing, but they are still reachable Rust API and
 therefore remain in the reviewed inventory. Do not use `#[doc(hidden)]` as a
@@ -44,12 +44,13 @@ The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
 with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
 report compares its ordinary inventory with 0.7.5, and the 0.8.1 report
 compares that release directly with published 0.8.0. The 0.9.0 report compares
-the published release directly with published 0.8.1. All reports also record each
-package's complete hidden-inventory count and fingerprint.
+the published release directly with published 0.8.1, and the staged 0.9.1
+report compares the candidate directly with published 0.9.0. All reports also
+record each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
 count/fingerprint in
-`docs/release-evidence/public-api/public-api-review-0.9.0.yml`.
+`docs/release-evidence/public-api/public-api-review-0.9.1.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
 The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
@@ -86,6 +87,12 @@ is in the generated
 [`0.9.0` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md),
 with its human review in
 [`public-api-review-0.9.0.yml`](release-evidence/public-api/public-api-review-0.9.0.yml).
+The provisional 0.9.1 comparison is in the generated
+[`0.9.1` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.1.md),
+with its human review in
+[`public-api-review-0.9.1.yml`](release-evidence/public-api/public-api-review-0.9.1.yml).
+It remains candidate evidence until the source is frozen and the exact-SHA
+release gates complete.
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
@@ -143,14 +150,14 @@ removing pass-through public wrappers. Its reviewed API diff must enumerate
 every contracted item and its changelog must provide migration guidance. This
 exception applied only to `0.7.5`.
 
-The completed historical transition lock was intentionally narrow: `0.8.0`
-was the only candidate permitted to compare against `v0.7.5` as an intentional
-pre-1.0 break. The currently configured semver baseline remains published
-`v0.8.1` at peeled commit
-`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b` solely for the completed 0.9.0
-report. Its one-time lock permits only `0.9.0` to compare against that baseline
-for the reviewed Metal API break. Before any later candidate is checked, the
-baseline must rotate to the published `v0.9.0` tag and version.
+The completed historical transition locks were intentionally narrow: `0.8.0`
+was the only candidate permitted to compare against `v0.7.5`, and `0.9.0` was
+the only candidate permitted to compare against `v0.8.1`, as intentional
+pre-1.0 breaks. The currently configured semver baseline is published
+`v0.9.0` at peeled commit
+`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The staged `0.9.1` patch
+candidate compares directly against that baseline without an intentional-break
+transition allowance.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.

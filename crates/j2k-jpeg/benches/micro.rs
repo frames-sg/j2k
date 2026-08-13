@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::time::Duration;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k_jpeg::bench_support::{
-    bench_idct_reference_block, BenchColorRowScratch, BenchHuffmanState, BenchRgb420RowPairScratch,
-    BenchUpsampleH2V2Scratch,
+    bench_idct_reference_block, BenchColorRowScratch, BenchGrayRowScratch, BenchHuffmanState,
+    BenchRgb420RowPairScratch, BenchRgbRowScratch, BenchUpsampleH2V2Scratch,
 };
 use j2k_jpeg::Decoder;
 use j2k_test_support::JPEG_BASELINE_420_16X16;
@@ -103,11 +105,12 @@ fn bench_micro(c: &mut Criterion) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use j2k_jpeg::bench_support::bench_idct_neon_block;
+        use j2k_jpeg::bench_support::BenchNeonIdct;
+        let neon = BenchNeonIdct::new();
         c.bench_function("micro/idct_islow_neon_block", |b| {
             let mut out = [0u8; 64];
             b.iter(|| {
-                bench_idct_neon_block(std::hint::black_box(&coeffs), &mut out);
+                neon.run(std::hint::black_box(&coeffs), &mut out);
                 std::hint::black_box(&out);
             });
         });
@@ -115,7 +118,7 @@ fn bench_micro(c: &mut Criterion) {
         c.bench_function("micro/idct_islow_neon_bottom_half_zero_block", |b| {
             let mut out = [0u8; 64];
             b.iter(|| {
-                bench_idct_neon_block(std::hint::black_box(&bottom_half_zero), &mut out);
+                neon.run_bottom_half_zero(std::hint::black_box(&bottom_half_zero), &mut out);
                 std::hint::black_box(&out);
             });
         });
@@ -123,12 +126,12 @@ fn bench_micro(c: &mut Criterion) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx2") {
-            use j2k_jpeg::bench_support::bench_idct_avx2_block;
+        use j2k_jpeg::bench_support::BenchAvx2Idct;
+        if let Some(avx2) = BenchAvx2Idct::try_new() {
             c.bench_function("micro/idct_islow_avx2_block", |b| {
                 let mut out = [0u8; 64];
                 b.iter(|| {
-                    bench_idct_avx2_block(std::hint::black_box(&coeffs), &mut out);
+                    avx2.run(std::hint::black_box(&coeffs), &mut out);
                     std::hint::black_box(&out);
                 });
             });
@@ -148,6 +151,7 @@ fn bench_micro(c: &mut Criterion) {
     // Odd-width 4:2:0 row-pair work item that forces the narrow chroma tail
     // handling exercised by the NEON hot-path parity test.
     let mut row_pair = BenchRgb420RowPairScratch::new(255);
+    assert!(row_pair.backend_matches_reference());
     c.bench_function("micro/rgb_420_row_pair_255", |b| {
         b.iter(|| {
             row_pair.run();
@@ -156,10 +160,38 @@ fn bench_micro(c: &mut Criterion) {
     });
 
     let mut row_pair_even = BenchRgb420RowPairScratch::new(256);
+    assert!(row_pair_even.backend_matches_reference());
     c.bench_function("micro/rgb_420_row_pair_256", |b| {
         b.iter(|| {
             row_pair_even.run();
             std::hint::black_box(&row_pair_even);
+        });
+    });
+
+    let mut row_pair_cropped = BenchRgb420RowPairScratch::new(257);
+    assert!(row_pair_cropped.cropped_backend_matches_reference(3, 249));
+    c.bench_function("micro/rgb_420_row_pair_cropped_3_249", |b| {
+        b.iter(|| {
+            row_pair_cropped.run_cropped(3, 249);
+            std::hint::black_box(&row_pair_cropped);
+        });
+    });
+
+    let mut gray = BenchGrayRowScratch::new(256);
+    assert!(gray.backend_matches_scalar());
+    c.bench_function("micro/gray_to_rgb_row_backend_256", |b| {
+        b.iter(|| {
+            gray.run_backend();
+            std::hint::black_box(&gray);
+        });
+    });
+
+    let mut rgb = BenchRgbRowScratch::new(256);
+    assert!(rgb.backend_matches_scalar());
+    c.bench_function("micro/planar_rgb_to_rgb_row_backend_256", |b| {
+        b.iter(|| {
+            rgb.run_backend();
+            std::hint::black_box(&rgb);
         });
     });
 
@@ -174,6 +206,7 @@ fn bench_micro(c: &mut Criterion) {
     });
 
     let mut backend_color = BenchColorRowScratch::new(256);
+    assert!(backend_color.backend_matches_scalar());
     c.bench_function("micro/ycbcr_to_rgb_row_backend_256", |b| {
         b.iter(|| {
             backend_color.run_backend();
@@ -182,13 +215,31 @@ fn bench_micro(c: &mut Criterion) {
     });
 
     let mut backend_color_tail = BenchColorRowScratch::new(255);
+    assert!(backend_color_tail.backend_matches_scalar());
     c.bench_function("micro/ycbcr_to_rgb_row_backend_255", |b| {
         b.iter(|| {
             backend_color_tail.run_backend();
             std::hint::black_box(&backend_color_tail);
         });
     });
+
+    let mut backend_color_unaligned = BenchColorRowScratch::new_unaligned(256);
+    assert!(backend_color_unaligned.backend_matches_scalar());
+    c.bench_function("micro/ycbcr_to_rgb_row_backend_unaligned_256", |b| {
+        b.iter(|| {
+            backend_color_unaligned.run_backend();
+            std::hint::black_box(&backend_color_unaligned);
+        });
+    });
 }
 
-criterion_group!(micro_benches, bench_micro);
+criterion_group! {
+    name = micro_benches;
+    config = Criterion::default()
+        .confidence_level(0.95)
+        .sample_size(50)
+        .warm_up_time(Duration::from_secs(3))
+        .measurement_time(Duration::from_secs(10));
+    targets = bench_micro
+}
 criterion_main!(micro_benches);

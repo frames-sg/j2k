@@ -74,6 +74,8 @@ pub(crate) mod color;
 
 pub(crate) mod backend;
 
+mod simd;
+
 pub(crate) mod output;
 
 pub(crate) mod profile;

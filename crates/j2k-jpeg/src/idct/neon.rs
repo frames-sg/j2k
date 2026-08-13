@@ -13,11 +13,12 @@
 
 use core::arch::aarch64::{
     int16x8_t, int32x4_t, vaddq_s32, vcombine_s16, vcombine_s32, vdupq_n_s32, vget_high_s16,
-    vget_high_s32, vget_low_s16, vget_low_s32, vgetq_lane_u64, vld1q_s16, vmovl_s16, vmulq_n_s32,
-    vorrq_u64, vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32, vst1_u8,
-    vsubq_s32, vtrnq_s32,
+    vget_high_s32, vget_low_s16, vget_low_s32, vgetq_lane_u64, vmovl_s16, vmulq_n_s32, vorrq_u64,
+    vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32, vsubq_s32, vtrnq_s32,
 };
 use j2k_codec_math::jpeg::idct;
+
+use crate::simd::neon_memory;
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -45,42 +46,32 @@ const FIX_2_053119869: i32 = idct::FIX_2_053119869;
 const FIX_2_562915447: i32 = idct::FIX_2_562915447;
 const FIX_3_072711026: i32 = idct::FIX_3_072711026;
 
-/// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
-/// saturated to `[0, 255]`, matching the scalar path byte-for-byte.
-///
-/// # Safety
-/// Caller ensures the target CPU supports NEON. On aarch64 NEON is
-/// architecturally mandatory, so the dispatch in `Backend::detect` picks
-/// this variant unconditionally for aarch64.
+fearless_simd::kernel! {
+    /// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
+    /// saturated to `[0, 255]`, matching the scalar path byte-for-byte.
+    pub(crate) fn idct_islow(neon: Neon, input: &[i16; 64], output: &mut [u8; 64]) {
+        idct_islow_kernel(input, output);
+    }
+}
+
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
+fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
     const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
     const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
     // Load 8 rows as int16x8_t so the common bottom-half-zero shortcut can
     // reuse the tail rows instead of rescanning coefficients scalar-by-scalar.
-    let src = input.as_ptr();
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row0 = unsafe { vld1q_s16(src) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row1 = unsafe { vld1q_s16(src.add(8)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row2 = unsafe { vld1q_s16(src.add(16)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row3 = unsafe { vld1q_s16(src.add(24)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row4 = unsafe { vld1q_s16(src.add(32)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row5 = unsafe { vld1q_s16(src.add(40)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row6 = unsafe { vld1q_s16(src.add(48)) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let row7 = unsafe { vld1q_s16(src.add(56)) };
+    let (rows, _) = input.as_chunks::<8>();
+    let row0 = neon_memory::load_i16x8(&rows[0]);
+    let row1 = neon_memory::load_i16x8(&rows[1]);
+    let row2 = neon_memory::load_i16x8(&rows[2]);
+    let row3 = neon_memory::load_i16x8(&rows[3]);
+    let row4 = neon_memory::load_i16x8(&rows[4]);
+    let row5 = neon_memory::load_i16x8(&rows[5]);
+    let row6 = neon_memory::load_i16x8(&rows[6]);
+    let row7 = neon_memory::load_i16x8(&rows[7]);
     let bottom_half_zero = bottom_half_rows_are_zero(row4, row5, row6, row7);
     if bottom_half_zero {
-        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-        unsafe {
-            idct_islow_bottom_half_zero_rows(row0, row1, row2, row3, output);
-        }
+        idct_islow_bottom_half_zero_rows(row0, row1, row2, row3, output);
         return;
     }
 
@@ -154,38 +145,42 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     // `flh_r` = row r (0..3), cols 4..7.
     // `fhl_r` = row r (4..7), cols 0..3.
     // `fhh_r` = row r (4..7), cols 4..7.
-    let store = output.as_mut_ptr();
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    unsafe {
-        store_row(store, fll0, flh0);
-        store_row(store.add(8), fll1, flh1);
-        store_row(store.add(16), fll2, flh2);
-        store_row(store.add(24), fll3, flh3);
-        store_row(store.add(32), fhl0, fhh0);
-        store_row(store.add(40), fhl1, fhh1);
-        store_row(store.add(48), fhl2, fhh2);
-        store_row(store.add(56), fhl3, fhh3);
-    }
+    let (rows, _) = output.as_chunks_mut::<8>();
+    store_row(&mut rows[0], fll0, flh0);
+    store_row(&mut rows[1], fll1, flh1);
+    store_row(&mut rows[2], fll2, flh2);
+    store_row(&mut rows[3], fll3, flh3);
+    store_row(&mut rows[4], fhl0, fhh0);
+    store_row(&mut rows[5], fhl1, fhh1);
+    store_row(&mut rows[6], fhl2, fhh2);
+    store_row(&mut rows[7], fhl3, fhh3);
 }
 
-/// Inverse DCT for blocks whose natural-order rows 4..7 are known to be zero.
-#[target_feature(enable = "neon")]
-pub(crate) unsafe fn idct_islow_bottom_half_zero(input: &[i16; 64], output: &mut [u8; 64]) {
-    let src = input.as_ptr();
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    unsafe {
-        idct_islow_bottom_half_zero_rows(
-            vld1q_s16(src),
-            vld1q_s16(src.add(8)),
-            vld1q_s16(src.add(16)),
-            vld1q_s16(src.add(24)),
-            output,
-        );
+fearless_simd::kernel! {
+    /// Inverse DCT for blocks whose natural-order rows 4..7 are known to be zero.
+    pub(crate) fn idct_islow_bottom_half_zero(
+        neon: Neon,
+        input: &[i16; 64],
+        output: &mut [u8; 64],
+    ) {
+        idct_islow_bottom_half_zero_kernel(input, output);
     }
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn idct_islow_bottom_half_zero_rows(
+fn idct_islow_bottom_half_zero_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
+    let (rows, _) = input.as_chunks::<8>();
+    idct_islow_bottom_half_zero_rows(
+        neon_memory::load_i16x8(&rows[0]),
+        neon_memory::load_i16x8(&rows[1]),
+        neon_memory::load_i16x8(&rows[2]),
+        neon_memory::load_i16x8(&rows[3]),
+        output,
+    );
+}
+
+#[target_feature(enable = "neon")]
+fn idct_islow_bottom_half_zero_rows(
     row0: int16x8_t,
     row1: int16x8_t,
     row2: int16x8_t,
@@ -238,32 +233,27 @@ unsafe fn idct_islow_bottom_half_zero_rows(
         vaddq_s32(rw_hi[7], bias),
     );
 
-    let store = output.as_mut_ptr();
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    unsafe {
-        store_row(store, fll0, flh0);
-        store_row(store.add(8), fll1, flh1);
-        store_row(store.add(16), fll2, flh2);
-        store_row(store.add(24), fll3, flh3);
-        store_row(store.add(32), fhl0, fhh0);
-        store_row(store.add(40), fhl1, fhh1);
-        store_row(store.add(48), fhl2, fhh2);
-        store_row(store.add(56), fhl3, fhh3);
-    }
+    let (rows, _) = output.as_chunks_mut::<8>();
+    store_row(&mut rows[0], fll0, flh0);
+    store_row(&mut rows[1], fll1, flh1);
+    store_row(&mut rows[2], fll2, flh2);
+    store_row(&mut rows[3], fll3, flh3);
+    store_row(&mut rows[4], fhl0, fhh0);
+    store_row(&mut rows[5], fhl1, fhh1);
+    store_row(&mut rows[6], fhl2, fhh2);
+    store_row(&mut rows[7], fhl3, fhh3);
 }
 
-#[inline]
-#[cfg(test)]
-fn bottom_half_is_zero(input: &[i16; 64]) -> bool {
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    let tail = unsafe { input.as_ptr().add(32) };
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    unsafe {
+fearless_simd::kernel! {
+    #[inline]
+    #[cfg(test)]
+    fn bottom_half_is_zero(neon: Neon, input: &[i16; 64]) -> bool {
+        let (rows, _) = input.as_chunks::<8>();
         bottom_half_rows_are_zero(
-            vld1q_s16(tail),
-            vld1q_s16(tail.add(8)),
-            vld1q_s16(tail.add(16)),
-            vld1q_s16(tail.add(24)),
+            neon_memory::load_i16x8(&rows[4]),
+            neon_memory::load_i16x8(&rows[5]),
+            neon_memory::load_i16x8(&rows[6]),
+            neon_memory::load_i16x8(&rows[7]),
         )
     }
 }
@@ -289,12 +279,9 @@ fn bottom_half_rows_are_zero(
 /// at each step produces the same u8 as the scalar's explicit clamp.
 #[inline]
 #[target_feature(enable = "neon")]
-unsafe fn store_row(dst: *mut u8, lo: int32x4_t, hi: int32x4_t) {
+fn store_row(dst: &mut [u8; 8], lo: int32x4_t, hi: int32x4_t) {
     let packed_i16: int16x8_t = vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi));
-    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-    unsafe {
-        vst1_u8(dst, vqmovun_s16(packed_i16));
-    }
+    neon_memory::store_u8x8(dst, vqmovun_s16(packed_i16));
 }
 
 /// One 1D IDCT pass over 4 lanes of i32. Eight inputs carrying the 4 column
@@ -420,8 +407,10 @@ mod tests {
         let mut scalar_out = [0u8; 64];
         idct_scalar(input, &mut scalar_out);
         let mut neon_out = [0u8; 64];
-        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-        unsafe { idct_islow(input, &mut neon_out) };
+        let neon = fearless_simd::Level::new()
+            .as_neon()
+            .expect("AArch64 test host must provide NEON");
+        idct_islow(neon, input, &mut neon_out);
         (scalar_out, neon_out)
     }
 
@@ -488,22 +477,27 @@ mod tests {
         let mut scalar_out = [0u8; 64];
         idct_scalar(&input, &mut scalar_out);
         let mut neon_out = [0u8; 64];
-        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
-        unsafe { idct_islow_bottom_half_zero(&input, &mut neon_out) };
+        let neon = fearless_simd::Level::new()
+            .as_neon()
+            .expect("AArch64 test host must provide NEON");
+        idct_islow_bottom_half_zero(neon, &input, &mut neon_out);
         assert_eq!(scalar_out, neon_out);
     }
 
     #[test]
     fn bottom_half_zero_detects_zero_and_nonzero_tails() {
+        let neon = fearless_simd::Level::new()
+            .as_neon()
+            .expect("AArch64 test host must provide NEON");
         let mut block = [0i16; 64];
         block[0] = 7;
-        assert!(bottom_half_is_zero(&block));
+        assert!(bottom_half_is_zero(neon, &block));
 
         block[32] = 1;
-        assert!(!bottom_half_is_zero(&block));
+        assert!(!bottom_half_is_zero(neon, &block));
 
         block[32] = 0;
         block[63] = -1;
-        assert!(!bottom_half_is_zero(&block));
+        assert!(!bottom_half_is_zero(neon, &block));
     }
 }

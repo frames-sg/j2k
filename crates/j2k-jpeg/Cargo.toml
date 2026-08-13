@@ -19,7 +19,7 @@ name = "j2k_jpeg"
 path = "src/lib.rs"
 
 [features]
-scalar-only  = []   # retained for fuzz/reference decode until native SIMD backends land
+scalar-only  = []   # deterministic fallback for fuzzing and differential testing
 # Opt-in for the comparison benches only: probes pkg-config for
 # libturbojpeg and emits link directives. Off by default so library
 # consumers never link a system JPEG.
@@ -27,12 +27,15 @@ bench-libjpeg-turbo = []
 bench-internals = []
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.9.0" }
-j2k-core = { path = "../j2k-core", version = "=0.9.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.9.0" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.9.1" }
+j2k-core = { path = "../j2k-core", version = "=0.9.1" }
+j2k-profile = { path = "../j2k-profile", version = "=0.9.1" }
 thiserror = { workspace = true }
 memchr = { workspace = true }
 rayon = { workspace = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+fearless_simd = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -70,6 +73,11 @@ name = "encode_cpu"
 harness = false
 test = false
 
+[[bench]]
+name = "decode_cpu"
+harness = false
+test = false
+
 [[test]]
 name = "fast420_profile"
 required-features = ["bench-internals"]
@@ -83,10 +91,10 @@ name = "neon_hot_paths"
 required-features = ["bench-internals"]
 
 [lints.rust]
-# Audited unsafe is confined to SIMD/hot kernels in `src/backend/`,
-# `src/idct/{avx2,neon}.rs`, and `src/entropy/sequential/deposit.rs`, plus
-# benchmark-only SIMD shims, FFI, and allocator instrumentation. Keep every
-# unsafe operation explicit and lint each unsafe block.
+# Audited SIMD unsafe is confined to the private feature/memory boundaries in
+# `src/simd/`; entropy deposit code, benchmark statistics pointers, FFI, and
+# allocator instrumentation retain their separately audited boundaries. Keep
+# every unsafe operation explicit and lint each unsafe block.
 unsafe_code     = "allow"
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"

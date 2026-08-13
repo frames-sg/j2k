@@ -85,8 +85,14 @@ buffer, texture, descriptor, size, and pixel-format types become retained or
 borrowed `objc2-metal` objects and values. Callers construct texture descriptors
 directly; the obsolete helper and unreachable raw-message-send errors are
 removed. The break ledger enumerates every removed item in the four affected
-Metal crates. The one-time transition was consumed by `0.9.0`; the semver
-baseline must rotate to tagged `v0.9.0` before another candidate is accepted.
+Metal crates. The one-time transition was consumed by `0.9.0`.
+
+The staged `0.9.1` patch candidate compares directly with published `v0.9.0`
+at peeled commit `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its provisional
+[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.1.md)
+and [review configuration](release-evidence/public-api/public-api-review-0.9.1.yml)
+must remain additive or compatible: the one-time `0.9.0` break transition is
+disabled.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does

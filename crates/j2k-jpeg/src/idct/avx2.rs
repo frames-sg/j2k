@@ -11,10 +11,13 @@
 
 use core::arch::x86_64::{
     __m128i, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_packs_epi32, _mm_packus_epi16,
-    _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_storel_epi64,
-    _mm_sub_epi32, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
+    _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32,
+    _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
 };
 use j2k_codec_math::jpeg::idct;
+
+use crate::simd::x86::exact_avx2_kernel;
+use crate::simd::x86_memory;
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -42,23 +45,22 @@ const FIX_2_053119869: i32 = idct::FIX_2_053119869;
 const FIX_2_562915447: i32 = idct::FIX_2_562915447;
 const FIX_3_072711026: i32 = idct::FIX_3_072711026;
 
-/// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
-/// saturated to `[0, 255]`, matching the scalar path byte-for-byte on
-/// legal JPEG coefficients and on the adversarial saturating edges
-/// proptested against.
-///
-/// # Safety
-/// Caller must ensure the host CPU supports SSE4.1. The
-/// `Backend::detect` dispatch picks this variant when AVX2 is available
-/// (which implies SSE4.1).
+exact_avx2_kernel! {
+    /// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
+    /// saturated to `[0, 255]`, matching the scalar path byte-for-byte on
+    /// legal JPEG coefficients and on the adversarial saturating edges
+    /// proptested against.
+    pub(crate) fn idct_islow(avx2: ExactAvx2, input: &[i16; 64], output: &mut [u8; 64]) {
+        idct_islow_kernel(input, output);
+    }
+}
+
 #[target_feature(enable = "avx2")]
-pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
+fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
     const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
     const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
 
-    let src = input.as_ptr();
-    // SAFETY: `input` contains exactly 64 i16 coefficients. The offsets below
-    // load eight coefficients each and stay within that fixed block.
+    let (rows, _) = input.as_chunks::<8>();
     let (
         (r0l, r0h),
         (r1l, r1h),
@@ -68,18 +70,16 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
         (r5l, r5h),
         (r6l, r6h),
         (r7l, r7h),
-    ) = unsafe {
-        (
-            widen(src.add(0)),
-            widen(src.add(8)),
-            widen(src.add(16)),
-            widen(src.add(24)),
-            widen(src.add(32)),
-            widen(src.add(40)),
-            widen(src.add(48)),
-            widen(src.add(56)),
-        )
-    };
+    ) = (
+        widen(&rows[0]),
+        widen(&rows[1]),
+        widen(&rows[2]),
+        widen(&rows[3]),
+        widen(&rows[4]),
+        widen(&rows[5]),
+        widen(&rows[6]),
+        widen(&rows[7]),
+    );
 
     let round1 = _mm_set1_epi32(1 << (PASS1_SHIFT - 1));
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
@@ -120,29 +120,23 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
         _mm_add_epi32(rw_hi[7], bias),
     );
 
-    let store = output.as_mut_ptr();
-    // SAFETY: `output` contains 64 writable bytes, and each store writes one
-    // eight-byte row at offsets 0, 8, ..., 56.
-    unsafe {
-        store_row(store, fll0, flh0);
-        store_row(store.add(8), fll1, flh1);
-        store_row(store.add(16), fll2, flh2);
-        store_row(store.add(24), fll3, flh3);
-        store_row(store.add(32), fhl0, fhh0);
-        store_row(store.add(40), fhl1, fhh1);
-        store_row(store.add(48), fhl2, fhh2);
-        store_row(store.add(56), fhl3, fhh3);
-    }
+    let (rows, _) = output.as_chunks_mut::<8>();
+    store_row(&mut rows[0], fll0, flh0);
+    store_row(&mut rows[1], fll1, flh1);
+    store_row(&mut rows[2], fll2, flh2);
+    store_row(&mut rows[3], fll3, flh3);
+    store_row(&mut rows[4], fhl0, fhh0);
+    store_row(&mut rows[5], fhl1, fhh1);
+    store_row(&mut rows[6], fhl2, fhh2);
+    store_row(&mut rows[7], fhl3, fhh3);
 }
 
 /// Load 8 `i16` values from `src` and sign-extend them to a pair of
 /// `__m128i` each carrying 4 `i32` lanes (low 4, high 4).
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn widen(src: *const i16) -> (__m128i, __m128i) {
-    // SAFETY: callers pass a pointer to at least eight readable i16 values;
-    // unaligned loads are intentional for JPEG coefficient blocks.
-    let full = unsafe { core::ptr::read_unaligned(src.cast::<__m128i>()) };
+fn widen(src: &[i16; 8]) -> (__m128i, __m128i) {
+    let full = x86_memory::load_i16x8(src);
     let lo = _mm_cvtepi16_epi32(full);
     let hi_shuffled = _mm_srli_si128::<8>(full);
     let hi = _mm_cvtepi16_epi32(hi_shuffled);
@@ -152,16 +146,12 @@ unsafe fn widen(src: *const i16) -> (__m128i, __m128i) {
 /// Saturating narrow an `(i32x4, i32x4)` pair to `u8x8` and store at `dst`.
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn store_row(dst: *mut u8, lo: __m128i, hi: __m128i) {
+fn store_row(dst: &mut [u8; 8], lo: __m128i, hi: __m128i) {
     // Lanes are [lo0..3, hi0..3] as i16.
     let i16_packed = _mm_packs_epi32(lo, hi);
     // The low eight lanes are the saturated output row.
     let u8_packed = _mm_packus_epi16(i16_packed, i16_packed);
-    // SAFETY: callers pass a pointer to eight writable bytes; the store writes
-    // only the low 64 bits and does not require alignment.
-    unsafe {
-        _mm_storel_epi64(dst.cast(), u8_packed);
-    }
+    x86_memory::store_u8x8(dst, u8_packed);
 }
 
 /// 1D IDCT pass over 4 i32 lanes. Mirrors `idct::neon::idct_1d_x4`.
@@ -239,14 +229,14 @@ fn transpose_4x4_i32(a: __m128i, b: __m128i, c: __m128i, d: __m128i) -> [__m128i
 mod tests {
     use super::*;
     use crate::idct::scalar::idct_islow as idct_scalar;
+    use crate::simd::x86::ExactAvx2;
 
     fn run_both(input: &[i16; 64]) -> ([u8; 64], [u8; 64]) {
         let mut scalar_out = [0u8; 64];
         idct_scalar(input, &mut scalar_out);
         let mut avx_out = [0u8; 64];
-        if std::is_x86_feature_detected!("avx2") {
-            // SAFETY: the runtime guard proves the required AVX2 feature.
-            unsafe { idct_islow(input, &mut avx_out) };
+        if let Some(avx2) = ExactAvx2::detect() {
+            idct_islow(avx2, input, &mut avx_out);
         } else {
             // Running the test on a non-AVX2 host: copy scalar output so
             // assertion passes and the test becomes a skip.

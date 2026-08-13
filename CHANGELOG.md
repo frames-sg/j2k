@@ -5,6 +5,22 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+Staged workspace version: `0.9.1`.
+
+- Refactors the CPU JPEG AVX2 and NEON paths around unforgeable capability
+  tokens and safe kernel entry points. SIMD dispatch, IDCT/color arithmetic,
+  tests, and benchmark wrappers no longer require unsafe calls; the remaining
+  raw loads/stores and exact-AVX2 bridge are isolated behind fixed-size safe
+  interfaces. Ten production SIMD unsafe blocks remain, with no `unsafe fn`,
+  under an AST-enforced 24-block cap.
+- Uses `fearless_simd 0.7.0` for AArch64 NEON kernels while preserving the
+  existing AVX2-only x86 acceleration envelope with a private exact-AVX2 token;
+  `fearless_simd::Avx2` is intentionally not used because its 0.7 contract is
+  the broader x86-64-v3 feature set.
+- Adds deterministic CPU JPEG decode and expanded SIMD microbenchmarks covering
+  grayscale, 4:4:4, 4:2:2, full/odd/cropped 4:2:0, row streaming, specialized
+  IDCT, tail widths, and unaligned source rows.
+
 ## [0.9.0] - 2026-08-10
 
 - Breaking: all expert Metal APIs in `j2k-metal-support`, `j2k-metal`,

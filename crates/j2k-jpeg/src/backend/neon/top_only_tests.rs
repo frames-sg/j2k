@@ -60,6 +60,12 @@ fn top_only_rows<'a>(fixture: &'a TopOnlyFixture, dst: &'a mut [u8]) -> Rgb420Ro
     Rgb420RowPair::new(&fixture.y, None, fixture.chroma(), dst, None)
 }
 
+fn neon() -> fearless_simd::Neon {
+    fearless_simd::Level::new()
+        .as_neon()
+        .expect("AArch64 test host must provide NEON")
+}
+
 #[test]
 fn cropped_top_only_neon_matches_scalar_across_alignment_and_partial_chunks() {
     let fixture = TopOnlyFixture::new(73);
@@ -73,10 +79,10 @@ fn cropped_top_only_neon_matches_scalar_across_alignment_and_partial_chunks() {
         ));
 
         let mut actual = vec![0u8; crop_width * 3];
-        fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
-            top_only_rows(&fixture, &mut actual),
-            crop,
-        ));
+        fill_rgb_row_pair_from_420_cropped(
+            neon(),
+            Rgb420CroppedRowPair::new(top_only_rows(&fixture, &mut actual), crop),
+        );
 
         assert_eq!(
             actual, expected,
@@ -93,7 +99,7 @@ fn top_only_neon_tail_matches_scalar_for_partial_and_full_chunks() {
         scalar::fill_rgb_row_pair_from_420(top_only_rows(&fixture, &mut expected));
 
         let mut actual = vec![0u8; width * 3];
-        fill_rgb_row_pair_from_420(top_only_rows(&fixture, &mut actual));
+        fill_rgb_row_pair_from_420(neon(), top_only_rows(&fixture, &mut actual));
 
         assert_eq!(actual, expected, "top-only tail differs at width {width}");
     }

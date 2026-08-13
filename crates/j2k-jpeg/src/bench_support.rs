@@ -8,7 +8,7 @@
 )]
 
 use crate::backend::scalar;
-use crate::backend::{Backend, Rgb420ChromaRows, Rgb420RowPair};
+use crate::backend::{Backend, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
 use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
 use crate::context::DecoderContext;
@@ -360,9 +360,55 @@ pub fn bench_idct_reduced_2x2_block_with(input: &[i16; 64], output: &mut [u8; 4]
 #[cfg(target_arch = "aarch64")]
 #[doc(hidden)]
 pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
-    // SAFETY: Every supported AArch64 target provides NEON, and the fixed-size
-    // references satisfy the kernel's input and output length requirements.
-    unsafe { crate::idct::neon::idct_islow(input, output) };
+    let neon = fearless_simd::Level::new()
+        .as_neon()
+        .expect("AArch64 benchmark host must provide NEON");
+    crate::idct::neon::idct_islow(neon, input, output);
+}
+
+/// Run the NEON specialization for blocks whose bottom four coefficient rows
+/// are known to be zero.
+#[cfg(target_arch = "aarch64")]
+#[doc(hidden)]
+pub fn bench_idct_neon_bottom_half_zero_block(input: &[i16; 64], output: &mut [u8; 64]) {
+    let neon = fearless_simd::Level::new()
+        .as_neon()
+        .expect("AArch64 benchmark host must provide NEON");
+    crate::idct::neon::idct_islow_bottom_half_zero(neon, input, output);
+}
+
+/// Pre-detected NEON IDCT capability for benchmark loops.
+#[cfg(target_arch = "aarch64")]
+#[doc(hidden)]
+pub struct BenchNeonIdct {
+    neon: fearless_simd::Neon,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl BenchNeonIdct {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            neon: fearless_simd::Level::new()
+                .as_neon()
+                .expect("AArch64 benchmark host must provide NEON"),
+        }
+    }
+
+    pub fn run(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::neon::idct_islow(self.neon, input, output);
+    }
+
+    pub fn run_bottom_half_zero(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::neon::idct_islow_bottom_half_zero(self.neon, input, output);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Default for BenchNeonIdct {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(any(target_arch = "x86_64", test))]
@@ -387,13 +433,33 @@ const fn select_bench_avx2_dispatch(avx2_available: bool) -> BenchAvx2Dispatch {
 #[cfg(target_arch = "x86_64")]
 #[doc(hidden)]
 pub fn bench_idct_avx2_block(input: &[i16; 64], output: &mut [u8; 64]) {
-    match select_bench_avx2_dispatch(std::is_x86_feature_detected!("avx2")) {
+    let avx2 = crate::simd::x86::ExactAvx2::detect();
+    match select_bench_avx2_dispatch(avx2.is_some()) {
         BenchAvx2Dispatch::Scalar => idct_islow(input, output),
-        BenchAvx2Dispatch::Avx2 => {
-            // SAFETY: This arm is reachable only after runtime AVX2 detection;
-            // fixed-size references satisfy the kernel's length requirements.
-            unsafe { crate::idct::avx2::idct_islow(input, output) };
-        }
+        BenchAvx2Dispatch::Avx2 => crate::idct::avx2::idct_islow(
+            avx2.expect("dispatch selected AVX2 only when its token exists"),
+            input,
+            output,
+        ),
+    }
+}
+
+/// Pre-detected exact-AVX2 capability for benchmark loops.
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub struct BenchAvx2Idct {
+    avx2: crate::simd::x86::ExactAvx2,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl BenchAvx2Idct {
+    #[must_use]
+    pub fn try_new() -> Option<Self> {
+        crate::simd::x86::ExactAvx2::detect().map(|avx2| Self { avx2 })
+    }
+
+    pub fn run(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::avx2::idct_islow(self.avx2, input, output);
     }
 }
 
@@ -494,6 +560,76 @@ impl BenchRgb420RowPairScratch {
             Some(&mut self.bottom),
         ));
     }
+
+    /// Run a cropped region through the detected CPU backend.
+    pub fn run_cropped(&mut self, start: usize, width: usize) {
+        let request = BenchRgb420RowPair::new(
+            &self.y_top,
+            Some(&self.y_bottom),
+            BenchRgb420ChromaRows::new(
+                &self.prev_cb,
+                &self.curr_cb,
+                &self.next_cb,
+                &self.prev_cr,
+                &self.curr_cr,
+                &self.next_cr,
+            ),
+            &mut self.top[..width * 3],
+            Some(&mut self.bottom[..width * 3]),
+        );
+        bench_rgb_row_pair_from_420_cropped(request, start, width);
+    }
+
+    /// Return whether the detected full-row backend produces the scalar bytes.
+    #[must_use]
+    pub fn backend_matches_reference(&mut self) -> bool {
+        let mut expected_top = vec![0u8; self.top.len()];
+        let mut expected_bottom = vec![0u8; self.bottom.len()];
+        bench_rgb_row_pair_from_420_reference(BenchRgb420RowPair::new(
+            &self.y_top,
+            Some(&self.y_bottom),
+            BenchRgb420ChromaRows::new(
+                &self.prev_cb,
+                &self.curr_cb,
+                &self.next_cb,
+                &self.prev_cr,
+                &self.curr_cr,
+                &self.next_cr,
+            ),
+            &mut expected_top,
+            Some(&mut expected_bottom),
+        ));
+        self.run();
+        self.top == expected_top && self.bottom == expected_bottom
+    }
+
+    /// Return whether a cropped backend request produces the same bytes as the
+    /// scalar cropped path.
+    #[must_use]
+    pub fn cropped_backend_matches_reference(&mut self, start: usize, width: usize) -> bool {
+        let mut expected_top = vec![0u8; width * 3];
+        let mut expected_bottom = vec![0u8; width * 3];
+        scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+            BenchRgb420RowPair::new(
+                &self.y_top,
+                Some(&self.y_bottom),
+                BenchRgb420ChromaRows::new(
+                    &self.prev_cb,
+                    &self.curr_cb,
+                    &self.next_cb,
+                    &self.prev_cr,
+                    &self.curr_cr,
+                    &self.next_cr,
+                ),
+                &mut expected_top,
+                Some(&mut expected_bottom),
+            )
+            .into_backend(),
+            Rgb420Crop::new(start, width),
+        ));
+        self.run_cropped(start, width);
+        self.top[..width * 3] == expected_top && self.bottom[..width * 3] == expected_bottom
+    }
 }
 
 /// Borrowed chroma rows for the 4:2:0 row-pair bench helper.
@@ -589,6 +725,19 @@ pub fn bench_rgb_row_pair_from_420(request: BenchRgb420RowPair<'_>) {
     Backend::detect().fill_rgb_row_pair_from_420(request.into_backend());
 }
 
+/// Run a cropped RGB 4:2:0 row-pair request through the detected backend.
+#[doc(hidden)]
+pub fn bench_rgb_row_pair_from_420_cropped(
+    request: BenchRgb420RowPair<'_>,
+    start: usize,
+    width: usize,
+) {
+    Backend::detect().fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+        request.into_backend(),
+        Rgb420Crop::new(start, width),
+    ));
+}
+
 /// Run the RGB 4:2:0 row-pair backend with dispatch stats.
 #[doc(hidden)]
 pub fn bench_rgb_row_pair_from_420_with_stats(
@@ -664,18 +813,31 @@ pub struct BenchColorRowScratch {
     cb: Vec<u8>,
     cr: Vec<u8>,
     rgb: Vec<u8>,
+    input_offset: usize,
+    width: usize,
 }
 
 impl BenchColorRowScratch {
     /// Create the scratch with a deterministic luminance/chroma pattern.
     #[must_use]
+    pub fn new(width: usize) -> Self {
+        Self::with_input_offset(width, 0)
+    }
+
+    /// Create a fixture whose source rows begin one byte into their backing
+    /// allocations, exercising unaligned SIMD loads.
+    #[must_use]
+    pub fn new_unaligned(width: usize) -> Self {
+        Self::with_input_offset(width, 1)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "benchmark fixture values are explicitly masked to one byte"
     )]
-    pub fn new(width: usize) -> Self {
+    fn with_input_offset(width: usize, input_offset: usize) -> Self {
         let seed = |offset: usize, scale: usize| -> Vec<u8> {
-            (0..width)
+            (0..width + input_offset)
                 .map(|i| ((i.wrapping_mul(scale).wrapping_add(offset)) & 0xFF) as u8)
                 .collect()
         };
@@ -685,16 +847,28 @@ impl BenchColorRowScratch {
             cb: seed(64, 5),
             cr: seed(192, 3),
             rgb: vec![0u8; width * 3],
+            input_offset,
+            width,
         }
+    }
+
+    fn rows(&self) -> (&[u8], &[u8], &[u8]) {
+        let range = self.input_offset..self.input_offset + self.width;
+        (
+            &self.y[range.clone()],
+            &self.cb[range.clone()],
+            &self.cr[range],
+        )
     }
 
     /// Run one iteration of the scalar per-pixel YCbCr→RGB conversion.
     pub fn run_scalar(&mut self) {
-        for (((&y, &cb), &cr), pixel) in self
-            .y
+        let input_offset = self.input_offset;
+        let width = self.width;
+        for (((&y, &cb), &cr), pixel) in self.y[input_offset..input_offset + width]
             .iter()
-            .zip(self.cb.iter())
-            .zip(self.cr.iter())
+            .zip(self.cb[input_offset..input_offset + width].iter())
+            .zip(self.cr[input_offset..input_offset + width].iter())
             .zip(self.rgb.chunks_exact_mut(3))
         {
             let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
@@ -706,7 +880,104 @@ impl BenchColorRowScratch {
 
     /// Run one iteration through the detected production backend.
     pub fn run_backend(&mut self) {
+        let input_offset = self.input_offset;
+        let width = self.width;
+        self.backend.fill_rgb_row_from_ycbcr(
+            &self.y[input_offset..input_offset + width],
+            &self.cb[input_offset..input_offset + width],
+            &self.cr[input_offset..input_offset + width],
+            &mut self.rgb,
+        );
+    }
+
+    /// Return whether the detected backend produces the scalar row bytes.
+    #[must_use]
+    pub fn backend_matches_scalar(&mut self) -> bool {
+        let (y, cb, cr) = self.rows();
+        let mut expected = vec![0u8; self.width * 3];
+        scalar::fill_rgb_row_from_ycbcr(y, cb, cr, &mut expected);
+        self.run_backend();
+        self.rgb == expected
+    }
+}
+
+/// Pre-allocated planar grayscale-to-RGB row benchmark input.
+#[doc(hidden)]
+pub struct BenchGrayRowScratch {
+    backend: Backend,
+    gray: Vec<u8>,
+    rgb: Vec<u8>,
+}
+
+impl BenchGrayRowScratch {
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "benchmark fixture values intentionally retain the low byte"
+    )]
+    pub fn new(width: usize) -> Self {
+        Self {
+            backend: Backend::detect(),
+            gray: (0..width).map(|i| i.wrapping_mul(37) as u8).collect(),
+            rgb: vec![0u8; width * 3],
+        }
+    }
+
+    pub fn run_backend(&mut self) {
         self.backend
-            .fill_rgb_row_from_ycbcr(&self.y, &self.cb, &self.cr, &mut self.rgb);
+            .fill_rgb_row_from_gray(&self.gray, &mut self.rgb);
+    }
+
+    #[must_use]
+    pub fn backend_matches_scalar(&mut self) -> bool {
+        let mut expected = vec![0u8; self.rgb.len()];
+        scalar::fill_rgb_row_from_gray(&self.gray, &mut expected);
+        self.run_backend();
+        self.rgb == expected
+    }
+}
+
+/// Pre-allocated planar RGB-to-interleaved-RGB row benchmark input.
+#[doc(hidden)]
+pub struct BenchRgbRowScratch {
+    backend: Backend,
+    r: Vec<u8>,
+    g: Vec<u8>,
+    b: Vec<u8>,
+    rgb: Vec<u8>,
+}
+
+impl BenchRgbRowScratch {
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "benchmark fixture values intentionally retain the low byte"
+    )]
+    pub fn new(width: usize) -> Self {
+        let seed = |offset: usize, scale: usize| -> Vec<u8> {
+            (0..width)
+                .map(|i| i.wrapping_mul(scale).wrapping_add(offset) as u8)
+                .collect()
+        };
+        Self {
+            backend: Backend::detect(),
+            r: seed(11, 37),
+            g: seed(47, 29),
+            b: seed(89, 19),
+            rgb: vec![0u8; width * 3],
+        }
+    }
+
+    pub fn run_backend(&mut self) {
+        self.backend
+            .fill_rgb_row_from_rgb(&self.r, &self.g, &self.b, &mut self.rgb);
+    }
+
+    #[must_use]
+    pub fn backend_matches_scalar(&mut self) -> bool {
+        let mut expected = vec![0u8; self.rgb.len()];
+        scalar::fill_rgb_row_from_rgb(&self.r, &self.g, &self.b, &mut expected);
+        self.run_backend();
+        self.rgb == expected
     }
 }

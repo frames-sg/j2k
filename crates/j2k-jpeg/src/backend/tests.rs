@@ -156,6 +156,11 @@ fn assert_rgb_rows_match_scalar(
     assert_eq!(actual, expected, "{label}");
 }
 
+fn backend_for_kind(kind: super::BackendKind) -> super::Backend {
+    super::Backend::for_test_kind(kind)
+        .unwrap_or_else(|| panic!("requested backend {kind:?} is unavailable on this host"))
+}
+
 fn assert_rgb420_pair_matches_scalar(
     label: &str,
     kind: super::BackendKind,
@@ -169,7 +174,7 @@ fn assert_rgb420_pair_matches_scalar(
 
     let mut actual_top = vec![0xAA; fixture.y_top.len() * 3];
     let mut actual_bottom = fixture.y_bottom.map(|row| vec![0xAA; row.len() * 3]);
-    super::Backend { kind }
+    backend_for_kind(kind)
         .fill_rgb_row_pair_from_420(fixture.request(&mut actual_top, actual_bottom.as_deref_mut()));
 
     assert_eq!(actual_top, expected_top, "{label}: top row");
@@ -194,7 +199,7 @@ fn assert_rgb420_cropped_pair_matches_scalar(
 
     let mut actual_top = vec![0xAA; crop_width * 3];
     let mut actual_bottom = fixture.y_bottom.map(|_| vec![0xAA; crop_width * 3]);
-    super::Backend { kind }.fill_rgb_row_pair_from_420_cropped(fixture.cropped_request(
+    backend_for_kind(kind).fill_rgb_row_pair_from_420_cropped(fixture.cropped_request(
         crop_start,
         crop_width,
         &mut actual_top,
@@ -227,7 +232,7 @@ fn assert_rgb420_pair_uses_safe_prefix(
 
     let mut actual_top = vec![0xAA; fixture.y_top.len() * 3];
     let mut actual_bottom = fixture.y_bottom.map(|row| vec![0xAA; row.len() * 3]);
-    super::Backend { kind }
+    backend_for_kind(kind)
         .fill_rgb_row_pair_from_420(fixture.request(&mut actual_top, actual_bottom.as_deref_mut()));
 
     assert_eq!(actual_top, expected_top, "{label}: top row");
@@ -237,6 +242,116 @@ fn assert_rgb420_pair_uses_safe_prefix(
 #[cfg(target_arch = "x86_64")]
 fn x86_fixture_byte(index: usize) -> u8 {
     u8::try_from(index).expect("x86 fixture index must fit in u8")
+}
+
+#[test]
+fn scalar_backend_is_always_constructible_without_a_capability_token() {
+    let backend = super::Backend::for_test_kind(super::BackendKind::Scalar)
+        .expect("scalar backend must always be available");
+    assert_eq!(backend.kind(), super::BackendKind::Scalar);
+}
+
+#[test]
+fn detected_backend_respects_scalar_only_and_runtime_capabilities() {
+    let detected = super::Backend::detect().kind();
+    if cfg!(feature = "scalar-only") {
+        assert_eq!(detected, super::BackendKind::Scalar);
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let expected = if j2k_core::CpuFeatures::detect().avx2 {
+            super::BackendKind::Avx2
+        } else {
+            super::BackendKind::Scalar
+        };
+        assert_eq!(detected, expected);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(detected, super::BackendKind::Neon);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn avx2_backend_requires_a_genuine_runtime_token() {
+    assert_eq!(
+        super::Backend::for_test_kind(super::BackendKind::Avx2).is_some(),
+        j2k_core::CpuFeatures::detect().avx2,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_backend_uses_a_genuine_fearless_simd_token() {
+    let backend = super::Backend::for_test_kind(super::BackendKind::Neon)
+        .expect("AArch64 hosts must expose a NEON token");
+    assert_eq!(backend.kind(), super::BackendKind::Neon);
+}
+
+#[test]
+fn detected_backend_matches_scalar_for_unaligned_and_boundary_width_rows() {
+    let backend = super::Backend::detect();
+    for width in [0usize, 1, 7, 8, 15, 16, 255, 256] {
+        let y_storage: Vec<u8> = (0..=width)
+            .map(|i| u8::try_from(i & 0xff).expect("masked fixture byte"))
+            .collect();
+        let cb_storage: Vec<u8> = (0..=width)
+            .map(|i| {
+                u8::try_from((i.wrapping_mul(29).wrapping_add(17)) & 0xff)
+                    .expect("masked fixture byte")
+            })
+            .collect();
+        let cr_storage: Vec<u8> = (0..=width)
+            .map(|i| {
+                u8::try_from((i.wrapping_mul(43).wrapping_add(91)) & 0xff)
+                    .expect("masked fixture byte")
+            })
+            .collect();
+        let y = &y_storage[1..];
+        let cb = &cb_storage[1..];
+        let cr = &cr_storage[1..];
+        let mut expected = vec![0xA5; width * 3];
+        let mut actual = expected.clone();
+        scalar::fill_rgb_row_from_ycbcr(y, cb, cr, &mut expected);
+        backend.fill_rgb_row_from_ycbcr(y, cb, cr, &mut actual);
+        assert_eq!(actual, expected, "unaligned row width {width}");
+    }
+}
+
+#[test]
+fn detected_backend_matches_scalar_for_unaligned_420_crop_and_missing_bottom() {
+    let width = 257usize;
+    let chroma_width = width.div_ceil(2);
+    let make = |len: usize, offset: usize, scale: usize| -> Vec<u8> {
+        (0..=len)
+            .map(|i| {
+                u8::try_from((i.wrapping_mul(scale).wrapping_add(offset)) & 0xff)
+                    .expect("masked fixture byte")
+            })
+            .collect()
+    };
+    let y = make(width, 3, 37);
+    let prev_cb = make(chroma_width, 5, 13);
+    let curr_cb = make(chroma_width, 7, 17);
+    let next_cb = make(chroma_width, 11, 23);
+    let prev_cr = make(chroma_width, 19, 29);
+    let curr_cr = make(chroma_width, 31, 31);
+    let next_cr = make(chroma_width, 47, 37);
+    let fixture = Rgb420Fixture::new(
+        &y[1..],
+        None,
+        [&prev_cb[1..], &curr_cb[1..], &next_cb[1..]],
+        [&prev_cr[1..], &curr_cr[1..], &next_cr[1..]],
+    );
+    assert_rgb420_cropped_pair_matches_scalar(
+        "detected unaligned top-only 4:2:0 crop",
+        super::Backend::detect().kind(),
+        fixture,
+        3,
+        249,
+    );
 }
 
 #[test]
@@ -389,9 +504,7 @@ fn backend_scalar_420_row_pair_handles_missing_bottom_row() {
     reason = "the synthetic byte pattern intentionally wraps the bounded row index"
 )]
 fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
-    let backend = super::Backend {
-        kind: super::BackendKind::Scalar,
-    };
+    let backend = backend_for_kind(super::BackendKind::Scalar);
     let width = 73usize;
     let crop_start = 3usize;
     let crop_width = 53usize;
@@ -471,9 +584,7 @@ fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
     reason = "the synthetic byte pattern intentionally wraps the bounded row index"
 )]
 fn backend_scalar_420_cropped_top_only_matches_full_width_crop() {
-    let backend = super::Backend {
-        kind: super::BackendKind::Scalar,
-    };
+    let backend = backend_for_kind(super::BackendKind::Scalar);
     let width = 31usize;
     let crop_start = 1usize;
     let crop_width = 17usize;
@@ -806,9 +917,7 @@ fn avx2_backend_prefers_cropped_420_region_when_available() {
         return;
     }
 
-    let backend = super::Backend {
-        kind: super::BackendKind::Avx2,
-    };
+    let backend = backend_for_kind(super::BackendKind::Avx2);
 
     assert!(backend.prefers_cropped_420_region(4096, 257));
 }
