@@ -163,9 +163,9 @@ dependencies = [
 
 [[package]]
 name = "fearless_simd"
-version = "0.4.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
+checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 
 [[package]]
 name = "find-msvc-tools"
@@ -256,7 +256,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "j2k"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.8.1"
+version = "0.9.1"
 
 [[package]]
 name = "j2k-compare"
@@ -285,14 +285,14 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "j2k-native"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "fearless_simd",
  "j2k-codec-math",
@@ -304,11 +304,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.8.1"
+version = "0.9.1"
 
 [[package]]
 name = "j2k-t803"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "image",
  "j2k",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-test-support"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "j2k-core",
  "serde",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.8.1"
+version = "0.9.1"
 
 [[package]]
 name = "jobserver"

@@ -30,7 +30,7 @@ fn nonterminal_external_test_modules_do_not_truncate_production_files() {
             root: "crates/j2k-jpeg/src/backend/mod.rs",
             analyzed: "crates/j2k-jpeg/src/backend/mod.rs",
             tests: "crates/j2k-jpeg/src/backend/tests.rs",
-            production_marker: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+            production_marker: "#[derive(Debug, Clone, Copy)]",
             later_function: Some("new"),
         },
         Case {

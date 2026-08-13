@@ -419,6 +419,8 @@ pub(super) fn no_std() -> Result<(), String> {
 }
 
 pub(super) fn verify_unsafe_audit() -> Result<(), String> {
+    verify_jpeg_simd_unsafe_boundary()?;
+
     let audit_path = Path::new("docs/unsafe-audit.md");
     let audit = fs::read_to_string(audit_path)
         .map_err(|err| format!("failed to read {}: {err}", audit_path.display()))?;
@@ -493,6 +495,160 @@ pub(super) fn verify_unsafe_audit() -> Result<(), String> {
         Err(format!(
             "docs/unsafe-audit.md is missing unsafe source entries: {missing:?}"
         ))
+    }
+}
+
+const JPEG_SIMD_UNSAFE_BLOCK_CAP: usize = 24;
+const JPEG_SIMD_UNSAFE_BOUNDARIES: &[&str] = &[
+    "crates/j2k-jpeg/src/simd/neon_memory.rs",
+    "crates/j2k-jpeg/src/simd/x86.rs",
+    "crates/j2k-jpeg/src/simd/x86_memory.rs",
+];
+
+fn verify_jpeg_simd_unsafe_boundary() -> Result<(), String> {
+    let mut paths = BTreeSet::new();
+    for root in [
+        "crates/j2k-jpeg/src/backend",
+        "crates/j2k-jpeg/src/idct",
+        "crates/j2k-jpeg/src/simd",
+    ] {
+        paths.extend(rust_sources(Path::new(root))?);
+    }
+
+    let mut unsafe_blocks = 0usize;
+    for path in paths {
+        let relative = path.to_string_lossy().replace('\\', "/");
+        let source = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let stats = audit_jpeg_simd_source(&relative, &source)?;
+        unsafe_blocks += stats.unsafe_blocks;
+    }
+
+    if unsafe_blocks > JPEG_SIMD_UNSAFE_BLOCK_CAP {
+        return Err(format!(
+            "j2k-jpeg SIMD contains {unsafe_blocks} unsafe blocks; cap is {JPEG_SIMD_UNSAFE_BLOCK_CAP}"
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct JpegSimdUnsafeStats {
+    unsafe_blocks: usize,
+}
+
+fn audit_jpeg_simd_source(relative: &str, source: &str) -> Result<JpegSimdUnsafeStats, String> {
+    let file = syn::parse_file(source)
+        .map_err(|err| format!("failed to parse {relative} for the SIMD unsafe ratchet: {err}"))?;
+    let mut visitor = JpegSimdUnsafeVisitor::default();
+    visitor.visit_file(&file);
+
+    if !visitor.unsafe_functions.is_empty() {
+        return Err(format!(
+            "{relative} contains SIMD unsafe fn declarations at lines {:?}; use safe token-backed entry points",
+            visitor.unsafe_functions
+        ));
+    }
+
+    if !visitor.unsafe_blocks.is_empty() && !JPEG_SIMD_UNSAFE_BOUNDARIES.contains(&relative) {
+        return Err(format!(
+            "{relative} contains SIMD unsafe at lines {:?} outside private boundary modules",
+            visitor.unsafe_blocks
+        ));
+    }
+
+    for line in &visitor.unsafe_blocks {
+        verify_simd_safety_proof(relative, source, *line)?;
+    }
+
+    Ok(JpegSimdUnsafeStats {
+        unsafe_blocks: visitor.unsafe_blocks.len(),
+    })
+}
+
+fn verify_simd_safety_proof(
+    relative: &str,
+    source: &str,
+    unsafe_line: usize,
+) -> Result<(), String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = unsafe_line.saturating_sub(20);
+    let end = unsafe_line.min(lines.len());
+    let proof = lines[start..end].join("\n").to_ascii_lowercase();
+    let required = [
+        "safety:",
+        "feature availability",
+        "bounds",
+        "alignment",
+        "aliasing",
+        "initialization",
+    ];
+    let missing = required
+        .into_iter()
+        .filter(|term| !proof.contains(term))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{relative}:{unsafe_line} SIMD unsafe block is missing proof terms: {missing:?}"
+        ))
+    }
+}
+
+#[derive(Default)]
+struct JpegSimdUnsafeVisitor {
+    unsafe_blocks: Vec<usize>,
+    unsafe_functions: Vec<usize>,
+}
+
+impl<'ast> Visit<'ast> for JpegSimdUnsafeVisitor {
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        self.unsafe_blocks
+            .push(expression.unsafe_token.span.start().line);
+        visit::visit_expr_unsafe(self, expression);
+    }
+
+    fn visit_item_macro(&mut self, item_macro: &'ast syn::ItemMacro) {
+        scan_simd_macro_tokens(
+            &item_macro.mac.tokens,
+            &mut self.unsafe_blocks,
+            &mut self.unsafe_functions,
+        );
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if let Some(unsafety) = signature.unsafety {
+            self.unsafe_functions.push(unsafety.span.start().line);
+        }
+        visit::visit_signature(self, signature);
+    }
+}
+
+fn scan_simd_macro_tokens(
+    tokens: &TokenStream,
+    unsafe_blocks: &mut Vec<usize>,
+    unsafe_functions: &mut Vec<usize>,
+) {
+    let trees = tokens.clone().into_iter().collect::<Vec<_>>();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Group(group) => {
+                scan_simd_macro_tokens(&group.stream(), unsafe_blocks, unsafe_functions);
+            }
+            TokenTree::Ident(ident) if ident == "unsafe" => {
+                let is_function = trees
+                    .get(index + 1)
+                    .is_some_and(|next| matches!(next, TokenTree::Ident(next) if next == "fn"));
+                if is_function {
+                    unsafe_functions.push(ident.span().start().line);
+                } else {
+                    unsafe_blocks.push(ident.span().start().line);
+                }
+            }
+            TokenTree::Ident(_) | TokenTree::Literal(_) | TokenTree::Punct(_) => {}
+        }
     }
 }
 
@@ -597,7 +753,7 @@ fn test_downstream_examples() -> Result<(), String> {
 
 #[cfg(test)]
 mod unsafe_audit_tests {
-    use super::source_contains_unsafe_rust;
+    use super::{audit_jpeg_simd_source, source_contains_unsafe_rust};
 
     #[test]
     fn detects_unsafe_rust_across_supported_syntax() {
@@ -656,6 +812,39 @@ mod unsafe_audit_tests {
         let error = source_contains_unsafe_rust("fn incomplete( {")
             .expect_err("invalid Rust must fail the audit scan");
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn jpeg_simd_boundary_rejects_unsafe_functions() {
+        let error = audit_jpeg_simd_source(
+            "crates/j2k-jpeg/src/simd/x86_memory.rs",
+            "pub(crate) unsafe fn load() {}",
+        )
+        .expect_err("SIMD unsafe functions must be rejected");
+        assert!(error.contains("unsafe fn"));
+    }
+
+    #[test]
+    fn jpeg_simd_boundary_rejects_unsafe_outside_boundary_modules() {
+        let error = audit_jpeg_simd_source(
+            "crates/j2k-jpeg/src/backend/x86.rs",
+            "fn kernel() { unsafe { core::hint::unreachable_unchecked() } }",
+        )
+        .expect_err("ordinary SIMD modules must not contain unsafe blocks");
+        assert!(error.contains("outside private boundary modules"));
+    }
+
+    #[test]
+    fn jpeg_simd_boundary_requires_the_complete_safety_proof() {
+        let error = audit_jpeg_simd_source(
+            "crates/j2k-jpeg/src/simd/x86_memory.rs",
+            "fn load() { /* SAFETY: bounds only */ unsafe { core::hint::unreachable_unchecked() } }",
+        )
+        .expect_err("incomplete SIMD safety proofs must be rejected");
+        assert!(error.contains("feature availability"));
+        assert!(error.contains("alignment"));
+        assert!(error.contains("aliasing"));
+        assert!(error.contains("initialization"));
     }
 }
 

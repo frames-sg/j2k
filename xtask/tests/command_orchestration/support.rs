@@ -60,7 +60,7 @@ impl Harness {
         fs::write(
             &git,
             format!(
-                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.8.1^{{commit}}' ]; then printf '%s\\n' 'f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.8.1:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nif [ \"$1\" = rev-parse ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release revision: %s\\n' \"$2\" >&2; exit 97; fi\nif [ \"$1\" = show ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release object: %s\\n' \"$2\" >&2; exit 97; fi\nexec \"{}\" \"$@\"\n",
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.9.0^{{commit}}' ]; then printf '%s\\n' 'b197f01ab4b9271f1cbc36921755a5b9d588bd5a'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.9.0:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nif [ \"$1\" = rev-parse ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release revision: %s\\n' \"$2\" >&2; exit 97; fi\nif [ \"$1\" = show ] && [ \"${{2#v}}\" != \"$2\" ]; then printf 'unexpected release object: %s\\n' \"$2\" >&2; exit 97; fi\nexec \"{}\" \"$@\"\n",
                 log.display(),
                 baseline_snapshot.display(),
                 real_git.display()

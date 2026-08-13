@@ -1735,9 +1735,9 @@ dependencies = [
 
 [[package]]
 name = "fearless_simd"
-version = "0.4.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
+checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 
 [[package]]
 name = "filetime"
@@ -2496,7 +2496,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "j2k"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k-codec-math",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-alloc-probe"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-native",
  "j2k-profile",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cli"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k",
  "j2k-jpeg",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.9.0"
+version = "0.9.1"
 
 [[package]]
 name = "j2k-compare"
@@ -2548,14 +2548,14 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "j2k-cuda"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda-runtime"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2580,9 +2580,10 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
+ "fearless_simd",
  "j2k-codec-math",
  "j2k-core",
  "j2k-profile",
@@ -2598,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg-cuda"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k-core",
@@ -2611,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg-metal"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k-core",
@@ -2628,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-metal"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "cc",
  "criterion",
@@ -2650,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-metal-support"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-core",
  "j2k-test-support",
@@ -2662,7 +2663,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-ml"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "burn-core",
  "burn-cuda",
@@ -2682,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "fearless_simd",
@@ -2696,11 +2697,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.9.0"
+version = "0.9.1"
 
 [[package]]
 name = "j2k-t803"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "image",
  "j2k",
@@ -2723,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-test-support"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -2734,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-tilecodec"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "flate2",
@@ -2746,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k",
@@ -2763,7 +2764,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-cuda"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-core",
  "j2k-cuda-runtime",
@@ -2775,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-metal"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "criterion",
  "j2k-codec-math",
@@ -2796,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-test-support"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "j2k-native",
  "j2k-transcode",
@@ -2805,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.9.0"
+version = "0.9.1"
 
 [[package]]
 name = "jni-sys"

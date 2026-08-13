@@ -92,6 +92,43 @@ alpha are distinct grouping keys. Preparation retains the caller-owned
 codestream bytes and reusable decode plans without duplicating the codestream.
 Broader component layouts remain on the component-plane APIs.
 
+### CPU JPEG SIMD boundary
+
+`j2k-jpeg` selects its CPU backend once while constructing a decoder. The
+internal backend value carries the capability needed to execute accelerated
+code: `Scalar`, `Avx2(ExactAvx2)`, or `Neon(fearless_simd::Neon)`. A diagnostic
+backend kind is not executable authority, and tests requesting a specialization
+must obtain the same runtime token as production. The `scalar-only` feature
+always selects `Scalar`.
+
+AArch64 entry kernels use the safe `fearless_simd 0.7` kernel boundary. x86-64
+uses a project-private equivalent that enables exactly AVX2. This distinction
+is intentional: the `fearless_simd::Avx2` token in 0.7 represents the broader
+x86-64-v3 feature set, including FMA, BMI, and other features. Requiring that
+token would silently remove acceleration from CPUs that satisfy the decoder's
+existing AVX2-plus-operating-system-state contract but not all of v3.
+
+Dispatch, benchmark adapters, and arithmetic helpers are safe Rust. Raw vector
+memory operations are confined to private fixed-size array leaves and one x86
+row cursor carrying the AVX2 capability and source-slice lifetimes. The cursor
+constructor fixes its readable extent to the shortest complete eight-byte
+chunk count, and private state advances all three rows together. These leaves
+use unaligned-capable operations and preserve Rust's reference aliasing and
+initialization rules. The optimized IDCT and color paths retain their existing
+integer arithmetic, chunk sizes, edge repair, crop rules, and scalar tails;
+this refactor does not substitute a new portable-SIMD algorithm.
+
+The unsafe-audit task parses every Rust source under the JPEG backend, IDCT,
+and SIMD directories. It rejects `unsafe fn`, rejects unsafe outside the
+private feature/memory modules, requires a five-part safety proof for each
+remaining block, and caps the explicit production SIMD boundary at 24 blocks.
+The refactored boundary currently contains 10 blocks and no `unsafe fn`.
+SIMD output remains differentially tested against scalar output. Performance
+acceptance uses same-host Criterion comparisons at 95% confidence, 50 samples,
+a three-second warm-up, and a ten-second measurement; a confidence-bound
+slowdown above 2% for a microbenchmark or 1% for end-to-end decode is repeated
+with twice the measurement time before accepting a narrow unsafe memory leaf.
+
 Device adapters can add resident outputs and validated caller-owned
 destinations, but explicit requests must return unsupported errors instead of
 falling back to CPU staging. A direct external destination is the final output

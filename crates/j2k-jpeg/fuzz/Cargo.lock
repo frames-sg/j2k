@@ -58,6 +58,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
+name = "fearless_simd"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -77,19 +83,20 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.8.1"
+version = "0.9.1"
 
 [[package]]
 name = "j2k-core"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
+ "fearless_simd",
  "j2k-codec-math",
  "j2k-core",
  "j2k-profile",
@@ -108,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.8.1"
+version = "0.9.1"
 
 [[package]]
 name = "jobserver"

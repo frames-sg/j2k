@@ -4,7 +4,8 @@
 //! inverse DCT.
 
 use crate::idct;
-use j2k_core::CpuFeatures;
+#[cfg(target_arch = "x86_64")]
+use crate::simd::x86::ExactAvx2;
 
 pub(crate) mod scalar;
 
@@ -20,6 +21,7 @@ mod row_pair;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendKind {
     Scalar,
@@ -30,8 +32,12 @@ pub(crate) enum BackendKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Backend {
-    kind: BackendKind,
+pub(crate) enum Backend {
+    Scalar,
+    #[cfg(target_arch = "x86_64")]
+    Avx2(ExactAvx2),
+    #[cfg(target_arch = "aarch64")]
+    Neon(fearless_simd::Neon),
 }
 
 #[derive(Clone, Copy)]
@@ -125,41 +131,65 @@ impl<'a> Rgb420CroppedRowPair<'a> {
 
 impl Backend {
     pub(crate) fn detect() -> Self {
-        let cpu = CpuFeatures::detect();
+        if cfg!(feature = "scalar-only") {
+            return Self::Scalar;
+        }
 
         #[cfg(target_arch = "x86_64")]
         {
-            if !cfg!(feature = "scalar-only") && cpu.avx2 {
-                return Self {
-                    kind: BackendKind::Avx2,
-                };
+            if let Some(avx2) = ExactAvx2::detect() {
+                return Self::Avx2(avx2);
             }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            if !cfg!(feature = "scalar-only") && cpu.neon {
-                return Self {
-                    kind: BackendKind::Neon,
-                };
+            if let Some(neon) = fearless_simd::Level::new().as_neon() {
+                return Self::Neon(neon);
             }
         }
 
-        Self {
-            kind: BackendKind::Scalar,
-        }
+        Self::Scalar
     }
 
-    pub(crate) fn fill_rgb_row_from_gray(self, gray_row: &[u8], dst: &mut [u8]) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_from_gray(gray_row, dst),
+    #[cfg(test)]
+    pub(super) fn for_test_kind(kind: BackendKind) -> Option<Self> {
+        match kind {
+            BackendKind::Scalar => Some(Self::Scalar),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_from_gray(gray_row, dst),
+            BackendKind::Avx2 => ExactAvx2::detect().map(Self::Avx2),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_from_gray(gray_row, dst),
+            BackendKind::Neon => fearless_simd::Level::new().as_neon().map(Self::Neon),
         }
     }
 
+    #[cfg(test)]
+    pub(super) const fn kind(self) -> BackendKind {
+        match self {
+            Self::Scalar => BackendKind::Scalar,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(_) => BackendKind::Avx2,
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(_) => BackendKind::Neon,
+        }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "same-host SIMD benchmarks confirmed this dispatch must inline outside the row loop"
+    )]
+    #[inline(always)]
+    pub(crate) fn fill_rgb_row_from_gray(self, gray_row: &[u8], dst: &mut [u8]) {
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_from_gray(gray_row, dst),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(_) => x86::fill_rgb_row_from_gray(gray_row, dst),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => neon::fill_rgb_row_from_gray(neon, gray_row, dst),
+        }
+    }
+
+    #[inline]
     pub(crate) fn fill_rgb_row_from_rgb(
         self,
         r_row: &[u8],
@@ -167,12 +197,12 @@ impl Backend {
         b_row: &[u8],
         dst: &mut [u8],
     ) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_from_rgb(r_row, g_row, b_row, dst),
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_from_rgb(r_row, g_row, b_row, dst),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_from_rgb(r_row, g_row, b_row, dst),
+            Self::Avx2(_) => x86::fill_rgb_row_from_rgb(r_row, g_row, b_row, dst),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_from_rgb(r_row, g_row, b_row, dst),
+            Self::Neon(neon) => neon::fill_rgb_row_from_rgb(neon, r_row, g_row, b_row, dst),
         }
     }
 
@@ -183,22 +213,22 @@ impl Backend {
         cr_row: &[u8],
         dst: &mut [u8],
     ) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst),
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst),
+            Self::Avx2(avx2) => x86::fill_rgb_row_from_ycbcr(avx2, y_row, cb_row, cr_row, dst),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst),
+            Self::Neon(neon) => neon::fill_rgb_row_from_ycbcr(neon, y_row, cb_row, cr_row, dst),
         }
     }
 
     pub(crate) fn fill_rgba_row_from_gray(self, gray_row: &[u8], dst: &mut [u8], alpha: u8) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
+        match self {
+            Self::Scalar => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
+            Self::Avx2(_) => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
+            Self::Neon(_) => scalar::fill_rgba_row_from_gray(gray_row, dst, alpha),
         }
     }
 
@@ -210,12 +240,12 @@ impl Backend {
         dst: &mut [u8],
         alpha: u8,
     ) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
+        match self {
+            Self::Scalar => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
+            Self::Avx2(_) => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
+            Self::Neon(_) => scalar::fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, alpha),
         }
     }
 
@@ -227,38 +257,40 @@ impl Backend {
         dst: &mut [u8],
         alpha: u8,
     ) {
-        match self.kind {
-            BackendKind::Scalar => {
+        match self {
+            Self::Scalar => {
                 scalar::fill_rgba_row_from_ycbcr(y_row, cb_row, cr_row, dst, alpha);
             }
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => {
+            Self::Avx2(_) => {
                 scalar::fill_rgba_row_from_ycbcr(y_row, cb_row, cr_row, dst, alpha);
             }
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => {
+            Self::Neon(_) => {
                 scalar::fill_rgba_row_from_ycbcr(y_row, cb_row, cr_row, dst, alpha);
             }
         }
     }
 
+    #[inline]
     pub(crate) fn fill_rgb_row_pair_from_420(self, request: Rgb420RowPair<'_>) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420(request),
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_pair_from_420(request),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420(request),
+            Self::Avx2(avx2) => x86::fill_rgb_row_pair_from_420(avx2, request),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_pair_from_420(request),
+            Self::Neon(neon) => neon::fill_rgb_row_pair_from_420(neon, request),
         }
     }
 
+    #[inline]
     pub(crate) fn fill_rgb_row_pair_from_420_cropped(self, request: Rgb420CroppedRowPair<'_>) {
-        match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420_cropped(request),
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_pair_from_420_cropped(request),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420_cropped(request),
+            Self::Avx2(avx2) => x86::fill_rgb_row_pair_from_420_cropped(avx2, request),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_pair_from_420_cropped(request),
+            Self::Neon(neon) => neon::fill_rgb_row_pair_from_420_cropped(neon, request),
         }
     }
 
@@ -266,12 +298,12 @@ impl Backend {
         if crop_width == 0 || crop_width >= row_width {
             return false;
         }
-        match self.kind {
-            BackendKind::Scalar => true,
+        match self {
+            Self::Scalar => true,
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => true,
+            Self::Avx2(_) => true,
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => true,
+            Self::Neon(_) => true,
         }
     }
 
@@ -279,26 +311,22 @@ impl Backend {
     /// level-shifted by +128 and clamped to `[0, 255]` — bit-exact with
     /// [`idct::scalar::idct_islow`] on every legal JPEG input.
     pub(crate) fn idct(self, input: &[i16; 64], output: &mut [u8; 64]) {
-        match self.kind {
-            BackendKind::Scalar => idct::scalar::idct_islow(input, output),
+        match self {
+            Self::Scalar => idct::scalar::idct_islow(input, output),
             #[cfg(target_arch = "x86_64")]
-            // SAFETY: Backend selection guarantees the SIMD target feature for this call.
-            BackendKind::Avx2 => unsafe { idct::avx2::idct_islow(input, output) },
+            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
-            // SAFETY: Backend selection guarantees the SIMD target feature for this call.
-            BackendKind::Neon => unsafe { idct::neon::idct_islow(input, output) },
+            Self::Neon(neon) => idct::neon::idct_islow(neon, input, output),
         }
     }
 
     pub(crate) fn idct_bottom_half_zero(self, input: &[i16; 64], output: &mut [u8; 64]) {
-        match self.kind {
-            BackendKind::Scalar => idct::scalar::idct_islow_bottom_half_zero(input, output),
+        match self {
+            Self::Scalar => idct::scalar::idct_islow_bottom_half_zero(input, output),
             #[cfg(target_arch = "x86_64")]
-            // SAFETY: Backend selection guarantees the SIMD target feature for this call.
-            BackendKind::Avx2 => unsafe { idct::avx2::idct_islow(input, output) },
+            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
-            // SAFETY: Backend selection guarantees the SIMD target feature for this call.
-            BackendKind::Neon => unsafe { idct::neon::idct_islow_bottom_half_zero(input, output) },
+            Self::Neon(neon) => idct::neon::idct_islow_bottom_half_zero(neon, input, output),
         }
     }
 }

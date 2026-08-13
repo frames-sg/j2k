@@ -337,6 +337,7 @@ impl core::convert::From<j2k_jpeg::adapter::JpegFast420PacketV1> for j2k_jpeg::a
 impl core::convert::From<j2k_jpeg::adapter::JpegFast422PacketV1> for j2k_jpeg::adapter::JpegFastPacket
 impl core::convert::From<j2k_jpeg::adapter::JpegFast444PacketV1> for j2k_jpeg::adapter::JpegFastPacket
 impl core::default::Default for j2k_jpeg::adapter::JpegPlanCache
+impl core::default::Default for j2k_jpeg::bench_support::BenchNeonIdct
 impl core::default::Default for j2k_jpeg::transcode::DctExtractOptions
 impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegFastPacket
 impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegInput
@@ -358,8 +359,11 @@ impl j2k_jpeg::bench_support::Bench420DispatchStats
 impl j2k_jpeg::bench_support::BenchBlockActivityCounts
 impl j2k_jpeg::bench_support::BenchColorRowScratch
 impl j2k_jpeg::bench_support::BenchFast420Profile
+impl j2k_jpeg::bench_support::BenchGrayRowScratch
 impl j2k_jpeg::bench_support::BenchHuffmanState
+impl j2k_jpeg::bench_support::BenchNeonIdct
 impl j2k_jpeg::bench_support::BenchRgb420RowPairScratch
+impl j2k_jpeg::bench_support::BenchRgbRowScratch
 impl j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch
 impl j2k_jpeg::transcode::DctExtractOptions
 impl j2k_jpeg::transcode::JpegDctImage
@@ -489,7 +493,9 @@ pub fn j2k_jpeg::bench_support::BenchBlockActivityCounts::bottom_half_zero_block
 pub fn j2k_jpeg::bench_support::BenchBlockActivityCounts::dc_only_blocks(self) -> usize
 pub fn j2k_jpeg::bench_support::BenchBlockActivityCounts::general_blocks(self) -> usize
 pub fn j2k_jpeg::bench_support::BenchBlockActivityCounts::total_blocks(self) -> usize
+pub fn j2k_jpeg::bench_support::BenchColorRowScratch::backend_matches_scalar(&mut self) -> bool
 pub fn j2k_jpeg::bench_support::BenchColorRowScratch::new(usize) -> Self
+pub fn j2k_jpeg::bench_support::BenchColorRowScratch::new_unaligned(usize) -> Self
 pub fn j2k_jpeg::bench_support::BenchColorRowScratch::run_backend(&mut self)
 pub fn j2k_jpeg::bench_support::BenchColorRowScratch::run_scalar(&mut self)
 pub fn j2k_jpeg::bench_support::BenchFast420Profile::block_activity_counts(self) -> j2k_jpeg::bench_support::BenchBlockActivityCounts
@@ -499,22 +505,37 @@ pub fn j2k_jpeg::bench_support::BenchFast420Profile::parse_plan_ns(self) -> u128
 pub fn j2k_jpeg::bench_support::BenchFast420Profile::rgb_emit_ns(self) -> u128
 pub fn j2k_jpeg::bench_support::BenchFast420Profile::tile_count(self) -> usize
 pub fn j2k_jpeg::bench_support::BenchFast420Profile::total_ns(self) -> u128
+pub fn j2k_jpeg::bench_support::BenchGrayRowScratch::backend_matches_scalar(&mut self) -> bool
+pub fn j2k_jpeg::bench_support::BenchGrayRowScratch::new(usize) -> Self
+pub fn j2k_jpeg::bench_support::BenchGrayRowScratch::run_backend(&mut self)
 pub fn j2k_jpeg::bench_support::BenchHuffmanState::decode_all(&self) -> core::result::Result<u32, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::bench_support::BenchHuffmanState::luma_dc_zeros(usize) -> Self
+pub fn j2k_jpeg::bench_support::BenchNeonIdct::default() -> Self
+pub fn j2k_jpeg::bench_support::BenchNeonIdct::new() -> Self
+pub fn j2k_jpeg::bench_support::BenchNeonIdct::run(&self, &[i16; 64], &mut [u8; 64])
+pub fn j2k_jpeg::bench_support::BenchNeonIdct::run_bottom_half_zero(&self, &[i16; 64], &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::BenchRgb420ChromaRows<'a>::new(&'a [u8], &'a [u8], &'a [u8], &'a [u8], &'a [u8], &'a [u8]) -> Self
 pub fn j2k_jpeg::bench_support::BenchRgb420RowPair<'a>::new(&'a [u8], core::option::Option<&'a [u8]>, j2k_jpeg::bench_support::BenchRgb420ChromaRows<'a>, &'a mut [u8], core::option::Option<&'a mut [u8]>) -> Self
+pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::backend_matches_reference(&mut self) -> bool
+pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::cropped_backend_matches_reference(&mut self, usize, usize) -> bool
 pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::new(usize) -> Self
 pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::run(&mut self)
+pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::run_cropped(&mut self, usize, usize)
 pub fn j2k_jpeg::bench_support::BenchRgb420RowPairScratch::run_reference(&mut self)
+pub fn j2k_jpeg::bench_support::BenchRgbRowScratch::backend_matches_scalar(&mut self) -> bool
+pub fn j2k_jpeg::bench_support::BenchRgbRowScratch::new(usize) -> Self
+pub fn j2k_jpeg::bench_support::BenchRgbRowScratch::run_backend(&mut self)
 pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::new(usize) -> Self
 pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::run(&mut self)
 pub fn j2k_jpeg::bench_support::bench_idct_dc_only_block_with(i16, &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_idct_neon_block(&[i16; 64], &mut [u8; 64])
+pub fn j2k_jpeg::bench_support::bench_idct_neon_bottom_half_zero_block(&[i16; 64], &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_idct_reduced_2x2_block_with(&[i16; 64], &mut [u8; 4])
 pub fn j2k_jpeg::bench_support::bench_idct_reference_block() -> [u8; 64]
 pub fn j2k_jpeg::bench_support::bench_idct_reference_block_with(&[i16; 64], &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_profile_fast420_tile_batch(&[u8], usize) -> core::result::Result<core::option::Option<j2k_jpeg::bench_support::BenchFast420Profile>, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::bench_support::bench_rgb_row_pair_from_420(j2k_jpeg::bench_support::BenchRgb420RowPair<'_>)
+pub fn j2k_jpeg::bench_support::bench_rgb_row_pair_from_420_cropped(j2k_jpeg::bench_support::BenchRgb420RowPair<'_>, usize, usize)
 pub fn j2k_jpeg::bench_support::bench_rgb_row_pair_from_420_reference(j2k_jpeg::bench_support::BenchRgb420RowPair<'_>)
 pub fn j2k_jpeg::bench_support::bench_rgb_row_pair_from_420_with_stats(j2k_jpeg::bench_support::BenchRgb420RowPair<'_>, &mut j2k_jpeg::bench_support::Bench420DispatchStats)
 pub fn j2k_jpeg::decode_tile_into_in_context(&[u8], &mut j2k_jpeg::DecoderContext, &mut j2k_jpeg::ScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_jpeg::DecodeOutcome, j2k_jpeg::JpegError>
@@ -855,10 +876,13 @@ pub struct j2k_jpeg::bench_support::Bench420DispatchStats
 pub struct j2k_jpeg::bench_support::BenchBlockActivityCounts
 pub struct j2k_jpeg::bench_support::BenchColorRowScratch
 pub struct j2k_jpeg::bench_support::BenchFast420Profile
+pub struct j2k_jpeg::bench_support::BenchGrayRowScratch
 pub struct j2k_jpeg::bench_support::BenchHuffmanState
+pub struct j2k_jpeg::bench_support::BenchNeonIdct
 pub struct j2k_jpeg::bench_support::BenchRgb420ChromaRows<'a>
 pub struct j2k_jpeg::bench_support::BenchRgb420RowPair<'a>
 pub struct j2k_jpeg::bench_support::BenchRgb420RowPairScratch
+pub struct j2k_jpeg::bench_support::BenchRgbRowScratch
 pub struct j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch
 pub struct j2k_jpeg::transcode::JpegDctComponent
 pub struct j2k_jpeg::transcode::JpegDctImage
