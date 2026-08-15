@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CUDA JPEG2000 Rust - J2K</title>
-  <meta name="description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta name="description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA backends for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/">
   <meta property="og:title" content="CUDA JPEG2000 Rust">
-  <meta property="og:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta property="og:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA backends for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
@@ -15,7 +15,7 @@
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="CUDA JPEG2000 Rust">
-  <meta name="twitter:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta name="twitter:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA backends for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -24,12 +24,12 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "CUDA JPEG2000 Rust",
-    "description": "CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.",
+    "description": "CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA backends for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.",
     "url": "https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/",
     "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
   }
   </script>
-  <link rel="stylesheet" href="../assets/site.css?v=20260623">
+  <link rel="stylesheet" href="../assets/site.css?v=20260814">
 </head>
 <body>
   <header class="site-header">
@@ -49,30 +49,30 @@
         <div>
           <p class="eyebrow">CUDA JPEG2000 Rust</p>
           <h1>CUDA JPEG2000 Rust</h1>
-          <p class="lead">J2K provides NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K device-output and encode-stage paths, plus supported coefficient-domain stages of JPEG-to-HTJ2K transcode workflows.</p>
+          <p class="lead">J2K provides NVIDIA CUDA backends for supported JPEG 2000 / HTJ2K device-output and encode-stage paths, plus supported coefficient-domain stages of JPEG-to-HTJ2K transcode workflows.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k-cuda">j2k-cuda</a>
             <a class="button" href="https://docs.rs/j2k-cuda">CUDA API docs</a>
           </div>
           <p class="note"><strong>Release status:</strong> See the <a href="https://github.com/frames-sg/j2k/blob/main/docs/release.md">release policy</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</p>
         </div>
-        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=3" alt="CUDA JPEG2000 Rust pipeline">
+        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=4" alt="CUDA JPEG2000 Rust pipeline">
       </div>
     </section>
     <section class="section">
       <div class="wrap grid three">
         <article class="card">
-          <h2>Codec adapter</h2>
-          <p><code>j2k-cuda</code> exposes CUDA-facing JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
+          <h2>Codec backend</h2>
+          <p><code>j2k-cuda</code> exposes CUDA-backed JPEG 2000 / HTJ2K decode and encode-stage APIs.</p>
           <pre class="code">cargo add j2k-cuda --features cuda-runtime</pre>
         </article>
         <article class="card">
-          <h2>JPEG input adapter</h2>
+          <h2>JPEG input</h2>
           <p><code>j2k-jpeg-cuda</code> provides CUDA device-output integration for supported JPEG decode surfaces.</p>
           <pre class="code">cargo add j2k-jpeg-cuda --features cuda-runtime</pre>
         </article>
         <article class="card">
-          <h2>Transcode adapter</h2>
+          <h2>Transcode backend</h2>
           <p><code>j2k-transcode-cuda</code> accelerates supported coefficient-domain stages of JPEG-to-HTJ2K transcode; packetization remains outside those transform stages.</p>
           <pre class="code">cargo add j2k-transcode-cuda --features cuda-runtime</pre>
         </article>
@@ -83,7 +83,7 @@
         <h2>Validation posture</h2>
         <p>CUDA performance claims require self-hosted NVIDIA benchmark evidence. Hosted CI is not treated as NVIDIA performance evidence.</p>
         <p><code>cuda-runtime</code> exposes CUDA Driver API dispatch, but product CUDA Oxide PTX is built only on supported Linux cuda-oxide hosts. Set <code>J2K_REQUIRE_CUDA_OXIDE_BUILD=1</code> on CUDA validation and benchmark hosts so placeholder PTX fails the build; runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.</p>
-        <p>CUDA adapters sit under the same codec support boundary as the public crate: JPEG 2000 Part 1, JP2 still-image files, HTJ2K Part 15, and JPH still-image files. Unsupported CUDA shapes return strict errors or stay on CPU under <code>Auto</code>.</p>
+        <p>CUDA backends operate under the same codec support boundary as the public crate: JPEG 2000 Part 1, JP2 still-image files, HTJ2K Part 15, and JPH still-image files. Unsupported CUDA shapes return strict errors or stay on CPU under <code>Auto</code>.</p>
         <p class="note">Current public benchmark evidence is in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Public speed claims also require a completed external adoption benchmark bundle with <code>publication_eligible=true</code>; generated local fixtures alone are not publication evidence.</p>
       </div>
     </section>

@@ -1,23 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="J2K: safe public Rust JPEG 2000 / HTJ2K APIs">
-  <rect width="1200" height="630" fill="#ffffff"/>
-  <rect width="1200" height="630" fill="#fdf4ef"/>
-  <rect x="0" y="0" width="1200" height="12" fill="#b7410e"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="GPU Accelerated J2K Codec">
+  <defs>
+    <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse">
+      <path d="M42 0H0V42" fill="none" stroke="#222827" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="flare" x1="0" x2="1" y1="0" y2="1">
+      <stop stop-color="#ff4d00" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#ff4d00" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
 
-  <g font-family="Inter, Arial, sans-serif">
-    <!-- brand mark -->
-    <rect x="80" y="86" width="84" height="84" rx="18" fill="#b7410e"/>
-    <text x="122" y="146" text-anchor="middle" font-size="40" font-weight="800" fill="#ffffff" letter-spacing="0">J2K</text>
+  <rect width="1200" height="630" fill="#090b0b"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <circle cx="1020" cy="230" r="310" fill="url(#flare)"/>
+  <rect width="14" height="630" fill="#ff4d00"/>
 
-    <text x="184" y="146" font-size="40" font-weight="800" fill="#1f2933">frames-sg/j2k</text>
+  <text x="1130" y="390" fill="none" stroke="#f3f4e9" stroke-opacity=".08" stroke-width="2" text-anchor="end" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="340" font-weight="700" letter-spacing="-28">2000</text>
 
-    <text x="80" y="288" font-size="70" font-weight="800" fill="#1f2933">Safe public Rust APIs</text>
-    <text x="80" y="372" font-size="70" font-weight="800" fill="#b7410e">JPEG 2000 / HTJ2K</text>
+  <rect x="70" y="58" width="94" height="62" fill="#f3f4e9"/>
+  <rect x="62" y="50" width="94" height="62" fill="#ff4d00"/>
+  <text x="109" y="90" fill="#090b0b" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" font-weight="800">J2K</text>
+  <text x="184" y="83" fill="#f3f4e9" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="1.2">CODEC SYSTEMS</text>
+  <text x="184" y="108" fill="#909a94" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="500" letter-spacing="1">FRAMES-SG / RUST</text>
 
-    <text x="80" y="446" font-size="32" fill="#5b6770">Audited unsafe boundaries · MIT / Apache-2.0</text>
-    <text x="80" y="492" font-size="32" fill="#5b6770">CPU baseline + CUDA &amp; Apple Metal backends</text>
+  <text x="62" y="253" fill="#f3f4e9" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" letter-spacing="-4">GPU ACCELERATED</text>
+  <text x="62" y="342" fill="#ff4d00" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="82" font-weight="700" letter-spacing="-4">J2K CODEC</text>
 
-    <!-- install chip -->
-    <rect x="80" y="536" width="320" height="58" rx="10" fill="#101820"/>
-    <text x="104" y="574" font-size="28" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#d6f3ed">cargo add j2k</text>
+  <text x="66" y="404" fill="#c7cec8" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="1">JPEG 2000 PART 1  /  HTJ2K PART 15</text>
+  <text x="66" y="438" fill="#909a94" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" font-weight="500">SAFE PUBLIC RUST APIs · JP2 / JPH · EXPLICIT BACKEND POLICY</text>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" letter-spacing="1.2">
+    <rect x="62" y="512" width="232" height="54" fill="#111616" stroke="#596261"/>
+    <text x="82" y="545" fill="#f3f4e9">CPU / BASELINE</text>
+    <rect x="310" y="512" width="232" height="54" fill="#111616" stroke="#ff4d00"/>
+    <text x="330" y="545" fill="#f3f4e9">CUDA / BACKEND</text>
+    <rect x="558" y="512" width="232" height="54" fill="#111616" stroke="#ff4d00"/>
+    <text x="578" y="545" fill="#f3f4e9">METAL / BACKEND</text>
   </g>
+
+  <text x="1138" y="550" fill="#ff4d00" text-anchor="end" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" letter-spacing="1.2">FRAMES-SG.GITHUB.IO/J2K</text>
 </svg>
