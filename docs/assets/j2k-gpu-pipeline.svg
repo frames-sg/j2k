@@ -1,59 +1,91 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 492" role="img" aria-labelledby="title desc">
   <title id="title">J2K Rust JPEG 2000 codec pipeline</title>
-  <desc id="desc">JPEG 2000 Part 1, HTJ2K Part 15, JP2/JPH, and JPEG inputs all enter the Rust j2k crate, which routes work to three parallel backends: a CPU baseline plus optional CUDA and Metal GPU adapters.</desc>
+  <desc id="desc">JPEG 2000 Part 1, HTJ2K Part 15, JP2/JPH, and JPEG inputs enter the public Rust j2k crate, which routes work to a CPU baseline plus optional CUDA and Metal backends.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 0 L10 5 L0 10 z" fill="#b7410e"/>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#242b29" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10Z" fill="#ff4d00"/>
     </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10Z" fill="#f3f4e9"/>
+    </marker>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
-  <rect width="760" height="492" fill="#f7f9fa"/>
 
-  <!-- input + backend boxes -->
-  <g fill="#ffffff" stroke="#d6dee3" stroke-width="2">
-    <rect x="44" y="34" width="200" height="92" rx="8"/>
-    <rect x="280" y="34" width="200" height="92" rx="8"/>
-    <rect x="516" y="34" width="200" height="92" rx="8"/>
-    <rect x="44" y="352" width="200" height="92" rx="8"/>
-    <rect x="280" y="352" width="200" height="92" rx="8"/>
-    <rect x="516" y="352" width="200" height="92" rx="8"/>
+  <rect width="760" height="492" fill="#090c0b"/>
+  <rect width="760" height="492" fill="url(#grid)" opacity=".75"/>
+  <path d="M0 5H760" stroke="#ff4d00" stroke-width="10"/>
+  <text x="28" y="38" fill="#8f9a93" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.4">SYSTEM MAP / STATIC TOPOLOGY</text>
+  <text x="732" y="38" fill="#f3f4e9" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" text-anchor="end">REQUEST::AUTO</text>
+
+  <g fill="#0d1110" stroke="#4a5551" stroke-width="1.5">
+    <rect x="38" y="62" width="204" height="78"/>
+    <rect x="278" y="62" width="204" height="78"/>
+    <rect x="518" y="62" width="204" height="78"/>
+    <rect x="38" y="356" width="204" height="82"/>
+    <rect x="278" y="356" width="204" height="82"/>
+    <rect x="518" y="356" width="204" height="82"/>
   </g>
 
-  <!-- central hub: the public j2k crate (accented) -->
-  <rect x="196" y="188" width="368" height="96" rx="10" fill="#fdf4ef" stroke="#b7410e" stroke-width="2.5"/>
-
-  <g font-family="Inter, Arial, sans-serif" fill="#172026">
-    <text x="66" y="72" font-size="22" font-weight="700">JPEG 2000</text>
-    <text x="66" y="98" font-size="15" fill="#52616b">JP2, J2K, J2C</text>
-    <text x="302" y="72" font-size="22" font-weight="700">HTJ2K</text>
-    <text x="302" y="98" font-size="15" fill="#52616b">Part 15, JPH</text>
-    <text x="538" y="72" font-size="22" font-weight="700">JPEG input</text>
-    <text x="538" y="98" font-size="15" fill="#52616b">Transcode paths</text>
-
-    <text x="380" y="228" text-anchor="middle" font-size="23" font-weight="700">j2k crate</text>
-    <text x="380" y="255" text-anchor="middle" font-size="14" fill="#52616b">Rust decode · encode · recode · transcode</text>
-
-    <text x="66" y="390" font-size="20" font-weight="700">CPU baseline</text>
-    <text x="66" y="415" font-size="14" fill="#52616b">Portable correctness path</text>
-    <text x="302" y="390" font-size="20" font-weight="700">CUDA adapter</text>
-    <text x="302" y="415" font-size="14" fill="#52616b">NVIDIA device surfaces</text>
-    <text x="538" y="390" font-size="20" font-weight="700">Metal adapter</text>
-    <text x="538" y="415" font-size="14" fill="#52616b">Apple GPU surfaces</text>
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+    <g fill="#ff4d00" font-size="10" letter-spacing="1.5">
+      <text x="56" y="84">INPUT / 01</text>
+      <text x="296" y="84">INPUT / 02</text>
+      <text x="536" y="84">INPUT / 03</text>
+    </g>
+    <g fill="#f3f4e9" font-size="21" font-weight="700">
+      <text x="56" y="116">JPEG 2000</text>
+      <text x="296" y="116">HTJ2K</text>
+      <text x="536" y="116">JPEG INPUT</text>
+    </g>
+    <g fill="#8f9a93" font-size="12">
+      <text x="56" y="132">JP2 · J2K · J2C</text>
+      <text x="296" y="132">PART 15 · JPH</text>
+      <text x="536" y="132">TRANSCODE PATHS</text>
+    </g>
   </g>
 
-  <!-- routing caption below the backends, clear of all arrows -->
-  <text x="380" y="478" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#7a6a5f">BackendRequest::Auto routes per shape · explicit CUDA / Metal requests are strict</text>
-
-  <!-- inputs converge into the j2k crate -->
-  <g stroke="#b7410e" stroke-width="2.5" fill="none" stroke-linecap="round">
-    <path d="M144 126 L300 186" marker-end="url(#arrow)"/>
-    <path d="M380 126 L380 186" marker-end="url(#arrow)"/>
-    <path d="M616 126 L460 186" marker-end="url(#arrow)"/>
+  <g fill="none" stroke-linecap="square" stroke-width="2">
+    <path d="M140 140V174L292 212" stroke="#ff4d00" stroke-dasharray="7 7" marker-end="url(#arrow-orange)"/>
+    <path d="M380 140V210" stroke="#f3f4e9" stroke-dasharray="7 7" marker-end="url(#arrow-green)"/>
+    <path d="M620 140V174L468 212" stroke="#ff4d00" stroke-dasharray="7 7" marker-end="url(#arrow-orange)"/>
+    <path d="M300 286 140 336V354" stroke="#ff4d00" stroke-dasharray="7 7" marker-end="url(#arrow-orange)"/>
+    <path d="M380 286V354" stroke="#f3f4e9" stroke-dasharray="7 7" marker-end="url(#arrow-green)"/>
+    <path d="M460 286 620 336V354" stroke="#ff4d00" stroke-dasharray="7 7" marker-end="url(#arrow-orange)"/>
   </g>
 
-  <!-- j2k crate fans out to the three parallel backends -->
-  <g stroke="#b7410e" stroke-width="2.5" fill="none" stroke-linecap="round">
-    <path d="M340 284 L160 350" marker-end="url(#arrow)"/>
-    <path d="M380 284 L380 350" marker-end="url(#arrow)"/>
-    <path d="M420 284 L600 350" marker-end="url(#arrow)"/>
+  <rect x="207" y="207" width="354" height="88" fill="#f3f4e9" opacity=".16" filter="url(#glow)"/>
+  <rect x="199" y="199" width="354" height="88" fill="#ff4d00" stroke="#f3f4e9" stroke-width="2"/>
+  <g fill="#090b0b" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" text-anchor="middle">
+    <text x="376" y="220" font-size="10" font-weight="600" letter-spacing="2">SAFE PUBLIC API</text>
+    <text x="376" y="258" font-size="34" font-weight="800">j2k</text>
+    <text x="376" y="278" font-size="11">DECODE · ENCODE · RECODE · TRANSCODE</text>
   </g>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+    <g fill="#f3f4e9" font-size="10" letter-spacing="1.5">
+      <text x="56" y="378">PATH / BASELINE</text>
+      <text x="296" y="378">GPU BACKEND</text>
+      <text x="536" y="378">GPU BACKEND</text>
+    </g>
+    <g fill="#f3f4e9" font-size="21" font-weight="700">
+      <text x="56" y="410">CPU</text>
+      <text x="296" y="410">CUDA</text>
+      <text x="536" y="410">METAL</text>
+    </g>
+    <g fill="#8f9a93" font-size="12">
+      <text x="56" y="428">PORTABLE CORRECTNESS</text>
+      <text x="296" y="428">NVIDIA SURFACES</text>
+      <text x="536" y="428">APPLE GPU SURFACES</text>
+    </g>
+  </g>
+
+  <path d="M28 465H732" stroke="#303737"/>
+  <text x="28" y="482" fill="#8f9a93" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="10" font-weight="700">AUTO ROUTES PER SHAPE</text>
+  <text x="732" y="482" fill="#ff4d00" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" text-anchor="end">EXPLICIT CUDA / METAL REQUESTS ARE STRICT</text>
 </svg>

@@ -3,79 +3,142 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>J2K Codec Project — Documentation and Packages</title>
-  <meta name="description" content="J2K provides safe public Rust APIs for JPEG 2000 Part 1 / HTJ2K Part 15, with audited unsafe implementation boundaries, JP2/JPH wrappers, and optional CUDA and Apple Metal adapters.">
+  <title>GPU-Accelerated J2K Codec — Pure Rust JPEG 2000 &amp; HTJ2K</title>
+  <meta name="description" content="J2K provides safe public Rust APIs for JPEG 2000 Part 1 / HTJ2K Part 15, with audited unsafe implementation boundaries, JP2/JPH wrappers, and optional CUDA and Apple Metal backends.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/">
-  <meta property="og:title" content="J2K Codec Project — Documentation and Packages">
-  <meta property="og:description" content="Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
+  <meta property="og:title" content="GPU-Accelerated J2K Codec — Pure Rust JPEG 2000 &amp; HTJ2K">
+  <meta property="og:description" content="Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal backends.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="J2K Codec Project — Documentation and Packages">
-  <meta name="twitter:description" content="Safe public Rust JPEG 2000 / HTJ2K APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
+  <meta name="twitter:title" content="GPU-Accelerated J2K Codec — Pure Rust JPEG 2000 &amp; HTJ2K">
+  <meta name="twitter:description" content="Safe public Rust JPEG 2000 / HTJ2K APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal backends.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="assets/site.css?v=20260623">
+  <link rel="stylesheet" href="assets/site.css?v=20260814">
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "J2K",
-    "headline": "J2K Codec Project — Documentation and Packages",
+    "headline": "GPU-Accelerated J2K Codec — Pure Rust JPEG 2000 & HTJ2K",
     "codeRepository": "https://github.com/frames-sg/j2k",
     "programmingLanguage": "Rust",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "url": "https://frames-sg.github.io/j2k/",
-    "description": "Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs with audited unsafe implementation boundaries, JP2/JPH still-image wrappers, and optional CUDA plus Apple Metal adapters."
+    "description": "Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs with audited unsafe implementation boundaries, JP2/JPH still-image wrappers, and optional CUDA plus Apple Metal backends."
   }
   </script>
 </head>
-<body>
+<body class="home">
+  <a class="skip-link" href="#content">Skip to content</a>
+  <div class="page-noise" aria-hidden="true"></div>
+
   <header class="site-header">
     <div class="bar">
-      <a class="brand" href="./">J2K</a>
+      <a class="brand" href="./" aria-label="J2K home">
+        <span class="brand-mark">J2K</span>
+        <span class="brand-name">JPEG 2000 / HTJ2K</span>
+      </a>
       <nav class="nav" aria-label="Primary">
-        <a href="rust-jpeg2000-codec/">Pure-Rust JPEG 2000 Codec</a>
-        <a href="gpu-jpeg2000-rust/">GPU Backends</a>
-        <a href="cuda-jpeg2000-rust/">CUDA</a>
-        <a href="metal-jpeg2000-rust/">Metal</a>
-        <a href="htj2k-rust/">HTJ2K</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#support">Support</a>
+        <a href="#install">Install</a>
+        <a href="gpu-jpeg2000-rust/">GPU backends</a>
+        <a class="nav-source" href="https://github.com/frames-sg/j2k">Source <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>
 
-  <main>
-    <section class="hero docs-hero">
-      <div class="wrap narrow">
-        <p class="eyebrow">Project documentation</p>
-        <h1>J2K Codec Project</h1>
-        <p class="lead">Safe public Rust APIs for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and coefficient-domain JPEG-to-HTJ2K transcode workflows. CPU is the correctness baseline; CUDA and Apple Metal adapters accelerate supported paths without becoming the public API.</p>
-        <div class="actions">
-          <a class="button primary" href="https://crates.io/crates/j2k">crates.io</a>
-          <a class="button" href="https://docs.rs/j2k">API docs</a>
-          <a class="button" href="https://github.com/frames-sg/j2k">Repository</a>
+  <main id="content">
+    <section class="hero docs-hero home-hero">
+      <div class="hero-index" aria-hidden="true">2000</div>
+      <div class="wrap hero-stage">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Pure Rust / JPEG 2000 / HTJ2K</p>
+          <h1><span>GPU Accelerated</span><span class="outline">J2K Codec</span></h1>
+          <p class="lead">Safe public Rust APIs for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and coefficient-domain JPEG-to-HTJ2K transcode workflows.</p>
+          <p class="hero-detail">CPU is the correctness baseline. CUDA and Apple Metal backends accelerate supported paths.</p>
+          <div class="actions">
+            <a class="button primary" href="https://crates.io/crates/j2k">crates.io <span aria-hidden="true">↗</span></a>
+            <a class="button" href="https://docs.rs/j2k">API docs <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/frames-sg/j2k">Repository <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="release-line"><span class="release-label">Release status</span><span class="release-copy">See the <a href="https://github.com/frames-sg/j2k/blob/main/docs/release.md">release policy</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</span></p>
         </div>
-        <p class="note"><strong>Release status:</strong> See the <a href="https://github.com/frames-sg/j2k/blob/main/docs/release.md">release policy</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</p>
+
+        <aside class="signal-console" aria-label="J2K routing overview">
+          <div class="console-bar">
+            <span>Route topology</span>
+            <span class="console-mode">BackendRequest::Auto</span>
+          </div>
+          <div class="route-map">
+            <div class="map-grid" aria-hidden="true"></div>
+            <div class="route-inputs">
+              <span>J2K / JP2</span>
+              <span>HTJ2K / JPH</span>
+              <span>JPEG</span>
+            </div>
+            <svg class="route-traces" viewBox="0 0 600 420" aria-hidden="true" preserveAspectRatio="none">
+              <path class="trace trace-a" d="M90 66 L90 120 L300 176"/>
+              <path class="trace trace-b" d="M300 66 L300 176"/>
+              <path class="trace trace-c" d="M510 66 L510 120 L300 176"/>
+              <path class="trace trace-d" d="M300 244 L90 302 L90 356"/>
+              <path class="trace trace-e" d="M300 244 L300 356"/>
+              <path class="trace trace-f" d="M300 244 L510 302 L510 356"/>
+            </svg>
+            <div class="route-core">
+              <span class="core-kicker">Safe public API</span>
+              <strong>j2k</strong>
+              <span>decode · encode · recode · transcode</span>
+            </div>
+            <div class="route-backends">
+              <span><b>CPU</b><small>baseline</small></span>
+              <span><b>CUDA</b><small>backend</small></span>
+              <span><b>METAL</b><small>backend</small></span>
+            </div>
+          </div>
+          <div class="console-footer">
+            <span><i class="legend-core" aria-hidden="true"></i> public surface</span>
+            <span><i class="legend-path" aria-hidden="true"></i> execution path</span>
+          </div>
+        </aside>
       </div>
     </section>
 
-    <section class="section alt">
+    <div class="capability-rail" aria-label="JPEG 2000 Part 1, HTJ2K Part 15, JP2, JPH, CPU, CUDA, and Metal support">
+      <div class="rail-track" aria-hidden="true">
+        <span>JPEG 2000 Part 1</span><i>◆</i><span>HTJ2K Part 15</span><i>◆</i><span>JP2 / JPH</span><i>◆</i><span>CPU baseline</span><i>◆</i><span>CUDA backend</span><i>◆</i><span>Metal backend</span><i>◆</i>
+        <span>JPEG 2000 Part 1</span><i>◆</i><span>HTJ2K Part 15</span><i>◆</i><span>JP2 / JPH</span><i>◆</i><span>CPU baseline</span><i>◆</i><span>CUDA backend</span><i>◆</i><span>Metal backend</span><i>◆</i>
+      </div>
+    </div>
+
+    <section class="section purpose-section">
       <div class="wrap">
-        <h2>Why J2K exists</h2>
-        <div class="grid three">
-          <article class="card">
+        <div class="section-heading">
+          <p class="section-label">01 / Public surface</p>
+          <h2>Why J2K exists</h2>
+        </div>
+        <div class="grid three feature-grid">
+          <article class="card feature-card">
+            <span class="card-number" aria-hidden="true">01</span>
+            <p class="card-kicker">Safety</p>
             <h3>Safe public Rust APIs</h3>
             <p>The public codec surface is safe Rust. Audited unsafe code is isolated at FFI, GPU integration, architecture-specific SIMD/intrinsic, allocation, and bounded pointer or buffer boundaries; the <a href="https://github.com/frames-sg/j2k/blob/main/docs/unsafe-audit.md">unsafe audit</a> is authoritative.</p>
           </article>
-          <article class="card">
-            <h3>Vendor-independent backends</h3>
-            <p>Applications can keep a portable CPU path while routing supported workloads to CUDA or Apple Metal under explicit backend policy.</p>
+          <article class="card feature-card">
+            <span class="card-number" aria-hidden="true">02</span>
+            <p class="card-kicker">Routing</p>
+            <h3>GPU-accelerated backends</h3>
+            <p>Applications keep a portable CPU path while routing supported workloads to CUDA or Apple Metal under explicit backend policy.</p>
           </article>
-          <article class="card">
+          <article class="card feature-card">
+            <span class="card-number" aria-hidden="true">03</span>
+            <p class="card-kicker">Evidence</p>
             <h3>Permissive integration</h3>
             <p>The workspace is dual-licensed MIT or Apache-2.0, with benchmark claims gated by reproducible evidence instead of broad speed marketing.</p>
           </article>
@@ -83,117 +146,135 @@
       </div>
     </section>
 
-    <section class="section">
+    <section class="section architecture-section" id="architecture">
       <div class="wrap">
+        <div class="architecture-intro">
+          <div>
+            <p class="section-label">02 / Architecture</p>
+            <h2>Architecture</h2>
+          </div>
+          <p>Still-image J2K/JP2 and HTJ2K/JPH surfaces meet in one public crate. CPU stays the portable correctness baseline; CUDA and Metal accelerate supported shapes under explicit policy.</p>
+        </div>
         <figure class="pipeline">
-          <img class="diagram" src="assets/j2k-gpu-pipeline.svg?v=3" alt="J2K pipeline: JPEG 2000, HTJ2K, and JPEG inputs flow through the j2k crate, which routes to CPU baseline, CUDA, and Metal backends.">
-          <figcaption>One public crate, still-image J2K/JP2 and HTJ2K/JPH surfaces, and three backends. CPU is the baseline; CUDA and Metal accelerate supported shapes.</figcaption>
+          <div class="pipeline-frame">
+            <div class="frame-label">System map / static topology</div>
+            <img class="diagram" src="assets/j2k-gpu-pipeline.svg?v=4" alt="J2K pipeline: JPEG 2000, HTJ2K, and JPEG inputs flow through the j2k crate, which routes to CPU baseline, CUDA, and Metal backends.">
+          </div>
+          <figcaption>Automatic routing may return CPU output when a device path is unavailable, unsupported, or not benchmarked for the requested shape. Explicit CUDA and Metal requests are strict.</figcaption>
         </figure>
       </div>
     </section>
 
-    <section class="section alt">
+    <section class="section support-section" id="support">
       <div class="wrap">
-        <h2>Support boundary</h2>
-        <div class="grid three">
-          <article class="card">
-            <h3>JPEG 2000 Part 1</h3>
+        <div class="section-heading split-heading">
+          <div>
+            <p class="section-label">03 / Support boundary</p>
+            <h2>Support boundary</h2>
+          </div>
+          <p>Exact coverage is maintained in the public support matrix.</p>
+        </div>
+        <div class="grid three support-grid">
+          <article class="card support-card">
+            <span class="scope-tag">In scope</span>
+            <h3>JPEG 2000 <em>Part 1</em></h3>
             <p>Raw J2K/J2C codestream parse, inspect, decode, encode, ROI, progression, tile-part, packet-marker, signed, high-bit, and component-plane surfaces are tracked by the public support matrix.</p>
           </article>
-          <article class="card">
-            <h3>HTJ2K Part 15</h3>
+          <article class="card support-card">
+            <span class="scope-tag">In scope</span>
+            <h3>HTJ2K <em>Part 15</em></h3>
             <p>HT cleanup and refinement decode/encode, quality layers, rate behavior, raw HT codestreams, and JPH still-image wrapping are in scope.</p>
           </article>
-          <article class="card">
-            <h3>Wrappers and limits</h3>
+          <article class="card support-card boundary-card">
+            <span class="scope-tag">Boundary</span>
+            <h3>Wrappers <em>and limits</em></h3>
             <p>JP2 and JPH still-image metadata paths are covered. JPX / JPEG 2000 Part 2 extensions and public speed claims require separate evidence.</p>
           </article>
         </div>
-        <p class="note">Exact row-by-row support status lives in <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a>. Published benchmark notes live in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; broader adoption reports require pinned external corpora and comparator evidence.</p>
+        <p class="evidence-line">Exact row-by-row support status lives in <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a>. Published benchmark notes live in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; broader adoption reports require pinned external corpora and comparator evidence.</p>
       </div>
     </section>
 
-    <section class="section">
-      <div class="wrap split">
-        <div>
-          <h2>Install</h2>
-          <p>Most applications should start with the public facade crate.</p>
-          <pre class="code">cargo add j2k</pre>
-        </div>
-        <div>
-          <h2>CLI smoke tests</h2>
-          <p>Use the CLI for inspection and conservative JPEG-to-HTJ2K transcode checks.</p>
-          <pre class="code">cargo install j2k-cli
-j2k inspect input.jp2
-j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
-        </div>
-      </div>
-    </section>
-
-    <section class="section alt">
+    <section class="section install-section" id="install">
       <div class="wrap">
-        <h2>Package map</h2>
+        <div class="section-heading split-heading">
+          <div>
+            <p class="section-label">04 / Install</p>
+            <h2>Install</h2>
+          </div>
+          <p>Most applications should start with the public facade crate. The CLI is useful for inspection and conservative JPEG-to-HTJ2K transcode smoke tests.</p>
+        </div>
+        <div class="install-grid">
+          <article class="terminal-card terminal-primary">
+            <div class="terminal-bar"><span>Library</span><span>01</span></div>
+            <pre class="code"><span class="prompt">$</span> cargo add j2k</pre>
+            <p>Safe public APIs for inspection, decode, encode, recode, JP2, and JPH.</p>
+          </article>
+          <article class="terminal-card">
+            <div class="terminal-bar"><span>CLI smoke test</span><span>02</span></div>
+            <pre class="code"><span class="prompt">$</span> cargo install j2k-cli
+<span class="prompt">$</span> j2k inspect input.jp2
+<span class="prompt">$</span> j2k transcode input.jpg output.j2k \
+    --htj2k --lossless-53</pre>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section package-section">
+      <div class="wrap">
+        <div class="section-heading compact-heading">
+          <p class="section-label">05 / Workspace</p>
+          <h2>Package map</h2>
+        </div>
         <div class="table-wrap">
           <table class="package-table">
             <thead>
-              <tr>
-                <th>Crate</th>
-                <th>Use</th>
-              </tr>
+              <tr><th>Crate</th><th>Role</th><th>Layer</th></tr>
             </thead>
             <tbody>
-              <tr>
-                <td><code>j2k</code></td>
-                <td>Public API for JPEG 2000 Part 1 / HTJ2K Part 15 inspection, decode, encode, recode, JP2, and JPH.</td>
-              </tr>
-              <tr>
-                <td><code>j2k-cuda</code></td>
-                <td>NVIDIA CUDA adapter for supported JPEG 2000 and HTJ2K backend paths.</td>
-              </tr>
-              <tr>
-                <td><code>j2k-metal</code></td>
-                <td>Apple Metal adapter for supported macOS GPU paths.</td>
-              </tr>
-              <tr>
-                <td><code>j2k-transcode</code></td>
-                <td>JPEG-to-HTJ2K coefficient-domain transcode primitives and shared transcode contracts.</td>
-              </tr>
-              <tr>
-                <td><code>j2k-cli</code></td>
-                <td>Command-line inspection and JPEG-to-HTJ2K transcode smoke tests.</td>
-              </tr>
+              <tr><td><code>j2k</code></td><td>Public API for JPEG 2000 Part 1 / HTJ2K Part 15 inspection, decode, encode, recode, JP2, and JPH.</td><td><span class="table-tag">Public</span></td></tr>
+              <tr><td><code>j2k-cuda</code></td><td>NVIDIA CUDA backend for supported JPEG 2000 and HTJ2K paths.</td><td><span class="table-tag">Backend</span></td></tr>
+              <tr><td><code>j2k-metal</code></td><td>Apple Metal backend for supported macOS GPU paths.</td><td><span class="table-tag">Backend</span></td></tr>
+              <tr><td><code>j2k-transcode</code></td><td>JPEG-to-HTJ2K coefficient-domain transcode primitives and shared transcode contracts.</td><td><span class="table-tag">Core</span></td></tr>
+              <tr><td><code>j2k-cli</code></td><td>Command-line inspection and JPEG-to-HTJ2K transcode smoke tests.</td><td><span class="table-tag">Tool</span></td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </section>
 
-    <section class="section">
-      <div class="wrap split">
+    <section class="section topics-section">
+      <div class="wrap topics-layout">
         <div>
-          <h2>Topic pages</h2>
+          <div class="section-heading compact-heading">
+            <p class="section-label">06 / Documentation</p>
+            <h2>Topic pages</h2>
+          </div>
           <ul class="link-list">
-            <li><a href="rust-jpeg2000-codec/">Pure-Rust JPEG 2000 Codec</a><span>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
-            <li><a href="gpu-jpeg2000-rust/">GPU Backends</a><span>Backend behavior, CPU fallback, CUDA, Metal, and strict device requests.</span></li>
-            <li><a href="cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a><span>NVIDIA adapter crates and runtime feature boundaries.</span></li>
-            <li><a href="metal-jpeg2000-rust/">Metal JPEG2000 Rust</a><span>Apple Metal adapter crates for macOS GPU-backed paths.</span></li>
-            <li><a href="htj2k-rust/">HTJ2K Rust</a><span>Part 15 HT block coding, JPH wrapping, recode, and transcode routes.</span></li>
+            <li><a href="rust-jpeg2000-codec/"><b>01</b><span><strong>Pure-Rust JPEG 2000 Codec</strong><small>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</small></span><i aria-hidden="true">↗</i></a></li>
+            <li><a href="gpu-jpeg2000-rust/"><b>02</b><span><strong>GPU Backends</strong><small>CPU fallback, CUDA, Metal, and strict device requests.</small></span><i aria-hidden="true">↗</i></a></li>
+            <li><a href="cuda-jpeg2000-rust/"><b>03</b><span><strong>CUDA JPEG2000 Rust</strong><small>NVIDIA CUDA backends and runtime feature boundaries.</small></span><i aria-hidden="true">↗</i></a></li>
+            <li><a href="metal-jpeg2000-rust/"><b>04</b><span><strong>Metal JPEG2000 Rust</strong><small>Apple Metal backends for macOS GPU paths.</small></span><i aria-hidden="true">↗</i></a></li>
+            <li><a href="htj2k-rust/"><b>05</b><span><strong>HTJ2K Rust</strong><small>Part 15 HT block coding, JPH wrapping, recode, and transcode routes.</small></span><i aria-hidden="true">↗</i></a></li>
           </ul>
         </div>
-        <div class="copy">
+        <aside class="backend-panel copy">
+          <p class="panel-index">AUTO / STRICT</p>
           <h2>Backend behavior</h2>
           <p>CPU output is the correctness baseline. <code>BackendRequest::Auto</code> may return CPU output when a device path is unavailable, unsupported, or not benchmarked for the requested shape.</p>
           <p>Explicit CUDA and Metal requests are strict. Unsupported shapes return errors instead of silently changing backend.</p>
           <p class="note">Benchmark claims should cite host hardware, operating system, input source, exact command, comparator availability, and comparator versions.</p>
-        </div>
+        </aside>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
     <div class="wrap footer-inner">
-      <p>J2K is dual-licensed under MIT or Apache-2.0.</p>
-      <p><a href="https://github.com/frames-sg/j2k">Repository</a> · <a href="https://docs.rs/j2k">API docs</a> · <a href="https://crates.io/crates/j2k">Crate</a></p>
+      <div class="footer-brand"><span>J2K</span><p>JPEG 2000 / HTJ2K in Rust.<br>MIT or Apache-2.0.</p></div>
+      <p class="footer-links"><a href="https://github.com/frames-sg/j2k">Repository</a><a href="https://docs.rs/j2k">API docs</a><a href="https://crates.io/crates/j2k">Crate</a></p>
+      <a class="back-top" href="#content">Back to top ↑</a>
     </div>
   </footer>
 </body>
