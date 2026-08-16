@@ -4,7 +4,7 @@
 use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
 use crate::error::{bail, err, ColorError, Result};
-use crate::math::{dispatch, f32x8, floor_f32, Level, Simd};
+use crate::math::{dispatch, f32x8, floor_f32, round_ties_even_then_add, Level, Simd};
 use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
 use j2k_codec_math::mct;
 
@@ -23,6 +23,7 @@ pub(crate) fn apply_inverse(
         };
     }
 
+    let round_irreversible_output = tile_ctx.round_irreversible_output;
     let (s, _) = tile_ctx.channel_data.split_at_mut(3);
     let [s0, s1, s2] = s else { unreachable!() };
 
@@ -43,6 +44,9 @@ pub(crate) fn apply_inverse(
         unsigned_level_shift(&component_infos[1]),
         unsigned_level_shift(&component_infos[2]),
     ];
+    let centered_output =
+        round_irreversible_output && transform == WaveletTransform::Irreversible97;
+    let transform_addends = if centered_output { [0.0; 3] } else { addends };
 
     if s0.integer_container.is_some()
         || s1.integer_container.is_some()
@@ -61,15 +65,17 @@ pub(crate) fn apply_inverse(
         );
     }
 
-    let handled = if let Some(backend) = backend.as_deref_mut() {
+    let handled = if centered_output {
+        false
+    } else if let Some(backend) = backend.as_deref_mut() {
         backend.decode_inverse_mct(J2kInverseMctJob {
             transform: J2kWaveletTransform::from(transform),
             plane0: &mut s0.container,
             plane1: &mut s1.container,
             plane2: &mut s2.container,
-            addend0: addends[0],
-            addend1: addends[1],
-            addend2: addends[2],
+            addend0: transform_addends[0],
+            addend1: transform_addends[1],
+            addend2: transform_addends[2],
         })?
     } else {
         false
@@ -81,11 +87,23 @@ pub(crate) fn apply_inverse(
             &mut s0.container,
             &mut s1.container,
             &mut s2.container,
-            addends,
+            transform_addends,
         );
     }
 
+    if centered_output {
+        round_centered_and_shift(&mut s0.container, addends[0]);
+        round_centered_and_shift(&mut s1.container, addends[1]);
+        round_centered_and_shift(&mut s2.container, addends[2]);
+    }
+
     Ok(())
+}
+
+fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
+    for sample in samples {
+        *sample = round_ties_even_then_add(*sample, addend);
+    }
 }
 
 fn apply_inverse_i64(
@@ -324,6 +342,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn irreversible_output_rounds_before_unsigned_level_shift() {
+        let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
+        round_centered_and_shift(&mut samples, 128.0);
+        assert_eq!(samples, [119.0, 118.0, 120.0]);
     }
 
     #[test]

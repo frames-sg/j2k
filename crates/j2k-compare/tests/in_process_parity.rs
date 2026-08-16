@@ -2,9 +2,10 @@
 
 use j2k::J2kDecoder;
 use j2k_core::{Downscale, PixelFormat, Rect};
-use j2k_test_support::{gradient_u8, write_pnm};
+use j2k_test_support::{fnv1a64_hex, gradient_u8, write_pnm};
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     process::Command,
     sync::{
@@ -12,6 +13,88 @@ use std::{
         Barrier, OnceLock,
     },
 };
+
+const APERIO_TILE_OFFSET: u64 = 12_696_074;
+const APERIO_TILE_BYTES: usize = 23_080;
+const APERIO_TILE_FNV1A64: &str = "36dc1f181d439cd5";
+
+#[test]
+fn aperio_lossy_wsi_tile_matches_openjpeg() {
+    let Some(path) = std::env::var_os("J2K_WSI_SVS_PATH") else {
+        eprintln!("J2K_WSI_SVS_PATH is unset; skipping external Aperio parity fixture");
+        return;
+    };
+    let mut file = fs::File::open(path).expect("open Aperio JP2K slide");
+    file.seek(SeekFrom::Start(APERIO_TILE_OFFSET))
+        .expect("seek to level-zero tile (14, 16)");
+    let mut codestream = vec![0_u8; APERIO_TILE_BYTES];
+    file.read_exact(&mut codestream)
+        .expect("read level-zero tile (14, 16)");
+    assert_eq!(fnv1a64_hex(&codestream), APERIO_TILE_FNV1A64);
+
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let ours = decoder
+        .decode_native_components()
+        .expect("j2k native component decode");
+    let reference = j2k_compare::openjpeg::decode_components(&codestream)
+        .expect("OpenJPEG native component decode");
+
+    assert_eq!(ours.dimensions(), reference.dimensions);
+    assert_eq!(ours.planes().len(), reference.components.len());
+    for (index, (actual, expected)) in ours.planes().iter().zip(&reference.components).enumerate() {
+        let sampling = actual.sampling();
+        assert_eq!(
+            (u32::from(sampling.0), u32::from(sampling.1)),
+            expected.sampling
+        );
+        assert_eq!(actual.bit_depth(), expected.bit_depth);
+        assert_eq!(actual.signed(), expected.signed);
+        assert_eq!(actual.bytes_per_sample(), 1);
+        assert_eq!(actual.dimensions(), ours.dimensions());
+        let actual_dimensions = actual.dimensions();
+        let mismatch =
+            actual
+                .data()
+                .iter()
+                .enumerate()
+                .find_map(|(sample_index, actual_sample)| {
+                    let x = sample_index % actual_dimensions.0 as usize;
+                    let y = sample_index / actual_dimensions.0 as usize;
+                    let expected_index = (y / sampling.1 as usize) * expected.dimensions.0 as usize
+                        + x / sampling.0 as usize;
+                    let expected_sample = expected.samples[expected_index];
+                    (i32::from(*actual_sample) != expected_sample).then_some((
+                        x,
+                        y,
+                        *actual_sample,
+                        expected_sample,
+                    ))
+                });
+        if let Some((x, y, actual_sample, expected_sample)) = mismatch {
+            panic!(
+                "component {index} differs at ({x}, {y}): native={actual_sample}, OpenJPEG={expected_sample}"
+            );
+        }
+    }
+
+    let ours_rgb = j2k_rgb(&codestream);
+    let reference_rgb =
+        j2k_compare::openjpeg::decode_rgb(&codestream).expect("OpenJPEG RGB decode");
+    assert_eq!(ours_rgb.len(), reference_rgb.len());
+    if let Some((index, (actual, expected))) = ours_rgb
+        .iter()
+        .zip(&reference_rgb)
+        .enumerate()
+        .find(|(_, (actual, expected))| actual != expected)
+    {
+        panic!("RGB output differs at byte {index}: native={actual}, OpenJPEG={expected}");
+    }
+    assert_eq!(
+        fnv1a64_hex(&ours_rgb),
+        "ce5021d9b3a33766",
+        "unexpected exact RGB checksum"
+    );
+}
 
 #[test]
 fn openjpeg_in_process_matches_j2k_rgb_fixture() {

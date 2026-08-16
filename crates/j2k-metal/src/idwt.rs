@@ -4,7 +4,7 @@
 use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k_native::J2kWaveletTransform;
-use j2k_native::{HtCodeBlockDecoder, J2kSingleDecompositionIdwtJob, Result};
+use j2k_native::{HtCodeBlockDecoder, J2kIdwtNormalization, J2kSingleDecompositionIdwtJob, Result};
 
 #[derive(Default)]
 pub(crate) struct MetalIdwtDecoder {
@@ -17,12 +17,11 @@ impl MetalIdwtDecoder {
     pub(crate) fn kernel_dispatches(&self) -> usize {
         self.kernel_dispatches
     }
-}
 
-impl HtCodeBlockDecoder for MetalIdwtDecoder {
-    fn decode_single_decomposition_idwt(
+    fn decode_with_normalization(
         &mut self,
         job: J2kSingleDecompositionIdwtJob<'_>,
+        normalization: J2kIdwtNormalization,
         output: &mut [f32],
     ) -> Result<bool> {
         #[cfg(target_os = "macos")]
@@ -30,6 +29,11 @@ impl HtCodeBlockDecoder for MetalIdwtDecoder {
             match job.transform {
                 J2kWaveletTransform::Reversible53 => {
                     compute::decode_reversible53_single_decomposition_idwt(job, output)
+                }
+                J2kWaveletTransform::Irreversible97
+                    if normalization == J2kIdwtNormalization::OpenJpegCodestream =>
+                {
+                    compute::decode_openjpeg_irreversible97_single_decomposition_idwt(job, output)
                 }
                 J2kWaveletTransform::Irreversible97 => {
                     compute::decode_irreversible97_single_decomposition_idwt(job, output)
@@ -40,9 +44,28 @@ impl HtCodeBlockDecoder for MetalIdwtDecoder {
             return Ok(true);
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (job, output);
+        let _ = (job, normalization, output);
 
         Ok(false)
+    }
+}
+
+impl HtCodeBlockDecoder for MetalIdwtDecoder {
+    fn decode_single_decomposition_idwt(
+        &mut self,
+        job: J2kSingleDecompositionIdwtJob<'_>,
+        output: &mut [f32],
+    ) -> Result<bool> {
+        self.decode_with_normalization(job, J2kIdwtNormalization::Standard, output)
+    }
+
+    fn decode_single_decomposition_idwt_with_normalization(
+        &mut self,
+        job: J2kSingleDecompositionIdwtJob<'_>,
+        normalization: J2kIdwtNormalization,
+        output: &mut [f32],
+    ) -> Result<bool> {
+        self.decode_with_normalization(job, normalization, output)
     }
 }
 
@@ -81,6 +104,10 @@ mod tests {
     use j2k_native::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
+    use std::io::{Read, Seek, SeekFrom};
+
+    const APERIO_TILE_OFFSET: u64 = 12_696_074;
+    const APERIO_TILE_BYTES: usize = 23_080;
 
     #[cfg(target_os = "macos")]
     fn should_run_metal_runtime() -> bool {
@@ -214,6 +241,56 @@ mod tests {
         assert!(
             decoder.kernel_dispatches() > 0,
             "irreversible grayscale fixture must exercise the Metal IDWT kernel"
+        );
+    }
+
+    #[test]
+    fn metal_codestream_normalization_matches_cpu_for_aperio_lossy_tile() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+        let Some(path) = std::env::var_os("J2K_WSI_SVS_PATH") else {
+            eprintln!("J2K_WSI_SVS_PATH is unset; skipping external Aperio Metal fixture");
+            return;
+        };
+        let mut file = std::fs::File::open(path).expect("open Aperio JP2K slide");
+        file.seek(SeekFrom::Start(APERIO_TILE_OFFSET))
+            .expect("seek to level-zero tile (14, 16)");
+        let mut codestream = vec![0_u8; APERIO_TILE_BYTES];
+        file.read_exact(&mut codestream)
+            .expect("read level-zero tile (14, 16)");
+        assert_eq!(
+            j2k_test_support::fnv1a64_hex(&codestream),
+            "36dc1f181d439cd5"
+        );
+
+        let image = Image::new(&codestream, &DecodeSettings::default()).expect("image");
+        let mut expected_context = DecoderContext::default();
+        let expected = image
+            .decode_components_with_context(&mut expected_context)
+            .expect("CPU decode");
+        let mut hooked_context = DecoderContext::default();
+        let mut decoder = MetalIdwtDecoder::default();
+        let actual = image
+            .decode_components_with_ht_decoder(&mut hooked_context, &mut decoder)
+            .expect("Metal IDWT decode");
+
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        assert_eq!(actual.planes().len(), expected.planes().len());
+        for (component, (actual, expected)) in
+            actual.planes().iter().zip(expected.planes()).enumerate()
+        {
+            assert_eq!(
+                actual.samples(),
+                expected.samples(),
+                "Metal component {component} differs from CPU"
+            );
+        }
+        #[cfg(target_os = "macos")]
+        assert!(
+            decoder.kernel_dispatches() > 0,
+            "Aperio lossy tile must exercise Metal codestream-normalized IDWT"
         );
     }
 

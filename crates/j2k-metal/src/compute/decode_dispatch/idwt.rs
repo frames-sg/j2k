@@ -13,10 +13,13 @@ use super::{
 };
 #[cfg(target_os = "macos")]
 mod irreversible;
-#[cfg(target_os = "macos")]
-pub(crate) use irreversible::decode_irreversible97_single_decomposition_idwt;
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use irreversible::decode_irreversible97_staged_single_decomposition_idwt;
+#[cfg(target_os = "macos")]
+pub(crate) use irreversible::{
+    decode_irreversible97_single_decomposition_idwt,
+    decode_openjpeg_irreversible97_single_decomposition_idwt,
+};
 #[cfg(target_os = "macos")]
 pub(in crate::compute) use irreversible::{
     dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,

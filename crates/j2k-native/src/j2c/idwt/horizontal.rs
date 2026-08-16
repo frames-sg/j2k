@@ -14,18 +14,52 @@ pub(super) fn filter_horizontal(
     rect: IntRect,
     transform: WaveletTransform,
 ) {
+    filter_horizontal_with_high_pass(coefficients, rect, transform, dwt::DWT97_INV_KAPPA_F32);
+}
+
+pub(super) fn filter_horizontal_codestream(
+    coefficients: &mut [f32],
+    rect: IntRect,
+    transform: WaveletTransform,
+) {
+    filter_horizontal_with_high_pass(
+        coefficients,
+        rect,
+        transform,
+        super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
+    );
+}
+
+fn filter_horizontal_with_high_pass(
+    coefficients: &mut [f32],
+    rect: IntRect,
+    transform: WaveletTransform,
+    irreversible_high_pass: f32,
+) {
     let width = rect.width() as usize;
 
     for scanline in coefficients
         .chunks_exact_mut(width)
         .take(rect.height() as usize)
     {
-        filter_row(scanline, width, rect.x0 as usize, transform);
+        filter_row(
+            scanline,
+            width,
+            rect.x0 as usize,
+            transform,
+            irreversible_high_pass,
+        );
     }
 }
 
 /// The `1D_SR` procedure from F.3.6.
-fn filter_row(scanline: &mut [f32], width: usize, x0: usize, transform: WaveletTransform) {
+fn filter_row(
+    scanline: &mut [f32],
+    width: usize,
+    x0: usize,
+    transform: WaveletTransform,
+    irreversible_high_pass: f32,
+) {
     if width == 1 {
         if !x0.is_multiple_of(2) {
             scanline[0] *= 0.5;
@@ -36,7 +70,9 @@ fn filter_row(scanline: &mut [f32], width: usize, x0: usize, transform: WaveletT
 
     match transform {
         WaveletTransform::Reversible53 => reversible_filter_53r(scanline, width, x0),
-        WaveletTransform::Irreversible97 => irreversible_filter_97i(scanline, width, x0),
+        WaveletTransform::Irreversible97 => {
+            irreversible_filter_97i(scanline, width, x0, irreversible_high_pass);
+        }
     }
 }
 
@@ -101,22 +137,20 @@ fn reversible_filter_53r_i64(scanline: &mut [i64], width: usize, x0: usize) {
 }
 
 /// The 1D Filter 9-7I procedure from F.3.8.2.
-fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
+fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize, high_pass: f32) {
     // Table F.4.
     const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
     const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
     const NEG_GAMMA: f32 = dwt::IDWT97_NEG_GAMMA_F32;
     const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
     const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
-    const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
-
     let first_even = x0 % 2;
     let first_odd = 1 - first_even;
 
     let (k0, k1) = if first_even == 0 {
-        (KAPPA, INV_KAPPA)
+        (KAPPA, high_pass)
     } else {
-        (INV_KAPPA, KAPPA)
+        (high_pass, KAPPA)
     };
 
     // Step 1 and 2.
@@ -173,7 +207,7 @@ fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
 
 #[cfg(test)]
 pub(crate) fn test_irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
-    irreversible_filter_97i(scanline, width, x0);
+    irreversible_filter_97i(scanline, width, x0, dwt::DWT97_INV_KAPPA_F32);
 }
 
 #[expect(

@@ -2,12 +2,12 @@ use super::{
     bail, decode_ht_code_block_scalar_with_workspace,
     decode_ht_code_block_scalar_with_workspace_midpoint,
     decode_j2k_code_block_scalar_with_workspace,
-    decode_j2k_code_block_scalar_with_workspace_midpoint, idwt, try_resize_decode_elements,
-    DecodingError, DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand,
-    DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan,
-    J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kIdwtBand,
-    J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, Range, Result, Vec,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, idwt, round_ties_even_then_add,
+    try_resize_decode_elements, DecodingError, DirectComponentBandScratch, DirectComponentPlane,
+    DirectCpuBand, DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
+    HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, Range, Result, Vec,
 };
 
 pub(super) fn execute_component_plan(
@@ -15,6 +15,7 @@ pub(super) fn execute_component_plan(
     bands: &mut DirectComponentBandScratch,
     output: &mut DirectComponentPlane,
     workspace_budget: DirectWorkspaceBudget,
+    round_irreversible_output: bool,
 ) -> Result<()> {
     bands.reset();
     let mut output_written = false;
@@ -29,7 +30,13 @@ pub(super) fn execute_component_plan(
             }
             J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
             J2kDirectGrayscaleStep::Store(store) => {
-                store_component(store, bands.active(), output, &mut output_written)?;
+                store_component(
+                    store,
+                    bands.active(),
+                    output,
+                    &mut output_written,
+                    round_irreversible_output,
+                )?;
             }
         }
     }
@@ -197,7 +204,7 @@ pub(super) fn execute_idwt_step(
         lh,
         hh,
     };
-    idwt::apply_single_decomposition_idwt_job(job, output)
+    idwt::apply_codestream_single_decomposition_idwt_job(job, output)
 }
 
 fn find_idwt_band(bands: &[DirectCpuBand], band_id: J2kDirectBandId) -> Result<J2kIdwtBand<'_>> {
@@ -213,6 +220,7 @@ pub(super) fn store_component(
     bands: &[DirectCpuBand],
     plane: &mut DirectComponentPlane,
     output_written: &mut bool,
+    round_irreversible_output: bool,
 ) -> Result<()> {
     let input = find_band(bands, store.input_band_id)?;
     if !*output_written {
@@ -245,7 +253,11 @@ pub(super) fn store_component(
         let src = &input.coefficients[src_start..src_start + copy_width];
         let dst = &mut plane.samples[dst_start..dst_start + copy_width];
         for (src, dst) in src.iter().zip(dst.iter_mut()) {
-            *dst = *src + store.addend;
+            *dst = if round_irreversible_output {
+                round_ties_even_then_add(*src, store.addend)
+            } else {
+                *src + store.addend
+            };
         }
     }
     Ok(())

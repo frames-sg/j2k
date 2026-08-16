@@ -639,6 +639,8 @@ pub(crate) struct TileDecodeContext {
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
     pub(crate) output_region: Option<OutputRegion>,
+    /// Whether irreversible samples are being decoded for an integer output.
+    pub(crate) round_irreversible_output: bool,
     /// Debug counters for tests and ROI instrumentation.
     pub(crate) debug_counters: DecodeDebugCounters,
 }
@@ -646,8 +648,10 @@ pub(crate) struct TileDecodeContext {
 impl TileDecodeContext {
     fn release_all_allocations(&mut self) {
         let output_region = self.output_region;
+        let round_irreversible_output = self.round_irreversible_output;
         *self = Self::default();
         self.output_region = output_region;
+        self.round_irreversible_output = round_irreversible_output;
     }
 
     fn release_tile_scratch_allocations(&mut self) {

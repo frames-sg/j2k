@@ -429,6 +429,7 @@ kernel void j2k_idwt_reversible53_vertical_pass_batched(
 kernel void j2k_idwt_irreversible97_horizontal_scale(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    constant float &high_pass [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height) {
@@ -436,7 +437,6 @@ kernel void j2k_idwt_irreversible97_horizontal_scale(
     }
 
     const float KAPPA = CODEC_MATH_DWT97_KAPPA;
-    const float INV_KAPPA = CODEC_MATH_DWT97_INV_KAPPA;
     float sample = out[gid.y * params.width + gid.x];
 
     if (params.width == 1u) {
@@ -445,7 +445,7 @@ kernel void j2k_idwt_irreversible97_horizontal_scale(
         }
     } else {
         const uint first_even_x = (params.x0 + params.output_x) & 1u;
-        sample *= (gid.x & 1u) == first_even_x ? KAPPA : INV_KAPPA;
+        sample *= (gid.x & 1u) == first_even_x ? KAPPA : high_pass;
     }
 
     out[gid.y * params.width + gid.x] = sample;
@@ -454,6 +454,7 @@ kernel void j2k_idwt_irreversible97_horizontal_scale(
 kernel void j2k_idwt_irreversible97_vertical_scale(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    constant float &high_pass [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height) {
@@ -461,7 +462,6 @@ kernel void j2k_idwt_irreversible97_vertical_scale(
     }
 
     const float KAPPA = CODEC_MATH_DWT97_KAPPA;
-    const float INV_KAPPA = CODEC_MATH_DWT97_INV_KAPPA;
     float sample = out[gid.y * params.width + gid.x];
 
     if (params.height == 1u) {
@@ -470,7 +470,7 @@ kernel void j2k_idwt_irreversible97_vertical_scale(
         }
     } else {
         const uint first_even_y = (params.y0 + params.output_y) & 1u;
-        sample *= (gid.y & 1u) == first_even_y ? KAPPA : INV_KAPPA;
+        sample *= (gid.y & 1u) == first_even_y ? KAPPA : high_pass;
     }
 
     out[gid.y * params.width + gid.x] = sample;

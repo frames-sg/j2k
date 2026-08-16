@@ -1,8 +1,9 @@
 use super::{
-    bail, execute_component_plan, floor_f32, prepare_direct_scratch, round_f32, DecodingError,
-    DirectComponentPlane, J2kDirectColorPlan, J2kDirectCpuScratch, J2kRect, J2kWaveletTransform,
-    Result,
+    bail, execute_component_plan, floor_f32, mul_add, prepare_direct_scratch, round_f32,
+    round_ties_even_then_add, DecodingError, DirectComponentPlane, J2kDirectColorPlan,
+    J2kDirectCpuScratch, J2kRect, J2kWaveletTransform, Result,
 };
+use j2k_codec_math::mct;
 
 /// Execute a adapter direct RGB plan on the CPU and write an RGB8 output region.
 ///
@@ -82,7 +83,13 @@ fn execute_direct_color_plan_u8_into(
     for (component_index, component_plan) in plan.component_plans.iter().enumerate() {
         let band_scratch = &mut scratch.component_band_sets[component_index];
         let plane = &mut scratch.component_planes[component_index];
-        execute_component_plan(component_plan, band_scratch, plane, workspace_budget)?;
+        execute_component_plan(
+            component_plan,
+            band_scratch,
+            plane,
+            workspace_budget,
+            !plan.mct && plan.transform == J2kWaveletTransform::Irreversible97,
+        )?;
     }
 
     let [plane0, plane1, plane2, ..] = scratch.component_planes.as_mut_slice() else {
@@ -93,6 +100,7 @@ fn execute_direct_color_plan_u8_into(
             plan.transform,
             plan.bit_depths,
             false,
+            true,
             plane0,
             plane1,
             plane2,
@@ -112,6 +120,7 @@ fn apply_inverse_mct(
     transform: J2kWaveletTransform,
     bit_depths: [u8; 3],
     signed: bool,
+    round_irreversible_output: bool,
     plane0: &mut DirectComponentPlane,
     plane1: &mut DirectComponentPlane,
     plane2: &mut DirectComponentPlane,
@@ -123,7 +132,12 @@ fn apply_inverse_mct(
         y1: plane0.height,
     };
     apply_inverse_mct_region(
-        transform, bit_depths, signed, region, plane0, plane1, plane2,
+        transform,
+        bit_depths,
+        signed,
+        round_irreversible_output,
+        region,
+        [plane0, plane1, plane2],
     )
 }
 
@@ -131,11 +145,11 @@ pub(super) fn apply_inverse_mct_region(
     transform: J2kWaveletTransform,
     bit_depths: [u8; 3],
     signed: bool,
+    round_irreversible_output: bool,
     region: J2kRect,
-    plane0: &mut DirectComponentPlane,
-    plane1: &mut DirectComponentPlane,
-    plane2: &mut DirectComponentPlane,
+    channels: [&mut DirectComponentPlane; 3],
 ) -> Result<()> {
+    let [plane0, plane1, plane2] = channels;
     if plane0.width != plane1.width
         || plane1.width != plane2.width
         || plane0.height != plane1.height
@@ -180,18 +194,28 @@ pub(super) fn apply_inverse_mct_region(
             let src2 = plane2.samples[index];
             let (out0, out1, out2) = match transform {
                 J2kWaveletTransform::Irreversible97 => (
-                    src0 + 1.402 * src2,
-                    src0 - 0.34413 * src1 - 0.71414 * src2,
-                    src0 + 1.772 * src1,
+                    mul_add(src2, mct::ICT_INV_R_CR, src0),
+                    mul_add(
+                        src2,
+                        mct::ICT_INV_G_CR,
+                        mul_add(src1, mct::ICT_INV_G_CB, src0),
+                    ),
+                    mul_add(src1, mct::ICT_INV_B_CB, src0),
                 ),
                 J2kWaveletTransform::Reversible53 => {
                     let i1 = src0 - floor_f32((src2 + src1) * 0.25);
                     (src2 + i1, i1, src1 + i1)
                 }
             };
-            plane0.samples[index] = out0 + addend0;
-            plane1.samples[index] = out1 + addend1;
-            plane2.samples[index] = out2 + addend2;
+            if round_irreversible_output && transform == J2kWaveletTransform::Irreversible97 {
+                plane0.samples[index] = round_ties_even_then_add(out0, addend0);
+                plane1.samples[index] = round_ties_even_then_add(out1, addend1);
+                plane2.samples[index] = round_ties_even_then_add(out2, addend2);
+            } else {
+                plane0.samples[index] = out0 + addend0;
+                plane1.samples[index] = out1 + addend1;
+                plane2.samples[index] = out2 + addend2;
+            }
         }
     }
     Ok(())

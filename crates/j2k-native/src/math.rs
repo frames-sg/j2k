@@ -615,8 +615,13 @@ mod inner {
 #[inline(always)]
 pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
     // The 9/7 lifting path must use one rounding step on every CPU target so
-    // its output does not change with compile-time FMA availability.
-    libm::fmaf(a, b, c)
+    // its output does not change with compile-time FMA availability. Hosted
+    // builds use the hardware-backed intrinsic; no-std keeps the libm oracle.
+    #[cfg(feature = "std")]
+    let result = a.mul_add(b, c);
+    #[cfg(not(feature = "std"))]
+    let result = libm::fmaf(a, b, c);
+    result
 }
 
 #[expect(
@@ -667,6 +672,19 @@ pub(crate) fn round_f32(x: f32) -> f32 {
             -floor_f32(-x + 0.5)
         }
     }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "the centered irreversible-output rounding boundary is shared by hot decode loops"
+)]
+#[inline(always)]
+pub(crate) fn round_ties_even_then_add(sample: f32, addend: f32) -> f32 {
+    #[cfg(feature = "std")]
+    let rounded = sample.round_ties_even();
+    #[cfg(not(feature = "std"))]
+    let rounded = libm::roundevenf(sample);
+    rounded + addend
 }
 
 #[expect(
@@ -882,6 +900,21 @@ mod simd_operator_tests {
 #[cfg(test)]
 mod floating_point_tests {
     use super::mul_add;
+    #[cfg(feature = "std")]
+    use j2k_codec_math::dwt;
+
+    #[cfg(feature = "std")]
+    fn assert_fused_mul_add_matches_libm(a: f32, b: f32, c: f32) {
+        debug_assert!(a.is_finite() && b.is_finite() && c.is_finite());
+        assert_eq!(
+            mul_add(a, b, c).to_bits(),
+            libm::fmaf(a, b, c).to_bits(),
+            "fused multiply-add mismatch for a={a:e} ({:#010x}), b={b:e} ({:#010x}), c={c:e} ({:#010x})",
+            a.to_bits(),
+            b.to_bits(),
+            c.to_bits()
+        );
+    }
 
     #[test]
     fn scalar_mul_add_has_one_rounding_step_on_every_target() {
@@ -892,6 +925,68 @@ mod floating_point_tests {
         );
 
         assert_eq!(value.to_bits(), 0xc483_47a5);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hosted_mul_add_matches_portable_fused_oracle_for_finite_inputs() {
+        const BOUNDARY_VALUES: [f32; 26] = [
+            0.0,
+            -0.0,
+            f32::from_bits(0x0000_0001),
+            f32::from_bits(0x8000_0001),
+            f32::from_bits(0x007f_ffff),
+            f32::from_bits(0x807f_ffff),
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            2.0,
+            -2.0,
+            f32::MAX,
+            f32::MIN,
+            dwt::DWT97_ALPHA_F32,
+            dwt::DWT97_BETA_F32,
+            dwt::DWT97_GAMMA_F32,
+            dwt::DWT97_DELTA_F32,
+            dwt::DWT97_KAPPA_F32,
+            dwt::DWT97_INV_KAPPA_F32,
+            dwt::IDWT97_NEG_ALPHA_F32,
+            dwt::IDWT97_NEG_BETA_F32,
+            dwt::IDWT97_NEG_GAMMA_F32,
+            dwt::IDWT97_NEG_DELTA_F32,
+        ];
+
+        for a in BOUNDARY_VALUES {
+            for b in BOUNDARY_VALUES {
+                for c in BOUNDARY_VALUES {
+                    assert_fused_mul_add_matches_libm(a, b, c);
+                }
+            }
+        }
+
+        // A fixed generator makes this test reproducible while covering normal,
+        // subnormal, cancellation, overflow, and signed-zero results broadly.
+        let mut state = 0x243f_6a88_85a3_08d3_u64;
+        let mut next_finite = || loop {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let bits = state as u32;
+            let value = f32::from_bits(bits);
+            if value.is_finite() {
+                break value;
+            }
+        };
+
+        for _ in 0..100_000 {
+            let a = next_finite();
+            let b = next_finite();
+            let c = next_finite();
+            assert_fused_mul_add_matches_libm(a, b, c);
+        }
     }
 }
 

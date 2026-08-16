@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::super::codestream::WaveletTransform;
 use super::{
     bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
+use crate::math::round_ties_even_then_add;
 
 pub(super) fn apply_sign_shift_after_mct(
     tile_ctx: &mut TileDecodeContext,
     component_infos: &[ComponentInfo],
 ) {
+    let round_irreversible_output = tile_ctx.round_irreversible_output;
     for (channel_data, component_info) in tile_ctx
         .channel_data
         .iter_mut()
@@ -23,9 +26,12 @@ pub(super) fn apply_sign_shift_after_mct(
             }
         } else {
             let addend = component_unsigned_level_shift(component_info);
-            for sample in &mut *channel_data.container {
-                *sample += addend;
-            }
+            apply_float_sign_shift(
+                &mut channel_data.container,
+                addend,
+                component_info.wavelet_transform(),
+                round_irreversible_output,
+            );
         }
     }
 }
@@ -49,6 +55,7 @@ pub(super) fn store<'a>(
         return store_i64(tile, header, tile_ctx, component_info, component_idx);
     }
 
+    let round_irreversible_output = tile_ctx.round_irreversible_output && !tile.mct;
     let channel_data = &mut tile_ctx.channel_data[component_idx];
     let idwt_output = &mut tile_ctx.idwt_output;
 
@@ -81,6 +88,7 @@ pub(super) fn store<'a>(
             output_region,
             backend,
             sign_shift,
+            round_irreversible_output,
         )?;
         return Ok(());
     }
@@ -99,22 +107,28 @@ pub(super) fn store<'a>(
         let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
         let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
 
-        let handled = if let Some(backend) = backend.as_deref_mut() {
-            copy_width > 0
-                && copy_height > 0
-                && backend.decode_store_component(J2kStoreComponentJob {
-                    input: &idwt_output.coefficients,
-                    input_width: idwt_output.rect.width(),
-                    source_x,
-                    source_y,
-                    copy_width,
-                    copy_height,
-                    output: &mut channel_data.container,
-                    output_width: header.size_data.image_width(),
-                    output_x,
-                    output_y,
-                    addend: sign_shift,
-                })?
+        let handled = if !round_irreversible_output
+            || component_info.wavelet_transform() != WaveletTransform::Irreversible97
+        {
+            if let Some(backend) = backend.as_deref_mut() {
+                copy_width > 0
+                    && copy_height > 0
+                    && backend.decode_store_component(J2kStoreComponentJob {
+                        input: &idwt_output.coefficients,
+                        input_width: idwt_output.rect.width(),
+                        source_x,
+                        source_y,
+                        copy_width,
+                        copy_height,
+                        output: &mut channel_data.container,
+                        output_width: header.size_data.image_width(),
+                        output_x,
+                        output_y,
+                        addend: sign_shift,
+                    })?
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -134,11 +148,12 @@ pub(super) fn store<'a>(
         let skip_x = image_x_offset.saturating_sub(idwt_output.rect.x0);
         let skip_y = image_y_offset.saturating_sub(idwt_output.rect.y0);
 
-        if sign_shift != 0.0 {
-            for sample in &mut idwt_output.coefficients {
-                *sample += sign_shift;
-            }
-        }
+        apply_float_sign_shift(
+            &mut idwt_output.coefficients,
+            sign_shift,
+            component_info.wavelet_transform(),
+            round_irreversible_output,
+        );
 
         let input_row_iter = idwt_output
             .coefficients
@@ -160,11 +175,12 @@ pub(super) fn store<'a>(
             output_row.copy_from_slice(input_row);
         }
     } else {
-        if sign_shift != 0.0 {
-            for sample in &mut idwt_output.coefficients {
-                *sample += sign_shift;
-            }
-        }
+        apply_float_sign_shift(
+            &mut idwt_output.coefficients,
+            sign_shift,
+            component_info.wavelet_transform(),
+            round_irreversible_output,
+        );
         let image_width = header.size_data.image_width();
         let image_height = header.size_data.image_height();
 
@@ -208,6 +224,23 @@ pub(super) fn store<'a>(
     }
 
     Ok(())
+}
+
+fn apply_float_sign_shift(
+    samples: &mut [f32],
+    sign_shift: f32,
+    transform: WaveletTransform,
+    round_irreversible_output: bool,
+) {
+    if round_irreversible_output && transform == WaveletTransform::Irreversible97 {
+        for sample in samples {
+            *sample = round_ties_even_then_add(*sample, sign_shift);
+        }
+    } else if sign_shift != 0.0 {
+        for sample in samples {
+            *sample += sign_shift;
+        }
+    }
 }
 
 fn store_i64<'a>(
@@ -372,6 +405,7 @@ fn store_region<'a>(
     output_region: OutputRegion,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
     sign_shift: f32,
+    round_irreversible_output: bool,
 ) -> Result<()> {
     let channel_data = &mut tile_ctx.channel_data[component_idx];
     let idwt_output = &mut tile_ctx.idwt_output;
@@ -422,22 +456,28 @@ fn store_region<'a>(
             .min(resolution_tile.rect.y1)
             .min(region_rect_y1);
 
-        let handled = if let Some(backend) = backend.as_deref_mut() {
-            copy_x0 < copy_x1
-                && copy_y0 < copy_y1
-                && backend.decode_store_component(J2kStoreComponentJob {
-                    input: &idwt_output.coefficients,
-                    input_width: idwt_output.rect.width(),
-                    source_x: copy_x0 - idwt_output.rect.x0,
-                    source_y: copy_y0 - idwt_output.rect.y0,
-                    copy_width: copy_x1 - copy_x0,
-                    copy_height: copy_y1 - copy_y0,
-                    output: &mut channel_data.container,
-                    output_width: output_region.width,
-                    output_x: copy_x0 - region_rect_x0,
-                    output_y: copy_y0 - region_rect_y0,
-                    addend: sign_shift,
-                })?
+        let handled = if !round_irreversible_output
+            || component_info.wavelet_transform() != WaveletTransform::Irreversible97
+        {
+            if let Some(backend) = backend.as_deref_mut() {
+                copy_x0 < copy_x1
+                    && copy_y0 < copy_y1
+                    && backend.decode_store_component(J2kStoreComponentJob {
+                        input: &idwt_output.coefficients,
+                        input_width: idwt_output.rect.width(),
+                        source_x: copy_x0 - idwt_output.rect.x0,
+                        source_y: copy_y0 - idwt_output.rect.y0,
+                        copy_width: copy_x1 - copy_x0,
+                        copy_height: copy_y1 - copy_y0,
+                        output: &mut channel_data.container,
+                        output_width: output_region.width,
+                        output_x: copy_x0 - region_rect_x0,
+                        output_y: copy_y0 - region_rect_y0,
+                        addend: sign_shift,
+                    })?
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -446,11 +486,12 @@ fn store_region<'a>(
             return Ok(());
         }
 
-        if sign_shift != 0.0 {
-            for sample in &mut idwt_output.coefficients {
-                *sample += sign_shift;
-            }
-        }
+        apply_float_sign_shift(
+            &mut idwt_output.coefficients,
+            sign_shift,
+            component_info.wavelet_transform(),
+            round_irreversible_output,
+        );
 
         if copy_x0 < copy_x1 && copy_y0 < copy_y1 {
             let input_width = idwt_output.rect.width() as usize;
@@ -468,11 +509,12 @@ fn store_region<'a>(
         return Ok(());
     }
 
-    if sign_shift != 0.0 {
-        for sample in &mut idwt_output.coefficients {
-            *sample += sign_shift;
-        }
-    }
+    apply_float_sign_shift(
+        &mut idwt_output.coefficients,
+        sign_shift,
+        component_info.wavelet_transform(),
+        round_irreversible_output,
+    );
 
     for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
         let relative_y = (y - component_tile.rect.y0) as usize;
@@ -516,4 +558,39 @@ fn store_region<'a>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_float_sign_shift, WaveletTransform};
+
+    #[test]
+    fn irreversible_level_shift_rounds_in_the_centered_domain() {
+        let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
+        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, true);
+        assert_eq!(samples, [119.0, 118.0, 120.0]);
+
+        let mut signed_samples = [-9.5, -8.5];
+        apply_float_sign_shift(
+            &mut signed_samples,
+            0.0,
+            WaveletTransform::Irreversible97,
+            true,
+        );
+        assert_eq!(signed_samples, [-10.0, -8.0]);
+    }
+
+    #[test]
+    fn component_output_preserves_irreversible_fractional_samples() {
+        let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
+        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, false);
+        assert_eq!(samples, [118.5, 118.5, 119.5]);
+    }
+
+    #[test]
+    fn reversible_level_shift_preserves_fractional_samples() {
+        let mut samples = [-9.5, -8.5];
+        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Reversible53, true);
+        assert_eq!(samples, [118.5, 119.5]);
+    }
 }

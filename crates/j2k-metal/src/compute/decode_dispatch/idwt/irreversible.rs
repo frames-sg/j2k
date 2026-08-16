@@ -20,9 +20,32 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
     decode_irreversible97_staged_single_decomposition_idwt(job, output)
 }
 
+pub(crate) fn decode_openjpeg_irreversible97_single_decomposition_idwt(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    decode_irreversible97_staged_single_decomposition_idwt_with_high_pass(
+        job,
+        output,
+        dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5,
+    )
+}
+
 pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
     job: J2kSingleDecompositionIdwtJob<'_>,
     output: &mut [f32],
+) -> Result<(), Error> {
+    decode_irreversible97_staged_single_decomposition_idwt_with_high_pass(
+        job,
+        output,
+        dwt::DWT97_INV_KAPPA_F32,
+    )
+}
+
+fn decode_irreversible97_staged_single_decomposition_idwt_with_high_pass(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    output: &mut [f32],
+    high_pass: f32,
 ) -> Result<(), Error> {
     with_runtime(|runtime| {
         let required_len = job.rect.width() as usize * job.rect.height() as usize;
@@ -64,7 +87,7 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
         let decoded = copied_slice_buffer(&runtime.device, output)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
+        dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pass(
             &encoder,
             SingleIdwtDispatch {
                 runtime,
@@ -82,6 +105,7 @@ pub(crate) fn decode_irreversible97_staged_single_decomposition_idwt(
                 decoded: &decoded,
                 decoded_offset: 0,
             },
+            high_pass,
         );
         encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
@@ -109,6 +133,18 @@ pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_i
 pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
     encoder: &ComputeCommandEncoderRef,
     dispatch: SingleIdwtDispatch<'_>,
+) {
+    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pass(
+        encoder,
+        dispatch,
+        dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5,
+    );
+}
+
+fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pass(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: SingleIdwtDispatch<'_>,
+    high_pass: f32,
 ) {
     let SingleIdwtDispatch {
         runtime,
@@ -141,7 +177,7 @@ pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_i
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    dispatch_irreversible97_stages(encoder, runtime, decoded, decoded_offset, params);
+    dispatch_irreversible97_stages(encoder, runtime, decoded, decoded_offset, params, high_pass);
 }
 
 fn dispatch_irreversible97_stages(
@@ -150,10 +186,12 @@ fn dispatch_irreversible97_stages(
     decoded: &Buffer,
     decoded_offset: usize,
     params: J2kIdwtSingleDecompositionParams,
+    high_pass: f32,
 ) {
     encoder.setComputePipelineState(&runtime.idwt_irreversible97_horizontal_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
+    encoder.set_bytes::<f32>(2, &high_pass);
     dispatch_2d_pipeline(
         encoder,
         &runtime.idwt_irreversible97_horizontal_scale,
@@ -190,6 +228,7 @@ fn dispatch_irreversible97_stages(
     encoder.setComputePipelineState(&runtime.idwt_irreversible97_vertical_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
+    encoder.set_bytes::<f32>(2, &high_pass);
     dispatch_2d_pipeline(
         encoder,
         &runtime.idwt_irreversible97_vertical_scale,

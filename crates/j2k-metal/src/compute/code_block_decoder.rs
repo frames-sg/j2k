@@ -2,7 +2,8 @@
 
 use j2k_native::{
     HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kInverseMctJob, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob,
+    J2kIdwtNormalization, J2kInverseMctJob, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
+    J2kSubBandDecodeJob,
 };
 
 use crate::{
@@ -78,6 +79,16 @@ impl HtCodeBlockDecoder for MetalCodeBlockDecoder {
         output: &mut [f32],
     ) -> j2k_native::Result<bool> {
         self.idwt.decode_single_decomposition_idwt(job, output)
+    }
+
+    fn decode_single_decomposition_idwt_with_normalization(
+        &mut self,
+        job: J2kSingleDecompositionIdwtJob<'_>,
+        normalization: J2kIdwtNormalization,
+        output: &mut [f32],
+    ) -> j2k_native::Result<bool> {
+        self.idwt
+            .decode_single_decomposition_idwt_with_normalization(job, normalization, output)
     }
 
     fn decode_inverse_mct(&mut self, job: J2kInverseMctJob<'_>) -> j2k_native::Result<bool> {

@@ -6,15 +6,15 @@ use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
-use super::horizontal::filter_horizontal;
+use super::horizontal::{filter_horizontal, filter_horizontal_codestream};
 use super::interleave::interleave_samples;
 use super::model::{CoefficientSource, IDWTInput, IDWTTempOutput};
 use super::roi::interleave_samples_roi;
-use super::vertical::filter_vertical;
+use super::vertical::{filter_vertical, filter_vertical_codestream};
 use crate::error::{bail, DecodingError};
 use crate::{
     checked_decode_usize_product2, try_resize_decode_elements, HtCodeBlockDecoder, J2kIdwtBand,
-    J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform, Result,
+    J2kIdwtNormalization, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform, Result,
 };
 
 pub(super) fn apply_level(
@@ -32,8 +32,12 @@ pub(super) fn apply_level(
         )?;
         try_resize_decode_elements(target, required_len, 0.0)?;
         let job = single_decomposition_job(input, decomposition, storage, transform);
+        let normalization = match transform {
+            WaveletTransform::Reversible53 => J2kIdwtNormalization::Standard,
+            WaveletTransform::Irreversible97 => J2kIdwtNormalization::OpenJpegCodestream,
+        };
         backend
-            .decode_single_decomposition_idwt(job, target)
+            .decode_single_decomposition_idwt_with_normalization(job, normalization, target)
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
     } else {
         false
@@ -48,9 +52,25 @@ pub(super) fn apply_level(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_single_decomposition_idwt_job(
     job: J2kSingleDecompositionIdwtJob<'_>,
     target: &mut Vec<f32>,
+) -> Result<()> {
+    apply_single_decomposition_idwt_job_with_normalization(job, target, false)
+}
+
+pub(crate) fn apply_codestream_single_decomposition_idwt_job(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    target: &mut Vec<f32>,
+) -> Result<()> {
+    apply_single_decomposition_idwt_job_with_normalization(job, target, true)
+}
+
+fn apply_single_decomposition_idwt_job_with_normalization(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    target: &mut Vec<f32>,
+    openjpeg_codestream: bool,
 ) -> Result<()> {
     let rect = int_rect_from_public(job.rect);
     validate_direct_band(job.ll)?;
@@ -73,8 +93,13 @@ pub(crate) fn apply_single_decomposition_idwt_job(
     );
     if rect.width() > 0 && rect.height() > 0 {
         let transform = wavelet_transform_from_public(job.transform);
-        filter_horizontal(target, rect, transform);
-        filter_vertical(target, rect, transform);
+        if openjpeg_codestream && transform == WaveletTransform::Irreversible97 {
+            filter_horizontal_codestream(target, rect, transform);
+            filter_vertical_codestream(target, rect, transform);
+        } else {
+            filter_horizontal(target, rect, transform);
+            filter_vertical(target, rect, transform);
+        }
     }
     Ok(())
 }
@@ -152,8 +177,8 @@ fn filter_2d(
     interleave_samples(input, decomposition, coefficients, storage)?;
 
     if decomposition.rect.width() > 0 && decomposition.rect.height() > 0 {
-        filter_horizontal(coefficients, decomposition.rect, transform);
-        filter_vertical(coefficients, decomposition.rect, transform);
+        filter_horizontal_codestream(coefficients, decomposition.rect, transform);
+        filter_vertical_codestream(coefficients, decomposition.rect, transform);
     }
 
     Ok(IDWTTempOutput {
