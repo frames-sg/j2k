@@ -187,6 +187,16 @@ pub enum J2kWaveletTransform {
     Irreversible97,
 }
 
+/// Coefficient normalization used for one backend IDWT callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum J2kIdwtNormalization {
+    /// Standard 9/7 coefficients using the public 1/K high-pass synthesis scale.
+    Standard,
+    /// Decoded JPEG 2000 coefficients using OpenJPEG-compatible 9/7 scaling.
+    OpenJpegCodestream,
+}
+
 /// Adapter single sub-band payload for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kIdwtBand<'a> {
@@ -396,6 +406,27 @@ pub trait HtCodeBlockDecoder {
         _output: &mut [f32],
     ) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Optionally decode one IDWT level with an explicit coefficient normalization.
+    ///
+    /// The default preserves existing adapters: standard jobs delegate to
+    /// [`Self::decode_single_decomposition_idwt`], while OpenJPEG-compatible
+    /// codestream jobs fall back to the portable decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the transform request.
+    fn decode_single_decomposition_idwt_with_normalization(
+        &mut self,
+        job: J2kSingleDecompositionIdwtJob<'_>,
+        normalization: J2kIdwtNormalization,
+        output: &mut [f32],
+    ) -> Result<bool> {
+        match normalization {
+            J2kIdwtNormalization::Standard => self.decode_single_decomposition_idwt(job, output),
+            J2kIdwtNormalization::OpenJpegCodestream => Ok(false),
+        }
     }
 
     /// Optionally apply inverse MCT on a backend.

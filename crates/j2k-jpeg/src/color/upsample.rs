@@ -56,21 +56,26 @@ pub(crate) fn upsample_h2v1_fancy_row(
         return;
     }
 
-    for (x, slot) in output_row.iter_mut().enumerate().take(output_width) {
-        let sample = x / 2;
-        *slot = match x {
-            0 => input_row[0],
-            _ if x == n * 2 - 1 => input_row[n - 1],
-            _ if x.is_multiple_of(2) => {
-                let prev = u32::from(input_row[sample - 1]);
-                let curr = u32::from(input_row[sample]);
-                ((3 * curr + prev + 1) / 4) as u8
-            }
-            _ => {
-                let curr = u32::from(input_row[sample]);
-                let next = u32::from(input_row[sample + 1]);
-                ((3 * curr + next + 2) / 4) as u8
-            }
+    let visible = &mut output_row[..output_width];
+    visible[0] = input_row[0];
+
+    let mut output_pairs = visible[1..].chunks_exact_mut(2);
+    for (input_pair, output_pair) in input_row.windows(2).zip(output_pairs.by_ref()) {
+        let left = u16::from(input_pair[0]);
+        let right = u16::from(input_pair[1]);
+        output_pair[0] = ((3 * left + right + 2) >> 2) as u8;
+        output_pair[1] = ((3 * right + left + 1) >> 2) as u8;
+    }
+
+    if let [tail] = output_pairs.into_remainder() {
+        let x = output_width - 1;
+        *tail = if x == n * 2 - 1 {
+            input_row[n - 1]
+        } else {
+            let sample = x / 2;
+            let curr = u16::from(input_row[sample]);
+            let next = u16::from(input_row[sample + 1]);
+            ((3 * curr + next + 2) >> 2) as u8
         };
     }
 }

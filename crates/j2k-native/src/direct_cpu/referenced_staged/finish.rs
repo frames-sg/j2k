@@ -121,7 +121,13 @@ pub(super) fn finish_tile_components(
                 | J2kDirectGrayscaleStep::HtSubBand(_) => {}
                 J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
                 J2kDirectGrayscaleStep::Store(store) => {
-                    store_component(store, bands.active(), output, &mut output_initialized)?;
+                    store_component(
+                        store,
+                        bands.active(),
+                        output,
+                        &mut output_initialized,
+                        false,
+                    )?;
                     stored = true;
                 }
             }
@@ -139,10 +145,9 @@ pub(super) fn finish_tile_components(
                 transform,
                 bit_depths,
                 signed,
+                false,
                 destination,
-                plane0,
-                plane1,
-                plane2,
+                [plane0, plane1, plane2],
             )?;
         }
     }

@@ -70,6 +70,54 @@ struct DecliningHtDecoder;
 
 impl HtCodeBlockDecoder for DecliningHtDecoder {}
 
+#[derive(Default)]
+struct CapturingIdwtNormalization {
+    normalizations: Vec<crate::J2kIdwtNormalization>,
+}
+
+impl HtCodeBlockDecoder for CapturingIdwtNormalization {
+    fn decode_single_decomposition_idwt_with_normalization(
+        &mut self,
+        _job: crate::J2kSingleDecompositionIdwtJob<'_>,
+        normalization: crate::J2kIdwtNormalization,
+        _output: &mut [f32],
+    ) -> Result<bool> {
+        self.normalizations.push(normalization);
+        Ok(false)
+    }
+}
+
+#[test]
+fn irreversible_codestream_decode_requests_openjpeg_idwt_normalization() {
+    let samples = (0_u8..64).collect::<Vec<_>>();
+    let encoded = encode(
+        &samples,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("irreversible grayscale fixture encodes");
+    let image = Image::new(&encoded, &DecodeSettings::strict()).expect("fixture parses");
+    let mut context = DecoderContext::default();
+    let mut decoder = CapturingIdwtNormalization::default();
+
+    image
+        .decode_components_with_ht_decoder(&mut context, &mut decoder)
+        .expect("declined normalized IDWT hook uses scalar decode");
+
+    assert_eq!(
+        decoder.normalizations,
+        [crate::J2kIdwtNormalization::OpenJpegCodestream]
+    );
+}
+
 #[test]
 fn image_output_entrypoints_preserve_pixels_regions_and_metadata() {
     let (samples, encoded) = gray_fixture();

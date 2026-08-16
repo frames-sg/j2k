@@ -132,6 +132,7 @@ impl<'a> Image<'a> {
         let bit_depth = self.uniform_header_bit_depth()?;
         let mut ht_decoder = None;
         decoder_context.set_output_region(None);
+        decoder_context.set_round_irreversible_output(true);
         let decode_result = j2c::decode(
             self.codestream,
             &self.header,
@@ -140,6 +141,7 @@ impl<'a> Image<'a> {
             &mut ht_decoder,
         );
         decoder_context.set_output_region(None);
+        decoder_context.set_round_irreversible_output(false);
         decode_result?;
 
         let components = &decoder_context.tile_decode_context.channel_data;
@@ -212,6 +214,7 @@ impl<'a> Image<'a> {
         let retained_image_bytes = self.retained_metadata_bytes()?;
         let mut ht_decoder = None;
         decoder_context.set_output_region(Some(roi));
+        decoder_context.set_round_irreversible_output(true);
         let decode_result = j2c::decode(
             self.codestream,
             &self.header,
@@ -220,6 +223,7 @@ impl<'a> Image<'a> {
             &mut ht_decoder,
         );
         decoder_context.set_output_region(None);
+        decoder_context.set_round_irreversible_output(false);
         decode_result?;
 
         let components = &decoder_context.tile_decode_context.channel_data;

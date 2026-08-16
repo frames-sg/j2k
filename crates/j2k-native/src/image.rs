@@ -381,7 +381,7 @@ impl<'a> Image<'a> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let mut decoded_image =
-                self.decode_image(decoder_context, None, None, retained_image_bytes)?;
+                self.decode_image(decoder_context, None, None, true, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
                 self.width() as usize,
@@ -432,8 +432,13 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
         self.validate_component_plane_precision()?;
-        let decoded_image =
-            self.decode_image(decoder_context, None, None, self.retained_metadata_bytes()?)?;
+        let decoded_image = self.decode_image(
+            decoder_context,
+            None,
+            None,
+            false,
+            self.retained_metadata_bytes()?,
+        )?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -506,7 +511,7 @@ impl<'a> Image<'a> {
         retained_baseline_bytes: usize,
     ) -> Result<DecodedNativeComponents> {
         let decoded_image =
-            self.decode_image(decoder_context, None, None, retained_baseline_bytes)?;
+            self.decode_image(decoder_context, None, None, true, retained_baseline_bytes)?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -532,6 +537,7 @@ impl<'a> Image<'a> {
             decoder_context,
             None,
             Some(ht_decoder),
+            false,
             self.retained_metadata_bytes()?,
         )?;
         let DecodedImage {
@@ -563,6 +569,7 @@ impl<'a> Image<'a> {
             decoder_context,
             Some(roi),
             None,
+            false,
             self.retained_metadata_bytes()?,
         )?;
         let DecodedImage {
@@ -594,7 +601,7 @@ impl<'a> Image<'a> {
         let (_x, _y, width, height) = roi;
         let retained_image_bytes = self.retained_metadata_bytes()?;
         let decoded_image =
-            self.decode_image(decoder_context, Some(roi), None, retained_image_bytes)?;
+            self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
         let DecodedImage {
             decoded_components,
             boxes: _,
@@ -624,6 +631,7 @@ impl<'a> Image<'a> {
             decoder_context,
             Some(roi),
             Some(ht_decoder),
+            false,
             self.retained_metadata_bytes()?,
         )?;
         let DecodedImage {
@@ -661,7 +669,7 @@ impl<'a> Image<'a> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let mut decoded_image =
-                self.decode_image(decoder_context, Some(roi), None, retained_image_bytes)?;
+                self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let (_x, _y, width, height) = roi;
             let data_len = checked_decode_byte_len3(
@@ -724,8 +732,13 @@ impl<'a> Image<'a> {
         buf: &mut [u8],
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
-        let mut decoded_image =
-            self.decode_image(decoder_context, None, None, self.retained_metadata_bytes()?)?;
+        let mut decoded_image = self.decode_image(
+            decoder_context,
+            None,
+            None,
+            true,
+            self.retained_metadata_bytes()?,
+        )?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
         interleave_and_convert(&mut decoded_image, buf)?;
 
@@ -737,11 +750,13 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
         output_region: Option<(u32, u32, u32, u32)>,
         ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
+        round_irreversible_output: bool,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedImage<'ctx, '_>> {
         let settings = &self.settings;
         let mut ht_decoder = ht_decoder;
         decoder_context.set_output_region(output_region);
+        decoder_context.set_round_irreversible_output(round_irreversible_output);
         let decode_result = j2c::decode(
             self.codestream,
             &self.header,
@@ -750,6 +765,7 @@ impl<'a> Image<'a> {
             &mut ht_decoder,
         );
         decoder_context.set_output_region(None);
+        decoder_context.set_round_irreversible_output(false);
         decode_result?;
         let mut decoded_image = DecodedImage {
             decoded_components: &mut decoder_context.tile_decode_context.channel_data,

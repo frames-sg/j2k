@@ -63,7 +63,35 @@ pub(super) fn filter_vertical(
     rect: IntRect,
     transform: WaveletTransform,
 ) {
-    dispatch!(Level::new(), simd => filter_vertical_impl(simd, coefficients, rect, transform));
+    filter_vertical_with_high_pass(coefficients, rect, transform, dwt::DWT97_INV_KAPPA_F32);
+}
+
+pub(super) fn filter_vertical_codestream(
+    coefficients: &mut [f32],
+    rect: IntRect,
+    transform: WaveletTransform,
+) {
+    filter_vertical_with_high_pass(
+        coefficients,
+        rect,
+        transform,
+        super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
+    );
+}
+
+fn filter_vertical_with_high_pass(
+    coefficients: &mut [f32],
+    rect: IntRect,
+    transform: WaveletTransform,
+    irreversible_high_pass: f32,
+) {
+    dispatch!(Level::new(), simd => filter_vertical_impl(
+        simd,
+        coefficients,
+        rect,
+        transform,
+        irreversible_high_pass,
+    ));
 }
 
 pub(super) fn filter_vertical_i64(coefficients: &mut [i64], rect: IntRect) {
@@ -127,6 +155,7 @@ fn filter_vertical_impl<S: Simd>(
     scanline: &mut [f32],
     rect: IntRect,
     transform: WaveletTransform,
+    irreversible_high_pass: f32,
 ) {
     let width = rect.width() as usize;
     let height = rect.height() as usize;
@@ -158,7 +187,7 @@ fn filter_vertical_impl<S: Simd>(
             reversible_filter_53r_simd(simd, scanline, height, width, y0);
         }
         WaveletTransform::Irreversible97 => {
-            irreversible_filter_97i_simd(simd, scanline, height, width, y0);
+            irreversible_filter_97i_simd(simd, scanline, height, width, y0, irreversible_high_pass);
         }
     }
 }
@@ -219,6 +248,7 @@ fn irreversible_filter_97i_simd<S: Simd>(
     height: usize,
     width: usize,
     y0: usize,
+    high_pass: f32,
 ) {
     const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
     const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
@@ -226,14 +256,12 @@ fn irreversible_filter_97i_simd<S: Simd>(
     const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
     const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
 
-    const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
-
     let neg_alpha = f32x8::splat(simd, NEG_ALPHA);
     let neg_beta = f32x8::splat(simd, NEG_BETA);
     let neg_gamma = f32x8::splat(simd, NEG_GAMMA);
     let neg_delta = f32x8::splat(simd, NEG_DELTA);
     let kappa = f32x8::splat(simd, KAPPA);
-    let inv_kappa = f32x8::splat(simd, INV_KAPPA);
+    let high_pass_simd = f32x8::splat(simd, high_pass);
 
     // Determine which local row indices correspond to even/odd global positions.
     let first_even = y0 % 2;
@@ -241,9 +269,9 @@ fn irreversible_filter_97i_simd<S: Simd>(
     let simd_width = width / SIMD_WIDTH * SIMD_WIDTH;
 
     let (k0, k1, k0_simd, k1_simd) = if first_even == 0 {
-        (KAPPA, INV_KAPPA, kappa, inv_kappa)
+        (KAPPA, high_pass, kappa, high_pass_simd)
     } else {
-        (INV_KAPPA, KAPPA, inv_kappa, kappa)
+        (high_pass, KAPPA, high_pass_simd, kappa)
     };
 
     // Step 1 and 2.

@@ -430,7 +430,7 @@ fn native_plane_crop(
 mod tests {
     use alloc::vec::Vec;
 
-    use super::native_plane_crop;
+    use super::{native_plane_crop, Image};
     use crate::error::{DecodeError, DecodingError};
     use crate::NativeComponentPlane;
 
@@ -462,5 +462,20 @@ mod tests {
             native_plane_crop(&plane((4, 4), (0, 2)), (8, 8), (0, 0, 4, 4)),
             Err(DecodeError::Decoding(DecodingError::CodeBlockDecodeFailure))
         ));
+    }
+
+    #[test]
+    fn reversible_integer_packing_keeps_exact_clamping_semantics() {
+        let mut out = Vec::new();
+        for sample in [-129, -1, 127, 128] {
+            Image::push_native_i64_sample_bytes(&mut out, sample, 8, true);
+        }
+        assert_eq!(out, [128, 255, 127, 127]);
+
+        out.clear();
+        for sample in [-1, 0, 255, 256] {
+            Image::push_native_i64_sample_bytes(&mut out, sample, 8, false);
+        }
+        assert_eq!(out, [0, 0, 255, 255]);
     }
 }

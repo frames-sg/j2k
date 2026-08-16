@@ -202,6 +202,10 @@ impl DecoderContext<'_> {
         self.tile_decode_context.output_region = output_region.map(OutputRegion::from_tuple);
     }
 
+    pub(crate) fn set_round_irreversible_output(&mut self, enabled: bool) {
+        self.tile_decode_context.round_irreversible_output = enabled;
+    }
+
     /// Return the native CPU decode parallelism policy.
     #[must_use]
     pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {

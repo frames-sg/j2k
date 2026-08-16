@@ -36,6 +36,11 @@ pub const DWT97_DELTA_F32: f32 = 0.443_506_87;
 pub const DWT97_KAPPA_F32: f32 = 1.230_174_1;
 /// Inverse irreversible 9/7 scaling factor, computed the same way as existing paths.
 pub const DWT97_INV_KAPPA_F32: f32 = 1.0 / DWT97_KAPPA_F32;
+/// Historical high-pass synthesis scale used by `OpenJPEG`.
+///
+/// `OpenJPEG` pairs this value with uncompensated irreversible subband step
+/// sizes.  The product is intentionally not identical to `2 / KAPPA`.
+pub const IDWT97_OPENJPEG_TWO_INV_KAPPA_F32: f32 = 1.625_732_4;
 
 /// Inverse 9/7 alpha step used by synthesis paths.
 pub const IDWT97_NEG_ALPHA_F32: f32 = -DWT97_ALPHA_F32;

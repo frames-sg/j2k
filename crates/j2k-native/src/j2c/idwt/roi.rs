@@ -6,9 +6,9 @@ use super::super::build::{Decomposition, SubBand};
 use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
 use super::super::rect::IntRect;
-use super::horizontal::filter_horizontal;
+use super::horizontal::filter_horizontal_codestream;
 use super::model::{CoefficientSource, IDWTOutput};
-use super::vertical::filter_vertical;
+use super::vertical::filter_vertical_codestream;
 use crate::error::DecodingError;
 use crate::j2c::Header;
 use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
@@ -131,8 +131,8 @@ fn apply_level_roi(
 
     interleave_samples_roi(ll, hl, lh, hh, target, output_window);
     if output_window.width() > 0 && output_window.height() > 0 {
-        filter_horizontal(target, output_window, transform);
-        filter_vertical(target, output_window, transform);
+        filter_horizontal_codestream(target, output_window, transform);
+        filter_vertical_codestream(target, output_window, transform);
     }
     Ok(())
 }

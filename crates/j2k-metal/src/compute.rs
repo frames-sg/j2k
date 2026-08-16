@@ -337,7 +337,9 @@ mod decode_dispatch;
 pub(crate) use self::decode_dispatch::idwt::decode_irreversible97_staged_single_decomposition_idwt;
 #[cfg(target_os = "macos")]
 pub(crate) use self::decode_dispatch::idwt::{
-    decode_irreversible97_single_decomposition_idwt, decode_reversible53_single_decomposition_idwt,
+    decode_irreversible97_single_decomposition_idwt,
+    decode_openjpeg_irreversible97_single_decomposition_idwt,
+    decode_reversible53_single_decomposition_idwt,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::decode_dispatch::mct::decode_inverse_mct;

@@ -388,8 +388,9 @@ fn native_bytes_per_sample(bit_depth: u8) -> Result<usize> {
 pub use backend::{
     HtCleanupEncodeDistribution, HtCodeBlockBatchJob, HtCodeBlockDecodeJob,
     HtCodeBlockDecodePhaseLimit, HtCodeBlockDecoder, HtSubBandDecodeJob, J2kCodeBlockBatchJob,
-    J2kCodeBlockDecodeJob, J2kIdwtBand, J2kInverseMctJob, J2kRect, J2kSingleDecompositionIdwtJob,
-    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
+    J2kCodeBlockDecodeJob, J2kIdwtBand, J2kIdwtNormalization, J2kInverseMctJob, J2kRect,
+    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kTier1TokenSegment,
+    J2kWaveletTransform,
 };
 #[doc(hidden)]
 pub use ht_adapter::{

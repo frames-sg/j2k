@@ -198,10 +198,9 @@ fn execute_color_components_referenced(
             transform,
             rgb_bit_depths,
             signed,
+            false,
             destination,
-            plane0,
-            plane1,
-            plane2,
+            [plane0, plane1, plane2],
         )?;
     }
     Ok(())
@@ -236,7 +235,7 @@ fn execute_component_plan_referenced(
             }
             J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
             J2kDirectGrayscaleStep::Store(store) => {
-                store_component(store, bands.active(), output, output_initialized)?;
+                store_component(store, bands.active(), output, output_initialized, false)?;
                 stored = true;
             }
         }
