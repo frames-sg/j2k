@@ -2,12 +2,13 @@
 
 Plan anchor: J2K-HARDENING-2026-08-18
 Audit baseline: f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5
-Current HEAD: f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5
+Final implementation checkpoint: 768ddaced35302cc9e493cbc353f3ef8c4b14c02
+Evidence finalization: this file's commit, the direct child of the implementation checkpoint
 Current branch: main
-Current task ID: Gate8-final-checkpoint
-Current phase: final architecture checkpoint creation
-Status: active on 2026-08-21; the user authorized two local commits with no
-push, tag, publish, or deployment
+Current task ID: complete
+Current phase: complete
+Status: complete on 2026-08-21; no push, tag, publish, or deployment was
+performed
 
 ## Completed Since Last Checkpoint
 
@@ -616,16 +617,11 @@ push, tag, publish, or deployment
 
 ## Known Failures or Risks
 
-- The worktree remains dirty with the user's five pre-existing native
-  arithmetic/bitplane edits and this workplan's implementation; no changes were
-  committed or pushed. The final checkpoint inventory has 907 status entries:
-  416 modified, 406 deleted, and 85 untracked. The untracked set contains the
-  expected new source, manifests, shader units, experiment records, API review,
-  and durable workplan files; no `target`, coverage-report, failed-diagnostic,
-  credential-like, or key-like path appears in that set.
-- The final architecture checkpoint is not yet authorized. Until it exists,
-  `EVIDENCE.md` cannot name a final commit and the dirty-tree development runs
-  cannot become clean-candidate exact-SHA release evidence.
+- Final implementation checkpoint
+  `768ddaced35302cc9e493cbc353f3ef8c4b14c02` contains the complete validated
+  0.10.0 architecture tree and the five preserved pre-existing native
+  arithmetic/bitplane edits. Its evidence-only child finalizes the durable
+  record; neither commit was pushed, tagged, published, or deployed.
 - The repository has no registered CUDA Actions runner. P18 and P19 were
   completed on the user-provided direct RTX lane, including strict post-cleanup
   CUDA-Oxide builds and focused runtime tests; this remains manually operated
@@ -648,12 +644,10 @@ push, tag, publish, or deployment
 
 ## Exact Next Action
 
-Create the authorized local architecture checkpoint from the complete validated
-0.10.0 tree, including the five preserved pre-existing native Tier-1/MQ edits.
-Then record the implementation SHA in durable evidence, create the evidence-only
-finalization commit, and verify the resulting clean tree. Do not push, tag,
-publish, deploy, or start release preparation without separate authorization.
+No further action is required by the hardening master plan. Any clean-candidate
+release preparation, hosted validation, push, tag, publication, or deployment
+requires separate user authorization.
 
 ## Exact Next Command
 
-`git add -A`
+`git status --short`
