@@ -2847,10 +2847,11 @@ Required:
 Status on 2026-08-21: the user-approved 0.10.0 post-version validation sweep is
 complete. Gates 0–7, all architecture tasks, P1–P19, local/CPU/Metal/CUDA
 development validation, clean packaging, and all three changed-line coverage
-thresholds pass. Gate 8 now requires only the explicitly authorized final
-repository checkpoint and its SHA in durable evidence. Publication, hosted
-exact-SHA evidence, tagging, and pushing remain separately authorized release
-actions rather than implicit plan work.
+thresholds pass. Gate 8 is complete at final implementation checkpoint
+`768ddaced35302cc9e493cbc353f3ef8c4b14c02`, whose direct evidence-only child
+records the result and leaves the working tree clean. Publication, hosted
+release-candidate evidence, tagging, and pushing remain separately authorized
+release actions rather than implicit plan work.
 
 
 # 24. FINAL DEFINITION OF DONE

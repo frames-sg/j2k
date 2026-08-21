@@ -2,14 +2,16 @@
 
 Plan anchor: J2K-HARDENING-2026-08-18
 Audit baseline: f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5
+Final implementation checkpoint: 768ddaced35302cc9e493cbc353f3ef8c4b14c02
 
 ## Baseline Reconciliation
 
 - Repository: `.` (repository root); branch `main`.
-- Current HEAD: `f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5`.
-- Current HEAD exactly equals the audit baseline. `git diff --stat
-  f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5..HEAD` is empty, so no
-  commit-level finding needed a forward-port reconciliation.
+- Audit baseline: `f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5`.
+- Final implementation checkpoint:
+  `768ddaced35302cc9e493cbc353f3ef8c4b14c02`, a direct child of the audit
+  baseline. The evidence-only finalization commit containing this record is its
+  direct child.
 - Five native Tier-1/MQ files were already modified when G0 began. G0 did not edit
   them: `arithmetic_decoder.rs`, `bitplane/arithmetic.rs`, `bitplane/state.rs`,
   `bitplane/tests.rs`, and `mq.rs` under `crates/j2k-native/src/j2c/`.
@@ -1337,17 +1339,17 @@ The report files were reproducible build artifacts and were removed by
 `cargo clean`; the commands and hashes, not surviving `target/` paths, are the
 durable evidence.
 
-Gate 8 current-tree validation is complete. Current HEAD remains the audit
-baseline `f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5`; no commit or push was
-authorized.
+Gate 8 current-tree validation is complete. The authorized local implementation
+checkpoint is `768ddaced35302cc9e493cbc353f3ef8c4b14c02`; no push, tag, publish,
+or deployment was authorized or performed.
 Direct access to the user-provided Linux/NVIDIA lane completed P13-P19. P17
 stopped at its profile gate without a prototype; P18 CUDA encoding promoted its
 staged route; P19 CUDA decoding promoted adaptive checkpoint geometry and
 rejected/removed coefficient-IDCT defusion. The public-API/version decision is
 resolved at 0.10.0, and the settled host, Metal, and CUDA Gate 8 reruns pass.
-The sole unmet evidence item is the final authorized implementation checkpoint
-and its SHA. Clean-candidate exact-SHA release preparation remains separately
-authorized work.
+The final implementation checkpoint and its SHA now satisfy the plan's last
+evidence item. Clean-candidate release preparation remains separately authorized
+work.
 
 ### Post-hardening development coverage and conformance
 
