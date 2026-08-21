@@ -42,63 +42,63 @@ const REVIEWED_ALLOWS: &[(&str, &str)] = &[
         "clippy::trivially_copy_pass_by_ref",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
         "clippy::manual_div_ceil",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
         "clippy::too_many_arguments",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
         "clippy::too_many_lines",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/main.rs",
         "clippy::manual_div_ceil",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/main.rs",
         "clippy::manual_is_multiple_of",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/main.rs",
         "clippy::too_many_arguments",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/main.rs",
         "static_mut_refs",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
         "static_mut_refs",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
         "static_mut_refs",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_ml/simt/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_ml/simt/src/main.rs",
         "clippy::too_many_arguments",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
         "clippy::cast_possible_truncation",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
         "clippy::cast_sign_loss",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
         "clippy::many_single_char_names",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
         "clippy::too_many_arguments",
     ),
     (
-        "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs",
+        "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs",
         "dead_code",
     ),
 ];

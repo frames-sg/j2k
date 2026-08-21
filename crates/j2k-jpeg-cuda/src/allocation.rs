@@ -1,75 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::Error;
-use j2k_core::{
-    try_host_vec_filled, try_host_vec_with_capacity, HostAllocationBudget, HostAllocationError,
-    HostAllocationLimitError, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-};
-pub(crate) struct HostPhaseBudget {
-    inner: HostAllocationBudget,
-    what: &'static str,
-}
-
-impl HostPhaseBudget {
-    pub(crate) const fn new(what: &'static str) -> Self {
-        Self::with_cap(what, DEFAULT_MAX_HOST_ALLOCATION_BYTES)
-    }
-
-    pub(crate) const fn with_cap(what: &'static str, cap: usize) -> Self {
-        Self {
-            inner: HostAllocationBudget::new(cap),
-            what,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn live_bytes(&self) -> usize {
-        self.inner.live_bytes()
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn account_bytes(&mut self, bytes: usize) -> Result<(), Error> {
-        self.inner
-            .account_bytes(bytes)
-            .map_err(|error| capacity_error(error, self.what))
-    }
-
-    pub(crate) fn account_vec<T>(&mut self, values: &Vec<T>) -> Result<usize, Error> {
-        self.inner
-            .account_vec(values)
-            .map_err(|error| capacity_error(error, self.what))
-    }
-
-    pub(crate) fn try_vec_with_capacity<T>(&mut self, capacity: usize) -> Result<Vec<T>, Error> {
-        self.inner
-            .check_capacity::<T>(capacity)
-            .map_err(|error| capacity_error(error, self.what))?;
-        let values = try_host_vec_with_capacity(capacity)
-            .map_err(|error| allocation_error(error, self.what))?;
-        self.account_vec(&values)?;
-        Ok(values)
-    }
-
-    pub(crate) fn try_vec_filled<T: Clone>(
-        &mut self,
-        len: usize,
-        value: T,
-    ) -> Result<Vec<T>, Error> {
-        self.inner
-            .check_capacity::<T>(len)
-            .map_err(|error| capacity_error(error, self.what))?;
-        let values =
-            try_host_vec_filled(len, value).map_err(|error| allocation_error(error, self.what))?;
-        self.account_vec(&values)?;
-        Ok(values)
-    }
-}
+pub(crate) use j2k_core::HostPhaseBudget;
 
 pub(crate) fn try_vec_with_capacity<T>(
     capacity: usize,
     what: &'static str,
 ) -> Result<Vec<T>, Error> {
-    HostPhaseBudget::new(what).try_vec_with_capacity(capacity)
+    Ok(HostPhaseBudget::new(what).try_vec_with_capacity(capacity)?)
 }
 
 pub(crate) fn try_vec_filled<T: Clone>(
@@ -77,7 +15,7 @@ pub(crate) fn try_vec_filled<T: Clone>(
     value: T,
     what: &'static str,
 ) -> Result<Vec<T>, Error> {
-    HostPhaseBudget::new(what).try_vec_filled(len, value)
+    Ok(HostPhaseBudget::new(what).try_vec_filled(len, value)?)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -120,21 +58,6 @@ where
     Ok(values)
 }
 
-fn allocation_error(error: HostAllocationError, what: &'static str) -> Error {
-    Error::HostAllocationFailed {
-        bytes: error.requested_bytes(),
-        what,
-    }
-}
-
-fn capacity_error(error: HostAllocationLimitError, what: &'static str) -> Error {
-    Error::HostAllocationTooLarge {
-        requested: error.requested_bytes(),
-        cap: error.cap_bytes(),
-        what,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "cuda-runtime")]
@@ -171,9 +94,9 @@ mod tests {
         one_under.account_vec(&first).unwrap();
         assert!(matches!(
             one_under.account_vec(&second),
-            Err(Error::HostAllocationTooLarge {
-                requested,
-                cap,
+            Err(j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes: requested,
+                cap_bytes: cap,
                 what: "test phase",
             }) if requested == actual && cap == actual.saturating_sub(1)
         ));

@@ -11,11 +11,11 @@ mod profile;
 pub(crate) use self::batch::{
     decode_region_scaled_color_batch_direct_to_device,
     decode_repeated_region_scaled_color_batch_direct_to_device,
+    decode_repeated_region_scaled_color_batch_direct_to_device_routed,
 };
 pub(crate) use self::batch::{
     decode_region_scaled_color_batch_direct_to_device_routed,
     decode_region_scaled_grayscale_batch_direct_to_device_routed,
-    decode_repeated_region_scaled_color_batch_direct_to_device_routed,
 };
 pub(crate) use self::cache::REGION_SCALED_COLOR_PLAN_CACHE_CAP;
 #[cfg(test)]

@@ -178,23 +178,16 @@ impl CudaSession {
             .map(j2k_cuda_runtime::CudaContext::begin_pinned_upload_operation)
             .transpose()
             .map_err(cuda_error)?;
-        let pinned_upload_retained_bytes = pinned_operation
-            .as_ref()
-            .map(j2k_cuda_runtime::CudaPinnedUploadOperationGuard::diagnostics)
-            .transpose()
-            .map_err(cuda_error)?
-            .map_or(0, |diagnostics| diagnostics.retained_bytes);
-        let accounting = pinned_operation
-            .as_ref()
-            .map(|operation| {
-                self.begin_pinned_upload_accounting(
-                    context
-                        .as_ref()
-                        .expect("pinned operation requires a context"),
-                    operation,
-                )
-            })
-            .transpose()?;
+        let (pinned_upload_retained_bytes, accounting) =
+            match (context.as_ref(), pinned_operation.as_ref()) {
+                (Some(context), Some(operation)) => {
+                    let retained_bytes =
+                        operation.diagnostics().map_err(cuda_error)?.retained_bytes;
+                    let accounting = self.begin_pinned_upload_accounting(context, operation)?;
+                    (retained_bytes, Some(accounting))
+                }
+                _ => (0, None),
+            };
         let diagnostics = self.owned_packet_cache.host_memory_diagnostics()?;
         if let Some(accounting) = accounting {
             accounting.finish(Ok(()))?;
@@ -213,6 +206,15 @@ impl CudaSession {
     /// Whether a CUDA runtime context has been initialized successfully.
     pub fn is_runtime_initialized(&self) -> bool {
         self.runtime_state.is_initialized()
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    /// Snapshot low-level CUDA work counters for benchmark diagnostics.
+    #[doc(hidden)]
+    pub fn cuda_context_diagnostics(
+        &self,
+    ) -> Result<j2k_cuda_runtime::CudaContextDiagnostics, Error> {
+        self.cuda_context()?.diagnostics().map_err(cuda_error)
     }
 
     #[cfg(feature = "cuda-runtime")]

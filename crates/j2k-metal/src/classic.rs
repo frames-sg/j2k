@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k_native::DecodingError;
 use j2k_native::{
@@ -259,7 +259,7 @@ mod error_context_tests {
 mod tests {
     use super::MetalClassicBlockDecoder;
     #[cfg(target_os = "macos")]
-    use crate::compute;
+    use crate::engine as compute;
     #[cfg(target_os = "macos")]
     use j2k_native::{decode_j2k_code_block_scalar, J2kCodeBlockDecodeJob, J2kCodeBlockSegment};
     use j2k_native::{

@@ -70,6 +70,33 @@ pub struct CudaSurfaceStats {
     pub(crate) decode_path: CudaJpegDecodePath,
 }
 
+#[cfg(feature = "cuda-runtime")]
+#[derive(Debug)]
+/// One normal CUDA JPEG surface plus profile-only stage attribution.
+#[doc(hidden)]
+pub struct CudaJpegDecodeProfile {
+    pub(crate) surface: Surface,
+    pub(crate) stage_timings: j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl CudaJpegDecodeProfile {
+    /// Borrow the decoded CUDA surface.
+    pub const fn surface(&self) -> &Surface {
+        &self.surface
+    }
+
+    /// Return the profile-only stage timings.
+    pub const fn stage_timings(&self) -> j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings {
+        self.stage_timings
+    }
+
+    /// Split this profile result into the normal surface and stage timings.
+    pub fn into_parts(self) -> (Surface, j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings) {
+        (self.surface, self.stage_timings)
+    }
+}
+
 #[doc(hidden)]
 impl CudaSurfaceStats {
     /// Total CUDA kernel or library dispatches used to produce the surface.

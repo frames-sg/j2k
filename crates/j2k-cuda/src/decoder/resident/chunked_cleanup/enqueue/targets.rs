@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::{CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob};
+use j2k_cuda_j2k_engine::{CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob};
 
 use super::super::super::super::{CudaComponentDecodeWork, Error};
 use super::super::super::pooled_cuda_buffer;

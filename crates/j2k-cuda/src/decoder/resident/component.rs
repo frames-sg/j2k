@@ -3,8 +3,8 @@
 use super::super::{
     cuda_error, profile, CudaBufferPool, CudaCoefficientBand, CudaComponentDecodeWork,
     CudaDecodeStageTimings, CudaDecodedComponent, CudaHtj2kDecodePlan, CudaHtj2kDecodeResources,
-    CudaHtj2kDecodeTableResources, CudaPendingDequantBand, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
-    CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
+    CudaHtj2kDecodeTableResources, CudaPendingDequantBand, Error, J2kCudaEngine,
+    CUDA_HTJ2K_KERNELS_NOT_READY, CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
 };
 use super::cleanup_dequant::run_component_cleanup_dequant_batches;
 use super::idwt::run_cuda_component_idwt_steps;
@@ -28,9 +28,10 @@ pub(super) fn decode_cuda_component_plan(
     collect_stage_timings: bool,
 ) -> Result<CudaDecodedComponent, Error> {
     let resource_upload_start = profile::profile_now(collect_stage_timings);
+    let engine = J2kCudaEngine::new(context);
     let decode_resources = match tables {
-        Some(tables) => context.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
-        None => context.upload_j2k_decode_payload(plan.payload()),
+        Some(tables) => engine.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
+        None => engine.upload_j2k_decode_payload(plan.payload()),
     }
     .map_err(cuda_error)?;
     let resource_upload_us = profile::elapsed_us(resource_upload_start);
@@ -92,6 +93,7 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
     collect_stage_timings: bool,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<CudaComponentDecodeWork, Error> {
+    let engine = J2kCudaEngine::new(context);
     let band_capacity = plan
         .subbands()
         .len()
@@ -114,28 +116,28 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
     for subband in plan.subbands() {
         let start = subband.code_block_start as usize;
         let end = start.checked_add(subband.code_block_count as usize).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            },
+            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+                CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+            )),
         )?;
-        let code_blocks =
-            plan.code_blocks()
-                .get(start..end)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
+        let code_blocks = plan
+            .code_blocks()
+            .get(start..end)
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+            ))?;
         let jobs = host_budget.try_collect_results_exact(
             code_blocks
                 .iter()
                 .map(|block| cuda_code_block_job_from_plan_block(block, subband.width)),
         )?;
         let output_words = checked_cuda_element_count(subband.width, subband.height).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            },
+            Error::capability_rejected(j2k_core::CapabilityRejection::missing_prepared_plan(
+                CUDA_HTJ2K_KERNELS_NOT_READY,
+            )),
         )?;
         let allocate_start = profile::profile_now(collect_stage_timings);
-        let output = context
+        let output = engine
             .allocate_htj2k_codeblock_coefficients_with_pool(&jobs, output_words, pool)
             .map_err(cuda_error)?;
         let allocate_wall_us = profile::elapsed_us(allocate_start);
@@ -167,9 +169,9 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
     timings.h2d = timings.h2d.saturating_add(classic_allocate_us);
 
     let [store] = plan.store_steps() else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_STORE_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(CUDA_HTJ2K_STORE_UNSUPPORTED),
+        ));
     };
 
     Ok(CudaComponentDecodeWork {
@@ -191,9 +193,9 @@ pub(in crate::decoder) fn finish_cuda_component_decode(
         .bands
         .iter()
         .position(|band| band.band_id == work.store.input_band_id)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?;
     let input = work.bands.swap_remove(input_index);
     Ok(CudaDecodedComponent {
         buffer: input.buffer,

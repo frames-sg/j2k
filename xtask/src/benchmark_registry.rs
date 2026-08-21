@@ -163,6 +163,13 @@ pub(crate) const COMPILE_BENCHMARKS: &[CompileBenchmark] = &[
         CUDA_BENCH_ENV,
     ),
     compile(
+        "j2k-jpeg-cuda",
+        Some("decode_defusion"),
+        Some("cuda-runtime"),
+        BenchmarkLane::Cuda,
+        CUDA_BENCH_ENV,
+    ),
+    compile(
         "j2k-cuda",
         Some("auto_routing"),
         Some("cuda-runtime"),

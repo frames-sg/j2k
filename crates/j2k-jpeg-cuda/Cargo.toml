@@ -21,26 +21,42 @@ path = "src/lib.rs"
 [features]
 default = []
 cuda-runtime = [
+    "dep:j2k-cuda-jpeg-engine",
     "dep:j2k-cuda-runtime",
-    "j2k-cuda-runtime/cuda-oxide-jpeg-decode",
-    "j2k-cuda-runtime/cuda-oxide-jpeg-encode",
+    "j2k-cuda-jpeg-engine/cuda-oxide-jpeg-decode",
+    "j2k-cuda-jpeg-engine/cuda-oxide-jpeg-encode",
 ]
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.9.1" }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.9.1", optional = true }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.9.1" }
-j2k-profile = { path = "../j2k-profile", version = "=0.9.1" }
+j2k-core = { path = "../j2k-core", version = "=0.10.0" }
+j2k-cuda-jpeg-engine = { path = "../j2k-cuda-jpeg-engine", version = "=0.10.0", optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.10.0", optional = true }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.10.0" }
+j2k-profile = { path = "../j2k-profile", version = "=0.10.0" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+jpeg-decoder = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support" }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "device_decode"
 harness = false
 test = false
+
+[[bench]]
+name = "encode_baseline"
+harness = false
+test = false
+required-features = ["cuda-runtime"]
+
+[[bench]]
+name = "decode_defusion"
+harness = false
+test = false
+required-features = ["cuda-runtime"]
 
 [lints.rust]
 unsafe_code = "allow"

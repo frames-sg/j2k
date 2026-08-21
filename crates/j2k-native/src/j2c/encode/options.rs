@@ -3,6 +3,9 @@
 //! JPEG 2000 encode option and request types.
 
 use alloc::vec::Vec;
+use j2k_types::encode_geometry::{
+    code_block_dimension, code_block_dimensions, CodeBlockGeometryError, EncodeCodeBlockDimensions,
+};
 
 use super::super::quantize;
 use crate::IrreversibleQuantizationSubbandScales;
@@ -209,47 +212,29 @@ pub(super) fn validate_irreversible_quantization_profile(
 
 /// Validated Part 1 code-block dimensions derived from COD's stored
 /// exponent-minus-two fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CodeBlockGeometry {
-    pub(super) width: u32,
-    pub(super) height: u32,
-}
+pub(super) type CodeBlockGeometry = EncodeCodeBlockDimensions;
 
 /// Validate the JPEG 2000 Part 1 code-block exponent and area constraints
 /// without allocating or shifting by an unchecked public value.
 pub(super) fn validate_code_block_geometry(
     options: &EncodeOptions,
 ) -> Result<CodeBlockGeometry, &'static str> {
-    const MAX_STORED_EXPONENT: u8 = 8;
-    const MAX_COMBINED_ACTUAL_EXPONENT: u8 = 12;
-
-    if options.code_block_width_exp > MAX_STORED_EXPONENT {
-        return Err("code-block width exponent exceeds supported range");
-    }
-    if options.code_block_height_exp > MAX_STORED_EXPONENT {
-        return Err("code-block height exponent exceeds supported range");
-    }
-    let width_exponent = options
-        .code_block_width_exp
-        .checked_add(2)
-        .ok_or("code-block width exponent exceeds supported range")?;
-    let height_exponent = options
-        .code_block_height_exp
-        .checked_add(2)
-        .ok_or("code-block height exponent exceeds supported range")?;
-    let combined_exponent = width_exponent
-        .checked_add(height_exponent)
-        .ok_or("code-block combined exponent exceeds supported range")?;
-    if combined_exponent > MAX_COMBINED_ACTUAL_EXPONENT {
-        return Err("code-block dimensions exceed JPEG 2000 Part 1 area limit");
-    }
-    let width = 1_u32
-        .checked_shl(u32::from(width_exponent))
-        .ok_or("code-block width exponent exceeds supported range")?;
-    let height = 1_u32
-        .checked_shl(u32::from(height_exponent))
-        .ok_or("code-block height exponent exceeds supported range")?;
-    Ok(CodeBlockGeometry { width, height })
+    code_block_dimension(options.code_block_width_exp)
+        .map_err(|_| "code-block width exponent exceeds supported range")?;
+    code_block_dimension(options.code_block_height_exp)
+        .map_err(|_| "code-block height exponent exceeds supported range")?;
+    code_block_dimensions(options.code_block_width_exp, options.code_block_height_exp).map_err(
+        |error| match error {
+            CodeBlockGeometryError::AreaTooLarge => {
+                "code-block dimensions exceed JPEG 2000 Part 1 area limit"
+            }
+            CodeBlockGeometryError::DimensionTooSmall
+            | CodeBlockGeometryError::DimensionNotPowerOfTwo
+            | CodeBlockGeometryError::StoredExponentTooLarge => {
+                "code-block exponent exceeds supported range"
+            }
+        },
+    )
 }
 
 pub(super) fn validate_precinct_exponents_for_options(

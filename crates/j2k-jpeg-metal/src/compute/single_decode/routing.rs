@@ -77,10 +77,7 @@ pub(crate) fn decode_private_rgb8_tile_with_session(
         )? {
             return private_jpeg_tile_from_fast_rgb_buffer(decoded);
         }
-        Err(Error::UnsupportedMetalRequest {
-            reason:
-                "private JPEG Metal output supports only fast baseline 4:4:4, 4:2:2, or 4:2:0 RGB8 full-tile decode",
-        })
+        Err(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_sampling("private JPEG Metal output supports only fast baseline 4:4:4, 4:2:2, or 4:2:0 RGB8 full-tile decode")))
     })
 }
 

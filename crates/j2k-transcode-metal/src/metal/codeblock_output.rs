@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_batch_len, checked_host_element_count, checked_host_workspace_bytes,
-    code_block_len_from_exp, dwt97_total_bitplanes, read_i32_buffer_at, size_of,
-    try_transcode_vec_from_slice, try_transcode_vec_with_capacity, u32_param,
-    DctGridToHtj2k97CodeBlockJob, Dwt97CodeBlockOutputBuffers, Htj2k97CodeBlockOptions,
+    checked_batch_len, checked_dwt_level_shape, checked_host_element_count,
+    checked_host_workspace_bytes, code_block_len_from_exp, dwt97_total_bitplanes,
+    read_i32_buffer_at, size_of, try_transcode_vec_from_slice, try_transcode_vec_with_capacity,
+    u32_param, DctGridToHtj2k97CodeBlockJob, Dwt97CodeBlockOutputBuffers, Htj2k97CodeBlockOptions,
     J2kSubBandType, MetalTranscodeError, PrequantizedHtj2k97CodeBlock,
     PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
     ProjectionBatchShape, METAL_DCT97_UNSUPPORTED_GRID, METAL_READBACK_CHUNK_BYTES,
@@ -254,10 +254,11 @@ fn codeblocks_per_item(
 ) -> Result<usize, MetalTranscodeError> {
     let cb_width = code_block_len_from_exp(options.code_block_width_exp)?;
     let cb_height = code_block_len_from_exp(options.code_block_height_exp)?;
-    let low_width = width.div_ceil(2);
-    let high_width = width / 2;
-    let low_height = height.div_ceil(2);
-    let high_height = height / 2;
+    let level = checked_dwt_level_shape(width, height, METAL_DCT97_UNSUPPORTED_GRID)?;
+    let low_width = level.low_width;
+    let high_width = level.high_width;
+    let low_height = level.low_height;
+    let high_height = level.high_height;
     [
         (low_width, low_height),
         (high_width, low_height),

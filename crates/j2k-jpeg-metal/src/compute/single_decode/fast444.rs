@@ -62,7 +62,7 @@ pub(in crate::compute) fn try_decode_fast444_to_surface(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_decode);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -79,7 +79,7 @@ pub(in crate::compute) fn try_decode_fast444_to_surface(
     );
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_decode_pipeline,
+        &runtime.pipelines.fast444_decode,
         decode_threads,
     );
     decoder_encoder.endEncoding();
@@ -132,7 +132,7 @@ pub(in crate::compute) fn try_decode_fast444_to_private_rgb8_tile(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_decode);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -149,7 +149,7 @@ pub(in crate::compute) fn try_decode_fast444_to_private_rgb8_tile(
     );
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_decode_pipeline,
+        &runtime.pipelines.fast444_decode,
         decode_threads,
     );
     decoder_encoder.endEncoding();
@@ -227,7 +227,7 @@ pub(in crate::compute) fn try_decode_fast444_region_to_surface(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_region_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_region_decode);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -244,7 +244,7 @@ pub(in crate::compute) fn try_decode_fast444_region_to_surface(
     );
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_region_decode_pipeline,
+        &runtime.pipelines.fast444_region_decode,
         decode_threads,
     );
     decoder_encoder.endEncoding();
@@ -308,7 +308,7 @@ pub(in crate::compute) fn try_decode_fast444_scaled_to_surface(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_scaled_decode);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -325,7 +325,7 @@ pub(in crate::compute) fn try_decode_fast444_scaled_to_surface(
     );
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_scaled_decode_pipeline,
+        &runtime.pipelines.fast444_scaled_decode,
         decode_threads,
     );
     decoder_encoder.endEncoding();
@@ -433,7 +433,7 @@ pub(in crate::compute) fn try_decode_fast444_scaled_region_to_surface_with_mode_
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_region_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_scaled_region_decode);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -450,7 +450,7 @@ pub(in crate::compute) fn try_decode_fast444_scaled_region_to_surface_with_mode_
     );
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_scaled_region_decode_pipeline,
+        &runtime.pipelines.fast444_scaled_region_decode,
         decode_threads,
     );
     decoder_encoder.endEncoding();

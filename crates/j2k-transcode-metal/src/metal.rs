@@ -43,9 +43,14 @@ type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 /// Checked shader-binding vocabulary for support-created retaining command
 /// buffers.
 trait TranscodeComputeEncoderExt {
-    fn set_buffer(&self, index: u64, buffer: Option<&ProtocolObject<dyn MTLBuffer>>, offset: u64);
+    fn set_buffer(
+        &self,
+        index: u64,
+        buffer: Option<&ProtocolObject<dyn MTLBuffer>>,
+        offset: u64,
+    ) -> Result<(), MetalTranscodeError>;
 
-    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T);
+    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T) -> Result<(), MetalTranscodeError>;
 }
 
 impl TranscodeComputeEncoderExt for ProtocolObject<dyn MTLComputeCommandEncoder> {
@@ -53,45 +58,68 @@ impl TranscodeComputeEncoderExt for ProtocolObject<dyn MTLComputeCommandEncoder>
         unsafe_code,
         reason = "objc2 requires an audited resource-binding boundary"
     )]
-    fn set_buffer(&self, index: u64, buffer: Option<&ProtocolObject<dyn MTLBuffer>>, offset: u64) {
-        let index = usize::try_from(index).expect("Metal buffer index fits usize");
-        (index < 31)
-            .then_some(())
-            .expect("Metal buffer index exceeds the API binding table");
-        let offset = usize::try_from(offset).expect("Metal buffer offset fits usize");
+    fn set_buffer(
+        &self,
+        index: u64,
+        buffer: Option<&ProtocolObject<dyn MTLBuffer>>,
+        offset: u64,
+    ) -> Result<(), MetalTranscodeError> {
+        let index = usize::try_from(index).map_err(|_| {
+            MetalTranscodeError::Kernel("Metal buffer binding index does not fit usize")
+        })?;
+        if index >= 31 {
+            return Err(MetalTranscodeError::Kernel(
+                "Metal buffer binding index exceeds the API binding table",
+            ));
+        }
+        let offset = usize::try_from(offset).map_err(|_| {
+            MetalTranscodeError::Kernel("Metal buffer binding offset does not fit usize")
+        })?;
         if let Some(buffer) = buffer {
-            (offset <= buffer.length())
-                .then_some(())
-                .expect("Metal buffer offset is out of bounds");
+            if offset > buffer.length() {
+                return Err(MetalTranscodeError::Kernel(
+                    "Metal buffer binding offset is out of bounds",
+                ));
+            }
         }
         // SAFETY: The binding index and offset were checked above. Every
         // encoder is created through j2k-metal-support from a retaining command
         // buffer, which retains bound resources through completion; private
         // call sites define the matching shader ABI and submission ordering.
         unsafe { self.setBuffer_offset_atIndex(buffer, offset, index) };
+        Ok(())
     }
 
     #[expect(
         unsafe_code,
         reason = "objc2 requires an audited immediate-byte binding boundary"
     )]
-    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T) {
-        let index = usize::try_from(index).expect("Metal byte-binding index fits usize");
-        (index < 31)
-            .then_some(())
-            .expect("Metal byte-binding index exceeds the API binding table");
+    fn set_bytes<T: GpuAbi>(&self, index: u64, value: &T) -> Result<(), MetalTranscodeError> {
+        let index = usize::try_from(index).map_err(|_| {
+            MetalTranscodeError::Kernel("Metal byte-binding index does not fit usize")
+        })?;
+        if index >= 31 {
+            return Err(MetalTranscodeError::Kernel(
+                "Metal byte-binding index exceeds the API binding table",
+            ));
+        }
         let bytes = T::as_bytes(value);
-        (!bytes.is_empty())
-            .then_some(())
-            .expect("Metal byte binding requires a nonempty ABI value");
-        (bytes.len() == core::mem::size_of::<T>())
-            .then_some(())
-            .expect("Metal byte-binding length must match its ABI value");
+        if bytes.is_empty() {
+            return Err(MetalTranscodeError::Kernel(
+                "Metal byte binding requires a nonempty ABI value",
+            ));
+        }
+        if bytes.len() != core::mem::size_of::<T>() {
+            return Err(MetalTranscodeError::Kernel(
+                "Metal byte-binding length does not match its ABI value",
+            ));
+        }
         let pointer = NonNull::from(bytes).cast::<c_void>();
         // SAFETY: GpuAbi exposes exactly `bytes.len()` initialized,
         // padding-free bytes. Metal copies them during this call, and the
         // binding index and ABI length were checked above.
         unsafe { self.setBytes_length_atIndex(pointer, bytes.len(), index) };
+        Ok(())
     }
 }
 
@@ -148,8 +176,8 @@ use self::codeblock_output::{
 };
 mod geometry;
 use self::geometry::{
-    checked_batch_len, code_block_len_from_exp, dispatch_band, dispatch_band_batch,
-    dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes,
+    checked_batch_len, checked_dwt_level_shape, code_block_len_from_exp, dispatch_band,
+    dispatch_band_batch, dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes,
     reversible_band_geometry, u32_param, upload_sparse_rows,
     validate_codeblock_projection_allocations, validate_dwt97_batch_geometry,
     validate_dwt97_codeblock_batch_geometry, validate_float_projection_allocations, validate_grid,

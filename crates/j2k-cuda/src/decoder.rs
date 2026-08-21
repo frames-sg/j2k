@@ -15,13 +15,16 @@ use j2k_core::{
     Rect, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 #[cfg(feature = "cuda-runtime")]
+use j2k_cuda_j2k_engine::{
+    CudaClassicCodeBlockJob, CudaClassicDecodeTarget, CudaClassicSegment, CudaHtj2kCleanupTarget,
+    CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources,
+    CudaHtj2kDequantizeTarget, CudaJ2kIdwtJob, CudaJ2kIdwtTarget, CudaJ2kRect,
+    CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaQueuedHtj2kCleanup, J2kCudaEngine,
+};
+#[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
-    CudaBufferPool, CudaBufferPoolTakeTrace, CudaClassicCodeBlockJob, CudaClassicDecodeTarget,
-    CudaClassicSegment, CudaContext, CudaDeviceBuffer, CudaError, CudaExecutionStats,
-    CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources,
-    CudaHtj2kDecodeTableResources, CudaHtj2kDequantizeTarget, CudaJ2kIdwtJob, CudaJ2kIdwtTarget,
-    CudaJ2kRect, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaPooledDeviceBuffer,
-    CudaQueuedExecution, CudaQueuedHtj2kCleanup,
+    CudaBufferPool, CudaBufferPoolTakeTrace, CudaContext, CudaDeviceBuffer, CudaError,
+    CudaExecutionStats, CudaPooledDeviceBuffer, CudaQueuedExecution,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage};
@@ -150,15 +153,17 @@ struct CudaQueuedIdwtBatch {
     queued: Vec<CudaQueuedExecution>,
     kernel_dispatches: usize,
     decode_dispatches: usize,
+    final_interleave_horizontal_us: u128,
+    final_vertical_us: u128,
 }
 
 #[cfg(feature = "cuda-runtime")]
 impl CudaQueuedIdwtBatch {
     fn merge(mut self, mut next: Self) -> Result<Self, Error> {
         if !self.context.is_same_context(&next.context) {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+            ));
         }
         self.queued
             .try_reserve_exact(next.queued.len())
@@ -175,6 +180,12 @@ impl CudaQueuedIdwtBatch {
         self.decode_dispatches = self
             .decode_dispatches
             .saturating_add(next.decode_dispatches);
+        self.final_interleave_horizontal_us = self
+            .final_interleave_horizontal_us
+            .saturating_add(next.final_interleave_horizontal_us);
+        self.final_vertical_us = self
+            .final_vertical_us
+            .saturating_add(next.final_vertical_us);
         Ok(self)
     }
 
@@ -452,6 +463,9 @@ mod tests {
             job_upload: 10,
             status_d2h: 5,
             classic_tier1: 11,
+            idwt: 31,
+            idwt_final_interleave_horizontal: 13,
+            idwt_final_vertical: 18,
             ht_refinement_dispatch_count: 3,
             fused_dequant_dispatch_count: 3,
             ..CudaDecodeStageTimings::default()
@@ -464,6 +478,9 @@ mod tests {
         assert_eq!(report.detail.job_upload_us, 10);
         assert_eq!(report.detail.status_d2h_us, 5);
         assert_eq!(report.classic_tier1_us, 11);
+        assert_eq!(report.idwt_us, 31);
+        assert_eq!(report.detail.idwt_final_interleave_horizontal_us, 13);
+        assert_eq!(report.detail.idwt_final_vertical_us, 18);
         assert_eq!(report.detail.ht_refinement_dispatch_count, 3);
         assert_eq!(report.detail.fused_dequant_dispatch_count, 3);
     }

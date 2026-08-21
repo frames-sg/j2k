@@ -92,17 +92,48 @@ fn intentional_break_transition_is_exact_and_names_the_next_baseline() {
     assert!(error.contains("required next baseline version"));
 
     assert_eq!(validate_baseline_transition("0.8.0", "0.8.1", None), Ok(()));
+
+    assert_eq!(
+        INTENTIONAL_BREAK_TRANSITION,
+        Some(BaselineTransition {
+            candidate_version: "0.10.0",
+            required_next_baseline_version: "0.10.0",
+            required_next_baseline_tag: "v0.10.0",
+        })
+    );
 }
 
 #[test]
-fn package_partition_treats_every_published_package_as_baseline() {
-    assert!(SEMVER_NEW_PACKAGES.is_empty());
+fn package_partition_tracks_baselines_and_exact_first_release_packages() {
+    assert_eq!(
+        SEMVER_NEW_PACKAGES,
+        [
+            "j2k-cuda-build-support",
+            "j2k-cuda-j2k-engine",
+            "j2k-cuda-jpeg-engine",
+            "j2k-cuda-transcode-engine",
+        ]
+    );
     assert!(SEMVER_BASELINE_PACKAGES.contains(&"j2k-ml"));
-    assert!(validate_package_partition(SEMVER_BASELINE_PACKAGES).is_ok());
+    assert!(SEMVER_NEW_PACKAGES
+        .iter()
+        .all(|package| !SEMVER_BASELINE_PACKAGES.contains(package)));
 
-    let mut incomplete = SEMVER_BASELINE_PACKAGES.to_vec();
+    let published = SEMVER_BASELINE_PACKAGES
+        .iter()
+        .chain(SEMVER_NEW_PACKAGES)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(validate_package_partition(&published).is_ok());
+    assert!(validate_package_partition(SEMVER_BASELINE_PACKAGES).is_err());
+
+    let mut incomplete = published.clone();
     incomplete.pop();
     assert!(validate_package_partition(&incomplete).is_err());
+
+    let mut unexpected = published;
+    unexpected.push("j2k-unreviewed");
+    assert!(validate_package_partition(&unexpected).is_err());
 }
 
 #[test]
@@ -206,7 +237,7 @@ fn published_candidate_uses_its_computed_release_type() {
 }
 
 #[test]
-fn report_has_one_published_details_section_and_rotated_baseline() {
+fn report_has_one_published_details_section_and_active_transition() {
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
         candidate_version: "0.7.0".to_string(),
@@ -222,9 +253,8 @@ fn report_has_one_published_details_section_and_rotated_baseline() {
     assert!(report.contains("Rustdoc-hidden candidate items: 1"));
     assert!(report.contains("Full hidden-inventory fingerprint: `fnv1a64:"));
     assert!(report.contains("Baseline registry version: `0.9.0`"));
-    assert!(!report.contains("Active intentional-break transition"));
-    assert!(!report.contains("Required next semver baseline"));
-    assert!(INTENTIONAL_BREAK_TRANSITION.is_none());
+    assert!(report.contains("Active intentional-break transition: only `0.10.0`"));
+    assert!(report.contains("Required next semver baseline: `v0.10.0` at version `0.10.0`"));
 }
 
 #[test]
@@ -233,7 +263,7 @@ fn parses_review_config_and_rejects_unknown_fields() {
 version: 3
 baseline_tag: v0.9.0
 baseline_version: 0.9.0
-candidate_version: 0.9.1
+candidate_version: 0.10.0
 break_ledger:
   - id: strict-decode-default
     kind: behavior
@@ -260,7 +290,7 @@ reviews:
 ";
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source).unwrap();
     let parsed = parse_review_config(&value).unwrap();
-    assert_eq!(parsed.candidate_version, "0.9.1");
+    assert_eq!(parsed.candidate_version, "0.10.0");
     assert_eq!(parsed.break_ledger.len(), 2);
     assert_eq!(parsed.break_ledger[0].kind, BreakKind::Behavior);
     assert_eq!(parsed.break_ledger[1].kind, BreakKind::Source);

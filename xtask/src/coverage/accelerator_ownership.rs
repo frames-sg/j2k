@@ -19,7 +19,7 @@ const SHARED_ACCELERATOR_SOURCES: &[SharedAcceleratorSource] = &[
     source("crates/j2k-profile/src/gpu_route.rs", "j2k-profile"),
     source("crates/j2k-types/src/lib.rs", "j2k-types"),
     source("crates/j2k/src/adapter/device_plan.rs", "j2k"),
-    source("crates/j2k/src/encode/routing.rs", "j2k"),
+    source("crates/j2k/src/encode/accelerator.rs", "j2k"),
     source(
         "crates/j2k-native/src/j2c/encode/precomputed/accelerator.rs",
         "j2k-native",

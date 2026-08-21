@@ -11,10 +11,8 @@ use super::heuristics::{
 };
 use super::{
     decode_cpu_host_batch, decode_distinct_full_color_batch, decode_distinct_full_grayscale_batch,
-    decode_distinct_region_scaled_direct_batch,
-    decode_distinct_region_scaled_direct_batch_prechecked, decode_individual,
-    decode_repeated_full_color, decode_repeated_full_grayscale,
-    decode_repeated_region_scaled_direct_batch_prechecked, QueuedRequest, SessionState,
+    decode_distinct_region_scaled_direct_batch, decode_individual, decode_repeated_full_color,
+    decode_repeated_full_grayscale, QueuedRequest, SessionState,
 };
 
 struct PendingBatchProfile {
@@ -158,25 +156,6 @@ fn process_batch_inner(
     backend: Option<&MetalBackendSession>,
 ) {
     if route == BatchRoute::AutoRegionScaledDirectCpu {
-        complete_cpu_host_fallback(session, requests);
-        return;
-    }
-
-    if matches!(
-        route,
-        BatchRoute::AutoRegionScaledDirectMetal | BatchRoute::AutoRepeatedRegionScaledDirectMetal
-    ) && requests.len() > 1
-    {
-        let decoded = if route == BatchRoute::AutoRepeatedRegionScaledDirectMetal {
-            decode_repeated_region_scaled_direct_batch_prechecked(&requests, backend)
-        } else {
-            decode_distinct_region_scaled_direct_batch_prechecked(&requests, backend)
-        };
-        if let Some(Ok(surfaces)) = decoded {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
-        }
         complete_cpu_host_fallback(session, requests);
         return;
     }

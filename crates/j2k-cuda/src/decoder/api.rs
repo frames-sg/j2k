@@ -57,30 +57,98 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
-    fn decode_to_surface_impl(
+    fn decode_op_on_cpu(
+        &mut self,
+        fmt: PixelFormat,
+        request: DeviceDecodeRequest,
+        plan: DeviceDecodePlan,
+    ) -> Result<(Vec<u8>, (u32, u32)), Error> {
+        let dims = plan.output_dims();
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
+        match request {
+            DeviceDecodeRequest::Full => {
+                self.inner
+                    .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
+            }
+            DeviceDecodeRequest::Region { .. } => {
+                self.inner.decode_region_into(
+                    &mut self.pool,
+                    &mut out,
+                    stride,
+                    fmt,
+                    plan.source_rect(),
+                )?;
+            }
+            DeviceDecodeRequest::Scaled { scale } => {
+                self.inner
+                    .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
+            }
+            DeviceDecodeRequest::RegionScaled { scale, .. } => {
+                self.inner.decode_region_scaled_into(
+                    &mut self.pool,
+                    &mut out,
+                    stride,
+                    fmt,
+                    plan.source_rect(),
+                    scale,
+                )?;
+            }
+        }
+        Ok((out, dims))
+    }
+
+    fn decode_op_to_surface_impl(
         &mut self,
         session: &mut CudaSession,
         fmt: PixelFormat,
+        request: DeviceDecodeRequest,
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda)
+        let plan = DeviceDecodePlan::for_image(self.inner.info().dimensions, request)?;
+        let dims = plan.output_dims();
+        let auto_operation = match request {
+            DeviceDecodeRequest::Full => Some(AutoDecodeOperation::Full),
+            DeviceDecodeRequest::Region { .. } => Some(AutoDecodeOperation::Region),
+            DeviceDecodeRequest::Scaled {
+                scale: Downscale::Half,
+            } => Some(AutoDecodeOperation::ScaledHalf),
+            DeviceDecodeRequest::Scaled { .. } | DeviceDecodeRequest::RegionScaled { .. } => None,
+        };
+        let use_cuda = backend == BackendRequest::Cuda
             || (backend == BackendRequest::Auto
-                && self.auto_decode_uses_cuda(
-                    self.inner.info().dimensions,
-                    fmt,
-                    AutoDecodeOperation::Full,
-                )
-                && auto_cuda_available(session)?)
-        {
-            return decode_to_cuda_resident_surface_impl(self, session, fmt);
+                && auto_operation
+                    .is_some_and(|operation| self.auto_decode_uses_cuda(dims, fmt, operation))
+                && auto_cuda_available(session)?);
+        if use_cuda {
+            return match request {
+                DeviceDecodeRequest::Full => {
+                    decode_to_cuda_resident_surface_impl(self, session, fmt)
+                }
+                DeviceDecodeRequest::Region { roi } => {
+                    decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi)
+                }
+                DeviceDecodeRequest::Scaled { scale } => {
+                    decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale)
+                }
+                DeviceDecodeRequest::RegionScaled { roi, scale } => {
+                    decode_region_scaled_to_cuda_resident_surface_impl(
+                        self, session, fmt, roi, scale,
+                    )
+                }
+            };
         }
-        let dims = self.inner.info().dimensions;
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
+
+        let operation = match request {
+            DeviceDecodeRequest::Full => "full",
+            DeviceDecodeRequest::Region { .. } => "region",
+            DeviceDecodeRequest::Scaled { .. } => "scaled",
+            DeviceDecodeRequest::RegionScaled { .. } => "region_scaled",
+        };
         j2k_profile::emit_gpu_route_surface_profile(
             ("j2k", "cuda"),
             (
-                "full",
+                operation,
                 format_args!("{backend:?}"),
                 format_args!("{fmt:?}"),
                 "cpu_decode_then_wrap",
@@ -88,96 +156,7 @@ impl<'a> J2kDecoder<'a> {
             dims,
             [],
         );
-        self.inner
-            .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_region_to_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        roi: Rect,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            return decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi);
-        }
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::Region { roi },
-        )?;
-        let dims = plan.output_dims();
-        if backend == BackendRequest::Auto
-            && self.auto_decode_uses_cuda(dims, fmt, AutoDecodeOperation::Region)
-            && auto_cuda_available(session)?
-        {
-            return decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi);
-        }
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner
-            .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_scaled_to_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            return decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale);
-        }
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::Scaled { scale },
-        )?;
-        let dims = plan.output_dims();
-        if backend == BackendRequest::Auto
-            && scale == Downscale::Half
-            && self.auto_decode_uses_cuda(dims, fmt, AutoDecodeOperation::ScaledHalf)
-            && auto_cuda_available(session)?
-        {
-            return decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale);
-        }
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner
-            .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_region_scaled_to_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            return decode_region_scaled_to_cuda_resident_surface_impl(
-                self, session, fmt, roi, scale,
-            );
-        }
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::RegionScaled { roi, scale },
-        )?;
-        let dims = plan.output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner.decode_region_scaled_into(
-            &mut self.pool,
-            &mut out,
-            stride,
-            fmt,
-            plan.source_rect(),
-            scale,
-        )?;
+        let (out, dims) = self.decode_op_on_cpu(fmt, request, plan)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
 
@@ -188,7 +167,12 @@ impl<'a> J2kDecoder<'a> {
         fmt: PixelFormat,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        self.decode_to_surface_impl(session, fmt, BackendRequest::Cuda)
+        self.decode_op_to_surface_impl(
+            session,
+            fmt,
+            DeviceDecodeRequest::Full,
+            BackendRequest::Cuda,
+        )
     }
 
     /// Strictly decode a geometry request into a CUDA-backed surface using an
@@ -200,18 +184,7 @@ impl<'a> J2kDecoder<'a> {
         request: DeviceDecodeRequest,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        match request {
-            DeviceDecodeRequest::Full => self.decode_to_device_with_session(fmt, session),
-            DeviceDecodeRequest::Region { roi } => {
-                self.decode_region_to_device_with_session(fmt, roi, session)
-            }
-            DeviceDecodeRequest::Scaled { scale } => {
-                self.decode_scaled_to_device_with_session(fmt, scale, session)
-            }
-            DeviceDecodeRequest::RegionScaled { roi, scale } => {
-                self.decode_region_scaled_to_device_with_session(fmt, roi, scale, session)
-            }
-        }
+        self.decode_op_to_surface_impl(session, fmt, request, BackendRequest::Cuda)
     }
 
     /// Strictly decode a full HTJ2K image into a CUDA-backed surface and return
@@ -272,44 +245,26 @@ impl<'a> J2kDecoder<'a> {
         )
     }
 
-    /// Strictly decode a full-resolution HTJ2K region into a CUDA-backed
-    /// surface using an existing backend session.
-    pub(crate) fn decode_region_to_device_with_session(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        session: &mut CudaSession,
-    ) -> Result<Surface, Error> {
-        self.decode_region_to_surface_impl(session, fmt, roi, BackendRequest::Cuda)
-    }
-
-    /// Strictly decode a reduced-resolution HTJ2K image into a CUDA-backed
-    /// surface using an existing backend session.
-    pub(crate) fn decode_scaled_to_device_with_session(
-        &mut self,
-        fmt: PixelFormat,
-        scale: Downscale,
-        session: &mut CudaSession,
-    ) -> Result<Surface, Error> {
-        self.decode_scaled_to_surface_impl(session, fmt, scale, BackendRequest::Cuda)
-    }
-
-    /// Strictly decode a reduced-resolution HTJ2K region into a CUDA-backed
-    /// surface using an existing backend session.
-    pub(crate) fn decode_region_scaled_to_device_with_session(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        session: &mut CudaSession,
-    ) -> Result<Surface, Error> {
-        self.decode_region_scaled_to_surface_impl(session, fmt, roi, scale, BackendRequest::Cuda)
-    }
-
     /// Decode a full image through the CPU path and wrap it as a host surface.
     pub fn decode_to_host_surface(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {
         let mut session = CudaSession::default();
-        self.decode_to_surface_impl(&mut session, fmt, BackendRequest::Cpu)
+        self.decode_op_to_surface_impl(
+            &mut session,
+            fmt,
+            DeviceDecodeRequest::Full,
+            BackendRequest::Cpu,
+        )
+    }
+
+    fn decode_op_to_cpu_staged_cuda_surface_with_session(
+        &mut self,
+        fmt: PixelFormat,
+        request: DeviceDecodeRequest,
+        session: &mut CudaSession,
+    ) -> Result<Surface, Error> {
+        let plan = DeviceDecodePlan::for_image(self.inner.info().dimensions, request)?;
+        let (out, dims) = self.decode_op_on_cpu(fmt, request, plan)?;
+        wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
     }
 
     /// Decode a full image on CPU and upload it into a CUDA buffer using an
@@ -319,11 +274,11 @@ impl<'a> J2kDecoder<'a> {
         fmt: PixelFormat,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        let dims = self.inner.info().dimensions;
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner
-            .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
-        wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
+        self.decode_op_to_cpu_staged_cuda_surface_with_session(
+            fmt,
+            DeviceDecodeRequest::Full,
+            session,
+        )
     }
 
     /// Decode a region on CPU and upload it into a CUDA buffer using an
@@ -334,15 +289,11 @@ impl<'a> J2kDecoder<'a> {
         roi: Rect,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
+        self.decode_op_to_cpu_staged_cuda_surface_with_session(
+            fmt,
             DeviceDecodeRequest::Region { roi },
-        )?;
-        let dims = plan.output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner
-            .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
-        wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
+            session,
+        )
     }
 
     /// Decode a scaled image on CPU and upload it into a CUDA buffer using an
@@ -353,15 +304,11 @@ impl<'a> J2kDecoder<'a> {
         scale: Downscale,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        let dims = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
+        self.decode_op_to_cpu_staged_cuda_surface_with_session(
+            fmt,
             DeviceDecodeRequest::Scaled { scale },
-        )?
-        .output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner
-            .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
-        wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
+            session,
+        )
     }
 
     /// Decode a scaled region on CPU and upload it into a CUDA buffer using an
@@ -373,21 +320,11 @@ impl<'a> J2kDecoder<'a> {
         scale: Downscale,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::RegionScaled { roi, scale },
-        )?;
-        let dims = plan.output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        self.inner.decode_region_scaled_into(
-            &mut self.pool,
-            &mut out,
-            stride,
+        self.decode_op_to_cpu_staged_cuda_surface_with_session(
             fmt,
-            plan.source_rect(),
-            scale,
-        )?;
-        wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
+            DeviceDecodeRequest::RegionScaled { roi, scale },
+            session,
+        )
     }
 }
 
@@ -526,7 +463,7 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            self.decode_to_surface_impl(session, fmt, backend)
+            self.decode_op_to_surface_impl(session, fmt, DeviceDecodeRequest::Full, backend)
         }))
     }
 
@@ -539,7 +476,12 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            self.decode_region_to_surface_impl(session, fmt, roi, backend)
+            self.decode_op_to_surface_impl(
+                session,
+                fmt,
+                DeviceDecodeRequest::Region { roi },
+                backend,
+            )
         }))
     }
 
@@ -552,7 +494,12 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            self.decode_scaled_to_surface_impl(session, fmt, scale, backend)
+            self.decode_op_to_surface_impl(
+                session,
+                fmt,
+                DeviceDecodeRequest::Scaled { scale },
+                backend,
+            )
         }))
     }
 
@@ -566,7 +513,24 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            self.decode_region_scaled_to_surface_impl(session, fmt, roi, scale, backend)
+            self.decode_op_to_surface_impl(
+                session,
+                fmt,
+                DeviceDecodeRequest::RegionScaled { roi, scale },
+                backend,
+            )
         }))
+    }
+}
+
+#[cfg(test)]
+mod operation_structure_tests {
+    #[test]
+    fn all_four_decode_operations_delegate_to_one_internal_entrypoint() {
+        let source = include_str!("api.rs");
+        let definition = ["fn decode_op", "_to_surface_impl"].concat();
+        let delegation = ["self.decode_op", "_to_surface_impl("].concat();
+        assert_eq!(source.matches(&definition).count(), 1);
+        assert!(source.matches(&delegation).count() >= 5);
     }
 }

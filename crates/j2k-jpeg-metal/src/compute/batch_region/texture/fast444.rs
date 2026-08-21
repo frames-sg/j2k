@@ -231,7 +231,7 @@ fn encode_fast444_region_texture_decode(
 ) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
     let decoder_encoder = new_compute_command_encoder(command_buffer)?;
-    decoder_encoder.setComputePipelineState(&runtime.fast444_scaled_region_batch_decode_pipeline);
+    decoder_encoder.setComputePipelineState(&runtime.pipelines.fast444_scaled_region_batch_decode);
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
         &decoder_encoder,
         &FastDecodeEntropyInputs {
@@ -249,7 +249,7 @@ fn encode_fast444_region_texture_decode(
     decoder_encoder.bind_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
         &decoder_encoder,
-        &runtime.fast444_scaled_region_batch_decode_pipeline,
+        &runtime.pipelines.fast444_scaled_region_batch_decode,
         shape.total_decode_threads,
     );
     decoder_encoder.endEncoding();
@@ -395,7 +395,7 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
     )?;
     dispatch_rgba_texture_pack(
         &command_buffer,
-        &runtime.pack_444_rgba_texture_pipeline,
+        &runtime.pipelines.pack_444_rgba_texture,
         (&y_plane, &cb_plane, &cr_plane),
         output,
         shape.pack_params,

@@ -217,9 +217,17 @@ fn unreachable_source_dispositions_are_narrow_and_syntax_checked() {
         "crates/j2k-codec-math/generated/dwt97_constants.rs",
         "crates/j2k-test-support/fixtures/htj2k/openjph_batch/generate.rs",
         "xtask/tests/fixtures/clone_audit/fixture.rs",
-        "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs",
+        "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs",
         "crates/j2k-cuda-runtime/src/cuda_oxide_demo/simt/src/lib.rs",
         "crates/j2k-cuda-runtime/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-transcode-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-transcode-engine/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/not_cuda_oxide/simt/src/lib.rs",
+        "crates/j2k-cuda-other-engine/src/cuda_oxide_demo/simt/src/lib.rs",
         "src/unreviewed.rs",
     ] {
         repository.write(path, "pub fn fixture() {}\n");
@@ -242,14 +250,26 @@ fn unreachable_source_dispositions_are_narrow_and_syntax_checked() {
         );
     }
     for path in [
-        "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs",
+        "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs",
         "crates/j2k-cuda-runtime/src/cuda_oxide_demo/simt/src/lib.rs",
         "crates/j2k-cuda-runtime/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/src/main.rs",
+        "crates/j2k-cuda-transcode-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-transcode-engine/src/cuda_oxide_demo/src/main.rs",
     ] {
         assert!(matches!(
             classify_unreached_source(repository.root(), path),
             Ok(SourceRole::Generated(_))
         ));
+    }
+    for path in [
+        "crates/j2k-cuda-j2k-engine/src/not_cuda_oxide/simt/src/lib.rs",
+        "crates/j2k-cuda-other-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+    ] {
+        assert!(classify_unreached_source(repository.root(), path).is_err());
     }
     assert!(classify_unreached_source(repository.root(), "src/unreviewed.rs").is_err());
     assert!(read_source(repository.root(), "src/missing.rs").is_err());

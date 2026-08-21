@@ -10,9 +10,9 @@ pub(in crate::decoder) fn cuda_code_block_job_from_plan_block(
         .output_y
         .checked_mul(subband_width)
         .and_then(|base| base.checked_add(block.output_x))
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?;
     Ok(CudaHtj2kCodeBlockJob {
         payload_offset: block.payload_offset,
         width: block.width,

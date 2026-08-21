@@ -5,7 +5,7 @@ use j2k::J2kLosslessSamples;
 #[cfg(target_os = "macos")]
 use super::validation::validation_pixel_format;
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k_core::DeviceSurface;
 
@@ -85,9 +85,11 @@ pub fn validate_lossless_roundtrip_on_metal_with_session(
     let (buffer, byte_offset) =
         surface
             .metal_buffer_trusted()
-            .ok_or(crate::Error::UnsupportedMetalRequest {
-                reason: "J2K Metal validation decode did not return a Metal buffer",
-            })?;
+            .ok_or(crate::Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K Metal validation decode did not return a Metal buffer",
+                ),
+            ))?;
     compute::validate_metal_buffer_matches_bytes(samples.data, buffer, byte_offset, session)
 }
 

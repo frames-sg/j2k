@@ -21,6 +21,59 @@ fn pixel_format_reports_layout_and_sample_type() {
     assert_eq!(PixelFormat::Rgb16.sample(), SampleType::U16);
 }
 
+#[test]
+fn capability_rejections_keep_typed_categories_and_exact_boundary_text() {
+    use j2k_core::{CapabilityRejection, CapabilityRejectionKind};
+
+    let cases = [
+        (
+            CapabilityRejection::unsupported_format("RGB output is required"),
+            CapabilityRejectionKind::UnsupportedFormat,
+        ),
+        (
+            CapabilityRejection::unsupported_sampling("4:2:0 is required"),
+            CapabilityRejectionKind::UnsupportedSampling,
+        ),
+        (
+            CapabilityRejection::unsupported_bit_depth("8-bit input is required"),
+            CapabilityRejectionKind::UnsupportedBitDepth,
+        ),
+        (
+            CapabilityRejection::unsupported_operation("scaled decode is unsupported"),
+            CapabilityRejectionKind::UnsupportedOperation,
+        ),
+        (
+            CapabilityRejection::missing_prepared_plan("prepared plan is required"),
+            CapabilityRejectionKind::MissingPreparedPlan,
+        ),
+        (
+            CapabilityRejection::unsupported_container("raw codestream is required"),
+            CapabilityRejectionKind::UnsupportedContainer,
+        ),
+        (
+            CapabilityRejection::geometry_mismatch("tile dimensions differ"),
+            CapabilityRejectionKind::GeometryMismatch,
+        ),
+        (
+            CapabilityRejection::resource_limit("payload exceeds device limit"),
+            CapabilityRejectionKind::ResourceLimit,
+        ),
+        (
+            CapabilityRejection::context_mismatch("session device differs"),
+            CapabilityRejectionKind::ContextMismatch,
+        ),
+        (
+            CapabilityRejection::contract_violation("completion owner is missing"),
+            CapabilityRejectionKind::ContractViolation,
+        ),
+    ];
+
+    for (rejection, expected_kind) in cases {
+        assert_eq!(rejection.kind(), expected_kind);
+        assert_eq!(rejection.to_string(), rejection.reason());
+    }
+}
+
 #[derive(Default)]
 struct SubmitCounter {
     submissions: u64,

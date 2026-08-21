@@ -7,10 +7,8 @@ mod store;
 
 use j2k::{BatchLayout, DeviceDecodePlan};
 use j2k_core::{DeviceSubmitSession, PixelFormat};
-use j2k_cuda_runtime::{
-    CudaDeviceBuffer, CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut,
-    CudaQueuedJ2kStoreBatch,
-};
+use j2k_cuda_j2k_engine::CudaQueuedJ2kStoreBatch;
+use j2k_cuda_runtime::{CudaDeviceBuffer, CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut};
 
 use super::{
     append_color_payload_to_shared, can_batch_color_idwt, cuda_error,
@@ -67,13 +65,15 @@ pub(crate) fn submit_native_color_resident_prepared_batch_into(
     let (output, report, completion) =
         decode_native_color_batch(inputs, session, fmt, layout, Some(destination), true)?;
     let NativeColorBatchOutput::External(ranges) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
-    let completion = completion.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA exact RGB submission did not retain a completion owner",
-    })?;
+    let completion = completion.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA exact RGB submission did not retain a completion owner",
+        ),
+    ))?;
     Ok(SubmittedNativeColorExternalBatch {
         ranges,
         report,
@@ -90,13 +90,15 @@ pub(crate) fn submit_native_color_resident_prepared_batch(
     let (output, report, completion) =
         decode_native_color_batch(inputs, session, fmt, layout, None, true)?;
     let NativeColorBatchOutput::Owned(output) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
-    let completion = completion.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA resident RGB submission did not retain a completion owner",
-    })?;
+    let completion = completion.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA resident RGB submission did not retain a completion owner",
+        ),
+    ))?;
     Ok(SubmittedNativeColorResidentBatch {
         output: Some(output),
         report,
@@ -113,7 +115,8 @@ mod tests {
         DeviceDecodePlan, DeviceDecodeRequest, EncodedImage,
     };
     use j2k_core::{Downscale, HtGpuJobChunkLimits, PixelFormat, Rect};
-    use j2k_cuda_runtime::{htj2k_cleanup_multi_descriptor_bytes, CudaContext};
+    use j2k_cuda_j2k_engine::htj2k_cleanup_multi_descriptor_bytes;
+    use j2k_cuda_runtime::CudaContext;
     use j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
 
     use super::{
@@ -215,12 +218,7 @@ mod tests {
         let prepared = prepare_batch(vec![EncodedImage::full(Arc::clone(&encoded))], options)
             .expect("prepare independent signed RGB12 fixture");
         let image = &prepared.groups()[0].images()[0];
-        let referenced_plan = image
-            .htj2k_plan()
-            .expect("retained HTJ2K plan")
-            .adapter_view()
-            .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-            .expect("native referenced HTJ2K plan adapter");
+        let referenced_plan = image.htj2k_plan().expect("retained HTJ2K plan").geometry();
 
         let mut cpu = CpuBatchDecoder::new(options);
         let oracle = cpu

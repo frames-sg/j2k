@@ -54,6 +54,7 @@ mod host_allocation;
 mod passthrough;
 /// Pixel layout and format descriptors.
 mod pixel;
+mod rejection;
 mod row_sink;
 /// Integer sample type descriptors.
 mod sample;
@@ -95,21 +96,22 @@ pub use error::{
 };
 #[doc(hidden)]
 pub use host_allocation::{
-    host_capacity_bytes, try_host_vec_filled, try_host_vec_from_slice, try_host_vec_resize,
-    try_host_vec_with_capacity, HostAllocationBudget, HostAllocationError,
-    HostAllocationLimitError,
+    checked_host_phase_product, checked_host_phase_sum, host_capacity_bytes, try_host_vec_filled,
+    try_host_vec_from_slice, try_host_vec_resize, try_host_vec_with_capacity, HostAllocationBudget,
+    HostAllocationError, HostAllocationLimitError, HostPhaseBudget, HostPhaseError,
 };
 pub use passthrough::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements,
 };
 pub use pixel::{PixelFormat, PixelLayout};
+pub use rejection::{CapabilityRejection, CapabilityRejectionKind};
 pub use row_sink::RowSink;
 pub use sample::{Sample, SampleType};
 pub use scale::Downscale;
 pub use scratch::ScratchPool;
 pub use traits::{
-    submit_ready_device, CpuBackedImageDecode, DecodeRowsError, DeviceSubmission,
+    submit_ready_device, CpuBackedImageDecode, DecodeRowsError, DeviceCodestream, DeviceSubmission,
     DeviceSubmitSession, DeviceSurface, ImageCodec, ImageDecode, ImageDecodeDevice,
     ImageDecodeRows, ImageDecodeSubmit, ReadySubmission, TileBatchDecode, TileBatchDecodeDevice,
     TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileDecompress,

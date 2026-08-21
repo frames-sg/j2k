@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::{
+use j2k_cuda_j2k_engine::{
     CudaHtj2kPacketizationBlock, CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState,
 };
@@ -10,7 +10,7 @@ use crate::encode::stage_error::{adapter_error, CudaStageResult};
 
 use super::types::CudaHtj2kPacketizationPlan;
 
-fn packetization_allocation_error(error: crate::Error) -> j2k::J2kEncodeStageError {
+fn packetization_allocation_error(error: impl Into<crate::Error>) -> j2k::J2kEncodeStageError {
     adapter_error("allocate CUDA packetization runtime descriptors", error)
 }
 

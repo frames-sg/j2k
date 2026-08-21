@@ -79,6 +79,25 @@ inline float j2k_unsigned_native_sample(float value, uint bit_depth) {
     return floor(clamp(value, 0.0f, max_value) + 0.5f);
 }
 
+inline float j2k_round_ties_even_centered(float value) {
+    // Every finite f32 at or beyond 2^23 is already integral. Keeping those
+    // values out of the integer conversion also bounds the no-libdevice floor.
+    if (!isfinite(value) || abs(value) >= 8388608.0f) {
+        return value;
+    }
+    const float truncated = float(int(value));
+    const float lower = truncated > value ? truncated - 1.0f : truncated;
+    const float upper = lower + 1.0f;
+    const float midpoint = lower + 0.5f;
+    if (value < midpoint) {
+        return lower;
+    }
+    if (value > midpoint || (int(lower) & 1) != 0) {
+        return upper;
+    }
+    return lower;
+}
+
 inline float3 j2k_native_color_samples(
     float value0,
     float value1,
@@ -105,11 +124,20 @@ inline float3 j2k_native_color_samples(
         const float green = value0 - floor((value2 + value1) * 0.25f);
         return float3(value2 + green, green, value1 + green) + addends;
     }
-    return float3(
-        value2 * 1.402f + value0,
-        value2 * -0.71414f + value1 * -0.34413f + value0,
-        value1 * 1.772f + value0
-    ) + addends;
+    {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        const float3 centered = float3(
+            fma(value2, 1.402f, value0),
+            fma(value2, -0.71414f, fma(value1, -0.34413f, value0)),
+            fma(value1, 1.772f, value0)
+        );
+        return float3(
+            j2k_round_ties_even_centered(centered[0]),
+            j2k_round_ties_even_centered(centered[1]),
+            j2k_round_ties_even_centered(centered[2])
+        ) + addends;
+    }
 }
 
 inline uint j2k_native_color_output_index(

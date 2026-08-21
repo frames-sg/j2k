@@ -109,7 +109,7 @@ fn is_safety_path(path: &str) -> bool {
 }
 
 fn is_codec_correctness_path(path: &str) -> bool {
-    if path.contains("/src/compute/") {
+    if path.contains("/src/compute/") || path.contains("/src/engine/") {
         return false;
     }
     path.starts_with("crates/j2k-codec-math/src/")

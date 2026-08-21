@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::CudaPinnedUploadStagingPoolDiagnostics;
-use crate::{
-    bytes::{f32_slice_as_bytes, i32_slice_as_bytes},
-    context::CudaContext,
-    memory::CudaDeviceBuffer,
-    CudaError,
-};
+#[cfg(test)]
+use crate::bytes::i32_slice_as_bytes;
+use crate::{bytes::f32_slice_as_bytes, context::CudaContext, memory::CudaDeviceBuffer, CudaError};
 
 pub(super) fn pinned_upload_staging_pool_diagnostics(
     context: &CudaContext,
@@ -44,6 +41,7 @@ impl CudaContext {
     }
 
     /// Upload host `i32` samples through a temporary page-locked staging buffer.
+    #[cfg(test)]
     pub(crate) fn upload_i32_pinned(&self, samples: &[i32]) -> Result<CudaDeviceBuffer, CudaError> {
         self.upload_pinned(i32_slice_as_bytes(samples))
     }

@@ -85,6 +85,14 @@ pub enum Error {
     },
 }
 
+impl Error {
+    pub(crate) const fn capability_rejected(rejection: j2k_core::CapabilityRejection) -> Self {
+        Self::UnsupportedMetalRequest {
+            reason: rejection.reason(),
+        }
+    }
+}
+
 #[doc(hidden)]
 impl AdapterErrorParts for Error {
     fn source_codec_error(&self) -> Option<&dyn CodecError> {

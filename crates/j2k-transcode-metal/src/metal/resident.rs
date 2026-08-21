@@ -2,15 +2,15 @@
 
 use super::{
     bind_projection_input_buffers, checked_batch_len, checked_command_buffer,
-    checked_compute_command_encoder, commit_and_wait, dispatch_band_batch, dwt97_block_value_count,
-    output_buffer, output_i32_buffer, private_f32_buffer, read_f32_buffer_at, size_of,
-    try_transcode_vec_with_capacity, u32_param, upload_sparse_rows, BackendKind, BatchBandGeometry,
-    Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DeviceMemoryRange, MetalRuntime,
-    MetalTranscodeError, ProjectedBands, ProjectionBatchJob, ResidentBufferRef, ResidentColorModel,
-    ResidentComponentGeometry, ResidentDctCoefficientOrder, ResidentDctGridLayout,
-    ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout, ResidentHandoffError,
-    ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling, DWT97_BLOCK_COEFFICIENTS,
-    METAL_DCT97_UNSUPPORTED_GRID,
+    checked_compute_command_encoder, checked_dwt_level_shape, commit_and_wait, dispatch_band_batch,
+    dwt97_block_value_count, output_buffer, output_i32_buffer, private_f32_buffer,
+    read_f32_buffer_at, size_of, try_transcode_vec_with_capacity, u32_param, upload_sparse_rows,
+    BackendKind, BatchBandGeometry, Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DeviceMemoryRange, MetalRuntime, MetalTranscodeError, ProjectedBands, ProjectionBatchJob,
+    ResidentBufferRef, ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
+    ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
+    ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
+    DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
 };
 use objc2::rc::Retained;
 use objc2_foundation::NSString;
@@ -44,10 +44,11 @@ pub(super) fn projection_batch_shape(
         return Ok(None);
     }
 
-    let low_width = job.width.div_ceil(2);
-    let high_width = job.width / 2;
-    let low_height = job.height.div_ceil(2);
-    let high_height = job.height / 2;
+    let level = checked_dwt_level_shape(job.width, job.height, job.unsupported_grid)?;
+    let low_width = level.low_width;
+    let high_width = level.high_width;
+    let low_height = level.low_height;
+    let high_height = level.high_height;
     let blocks_per_item = job
         .block_cols
         .checked_mul(job.block_rows)
@@ -529,7 +530,7 @@ pub(super) fn dispatch_projection_batch_bands(
         MetalTranscodeError::support("Metal batch projection compute encoder creation", error)
     })?;
     encoder.setComputePipelineState(&runtime.dct_project_band_batch);
-    bind_projection_input_buffers(&encoder, blocks, &runtime.idct_basis);
+    bind_projection_input_buffers(&encoder, blocks, &runtime.idct_basis)?;
 
     dispatch_band_batch(
         &encoder,
@@ -546,7 +547,7 @@ pub(super) fn dispatch_projection_batch_bands(
             output_stride: u32_param(shape.ll_len, job.unsupported_grid)?,
             batch_count: shape.batch_count_u32,
         },
-    );
+    )?;
     dispatch_band_batch(
         &encoder,
         (&weights.x_high_rows, &weights.x_high_taps),
@@ -562,7 +563,7 @@ pub(super) fn dispatch_projection_batch_bands(
             output_stride: u32_param(shape.hl_len, job.unsupported_grid)?,
             batch_count: shape.batch_count_u32,
         },
-    );
+    )?;
     dispatch_band_batch(
         &encoder,
         (&weights.x_low_rows, &weights.x_low_taps),
@@ -578,7 +579,7 @@ pub(super) fn dispatch_projection_batch_bands(
             output_stride: u32_param(shape.lh_len, job.unsupported_grid)?,
             batch_count: shape.batch_count_u32,
         },
-    );
+    )?;
     dispatch_band_batch(
         &encoder,
         (&weights.x_high_rows, &weights.x_high_taps),
@@ -594,7 +595,7 @@ pub(super) fn dispatch_projection_batch_bands(
             output_stride: u32_param(shape.hh_len, job.unsupported_grid)?,
             batch_count: shape.batch_count_u32,
         },
-    );
+    )?;
 
     encoder.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {

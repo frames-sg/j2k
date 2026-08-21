@@ -35,10 +35,10 @@ impl CudaBatchError {
         clippy::disallowed_methods,
         reason = "error construction preserves its infallible public signature while retaining affected source indices"
     )]
-    pub(super) fn group(group: &PreparedBatchGroup, source: Error) -> Self {
+    pub(super) fn group(group: &PreparedBatchGroup, source: impl Into<Error>) -> Self {
         Self::GroupExecution {
             source_indices: group.source_indices().to_vec(),
-            source: Box::new(source),
+            source: Box::new(source.into()),
         }
     }
 
@@ -86,9 +86,9 @@ mod classification_tests {
                 .session_is_unusable()
         );
         assert!(group_error(Error::CudaUnavailable).session_is_unusable());
-        assert!(!group_error(Error::UnsupportedCudaRequest {
-            reason: "test contract rejection",
-        })
+        assert!(!group_error(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation("test contract rejection")
+        ))
         .session_is_unusable());
     }
 }

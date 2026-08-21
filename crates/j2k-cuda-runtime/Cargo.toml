@@ -13,6 +13,10 @@ include = ["Cargo.toml", "README.md", "build.rs", "src/**"]
 all-features = true
 targets = []
 
+[package.metadata.cargo-machete]
+# Build-time metadata and CUDA-Oxide staging dependencies used through build.rs.
+ignored = ["j2k-codec-math", "j2k-cuda-build-support"]
+
 [lib]
 name = "j2k_cuda_runtime"
 path = "src/lib.rs"
@@ -22,39 +26,17 @@ default = []
 cuda-profiling = []
 cuda-oxide = [
     "cuda-oxide-copy-u8",
-    "cuda-oxide-j2k-encode",
-    "cuda-oxide-j2k-decode-store",
-    "cuda-oxide-j2k-classic-decode",
-    "cuda-oxide-j2k-dequantize",
-    "cuda-oxide-j2k-idwt",
-    "cuda-oxide-j2k-ml",
-    "cuda-oxide-htj2k-decode",
-    "cuda-oxide-htj2k-encode",
-    "cuda-oxide-transcode",
-    "cuda-oxide-jpeg-decode",
-    "cuda-oxide-jpeg-encode",
 ]
 cuda-oxide-copy-u8 = []
-cuda-oxide-j2k-encode = []
-cuda-oxide-j2k-decode-store = []
-cuda-oxide-j2k-classic-decode = []
-cuda-oxide-j2k-dequantize = []
-cuda-oxide-j2k-idwt = []
-cuda-oxide-j2k-ml = []
-cuda-oxide-htj2k-decode = []
-cuda-oxide-htj2k-encode = []
-cuda-oxide-transcode = []
-cuda-oxide-jpeg-decode = []
-cuda-oxide-jpeg-encode = []
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.9.1" }
-j2k-core = { path = "../j2k-core", version = "=0.9.1" }
+j2k-core = { path = "../j2k-core", version = "=0.10.0" }
 libloading = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.9.1" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.10.0" }
+j2k-cuda-build-support = { path = "../j2k-cuda-build-support", version = "=0.10.0" }
 
 [dev-dependencies]
 j2k-test-support = { path = "../j2k-test-support" }

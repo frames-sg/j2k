@@ -350,10 +350,7 @@ fn referenced_prepared_plan_materializes_only_the_execution_arena() {
     .expect("prepare referenced-plan fixture");
     let image = &prepared.groups()[0].images()[0];
     let prepared_plan = image.htj2k_plan().expect("retained HTJ2K plan");
-    let referenced = prepared_plan
-        .adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .expect("native referenced HTJ2K plan adapter");
+    let referenced = prepared_plan.geometry();
     let tile = &referenced.tiles()[0];
     let geometry = tile
         .grayscale_geometry()

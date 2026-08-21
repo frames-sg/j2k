@@ -76,10 +76,37 @@ pub(crate) const SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE: H
 std::thread_local! {
     static CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
     static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<ProfileStageMode>> = const { Cell::new(None) };
+    static DISABLE_FUSED_INPUT_MCT_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 fn env_flag_enabled(name: &str) -> bool {
     env_flag_from_env(name)
+}
+
+pub(crate) fn fused_input_mct_disabled() -> bool {
+    #[cfg(test)]
+    if let Some(disabled) = DISABLE_FUSED_INPUT_MCT_OVERRIDE.with(Cell::get) {
+        return disabled;
+    }
+    false
+}
+
+#[cfg(test)]
+pub(crate) struct FusedInputMctRouteOverrideGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(test)]
+impl Drop for FusedInputMctRouteOverrideGuard {
+    fn drop(&mut self) {
+        DISABLE_FUSED_INPUT_MCT_OVERRIDE.with(|slot| slot.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_fused_input_mct_disabled(disabled: bool) -> FusedInputMctRouteOverrideGuard {
+    let previous = DISABLE_FUSED_INPUT_MCT_OVERRIDE.with(|slot| slot.replace(Some(disabled)));
+    FusedInputMctRouteOverrideGuard { previous }
 }
 
 pub(crate) fn classic_selective_bypass_disabled() -> bool {

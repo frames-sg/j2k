@@ -5,7 +5,43 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
-Staged workspace version: `0.9.1`.
+Staged workspace version: `0.10.0`.
+
+- Breaking: narrows `j2k-cuda-runtime` to codec-neutral CUDA allocation,
+  launch, completion, and diagnostics. CUDA JPEG 2000, JPEG, and transcode
+  ownership now lives in the published implementation crates
+  `j2k-cuda-j2k-engine`, `j2k-cuda-jpeg-engine`, and
+  `j2k-cuda-transcode-engine`; callers of
+  `j2k_cuda_runtime::transcode_kernels_built` must use
+  `j2k_cuda_transcode_engine::transcode_kernels_built`.
+- Breaking: generalizes
+  `j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k`
+  from `&j2k_metal::MetalEncodedJ2k` to any `&impl DeviceCodestream`. Existing
+  `MetalEncodedJ2k` calls continue to type-check, while custom device
+  codestreams implement `j2k_core::DeviceCodestream`; this removes the
+  transcode adapter's dependency on the full public Metal adapter.
+- Moves stable codec contracts, prepared-plan geometry, capability rejection,
+  host allocation phases, packing, and encode geometry into single typed
+  owners. Native produces typed plans consumed by CPU, CUDA, and Metal; the
+  adapters no longer downcast erased plans or duplicate resource policy.
+- Decomposes the native color, Metal JPEG/JPEG 2000, CUDA, and transcode
+  orchestration roots by pipeline ownership, with repository policies enforcing
+  dependency direction, source boundaries, unsafe inventory, clone ceilings,
+  benchmark registration, and generated routing evidence.
+- Promotes measured staged CUDA JPEG encoding and adaptive CUDA JPEG checkpoint
+  launch geometry. The staged encoder improves the representative 512 x 512
+  batch-8 cells by about 95%, while the checkpoint policy uses one-thread
+  launches below 128 checkpoints and 128-thread blocks at or above that
+  threshold.
+- Records and removes rejected Metal and CUDA candidates whose product
+  intervals did not qualify, including terminal IDWT/store specialization,
+  wide-axis and FDWT staging, RGB input fusion, packetization, terminal
+  column/quantization fusion, and JPEG coefficient/IDCT defusion. No rejected
+  selector, fallback, or benchmark-only production branch remains.
+- Repairs ties-to-even irreversible color rounding in Metal and CUDA, the JPEG
+  restart-marker bit-reader boundary, CUDA restart-coded capability routing,
+  clean packaged CUDA-Oxide sibling resolution, and lane-specific changed-line
+  coverage orchestration.
 
 - Refactors the CPU JPEG AVX2 and NEON paths around unforgeable capability
   tokens and safe kernel entry points. SIMD dispatch, IDCT/color arithmetic,

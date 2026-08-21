@@ -116,6 +116,32 @@ fn assert_independent_decoder_accepts(
 }
 
 #[cfg(target_os = "macos")]
+fn assert_entropy_byte_stuffing_and_restart_markers(encoded: &[u8]) {
+    let sos = encoded
+        .windows(2)
+        .position(|bytes| bytes == [0xff, 0xda])
+        .expect("JPEG contains SOS");
+    let header_len = usize::from(u16::from_be_bytes([encoded[sos + 2], encoded[sos + 3]]));
+    let mut index = sos + 2 + header_len;
+    while index + 1 < encoded.len() {
+        if encoded[index] != 0xff {
+            index += 1;
+            continue;
+        }
+        let marker = encoded[index + 1];
+        assert!(
+            marker == 0x00 || (0xd0..=0xd7).contains(&marker) || marker == 0xd9,
+            "entropy 0xff byte must be stuffed or introduce restart/EOI marker, got 0x{marker:02x}"
+        );
+        if marker == 0xd9 {
+            return;
+        }
+        index += 2;
+    }
+    panic!("JPEG entropy scan did not reach EOI");
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn metal_baseline_encoder_round_trips_rgb_422() {
     use j2k_core::PixelFormat;
@@ -395,4 +421,174 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
             jpeg_decoder::PixelFormat::RGB24,
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+fn update_p18_rgb_matrix_digest(
+    session: &j2k_jpeg_metal::MetalBackendSession,
+    digest: &mut sha2::Sha256,
+) {
+    use j2k_core::PixelFormat;
+    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg_metal::{
+        encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
+    };
+    use sha2::Digest;
+
+    let rgb_size = (23u32, 19u32);
+    let rgb_tile_count = 2usize;
+    let rgb_tile_bytes = rgb_size.0 as usize * rgb_size.1 as usize * 3;
+    let rgb = j2k_test_support::patterned_rgb8_tiles(rgb_size.0, rgb_size.1, rgb_tile_count);
+    let rgb_buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
+        .expect("upload P18 RGB differential matrix");
+    let rgb_tiles = (0..rgb_tile_count)
+        .map(|tile| {
+            // SAFETY: each descriptor names an initialized, disjoint immutable tile range
+            // retained by `rgb_buffer` through every synchronous encode below.
+            unsafe {
+                JpegBaselineMetalEncodeTile::new(
+                    &rgb_buffer,
+                    tile * rgb_tile_bytes,
+                    rgb_size,
+                    rgb_size.0 as usize * 3,
+                    rgb_size,
+                    PixelFormat::Rgb8,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    for (subsampling, restart_interval, quality) in [
+        (JpegSubsampling::Ybr444, None, 1u8),
+        (JpegSubsampling::Ybr444, Some(5), 90),
+        (JpegSubsampling::Ybr422, None, 90),
+        (JpegSubsampling::Ybr422, Some(5), 100),
+        (JpegSubsampling::Ybr420, None, 100),
+        (JpegSubsampling::Ybr420, Some(5), 1),
+    ] {
+        let options = JpegEncodeOptions {
+            quality,
+            subsampling,
+            restart_interval,
+            backend: JpegBackend::Metal,
+        };
+        let frames = encode_jpeg_baseline_batch_from_metal_buffers(&rgb_tiles, options, session)
+            .expect("P18 RGB differential matrix encode");
+        let repeat = encode_jpeg_baseline_batch_from_metal_buffers(&rgb_tiles, options, session)
+            .expect("repeat P18 RGB differential matrix encode");
+        assert_eq!(
+            frames.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
+            repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
+            "P18 RGB route must be deterministic for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
+        );
+        for frame in frames {
+            assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
+            assert_independent_decoder_accepts(
+                &frame.data,
+                rgb_size.0,
+                rgb_size.1,
+                jpeg_decoder::PixelFormat::RGB24,
+            );
+            digest.update((frame.data.len() as u64).to_le_bytes());
+            digest.update(&frame.data);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn update_p18_gray_matrix_digest(
+    session: &j2k_jpeg_metal::MetalBackendSession,
+    digest: &mut sha2::Sha256,
+) {
+    use j2k_core::PixelFormat;
+    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg_metal::{
+        encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
+    };
+    use sha2::Digest;
+
+    let gray_input = (7u32, 5u32);
+    let gray_output = (13u32, 11u32);
+    let gray_tile_count = 2usize;
+    let gray_tile_bytes = gray_input.0 as usize * gray_input.1 as usize;
+    let mut gray = Vec::new();
+    for salt in 0..gray_tile_count {
+        let salt = u8::try_from(salt).expect("P18 grayscale tile salt fits u8");
+        gray.extend(
+            j2k_test_support::patterned_gray8(gray_input.0, gray_input.1)
+                .into_iter()
+                .map(|sample| sample.wrapping_add(salt)),
+        );
+    }
+    let gray_buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &gray)
+        .expect("upload P18 grayscale differential matrix");
+    let gray_tiles = (0..gray_tile_count)
+        .map(|tile| {
+            // SAFETY: each descriptor names an initialized, disjoint immutable tile range
+            // retained by `gray_buffer` through every synchronous encode below.
+            unsafe {
+                JpegBaselineMetalEncodeTile::new(
+                    &gray_buffer,
+                    tile * gray_tile_bytes,
+                    gray_input,
+                    gray_input.0 as usize,
+                    gray_output,
+                    PixelFormat::Gray8,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    for (quality, restart_interval) in [(1u8, None), (100, Some(3))] {
+        let options = JpegEncodeOptions {
+            quality,
+            subsampling: JpegSubsampling::Gray,
+            restart_interval,
+            backend: JpegBackend::Metal,
+        };
+        let frames = encode_jpeg_baseline_batch_from_metal_buffers(&gray_tiles, options, session)
+            .expect("P18 grayscale differential matrix encode");
+        let repeat = encode_jpeg_baseline_batch_from_metal_buffers(&gray_tiles, options, session)
+            .expect("repeat P18 grayscale differential matrix encode");
+        assert_eq!(
+            frames.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
+            repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
+            "P18 grayscale route must be deterministic for restart={restart_interval:?}, quality={quality}"
+        );
+        for frame in frames {
+            assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
+            assert_independent_decoder_accepts(
+                &frame.data,
+                gray_output.0,
+                gray_output.1,
+                jpeg_decoder::PixelFormat::L8,
+            );
+            digest.update((frame.data.len() as u64).to_le_bytes());
+            digest.update(&frame.data);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn p18_promoted_route_matrix_digest() -> String {
+    use sha2::{Digest, Sha256};
+
+    let session =
+        j2k_jpeg_metal::MetalBackendSession::system_default().expect("Metal backend session");
+    let mut digest = Sha256::new();
+    update_p18_rgb_matrix_digest(&session, &mut digest);
+    update_p18_gray_matrix_digest(&session, &mut digest);
+
+    format!("{:x}", digest.finalize())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn promoted_staged_metal_encoder_matches_reviewed_p18_matrix_hash() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    assert_eq!(
+        p18_promoted_route_matrix_digest(),
+        "b9af03a1a522926f3bee386fd554f146db773cf8287cef91d9001335c88c3a26",
+        "promoted staged route must match the reviewed fused/staged P18 matrix hash"
+    );
 }

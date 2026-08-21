@@ -2,10 +2,10 @@
 
 #![cfg(feature = "cuda-runtime")]
 
-use j2k_cuda_runtime::{
-    CudaBufferPool, CudaClassicCodeBlockJob, CudaClassicDecodeTarget, CudaClassicSegment,
-    CudaContext,
+use j2k_cuda_j2k_engine::{
+    CudaClassicCodeBlockJob, CudaClassicDecodeTarget, CudaClassicSegment, J2kCudaEngine,
 };
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext};
 use j2k_native::{
     decode_j2k_code_block_scalar, encode_j2k_code_block_scalar_with_style, J2kCodeBlockDecodeJob,
     J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType,
@@ -268,13 +268,13 @@ fn cuda_decode(
     segments: &[CudaClassicSegment],
     output_words: usize,
 ) -> Result<Vec<f32>, String> {
-    let resources = context
+    let resources = J2kCudaEngine::new(context)
         .upload_j2k_decode_payload(payload)
         .map_err(|error| error.to_string())?;
-    let output = context
+    let output = J2kCudaEngine::new(context)
         .allocate_classic_coefficients_with_pool(output_words, pool)
         .map_err(|error| error.to_string())?;
-    context
+    J2kCudaEngine::new(context)
         .decode_classic_codeblocks_multi_with_resources_and_pool(
             &resources,
             &[CudaClassicDecodeTarget {

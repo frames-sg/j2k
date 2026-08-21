@@ -9,7 +9,7 @@ use j2k_native::{
 };
 
 #[cfg(all(target_os = "macos", test))]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(all(target_os = "macos", test))]
 use crate::Error;
 
@@ -349,14 +349,14 @@ mod tests {
                     };
                     match idwt.transform {
                         j2k_native::J2kWaveletTransform::Reversible53 => {
-                            crate::compute::decode_reversible53_single_decomposition_idwt(
+                            crate::engine::decode_reversible53_single_decomposition_idwt(
                                 job,
                                 &mut output,
                             )
                             .expect("53 idwt");
                         }
                         j2k_native::J2kWaveletTransform::Irreversible97 => {
-                            crate::compute::decode_irreversible97_single_decomposition_idwt(
+                            crate::engine::decode_irreversible97_single_decomposition_idwt(
                                 job,
                                 &mut output,
                             )

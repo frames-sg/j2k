@@ -387,9 +387,7 @@ fn submit_lossless_tiles(
             });
         }
         if options.backend == EncodeBackendPreference::RequireDevice {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "J2K Metal resident encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level",
-            });
+            return Err(crate::Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit("J2K Metal resident encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level")));
         }
     }
 

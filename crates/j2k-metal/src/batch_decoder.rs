@@ -175,7 +175,7 @@ mod batch_contract_tests {
                 .expect("external group destination")
         };
 
-        crate::compute::reset_stacked_component_batches_for_test();
+        crate::engine::reset_stacked_component_batches_for_test();
         let completion = decoder
             .submit_prepared_group_into(group, destination)
             .expect("submit external group")
@@ -183,7 +183,7 @@ mod batch_contract_tests {
             .expect("complete external group");
 
         assert_eq!(
-            crate::compute::stacked_component_batches_for_test(),
+            crate::engine::stacked_component_batches_for_test(),
             1,
             "two homogeneous HT images must share one stacked component graph"
         );
@@ -205,11 +205,11 @@ mod batch_contract_tests {
             MetalImageDestination::from_exclusive_buffer(output, layout)
                 .expect("reused external group destination")
         };
-        crate::compute::reset_stacked_component_batches_for_test();
+        crate::engine::reset_stacked_component_batches_for_test();
         decoder
             .decode_prepared_group_into(group, &destination)
             .expect("synchronous external group decode");
-        assert_eq!(crate::compute::stacked_component_batches_for_test(), 1);
+        assert_eq!(crate::engine::stacked_component_batches_for_test(), 1);
     }
 
     #[cfg(target_os = "macos")]
@@ -260,7 +260,7 @@ mod batch_contract_tests {
                 .expect("external RGB group destination")
         };
 
-        crate::compute::reset_stacked_component_batches_for_test();
+        crate::engine::reset_stacked_component_batches_for_test();
         decoder
             .submit_prepared_group_into(group, destination)
             .expect("submit external RGB group")
@@ -268,7 +268,7 @@ mod batch_contract_tests {
             .expect("complete external RGB group");
 
         assert_eq!(
-            crate::compute::stacked_component_batches_for_test(),
+            crate::engine::stacked_component_batches_for_test(),
             3,
             "RGB components must each coalesce the two image plans"
         );

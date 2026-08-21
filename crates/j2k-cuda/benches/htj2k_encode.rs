@@ -14,10 +14,11 @@ use j2k::{
 };
 use j2k_core::BackendKind;
 use j2k_cuda::encode_j2k_lossless_with_cuda;
-use j2k_cuda_runtime::{
-    CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
-    CudaHtj2kEncodeTables, CudaHtj2kEncodedCodeBlocks,
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeTables,
+    CudaHtj2kEncodedCodeBlocks, J2kCudaEngine,
 };
+use j2k_cuda_runtime::CudaContext;
 use j2k_native::{
     encode_ht_code_block_scalar, ht_uvlc_encode_table, ht_vlc_encode_table0, ht_vlc_encode_table1,
 };
@@ -240,13 +241,14 @@ fn bench_codeblock_microkernels(
             BenchmarkId::new("cuda_host_staged_cleanup", CODE_BLOCK_BATCH),
             &(coefficients, jobs),
             |b, (coefficients, jobs)| {
-                let context = CudaContext::system_default().expect("CUDA context");
+                let runtime = CudaContext::system_default().expect("CUDA context");
+                let engine = J2kCudaEngine::new(&runtime);
                 let uvlc_table = uvlc_encode_table_bytes();
-                let resources = context
+                let resources = engine
                     .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
                     .expect("CUDA HTJ2K encode resources");
                 b.iter(|| {
-                    let encoded = context
+                    let encoded = engine
                         .encode_htj2k_codeblocks_with_resources(
                             std::hint::black_box(coefficients),
                             std::hint::black_box(jobs),
@@ -262,18 +264,19 @@ fn bench_codeblock_microkernels(
             BenchmarkId::new("cuda_resident_cleanup", CODE_BLOCK_BATCH),
             &(coefficients, jobs),
             |b, (coefficients, jobs)| {
-                let context = CudaContext::system_default().expect("CUDA context");
+                let runtime = CudaContext::system_default().expect("CUDA context");
+                let engine = J2kCudaEngine::new(&runtime);
                 let coefficient_bytes = coefficients_as_bytes(coefficients);
-                let resident_coefficients = context
+                let resident_coefficients = runtime
                     .upload(&coefficient_bytes)
                     .expect("resident quantized coefficients");
                 let uvlc_table = uvlc_encode_table_bytes();
-                let resources = context
+                let resources = engine
                     .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
                     .expect("CUDA HTJ2K encode resources");
-                let pool = context.buffer_pool();
+                let pool = runtime.buffer_pool();
                 b.iter(|| {
-                    let encoded = context
+                    let encoded = engine
                         .encode_htj2k_codeblocks_resident_with_resources_and_pool(
                             &resident_coefficients,
                             coefficients.len(),
@@ -327,18 +330,19 @@ fn bench_device_input_regions(
             BenchmarkId::new("cuda_resident_strided_cleanup", jobs.len()),
             &(coefficients, jobs),
             |b, (coefficients, jobs)| {
-                let context = CudaContext::system_default().expect("CUDA context");
+                let runtime = CudaContext::system_default().expect("CUDA context");
+                let engine = J2kCudaEngine::new(&runtime);
                 let coefficient_bytes = coefficients_as_bytes(coefficients);
-                let resident_coefficients = context
+                let resident_coefficients = runtime
                     .upload(&coefficient_bytes)
                     .expect("resident strided quantized coefficients");
                 let uvlc_table = uvlc_encode_table_bytes();
-                let resources = context
+                let resources = engine
                     .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
                     .expect("CUDA HTJ2K encode resources");
-                let pool = context.buffer_pool();
+                let pool = runtime.buffer_pool();
                 b.iter(|| {
-                    let encoded = context
+                    let encoded = engine
                         .encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
                             &resident_coefficients,
                             coefficients.len(),
@@ -643,7 +647,7 @@ fn cuda_encode_available(
         }
     }
 
-    let context = match CudaContext::system_default() {
+    let runtime = match CudaContext::system_default() {
         Ok(context) => context,
         Err(error) if std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_some() => {
             panic!("J2K_REQUIRE_CUDA_BENCH is set but CUDA context failed: {error}")
@@ -653,8 +657,9 @@ fn cuda_encode_available(
             return false;
         }
     };
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = uvlc_encode_table_bytes();
-    let resources = match context.upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table)) {
+    let resources = match engine.upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table)) {
         Ok(resources) => resources,
         Err(error) if std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_some() => {
             panic!("J2K_REQUIRE_CUDA_BENCH is set but CUDA HTJ2K encode resource upload failed: {error}")
@@ -665,7 +670,7 @@ fn cuda_encode_available(
         }
     };
     let result =
-        context.encode_htj2k_codeblocks_with_resources(coefficients, &jobs[..1], &resources);
+        engine.encode_htj2k_codeblocks_with_resources(coefficients, &jobs[..1], &resources);
     match result {
         Ok(encoded) if encoded.execution().kernel_dispatches() > 0 => true,
         Ok(_) if std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_some() => {

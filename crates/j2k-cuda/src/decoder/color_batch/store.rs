@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::PixelFormat;
-use j2k_cuda_runtime::{
-    CudaContext, CudaDeviceBuffer, CudaError, CudaJ2kInverseMctJob, CudaJ2kStoreRgb16Job,
-    CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctJob, CudaKernelOutput,
+use j2k_cuda_j2k_engine::{
+    CudaJ2kInverseMctJob, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job,
+    CudaJ2kStoreRgb8MctJob,
 };
+use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer, CudaError, CudaKernelOutput};
 
 use super::super::{
     cuda_error, CudaHtj2kStoreStep, CudaHtj2kTransform, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
@@ -222,18 +223,20 @@ pub(super) fn run_color_mct(
 
     let mct_len = u32::try_from(
         checked_cuda_element_count(mct_dimensions.0, mct_dimensions.1).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            },
+            Error::capability_rejected(j2k_core::CapabilityRejection::missing_prepared_plan(
+                CUDA_HTJ2K_KERNELS_NOT_READY,
+            )),
         )?,
     )
-    .map_err(|_| Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_KERNELS_NOT_READY,
+    .map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::missing_prepared_plan(
+            CUDA_HTJ2K_KERNELS_NOT_READY,
+        ))
     })?;
     let (stats, elapsed_us) = inputs
         .context
         .time_default_stream_named_us_if(collect_stage_timings, "j2k.htj2k.decode.mct", || {
-            inputs.context.j2k_inverse_mct_device(
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_inverse_mct_device(
                 inputs.buffers[0],
                 inputs.buffers[1],
                 inputs.buffers[2],
@@ -263,7 +266,7 @@ fn dispatch_color_store_u8(
 ) -> Result<CudaKernelOutput, CudaError> {
     let store_job = plan.rgb8_job(rgba);
     if plan.uses_fused_store() {
-        inputs.context.j2k_store_rgb8_mct_device(
+        j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_store_rgb8_mct_device(
             inputs.buffers[0],
             inputs.buffers[1],
             inputs.buffers[2],
@@ -273,7 +276,7 @@ fn dispatch_color_store_u8(
             },
         )
     } else {
-        inputs.context.j2k_store_rgb8_device(
+        j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_store_rgb8_device(
             inputs.buffers[0],
             inputs.buffers[1],
             inputs.buffers[2],
@@ -289,7 +292,7 @@ fn dispatch_color_store_u16(
 ) -> Result<CudaKernelOutput, CudaError> {
     let store_job = plan.rgb16_job(rgba);
     if plan.uses_fused_store() {
-        inputs.context.j2k_store_rgb16_mct_device(
+        j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_store_rgb16_mct_device(
             inputs.buffers[0],
             inputs.buffers[1],
             inputs.buffers[2],
@@ -299,7 +302,7 @@ fn dispatch_color_store_u16(
             },
         )
     } else {
-        inputs.context.j2k_store_rgb16_device(
+        j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_store_rgb16_device(
             inputs.buffers[0],
             inputs.buffers[1],
             inputs.buffers[2],

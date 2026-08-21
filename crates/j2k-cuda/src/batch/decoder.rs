@@ -205,10 +205,6 @@ impl CudaBatchDecoder {
     /// cannot be proven, the external allocation must be quarantined rather
     /// than freed or reused.
     #[cfg(feature = "cuda-runtime")]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "external submission keeps routing, safety-critical destination ownership, and fallible metadata capture in one boundary"
-    )]
     pub unsafe fn submit_batch_into(
         &mut self,
         group: &PreparedBatchGroup,
@@ -250,14 +246,9 @@ impl CudaBatchDecoder {
                 .iter()
                 .zip(group.source_indices().iter().copied())
                 .map(|(image, source_index)| {
-                    let referenced_plan = image
-                        .htj2k_plan()
-                        .map(native_referenced_htj2k_plan)
-                        .transpose()?;
-                    let referenced_classic_plan = image
-                        .classic_plan()
-                        .map(native_referenced_classic_plan)
-                        .transpose()?;
+                    let referenced_plan = image.htj2k_plan().map(native_referenced_htj2k_plan);
+                    let referenced_classic_plan =
+                        image.classic_plan().map(native_referenced_classic_plan);
                     Ok(crate::decoder::grayscale_batch::GrayscaleBatchInput {
                         source_index,
                         bytes: image.bytes().as_ref(),
@@ -281,10 +272,9 @@ impl CudaBatchDecoder {
         } else {
             return Err(CudaBatchError::group(
                 group,
-                Error::UnsupportedCudaRequest {
-                    reason:
-                        "direct external CUDA batch decode requires exact Gray, RGB, or RGBA output",
-                },
+                Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_format(
+                    "direct external CUDA batch decode requires exact Gray, RGB, or RGBA output",
+                )),
             ));
         };
         let mut metadata_budget =

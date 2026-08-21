@@ -7,17 +7,10 @@ use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use crate::{Error, MetalSession};
 
 use super::execute::complete_repeated_device_failure;
-#[cfg(target_os = "macos")]
-use super::execute::process_batch;
-#[cfg(target_os = "macos")]
-use super::heuristics::GroupedRequests;
 use super::heuristics::{
-    auto_region_scaled_direct_metal_min_dim, can_decode_requests_as_repeated_full_color_batch,
-    can_decode_requests_as_repeated_full_grayscale_batch,
-    can_decode_requests_as_repeated_region_scaled_batch, group_metal_requests, profile_route_label,
-    same_input_bytes, BatchRoute, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT,
-    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM, AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
-    AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
+    can_decode_requests_as_repeated_full_color_batch,
+    can_decode_requests_as_repeated_full_grayscale_batch, group_metal_requests,
+    profile_route_label, same_input_bytes, BatchRoute,
 };
 use super::request::{BatchOp, QueuedRequest};
 use super::session::{queue_tile_request_shared, release_surface_slot, SessionState};
@@ -68,68 +61,15 @@ fn auto_repeated_full_candidates_are_limited_to_measured_formats() {
     ));
 }
 
-fn auto_rgb_region_scaled_request_with_max_dim(
-    input: Arc<[u8]>,
-    max_image_dim: u32,
-) -> QueuedRequest {
-    let request = auto_rgb_region_scaled_request(input);
-    request.max_image_dim.set(Some(max_image_dim)).ok();
-    request
-}
-
 #[test]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "bounded test fixture index fits in u8"
-)]
-fn auto_region_scaled_rgb_threshold_requires_repeated_inputs() {
-    let requests = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
-        .map(|idx| auto_rgb_region_scaled_request(Arc::from([idx as u8])))
+fn auto_region_scaled_distinct_inputs_stay_on_cpu_without_promotion_evidence() {
+    let requests = (0_u8..16)
+        .map(|idx| auto_rgb_region_scaled_request(Arc::from([idx])))
         .collect::<Vec<_>>();
 
-    assert!(!can_decode_requests_as_repeated_region_scaled_batch(
-        &requests
-    ));
-    assert_eq!(
-        auto_region_scaled_direct_metal_min_dim(&requests),
-        None,
-        "distinct RGB ROI+scaled Auto batches must stay CPU until hybrid wins for distinct inputs"
-    );
-
-    let shared = Arc::<[u8]>::from([1_u8]);
-    let repeated = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
-        .map(|_| auto_rgb_region_scaled_request(shared.clone()))
-        .collect::<Vec<_>>();
-    assert!(can_decode_requests_as_repeated_region_scaled_batch(
-        &repeated
-    ));
-}
-
-#[test]
-fn auto_region_scaled_repeated_rgb_uses_measured_batch_two_metal_threshold() {
-    let shared = Arc::<[u8]>::from([1_u8]);
-    let repeated = (0..2)
-        .map(|_| auto_rgb_region_scaled_request_with_max_dim(shared.clone(), 512))
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        auto_region_scaled_direct_metal_min_dim(&repeated),
-        Some(512),
-        "measured repeated RGB ROI+scaled batches should route to Metal from batch 2 at 512px"
-    );
-
-    let single = vec![auto_rgb_region_scaled_request_with_max_dim(shared, 512)];
-    assert_eq!(auto_region_scaled_direct_metal_min_dim(&single), None);
-}
-
-#[test]
-fn queued_request_caches_image_dimension_probe() {
-    let request = auto_rgb_region_scaled_request(Arc::from([0_u8]));
-
-    assert!(!request.max_image_dim_cache_filled_for_test());
-    assert_eq!(request.max_image_dim(), None);
-    assert!(request.max_image_dim_cache_filled_for_test());
-    assert_eq!(request.max_image_dim(), None);
+    let grouped = group_metal_requests(requests).expect("group requests");
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].route, BatchRoute::AutoRegionScaledDirectCpu);
 }
 
 #[test]
@@ -225,28 +165,17 @@ fn selected_repeated_device_failure_is_reported_without_cpu_retry() {
 }
 
 #[test]
-fn auto_region_scaled_grouping_preserves_repeated_rgb_metal_decision() {
+fn auto_region_scaled_grouping_keeps_repeated_rgb_on_cpu_without_evidence() {
     let shared = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
-    let requests = (0..AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT)
-        .map(|_| {
-            auto_rgb_region_scaled_request_with_max_dim(
-                shared.clone(),
-                AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
-            )
-        })
+    let requests = (0..2)
+        .map(|_| auto_rgb_region_scaled_request(shared.clone()))
         .collect::<Vec<_>>();
 
     let grouped = group_metal_requests(requests).expect("group requests");
 
     assert_eq!(grouped.len(), 1);
-    assert_eq!(
-        grouped[0].route,
-        BatchRoute::AutoRepeatedRegionScaledDirectMetal
-    );
-    assert_eq!(
-        grouped[0].requests.len(),
-        AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT
-    );
+    assert_eq!(grouped[0].route, BatchRoute::AutoRegionScaledDirectCpu);
+    assert_eq!(grouped[0].requests.len(), 2);
     assert!(
         grouped[0]
             .requests
@@ -257,28 +186,16 @@ fn auto_region_scaled_grouping_preserves_repeated_rgb_metal_decision() {
 }
 
 #[test]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "bounded test fixture index fits in u8"
-)]
 fn auto_region_scaled_distinct_rgb_grouping_preserves_cpu_decision() {
-    let requests = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
-        .map(|idx| {
-            auto_rgb_region_scaled_request_with_max_dim(
-                Arc::from([idx as u8]),
-                AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
-            )
-        })
+    let requests = (0_u8..16)
+        .map(|idx| auto_rgb_region_scaled_request(Arc::from([idx])))
         .collect::<Vec<_>>();
 
     let grouped = group_metal_requests(requests).expect("group requests");
 
     assert_eq!(grouped.len(), 1);
     assert_eq!(grouped[0].route, BatchRoute::AutoRegionScaledDirectCpu);
-    assert_eq!(
-        grouped[0].requests.len(),
-        AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT
-    );
+    assert_eq!(grouped[0].requests.len(), 16);
 }
 
 #[test]
@@ -287,59 +204,5 @@ fn profile_route_labels_are_stable_for_decode_batch_slices() {
     assert_eq!(
         profile_route_label(BatchRoute::AutoRegionScaledDirectCpu),
         "auto_region_scaled_direct_cpu"
-    );
-    assert_eq!(
-        profile_route_label(BatchRoute::AutoRegionScaledDirectMetal),
-        "auto_region_scaled_direct_metal"
-    );
-    assert_eq!(
-        profile_route_label(BatchRoute::AutoRepeatedRegionScaledDirectMetal),
-        "auto_repeated_region_scaled_direct_metal"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn auto_region_scaled_prechecked_error_does_not_retry_generic_direct_path() {
-    let _guard = crate::hybrid::region_scaled_color_plan_test_lock_for_test();
-    crate::hybrid::reset_region_scaled_color_plan_builds_for_test();
-    let shared = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
-    let requests = (0..AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT)
-        .map(|slot| {
-            let mut request = auto_rgb_region_scaled_request_with_max_dim(
-                shared.clone(),
-                AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
-            );
-            request.output_slot = slot;
-            request
-        })
-        .collect::<Vec<_>>();
-    let mut session = SessionState {
-        submissions: 0,
-        queued: Vec::new(),
-        completed: (0..requests.len()).map(|_| None).collect(),
-        free_slots: Vec::new(),
-    };
-
-    process_batch(
-        &mut session,
-        GroupedRequests {
-            route: BatchRoute::AutoRepeatedRegionScaledDirectMetal,
-            requests,
-        },
-        None,
-    );
-
-    assert_eq!(
-        crate::hybrid::region_scaled_color_plan_builds_for_test(),
-        1,
-        "failed prechecked Auto Metal routing should fall back to CPU without retrying generic direct Metal"
-    );
-    assert!(
-        session
-            .completed
-            .iter()
-            .all(|result| matches!(result, Some(Err(_)))),
-        "invalid inputs should be surfaced on every fallback request"
     );
 }

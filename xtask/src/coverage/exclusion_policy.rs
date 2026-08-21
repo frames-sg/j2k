@@ -7,6 +7,9 @@ use std::path::Path;
 use syn::{Attribute, Item};
 
 use self::evidence_modules::collect_evidence_symbols_from_file;
+use super::cuda_oxide_paths::{
+    is_cuda_oxide_device_rust, is_cuda_oxide_host_scaffold, CUDA_OXIDE_PACKAGE_ROOTS,
+};
 
 mod evidence_modules;
 
@@ -24,15 +27,25 @@ const CUDA_SIMT_EVIDENCE: &[EvidenceTest] = &[
         "ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path",
     ),
     primary_evidence(
-        "crates/j2k-cuda-runtime/src/tests.rs",
-        "kernel_module_names_cover_htj2k_decode_and_encode_stages",
+        "crates/j2k-cuda-j2k-engine/src/kernels.rs",
+        "htj2k_decode_and_dequantize_entrypoints_are_stable",
+    ),
+    primary_evidence(
+        "crates/j2k-cuda-j2k-engine/src/kernels.rs",
+        "j2k_encode_and_forward_transform_entrypoints_are_stable",
     ),
 ];
 
-const CUDA_SCAFFOLD_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
-    "crates/j2k-cuda-runtime/src/tests.rs",
-    "kernel_module_names_cover_htj2k_decode_and_encode_stages",
-)];
+const CUDA_SCAFFOLD_EVIDENCE: &[EvidenceTest] = &[
+    primary_evidence(
+        "crates/j2k-cuda-j2k-engine/src/kernels.rs",
+        "htj2k_decode_and_dequantize_entrypoints_are_stable",
+    ),
+    primary_evidence(
+        "crates/j2k-cuda-j2k-engine/src/kernels.rs",
+        "j2k_encode_and_forward_transform_entrypoints_are_stable",
+    ),
+];
 
 const CUDA_FFI_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
     "crates/j2k-cuda-runtime/src/tests.rs",
@@ -81,30 +94,20 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
     CoverageExclusion {
         id: "cuda-simt-device-rust",
         reason: "CUDA SIMT device Rust is cross-compiled to PTX and cannot be instrumented by host LLVM coverage",
-        matcher: ExclusionMatcher::PathPattern {
-            prefix: "crates/j2k-cuda-runtime/src/cuda_oxide_",
-            contains: Some("/simt/src/"),
-            excludes: None,
-            suffix: ".rs",
-        },
+        matcher: ExclusionMatcher::CudaOxideDeviceRust,
         evidence: CUDA_SIMT_EVIDENCE,
     },
     CoverageExclusion {
         id: "cuda-generated-host-scaffold",
         reason: "generated cuda-oxide host project scaffolds contain only the build entry point",
-        matcher: ExclusionMatcher::PathPattern {
-            prefix: "crates/j2k-cuda-runtime/src/cuda_oxide_",
-            contains: Some("/src/"),
-            excludes: Some("/simt/"),
-            suffix: "main.rs",
-        },
+        matcher: ExclusionMatcher::CudaOxideHostScaffold,
         evidence: CUDA_SCAFFOLD_EVIDENCE,
     },
     CoverageExclusion {
         id: "cuda-shared-simt-prelude",
         reason: "shared CUDA SIMT device helpers are included into PTX crates and are not host-instrumentable",
         matcher: ExclusionMatcher::WholeFile {
-            path: "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs",
+            path: "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs",
         },
         evidence: CUDA_SIMT_EVIDENCE,
     },
@@ -122,7 +125,7 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
         id: "metal-embedded-shader-body",
         reason: "the embedded Metal shader body is MSL text, not executable host Rust",
         matcher: ExclusionMatcher::MarkerSpan {
-            path: "crates/j2k-metal/src/compute/shader_source.rs",
+            path: "crates/j2k-metal/src/engine/shader_source.rs",
             start: "        r\"",
             end: "\",",
         },
@@ -161,14 +164,10 @@ pub(super) struct CoverageExclusion {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ExclusionMatcher {
+    CudaOxideDeviceRust,
+    CudaOxideHostScaffold,
     WholeFile {
         path: &'static str,
-    },
-    PathPattern {
-        prefix: &'static str,
-        contains: Option<&'static str>,
-        excludes: Option<&'static str>,
-        suffix: &'static str,
     },
     MarkerSpan {
         path: &'static str,
@@ -197,16 +196,9 @@ fn exclusion_matches(
     source: &[&str],
 ) -> Result<bool, String> {
     match exclusion.matcher {
+        ExclusionMatcher::CudaOxideDeviceRust => Ok(is_cuda_oxide_device_rust(path)),
+        ExclusionMatcher::CudaOxideHostScaffold => Ok(is_cuda_oxide_host_scaffold(path)),
         ExclusionMatcher::WholeFile { path: exact } => Ok(path == exact),
-        ExclusionMatcher::PathPattern {
-            prefix,
-            contains,
-            excludes,
-            suffix,
-        } => Ok(path.starts_with(prefix)
-            && contains.is_none_or(|needle| path.contains(needle))
-            && excludes.is_none_or(|needle| !path.contains(needle))
-            && path.ends_with(suffix)),
         ExclusionMatcher::MarkerSpan {
             path: exact,
             start,
@@ -428,22 +420,28 @@ const fn evidence_class_description(class: EvidenceClass) -> &'static str {
 
 fn validate_exclusion_matcher(root: &Path, exclusion: &CoverageExclusion) -> Result<(), String> {
     match exclusion.matcher {
-        ExclusionMatcher::WholeFile { path } => {
-            if !root.join(path).is_file() {
+        ExclusionMatcher::CudaOxideDeviceRust | ExclusionMatcher::CudaOxideHostScaffold => {
+            let mut matched = false;
+            for package_root in CUDA_OXIDE_PACKAGE_ROOTS {
+                if collect_rust_files(&root.join(package_root).join("src"), root)?
+                    .into_iter()
+                    .any(|path| exclusion_matches(exclusion, &path, 1, &[]).unwrap_or(false))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
                 return Err(format!(
-                    "coverage exclusion `{}` file `{path}` is missing",
+                    "coverage exclusion `{}` CUDA-Oxide matcher matches no Rust file",
                     exclusion.id
                 ));
             }
         }
-        ExclusionMatcher::PathPattern { .. } => {
-            let cuda_runtime_src = root.join("crates/j2k-cuda-runtime/src");
-            let matched = collect_rust_files(&cuda_runtime_src, root)?
-                .into_iter()
-                .any(|path| exclusion_matches(exclusion, &path, 1, &[]).unwrap_or(false));
-            if !matched {
+        ExclusionMatcher::WholeFile { path } => {
+            if !root.join(path).is_file() {
                 return Err(format!(
-                    "coverage exclusion `{}` path pattern matches no Rust file",
+                    "coverage exclusion `{}` file `{path}` is missing",
                     exclusion.id
                 ));
             }

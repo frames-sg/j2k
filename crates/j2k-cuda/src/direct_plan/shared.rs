@@ -74,9 +74,11 @@ impl CudaPlanOwners {
         let transform = CudaHtj2kTransform::from_native(step.transform);
         match self.transform {
             Some(existing) if existing != transform => {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: MIXED_TRANSFORMS_UNSUPPORTED,
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_operation(
+                        MIXED_TRANSFORMS_UNSUPPORTED,
+                    ),
+                ));
             }
             Some(_) => {}
             None => self.transform = Some(transform),
@@ -96,9 +98,9 @@ impl CudaPlanOwners {
         // executable graph so the zero-filled band can flow through IDWT and
         // final color reconstruction even when it has no entropy jobs.
         if self.subbands.is_empty() && self.classic_subbands.is_empty() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: EMPTY_CUDA_COEFFICIENT_PLAN,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(EMPTY_CUDA_COEFFICIENT_PLAN),
+            ));
         }
         Ok(CudaHtj2kDecodePlan {
             dimensions,
@@ -152,9 +154,9 @@ fn cuda_plan_capacity_hint(plan: &J2kDirectGrayscalePlan) -> Result<CudaPlanCapa
 fn checked_add(current: usize, additional: usize) -> Result<usize, Error> {
     current
         .checked_add(additional)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: PLAN_PAYLOAD_TOO_LARGE,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+        ))
 }
 
 pub(super) fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {
@@ -249,15 +251,15 @@ pub(super) fn convert_referenced_tile_store_step(
 }
 
 fn checked_end(start: u32, len: u32) -> Result<u32, Error> {
-    start.checked_add(len).ok_or(Error::UnsupportedCudaRequest {
-        reason: PLAN_OUTPUT_RECT_MISMATCH,
-    })
+    start.checked_add(len).ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::geometry_mismatch(PLAN_OUTPUT_RECT_MISMATCH),
+    ))
 }
 
 fn output_rect_error<T>() -> Result<T, Error> {
-    Err(Error::UnsupportedCudaRequest {
-        reason: PLAN_OUTPUT_RECT_MISMATCH,
-    })
+    Err(Error::capability_rejected(
+        j2k_core::CapabilityRejection::geometry_mismatch(PLAN_OUTPUT_RECT_MISMATCH),
+    ))
 }
 
 fn convert_rect(rect: J2kRect) -> CudaHtj2kRect {

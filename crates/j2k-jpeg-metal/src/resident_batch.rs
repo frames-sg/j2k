@@ -28,20 +28,24 @@ pub(crate) fn report_required_output_dimensions(
     report: &JpegMetalResidentBatchReport,
 ) -> Result<Option<(u32, u32)>, Error> {
     if !report.eligibility.eligible {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: report
-                .eligibility
-                .reason
-                .unwrap_or("JPEG Metal resident batch report is not eligible"),
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                report
+                    .eligibility
+                    .reason
+                    .unwrap_or("JPEG Metal resident batch report is not eligible"),
+            ),
+        ));
     }
     if report.tile_count == 0 {
         return Ok(None);
     }
     report
         .output_dimensions
-        .ok_or(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal resident batch report is missing output dimensions",
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "JPEG Metal resident batch report is missing output dimensions",
+            ),
+        ))
         .map(Some)
 }

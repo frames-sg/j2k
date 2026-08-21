@@ -24,7 +24,17 @@ impl CudaContext {
         Ok(required != 0)
     }
 
-    pub(crate) fn memset_d8(
+    /// Fill the first `bytes` of a device buffer with one byte value.
+    ///
+    /// The destination must belong to this context. A zero-length fill is a
+    /// validated no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::InvalidArgument`] when `dst` belongs to another
+    /// context, [`CudaError::OutputTooSmall`] when `bytes` exceeds its length,
+    /// or the underlying CUDA driver failure.
+    pub fn memset_d8(
         &self,
         dst: &CudaDeviceBuffer,
         value: u8,
@@ -42,7 +52,12 @@ impl CudaContext {
         })
     }
 
-    pub(crate) fn memset_d32(
+    /// Fill the first `words` 32-bit words of a device buffer synchronously.
+    ///
+    /// This codec-neutral primitive is exposed for engine crates. The
+    /// destination must belong to this context.
+    #[doc(hidden)]
+    pub fn memset_d32(
         &self,
         dst: &CudaDeviceBuffer,
         value: c_uint,
@@ -63,7 +78,13 @@ impl CudaContext {
         })
     }
 
-    pub(crate) fn memset_d32_async(
+    /// Fill the first `words` 32-bit words of a device buffer on the default stream.
+    ///
+    /// The destination must belong to this context. Submitted work is ordered
+    /// with later default-stream launches; callers retain the destination until
+    /// stream completion.
+    #[doc(hidden)]
+    pub fn memset_d32_async(
         &self,
         dst: &CudaDeviceBuffer,
         value: c_uint,

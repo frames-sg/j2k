@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use j2k_core::{BackendKind, BackendRequest};
+use j2k_core::{BackendKind, BackendRequest, DeviceCodestream};
 use j2k_transcode::{
     BatchTranscodeReport, EncodedTranscode, EncodedTranscodeBatch, JpegTileBatchInput,
     JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodePipelineMap,
@@ -80,10 +80,10 @@ pub struct MetalEncodedTranscodeBatch {
     pub route: MetalTranscodeRouteReport,
 }
 
-/// Build a backend-neutral resident codestream descriptor from a Metal encode output.
+/// Build a resident handoff descriptor from any backend-neutral device codestream.
 #[cfg(target_os = "macos")]
-pub fn resident_codestream_buffer_from_metal_encoded_j2k(
-    encoded: &j2k_metal::MetalEncodedJ2k,
+pub fn resident_codestream_buffer_from_metal_encoded_j2k<T: DeviceCodestream + ?Sized>(
+    encoded: &T,
 ) -> Result<ResidentCodestreamBuffer<'_>, ResidentHandoffError> {
     let memory = encoded
         .codestream_memory_range()
@@ -92,8 +92,12 @@ pub fn resident_codestream_buffer_from_metal_encoded_j2k(
         .codestream_allocation_len()
         .ok_or(ResidentHandoffError::RangeExceedsAllocation)?;
     let buffer = ResidentBufferRef::with_allocation_len(memory, allocation_len)?;
-    ResidentCodestreamBuffer::new(buffer, encoded.byte_len(), encoded.capacity())?
-        .require_backend(BackendKind::Metal)
+    ResidentCodestreamBuffer::new(
+        buffer,
+        encoded.codestream_byte_len(),
+        encoded.codestream_capacity(),
+    )?
+    .require_backend(BackendKind::Metal)
 }
 
 /// Transcode JPEG to HTJ2K using CPU, Auto Metal, or strict Metal routing.

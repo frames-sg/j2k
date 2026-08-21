@@ -30,7 +30,7 @@ pub(crate) fn decode_region_scaled_direct_to_surface_with_session(
     scale: Downscale,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<Surface>, Error> {
-    crate::compute::with_runtime_for_session(session, |_| {
+    crate::engine::with_runtime_for_session(session, |_| {
         let Some(prepared) =
             build_region_scaled_direct_plan_with_session(input, fmt, roi, scale, session)?
         else {
@@ -46,19 +46,21 @@ fn execute_region_scaled_direct_plan(
 ) -> Result<Option<Surface>, Error> {
     match plan {
         PreparedRegionScaledDirectPlan::Gray(plan) => {
-            match crate::compute::execute_prepared_direct_grayscale_plan(&plan, fmt) {
+            match crate::engine::execute_prepared_direct_grayscale_plan(&plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => Ok(None),
                 Err(error) => Err(error),
             }
         }
         PreparedRegionScaledDirectPlan::Color(plan) => {
-            match crate::compute::execute_hybrid_cpu_tier1_direct_color_plan(plan, fmt) {
+            match crate::engine::execute_hybrid_cpu_tier1_direct_color_plan(plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
-                    Err(Error::UnsupportedMetalRequest {
-                        reason: RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
-                    })
+                    Err(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::unsupported_operation(
+                            RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
+                        ),
+                    ))
                 }
                 Err(error) => Err(error),
             }
@@ -73,7 +75,7 @@ fn execute_region_scaled_direct_plan_with_device(
 ) -> Result<Option<Surface>, Error> {
     match plan {
         PreparedRegionScaledDirectPlan::Gray(plan) => {
-            match crate::compute::execute_prepared_direct_grayscale_plan_with_device(
+            match crate::engine::execute_prepared_direct_grayscale_plan_with_device(
                 &plan, fmt, device,
             ) {
                 Ok(surface) => Ok(Some(surface)),
@@ -82,14 +84,16 @@ fn execute_region_scaled_direct_plan_with_device(
             }
         }
         PreparedRegionScaledDirectPlan::Color(plan) => {
-            match crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_with_device(
+            match crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_with_device(
                 plan, fmt, device,
             ) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
-                    Err(Error::UnsupportedMetalRequest {
-                        reason: RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
-                    })
+                    Err(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::unsupported_operation(
+                            RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
+                        ),
+                    ))
                 }
                 Err(error) => Err(error),
             }

@@ -5,6 +5,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    path::Path,
 };
 
 use super::{
@@ -52,8 +53,12 @@ pub(super) struct ReviewConfig {
 }
 
 pub(super) fn load_review_config() -> Result<ReviewConfig, String> {
-    let source = fs::read_to_string(API_REVIEW_CONFIG)
-        .map_err(|err| format!("read {API_REVIEW_CONFIG}: {err}"))?;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "xtask manifest directory has no workspace parent".to_string())?
+        .join(API_REVIEW_CONFIG);
+    let source =
+        fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&source)
         .map_err(|err| format!("parse {API_REVIEW_CONFIG}: {err}"))?;
     parse_review_config(&value)

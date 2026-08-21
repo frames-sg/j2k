@@ -153,10 +153,10 @@ fn cuda_resident_quantized_subband_feeds_resident_ht_batch_when_runtime_required
         range_bits: 8,
         reversible: true,
     };
-    let resident_quantized = context
+    let resident_quantized = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .j2k_quantize_subband_resident(&sample_buffer, samples.len(), quantization)
         .expect("resident quantization");
-    let host_quantized = context
+    let host_quantized = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .j2k_quantize_subband(&samples, quantization)
         .expect("host-staged quantization");
     let jobs = [CudaHtj2kEncodeCodeBlockJob {
@@ -167,7 +167,7 @@ fn cuda_resident_quantized_subband_feeds_resident_ht_batch_when_runtime_required
         target_coding_passes: 1,
     }];
 
-    let resident_encoded = context
+    let resident_encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblocks_resident(
             resident_quantized.buffer(),
             resident_quantized.coefficient_count(),
@@ -175,7 +175,7 @@ fn cuda_resident_quantized_subband_feeds_resident_ht_batch_when_runtime_required
             cuda_htj2k_encode_tables(),
         )
         .expect("resident HTJ2K encode");
-    let staged_encoded = context
+    let staged_encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblocks(
             host_quantized.coefficients(),
             &jobs,
@@ -218,7 +218,7 @@ fn cuda_resident_strided_codeblock_region_matches_host_gather_when_runtime_requi
         range_bits: 8,
         reversible: true,
     };
-    let resident_quantized = context
+    let resident_quantized = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .j2k_quantize_subband_resident(&sample_buffer, samples.len(), quantization)
         .expect("resident quantization");
     let quantized = resident_quantized
@@ -241,7 +241,7 @@ fn cuda_resident_strided_codeblock_region_matches_host_gather_when_runtime_requi
         target_coding_passes: 1,
     }];
 
-    let resident_encoded = context
+    let resident_encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblock_regions_resident(
             resident_quantized.buffer(),
             resident_quantized.coefficient_count(),
@@ -249,7 +249,7 @@ fn cuda_resident_strided_codeblock_region_matches_host_gather_when_runtime_requi
             cuda_htj2k_encode_tables(),
         )
         .expect("resident strided HTJ2K encode");
-    let staged_encoded = context
+    let staged_encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblocks(
             &gathered_codeblock,
             &contiguous_jobs,

@@ -11,7 +11,7 @@ pub(super) fn emit_region_scaled_color_plan_build_timings(
     crop_us: u128,
     total_us: u128,
 ) {
-    if !crate::compute::metal_profile_stages_enabled() {
+    if !crate::engine::metal_profile_stages_enabled() {
         return;
     }
 

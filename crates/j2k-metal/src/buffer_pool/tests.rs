@@ -30,7 +30,8 @@ fn completed_exact_size_reuse_updates_actual_byte_accounting() {
     let queue = checked_command_queue(&device).expect("command queue");
     let command_buffer = checked_command_buffer(&queue).expect("command buffer");
     let blit = checked_blit_command_encoder(&command_buffer).expect("blit encoder");
-    blit.copy_from_buffer(&upload, 0, &buffer, 0, 16);
+    blit.copy_from_buffer(&upload, 0, &buffer, 0, 16)
+        .expect("copy upload into pooled buffer");
     blit.endEncoding();
     commit_and_wait(&command_buffer).expect("buffer work completion before recycle");
     let pointer = objc2::rc::Retained::as_ptr(buffer.buffer());

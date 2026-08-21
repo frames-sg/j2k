@@ -2,12 +2,11 @@
 
 //! Metal baseline JPEG entropy submission and bounded host readback.
 
-use objc2_metal::MTLSize;
-
 use crate::metal_types::prelude::*;
 
 use super::{
-    commit_and_wait_jpeg, new_command_buffer, new_compute_command_encoder, with_runtime_for_session,
+    commit_and_wait_jpeg, dispatch_1d_pipeline, new_command_buffer, new_compute_command_encoder,
+    with_runtime_for_session,
 };
 use crate::abi::{
     JpegBaselineEncodeHuffmanTable, JpegBaselineEncodeParams, JpegBaselineEncodeStatus,
@@ -15,11 +14,71 @@ use crate::abi::{
     JPEG_BASELINE_ENCODE_STATUS_OK,
 };
 use crate::buffers::{
-    checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at, new_shared_buffer,
-    new_shared_buffer_with_slice,
+    checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at, new_private_buffer,
+    new_shared_buffer, new_shared_buffer_with_slice,
 };
 use crate::compute::status::jpeg_baseline_encode_status_error;
 use crate::{encode::allocation as encode_allocation, Error};
+
+fn staged_coefficient_plan(params: &[JpegBaselineEncodeParams]) -> Result<(usize, u32), Error> {
+    let mut coefficient_count = 0usize;
+    let mut mcu_count = 0usize;
+    for params in params {
+        let components = usize::try_from(params.components).map_err(|_| Error::MetalKernel {
+            message: "JPEG Baseline Metal component count exceeds usize".to_string(),
+        })?;
+        if !(1..=3).contains(&components) {
+            return Err(Error::MetalKernel {
+                message: "JPEG Baseline Metal staged encode requires one to three components"
+                    .to_string(),
+            });
+        }
+        let component_blocks = [
+            params.h0.checked_mul(params.v0),
+            params.h1.checked_mul(params.v1),
+            params.h2.checked_mul(params.v2),
+        ];
+        let mut blocks_per_mcu = 0usize;
+        for blocks in component_blocks.into_iter().take(components) {
+            blocks_per_mcu = blocks_per_mcu
+                .checked_add(blocks.ok_or_else(|| Error::MetalKernel {
+                    message: "JPEG Baseline Metal block geometry overflowed".to_string(),
+                })? as usize)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "JPEG Baseline Metal blocks-per-MCU overflowed".to_string(),
+                })?;
+        }
+        let tile_mcus = (params.mcus_per_row as usize)
+            .checked_mul(params.mcu_rows as usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Baseline Metal MCU count overflowed".to_string(),
+            })?;
+        mcu_count = mcu_count
+            .checked_add(tile_mcus)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Baseline Metal batch MCU count overflowed".to_string(),
+            })?;
+        coefficient_count = coefficient_count
+            .checked_add(
+                tile_mcus
+                    .checked_mul(blocks_per_mcu)
+                    .and_then(|blocks| blocks.checked_mul(64))
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "JPEG Baseline Metal coefficient count overflowed".to_string(),
+                    })?,
+            )
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Baseline Metal batch coefficient count overflowed".to_string(),
+            })?;
+    }
+    let mcu_count = u32::try_from(mcu_count).map_err(|_| Error::MetalKernel {
+        message: "JPEG Baseline Metal batch MCU count exceeds u32".to_string(),
+    })?;
+    u32::try_from(coefficient_count).map_err(|_| Error::MetalKernel {
+        message: "JPEG Baseline Metal coefficient indexing exceeds u32".to_string(),
+    })?;
+    Ok((coefficient_count, mcu_count))
+}
 
 pub(crate) fn encode_jpeg_baseline_entropy_with_session(
     session: &crate::MetalBackendSession,
@@ -33,32 +92,62 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
             new_shared_buffer_with_slice(&runtime.device, std::slice::from_ref(&status))?;
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
-        let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.jpeg_baseline_encode_pipeline);
-        encoder.bind_buffer(0, Some(job.input), job.input_offset as u64);
-        encoder.bind_buffer(1, Some(&entropy_buffer), 0);
-        encoder.bind_buffer(2, Some(&status_buffer), 0);
-        encoder.bind_bytes::<JpegBaselineEncodeParams>(3, &job.params);
-        encoder.bind_bytes::<[u8; 64]>(4, &job.q_luma);
-        encoder.bind_bytes::<[u8; 64]>(5, &job.q_chroma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_luma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_luma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(8, &job.huff_dc_chroma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(9, &job.huff_ac_chroma);
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
+        let mut params = job.params;
+        params.input_offset_bytes = 0;
+        params.entropy_offset_bytes = 0;
+        let params_buffer =
+            new_shared_buffer_with_slice(&runtime.device, std::slice::from_ref(&params))?;
+        let (coefficient_count, mcu_count) =
+            staged_coefficient_plan(std::slice::from_ref(&params))?;
+        let coefficient_bytes = coefficient_count
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Baseline Metal coefficient byte count overflowed".to_string(),
+            })?;
+        let coefficient_buffer = new_private_buffer(&runtime.device, coefficient_bytes)?;
+        let tile_count = 1u32;
+
+        let precompute = new_compute_command_encoder(&command_buffer)?;
+        precompute
+            .setComputePipelineState(&runtime.pipelines.jpeg_baseline_encode_precompute_batch);
+        precompute.bind_buffer(0, Some(job.input), job.input_offset as u64);
+        precompute.bind_buffer(1, Some(&coefficient_buffer), 0);
+        precompute.bind_buffer(2, Some(&params_buffer), 0);
+        precompute.bind_bytes::<[u8; 64]>(3, &job.q_luma);
+        precompute.bind_bytes::<[u8; 64]>(4, &job.q_chroma);
+        precompute.bind_bytes::<u32>(5, &tile_count);
+        dispatch_1d_pipeline(
+            &precompute,
+            &runtime.pipelines.jpeg_baseline_encode_precompute_batch,
+            mcu_count,
         );
-        encoder.endEncoding();
+        precompute.endEncoding();
+
+        let entropy = new_compute_command_encoder(&command_buffer)?;
+        entropy.setComputePipelineState(
+            &runtime
+                .pipelines
+                .jpeg_baseline_encode_entropy_from_coeffs_batch,
+        );
+        entropy.bind_buffer(0, Some(&coefficient_buffer), 0);
+        entropy.bind_buffer(1, Some(&entropy_buffer), 0);
+        entropy.bind_buffer(2, Some(&status_buffer), 0);
+        entropy.bind_buffer(3, Some(&params_buffer), 0);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(4, &job.huff_dc_luma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(5, &job.huff_ac_luma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_chroma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_chroma);
+        entropy.bind_bytes::<u32>(8, &tile_count);
+        dispatch_1d_pipeline(
+            &entropy,
+            &runtime
+                .pipelines
+                .jpeg_baseline_encode_entropy_from_coeffs_batch,
+            tile_count,
+        );
+        entropy.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
+        drop(coefficient_buffer);
 
         let status = checked_buffer_read::<JpegBaselineEncodeStatus>(
             &status_buffer,
@@ -128,33 +217,55 @@ pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
         })?;
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
-        let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.jpeg_baseline_encode_batch_pipeline);
-        encoder.bind_buffer(0, Some(job.input), 0);
-        encoder.bind_buffer(1, Some(&entropy_buffer), 0);
-        encoder.bind_buffer(2, Some(&status_buffer), 0);
-        encoder.bind_buffer(3, Some(&params_buffer), 0);
-        encoder.bind_bytes::<[u8; 64]>(4, &job.q_luma);
-        encoder.bind_bytes::<[u8; 64]>(5, &job.q_chroma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_luma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_luma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(8, &job.huff_dc_chroma);
-        encoder.bind_bytes::<JpegBaselineEncodeHuffmanTable>(9, &job.huff_ac_chroma);
-        encoder.bind_bytes::<u32>(10, &tile_count);
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            MTLSize {
-                width: tile_count as usize,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
+        let (coefficient_count, mcu_count) = staged_coefficient_plan(&job.params)?;
+        let coefficient_bytes = coefficient_count
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Baseline Metal coefficient byte count overflowed".to_string(),
+            })?;
+        let coefficient_buffer = new_private_buffer(&runtime.device, coefficient_bytes)?;
+
+        let precompute = new_compute_command_encoder(&command_buffer)?;
+        precompute
+            .setComputePipelineState(&runtime.pipelines.jpeg_baseline_encode_precompute_batch);
+        precompute.bind_buffer(0, Some(job.input), 0);
+        precompute.bind_buffer(1, Some(&coefficient_buffer), 0);
+        precompute.bind_buffer(2, Some(&params_buffer), 0);
+        precompute.bind_bytes::<[u8; 64]>(3, &job.q_luma);
+        precompute.bind_bytes::<[u8; 64]>(4, &job.q_chroma);
+        precompute.bind_bytes::<u32>(5, &tile_count);
+        dispatch_1d_pipeline(
+            &precompute,
+            &runtime.pipelines.jpeg_baseline_encode_precompute_batch,
+            mcu_count,
         );
-        encoder.endEncoding();
+        precompute.endEncoding();
+
+        let entropy = new_compute_command_encoder(&command_buffer)?;
+        entropy.setComputePipelineState(
+            &runtime
+                .pipelines
+                .jpeg_baseline_encode_entropy_from_coeffs_batch,
+        );
+        entropy.bind_buffer(0, Some(&coefficient_buffer), 0);
+        entropy.bind_buffer(1, Some(&entropy_buffer), 0);
+        entropy.bind_buffer(2, Some(&status_buffer), 0);
+        entropy.bind_buffer(3, Some(&params_buffer), 0);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(4, &job.huff_dc_luma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(5, &job.huff_ac_luma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(6, &job.huff_dc_chroma);
+        entropy.bind_bytes::<JpegBaselineEncodeHuffmanTable>(7, &job.huff_ac_chroma);
+        entropy.bind_bytes::<u32>(8, &tile_count);
+        dispatch_1d_pipeline(
+            &entropy,
+            &runtime
+                .pipelines
+                .jpeg_baseline_encode_entropy_from_coeffs_batch,
+            tile_count,
+        );
+        entropy.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
+        drop(coefficient_buffer);
 
         let status_slice = checked_buffer_slice::<JpegBaselineEncodeStatus>(
             &status_buffer,

@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 use crate::process::{self, CommandContext};
 
 mod config;
+mod metal_stage;
 mod report;
 mod stage;
 mod test_stage;
 
 use config::{
-    validate_clone_config, validate_test_clone_config, DUPLICATED_LINE_THRESHOLD,
-    TEST_DUPLICATED_LINE_THRESHOLD,
+    validate_clone_config, validate_metal_clone_config, validate_test_clone_config,
+    DUPLICATED_LINE_THRESHOLD, METAL_DUPLICATED_LINE_THRESHOLD, TEST_DUPLICATED_LINE_THRESHOLD,
 };
+use metal_stage::stage_metal_sources;
 use report::validate_jscpd_report;
 use stage::{reset_generated_directory, stage_production_sources};
 use test_stage::stage_test_sources;
@@ -23,11 +25,14 @@ const JSCPD_VERSION: &str = "4.0.5";
 const JSCPD_PACKAGE: &str = "jscpd@4.0.5";
 const CONFIG_RELATIVE: &str = ".jscpd.json";
 const TEST_CONFIG_RELATIVE: &str = ".jscpd-tests.json";
+const METAL_CONFIG_RELATIVE: &str = ".jscpd-metal.json";
 const AUDIT_ROOT_RELATIVE: &str = "target/clone-audit";
 const STAGE_RELATIVE: &str = "target/clone-audit/production";
 const REPORT_RELATIVE: &str = "target/clone-audit/report";
 const TEST_STAGE_RELATIVE: &str = "target/clone-audit/tests";
 const TEST_REPORT_RELATIVE: &str = "target/clone-audit/test-report";
+const METAL_STAGE_RELATIVE: &str = "target/clone-audit/metal";
+const METAL_REPORT_RELATIVE: &str = "target/clone-audit/metal-report";
 
 pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), String> {
     let arguments = args.collect::<Vec<_>>();
@@ -42,61 +47,53 @@ pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), Stri
     validate_clone_config(&config_path)?;
     let test_config_path = root.join(TEST_CONFIG_RELATIVE);
     validate_test_clone_config(&test_config_path)?;
+    let metal_config_path = root.join(METAL_CONFIG_RELATIVE);
+    validate_metal_clone_config(&metal_config_path)?;
 
     let audit_root = root.join(AUDIT_ROOT_RELATIVE);
     let stage_root = root.join(STAGE_RELATIVE);
     let report_root = root.join(REPORT_RELATIVE);
     let test_stage_root = root.join(TEST_STAGE_RELATIVE);
     let test_report_root = root.join(TEST_REPORT_RELATIVE);
-    reset_generated_directory(&audit_root, &stage_root)?;
-    reset_generated_directory(&audit_root, &report_root)?;
-    reset_generated_directory(&audit_root, &test_stage_root)?;
-    reset_generated_directory(&audit_root, &test_report_root)?;
-    fs::create_dir_all(&stage_root)
-        .map_err(|error| format!("create clone-audit stage {}: {error}", stage_root.display()))?;
-    fs::create_dir_all(&report_root).map_err(|error| {
-        format!(
-            "create clone-audit report {}: {error}",
-            report_root.display()
-        )
-    })?;
-    fs::create_dir_all(&test_stage_root).map_err(|error| {
-        format!(
-            "create test clone-audit stage {}: {error}",
-            test_stage_root.display()
-        )
-    })?;
-    fs::create_dir_all(&test_report_root).map_err(|error| {
-        format!(
-            "create test clone-audit report {}: {error}",
-            test_report_root.display()
-        )
-    })?;
+    let metal_stage_root = root.join(METAL_STAGE_RELATIVE);
+    let metal_report_root = root.join(METAL_REPORT_RELATIVE);
+    for (directory, label) in [
+        (&stage_root, "production stage"),
+        (&report_root, "production report"),
+        (&test_stage_root, "test stage"),
+        (&test_report_root, "test report"),
+        (&metal_stage_root, "Metal stage"),
+        (&metal_report_root, "Metal report"),
+    ] {
+        prepare_generated_directory(&audit_root, directory, label)?;
+    }
 
     let summary = stage_production_sources(&root, &stage_root)?;
     let scanner_args = jscpd_args(&stage_root, &config_path, &report_root)?;
-    process::run_command_owned(
-        OsString::from("npx"),
+    run_jscpd_lane(
+        &root,
         &scanner_args,
-        CommandContext::new().current_dir(&root),
-    )
-    .map_err(|error| {
-        format!("pinned jscpd {JSCPD_VERSION} production clone audit failed: {error}")
-    })?;
-    validate_jscpd_report(
-        &report_root.join("jscpd-report.json"),
+        "production",
+        &report_root,
         DUPLICATED_LINE_THRESHOLD,
+    )?;
+    let metal_summary = stage_metal_sources(&root, &metal_stage_root)?;
+    let metal_scanner_args =
+        metal_jscpd_args(&metal_stage_root, &metal_config_path, &metal_report_root)?;
+    run_jscpd_lane(
+        &root,
+        &metal_scanner_args,
+        "Metal",
+        &metal_report_root,
+        METAL_DUPLICATED_LINE_THRESHOLD,
     )?;
     let test_summary = stage_test_sources(&root, &test_stage_root)?;
     let test_scanner_args = jscpd_args(&test_stage_root, &test_config_path, &test_report_root)?;
-    process::run_command_owned(
-        OsString::from("npx"),
+    run_jscpd_lane(
+        &root,
         &test_scanner_args,
-        CommandContext::new().current_dir(&root),
-    )
-    .map_err(|error| format!("pinned jscpd {JSCPD_VERSION} test clone audit failed: {error}"))?;
-    validate_jscpd_report(
-        &test_report_root.join("jscpd-report.json"),
+        "test",
+        &test_report_root,
         TEST_DUPLICATED_LINE_THRESHOLD,
     )?;
     println!(
@@ -107,12 +104,47 @@ pub(crate) fn clone_audit(args: impl Iterator<Item = String>) -> Result<(), Stri
         report_root.join("jscpd-report.json").display()
     );
     println!(
+        "Metal clone audit passed across {} staged shader sources; report: {}",
+        metal_summary.files,
+        metal_report_root.join("jscpd-report.json").display()
+    );
+    println!(
         "test clone audit passed across {} staged Rust sources, including {} inline test-only syntax nodes; report: {}",
         test_summary.files,
         test_summary.masked_nodes,
         test_report_root.join("jscpd-report.json").display()
     );
     Ok(())
+}
+
+fn prepare_generated_directory(
+    audit_root: &Path,
+    directory: &Path,
+    label: &str,
+) -> Result<(), String> {
+    reset_generated_directory(audit_root, directory)?;
+    fs::create_dir_all(directory).map_err(|error| {
+        format!(
+            "create clone-audit {label} {}: {error}",
+            directory.display()
+        )
+    })
+}
+
+fn run_jscpd_lane(
+    root: &Path,
+    scanner_args: &[String],
+    label: &str,
+    report_root: &Path,
+    threshold: f64,
+) -> Result<(), String> {
+    process::run_command_owned(
+        OsString::from("npx"),
+        scanner_args,
+        CommandContext::new().current_dir(root),
+    )
+    .map_err(|error| format!("pinned jscpd {JSCPD_VERSION} {label} clone audit failed: {error}"))?;
+    validate_jscpd_report(&report_root.join("jscpd-report.json"), threshold)
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -137,6 +169,16 @@ fn jscpd_args(
         path_text(report_root)?,
         "--silent".to_string(),
     ])
+}
+
+fn metal_jscpd_args(
+    stage_root: &Path,
+    config_path: &Path,
+    report_root: &Path,
+) -> Result<Vec<String>, String> {
+    let mut args = jscpd_args(stage_root, config_path, report_root)?;
+    args.extend(["--formats-exts".to_string(), "opencl:metal".to_string()]);
+    Ok(args)
 }
 
 fn path_text(path: &Path) -> Result<String, String> {

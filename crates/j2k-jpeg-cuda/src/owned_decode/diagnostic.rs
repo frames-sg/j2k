@@ -14,12 +14,12 @@ const UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT: &str =
 #[doc(hidden)]
 /// Diagnostic report retaining an exact session host-owner lease.
 pub struct CudaJpegChunkedEntropyReport {
-    report: j2k_cuda_runtime::CudaJpegChunkedEntropyReport,
+    report: j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyReport,
     _lease: HostOwnerLease,
 }
 
 impl core::ops::Deref for CudaJpegChunkedEntropyReport {
-    type Target = j2k_cuda_runtime::CudaJpegChunkedEntropyReport;
+    type Target = j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyReport;
 
     fn deref(&self) -> &Self::Target {
         &self.report
@@ -28,7 +28,7 @@ impl core::ops::Deref for CudaJpegChunkedEntropyReport {
 
 pub(crate) fn diagnose_owned_cuda_420_entropy(
     bytes: &[u8],
-    config: j2k_cuda_runtime::CudaJpegChunkedEntropyConfig,
+    config: j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig,
     session: &mut CudaSession,
 ) -> Result<CudaJpegChunkedEntropyReport, Error> {
     config
@@ -42,15 +42,17 @@ pub(crate) fn diagnose_owned_cuda_420_entropy(
     let fast420 = leased_packet
         .packet
         .fast420()
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT,
+            ),
+        ))?;
     let context = session.cuda_context()?;
     let pinned_upload = context
         .begin_pinned_upload_operation()
         .map_err(crate::runtime::cuda_error)?;
     let pinned_accounting = session.reserve_pinned_upload_retention(&context, &pinned_upload)?;
-    let plan = j2k_cuda_runtime::CudaJpegChunkedEntropyPlan {
+    let plan = j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyPlan {
         config,
         entropy_bytes: &fast420.entropy_bytes,
         y_dc_table: cuda_huffman_table(&fast420.y_dc_table)?,
@@ -61,12 +63,8 @@ pub(crate) fn diagnose_owned_cuda_420_entropy(
         cr_ac_table: cuda_huffman_table(&fast420.cr_ac_table)?,
     };
     let runtime_external_live = session.owned_host_live_bytes_without_pinned()?;
-    let report = context
-        .diagnose_jpeg_420_entropy_self_sync_with_pinned_upload_operation(
-            &plan,
-            runtime_external_live,
-            &pinned_upload,
-        )
+    let report = j2k_cuda_jpeg_engine::JpegCudaEngine::new(&context)
+        .diagnose_entropy_with_pinned_upload_operation(&plan, runtime_external_live, &pinned_upload)
         .map_err(cuda_chunked_entropy_diagnostic_error);
     let report = pinned_accounting.finish(report)?;
     let retained_bytes = report

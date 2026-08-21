@@ -18,9 +18,9 @@ pub(super) fn prepare_color_cuda_resident_batch(
         let mut color =
             build_cuda_htj2k_color_plans_from_bytes_with_profile(input, fmt, &mut native_context)?;
         if color.components.len() != 3 {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+            ));
         }
         let mut append_budget = host_owners::color_batch_budget(
             &colors,

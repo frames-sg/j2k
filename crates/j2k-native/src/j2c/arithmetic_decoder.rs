@@ -4,7 +4,7 @@
 //! context labels as input, each time yielding a new bit from the original data
 //! as output.
 
-use super::mq::QE_TABLE;
+use super::mq::PACKED_DECODER_STATES;
 
 pub(crate) struct ArithmeticDecoder<'a> {
     /// The underlying encoded data.
@@ -128,14 +128,18 @@ impl<'a> ArithmeticDecoder<'a> {
     ///
     /// We use the version from Annex G from <https://www.itu.int/rec/T-REC-T.88-201808-I>.
     #[expect(
+        clippy::cast_possible_truncation,
         clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
+        clippy::similar_names,
+        reason = "packed MQ fields are explicitly bounded and MPS/LPS are paired domain terms on a measured per-symbol hot path"
     )]
     #[inline(always)]
     pub(crate) fn decode(&mut self, context: &mut ArithmeticDecoderContext) -> u32 {
-        let qe_entry = &QE_TABLE[context.index() as usize];
+        let state = PACKED_DECODER_STATES[context.0 as usize];
+        let qe = state as u32 & 0xffff;
+        let mps = u32::from((state >> 16) & 1 != 0);
 
-        self.a -= qe_entry.qe;
+        self.a -= qe;
 
         // This is a faster version that reduces branching, which has shown
         // itself to be the main limiting factor for better performance.
@@ -144,7 +148,7 @@ impl<'a> ArithmeticDecoder<'a> {
         // MPS_EXCHANGE and LPS_EXCHANGE.
 
         if (self.c >> 16) < self.a && self.a & 0x8000 != 0 {
-            return context.mps();
+            return mps;
         }
 
         // Unified branchless MPS_EXCHANGE / LPS_EXCHANGE. In the Annex C.3.2
@@ -163,27 +167,24 @@ impl<'a> ArithmeticDecoder<'a> {
         self.c -= (self.a << 16) & lps_mask;
 
         // Same condition as in exchange_mps / exchange_lps.
-        let cond = u32::from(self.a < qe_entry.qe);
+        let cond = u32::from(self.a < qe);
 
         // LPS: a = qe (no-op when MPS, a stays as a - qe).
-        self.a = (self.a & !lps_mask) | (qe_entry.qe & lps_mask);
+        self.a = (self.a & !lps_mask) | (qe & lps_mask);
 
         // exchange_mps: d = mps ^ cond       →  cond ^ 0
         // exchange_lps: d = mps ^ inv_cond   →  cond ^ 1
         // unified:      d = mps ^ (cond ^ is_lps)
-        let d = context.mps() ^ cond ^ is_lps;
+        let pick_nlps = cond ^ is_lps;
+        let d = mps ^ pick_nlps;
 
         // exchange_mps: flip mps when cond & switch       →  (cond ^ 0) & switch
         // exchange_lps: flip mps when inv_cond & switch   →  (cond ^ 1) & switch
         // unified:      flip mps when (cond ^ is_lps) & switch
-        context.xor_mps((cond ^ is_lps) & u32::from(qe_entry.switch));
-
-        // exchange_mps: index = cond * nlps + inv_cond * nmps
-        // exchange_lps: index = cond * nmps + inv_cond * nlps  (swapped)
-        // unified: the result is always exactly nmps or nlps —
-        //          pick nlps when (cond ^ is_lps) == 1, nmps otherwise.
-        let pick_nlps = u8::from(cond ^ is_lps != 0).wrapping_neg(); // 0xFF or 0x00
-        context.set_index(qe_entry.nmps ^ ((qe_entry.nmps ^ qe_entry.nlps) & pick_nlps));
+        let pick_mask = u8::from(pick_nlps != 0).wrapping_neg();
+        let next_mps = (state >> 24) as u8;
+        let next_lps = (state >> 32) as u8;
+        context.0 = next_mps ^ ((next_mps ^ next_lps) & pick_mask);
 
         self.renormalize();
 
@@ -237,6 +238,7 @@ impl ArithmeticDecoderContext {
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
     )]
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn index(self) -> u32 {
         u32::from(self.0 & 0x7F)
@@ -246,27 +248,10 @@ impl ArithmeticDecoderContext {
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
     )]
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn mps(self) -> u32 {
         u32::from(self.0 >> 7)
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
-    )]
-    #[inline(always)]
-    fn set_index(&mut self, index: u8) {
-        self.0 = (self.0 & 0x80) | index;
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
-    )]
-    #[inline(always)]
-    fn xor_mps(&mut self, val: u32) {
-        self.0 ^= u8::from(val & 1 != 0) << 7;
     }
 
     #[expect(

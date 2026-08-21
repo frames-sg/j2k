@@ -83,7 +83,7 @@ fn accelerator_critical_paths_exclude_broad_compute_and_diagnostic_internals() {
         Some(CriticalPathClass::Ownership)
     );
     assert_eq!(
-        classify_path("crates/j2k-metal/src/compute/tier1_encode.rs"),
+        classify_path("crates/j2k-metal/src/engine/tier1_encode.rs"),
         None
     );
     assert_eq!(
@@ -91,23 +91,23 @@ fn accelerator_critical_paths_exclude_broad_compute_and_diagnostic_internals() {
         None
     );
     assert_eq!(
-        classify_path("crates/j2k-metal/src/compute/resident_packet_plan.rs"),
+        classify_path("crates/j2k-metal/src/engine/resident_packet_plan.rs"),
         None
     );
     assert_eq!(classify_path("crates/j2k-metal/src/encode/batch.rs"), None);
     assert_eq!(
-        classify_path("crates/j2k-metal/src/compute/resident_tier1/counter_validation/validate.rs"),
+        classify_path("crates/j2k-metal/src/engine/resident_tier1/counter_validation/validate.rs"),
         None
     );
     assert_eq!(
-        classify_path("crates/j2k-metal/src/compute/resident_codestream/classic_tier1.rs"),
+        classify_path("crates/j2k-metal/src/engine/resident_codestream/classic_tier1.rs"),
         None
     );
     assert_eq!(
         audit_zero_body(
             CoverageLane::Metal,
             ZeroBodyKind::Function,
-            "crates/j2k-metal/src/compute/tier1_encode.rs::encode_codeblock@1",
+            "crates/j2k-metal/src/engine/tier1_encode.rs::encode_codeblock@1",
         ),
         ZeroBodyAudit::Residual(ResidualDisposition::HardwareOnly)
     );

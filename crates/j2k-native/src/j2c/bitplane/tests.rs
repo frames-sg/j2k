@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 
 use super::super::bitplane_encode;
-use super::arithmetic::cleanup_candidate_scan_mask;
+use super::arithmetic::{cleanup_candidate_scan_mask, cleanup_run_length_candidate};
 use super::bypass::{BitDecoder, BypassDecoder};
 use super::context::{
     context_label_magnitude_refinement_coding_from_state_lazy, context_label_sign_coding_index,
@@ -13,7 +13,7 @@ use super::facade::decode_code_block_segments_validated;
 use super::reconstruction::reconstruct_irreversible_midpoint;
 use super::state::{
     BitPlaneDecodeContext, Coefficient, CoefficientState, NeighborSignificances,
-    COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK, SIGNIFICANCE_MASK,
+    COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK, HAS_ZERO_CODING_MASK, SIGNIFICANCE_MASK,
 };
 use crate::j2c::build::SubBandType;
 use crate::j2c::codestream::CodeBlockStyle;
@@ -483,6 +483,21 @@ fn scan_unit_masks_track_significance_and_current_bitplane_zero_coding() {
 
     assert_eq!(ctx.significant_scan_masks[scan_unit], bit);
     assert_eq!(ctx.zero_coding_scan_masks[scan_unit], 0);
+    assert_ne!(
+        ctx.coefficient_states[idx].0 & HAS_ZERO_CODING_MASK,
+        0,
+        "normal arithmetic mode uses the reset scan mask as its transient source of truth"
+    );
+
+    let bypass_style = CodeBlockStyle {
+        selective_arithmetic_coding_bypass: true,
+        ..CodeBlockStyle::default()
+    };
+    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &bypass_style, 8, true)
+        .expect("reset bypass context");
+    ctx.set_zero_coding_index(idx, padded_width);
+    ctx.reset_for_next_bitplane();
+    assert_eq!(ctx.coefficient_states[idx].0 & HAS_ZERO_CODING_MASK, 0);
 }
 
 #[test]
@@ -563,6 +578,25 @@ fn cleanup_candidate_mask_excludes_significant_and_zero_coded_coefficients() {
 
     assert_eq!(cleanup_candidate_scan_mask(&ctx, scan_unit, 4), 0b0101);
     assert_eq!(cleanup_candidate_scan_mask(&ctx, scan_unit, 2), 0b0001);
+}
+
+#[test]
+fn cleanup_run_length_rejects_a_zero_coded_coefficient_without_significant_neighbors() {
+    let mut ctx = BitPlaneDecodeContext::default();
+    let style = CodeBlockStyle::default();
+    ctx.reset_for_job(1, 4, 0, 4, SubBandType::LowLow, &style, 8, true)
+        .expect("reset context");
+
+    let padded_width = ctx.padded_width as usize;
+    let top_idx = COEFFICIENTS_PADDING as usize * padded_width + COEFFICIENTS_PADDING as usize;
+    ctx.set_zero_coding_index(top_idx + padded_width, padded_width);
+
+    assert!(!cleanup_run_length_candidate(
+        &ctx,
+        top_idx,
+        padded_width,
+        0
+    ));
 }
 
 #[test]

@@ -7,6 +7,7 @@ use super::{
     CudaSession, Error, FinishColorCudaResidentSurfaceRequest, HostPhaseBudget, J2kDecoder,
     PixelFormat, Rect, Surface, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
+use j2k_cuda_j2k_engine::J2kCudaEngine;
 
 pub(in crate::decoder) fn decode_color_cuda_resident_surface_with_profile(
     decoder: &mut J2kDecoder<'_>,
@@ -99,9 +100,9 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
     collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     if color.components.len() != 3 {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
     let context = session.cuda_context()?;
     let pool = session.decode_buffer_pool()?;
@@ -123,9 +124,10 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .table_upload_us
         .saturating_add(table_upload_us);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
+    let engine = J2kCudaEngine::new(&context);
     let decode_resources = match table_resources.as_ref() {
-        Some(tables) => context.upload_htj2k_decode_resources_with_tables(&color.payload, tables),
-        None => context.upload_j2k_decode_payload(&color.payload),
+        Some(tables) => engine.upload_htj2k_decode_resources_with_tables(&color.payload, tables),
+        None => engine.upload_j2k_decode_payload(&color.payload),
     }
     .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);

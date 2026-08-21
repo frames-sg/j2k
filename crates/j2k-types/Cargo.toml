@@ -1,6 +1,6 @@
 [package]
 name = "j2k-types"
-description = "Shared JPEG 2000 and HTJ2K encode-stage contracts, progression helpers, and dispatch accounting"
+description = "Shared JPEG 2000 and HTJ2K codec value contracts and dispatch accounting"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

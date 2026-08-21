@@ -16,10 +16,7 @@ use j2k_test_support::{
 
 fn ht_pass_counts(prepared: &j2k::PreparedImage) -> Vec<u8> {
     let plan = prepared.htj2k_plan().expect("HTJ2K referenced plan");
-    let plan = plan
-        .adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .expect("j2k-native prepared-plan adapter");
+    let plan = plan.geometry();
     let mut passes = Vec::new();
     for tile in plan.tiles() {
         if let Some(geometry) = tile.grayscale_geometry() {

@@ -6,9 +6,7 @@ use super::super::{CudaDeviceBuffer, CudaPooledDeviceBuffer, Error, CUDA_HTJ2K_K
 pub(in crate::decoder) fn pooled_cuda_buffer(
     buffer: &CudaPooledDeviceBuffer,
 ) -> Result<&CudaDeviceBuffer, Error> {
-    buffer
-        .as_device_buffer()
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })
+    buffer.as_device_buffer().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+    ))
 }

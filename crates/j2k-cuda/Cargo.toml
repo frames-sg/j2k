@@ -21,34 +21,49 @@ path = "src/lib.rs"
 [features]
 default = []
 cuda-runtime = [
+    "dep:j2k-cuda-j2k-engine",
     "dep:j2k-cuda-runtime",
     "j2k-cuda-runtime/cuda-oxide-copy-u8",
-    "j2k-cuda-runtime/cuda-oxide-j2k-encode",
-    "j2k-cuda-runtime/cuda-oxide-j2k-decode-store",
-    "j2k-cuda-runtime/cuda-oxide-j2k-classic-decode",
-    "j2k-cuda-runtime/cuda-oxide-j2k-dequantize",
-    "j2k-cuda-runtime/cuda-oxide-j2k-idwt",
-    "j2k-cuda-runtime/cuda-oxide-htj2k-decode",
-    "j2k-cuda-runtime/cuda-oxide-htj2k-encode",
+    "j2k-cuda-j2k-engine/cuda-oxide-j2k-encode",
+    "j2k-cuda-j2k-engine/cuda-oxide-j2k-decode-store",
+    "j2k-cuda-j2k-engine/cuda-oxide-j2k-classic-decode",
+    "j2k-cuda-j2k-engine/cuda-oxide-j2k-dequantize",
+    "j2k-cuda-j2k-engine/cuda-oxide-j2k-idwt",
+    "j2k-cuda-j2k-engine/cuda-oxide-htj2k-decode",
+    "j2k-cuda-j2k-engine/cuda-oxide-htj2k-encode",
 ]
-cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
+cuda-profiling = ["cuda-runtime", "j2k-cuda-j2k-engine/cuda-profiling"]
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.9.1" }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.9.1", optional = true }
-j2k = { path = "../j2k", version = "=0.9.1" }
-j2k-native = { path = "../j2k-native", version = "=0.9.1" }
-j2k-profile = { path = "../j2k-profile", version = "=0.9.1" }
+j2k-core = { path = "../j2k-core", version = "=0.10.0" }
+j2k-cuda-j2k-engine = { path = "../j2k-cuda-j2k-engine", version = "=0.10.0", optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.10.0", optional = true }
+j2k = { path = "../j2k", version = "=0.10.0" }
+j2k-native = { path = "../j2k-native", version = "=0.10.0" }
+j2k-profile = { path = "../j2k-profile", version = "=0.10.0" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "encode_stages"
 harness = false
 test = false
+
+[[bench]]
+name = "input_fusion"
+harness = false
+test = false
+required-features = ["cuda-runtime"]
+
+[[bench]]
+name = "fdwt97_baseline"
+harness = false
+test = false
+required-features = ["cuda-runtime"]
 
 [[bench]]
 name = "auto_routing"

@@ -23,6 +23,7 @@ mod codegen_commands;
 mod command_support;
 mod coverage;
 mod cuda;
+mod gpu_experiment;
 mod gpu_validation;
 #[cfg(feature = "adoption")]
 mod markdown;
@@ -30,6 +31,7 @@ mod metal;
 mod panic_surface;
 mod perf_guard;
 mod process;
+mod promotion_codegen;
 mod public_support;
 #[cfg(feature = "adoption")]
 mod publication_gate;
@@ -109,6 +111,7 @@ fn run() -> Result<(), String> {
         "codec-math-codegen" => codec_math_codegen(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
+        "gpu-experiment" => gpu_experiment::gpu_experiment(env::args().skip(2)),
         "stable-api" => stable_api(env::args().skip(2)),
         "semver" => {
             let packages = published_library_packages()?;
@@ -119,6 +122,7 @@ fn run() -> Result<(), String> {
         "machete" => machete(),
         "clone-audit" => clone_audit(env::args().skip(2)),
         "panic-surface" => panic_surface(),
+        "promotion-codegen" => promotion_codegen::promotion_codegen(env::args().skip(2)),
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "repo-lint" => repo_lint(env::args().skip(2)),
@@ -166,13 +170,15 @@ fn print_help() {
           auto-routing  verify Criterion-backed hybrid Auto-routing promotion evidence\n\
           codec-math-codegen check generated codec-math Rust and Metal fragments\n\
            fuzz-build    compile fuzz harnesses\n\
-           fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
+          fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
+          gpu-experiment validate a complete GPU performance experiment record\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
            semver        verify computed release types and reviewed API diff [--write-report]\n\
            miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\
            clone-audit   stage source-aware production Rust and run pinned jscpd\n\
-           panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
+          panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
+          promotion-codegen generate or check verifier-backed GPU Auto-routing tables [--check]\n\
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            repo-lint     run repository policy checks owned by xtask\n\

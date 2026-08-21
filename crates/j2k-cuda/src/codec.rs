@@ -22,14 +22,13 @@ use crate::{CudaSession, Error, J2kDecoder, Surface};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Codec;
 
-struct RegionScaledSurfaceRequest<'a> {
+struct TileSurfaceRequest<'a> {
     ctx: &'a mut CpuJ2kContext,
     session: &'a mut CudaSession,
     pool: &'a mut CpuJ2kScratchPool,
     input: &'a [u8],
     fmt: PixelFormat,
-    roi: Rect,
-    scale: Downscale,
+    operation: DeviceDecodeRequest,
     backend: BackendRequest,
 }
 
@@ -72,109 +71,58 @@ impl Codec {
         Err(Error::CudaUnavailable)
     }
 
-    fn decode_tile_to_surface_impl(
-        ctx: &mut CpuJ2kContext,
-        session: &mut CudaSession,
-        pool: &mut CpuJ2kScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            let mut decoder = J2kDecoder::new(input)?;
-            return decoder.decode_to_device_with_session(fmt, session);
-        }
-        let dims = CpuDecoder::inspect(input)?.dimensions;
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        CpuCodec::decode_tile(ctx, pool, input, &mut out, stride, fmt)?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_tile_region_to_surface_impl(
-        ctx: &mut CpuJ2kContext,
-        session: &mut CudaSession,
-        pool: &mut CpuJ2kScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            let mut decoder = J2kDecoder::new(input)?;
-            return decoder.decode_region_to_device_with_session(fmt, roi, session);
-        }
-        let dims = DeviceDecodePlan::for_image(
-            CpuDecoder::inspect(input)?.dimensions,
-            DeviceDecodeRequest::Region { roi },
-        )?
-        .output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        CpuCodec::decode_tile_region(ctx, pool, input, &mut out, stride, fmt, roi)?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_tile_scaled_to_surface_impl(
-        ctx: &mut CpuJ2kContext,
-        session: &mut CudaSession,
-        pool: &mut CpuJ2kScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
-            let mut decoder = J2kDecoder::new(input)?;
-            return decoder.decode_scaled_to_device_with_session(fmt, scale, session);
-        }
-        let dims = DeviceDecodePlan::for_image(
-            CpuDecoder::inspect(input)?.dimensions,
-            DeviceDecodeRequest::Scaled { scale },
-        )?
-        .output_dims();
-        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        CpuCodec::decode_tile_scaled(ctx, pool, input, &mut out, stride, fmt, scale)?;
-        wrap_surface(out, dims, fmt, backend, session)
-    }
-
-    fn decode_tile_region_scaled_to_surface_impl(
-        request: RegionScaledSurfaceRequest<'_>,
-    ) -> Result<Surface, Error> {
-        let RegionScaledSurfaceRequest {
+    fn decode_tile_op_to_surface_impl(request: TileSurfaceRequest<'_>) -> Result<Surface, Error> {
+        let TileSurfaceRequest {
             ctx,
             session,
             pool,
             input,
             fmt,
-            roi,
-            scale,
+            operation,
             backend,
         } = request;
         validate_surface_request(backend)?;
-        if matches!(backend, BackendRequest::Cuda) {
+        if backend == BackendRequest::Cuda {
             let mut decoder = J2kDecoder::new(input)?;
-            return decoder.decode_region_scaled_to_device_with_session(fmt, roi, scale, session);
+            return decoder.decode_request_to_device_with_session(fmt, operation, session);
         }
-        let dims = DeviceDecodePlan::for_image(
-            CpuDecoder::inspect(input)?.dimensions,
-            DeviceDecodeRequest::RegionScaled { roi, scale },
-        )?
-        .output_dims();
+
+        let plan = DeviceDecodePlan::for_image(CpuDecoder::inspect(input)?.dimensions, operation)?;
+        let dims = plan.output_dims();
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        CpuCodec::decode_tile_region_scaled(
-            ctx,
-            pool,
-            fmt,
-            TileRegionScaledDecodeJob {
-                input,
-                out: &mut out,
-                stride,
-                roi,
-                scale,
-            },
-        )?;
+        match operation {
+            DeviceDecodeRequest::Full => {
+                CpuCodec::decode_tile(ctx, pool, input, &mut out, stride, fmt)?;
+            }
+            DeviceDecodeRequest::Region { .. } => {
+                CpuCodec::decode_tile_region(
+                    ctx,
+                    pool,
+                    input,
+                    &mut out,
+                    stride,
+                    fmt,
+                    plan.source_rect(),
+                )?;
+            }
+            DeviceDecodeRequest::Scaled { scale } => {
+                CpuCodec::decode_tile_scaled(ctx, pool, input, &mut out, stride, fmt, scale)?;
+            }
+            DeviceDecodeRequest::RegionScaled { scale, .. } => {
+                CpuCodec::decode_tile_region_scaled(
+                    ctx,
+                    pool,
+                    fmt,
+                    TileRegionScaledDecodeJob {
+                        input,
+                        out: &mut out,
+                        stride,
+                        roi: plan.source_rect(),
+                        scale,
+                    },
+                )?;
+            }
+        }
         wrap_surface(out, dims, fmt, backend, session)
     }
 }
@@ -209,7 +157,15 @@ impl TileBatchDecodeSubmit for Codec {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend)
+            Self::decode_tile_op_to_surface_impl(TileSurfaceRequest {
+                ctx,
+                session,
+                pool,
+                input,
+                fmt,
+                operation: DeviceDecodeRequest::Full,
+                backend,
+            })
         }))
     }
 
@@ -224,7 +180,15 @@ impl TileBatchDecodeSubmit for Codec {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_region_to_surface_impl(ctx, session, pool, input, fmt, roi, backend)
+            Self::decode_tile_op_to_surface_impl(TileSurfaceRequest {
+                ctx,
+                session,
+                pool,
+                input,
+                fmt,
+                operation: DeviceDecodeRequest::Region { roi },
+                backend,
+            })
         }))
     }
 
@@ -239,7 +203,15 @@ impl TileBatchDecodeSubmit for Codec {
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_scaled_to_surface_impl(ctx, session, pool, input, fmt, scale, backend)
+            Self::decode_tile_op_to_surface_impl(TileSurfaceRequest {
+                ctx,
+                session,
+                pool,
+                input,
+                fmt,
+                operation: DeviceDecodeRequest::Scaled { scale },
+                backend,
+            })
         }))
     }
 
@@ -258,14 +230,13 @@ impl TileBatchDecodeSubmit for Codec {
         } = request;
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_region_scaled_to_surface_impl(RegionScaledSurfaceRequest {
+            Self::decode_tile_op_to_surface_impl(TileSurfaceRequest {
                 ctx,
                 session,
                 pool,
                 input,
                 fmt,
-                roi,
-                scale,
+                operation: DeviceDecodeRequest::RegionScaled { roi, scale },
                 backend,
             })
         }))
@@ -319,7 +290,15 @@ impl TileBatchDecodeManyDevice for Codec {
 
         try_collect_results_exact(
             inputs.iter().map(|input| {
-                Self::decode_tile_to_surface_impl(ctx, &mut session, pool, input, fmt, backend)
+                Self::decode_tile_op_to_surface_impl(TileSurfaceRequest {
+                    ctx,
+                    session: &mut session,
+                    pool,
+                    input,
+                    fmt,
+                    operation: DeviceDecodeRequest::Full,
+                    backend,
+                })
             }),
             "j2k CUDA decode batch surfaces",
         )

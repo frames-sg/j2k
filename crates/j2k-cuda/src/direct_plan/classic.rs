@@ -125,9 +125,9 @@ fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> 
         }
         expected_pass = segment.end_coding_pass;
         expected_offset = segment.data_offset.checked_add(segment.data_length).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CLASSIC_PLAN_INVALID,
-            },
+            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+                CLASSIC_PLAN_INVALID,
+            )),
         )?;
     }
     if expected_pass != job.number_of_coding_passes
@@ -139,9 +139,9 @@ fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> 
 }
 
 fn invalid_classic_plan<T>() -> Result<T, Error> {
-    Err(Error::UnsupportedCudaRequest {
-        reason: CLASSIC_PLAN_INVALID,
-    })
+    Err(Error::capability_rejected(
+        j2k_core::CapabilityRejection::geometry_mismatch(CLASSIC_PLAN_INVALID),
+    ))
 }
 
 fn convert_classic_segment(segment: &J2kCodeBlockSegment) -> CudaClassicSegment {
@@ -173,13 +173,17 @@ fn classic_style_flags(style: J2kCodeBlockStyle) -> u32 {
 }
 
 fn checked_u32(value: usize) -> Result<u32, Error> {
-    u32::try_from(value).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
+    u32::try_from(value).map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+            PLAN_PAYLOAD_TOO_LARGE,
+        ))
     })
 }
 
 fn checked_u64(value: usize) -> Result<u64, Error> {
-    u64::try_from(value).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
+    u64::try_from(value).map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+            PLAN_PAYLOAD_TOO_LARGE,
+        ))
     })
 }

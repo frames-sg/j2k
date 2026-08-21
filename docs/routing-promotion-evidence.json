@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "cuda_part1",
+      "backend": "cuda",
+      "artifact_sha256": "ded1eb045f9673e5bbe64dc873be3ba227ecb61ec11b6c9ad53653dbcc993f44",
+      "operation_coverage": ["full_decode", "roi_decode", "scaled_decode", "batch_decode", "lossless_encode", "lossy_encode"]
+    },
+    {
+      "name": "cuda_part15",
+      "backend": "cuda",
+      "artifact_sha256": "77370c83710ebf578139ad0bfa2608ffad989d83faec8d5eee213691290c0088",
+      "operation_coverage": ["full_decode", "roi_decode", "scaled_decode", "batch_decode", "lossless_encode", "lossy_encode"]
+    },
+    {
+      "name": "metal_part1",
+      "backend": "metal",
+      "artifact_sha256": "162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879",
+      "operation_coverage": ["full_decode", "roi_decode", "scaled_decode", "batch_decode", "lossless_encode", "lossy_encode"]
+    },
+    {
+      "name": "metal_part15",
+      "backend": "metal",
+      "artifact_sha256": "cfa66686d053bb3e2d4c8756abaf84aab65d8505a635795cefd38de53573c1f5",
+      "operation_coverage": ["full_decode", "roi_decode", "scaled_decode", "batch_decode", "lossless_encode", "lossy_encode"]
+    },
+    {
+      "name": "metal_host_output",
+      "backend": "metal",
+      "artifact_sha256": "c98f11c0b2a2a96853953ceee7ea672e0e5044bdb8abbd397c8c36eb82fe53b8",
+      "operation_coverage": ["full_decode", "roi_decode", "scaled_decode", "batch_decode", "lossless_encode", "lossy_encode"]
+    }
+  ],
+  "cuda_decode": [
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Full","minimum_width":256,"minimum_height":149,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Region","minimum_width":128,"minimum_height":74,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"ScaledHalf","minimum_width":1296,"minimum_height":972,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Full","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Region","minimum_width":320,"minimum_height":240,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"ScaledHalf","minimum_width":320,"minimum_height":240,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Full","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Full","minimum_width":3323,"minimum_height":891,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Region","minimum_width":1661,"minimum_height":445,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"ScaledHalf","minimum_width":1662,"minimum_height":446,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":256,"minimum_height":149,"minimum_pixels":0,"minimum_count":16},
+    {"source":"cuda_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":256,"minimum_height":149,"minimum_pixels":0,"minimum_count":16},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":16},
+    {"source":"cuda_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":3323,"minimum_height":891,"minimum_pixels":0,"minimum_count":16},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Full","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Region","minimum_width":320,"minimum_height":240,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"ScaledHalf","minimum_width":320,"minimum_height":240,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":16},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Full","minimum_width":768,"minimum_height":512,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Region","minimum_width":384,"minimum_height":256,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"ScaledHalf","minimum_width":384,"minimum_height":256,"minimum_pixels":0,"minimum_count":1},
+    {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Repeated","minimum_width":768,"minimum_height":512,"minimum_pixels":0,"minimum_count":16}
+  ],
+  "metal_decode": [
+    {"source":"metal_part1","source_components":1,"format":"Gray8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":0,"minimum_height":0,"minimum_pixels":2960793,"minimum_count":16},
+    {"source":"metal_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":0,"minimum_height":0,"minimum_pixels":307200,"minimum_count":16},
+    {"source":"metal_part1","source_components":3,"format":"Rgb8","transfer_syntax":"Jpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":0,"minimum_height":0,"minimum_pixels":5038848,"minimum_count":16},
+    {"source":"metal_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":640,"minimum_height":480,"minimum_pixels":0,"minimum_count":16},
+    {"source":"metal_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Repeated","minimum_width":768,"minimum_height":512,"minimum_pixels":0,"minimum_count":16},
+    {"source":"metal_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossy","payload_kind":"Jpeg2000Codestream","operation":"ScaledHalf","minimum_width":320,"minimum_height":240,"minimum_pixels":0,"minimum_count":1}
+  ],
+  "metal_host_output": [
+    {"source":"metal_host_output","source_components":3,"width":1024,"height":1024},
+    {"source":"metal_host_output","source_components":1,"width":2048,"height":2048},
+    {"source":"metal_host_output","source_components":3,"width":2048,"height":2048}
+  ],
+  "metal_lossy_rgb8": {"source":"metal_part1","minimum_pixels":5038848}
+}

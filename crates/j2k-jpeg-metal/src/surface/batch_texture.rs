@@ -56,10 +56,11 @@ impl MetalBatchTextureOutput {
         tile_capacity: usize,
     ) -> Result<Self, Error> {
         if dimensions.0 == 0 || dimensions.1 == 0 || tile_capacity == 0 {
-            return Err(Error::UnsupportedMetalRequest {
-                reason:
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(
                     "JPEG Metal batch texture output requires nonzero dimensions and tile capacity",
-            });
+                ),
+            ));
         }
 
         // SAFETY: Dimensions were checked nonzero above, are representable as

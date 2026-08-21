@@ -183,12 +183,8 @@ fn encode_responsibilities_have_single_module_owners() {
         }
     }
     let routing = read_source(&root.join("routing.rs"));
-    assert_eq!(
-        routing
-            .matches("const AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS")
-            .count(),
-        1
-    );
+    assert!(routing.contains("crate::generated::promotion::auto_host_output_encode_qualifies"));
+    assert!(!routing.contains("const AUTO_"));
     let hybrid = read_source(&root.join("resident_hybrid.rs"));
     assert_eq!(hybrid.matches("struct ResidentHybridHtTileBody").count(), 1);
     let prepare = read_source(&root.join("resident_prepare.rs"));

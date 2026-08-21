@@ -2496,10 +2496,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "j2k"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
- "j2k-codec-math",
  "j2k-core",
  "j2k-native",
  "j2k-test-support",
@@ -2511,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-alloc-probe"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "j2k-native",
  "j2k-profile",
@@ -2521,7 +2520,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cli"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "j2k",
  "j2k-jpeg",
@@ -2531,7 +2530,10 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.9.1"
+version = "0.10.0"
+dependencies = [
+ "j2k-types",
+]
 
 [[package]]
 name = "j2k-compare"
@@ -2548,39 +2550,81 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "j2k-cuda"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "j2k",
  "j2k-core",
+ "j2k-cuda-j2k-engine",
  "j2k-cuda-runtime",
  "j2k-native",
  "j2k-profile",
  "j2k-test-support",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "j2k-cuda-runtime"
-version = "0.9.1"
+name = "j2k-cuda-build-support"
+version = "0.10.0"
+
+[[package]]
+name = "j2k-cuda-j2k-engine"
+version = "0.10.0"
+dependencies = [
+ "criterion",
+ "j2k-codec-math",
+ "j2k-core",
+ "j2k-cuda-build-support",
+ "j2k-cuda-runtime",
+ "j2k-test-support",
+ "j2k-types",
+ "sha2",
+]
+
+[[package]]
+name = "j2k-cuda-jpeg-engine"
+version = "0.10.0"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
+ "j2k-cuda-build-support",
+ "j2k-cuda-runtime",
+ "j2k-test-support",
+]
+
+[[package]]
+name = "j2k-cuda-runtime"
+version = "0.10.0"
+dependencies = [
+ "j2k-codec-math",
+ "j2k-core",
+ "j2k-cuda-build-support",
  "j2k-test-support",
  "libloading 0.9.0",
  "thiserror 2.0.18",
 ]
 
 [[package]]
+name = "j2k-cuda-transcode-engine"
+version = "0.10.0"
+dependencies = [
+ "j2k-core",
+ "j2k-cuda-build-support",
+ "j2k-cuda-runtime",
+ "j2k-test-support",
+]
+
+[[package]]
 name = "j2k-jpeg"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "fearless_simd",
@@ -2599,20 +2643,23 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg-cuda"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "j2k-core",
+ "j2k-cuda-jpeg-engine",
  "j2k-cuda-runtime",
  "j2k-jpeg",
  "j2k-profile",
  "j2k-test-support",
+ "jpeg-decoder",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "j2k-jpeg-metal"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "j2k-core",
@@ -2624,12 +2671,13 @@ dependencies = [
  "jpeg-encoder",
  "objc2",
  "objc2-metal",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "j2k-metal"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "cc",
  "criterion",
@@ -2640,6 +2688,7 @@ dependencies = [
  "j2k-native",
  "j2k-profile",
  "j2k-test-support",
+ "j2k-types",
  "libc",
  "objc2",
  "objc2-foundation",
@@ -2651,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-metal-support"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "j2k-core",
  "j2k-test-support",
@@ -2663,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-ml"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "burn-core",
  "burn-cuda",
@@ -2683,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "fearless_simd",
@@ -2697,11 +2746,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.9.1"
+version = "0.10.0"
 
 [[package]]
 name = "j2k-t803"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "image",
  "j2k",
@@ -2724,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-test-support"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -2735,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-tilecodec"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "flate2",
@@ -2747,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "j2k",
@@ -2764,31 +2813,36 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-cuda"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
+ "criterion",
  "j2k-core",
+ "j2k-cuda-j2k-engine",
  "j2k-cuda-runtime",
+ "j2k-cuda-transcode-engine",
+ "j2k-jpeg",
  "j2k-native",
  "j2k-test-support",
  "j2k-transcode",
  "j2k-transcode-test-support",
+ "sha2",
 ]
 
 [[package]]
 name = "j2k-transcode-metal"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "j2k-codec-math",
  "j2k-core",
  "j2k-jpeg",
- "j2k-metal",
  "j2k-metal-support",
  "j2k-native",
  "j2k-profile",
  "j2k-test-support",
  "j2k-transcode",
  "j2k-transcode-test-support",
+ "j2k-types",
  "objc2",
  "objc2-foundation",
  "objc2-metal",
@@ -2797,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-test-support"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "j2k-native",
  "j2k-transcode",
@@ -2806,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.9.1"
+version = "0.10.0"
 
 [[package]]
 name = "jni-sys"

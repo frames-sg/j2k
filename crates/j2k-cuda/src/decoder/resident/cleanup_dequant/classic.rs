@@ -2,7 +2,7 @@
 
 use super::super::super::{
     cuda_error, CudaBufferPool, CudaClassicDecodeTarget, CudaComponentDecodeWork,
-    CudaHtj2kDecodeResources, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
+    CudaHtj2kDecodeResources, Error, J2kCudaEngine, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 use super::super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::HostPhaseBudget;
@@ -30,9 +30,9 @@ pub(in crate::decoder) fn run_component_classic_batches(
     let accounting_index = component_work
         .iter()
         .position(|work| !work.pending_classic_bands.is_empty())
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?;
     let mut budget =
         HostPhaseBudget::with_live_bytes("j2k CUDA classic Tier-1 target phase", live_host_bytes)?;
     let mut targets = budget.try_vec_with_capacity(pending_count)?;
@@ -46,7 +46,7 @@ pub(in crate::decoder) fn run_component_classic_batches(
             });
         }
     }
-    let (_, runtime_timings) = context
+    let (_, runtime_timings) = J2kCudaEngine::new(context)
         .decode_classic_codeblocks_multi_with_resources_and_pool_timed(
             decode_resources,
             &targets,

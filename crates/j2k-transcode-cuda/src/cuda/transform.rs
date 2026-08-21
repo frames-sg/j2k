@@ -2,13 +2,14 @@
 
 use super::{
     device_bands_to_preencoded_components, htj2k97_quantize_params, htj2k97_subband_delta,
-    transcode_kernels_built, try_transcode_vec_for_product, validate_htj2k97_codeblock_options,
-    CudaContext, CudaDwt97BatchGeometry, CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest,
+    resident_dwt_handoff_count, transcode_kernels_built, try_transcode_vec_for_product,
+    validate_htj2k97_codeblock_options, CudaContext, CudaDwt97BatchGeometry,
+    CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest,
     CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
-    CudaHtj2kEncodeStageTimings, CudaTranscodeError, CudaTranscodeSession, DctGridToDwt53Job,
-    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
-    Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional, HostPhaseBudget,
-    Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97Component,
+    CudaHtj2kEncodeStageTimings, CudaTranscodeEngine, CudaTranscodeError, CudaTranscodeSession,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional,
+    HostPhaseBudget, Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97Component,
     PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, NOT_WIRED,
 };
 mod components;
@@ -27,7 +28,7 @@ pub(super) fn run_reversible(
     job: DctGridToReversibleDwt53Job<'_>,
     live_host_bytes: usize,
 ) -> Result<ReversibleDwt53FirstLevel, CudaTranscodeError> {
-    let bands = context
+    let bands = CudaTranscodeEngine::new(context)
         .j2k_transcode_reversible_dwt53_and_live_host_bytes(
             flatten_blocks(job.dequantized_blocks),
             job.block_cols,
@@ -63,7 +64,7 @@ pub(crate) fn dispatch_reversible_dwt53_batch(
     let context = session.context()?;
     let mut budget = HostPhaseBudget::new("CUDA reversible 5/3 batch outputs");
     let mut outputs =
-        budget.try_vec_with_capacity(jobs.len(), "CUDA reversible 5/3 batch outputs")?;
+        budget.try_vec_with_capacity_named(jobs.len(), "CUDA reversible 5/3 batch outputs")?;
     for job in jobs {
         let output = run_reversible(&context, *job, budget.live_bytes())?;
         account_reversible_output(&mut budget, &output)?;
@@ -218,7 +219,7 @@ pub(super) fn run_dwt97(
     let mut staging_budget =
         HostPhaseBudget::with_live_bytes("CUDA 9/7 single staging", live_host_bytes)?;
     let coeffs = flatten_f64_blocks_to_f32(job.blocks, &mut staging_budget)?;
-    let bands = context
+    let bands = CudaTranscodeEngine::new(context)
         .j2k_transcode_dwt97_and_live_host_bytes(
             &coeffs,
             job.block_cols,
@@ -267,7 +268,7 @@ pub(crate) fn dispatch_dwt97_batch(
     if !uniform {
         let mut budget = HostPhaseBudget::new("nonuniform CUDA 9/7 batch outputs");
         let mut outputs =
-            budget.try_vec_with_capacity(jobs.len(), "nonuniform CUDA 9/7 batch outputs")?;
+            budget.try_vec_with_capacity_named(jobs.len(), "nonuniform CUDA 9/7 batch outputs")?;
         for job in jobs {
             let output = run_dwt97(&context, *job, budget.live_bytes())?;
             account_dwt97_output(&mut budget, &output)?;
@@ -301,7 +302,7 @@ pub(crate) fn dispatch_dwt97_batch(
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
-    let (bands, timings) = context
+    let (bands, timings) = CudaTranscodeEngine::new(&context)
         .j2k_transcode_dwt97_batch_with_pool_and_live_host_bytes(
             CudaDwt97BatchWithPoolRequest {
                 blocks: &blocks,
@@ -392,7 +393,7 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
-    let (codeblock_bands, timings) = context
+    let (codeblock_bands, timings) = CudaTranscodeEngine::new(&context)
         .j2k_transcode_htj2k97_codeblock_batch_with_pool_and_live_host_bytes(
             CudaHtj2k97CodeblockBatchWithPoolRequest {
                 blocks: &blocks,
@@ -468,7 +469,7 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
-    let (device_bands, cuda_timings) = context
+    let (device_bands, cuda_timings) = CudaTranscodeEngine::new(&context)
         .j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
             CudaHtj2k97CodeblockBatchWithPoolRequest {
                 blocks: &blocks,
@@ -497,6 +498,8 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
             jobs,
             options,
         )?;
+    timings.resident_dct_handoff_count = jobs.len();
+    timings.resident_dwt_handoff_count = resident_dwt_handoff_count(&device_bands);
     set_ht_encode_timings(&mut timings, ht_timings);
     timings.ht_codeblock_dispatches = ht_dispatches;
     Ok((components, required_magnitude_bounds, timings))

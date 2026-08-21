@@ -202,16 +202,16 @@ impl<'a> Decoder<'a> {
                 return Err(err);
             }
             match decision {
-                routing::RouteDecision::MetalKernel => {
-                    reject_cpu_staged_metal_upload(compute::decode_to_surface_with_session(
+                routing::RouteDecision::MetalKernel => reject_cpu_staged_metal_upload(
+                    compute::single_decode::decode_to_surface_with_session(
                         &self.inner,
                         &mut pool,
                         fmt,
                         self.fast_packets(),
                         external_live_bytes,
                         session,
-                    )?)
-                }
+                    )?,
+                ),
                 routing::RouteDecision::CpuHost
                 | routing::RouteDecision::RejectExplicitMetal { .. }
                 | routing::RouteDecision::RejectUnsupportedBackend { .. }
@@ -257,13 +257,15 @@ impl<'a> Decoder<'a> {
             return Err(err);
         }
         match decision {
-            routing::RouteDecision::MetalKernel => compute::decode_private_rgb8_tile_with_session(
-                &self.inner,
-                self.fast444_packet(),
-                self.fast422_packet(),
-                self.fast420_packet(),
-                session,
-            ),
+            routing::RouteDecision::MetalKernel => {
+                compute::single_decode::decode_private_rgb8_tile_with_session(
+                    &self.inner,
+                    self.fast444_packet(),
+                    self.fast422_packet(),
+                    self.fast420_packet(),
+                    session,
+                )
+            }
             routing::RouteDecision::CpuHost
             | routing::RouteDecision::RejectExplicitMetal { .. }
             | routing::RouteDecision::RejectUnsupportedBackend { .. }

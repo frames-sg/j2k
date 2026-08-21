@@ -4,11 +4,11 @@ use j2k::{
     EncodedHtJ2kCodeBlock, J2kEncodeStageError, J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob,
     J2kResidentHtj2kTileEncodeJob,
 };
-use j2k_cuda_runtime::{
-    CudaContext, CudaDeviceBuffer, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
-    CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaJ2kQuantizeJob,
-    CudaJ2kQuantizeSubbandRegionJob,
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResources,
+    CudaHtj2kEncodeTables, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob,
 };
+use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer};
 
 use crate::allocation::{try_vec_push, try_vec_with_capacity, HostPhaseBudget};
 use crate::encode::stage_error::{arithmetic_overflow, runtime_error, CudaStageResult};
@@ -25,7 +25,7 @@ pub(in crate::encode) fn cuda_encode_ht_code_block(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
     job: J2kHtCodeBlockEncodeJob<'_>,
-) -> CudaStageResult<j2k_cuda_runtime::CudaHtj2kEncodedCodeBlocks> {
+) -> CudaStageResult<j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks> {
     let coefficient_len = (job.width as usize)
         .checked_mul(job.height as usize)
         .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K code-block encode coefficient count"))?;
@@ -41,7 +41,7 @@ pub(in crate::encode) fn cuda_encode_ht_code_block(
         total_bitplanes: job.total_bitplanes,
         target_coding_passes: job.target_coding_passes,
     }];
-    context
+    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_with_resources(job.coefficients, &cuda_jobs, resources)
         .map_err(|error| runtime_error("encode CUDA HTJ2K code block", error))
 }
@@ -51,7 +51,7 @@ pub(in crate::encode) fn cuda_encode_ht_code_blocks(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-) -> CudaStageResult<j2k_cuda_runtime::CudaHtj2kEncodedCodeBlocks> {
+) -> CudaStageResult<j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks> {
     let total_coefficients = jobs.iter().try_fold(0usize, |acc, job| {
         let coefficient_len = (job.width as usize)
             .checked_mul(job.height as usize)
@@ -91,7 +91,7 @@ pub(in crate::encode) fn cuda_encode_ht_code_blocks(
             .map_err(htj2k_allocation_error)?;
     }
 
-    context
+    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_with_resources_and_live_host_bytes(
             &coefficients,
             &cuda_jobs,
@@ -188,7 +188,7 @@ pub(in crate::encode) fn cuda_encode_ht_subband(
         context,
         collect_profile,
         || {
-            context.j2k_quantize_subband_resident(
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context).j2k_quantize_subband_resident(
                 &sample_buffer,
                 job.coefficients.len(),
                 CudaJ2kQuantizeJob {
@@ -207,7 +207,7 @@ pub(in crate::encode) fn cuda_encode_ht_subband(
         .account_vec(&cuda_jobs)
         .map_err(htj2k_allocation_error)?;
     let pool = context.buffer_pool();
-    let encoded = context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
             quantized.buffer(),
             quantized.coefficient_count(),
@@ -273,25 +273,26 @@ pub(super) fn cuda_encode_tile_subband_region(
         runtime.context,
         stats.collect_profile,
         || {
-            runtime.context.j2k_quantize_subband_region_resident(
-                source,
-                CudaJ2kQuantizeSubbandRegionJob {
-                    x0: region.x0,
-                    y0: region.y0,
-                    width: region.width,
-                    height: region.height,
-                    stride: region.stride,
-                    quantization: CudaJ2kQuantizeJob {
-                        step_exponent,
-                        step_mantissa,
-                        range_bits: cuda_tile_subband_range_bits(
-                            job.input.bit_depth(),
-                            subband_kind,
-                        ),
-                        reversible: job.reversible,
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
+                .j2k_quantize_subband_region_resident(
+                    source,
+                    CudaJ2kQuantizeSubbandRegionJob {
+                        x0: region.x0,
+                        y0: region.y0,
+                        width: region.width,
+                        height: region.height,
+                        stride: region.stride,
+                        quantization: CudaJ2kQuantizeJob {
+                            step_exponent,
+                            step_mantissa,
+                            range_bits: cuda_tile_subband_range_bits(
+                                job.input.bit_depth(),
+                                subband_kind,
+                            ),
+                            reversible: job.reversible,
+                        },
                     },
-                },
-            )
+                )
         },
     )
     .map_err(|error| runtime_error("quantize CUDA HTJ2K tile subband", error))?;
@@ -313,8 +314,7 @@ pub(super) fn cuda_encode_tile_subband_region(
     host_budget
         .account_vec(&region_jobs)
         .map_err(htj2k_allocation_error)?;
-    let encoded = runtime
-        .context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
         .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
             quantized.buffer(),
             quantized.coefficient_count(),
@@ -369,7 +369,7 @@ fn cuda_tile_subband_range_bits(bit_depth: u8, subband_kind: CudaTileSubbandKind
 
 #[cfg(feature = "cuda-runtime")]
 fn encoded_ht_code_block_from_cuda(
-    encoded: j2k_cuda_runtime::CudaHtj2kEncodedCodeBlock,
+    encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlock,
 ) -> EncodedHtJ2kCodeBlock {
     let (data, cleanup_length, refinement_length, num_coding_passes, num_zero_bitplanes) =
         encoded.into_parts();
@@ -384,7 +384,7 @@ fn encoded_ht_code_block_from_cuda(
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) fn encoded_ht_code_blocks_from_cuda(
-    encoded: j2k_cuda_runtime::CudaHtj2kEncodedCodeBlocks,
+    encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks,
 ) -> CudaStageResult<Vec<EncodedHtJ2kCodeBlock>> {
     let mut host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K encoded code-block conversion");
     host_budget

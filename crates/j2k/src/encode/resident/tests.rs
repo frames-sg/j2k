@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use j2k_core::BackendKind;
 
-use super::super::native::map_native_resident_encode_error;
+use super::super::cpu::map_native_resident_encode_error;
 use super::encode_j2k_lossless_resident_with_accelerator;
 use crate::{
     encode_j2k_lossless_with_accelerator, EncodeBackendPreference, J2kBlockCodingMode,

@@ -4,7 +4,7 @@ use j2k::J2kEncodeStageError;
 
 use super::stage_error::adapter_error;
 
-fn htj2k_allocation_error(error: crate::Error) -> J2kEncodeStageError {
+fn htj2k_allocation_error(error: impl Into<crate::Error>) -> J2kEncodeStageError {
     adapter_error("allocate CUDA HTJ2K encode staging", error)
 }
 

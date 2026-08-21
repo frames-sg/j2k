@@ -279,9 +279,11 @@ impl SharedHostLedger {
             if owner.is_for_context(context) {
                 return Ok(());
             }
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "CUDA JPEG host-owner ledger is already bound to another CUDA context",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "CUDA JPEG host-owner ledger is already bound to another CUDA context",
+                ),
+            ));
         }
         let bytes = self
             .cache_retained_bytes
@@ -309,9 +311,11 @@ impl SharedHostLedger {
         let owner = self.context_owner()?;
         match owner.as_ref() {
             Some(owner) if owner.is_for_context(context) => Ok(()),
-            _ => Err(Error::UnsupportedCudaRequest {
-                reason: "CUDA pinned-upload operation does not belong to this session context",
-            }),
+            _ => Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "CUDA pinned-upload operation does not belong to this session context",
+                ),
+            )),
         }
     }
 

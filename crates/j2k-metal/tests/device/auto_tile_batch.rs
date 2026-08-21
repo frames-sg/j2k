@@ -161,7 +161,7 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
 }
 
 #[test]
-fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
+fn submitted_auto_region_scaled_grayscale_batch64_stays_on_cpu_without_evidence() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -210,7 +210,8 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
 
     for submission in submissions {
         let surface = submission.wait().expect("auto region-scaled surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -220,12 +221,12 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
-        "large auto ROI+scaled grayscale tile batches should use one Metal batch"
+        "unqualified auto ROI+scaled grayscale tiles should use one CPU fallback batch"
     );
 }
 
 #[test]
-fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch() {
+fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_stays_on_cpu_without_evidence() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -274,7 +275,8 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
 
     for submission in submissions {
         let surface = submission.wait().expect("auto region-scaled surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -284,12 +286,12 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
-        "1024-class auto HT ROI+scaled grayscale tile batches should use one Metal batch"
+        "unqualified 1024-class auto HT ROI+scaled grayscale tiles should use one CPU fallback batch"
     );
 }
 
 #[test]
-fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
+fn submitted_auto_region_scaled_rgb_1024_batch16_stays_on_cpu_without_evidence() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -338,8 +340,8 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
 
     for submission in submissions {
         let surface = submission.wait().expect("auto region-scaled RGB surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
@@ -349,12 +351,12 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
-        "1024-class auto ROI+scaled RGB tile batches should use one resident hybrid Metal batch"
+        "unqualified 1024-class auto ROI+scaled RGB tiles should use one CPU fallback batch"
     );
 }
 
 #[test]
-fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
+fn submitted_auto_region_scaled_ht_grayscale_batch16_stays_on_cpu_regardless_of_order() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -429,9 +431,10 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
     }
     assert_eq!(
         surfaces[1].backend_kind(),
-        BackendKind::Metal,
-        "large 1024-class tiles should not be routed to CPU just because a small tile was submitted first"
+        BackendKind::Cpu,
+        "unqualified large tiles should remain on CPU regardless of input order"
     );
+    assert_eq!(surfaces[1].residency(), SurfaceResidency::Host);
     assert_eq!(surfaces[1].dimensions(), (large_scaled.w, large_scaled.h));
     assert_eq!(
         surfaces[1].as_bytes().expect("surface byte access"),
@@ -439,7 +442,7 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
     );
     assert_eq!(
         session.submissions().expect("session submissions"),
-        2,
-        "auto ROI+scaled should use one Metal batch for the sixteen qualifying 1024-class tiles and leave the leading small tile on CPU"
+        1,
+        "mixed unqualified auto ROI+scaled shapes should use one CPU fallback batch"
     );
 }

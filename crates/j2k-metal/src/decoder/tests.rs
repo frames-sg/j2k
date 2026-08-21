@@ -6,6 +6,7 @@ use crate::metal_types::prelude::*;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 
+use j2k::DeviceDecodeRequest;
 use j2k_core::{
     BackendKind, BackendRequest, CodecError, DeviceSurface, Downscale, PixelFormat, Rect,
 };
@@ -85,6 +86,41 @@ fn metal_decode_request_maps_geometry_to_report_and_batch_ops() {
     for (request, report_operation, batch_op) in requests {
         assert_eq!(request.op.report_operation(), report_operation);
         assert_eq!(request.op.batch_op(), batch_op);
+    }
+}
+
+#[test]
+fn metal_decode_operation_lowers_once_to_shared_device_geometry() {
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 3,
+        h: 4,
+    };
+    for (operation, expected) in [
+        (super::MetalDecodeOp::Full, DeviceDecodeRequest::Full),
+        (
+            super::MetalDecodeOp::Region(roi),
+            DeviceDecodeRequest::Region { roi },
+        ),
+        (
+            super::MetalDecodeOp::Scaled(Downscale::Half),
+            DeviceDecodeRequest::Scaled {
+                scale: Downscale::Half,
+            },
+        ),
+        (
+            super::MetalDecodeOp::RegionScaled {
+                roi,
+                scale: Downscale::Quarter,
+            },
+            DeviceDecodeRequest::RegionScaled {
+                roi,
+                scale: Downscale::Quarter,
+            },
+        ),
+    ] {
+        assert_eq!(operation.device_request(), expected);
     }
 }
 
@@ -195,8 +231,8 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
     let session = MetalBackendSession::new(device.clone());
     let session_runtime = session.runtime().expect("explicit session runtime");
 
-    crate::compute::reset_direct_tier1_input_buffer_prepares_for_test();
-    crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
+    crate::engine::reset_direct_tier1_input_buffer_prepares_for_test();
+    crate::engine::with_isolated_runtime_for_device_for_test(&device, || {
         let mut decoder = J2kDecoder::new(&bytes)?;
         let prepared =
             decoder.ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)?;
@@ -206,11 +242,11 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
     .expect("prepare direct plan with explicit session");
 
     assert!(
-        crate::compute::direct_tier1_input_buffer_prepares_for_test() > 0,
+        crate::engine::direct_tier1_input_buffer_prepares_for_test() > 0,
         "fixture must allocate classic Tier-1 input buffers"
     );
     assert_eq!(
-        crate::compute::direct_tier1_input_buffer_runtime_for_test(),
+        crate::engine::direct_tier1_input_buffer_runtime_for_test(),
         Arc::as_ptr(&session_runtime).addr(),
         "fresh cached buffers must be prepared by the explicit session runtime"
     );

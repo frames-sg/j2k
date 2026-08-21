@@ -25,6 +25,7 @@ struct AcceleratorLaneSpec {
 struct AcceleratorPackageSpec {
     name: &'static str,
     source_prefix: &'static str,
+    coverage_feature: Option<&'static str>,
 }
 
 const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
@@ -33,17 +34,24 @@ const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
         accelerator_package("j2k-jpeg-metal", "crates/j2k-jpeg-metal/"),
         accelerator_package("j2k-metal", "crates/j2k-metal/"),
         accelerator_package("j2k-transcode-metal", "crates/j2k-transcode-metal/"),
-        accelerator_package("j2k-ml", "crates/j2k-ml/src/metal.rs"),
+        feature_accelerator_package("j2k-ml", "crates/j2k-ml/src/metal.rs", "metal"),
     ],
 };
 
 const CUDA_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
     packages: &[
+        accelerator_package("j2k-cuda-build-support", "crates/j2k-cuda-build-support/"),
         accelerator_package("j2k-cuda-runtime", "crates/j2k-cuda-runtime/"),
+        accelerator_package("j2k-cuda-j2k-engine", "crates/j2k-cuda-j2k-engine/"),
+        accelerator_package("j2k-cuda-jpeg-engine", "crates/j2k-cuda-jpeg-engine/"),
+        accelerator_package(
+            "j2k-cuda-transcode-engine",
+            "crates/j2k-cuda-transcode-engine/",
+        ),
         accelerator_package("j2k-jpeg-cuda", "crates/j2k-jpeg-cuda/"),
         accelerator_package("j2k-cuda", "crates/j2k-cuda/"),
         accelerator_package("j2k-transcode-cuda", "crates/j2k-transcode-cuda/"),
-        accelerator_package("j2k-ml", "crates/j2k-ml/src/cuda.rs"),
+        feature_accelerator_package("j2k-ml", "crates/j2k-ml/src/cuda.rs", "cuda"),
     ],
 };
 
@@ -57,6 +65,19 @@ const fn accelerator_package(
     AcceleratorPackageSpec {
         name,
         source_prefix,
+        coverage_feature: None,
+    }
+}
+
+const fn feature_accelerator_package(
+    name: &'static str,
+    source_prefix: &'static str,
+    coverage_feature: &'static str,
+) -> AcceleratorPackageSpec {
+    AcceleratorPackageSpec {
+        name,
+        source_prefix,
+        coverage_feature: Some(coverage_feature),
     }
 }
 
@@ -135,10 +156,28 @@ impl CoverageLane {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn coverage_packages(self) -> impl Iterator<Item = &'static str> {
         self.accelerator_packages()
             .iter()
             .map(|package| package.name)
+    }
+
+    pub(super) fn all_feature_coverage_packages(self) -> impl Iterator<Item = &'static str> {
+        self.accelerator_packages()
+            .iter()
+            .filter(|package| package.coverage_feature.is_none())
+            .map(|package| package.name)
+    }
+
+    pub(super) fn feature_coverage_packages(
+        self,
+    ) -> impl Iterator<Item = (&'static str, &'static str)> {
+        self.accelerator_packages().iter().filter_map(|package| {
+            package
+                .coverage_feature
+                .map(|feature| (package.name, feature))
+        })
     }
 
     #[cfg(test)]

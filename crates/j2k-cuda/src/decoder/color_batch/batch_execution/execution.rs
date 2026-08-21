@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::{CudaContext, CudaHtj2kDecodeResources};
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, J2kCudaEngine};
+use j2k_cuda_runtime::CudaContext;
 
 use super::super::{
     can_batch_color_idwt, cuda_error, decode_cuda_component_subbands_with_resources, host_owners,
@@ -76,11 +77,12 @@ fn upload_color_batch_resources(
     };
     let table_upload_us = profile::elapsed_us(table_upload_start);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
+    let engine = J2kCudaEngine::new(context);
     let resources = match table_resources.as_ref() {
         Some(tables) => {
-            context.upload_htj2k_decode_resources_with_tables_and_pool(shared_payload, tables, pool)
+            engine.upload_htj2k_decode_resources_with_tables_and_pool(shared_payload, tables, pool)
         }
-        None => context.upload_j2k_decode_payload_with_pool(shared_payload, pool),
+        None => engine.upload_j2k_decode_payload_with_pool(shared_payload, pool),
     }
     .map_err(cuda_error)?;
     Ok((

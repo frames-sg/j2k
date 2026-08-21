@@ -4,7 +4,7 @@
 use super::{
     cuda_dwt53_output_to_j2k, cuda_dwt97_output_to_j2k, forward_dwt53_reference,
     forward_dwt97_reference, forward_ict_reference, try_deinterleave_reference, CudaContext,
-    J2kDeinterleaveToF32Job,
+    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::{
@@ -37,6 +37,26 @@ fn cuda_deinterleave_stage_dispatches_when_runtime_required() {
         components,
         vec![vec![-128.0, -64.0], vec![0.0, -96.0], vec![127.0, -112.0]]
     );
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_rgb_input_mct_hook_preserves_separate_stage_fallback() {
+    let mut accelerator = CudaEncodeStageAccelerator::default();
+    let result = accelerator
+        .encode_deinterleave_mct(J2kDeinterleaveMctToF32Job {
+            pixels: &[0, 128, 255],
+            num_pixels: 1,
+            bit_depth: 8,
+            signed: false,
+            reversible: true,
+        })
+        .expect("combined input hook declines without an error");
+
+    assert!(result.is_none());
+    assert_eq!(accelerator.deinterleave_dispatches(), 0);
+    assert_eq!(accelerator.forward_rct_dispatches(), 0);
+    assert_eq!(accelerator.forward_ict_dispatches(), 0);
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -160,7 +180,7 @@ fn cuda_forward_ict_matches_native_for_external_parity_fixture_when_required() {
     let context = CudaContext::system_default().expect("CUDA context");
     let (plane0, rest) = actual.split_at_mut(1);
     let (plane1, plane2) = rest.split_at_mut(1);
-    context
+    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .j2k_forward_ict(&mut plane0[0], &mut plane1[0], &mut plane2[0])
         .expect("CUDA forward ICT");
 
@@ -211,7 +231,7 @@ fn cuda_forward_dwt97_matches_native_for_external_parity_fixture_when_required()
     for (component, plane) in transformed.iter().enumerate() {
         let expected = forward_dwt97_reference(plane, image.width, image.height, 3)
             .expect("native forward DWT 9/7 reference");
-        let cuda = context
+        let cuda = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
             .j2k_forward_dwt97(plane, image.width, image.height, 3)
             .expect("CUDA forward DWT 9/7");
         let actual = cuda_dwt97_output_to_j2k(&cuda).expect("reshape CUDA forward DWT 9/7");
@@ -313,7 +333,7 @@ fn assert_cuda_forward_dwt53_reshape_matches_native(width: u32, height: u32, num
     let native = forward_dwt53_reference(&samples, width, height, num_levels)
         .expect("native forward DWT 5/3 reference");
     let context = CudaContext::system_default().expect("CUDA context");
-    let cuda_output = context
+    let cuda_output = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
         .j2k_forward_dwt53(&samples, width, height, num_levels)
         .expect("CUDA forward DWT 5/3");
     let cuda_as_native = cuda_dwt53_output_to_j2k(&cuda_output)

@@ -167,7 +167,7 @@ pub fn build_device_plan<'a>(
         scan_bytes,
         components,
         checkpoints,
-        matches_fast_420: plan.matches_fast_tile_shape(),
+        matches_fast_420: plan.matches_fast_420_device_shape(),
         matches_fast_422: plan.matches_fast_rgb422_shape(),
         matches_fast_444: plan.matches_fast_rgb444_shape(),
     })
@@ -225,7 +225,7 @@ pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> Devic
     DeviceBatchSummary {
         restart_interval,
         checkpoint_count,
-        matches_fast_420: plan.matches_fast_tile_shape(),
+        matches_fast_420: plan.matches_fast_420_device_shape(),
         matches_fast_422: plan.matches_fast_rgb422_shape(),
         matches_fast_444: plan.matches_fast_rgb444_shape(),
     }

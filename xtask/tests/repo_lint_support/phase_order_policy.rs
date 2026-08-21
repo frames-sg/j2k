@@ -75,7 +75,7 @@ fn native_context_and_tile_owner_handoffs_remain_transactional() {
 
 #[test]
 fn cuda_status_and_packet_owners_exist_before_launch_or_completion() {
-    let decode = read("crates/j2k-cuda-runtime/src/htj2k_decode/completion.rs");
+    let decode = read("crates/j2k-cuda-j2k-engine/src/htj2k_decode/completion.rs");
     FunctionCalls::parse(
         "CUDA cleanup completion",
         &decode,
@@ -86,7 +86,7 @@ fn cuda_status_and_packet_owners_exist_before_launch_or_completion() {
         &["try_vec_filled", "launch_htj2k_decode_codeblocks_multi"],
     );
 
-    let encode = read("crates/j2k-cuda-runtime/src/htj2k_encode/completion.rs");
+    let encode = read("crates/j2k-cuda-j2k-engine/src/htj2k_encode/completion.rs");
     for function in [
         "encode_htj2k_kernel_jobs_device_with_resources_and_pool",
         "encode_htj2k_multi_input_kernel_jobs_device_compact_with_resources_and_pool",
@@ -101,7 +101,7 @@ fn cuda_status_and_packet_owners_exist_before_launch_or_completion() {
         );
     }
 
-    let packetize = read("crates/j2k-cuda-runtime/src/htj2k_packetize.rs");
+    let packetize = read("crates/j2k-cuda-j2k-engine/src/htj2k_packetize.rs");
     FunctionCalls::parse(
         "CUDA packetization completion",
         &packetize,

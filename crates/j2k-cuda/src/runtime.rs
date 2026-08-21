@@ -44,9 +44,11 @@ pub(crate) fn wrap_surface(
         }
         BackendRequest::Cuda => {
             let _ = (bytes, session);
-            Err(Error::UnsupportedCudaRequest {
-                reason: CPU_STAGED_CUDA_REQUIRES_EXPLICIT_API,
-            })
+            Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    CPU_STAGED_CUDA_REQUIRES_EXPLICIT_API,
+                ),
+            ))
         }
         BackendRequest::Metal => Err(Error::UnsupportedBackend { request: backend }),
     }

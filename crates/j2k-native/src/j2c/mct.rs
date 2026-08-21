@@ -348,7 +348,10 @@ mod tests {
     fn irreversible_output_rounds_before_unsigned_level_shift() {
         let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
         round_centered_and_shift(&mut samples, 128.0);
-        assert_eq!(samples, [119.0, 118.0, 120.0]);
+        assert_eq!(
+            samples.map(f32::to_bits),
+            [119.0, 118.0, 120.0].map(f32::to_bits)
+        );
     }
 
     #[test]

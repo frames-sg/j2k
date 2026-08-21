@@ -2,8 +2,6 @@
 
 use super::cuda_runtime_gate;
 use crate::{CudaContext, CudaError, CudaExternalDeviceBufferViewMut};
-#[cfg(feature = "cuda-oxide-j2k-ml")]
-use crate::{CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization, CudaJ2kMlSample};
 
 #[test]
 fn cuda_context_identity_distinguishes_clones_from_independent_contexts_when_required() {
@@ -161,44 +159,4 @@ fn external_cuda_view_rejects_foreign_context_and_never_owns_memory_when_require
     }
     .expect_err("foreign context must fail");
     assert!(matches!(error, CudaError::InvalidArgument { .. }));
-}
-
-#[cfg(feature = "cuda-oxide-j2k-ml")]
-#[test]
-fn j2k_ml_external_destination_checks_batch_offsets_before_launch_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let source = context.upload(&[1, 2, 3, 4]).expect("source upload");
-    let mut allocation = context.allocate(4).expect("destination allocation");
-    let ptr = allocation.device_ptr();
-    let len = allocation.byte_len();
-    // SAFETY: `allocation` owns this live four-byte range and the view holds
-    // its exclusive borrow until validation returns.
-    let mut destination = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(&context, ptr, len, 1, &mut allocation)
-    }
-    .expect("external view");
-
-    let error = context
-        .j2k_ml_convert_into_external(
-            source.device_ptr(),
-            source.byte_len(),
-            &mut destination,
-            CudaJ2kMlKernelConfig {
-                width: 2,
-                height: 2,
-                channels: 1,
-                sample: CudaJ2kMlSample::U8,
-                layout: CudaJ2kMlLayout::ChannelsFirst,
-                destination_offset_elements: 1,
-                normalization: CudaJ2kMlNormalization::Integer,
-            },
-        )
-        .expect_err("offset must exceed destination bounds");
-    assert!(matches!(error, CudaError::OutputTooSmall { .. }));
-    drop(destination);
-    assert_eq!(allocation.device_ptr(), ptr);
 }

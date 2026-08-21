@@ -1,7 +1,8 @@
 use crate::{CudaHtj2kTransform, J2kDecoder, SurfaceResidency};
 use j2k_core::{PixelFormat, Rect};
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables};
+use j2k_cuda_j2k_engine::{CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine};
+use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
     decode_ht_code_block_scalar, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1,
@@ -289,7 +290,7 @@ fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
     .expect("native scalar HT decode");
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let output = context
+    let output = J2kCudaEngine::new(&context)
         .decode_htj2k_codeblocks(
             block_payload,
             &[CudaHtj2kCodeBlockJob {
@@ -379,7 +380,7 @@ fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() 
     .expect("native scalar HT refinement decode");
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let output = context
+    let output = J2kCudaEngine::new(&context)
         .decode_htj2k_codeblocks(
             block_payload,
             &[CudaHtj2kCodeBlockJob {

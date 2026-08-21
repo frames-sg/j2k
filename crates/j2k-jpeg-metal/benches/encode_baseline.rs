@@ -11,6 +11,8 @@ use j2k_jpeg_metal::{
     encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
     JpegBaselineMetalEncodeTile, MetalBackendSession,
 };
+#[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const DEFAULT_DIM: u32 = 512;
@@ -133,6 +135,23 @@ fn bench_batch_encode(
                 )
             })
             .collect::<Vec<_>>();
+        let probe = encode_jpeg_baseline_batch_from_metal_buffers(&tiles, metal_options, &session)
+            .expect("Metal JPEG Baseline batch probe");
+        let mut hasher = Sha256::new();
+        for frame in &probe {
+            let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(&frame.data));
+            let pixels = decoder.decode().expect("decode Metal batch probe");
+            assert_eq!(pixels.len(), tile_bytes);
+            hasher.update((frame.data.len() as u64).to_le_bytes());
+            hasher.update(&frame.data);
+        }
+        let mcus = dim.div_ceil(16) as usize * dim.div_ceil(8) as usize;
+        let coefficient_scratch_bytes = mcus * 4 * 64 * std::mem::size_of::<i32>() * batch_size;
+        eprintln!(
+            "jpeg_metal_p18_probe path=staged dimensions={dim}x{dim} batch={batch_size} coefficient_scratch_bytes={coefficient_scratch_bytes} input_sha256={:x} output_sha256={:x}",
+            Sha256::digest(rgb),
+            hasher.finalize(),
+        );
         batch.bench_function(
             format!("metal_rgb8_422_{dim}x{dim}_batch{batch_size}"),
             |b| {

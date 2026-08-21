@@ -44,13 +44,13 @@ The published 0.7.5 artifact recorded both ordinary and hidden-enabled passes
 with the same generator, rustdoc, and target pins. The historical 0.8.0 semver
 report compares its ordinary inventory with 0.7.5, and the 0.8.1 report
 compares that release directly with published 0.8.0. The 0.9.0 report compares
-the published release directly with published 0.8.1, and the staged 0.9.1
+the published release directly with published 0.8.1, and the staged 0.10.0
 report compares the candidate directly with published 0.9.0. All reports also
 record each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
 count/fingerprint in
-`docs/release-evidence/public-api/public-api-review-0.9.1.yml`.
+`docs/release-evidence/public-api/public-api-review-0.10.0.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
 The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
@@ -87,10 +87,10 @@ is in the generated
 [`0.9.0` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md),
 with its human review in
 [`public-api-review-0.9.0.yml`](release-evidence/public-api/public-api-review-0.9.0.yml).
-The provisional 0.9.1 comparison is in the generated
-[`0.9.1` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.1.md),
+The provisional 0.10.0 comparison is in the generated
+[`0.10.0` reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md),
 with its human review in
-[`public-api-review-0.9.1.yml`](release-evidence/public-api/public-api-review-0.9.1.yml).
+[`public-api-review-0.10.0.yml`](release-evidence/public-api/public-api-review-0.10.0.yml).
 It remains candidate evidence until the source is frozen and the exact-SHA
 release gates complete.
 
@@ -116,7 +116,7 @@ of the pre-1.0 `0.6.2` API and did not claim source compatibility with `0.6.x`.
 crate. The tier changes the support promise; it does not remove ordinary Rust
 visibility or make a public item exempt from patch-release review.
 
-All 18 published libraries are built with missing-docs enforcement, recorded in
+All 22 published libraries are built with missing-docs enforcement, recorded in
 both the ordinary and rustdoc-hidden inventories, and checked for patch
 compatibility. A public `#[doc(hidden)]` item remains callable Rust API and is
 not private merely because rustdoc omits it. Use actual module or item privacy
@@ -132,7 +132,9 @@ for internals whenever possible.
   break ledger and migration guidance. Their runtime support remains limited
   by feature gates, hardware availability, and `docs/public-support.md`.
 - `implementation`: `j2k-codec-math`, `j2k-profile`, `j2k-types`,
-  `j2k-cuda-runtime`, and `j2k-metal-support`. These are published sibling-crate
+  `j2k-cuda-build-support`, `j2k-cuda-runtime`, `j2k-cuda-j2k-engine`,
+  `j2k-cuda-jpeg-engine`, `j2k-cuda-transcode-engine`, and
+  `j2k-metal-support`. These are published sibling-crate
   interfaces, not supported general-purpose extension APIs. They still receive
   documentation, inventory, and patch-compatibility checks because downstream
   Rust code can call them. A pre-1.0 minor release may revise them with the same
@@ -155,9 +157,10 @@ was the only candidate permitted to compare against `v0.7.5`, and `0.9.0` was
 the only candidate permitted to compare against `v0.8.1`, as intentional
 pre-1.0 breaks. The currently configured semver baseline is published
 `v0.9.0` at peeled commit
-`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The staged `0.9.1` patch
-candidate compares directly against that baseline without an intentional-break
-transition allowance.
+`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The staged `0.10.0` pre-1.0
+minor candidate compares directly against that baseline under a one-time
+intentional-break transition. Its ledger records every generated removal and
+direct migration; the allowance must be disabled after publication.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.

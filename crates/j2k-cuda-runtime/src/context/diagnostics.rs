@@ -241,7 +241,9 @@ impl CudaContext {
         self.inner.diagnostics.record_device_free(byte_len);
     }
 
-    pub(crate) fn record_status_device_to_host_copy(&self, byte_len: usize) {
+    /// Record one codec-engine status readback in context diagnostics.
+    #[doc(hidden)]
+    pub fn record_status_device_to_host_copy(&self, byte_len: usize) {
         atomic_saturating_add(&self.inner.diagnostics.status_device_to_host_operations, 1);
         atomic_saturating_add(
             &self.inner.diagnostics.status_device_to_host_bytes,

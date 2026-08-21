@@ -53,11 +53,11 @@ pub(super) fn finish_color_components(
     color: &mut CudaHtj2kColorDecodePlans,
 ) -> Result<PreparedColorComponents, Error> {
     let [work0, work1, work2]: [CudaComponentDecodeWork; 3] =
-        component_work
-            .try_into()
-            .map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            })?;
+        component_work.try_into().map_err(|_| {
+            Error::capability_rejected(j2k_core::CapabilityRejection::missing_prepared_plan(
+                CUDA_HTJ2K_KERNELS_NOT_READY,
+            ))
+        })?;
     let components = [
         finish_cuda_component_decode(work0)?,
         finish_cuda_component_decode(work1)?,

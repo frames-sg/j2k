@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    checked_batch_len, private_f32_buffer, u32_param, Buffer, DctGridToDwt97Job,
-    DctGridToHtj2k97CodeBlockJob, MetalRuntime, MetalTranscodeError, ProjectionBatchShape,
-    METAL_DCT97_UNSUPPORTED_GRID,
+    checked_batch_len, checked_dwt_level_shape, private_f32_buffer, u32_param, Buffer,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, MetalRuntime, MetalTranscodeError,
+    ProjectionBatchShape, METAL_DCT97_UNSUPPORTED_GRID,
 };
 
 pub(super) fn dwt97_staged_batch_shape(
@@ -39,10 +39,11 @@ fn staged_batch_shape(
     width: usize,
     height: usize,
 ) -> Result<ProjectionBatchShape, MetalTranscodeError> {
-    let low_width = width.div_ceil(2);
-    let high_width = width / 2;
-    let low_height = height.div_ceil(2);
-    let high_height = height / 2;
+    let level = checked_dwt_level_shape(width, height, METAL_DCT97_UNSUPPORTED_GRID)?;
+    let low_width = level.low_width;
+    let high_width = level.high_width;
+    let low_height = level.low_height;
+    let high_height = level.high_height;
     let blocks_per_item =
         block_cols
             .checked_mul(block_rows)

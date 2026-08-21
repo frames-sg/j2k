@@ -18,7 +18,9 @@ use crate::allocation::{try_collect_results_exact, try_vec_filled};
 use crate::batch::CudaJpegBatch;
 use crate::owned_decode::decode_owned_cuda_rgb8_from_decoder;
 #[cfg(feature = "cuda-runtime")]
-use crate::owned_decode::decode_owned_cuda_rgb8_from_decoder_into;
+use crate::owned_decode::{
+    decode_owned_cuda_rgb8_from_decoder_into, profile_owned_cuda_rgb8_from_decoder,
+};
 use crate::runtime::{validate_surface_request, wrap_surface};
 use crate::{CudaSession, Error, Surface};
 
@@ -58,12 +60,26 @@ impl ImageCodec for Codec {
 
 fn rejected_decode_path_error(backend: BackendRequest, reason: &'static str) -> Error {
     match backend {
-        BackendRequest::Cuda => Error::UnsupportedCudaRequest { reason },
+        BackendRequest::Cuda => {
+            Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_operation(reason))
+        }
         other => Error::UnsupportedBackend { request: other },
     }
 }
 
 impl Codec {
+    #[cfg(feature = "cuda-runtime")]
+    /// Profile the existing full-frame CUDA JPEG RGB8 route without changing
+    /// kernel selection or launch geometry.
+    #[doc(hidden)]
+    pub fn profile_tile_rgb8_with_session(
+        input: &[u8],
+        session: &mut CudaSession,
+    ) -> Result<crate::CudaJpegDecodeProfile, Error> {
+        let decoder = CpuDecoder::new(input)?;
+        profile_owned_cuda_rgb8_from_decoder(&decoder, session)
+    }
+
     #[cfg(feature = "cuda-runtime")]
     #[doc(hidden)]
     /// Run experimental chunked JPEG entropy self-sync diagnostics for a 4:2:0 RGB8 tile.
@@ -71,7 +87,7 @@ impl Codec {
     /// This does not decode pixels and does not affect production CUDA routing.
     pub fn diagnose_tile_rgb8_chunked_entropy_with_session(
         input: &[u8],
-        config: j2k_cuda_runtime::CudaJpegChunkedEntropyConfig,
+        config: j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig,
         session: &mut CudaSession,
     ) -> Result<crate::CudaJpegChunkedEntropyReport, Error> {
         crate::owned_decode::diagnose_owned_cuda_420_entropy(input, config, session)
@@ -205,9 +221,11 @@ impl Codec {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support region output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support region output",
+                ),
+            ));
         }
         let dims = (roi.w, roi.h);
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
@@ -236,9 +254,11 @@ impl Codec {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support scaled output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support scaled output",
+                ),
+            ));
         }
         let source_dims = CpuDecoder::inspect(input)?.dimensions;
         let dims = (
@@ -275,9 +295,11 @@ impl Codec {
         } = request;
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support scaled region output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support scaled region output",
+                ),
+            ));
         }
         let dims = {
             let scaled = roi.scaled_covering(scale);

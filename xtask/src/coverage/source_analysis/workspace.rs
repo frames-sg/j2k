@@ -12,6 +12,7 @@ use super::ast::validate_source;
 use super::cfg_eval::CoverageCfgContext;
 use super::graph::ReachKind;
 use super::{SourceRole, GENERATED_DWT_DISPOSITION};
+use crate::coverage::cuda_oxide_paths::{is_cuda_oxide_device_rust, is_cuda_oxide_host_scaffold};
 mod fuzz_manifests;
 #[cfg(test)]
 mod tests;
@@ -275,20 +276,13 @@ pub(super) fn classify_unreached_source(root: &Path, path: &str) -> Result<Sourc
     if is_clone_audit_fixture(path) {
         return Ok(SourceRole::TestOnly);
     }
-    if path == "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs" {
+    if path == "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs" {
         return Ok(SourceRole::Generated("cuda-shared-simt-prelude"));
     }
-    if path.starts_with("crates/j2k-cuda-runtime/src/cuda_oxide_")
-        && path.contains("/simt/src/")
-        && has_rust_extension(path)
-    {
+    if is_cuda_oxide_device_rust(path) {
         return Ok(SourceRole::Generated("cuda-simt-device-rust"));
     }
-    if path.starts_with("crates/j2k-cuda-runtime/src/cuda_oxide_")
-        && path.contains("/src/")
-        && !path.contains("/simt/")
-        && path.ends_with("main.rs")
-    {
+    if is_cuda_oxide_host_scaffold(path) {
         return Ok(SourceRole::Generated("cuda-generated-host-scaffold"));
     }
     Err(format!(

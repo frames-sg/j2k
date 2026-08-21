@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::PixelFormat;
-use j2k_cuda_runtime::{CudaJ2kStoreRgb8MctJob, CudaJ2kStoreRgb8MctTarget};
+use j2k_cuda_j2k_engine::{CudaJ2kStoreRgb8MctJob, CudaJ2kStoreRgb8MctTarget};
 
 use super::super::super::resident::{finish_cuda_component_decode, pooled_cuda_buffer};
 use super::super::super::{
@@ -27,11 +27,11 @@ pub(in crate::decoder::color_batch) fn prepare_rgb8_mct_batch_store(
     component_work: Vec<CudaComponentDecodeWork>,
 ) -> Result<CudaPreparedRgb8MctBatchStore, Error> {
     let [work0, work1, work2]: [CudaComponentDecodeWork; 3] =
-        component_work
-            .try_into()
-            .map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            })?;
+        component_work.try_into().map_err(|_| {
+            Error::capability_rejected(j2k_core::CapabilityRejection::missing_prepared_plan(
+                CUDA_HTJ2K_KERNELS_NOT_READY,
+            ))
+        })?;
     let decoded_components = [
         finish_cuda_component_decode(work0)?,
         finish_cuda_component_decode(work1)?,
@@ -41,9 +41,9 @@ pub(in crate::decoder::color_batch) fn prepare_rgb8_mct_batch_store(
     let stores = [&component0.store, &component1.store, &component2.store];
     validate_color_stores(stores, color.dimensions)?;
     if !color.mct || !can_fuse_mct_store_for_stores(stores) {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
 
     let dispatches = decoded_components

@@ -16,7 +16,7 @@ use super::{
     GrayscaleBatchInput, GrayscaleBatchOutput, GrayscaleHtj2kCleanup, GrayscalePendingCompletion,
     HostPhaseBudget, PixelFormat, StoredGrayscaleBatch, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
-use j2k_cuda_runtime::CudaHtj2kDecodeResources;
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, J2kCudaEngine};
 
 pub(super) fn decode_grayscale_cuda_batch_with_profile(
     inputs: &[GrayscaleBatchInput<'_>],
@@ -38,9 +38,9 @@ pub(super) fn decode_grayscale_cuda_batch_with_profile(
         fmt,
         PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16
     ) {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     }
     let batch_wall_started = profile::profile_now(collect_stage_timings);
     let mut prepared = prepare_grayscale_batch(inputs, fmt, settings)?;
@@ -125,13 +125,14 @@ fn upload_grayscale_decode_resources(
     };
     let table_upload_us = profile::elapsed_us(table_upload_start);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
+    let engine = J2kCudaEngine::new(&context);
     let resources = match tables.as_ref() {
-        Some(tables) => context.upload_htj2k_decode_resources_with_tables_and_pool(
+        Some(tables) => engine.upload_htj2k_decode_resources_with_tables_and_pool(
             &prepared.shared_payload,
             tables,
             &pool,
         ),
-        None => context.upload_j2k_decode_payload_with_pool(&prepared.shared_payload, &pool),
+        None => engine.upload_j2k_decode_payload_with_pool(&prepared.shared_payload, &pool),
     }
     .map_err(cuda_error)?;
     Ok((
@@ -329,9 +330,11 @@ fn finish_grayscale_components_and_store(
             enqueue_external,
         )?,
         _ => {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-            })
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_format(
+                    CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+                ),
+            ))
         }
     };
     let store_us = profile::elapsed_us(store_started);

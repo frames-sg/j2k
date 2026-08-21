@@ -98,7 +98,7 @@ fn preflight_component_allocation_budget(
         ],
         "CUDA 9/7 component assembly workspace",
     )?;
-    budget.preflight_bytes(additional)
+    Ok(budget.preflight_bytes(additional)?)
 }
 
 /// Reslice one subband's code-block-major `i32` buffer (one item) into a
@@ -120,8 +120,8 @@ fn subband_from_codeblock_slice(
         &[num_cbs_x, num_cbs_y],
         "CUDA 9/7 output code-block metadata",
     )?;
-    let mut code_blocks =
-        budget.try_vec_with_capacity(code_block_count, "CUDA 9/7 output code-block metadata")?;
+    let mut code_blocks = budget
+        .try_vec_with_capacity_named(code_block_count, "CUDA 9/7 output code-block metadata")?;
     let mut offset = 0usize;
     for cby in 0..num_cbs_y {
         for cbx in 0..num_cbs_x {
@@ -137,7 +137,7 @@ fn subband_from_codeblock_slice(
                 ));
             }
             code_blocks.push(PrequantizedHtj2k97CodeBlock {
-                coefficients: budget.try_vec_from_slice(
+                coefficients: budget.try_vec_from_slice_named(
                     &data[offset..end],
                     "CUDA 9/7 prequantized code-block coefficients",
                 )?,
@@ -190,16 +190,18 @@ fn component_from_subbands(
     budget: &mut HostPhaseBudget,
 ) -> Result<PrequantizedHtj2k97Component, CudaTranscodeError> {
     let low_resolution = PrequantizedHtj2k97Resolution {
-        subbands: budget.try_vec_from_array([ll], "CUDA 9/7 LL resolution subbands")?,
+        subbands: budget.try_vec_from_array_named([ll], "CUDA 9/7 LL resolution subbands")?,
     };
     let high_resolution = PrequantizedHtj2k97Resolution {
-        subbands: budget
-            .try_vec_from_array([hl, lh, hh], "CUDA 9/7 high-frequency resolution subbands")?,
+        subbands: budget.try_vec_from_array_named(
+            [hl, lh, hh],
+            "CUDA 9/7 high-frequency resolution subbands",
+        )?,
     };
     Ok(PrequantizedHtj2k97Component {
         x_rsiz: job.x_rsiz,
         y_rsiz: job.y_rsiz,
-        resolutions: budget.try_vec_from_array(
+        resolutions: budget.try_vec_from_array_named(
             [low_resolution, high_resolution],
             "CUDA 9/7 component resolutions",
         )?,
@@ -246,7 +248,7 @@ pub(super) fn codeblock_bands_to_components(
     account_codeblock_bands(&mut budget, bands)?;
     preflight_component_allocation_budget(&budget, bands, jobs.len(), options)?;
     let mut components =
-        budget.try_vec_with_capacity(jobs.len(), "CUDA 9/7 prequantized components")?;
+        budget.try_vec_with_capacity_named(jobs.len(), "CUDA 9/7 prequantized components")?;
     for (item, job) in jobs.iter().enumerate() {
         let ll = subband_from_codeblock_slice(
             item_band_slice(&bands.ll, item, ll_size)?,

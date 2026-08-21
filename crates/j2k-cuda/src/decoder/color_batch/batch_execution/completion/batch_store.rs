@@ -23,9 +23,9 @@ pub(super) fn can_batch_rgb8_mct_color_store(
     for color in colors {
         let component_count = color.components.len();
         if component_count != 3 || offset.saturating_add(component_count) > component_work.len() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+            ));
         }
         if !color.mct {
             return Ok(false);
@@ -39,9 +39,9 @@ pub(super) fn can_batch_rgb8_mct_color_store(
         offset = offset.saturating_add(component_count);
     }
     if offset != component_work.len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
     Ok(!colors.is_empty())
 }
@@ -61,19 +61,20 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
             collect_stage_timings,
             "j2k.htj2k.decode.store.color.batch",
             || {
-                context.j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(
-                    &targets,
-                    host_budget.live_bytes(),
-                )
+                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                    .j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(
+                        &targets,
+                        host_budget.live_bytes(),
+                    )
             },
         )
         .map_err(cuda_error)?;
     drop(targets);
     let (surface_buffer, surface_ranges, store_stats) = store_output.into_parts();
     if surface_ranges.len() != prepared.len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
     assemble_batch_store_surfaces(
         fmt,
@@ -101,9 +102,9 @@ fn prepare_batch_store_items(
         prepared.push(prepare_rgb8_mct_batch_store(fmt, color, work)?);
     }
     if work_iter.next().is_some() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
     Ok((host_budget, prepared))
 }

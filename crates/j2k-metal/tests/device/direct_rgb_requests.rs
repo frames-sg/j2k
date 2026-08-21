@@ -261,7 +261,7 @@ fn explicit_metal_tile_unsupported_rgba16_is_rejected() {
 
 #[test]
 fn hybrid_ht_cpuupload_uses_worker_local_decode_workspace() {
-    let source = include_str!("../../src/compute/direct_cpu.rs");
+    let source = include_str!("../../src/engine/direct_cpu.rs");
 
     assert!(
         source.contains("decode_prepared_ht_jobs_on_cpu_with_workspace"),

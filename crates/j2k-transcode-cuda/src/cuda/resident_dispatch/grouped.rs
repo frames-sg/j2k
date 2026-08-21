@@ -6,12 +6,12 @@ use super::super::{
     device_band_groups_to_preencoded_components, map_batch_timings, transcode_kernels_built,
     validate_htj2k97_codeblock_options, CudaBufferPool, CudaContext, CudaDwt97BatchGeometry,
     CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
-    CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaTranscodeError,
+    CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaTranscodeEngine, CudaTranscodeError,
     CudaTranscodeSession, DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob,
     Dwt97BatchStageTimings, HostPhaseBudget, Htj2k97CodeBlockOptions,
     PreencodedHtj2k97CompactBatchGroups, PreencodedHtj2k97Component, ResidentDeviceGroup,
 };
-use super::{htj2k97_quantize_params, validate_i16_block_grid};
+use super::{htj2k97_quantize_params, resident_dwt_handoff_count, validate_i16_block_grid};
 
 type EncodedGroups<C> = Vec<(usize, Vec<C>, Vec<u8>)>;
 type GroupedSinkOutput<X, C> = (X, EncodedGroups<C>, CudaHtj2kEncodeStageTimings, usize);
@@ -37,8 +37,8 @@ fn flatten_required_magnitude_bounds(
         .ok_or(CudaTranscodeError::Kernel(
             "CUDA grouped 9/7 resident HT magnitude-bound count overflow",
         ))?;
-    let mut flattened =
-        budget.try_vec_with_capacity(count, "CUDA grouped resident magnitude-bound outputs")?;
+    let mut flattened = budget
+        .try_vec_with_capacity_named(count, "CUDA grouped resident magnitude-bound outputs")?;
     for bounds in magnitude_bounds {
         flattened.extend(bounds);
     }
@@ -145,7 +145,7 @@ fn stage_resident_device_groups<'a, 'j>(
         for job in group.jobs {
             append_i16_blocks(job.dequantized_blocks, &mut blocks);
         }
-        let (bands, group_timings) = context
+        let (bands, group_timings) = CudaTranscodeEngine::new(context)
             .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
                 CudaHtj2k97I16CodeblockBatchWithPoolRequest {
                     blocks: &blocks,
@@ -196,19 +196,23 @@ fn dispatch_with_sink<'a, 'g, 'j, C, X: Default>(
     let params = htj2k97_quantize_params(options)?;
     let pool = session.buffer_pool(&context);
     let mut host_budget = HostPhaseBudget::new("CUDA grouped resident dispatch metadata");
-    let mut outputs = host_budget
-        .try_vec_with_capacity::<Vec<C>>(groups.len(), "CUDA grouped resident output slots")?;
+    let mut outputs = host_budget.try_vec_with_capacity_named::<Vec<C>>(
+        groups.len(),
+        "CUDA grouped resident output slots",
+    )?;
     outputs.resize_with(groups.len(), Vec::new);
-    let mut magnitude_bounds = host_budget.try_vec_with_capacity::<Vec<u8>>(
+    let mut magnitude_bounds = host_budget.try_vec_with_capacity_named::<Vec<u8>>(
         groups.len(),
         "CUDA grouped resident magnitude-bound slots",
     )?;
     magnitude_bounds.resize_with(groups.len(), Vec::new);
-    let mut output_present = host_budget
-        .try_vec_with_capacity::<bool>(groups.len(), "CUDA grouped resident output presence")?;
+    let mut output_present = host_budget.try_vec_with_capacity_named::<bool>(
+        groups.len(),
+        "CUDA grouped resident output presence",
+    )?;
     output_present.resize(groups.len(), false);
     let device_groups = host_budget
-        .try_vec_with_capacity(groups.len(), "CUDA grouped resident device-band metadata")?;
+        .try_vec_with_capacity_named(groups.len(), "CUDA grouped resident device-band metadata")?;
     let live_metadata_bytes = host_budget.live_bytes();
     let mut staging = ResidentGroupStaging {
         output_present,
@@ -237,6 +241,14 @@ fn dispatch_with_sink<'a, 'g, 'j, C, X: Default>(
             live_metadata_bytes,
         )?;
         extra = sink_extra;
+        staging.timings.resident_dct_handoff_count =
+            staging.device_groups.iter().fold(0usize, |count, group| {
+                count.saturating_add(group.jobs.len())
+            });
+        staging.timings.resident_dwt_handoff_count =
+            staging.device_groups.iter().fold(0usize, |count, group| {
+                count.saturating_add(resident_dwt_handoff_count(&group.bands))
+            });
         add_ht_encode_timings(&mut staging.timings, ht_timings);
         staging.timings.ht_codeblock_dispatches = staging
             .timings

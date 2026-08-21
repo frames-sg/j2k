@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::batch_entry::*;
 use super::*;
 use crate::Storage;
 use j2k_jpeg::adapter::JpegHuffmanTable as PacketHuffmanTable;
@@ -381,7 +382,7 @@ fn auto_batched_packets_require_wsi_batch_threshold() {
 }
 
 #[test]
-fn auto_batched_packets_accept_restart_wsi_batch_at_threshold() {
+fn auto_batched_packets_reject_restart_batch_without_validated_promotion_evidence() {
     let input = Arc::<[u8]>::from(BASELINE_420_RESTART);
     let packet =
         Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet"));
@@ -401,11 +402,11 @@ fn auto_batched_packets_accept_restart_wsi_batch_at_threshold() {
 
     assert!(batched_fast_packets(&requests)
         .expect("packet lookup")
-        .is_some());
+        .is_none());
 }
 
 #[test]
-fn auto_batched_packets_accept_large_nonrestart_wsi_batch_at_threshold() {
+fn auto_batched_packets_reject_large_batch_without_validated_promotion_evidence() {
     let input = Arc::<[u8]>::from(generated_rgb_jpeg(512));
     let fast444_packet = j2k_jpeg::adapter::build_fast444_packet(input.as_ref())
         .ok()
@@ -436,7 +437,7 @@ fn auto_batched_packets_accept_large_nonrestart_wsi_batch_at_threshold() {
 
     assert!(batched_fast_packets(&requests)
         .expect("packet lookup")
-        .is_some());
+        .is_none());
 }
 
 fn generated_rgb_jpeg(dim: u16) -> Vec<u8> {

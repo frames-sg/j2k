@@ -3,15 +3,61 @@
 use super::*;
 use crate::error::DecodeError;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
+use crate::DecodingError;
 use alloc::vec;
 
 fn component(values: &[f32], bit_depth: u8) -> ComponentData {
+    component_with_signed(values, bit_depth, false)
+}
+
+fn component_with_signed(values: &[f32], bit_depth: u8, signed: bool) -> ComponentData {
     ComponentData {
         container: SimdBuffer::<SIMD_WIDTH>::new(values.to_vec()),
         integer_container: None,
         bit_depth,
-        signed: false,
+        signed,
     }
+}
+
+fn components(specs: &[(Vec<f32>, u8, bool)]) -> Vec<ComponentData> {
+    specs
+        .iter()
+        .map(|(values, bit_depth, signed)| component_with_signed(values, *bit_depth, *signed))
+        .collect()
+}
+
+fn assert_region_matches_full_crop(
+    specs: &[(Vec<f32>, u8, bool)],
+    dimensions: (usize, usize),
+    roi: (u32, u32, u32, u32),
+) {
+    let boxes = ImageBoxes::default();
+    let mut full_components = components(specs);
+    let mut full_image = DecodedImage {
+        decoded_components: &mut full_components,
+        boxes: &boxes,
+    };
+    let channels = specs.len();
+    let mut full = vec![0; dimensions.0 * dimensions.1 * channels];
+    interleave_and_convert(&mut full_image, &mut full).expect("full projection");
+
+    let mut region_components = components(specs);
+    let mut region_image = DecodedImage {
+        decoded_components: &mut region_components,
+        boxes: &boxes,
+    };
+    let (x, y, width, height) = roi;
+    let mut region = vec![0; width as usize * height as usize * channels];
+    interleave_and_convert_region(&mut region_image, dimensions.0, roi, &mut region)
+        .expect("region projection");
+
+    let mut expected = Vec::with_capacity(region.len());
+    for row in y as usize..(y + height) as usize {
+        let start = (row * dimensions.0 + x as usize) * channels;
+        let end = start + width as usize * channels;
+        expected.extend_from_slice(&full[start..end]);
+    }
+    assert_eq!(region, expected);
 }
 
 #[test]
@@ -77,7 +123,7 @@ fn region_interleaver_matches_fast_and_slow_full_projection_crops() {
         boxes: &boxes,
     };
     let mut fast = vec![0; 4];
-    interleave_and_convert_region(&mut fast_image, 2, roi, &mut fast);
+    interleave_and_convert_region(&mut fast_image, 2, roi, &mut fast).expect("fast region");
     assert_eq!(fast, [2, 12, 4, 14]);
 
     let mut slow_components = vec![
@@ -89,8 +135,99 @@ fn region_interleaver_matches_fast_and_slow_full_projection_crops() {
         boxes: &boxes,
     };
     let mut slow = vec![0; 4];
-    interleave_and_convert_region(&mut slow_image, 2, roi, &mut slow);
+    interleave_and_convert_region(&mut slow_image, 2, roi, &mut slow).expect("slow region");
     assert_eq!(slow, [255, 2, 68, 4]);
+}
+
+#[test]
+fn full_and_region_sample_conversion_match_required_component_matrix() {
+    let dimensions = (5, 3);
+    let sample_count = dimensions.0 * dimensions.1;
+    let eight_bit = |seed: usize| {
+        (0..sample_count)
+            .map(|index| {
+                f32::from(u16::try_from((index * 17 + seed) % 256).expect("8-bit fixture value"))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for channel_count in 1..=4 {
+        let specs = (0..channel_count)
+            .map(|channel| (eight_bit(channel * 31), 8, false))
+            .collect::<Vec<_>>();
+        assert_region_matches_full_crop(&specs, dimensions, (0, 0, 5, 3));
+        assert_region_matches_full_crop(&specs, dimensions, (1, 1, 3, 2));
+        assert_region_matches_full_crop(&specs, dimensions, (4, 0, 1, 3));
+    }
+
+    let mixed = vec![
+        (
+            (0..sample_count)
+                .map(|index| f32::from(u16::try_from(index % 16).expect("4-bit fixture value")))
+                .collect(),
+            4,
+            false,
+        ),
+        (eight_bit(9), 8, false),
+        (
+            (0..sample_count)
+                .map(|index| {
+                    f32::from(u16::try_from((index * 271) % 4096).expect("12-bit fixture value"))
+                })
+                .collect(),
+            12,
+            false,
+        ),
+    ];
+    assert_region_matches_full_crop(&mixed, dimensions, (0, 0, 5, 3));
+    assert_region_matches_full_crop(&mixed, dimensions, (1, 0, 3, 3));
+
+    let signed = vec![
+        (
+            (0..sample_count)
+                .map(|index| {
+                    f32::from(u16::try_from(index).expect("bounded fixture index")) * 19.0 - 128.0
+                })
+                .collect(),
+            8,
+            true,
+        ),
+        (
+            (0..sample_count)
+                .map(|index| {
+                    f32::from(u16::try_from(index).expect("bounded fixture index")) * 277.0 - 2048.0
+                })
+                .collect(),
+            12,
+            true,
+        ),
+    ];
+    assert_region_matches_full_crop(&signed, dimensions, (0, 0, 5, 3));
+    assert_region_matches_full_crop(&signed, dimensions, (2, 1, 3, 2));
+}
+
+#[test]
+fn full_and_region_interleavers_reject_short_output_buffers() {
+    let boxes = ImageBoxes::default();
+    let mut full_components = vec![component(&[1.0, 2.0], 8)];
+    let mut full_image = DecodedImage {
+        decoded_components: &mut full_components,
+        boxes: &boxes,
+    };
+    assert_eq!(
+        interleave_and_convert(&mut full_image, &mut [0]),
+        Err(DecodeError::Decoding(DecodingError::OutputBufferTooSmall))
+    );
+
+    let mut region_components = vec![component(&[1.0, 2.0], 8)];
+    let mut region_image = DecodedImage {
+        decoded_components: &mut region_components,
+        boxes: &boxes,
+    };
+    assert_eq!(
+        interleave_and_convert_region(&mut region_image, 2, (0, 0, 2, 1), &mut [0]),
+        Err(DecodeError::Decoding(DecodingError::OutputBufferTooSmall))
+    );
 }
 
 #[test]

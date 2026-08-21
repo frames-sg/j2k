@@ -291,17 +291,17 @@ impl<'a> BitReader<'a> {
     /// Consume the next restart marker and return the following RST index.
     ///
     /// Entropy decoders normally prefetch far enough to observe the marker.
-    /// When no bits remain buffered, one refill attempt preserves the former
-    /// boundary-probe behavior without discarding an `ensure_bits` error. A
-    /// missing marker is a scan-position failure rather than a Huffman-symbol
-    /// failure, so it retains the caller's MCU coordinates.
+    /// When at most one byte's legal alignment padding remains buffered, one
+    /// refill attempt probes the next byte without discarding an `ensure_bits`
+    /// error. A missing marker is a scan-position failure rather than a
+    /// Huffman-symbol failure, so it retains the caller's MCU coordinates.
     pub(crate) fn consume_restart_marker(
         &mut self,
         expected_rst: u8,
         mcu_at: u32,
         mcu_total: u32,
     ) -> Result<u8, JpegError> {
-        if self.bits == 0 {
+        if self.marker.is_none() && self.bits <= 7 {
             self.refill_one_byte();
         }
         let marker = self
@@ -517,6 +517,23 @@ mod tests {
         let next = br.consume_restart_marker(next, 2, 3).unwrap();
         assert_eq!(next, 2);
         assert_eq!(br.position(), data.len());
+    }
+
+    #[test]
+    fn restart_marker_probe_accepts_unprefetched_marker_after_buffered_padding() {
+        let data = [0xaf, 0xff, 0xd0];
+        let mut br = BitReader::from_snapshot(
+            &data,
+            BitReaderSnapshot {
+                pos: 1,
+                acc: 0x0f_u64 << 60,
+                bits: 4,
+            },
+        );
+
+        assert_eq!(br.consume_restart_marker(0, 16, 2_048).unwrap(), 1);
+        assert_eq!(br.position(), data.len());
+        assert_eq!(br.snapshot().bits, 0);
     }
 
     #[test]

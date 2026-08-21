@@ -23,7 +23,7 @@ fn nonterminal_external_test_modules_do_not_truncate_production_files() {
             root: "crates/j2k-cuda-runtime/src/lib.rs",
             analyzed: "crates/j2k-cuda-runtime/src/lib.rs",
             tests: "crates/j2k-cuda-runtime/src/tests.rs",
-            production_marker: "pub use build_flags::transcode_kernels_built;",
+            production_marker: "pub use kernel::CudaKernelSpec;",
             later_function: None,
         },
         Case {
@@ -93,11 +93,11 @@ fn nonterminal_external_test_modules_do_not_truncate_production_files() {
 fn cfg_test_helper_trees_are_not_production_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let metal_helpers = [
-        "crates/j2k-metal/src/compute/test_counters.rs",
-        "crates/j2k-metal/src/compute/tier1_encode/test_support.rs",
-        "crates/j2k-metal/src/compute/tier1_encode/test_support/gpu_pack.rs",
-        "crates/j2k-metal/src/compute/tier1_encode/test_support/ordered_pack.rs",
-        "crates/j2k-metal/src/compute/tier1_encode/test_support/split_cpu_pack.rs",
+        "crates/j2k-metal/src/engine/test_counters.rs",
+        "crates/j2k-metal/src/engine/tier1_encode/test_support.rs",
+        "crates/j2k-metal/src/engine/tier1_encode/test_support/gpu_pack.rs",
+        "crates/j2k-metal/src/engine/tier1_encode/test_support/ordered_pack.rs",
+        "crates/j2k-metal/src/engine/tier1_encode/test_support/split_cpu_pack.rs",
     ];
     let changed = metal_helpers
         .iter()

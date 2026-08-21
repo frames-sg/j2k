@@ -57,35 +57,36 @@ impl MetalBatchDecoder {
             BatchColor::Gray => {
                 let plans = self.prepared_gray_group_plans(group, fmt, false)?;
                 let runtime = self.backend_session().runtime()?;
-                crate::compute::submit_prepared_direct_grayscale_plan_batch_into_group(
+                crate::engine::submit_prepared_direct_grayscale_plan_batch_into_group(
                     runtime,
                     &plans,
                     fmt,
                     destination,
                     Some(group.source_indices()),
-                    crate::compute::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                    crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
                 )?
                 .wait()?;
             }
             BatchColor::Rgb | BatchColor::Rgba => {
                 let plans = self.prepared_color_group_plans(group, fmt)?;
                 let runtime = self.backend_session().runtime()?;
-                crate::compute::submit_prepared_direct_color_plan_batch_into_group(
+                crate::engine::submit_prepared_direct_color_plan_batch_into_group(
                     runtime,
                     &plans,
                     fmt,
                     group.info().layout,
                     destination,
                     Some(group.source_indices()),
-                    crate::compute::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                    crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
                 )?
                 .wait()?;
             }
             _ => {
-                return Err(Error::UnsupportedMetalRequest {
-                    reason:
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_format(
                         "J2K Metal exact external final-store received an unknown color contract",
-                })
+                    ),
+                ))
             }
         }
         self.record_submission();
@@ -108,7 +109,7 @@ impl MetalBatchDecoder {
         self.submit_prepared_group_into_with_ordering(
             group,
             destination,
-            crate::compute::DirectDestinationConsumerOrdering::Deferred,
+            crate::engine::DirectDestinationConsumerOrdering::Deferred,
         )
     }
 
@@ -132,7 +133,7 @@ impl MetalBatchDecoder {
         self.submit_prepared_group_into_with_ordering(
             group,
             destination,
-            crate::compute::DirectDestinationConsumerOrdering::Known {
+            crate::engine::DirectDestinationConsumerOrdering::Known {
                 consumer_queue: consumer_queue.retain(),
                 timeline: self.backend_session().consumer_event_timeline(),
             },
@@ -143,7 +144,7 @@ impl MetalBatchDecoder {
         &mut self,
         group: &PreparedBatchGroup,
         destination: MetalImageDestination,
-        consumer_ordering: crate::compute::DirectDestinationConsumerOrdering,
+        consumer_ordering: crate::engine::DirectDestinationConsumerOrdering,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
         let fmt = validate_group_contract(group.info())?;
         destination
@@ -162,7 +163,7 @@ impl MetalBatchDecoder {
             match group.info().color {
                 BatchColor::Gray => {
                     let plans = self.prepared_gray_group_plans(group, fmt, true)?;
-                    crate::compute::submit_prepared_direct_grayscale_plan_batch_into_group(
+                    crate::engine::submit_prepared_direct_grayscale_plan_batch_into_group(
                         runtime,
                         &plans,
                         fmt,
@@ -173,7 +174,7 @@ impl MetalBatchDecoder {
                 }
                 BatchColor::Rgb | BatchColor::Rgba => {
                     let plans = self.prepared_color_group_plans(group, fmt)?;
-                    crate::compute::submit_prepared_direct_color_plan_batch_into_group(
+                    crate::engine::submit_prepared_direct_color_plan_batch_into_group(
                         runtime,
                         &plans,
                         fmt,
@@ -183,10 +184,11 @@ impl MetalBatchDecoder {
                         consumer_ordering,
                     )?
                 }
-                _ => return Err(Error::UnsupportedMetalRequest {
-                    reason:
+                _ => return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_format(
                         "J2K Metal exact external final-store received an unknown color contract",
-                }),
+                    ),
+                )),
             };
         self.record_submission();
         Ok(SubmittedMetalGroupDecodeInto {

@@ -18,6 +18,7 @@ mod decoder;
 mod direct_plan;
 mod encode;
 mod error;
+mod generated;
 mod profile;
 mod routing;
 mod runtime;

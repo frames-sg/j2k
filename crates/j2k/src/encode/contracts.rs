@@ -80,6 +80,20 @@ pub enum J2kProgressionOrder {
     Cprl,
 }
 
+impl J2kProgressionOrder {
+    /// Return the backend-neutral packetization progression value.
+    #[doc(hidden)]
+    pub const fn packetization_order(self) -> j2k_types::J2kPacketizationProgressionOrder {
+        match self {
+            Self::Lrcp => j2k_types::J2kPacketizationProgressionOrder::Lrcp,
+            Self::Rlcp => j2k_types::J2kPacketizationProgressionOrder::Rlcp,
+            Self::Rpcl => j2k_types::J2kPacketizationProgressionOrder::Rpcl,
+            Self::Pcrl => j2k_types::J2kPacketizationProgressionOrder::Pcrl,
+            Self::Cprl => j2k_types::J2kPacketizationProgressionOrder::Cprl,
+        }
+    }
+}
+
 /// Supported code-block coding modes for the lossless encode facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum J2kBlockCodingMode {

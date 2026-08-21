@@ -2,12 +2,12 @@
 
 use j2k_core::{BackendKind, Unsupported};
 
+use super::accelerator::{required_resident_encode_stages, resolve_accelerated_encode_backend};
 use super::contracts::{
     EncodeBackendPreference, EncodedJ2k, J2kBlockCodingMode, J2kEncodeValidation,
     J2kLosslessEncodeOptions, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
-use super::native::encode_resident_with_native_accelerator;
-use super::routing::{required_resident_encode_stages, resolve_accelerated_encode_backend};
+use super::cpu::encode_resident_with_native_accelerator;
 use crate::{J2kEncodeStageAccelerator, J2kError, J2kResidentEncodeInput};
 
 /// Encode a lossless HTJ2K codestream from backend-resident pixels.

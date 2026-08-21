@@ -32,9 +32,11 @@ pub(in crate::compute) fn batch_output_buffer_or_new(
         || output.pitch_bytes() != out_stride
         || output.tile_stride_bytes() < out_tile_len
     {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal batch output buffer shape does not match requested RGB8 tiles",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "JPEG Metal batch output buffer shape does not match requested RGB8 tiles",
+            ),
+        ));
     }
     if output.tile_capacity() < tile_count {
         return Err(BufferError::OutputTooSmall {

@@ -4,6 +4,7 @@ use crate::{
     decode_ht_code_block_scalar, decode_ht_code_block_scalar_with_workspace_midpoint,
     HtCodeBlockDecodeWorkspace, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType, Result,
 };
+pub use j2k_types::{J2kRect, J2kWaveletTransform};
 
 define_ht_code_block_job! {
     /// Adapter HTJ2K code-block job description for backend experimentation.
@@ -149,42 +150,6 @@ pub struct J2kSubBandDecodeJob<'a> {
     pub height: u32,
     /// Code blocks to decode into this sub-band.
     pub jobs: &'a [J2kCodeBlockBatchJob<'a>],
-}
-
-/// Adapter integer rectangle for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct J2kRect {
-    /// Inclusive minimum x coordinate.
-    pub x0: u32,
-    /// Inclusive minimum y coordinate.
-    pub y0: u32,
-    /// Exclusive maximum x coordinate.
-    pub x1: u32,
-    /// Exclusive maximum y coordinate.
-    pub y1: u32,
-}
-
-impl J2kRect {
-    /// Rectangle width in samples.
-    #[must_use]
-    pub fn width(self) -> u32 {
-        self.x1.saturating_sub(self.x0)
-    }
-
-    /// Rectangle height in samples.
-    #[must_use]
-    pub fn height(self) -> u32 {
-        self.y1.saturating_sub(self.y0)
-    }
-}
-
-/// Adapter wavelet transform selector for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum J2kWaveletTransform {
-    /// Reversible 5/3 transform.
-    Reversible53,
-    /// Irreversible 9/7 transform.
-    Irreversible97,
 }
 
 /// Coefficient normalization used for one backend IDWT callback.

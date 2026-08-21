@@ -355,9 +355,9 @@ mod tests {
             }
         ));
         assert!(matches!(
-            Error::UnsupportedMetalRequest {
-                reason: "unsupported test shape",
-            }
+            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+                "unsupported test shape"
+            ))
             .clone(),
             Error::UnsupportedMetalRequest {
                 reason: "unsupported test shape"

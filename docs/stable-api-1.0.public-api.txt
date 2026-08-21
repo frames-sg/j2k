@@ -321,6 +321,8 @@ pub fn j2k::PreparedBatch::into_parts(self) -> (alloc::sync::Arc<[j2k::PreparedB
 pub fn j2k::PreparedBatchGroup::images(&self) -> &[j2k::PreparedImage]
 pub fn j2k::PreparedBatchGroup::info(&self) -> &j2k::BatchGroupInfo
 pub fn j2k::PreparedBatchGroup::source_indices(&self) -> &[usize]
+pub fn j2k::PreparedClassicPlan::geometry(&self) -> &j2k::ClassicPreparedGeometry
+pub fn j2k::PreparedClassicPlan::image_geometry(&self) -> j2k::PreparedImageGeometry<'_>
 pub fn j2k::PreparedClassicPlan::is_color(&self) -> bool
 pub fn j2k::PreparedClassicPlan::is_empty(&self) -> bool
 pub fn j2k::PreparedClassicPlan::is_grayscale(&self) -> bool
@@ -331,6 +333,8 @@ pub fn j2k::PreparedClassicPlan::payloads(&self) -> impl core::iter::traits::exa
 pub fn j2k::PreparedClassicPlan::range(&self, usize) -> core::option::Option<j2k_types::decode_payload::J2kCodestreamRange>
 pub fn j2k::PreparedClassicPlan::range_count(&self) -> usize
 pub fn j2k::PreparedClassicPlan::ranges(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = j2k_types::decode_payload::J2kCodestreamRange> + '_
+pub fn j2k::PreparedHtj2kPlan::geometry(&self) -> &j2k::Htj2kPreparedGeometry
+pub fn j2k::PreparedHtj2kPlan::image_geometry(&self) -> j2k::PreparedImageGeometry<'_>
 pub fn j2k::PreparedHtj2kPlan::is_color(&self) -> bool
 pub fn j2k::PreparedHtj2kPlan::is_empty(&self) -> bool
 pub fn j2k::PreparedHtj2kPlan::is_grayscale(&self) -> bool
@@ -355,10 +359,10 @@ pub fn j2k::decode_tiles_scaled_into(&mut [j2k::TileScaledDecodeJob<'_, '_>], j2
 pub fn j2k::encode_j2k_lossless(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
 pub fn j2k::encode_j2k_lossless_components(j2k::J2kLosslessComponentSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
 pub fn j2k::encode_j2k_lossless_typed_components(j2k::J2kLosslessTypedComponentSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
-pub fn j2k::encode_j2k_lossless_with_accelerator(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
+pub fn j2k::encode_j2k_lossless_with_accelerator(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::dispatch::accelerator::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
 pub fn j2k::encode_j2k_lossless_with_roi_regions(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, &[j2k::J2kRoiRegion]) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>
 pub fn j2k::encode_j2k_lossy(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::J2kError>
-pub fn j2k::encode_j2k_lossy_with_accelerator(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::J2kError>
+pub fn j2k::encode_j2k_lossy_with_accelerator(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::dispatch::accelerator::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::J2kError>
 pub fn j2k::encode_j2k_lossy_with_roi_regions(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, &[j2k::J2kRoiRegion]) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::J2kError>
 pub fn j2k::extract_j2k_codestream_payload(&[u8]) -> core::result::Result<j2k::J2kCodestreamPayload<'_>, j2k::J2kError>
 pub fn j2k::j2k_lossless_decomposition_levels(j2k::J2kLosslessSamples<'_>) -> u8
@@ -439,7 +443,7 @@ pub j2k::EncodedJ2k::backend: j2k_core::backend::BackendKind
 pub j2k::EncodedJ2k::bit_depth: u8
 pub j2k::EncodedJ2k::codestream: alloc::vec::Vec<u8>
 pub j2k::EncodedJ2k::components: u16
-pub j2k::EncodedJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport
+pub j2k::EncodedJ2k::dispatch_report: j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub j2k::EncodedJ2k::height: u32
 pub j2k::EncodedJ2k::signed: bool
 pub j2k::EncodedJ2k::width: u32
@@ -447,7 +451,7 @@ pub j2k::EncodedLossyJ2k::backend: j2k_core::backend::BackendKind
 pub j2k::EncodedLossyJ2k::bit_depth: u8
 pub j2k::EncodedLossyJ2k::codestream: alloc::vec::Vec<u8>
 pub j2k::EncodedLossyJ2k::components: u16
-pub j2k::EncodedLossyJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport
+pub j2k::EncodedLossyJ2k::dispatch_report: j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub j2k::EncodedLossyJ2k::height: u32
 pub j2k::EncodedLossyJ2k::report: j2k::J2kLossyEncodeReport
 pub j2k::EncodedLossyJ2k::signed: bool
@@ -759,8 +763,11 @@ pub struct j2k::TileDecodeOutput<'o>
 pub trait j2k::BatchDecoder
 pub type j2k::BatchDecoder::Error: core::convert::From<j2k_core::batch::BatchInfrastructureError>
 pub type j2k::BatchDecoder::Output
+pub type j2k::ClassicPreparedGeometry = j2k_types::decode_plan::referenced::J2kReferencedClassicPlan
 pub type j2k::CpuBatchDecoder::Error = j2k_core::batch::BatchInfrastructureError
 pub type j2k::CpuBatchDecoder::Output = j2k::CpuBatchDecodeResult
+pub type j2k::Htj2kPreparedGeometry = j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan
+pub type j2k::PreparedImageGeometry<'a> = j2k_types::decode_plan::referenced::J2kReferencedImageGeometry<'a>
 pub type j2k::TileBatchError = j2k_core::batch::BatchDecodeError<j2k::J2kError>
 pub type j2k::TileDecodeJob<'i, 'o> = j2k_core::batch::TileDecodeJob<'i, 'o>
 pub type j2k::TileRegionDecodeJob<'i, 'o> = j2k_core::batch::TileRegionDecodeJob<'i, 'o>
@@ -802,6 +809,7 @@ pub use j2k::TileBatchOptions
 #[non_exhaustive] pub enum j2k_core::BatchDecodeError<E>
 #[non_exhaustive] pub enum j2k_core::BatchInfrastructureError
 #[non_exhaustive] pub enum j2k_core::BufferError
+#[non_exhaustive] pub enum j2k_core::CapabilityRejectionKind
 #[non_exhaustive] pub enum j2k_core::Colorspace
 #[non_exhaustive] pub enum j2k_core::CompressedPayloadKind
 #[non_exhaustive] pub enum j2k_core::CompressedTransferSyntax
@@ -812,9 +820,11 @@ pub use j2k::TileBatchOptions
 #[non_exhaustive] pub enum j2k_core::SampleType
 #[non_exhaustive] pub enum j2k_core::SurfaceResidency
 #[non_exhaustive] pub enum j2k_core::accelerator::SurfaceResidency
+impl core::fmt::Display for j2k_core::CapabilityRejection
 impl j2k_core::BackendCapabilities
 impl j2k_core::BackendRequest
 impl j2k_core::CacheStats
+impl j2k_core::CapabilityRejection
 impl j2k_core::CodedUnitLayout
 impl j2k_core::CompressedTransferSyntax
 impl j2k_core::CpuFeatures
@@ -846,6 +856,18 @@ pub const fn j2k_core::BatchDecodeError<E>::infrastructure_error(&self) -> core:
 pub const fn j2k_core::BatchDecodeError<E>::tile_error(&self) -> core::option::Option<&j2k_core::TileBatchError<E>>
 pub const fn j2k_core::CacheStats::new(u64, u64) -> Self
 pub const fn j2k_core::CacheStats::with_slots(u64, u64, u64, u64) -> Self
+pub const fn j2k_core::CapabilityRejection::context_mismatch(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::contract_violation(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::geometry_mismatch(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::kind(self) -> j2k_core::CapabilityRejectionKind
+pub const fn j2k_core::CapabilityRejection::missing_prepared_plan(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::reason(self) -> &'static str
+pub const fn j2k_core::CapabilityRejection::resource_limit(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::unsupported_bit_depth(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::unsupported_container(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::unsupported_format(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::unsupported_operation(&'static str) -> Self
+pub const fn j2k_core::CapabilityRejection::unsupported_sampling(&'static str) -> Self
 pub const fn j2k_core::CodedUnitLayout::unit_count(&self) -> u32
 pub const fn j2k_core::CompressedTransferSyntax::is_jpeg2000_family(self) -> bool
 pub const fn j2k_core::CompressedTransferSyntax::is_lossless(self) -> bool
@@ -907,6 +929,7 @@ pub fn j2k_core::BatchDecodeError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) 
 pub fn j2k_core::BatchDecodeError<E>::from(j2k_core::BatchInfrastructureError) -> Self
 pub fn j2k_core::BatchDecodeError<E>::from(j2k_core::TileBatchError<E>) -> Self
 pub fn j2k_core::BatchDecodeError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn j2k_core::CapabilityRejection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_core::CodecContext::cache_stats(&self) -> j2k_core::CacheStats
 pub fn j2k_core::CodecContext::clear(&mut self)
 pub fn j2k_core::CodecError::is_buffer_error(&self) -> bool
@@ -915,6 +938,10 @@ pub fn j2k_core::CodecError::is_truncated(&self) -> bool
 pub fn j2k_core::CodecError::is_unsupported(&self) -> bool
 pub fn j2k_core::CpuFeatures::detect() -> Self
 pub fn j2k_core::DecodeOutcome<W>::new(j2k_core::Rect, alloc::vec::Vec<W>) -> Self
+pub fn j2k_core::DeviceCodestream::codestream_allocation_len(&self) -> core::option::Option<usize>
+pub fn j2k_core::DeviceCodestream::codestream_byte_len(&self) -> usize
+pub fn j2k_core::DeviceCodestream::codestream_capacity(&self) -> usize
+pub fn j2k_core::DeviceCodestream::codestream_memory_range(&self) -> core::option::Option<j2k_core::accelerator::DeviceMemoryRange>
 pub fn j2k_core::DeviceSubmission::wait(self) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_core::DeviceSurface::backend_kind(&self) -> j2k_core::BackendKind
 pub fn j2k_core::DeviceSurface::byte_len(&self) -> usize
@@ -1040,6 +1067,16 @@ pub j2k_core::CacheStats::evictions: u64
 pub j2k_core::CacheStats::hits: u64
 pub j2k_core::CacheStats::misses: u64
 pub j2k_core::CacheStats::occupied_slots: u64
+pub j2k_core::CapabilityRejectionKind::ContextMismatch
+pub j2k_core::CapabilityRejectionKind::ContractViolation
+pub j2k_core::CapabilityRejectionKind::GeometryMismatch
+pub j2k_core::CapabilityRejectionKind::MissingPreparedPlan
+pub j2k_core::CapabilityRejectionKind::ResourceLimit
+pub j2k_core::CapabilityRejectionKind::UnsupportedBitDepth
+pub j2k_core::CapabilityRejectionKind::UnsupportedContainer
+pub j2k_core::CapabilityRejectionKind::UnsupportedFormat
+pub j2k_core::CapabilityRejectionKind::UnsupportedOperation
+pub j2k_core::CapabilityRejectionKind::UnsupportedSampling
 pub j2k_core::CodedUnitLayout::unit_height: u32
 pub j2k_core::CodedUnitLayout::unit_width: u32
 pub j2k_core::CodedUnitLayout::units_x: u32
@@ -1219,6 +1256,7 @@ pub mod j2k_core
 pub mod j2k_core::accelerator
 pub struct j2k_core::BackendCapabilities
 pub struct j2k_core::CacheStats
+pub struct j2k_core::CapabilityRejection
 pub struct j2k_core::CodedUnitLayout
 pub struct j2k_core::CpuFeatures
 pub struct j2k_core::DecodeOutcome<W>
@@ -1246,6 +1284,7 @@ pub trait j2k_core::AcceleratorSession
 pub trait j2k_core::AdapterErrorParts
 pub trait j2k_core::CodecContext: core::default::Default + core::marker::Send
 pub trait j2k_core::CodecError: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub trait j2k_core::DeviceCodestream
 pub trait j2k_core::DeviceSubmission
 pub trait j2k_core::DeviceSurface
 pub trait j2k_core::ImageCodec
@@ -1323,6 +1362,7 @@ pub const j2k_codec_math::dwt::IDWT97_NEG_ALPHA_F32: f32
 pub const j2k_codec_math::dwt::IDWT97_NEG_BETA_F32: f32
 pub const j2k_codec_math::dwt::IDWT97_NEG_DELTA_F32: f32
 pub const j2k_codec_math::dwt::IDWT97_NEG_GAMMA_F32: f32
+pub const j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32: f32
 pub const j2k_codec_math::generated::DWT97_CONSTANTS_METAL: &str
 pub const j2k_codec_math::jpeg::ZIGZAG: [u8; 64]
 pub const j2k_codec_math::jpeg::idct::CONST_BITS: usize
@@ -2219,6 +2259,7 @@ impl core::fmt::Debug for j2k_metal::SubmittedMetalGroupDecodeInto
 impl core::fmt::Debug for j2k_metal::SubmittedMetalPreparedBatch
 impl core::fmt::Display for j2k_metal::NativeBackendError
 impl j2k::owned_batch::prepared::BatchDecoder for j2k_metal::MetalBatchDecoder
+impl j2k_core::traits::DeviceCodestream for j2k_metal::MetalEncodedJ2k
 impl j2k_core::traits::DeviceSubmission for j2k_metal::SubmittedMetalGroupDecodeInto
 impl j2k_core::traits::DeviceSubmission for j2k_metal::SubmittedMetalPreparedBatch
 impl j2k_metal::MetalBackendSession
@@ -2312,7 +2353,9 @@ pub fn j2k_metal::MetalEncodedJ2k::byte_len(&self) -> usize
 pub fn j2k_metal::MetalEncodedJ2k::byte_offset(&self) -> usize
 pub fn j2k_metal::MetalEncodedJ2k::capacity(&self) -> usize
 pub fn j2k_metal::MetalEncodedJ2k::codestream_allocation_len(&self) -> core::option::Option<usize>
+pub fn j2k_metal::MetalEncodedJ2k::codestream_byte_len(&self) -> usize
 pub fn j2k_metal::MetalEncodedJ2k::codestream_bytes(&self) -> core::result::Result<alloc::vec::Vec<u8>, j2k_metal::Error>
+pub fn j2k_metal::MetalEncodedJ2k::codestream_capacity(&self) -> usize
 pub fn j2k_metal::MetalEncodedJ2k::codestream_memory_range(&self) -> core::option::Option<j2k_core::accelerator::DeviceMemoryRange>
 pub fn j2k_metal::MetalEncodedJ2k::components(&self) -> u8
 pub fn j2k_metal::MetalEncodedJ2k::dimensions(&self) -> (u32, u32)
@@ -2599,7 +2642,7 @@ pub const fn j2k_cuda::CudaEncodeStageTimings::saturating_add(self, Self) -> Sel
 pub const fn j2k_cuda::CudaEncodeStageTimings::total_us(self) -> u128
 pub const fn j2k_cuda::CudaExternalBatchGroup::info(&self) -> &j2k::owned_batch::contracts::BatchGroupInfo
 pub const fn j2k_cuda::CudaLosslessEncodeResult::actual_backend(&self) -> j2k_core::backend::BackendKind
-pub const fn j2k_cuda::CudaLosslessEncodeResult::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
+pub const fn j2k_cuda::CudaLosslessEncodeResult::dispatch_report(&self) -> j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub const fn j2k_cuda::CudaLosslessEncodeResult::encoded(&self) -> &j2k::encode::contracts::EncodedJ2k
 pub const fn j2k_cuda::CudaLosslessEncodeResult::fallback_reason(&self) -> core::option::Option<j2k_cuda::CudaEncodeFallbackReason>
 pub const fn j2k_cuda::CudaLosslessEncodeResult::requested_backend(&self) -> j2k::encode::contracts::EncodeBackendPreference
@@ -2722,7 +2765,7 @@ pub j2k_cuda::CudaEncodedJ2k::metadata: j2k_cuda::CudaEncodedJ2kMetadata
 pub j2k_cuda::CudaEncodedJ2kMetadata::backend: j2k_core::backend::BackendKind
 pub j2k_cuda::CudaEncodedJ2kMetadata::bit_depth: u8
 pub j2k_cuda::CudaEncodedJ2kMetadata::components: u16
-pub j2k_cuda::CudaEncodedJ2kMetadata::dispatch_report: j2k_types::J2kEncodeDispatchReport
+pub j2k_cuda::CudaEncodedJ2kMetadata::dispatch_report: j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub j2k_cuda::CudaEncodedJ2kMetadata::height: u32
 pub j2k_cuda::CudaEncodedJ2kMetadata::signed: bool
 pub j2k_cuda::CudaEncodedJ2kMetadata::width: u32
@@ -2886,13 +2929,13 @@ pub enum j2k_transcode::TranscodeStageProcessor
 pub fn j2k_transcode::DctGridError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatch>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::TranscodeStageError>
-pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
-pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>>, j2k_transcode::TranscodeStageError>
+pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
+pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_dwt53(&mut self, j2k_transcode::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::Dwt53TwoDimensional<f64>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_dwt97(&mut self, j2k_transcode::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::Dwt97TwoDimensional<f64>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_dwt97_batch(&mut self, &[j2k_transcode::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::Dwt97TwoDimensional<f64>>>, j2k_transcode::TranscodeStageError>
-pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_codeblock_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PrequantizedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
-pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
+pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_codeblock_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PrequantizedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
+pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53(&mut self, j2k_transcode::DctGridToReversibleDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::ReversibleDwt53FirstLevel>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53_batch(&mut self, &[j2k_transcode::DctGridToReversibleDwt53Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::ReversibleDwt53FirstLevel>>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<j2k_transcode::Dwt97BatchStageTimings>
@@ -2926,8 +2969,8 @@ pub fn j2k_transcode::dct8x8_blocks_then_dwt53_float(&[[[f64; 8]; 8]], usize, us
 pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float(&[[[f64; 8]; 8]], usize, usize, usize, usize) -> core::result::Result<j2k_transcode::Dwt97TwoDimensional<f64>, j2k_transcode::DctTransformError>
 pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch(&[[[f64; 8]; 8]], usize, usize, usize, usize, &mut j2k_transcode::Dct97GridScratch) -> core::result::Result<j2k_transcode::Dwt97TwoDimensional<f64>, j2k_transcode::DctTransformError>
 pub fn j2k_transcode::dct8x8_blocks_to_dwt53_float_linear(&[[[f64; 8]; 8]], usize, usize, usize, usize) -> core::result::Result<j2k_transcode::Dwt53TwoDimensional<f64>, j2k_transcode::DctTransformError>
-pub fn j2k_transcode::htj2k97_subband_delta(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> f64
-pub fn j2k_transcode::htj2k97_subband_total_bitplanes(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> u8
+pub fn j2k_transcode::htj2k97_subband_delta(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::tier1::classic::J2kSubBandType) -> f64
+pub fn j2k_transcode::htj2k97_subband_total_bitplanes(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::tier1::classic::J2kSubBandType) -> u8
 pub fn j2k_transcode::validate_htj2k97_codeblock_options(j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<(usize, usize), j2k_transcode::Htj2k97CodeBlockOptionsError>
 pub j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch::jobs: &'j [j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'a>]
 pub j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob::block_cols: usize
@@ -3032,7 +3075,7 @@ pub j2k_transcode::Htj2k97CodeBlockOptions::code_block_height_exp: u8
 pub j2k_transcode::Htj2k97CodeBlockOptions::code_block_width_exp: u8
 pub j2k_transcode::Htj2k97CodeBlockOptions::guard_bits: u8
 pub j2k_transcode::Htj2k97CodeBlockOptions::irreversible_quantization_scale: f32
-pub j2k_transcode::Htj2k97CodeBlockOptions::irreversible_quantization_subband_scales: j2k_types::IrreversibleQuantizationSubbandScales
+pub j2k_transcode::Htj2k97CodeBlockOptions::irreversible_quantization_subband_scales: j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported::axis: j2k_transcode::Htj2k97CodeBlockAxis
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported::exponent_minus_two: u8
@@ -3041,9 +3084,9 @@ pub j2k_transcode::Htj2k97CodeBlockOptionsError::DimensionsExceedLimits::height:
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::DimensionsExceedLimits::width: usize
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::NumericOptionsOutOfRange
 pub j2k_transcode::Htj2k97CodeBlockOptionsError::QuantizationOptionsOutOfRange
-pub j2k_transcode::PreencodedHtj2k97CompactBatch::components: alloc::vec::Vec<j2k_types::PreencodedHtj2k97CompactComponent>
+pub j2k_transcode::PreencodedHtj2k97CompactBatch::components: alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97CompactComponent>
 pub j2k_transcode::PreencodedHtj2k97CompactBatch::payload: alloc::vec::Vec<u8>
-pub j2k_transcode::PreencodedHtj2k97CompactBatchGroups::groups: alloc::vec::Vec<alloc::vec::Vec<j2k_types::PreencodedHtj2k97CompactComponent>>
+pub j2k_transcode::PreencodedHtj2k97CompactBatchGroups::groups: alloc::vec::Vec<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97CompactComponent>>
 pub j2k_transcode::PreencodedHtj2k97CompactBatchGroups::payload: alloc::vec::Vec<u8>
 pub j2k_transcode::ResidentCodestreamBuffer::buffer: j2k_transcode::ResidentBufferRef<'a>
 pub j2k_transcode::ResidentCodestreamBuffer::byte_len: usize
@@ -3534,7 +3577,7 @@ pub fn j2k_transcode_metal::MetalTranscodeSession::new(objc2::rc::retained::Reta
 pub fn j2k_transcode_metal::MetalTranscodeSession::system_default() -> core::result::Result<Self, j2k_transcode_metal::MetalTranscodeError>
 pub fn j2k_transcode_metal::jpeg_to_htj2k_batch_with_metal_route(&[j2k_transcode::jpeg_to_htj2k::output::JpegTileBatchInput<'_>], &j2k_transcode::jpeg_to_htj2k::options::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscodeBatch, j2k_transcode::jpeg_to_htj2k::error::JpegToHtj2kError>
 pub fn j2k_transcode_metal::jpeg_to_htj2k_with_metal_route(&[u8], &j2k_transcode::jpeg_to_htj2k::options::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscode, j2k_transcode::jpeg_to_htj2k::error::JpegToHtj2kError>
-pub fn j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&j2k_metal::encode::encoded::MetalEncodedJ2k) -> core::result::Result<j2k_transcode::resident::ResidentCodestreamBuffer<'_>, j2k_transcode::resident::ResidentHandoffError>
+pub fn j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k<T: j2k_core::traits::DeviceCodestream + ?core::marker::Sized>(&T) -> core::result::Result<j2k_transcode::resident::ResidentCodestreamBuffer<'_>, j2k_transcode::resident::ResidentHandoffError>
 pub j2k_transcode_metal::MetalEncodedTranscode::encoded: j2k_transcode::jpeg_to_htj2k::output::EncodedTranscode
 pub j2k_transcode_metal::MetalEncodedTranscode::route: j2k_transcode_metal::MetalTranscodeRouteReport
 pub j2k_transcode_metal::MetalEncodedTranscodeBatch::batch: j2k_transcode::jpeg_to_htj2k::output::EncodedTranscodeBatch
@@ -3598,6 +3641,7 @@ impl core::convert::From<j2k_native::FormatError> for j2k_native::DecodeError
 impl core::convert::From<j2k_native::MarkerError> for j2k_native::DecodeError
 impl core::convert::From<j2k_native::TileError> for j2k_native::DecodeError
 impl core::convert::From<j2k_native::ValidationError> for j2k_native::DecodeError
+impl core::convert::From<j2k_types::decode_plan::allocation::DecodePlanAllocationError> for j2k_native::DecodeError
 impl core::default::Default for j2k_native::DecodeSettings
 impl core::default::Default for j2k_native::DecoderContext<'_>
 impl core::default::Default for j2k_native::EncodeOptions
@@ -3679,6 +3723,7 @@ pub fn j2k_native::DecodeError::from(j2k_native::FormatError) -> Self
 pub fn j2k_native::DecodeError::from(j2k_native::MarkerError) -> Self
 pub fn j2k_native::DecodeError::from(j2k_native::TileError) -> Self
 pub fn j2k_native::DecodeError::from(j2k_native::ValidationError) -> Self
+pub fn j2k_native::DecodeError::from(j2k_types::decode_plan::allocation::DecodePlanAllocationError) -> Self
 pub fn j2k_native::DecodeSettings::default() -> Self
 pub fn j2k_native::DecodedComponents<'a>::color_space(&self) -> &j2k_native::ColorSpace
 pub fn j2k_native::DecodedComponents<'a>::dimensions(&self) -> (u32, u32)
@@ -3815,7 +3860,7 @@ pub j2k_native::EncodeComponentPlane::x_rsiz: u8
 pub j2k_native::EncodeComponentPlane::y_rsiz: u8
 pub j2k_native::EncodeError::Accelerator
 pub j2k_native::EncodeError::Accelerator::operation: &'static str
-pub j2k_native::EncodeError::Accelerator::source: j2k_types::stage_error::J2kEncodeStageError
+pub j2k_native::EncodeError::Accelerator::source: j2k_types::dispatch::error::J2kEncodeStageError
 pub j2k_native::EncodeError::AllocationTooLarge
 pub j2k_native::EncodeError::AllocationTooLarge::cap: usize
 pub j2k_native::EncodeError::AllocationTooLarge::requested: usize
@@ -3838,7 +3883,7 @@ pub j2k_native::EncodeOptions::code_block_width_exp: u8
 pub j2k_native::EncodeOptions::component_sampling: core::option::Option<alloc::vec::Vec<(u8, u8)>>
 pub j2k_native::EncodeOptions::guard_bits: u8
 pub j2k_native::EncodeOptions::irreversible_quantization_scale: f32
-pub j2k_native::EncodeOptions::irreversible_quantization_subband_scales: j2k_types::IrreversibleQuantizationSubbandScales
+pub j2k_native::EncodeOptions::irreversible_quantization_subband_scales: j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales
 pub j2k_native::EncodeOptions::num_decomposition_levels: u8
 pub j2k_native::EncodeOptions::num_layers: u8
 pub j2k_native::EncodeOptions::precinct_exponents: alloc::vec::Vec<(u8, u8)>
@@ -3945,7 +3990,7 @@ pub j2k_native::RawBitmap::width: u32
 pub j2k_native::Reversible53CoefficientImage::code_block_height_exp: u8
 pub j2k_native::Reversible53CoefficientImage::code_block_width_exp: u8
 pub j2k_native::Reversible53CoefficientImage::guard_bits: u8
-pub j2k_native::Reversible53CoefficientImage::image: j2k_types::PrecomputedHtj2k53Image
+pub j2k_native::Reversible53CoefficientImage::image: j2k_types::prepared_plan::PrecomputedHtj2k53Image
 pub j2k_native::Reversible53CoefficientImage::use_mct: bool
 pub j2k_native::TileError::Invalid
 pub j2k_native::TileError::InvalidIndex
@@ -4001,9 +4046,18 @@ impl core::error::Error for j2k_types::J2kEncodeStageError
 impl core::fmt::Display for j2k_types::J2kEncodeStageError
 impl j2k_types::J2kClassicCodeBlockPayload
 impl j2k_types::J2kCodestreamRange
+impl j2k_types::J2kDirectColorPlan
+impl j2k_types::J2kDirectGrayscalePlan
+impl j2k_types::J2kDirectRgbaPlan
 impl j2k_types::J2kEncodeDispatchReport
 impl j2k_types::J2kEncodeStageError
 impl j2k_types::J2kPacketizationProgressionOrder
+impl j2k_types::J2kRect
+impl j2k_types::J2kReferencedClassicPlan
+impl j2k_types::J2kReferencedHtj2kPlan
+impl j2k_types::J2kReferencedPayloadRecordSpan
+impl j2k_types::J2kReferencedTilePlan
+impl<'a> j2k_types::J2kReferencedImageGeometry<'a>
 pub const fn j2k_types::J2kClassicCodeBlockPayload::end_range(self) -> core::option::Option<usize>
 pub const fn j2k_types::J2kCodestreamRange::end(self) -> core::option::Option<usize>
 pub const fn j2k_types::J2kEncodeStageError::arithmetic_overflow(&'static str) -> Self
@@ -4015,16 +4069,48 @@ pub const fn j2k_types::J2kEncodeStageError::memory_cap_exceeded(&'static str, u
 pub const fn j2k_types::J2kEncodeStageError::reason(&self) -> &'static str
 pub const fn j2k_types::J2kEncodeStageError::unsupported(&'static str) -> Self
 pub const fn j2k_types::J2kPacketizationProgressionOrder::codestream_order_code(self) -> u8
+pub const fn j2k_types::J2kRect::height(self) -> u32
+pub const fn j2k_types::J2kRect::width(self) -> u32
+pub const fn j2k_types::J2kReferencedClassicPlan::full_dimensions(&self) -> (u32, u32)
+pub const fn j2k_types::J2kReferencedClassicPlan::image_geometry(&self) -> j2k_types::J2kReferencedImageGeometry<'_>
+pub const fn j2k_types::J2kReferencedClassicPlan::output_rect(&self) -> j2k_types::J2kRect
+pub const fn j2k_types::J2kReferencedHtj2kPlan::full_dimensions(&self) -> (u32, u32)
+pub const fn j2k_types::J2kReferencedHtj2kPlan::image_geometry(&self) -> j2k_types::J2kReferencedImageGeometry<'_>
+pub const fn j2k_types::J2kReferencedHtj2kPlan::output_rect(&self) -> j2k_types::J2kRect
+pub const fn j2k_types::J2kReferencedImageGeometry<'a>::full_dimensions(self) -> (u32, u32)
+pub const fn j2k_types::J2kReferencedImageGeometry<'a>::is_empty(self) -> bool
+pub const fn j2k_types::J2kReferencedImageGeometry<'a>::output_rect(self) -> j2k_types::J2kRect
+pub const fn j2k_types::J2kReferencedImageGeometry<'a>::tiles(self) -> &'a [j2k_types::J2kReferencedTilePlan]
+pub const fn j2k_types::J2kReferencedPayloadRecordSpan::end_record(self) -> core::option::Option<usize>
+pub const fn j2k_types::J2kReferencedTilePlan::color_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectColorPlan>
+pub const fn j2k_types::J2kReferencedTilePlan::decoded_rect(&self) -> j2k_types::J2kRect
+pub const fn j2k_types::J2kReferencedTilePlan::destination_rect(&self) -> j2k_types::J2kRect
+pub const fn j2k_types::J2kReferencedTilePlan::grayscale_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectGrayscalePlan>
+pub const fn j2k_types::J2kReferencedTilePlan::payload_records(&self) -> j2k_types::J2kReferencedPayloadRecordSpan
+pub const fn j2k_types::J2kReferencedTilePlan::rgba_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectRgbaPlan>
+pub const fn j2k_types::J2kReferencedTilePlan::tile_index(&self) -> usize
+pub const fn j2k_types::J2kReferencedTilePlan::wavelet_transform(&self) -> j2k_types::J2kWaveletTransform
+pub const j2k_types::DEFAULT_MAX_CODEC_BYTES: usize
+pub const j2k_types::DEFAULT_MAX_DECODE_BYTES: usize
+pub enum j2k_types::J2kDirectGrayscaleStep
 pub enum j2k_types::J2kPacketizationBlockCodingMode
 pub enum j2k_types::J2kPacketizationProgressionOrder
+pub enum j2k_types::J2kReferencedClassicPlan
+pub enum j2k_types::J2kReferencedHtj2kPlan
+pub enum j2k_types::J2kReferencedTileGeometry
 pub enum j2k_types::J2kSubBandType
+pub enum j2k_types::J2kWaveletTransform
 pub fn j2k_types::IrreversibleQuantizationSubbandScales::default() -> Self
+pub fn j2k_types::J2kDirectColorPlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
+pub fn j2k_types::J2kDirectGrayscalePlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
+pub fn j2k_types::J2kDirectRgbaPlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
 pub fn j2k_types::J2kEncodeDispatchReport::any(self) -> bool
 pub fn j2k_types::J2kEncodeDispatchReport::saturating_delta(self, Self) -> Self
 pub fn j2k_types::J2kEncodeDispatchReport::total(self) -> usize
 pub fn j2k_types::J2kEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::J2kEncodeStageResult<()>
 pub fn j2k_types::J2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
+pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt97Output>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::J2kForwardIctJob<'_>) -> j2k_types::J2kEncodeStageResult<bool>
@@ -4046,6 +4132,35 @@ pub fn j2k_types::J2kEncodeStageError::backend(&'static str, &'static str, impl 
 pub fn j2k_types::J2kEncodeStageError::eq(&self, &Self) -> bool
 pub fn j2k_types::J2kEncodeStageError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_types::J2kEncodeStageError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn j2k_types::J2kReferencedClassicPlan::color(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>, alloc::vec::Vec<j2k_types::J2kCodestreamRange>) -> Self
+pub fn j2k_types::J2kReferencedClassicPlan::color_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectColorPlan>
+pub fn j2k_types::J2kReferencedClassicPlan::grayscale(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>, alloc::vec::Vec<j2k_types::J2kCodestreamRange>) -> Self
+pub fn j2k_types::J2kReferencedClassicPlan::grayscale_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectGrayscalePlan>
+pub fn j2k_types::J2kReferencedClassicPlan::payloads(&self) -> &[j2k_types::J2kClassicCodeBlockPayload]
+pub fn j2k_types::J2kReferencedClassicPlan::ranges(&self) -> &[j2k_types::J2kCodestreamRange]
+pub fn j2k_types::J2kReferencedClassicPlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
+pub fn j2k_types::J2kReferencedClassicPlan::rgba(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>, alloc::vec::Vec<j2k_types::J2kCodestreamRange>) -> Self
+pub fn j2k_types::J2kReferencedClassicPlan::rgba_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectRgbaPlan>
+pub fn j2k_types::J2kReferencedClassicPlan::tiles(&self) -> &[j2k_types::J2kReferencedTilePlan]
+pub fn j2k_types::J2kReferencedHtj2kPlan::color(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>) -> Self
+pub fn j2k_types::J2kReferencedHtj2kPlan::color_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectColorPlan>
+pub fn j2k_types::J2kReferencedHtj2kPlan::grayscale(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>) -> Self
+pub fn j2k_types::J2kReferencedHtj2kPlan::grayscale_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectGrayscalePlan>
+pub fn j2k_types::J2kReferencedHtj2kPlan::payloads(&self) -> &[j2k_types::HtCodeBlockPayloadRanges]
+pub fn j2k_types::J2kReferencedHtj2kPlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
+pub fn j2k_types::J2kReferencedHtj2kPlan::rgba(alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>, (u32, u32), j2k_types::J2kRect, alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>) -> Self
+pub fn j2k_types::J2kReferencedHtj2kPlan::rgba_geometry(&self) -> core::option::Option<&j2k_types::J2kDirectRgbaPlan>
+pub fn j2k_types::J2kReferencedHtj2kPlan::tiles(&self) -> &[j2k_types::J2kReferencedTilePlan]
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::color_geometry(self) -> core::option::Option<&'a j2k_types::J2kDirectColorPlan>
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::grayscale_geometry(self) -> core::option::Option<&'a j2k_types::J2kDirectGrayscalePlan>
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::is_color(self) -> bool
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::is_grayscale(self) -> bool
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::is_rgba(self) -> bool
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::rgba_geometry(self) -> core::option::Option<&'a j2k_types::J2kDirectRgbaPlan>
+pub fn j2k_types::J2kReferencedImageGeometry<'a>::uniform_wavelet_transform(self) -> core::option::Option<j2k_types::J2kWaveletTransform>
+pub fn j2k_types::J2kReferencedTilePlan::classic_payloads(&self) -> &[j2k_types::J2kClassicCodeBlockPayload]
+pub fn j2k_types::J2kReferencedTilePlan::classic_ranges(&self) -> &[j2k_types::J2kCodestreamRange]
+pub fn j2k_types::J2kReferencedTilePlan::new(usize, j2k_types::J2kRect, j2k_types::J2kRect, j2k_types::J2kReferencedPayloadRecordSpan, alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>, alloc::vec::Vec<j2k_types::J2kCodestreamRange>, j2k_types::J2kWaveletTransform, j2k_types::J2kReferencedTileGeometry) -> Self
 pub fn j2k_types::sort_packet_descriptors_for_progression(&mut [j2k_types::J2kPacketizationPacketDescriptor], j2k_types::J2kPacketizationProgressionOrder)
 pub j2k_types::EncodedHtJ2kCodeBlock::cleanup_length: u32
 pub j2k_types::EncodedHtJ2kCodeBlock::data: alloc::vec::Vec<u8>
@@ -4058,6 +4173,27 @@ pub j2k_types::EncodedJ2kCodeBlock::number_of_coding_passes: u8
 pub j2k_types::EncodedJ2kCodeBlock::segments: alloc::vec::Vec<j2k_types::J2kCodeBlockSegment>
 pub j2k_types::HtCodeBlockPayloadRanges::cleanup: j2k_types::J2kCodestreamRange
 pub j2k_types::HtCodeBlockPayloadRanges::refinement: core::option::Option<j2k_types::J2kCodestreamRange>
+pub j2k_types::HtOwnedCodeBlockBatchJob::cleanup_length: u32
+pub j2k_types::HtOwnedCodeBlockBatchJob::data: alloc::vec::Vec<u8>
+pub j2k_types::HtOwnedCodeBlockBatchJob::dequantization_step: f32
+pub j2k_types::HtOwnedCodeBlockBatchJob::height: u32
+pub j2k_types::HtOwnedCodeBlockBatchJob::missing_bit_planes: u8
+pub j2k_types::HtOwnedCodeBlockBatchJob::num_bitplanes: u8
+pub j2k_types::HtOwnedCodeBlockBatchJob::number_of_coding_passes: u8
+pub j2k_types::HtOwnedCodeBlockBatchJob::output_stride: usize
+pub j2k_types::HtOwnedCodeBlockBatchJob::output_x: u32
+pub j2k_types::HtOwnedCodeBlockBatchJob::output_y: u32
+pub j2k_types::HtOwnedCodeBlockBatchJob::refinement_length: u32
+pub j2k_types::HtOwnedCodeBlockBatchJob::roi_shift: u8
+pub j2k_types::HtOwnedCodeBlockBatchJob::strict: bool
+pub j2k_types::HtOwnedCodeBlockBatchJob::stripe_causal: bool
+pub j2k_types::HtOwnedCodeBlockBatchJob::width: u32
+pub j2k_types::HtOwnedSubBandPlan::band_id: j2k_types::J2kDirectBandId
+pub j2k_types::HtOwnedSubBandPlan::height: u32
+pub j2k_types::HtOwnedSubBandPlan::irreversible_midpoint: bool
+pub j2k_types::HtOwnedSubBandPlan::jobs: alloc::vec::Vec<j2k_types::HtOwnedCodeBlockBatchJob>
+pub j2k_types::HtOwnedSubBandPlan::rect: j2k_types::J2kRect
+pub j2k_types::HtOwnedSubBandPlan::width: u32
 pub j2k_types::IrreversibleQuantizationStep::exponent: u8
 pub j2k_types::IrreversibleQuantizationStep::mantissa: u16
 pub j2k_types::IrreversibleQuantizationSubbandScales::high_high: f32
@@ -4079,11 +4215,55 @@ pub j2k_types::J2kCodeBlockStyle::termination_on_each_pass: bool
 pub j2k_types::J2kCodeBlockStyle::vertically_causal_context: bool
 pub j2k_types::J2kCodestreamRange::length: usize
 pub j2k_types::J2kCodestreamRange::offset: usize
+pub j2k_types::J2kDeinterleaveMctToF32Job::bit_depth: u8
+pub j2k_types::J2kDeinterleaveMctToF32Job::num_pixels: usize
+pub j2k_types::J2kDeinterleaveMctToF32Job::pixels: &'a [u8]
+pub j2k_types::J2kDeinterleaveMctToF32Job::reversible: bool
+pub j2k_types::J2kDeinterleaveMctToF32Job::signed: bool
 pub j2k_types::J2kDeinterleaveToF32Job::bit_depth: u8
 pub j2k_types::J2kDeinterleaveToF32Job::num_components: u16
 pub j2k_types::J2kDeinterleaveToF32Job::num_pixels: usize
 pub j2k_types::J2kDeinterleaveToF32Job::pixels: &'a [u8]
 pub j2k_types::J2kDeinterleaveToF32Job::signed: bool
+pub j2k_types::J2kDirectColorPlan::bit_depths: [u8; 3]
+pub j2k_types::J2kDirectColorPlan::component_plans: alloc::vec::Vec<j2k_types::J2kDirectGrayscalePlan>
+pub j2k_types::J2kDirectColorPlan::dimensions: (u32, u32)
+pub j2k_types::J2kDirectColorPlan::mct: bool
+pub j2k_types::J2kDirectColorPlan::transform: j2k_types::J2kWaveletTransform
+pub j2k_types::J2kDirectGrayscalePlan::bit_depth: u8
+pub j2k_types::J2kDirectGrayscalePlan::dimensions: (u32, u32)
+pub j2k_types::J2kDirectGrayscalePlan::steps: alloc::vec::Vec<j2k_types::J2kDirectGrayscaleStep>
+pub j2k_types::J2kDirectGrayscaleStep::ClassicSubBand(j2k_types::J2kOwnedSubBandPlan)
+pub j2k_types::J2kDirectGrayscaleStep::HtSubBand(j2k_types::HtOwnedSubBandPlan)
+pub j2k_types::J2kDirectGrayscaleStep::Idwt(j2k_types::J2kDirectIdwtStep)
+pub j2k_types::J2kDirectGrayscaleStep::Store(j2k_types::J2kDirectStoreStep)
+pub j2k_types::J2kDirectIdwtStep::hh: j2k_types::J2kRect
+pub j2k_types::J2kDirectIdwtStep::hh_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectIdwtStep::hl: j2k_types::J2kRect
+pub j2k_types::J2kDirectIdwtStep::hl_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectIdwtStep::lh: j2k_types::J2kRect
+pub j2k_types::J2kDirectIdwtStep::lh_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectIdwtStep::ll: j2k_types::J2kRect
+pub j2k_types::J2kDirectIdwtStep::ll_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectIdwtStep::output_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectIdwtStep::rect: j2k_types::J2kRect
+pub j2k_types::J2kDirectIdwtStep::transform: j2k_types::J2kWaveletTransform
+pub j2k_types::J2kDirectRgbaPlan::bit_depths: [u8; 4]
+pub j2k_types::J2kDirectRgbaPlan::component_plans: alloc::vec::Vec<j2k_types::J2kDirectGrayscalePlan>
+pub j2k_types::J2kDirectRgbaPlan::dimensions: (u32, u32)
+pub j2k_types::J2kDirectRgbaPlan::mct: bool
+pub j2k_types::J2kDirectRgbaPlan::transform: j2k_types::J2kWaveletTransform
+pub j2k_types::J2kDirectStoreStep::addend: f32
+pub j2k_types::J2kDirectStoreStep::copy_height: u32
+pub j2k_types::J2kDirectStoreStep::copy_width: u32
+pub j2k_types::J2kDirectStoreStep::input_band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kDirectStoreStep::input_rect: j2k_types::J2kRect
+pub j2k_types::J2kDirectStoreStep::output_height: u32
+pub j2k_types::J2kDirectStoreStep::output_width: u32
+pub j2k_types::J2kDirectStoreStep::output_x: u32
+pub j2k_types::J2kDirectStoreStep::output_y: u32
+pub j2k_types::J2kDirectStoreStep::source_x: u32
+pub j2k_types::J2kDirectStoreStep::source_y: u32
 pub j2k_types::J2kEncodeContext::bit_depth: u8
 pub j2k_types::J2kEncodeContext::num_components: u16
 pub j2k_types::J2kEncodeContext::num_pixels: usize
@@ -4194,6 +4374,27 @@ pub j2k_types::J2kHtj2kTileEncodeJob::reversible: bool
 pub j2k_types::J2kHtj2kTileEncodeJob::signed: bool
 pub j2k_types::J2kHtj2kTileEncodeJob::use_mct: bool
 pub j2k_types::J2kHtj2kTileEncodeJob::width: u32
+pub j2k_types::J2kOwnedCodeBlockBatchJob::data: alloc::vec::Vec<u8>
+pub j2k_types::J2kOwnedCodeBlockBatchJob::dequantization_step: f32
+pub j2k_types::J2kOwnedCodeBlockBatchJob::height: u32
+pub j2k_types::J2kOwnedCodeBlockBatchJob::missing_bit_planes: u8
+pub j2k_types::J2kOwnedCodeBlockBatchJob::number_of_coding_passes: u8
+pub j2k_types::J2kOwnedCodeBlockBatchJob::output_stride: usize
+pub j2k_types::J2kOwnedCodeBlockBatchJob::output_x: u32
+pub j2k_types::J2kOwnedCodeBlockBatchJob::output_y: u32
+pub j2k_types::J2kOwnedCodeBlockBatchJob::roi_shift: u8
+pub j2k_types::J2kOwnedCodeBlockBatchJob::segments: alloc::vec::Vec<j2k_types::J2kCodeBlockSegment>
+pub j2k_types::J2kOwnedCodeBlockBatchJob::strict: bool
+pub j2k_types::J2kOwnedCodeBlockBatchJob::style: j2k_types::J2kCodeBlockStyle
+pub j2k_types::J2kOwnedCodeBlockBatchJob::sub_band_type: j2k_types::J2kSubBandType
+pub j2k_types::J2kOwnedCodeBlockBatchJob::total_bitplanes: u8
+pub j2k_types::J2kOwnedCodeBlockBatchJob::width: u32
+pub j2k_types::J2kOwnedSubBandPlan::band_id: j2k_types::J2kDirectBandId
+pub j2k_types::J2kOwnedSubBandPlan::height: u32
+pub j2k_types::J2kOwnedSubBandPlan::irreversible_midpoint: bool
+pub j2k_types::J2kOwnedSubBandPlan::jobs: alloc::vec::Vec<j2k_types::J2kOwnedCodeBlockBatchJob>
+pub j2k_types::J2kOwnedSubBandPlan::rect: j2k_types::J2kRect
+pub j2k_types::J2kOwnedSubBandPlan::width: u32
 pub j2k_types::J2kPacketizationBlockCodingMode::Classic
 pub j2k_types::J2kPacketizationBlockCodingMode::HighThroughput
 pub j2k_types::J2kPacketizationCodeBlock::block_coding_mode: j2k_types::J2kPacketizationBlockCodingMode
@@ -4231,6 +4432,48 @@ pub j2k_types::J2kQuantizeSubbandJob::range_bits: u8
 pub j2k_types::J2kQuantizeSubbandJob::reversible: bool
 pub j2k_types::J2kQuantizeSubbandJob::step_exponent: u16
 pub j2k_types::J2kQuantizeSubbandJob::step_mantissa: u16
+pub j2k_types::J2kRect::x0: u32
+pub j2k_types::J2kRect::x1: u32
+pub j2k_types::J2kRect::y0: u32
+pub j2k_types::J2kRect::y1: u32
+pub j2k_types::J2kReferencedClassicPlan::Color
+pub j2k_types::J2kReferencedClassicPlan::Color::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedClassicPlan::Color::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedClassicPlan::Color::payloads: alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>
+pub j2k_types::J2kReferencedClassicPlan::Color::ranges: alloc::vec::Vec<j2k_types::J2kCodestreamRange>
+pub j2k_types::J2kReferencedClassicPlan::Color::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedClassicPlan::Grayscale
+pub j2k_types::J2kReferencedClassicPlan::Grayscale::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedClassicPlan::Grayscale::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedClassicPlan::Grayscale::payloads: alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>
+pub j2k_types::J2kReferencedClassicPlan::Grayscale::ranges: alloc::vec::Vec<j2k_types::J2kCodestreamRange>
+pub j2k_types::J2kReferencedClassicPlan::Grayscale::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedClassicPlan::Rgba
+pub j2k_types::J2kReferencedClassicPlan::Rgba::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedClassicPlan::Rgba::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedClassicPlan::Rgba::payloads: alloc::vec::Vec<j2k_types::J2kClassicCodeBlockPayload>
+pub j2k_types::J2kReferencedClassicPlan::Rgba::ranges: alloc::vec::Vec<j2k_types::J2kCodestreamRange>
+pub j2k_types::J2kReferencedClassicPlan::Rgba::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedHtj2kPlan::Color
+pub j2k_types::J2kReferencedHtj2kPlan::Color::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedHtj2kPlan::Color::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedHtj2kPlan::Color::payloads: alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>
+pub j2k_types::J2kReferencedHtj2kPlan::Color::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedHtj2kPlan::Grayscale
+pub j2k_types::J2kReferencedHtj2kPlan::Grayscale::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedHtj2kPlan::Grayscale::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedHtj2kPlan::Grayscale::payloads: alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>
+pub j2k_types::J2kReferencedHtj2kPlan::Grayscale::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedHtj2kPlan::Rgba
+pub j2k_types::J2kReferencedHtj2kPlan::Rgba::full_dimensions: (u32, u32)
+pub j2k_types::J2kReferencedHtj2kPlan::Rgba::output_rect: j2k_types::J2kRect
+pub j2k_types::J2kReferencedHtj2kPlan::Rgba::payloads: alloc::vec::Vec<j2k_types::HtCodeBlockPayloadRanges>
+pub j2k_types::J2kReferencedHtj2kPlan::Rgba::tiles: alloc::vec::Vec<j2k_types::J2kReferencedTilePlan>
+pub j2k_types::J2kReferencedPayloadRecordSpan::first_record: usize
+pub j2k_types::J2kReferencedPayloadRecordSpan::record_count: usize
+pub j2k_types::J2kReferencedTileGeometry::Color(j2k_types::J2kDirectColorPlan)
+pub j2k_types::J2kReferencedTileGeometry::Grayscale(j2k_types::J2kDirectGrayscalePlan)
+pub j2k_types::J2kReferencedTileGeometry::Rgba(j2k_types::J2kDirectRgbaPlan)
 pub j2k_types::J2kSubBandType::HighHigh
 pub j2k_types::J2kSubBandType::HighLow
 pub j2k_types::J2kSubBandType::LowHigh
@@ -4241,6 +4484,8 @@ pub j2k_types::J2kTier1CodeBlockEncodeJob::style: j2k_types::J2kCodeBlockStyle
 pub j2k_types::J2kTier1CodeBlockEncodeJob::sub_band_type: j2k_types::J2kSubBandType
 pub j2k_types::J2kTier1CodeBlockEncodeJob::total_bitplanes: u8
 pub j2k_types::J2kTier1CodeBlockEncodeJob::width: u32
+pub j2k_types::J2kWaveletTransform::Irreversible97
+pub j2k_types::J2kWaveletTransform::Reversible53
 pub j2k_types::PrecomputedHtj2k53Component::dwt: j2k_types::J2kForwardDwt53Output
 pub j2k_types::PrecomputedHtj2k53Component::x_rsiz: u8
 pub j2k_types::PrecomputedHtj2k53Component::y_rsiz: u8
@@ -4315,16 +4560,25 @@ pub j2k_types::PrequantizedHtj2k97Subband::sub_band_type: j2k_types::J2kSubBandT
 pub j2k_types::PrequantizedHtj2k97Subband::total_bitplanes: u8
 pub mod j2k_types
 pub struct j2k_types::CpuOnlyJ2kEncodeStageAccelerator
+pub struct j2k_types::DecodePlanAllocationError
 pub struct j2k_types::EncodedHtJ2kCodeBlock
 pub struct j2k_types::EncodedJ2kCodeBlock
 pub struct j2k_types::HtCodeBlockPayloadRanges
+pub struct j2k_types::HtOwnedCodeBlockBatchJob
+pub struct j2k_types::HtOwnedSubBandPlan
 pub struct j2k_types::IrreversibleQuantizationStep
 pub struct j2k_types::IrreversibleQuantizationSubbandScales
 pub struct j2k_types::J2kClassicCodeBlockPayload
 pub struct j2k_types::J2kCodeBlockSegment
 pub struct j2k_types::J2kCodeBlockStyle
 pub struct j2k_types::J2kCodestreamRange
+pub struct j2k_types::J2kDeinterleaveMctToF32Job<'a>
 pub struct j2k_types::J2kDeinterleaveToF32Job<'a>
+pub struct j2k_types::J2kDirectColorPlan
+pub struct j2k_types::J2kDirectGrayscalePlan
+pub struct j2k_types::J2kDirectIdwtStep
+pub struct j2k_types::J2kDirectRgbaPlan
+pub struct j2k_types::J2kDirectStoreStep
 pub struct j2k_types::J2kEncodeContext
 pub struct j2k_types::J2kEncodeDispatchReport
 pub struct j2k_types::J2kForwardDwt53Job<'a>
@@ -4338,12 +4592,18 @@ pub struct j2k_types::J2kForwardRctJob<'a>
 pub struct j2k_types::J2kHtCodeBlockEncodeJob<'a>
 pub struct j2k_types::J2kHtSubbandEncodeJob<'a>
 pub struct j2k_types::J2kHtj2kTileEncodeJob<'a>
+pub struct j2k_types::J2kOwnedCodeBlockBatchJob
+pub struct j2k_types::J2kOwnedSubBandPlan
 pub struct j2k_types::J2kPacketizationCodeBlock<'a>
 pub struct j2k_types::J2kPacketizationEncodeJob<'a>
 pub struct j2k_types::J2kPacketizationPacketDescriptor
 pub struct j2k_types::J2kPacketizationResolution<'a>
 pub struct j2k_types::J2kPacketizationSubband<'a>
 pub struct j2k_types::J2kQuantizeSubbandJob<'a>
+pub struct j2k_types::J2kRect
+pub struct j2k_types::J2kReferencedImageGeometry<'a>
+pub struct j2k_types::J2kReferencedPayloadRecordSpan
+pub struct j2k_types::J2kReferencedTilePlan
 pub struct j2k_types::J2kTier1CodeBlockEncodeJob<'a>
 pub struct j2k_types::PrecomputedHtj2k53Component
 pub struct j2k_types::PrecomputedHtj2k53Image
@@ -4365,6 +4625,7 @@ pub struct j2k_types::PrequantizedHtj2k97Image
 pub struct j2k_types::PrequantizedHtj2k97Resolution
 pub struct j2k_types::PrequantizedHtj2k97Subband
 pub trait j2k_types::J2kEncodeStageAccelerator
+pub type j2k_types::J2kDirectBandId = u32
 pub type j2k_types::J2kEncodeStageResult<T> = core::result::Result<T, j2k_types::J2kEncodeStageError>
 ```
 
@@ -4372,15 +4633,33 @@ pub type j2k_types::J2kEncodeStageResult<T> = core::result::Result<T, j2k_types:
 
 ```text
 #[non_exhaustive] pub enum j2k_cuda_runtime::CudaError
+impl core::cmp::Eq for j2k_cuda_runtime::CudaKernelSpec
+impl core::cmp::PartialEq for j2k_cuda_runtime::CudaKernelSpec
 impl core::fmt::Debug for j2k_cuda_runtime::CudaContext
+impl core::hash::Hash for j2k_cuda_runtime::CudaKernelSpec
+impl core::marker::Send for j2k_cuda_runtime::CudaEvent
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaDeviceBuffer
+impl core::ops::drop::Drop for j2k_cuda_runtime::CudaEvent
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaPooledDeviceBuffer
 impl j2k_cuda_runtime::CudaBufferPool
 impl j2k_cuda_runtime::CudaContext
 impl j2k_cuda_runtime::CudaDeviceBuffer
 impl j2k_cuda_runtime::CudaError
 impl j2k_cuda_runtime::CudaExecutionStats
+impl j2k_cuda_runtime::CudaKernelParam for f32
+impl j2k_cuda_runtime::CudaKernelParam for i32
+impl j2k_cuda_runtime::CudaKernelParam for u32
+impl j2k_cuda_runtime::CudaKernelParam for u64
+impl j2k_cuda_runtime::CudaKernelSpec
+impl j2k_cuda_runtime::CudaLaunchGeometry
 impl j2k_cuda_runtime::CudaPooledDeviceBuffer
+pub const fn j2k_cuda_runtime::CudaKernelSpec::entrypoint(self) -> &'static [u8]
+pub const fn j2k_cuda_runtime::CudaKernelSpec::module_id(self) -> &'static str
+pub const fn j2k_cuda_runtime::CudaKernelSpec::ptx(self) -> &'static [u8]
+pub const fn j2k_cuda_runtime::CudaLaunchGeometry::block(self) -> (std::os::raw::c_uint, std::os::raw::c_uint, std::os::raw::c_uint)
+pub const fn j2k_cuda_runtime::CudaLaunchGeometry::grid(self) -> (std::os::raw::c_uint, std::os::raw::c_uint, std::os::raw::c_uint)
+pub const fn j2k_cuda_runtime::CudaLaunchGeometry::is_valid(self) -> bool
+pub const fn j2k_cuda_runtime::CudaLaunchGeometry::new((std::os::raw::c_uint, std::os::raw::c_uint, std::os::raw::c_uint), (std::os::raw::c_uint, std::os::raw::c_uint, std::os::raw::c_uint)) -> core::option::Option<Self>
 pub fn j2k_cuda_runtime::CudaBufferPool::cached_count(&self) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaBufferPool::new(j2k_cuda_runtime::CudaContext) -> Self
 pub fn j2k_cuda_runtime::CudaBufferPool::recycle(&self, j2k_cuda_runtime::CudaDeviceBuffer) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
@@ -4393,6 +4672,7 @@ pub fn j2k_cuda_runtime::CudaContext::allocate(&self, usize) -> core::result::Re
 pub fn j2k_cuda_runtime::CudaContext::best_fit_buffer_pool(&self) -> j2k_cuda_runtime::CudaBufferPool
 pub fn j2k_cuda_runtime::CudaContext::buffer_pool(&self) -> j2k_cuda_runtime::CudaBufferPool
 pub fn j2k_cuda_runtime::CudaContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_cuda_runtime::CudaContext::memset_d8(&self, &j2k_cuda_runtime::CudaDeviceBuffer, u8, usize) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::retain_primary(usize) -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::synchronize(&self) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::system_default() -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
@@ -4408,10 +4688,14 @@ pub fn j2k_cuda_runtime::CudaDeviceBuffer::copy_to_host(&self, &mut [u8]) -> cor
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::device_ptr(&self) -> u64
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaError::is_unavailable(&self) -> bool
+pub fn j2k_cuda_runtime::CudaEvent::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaExecutionStats::copy_kernel_dispatches(self) -> usize
 pub fn j2k_cuda_runtime::CudaExecutionStats::decode_kernel_dispatches(self) -> usize
 pub fn j2k_cuda_runtime::CudaExecutionStats::kernel_dispatches(self) -> usize
 pub fn j2k_cuda_runtime::CudaExecutionStats::used_hardware_decode(self) -> bool
+pub fn j2k_cuda_runtime::CudaKernelSpec::eq(&self, &Self) -> bool
+pub fn j2k_cuda_runtime::CudaKernelSpec::hash<H: core::hash::Hasher>(&self, &mut H)
+pub fn j2k_cuda_runtime::CudaKernelSpec::new(&'static str, &'static [u8], &'static [u8]) -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::allocation_byte_len(&self) -> usize
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::as_device_buffer(&self) -> core::option::Option<&j2k_cuda_runtime::CudaDeviceBuffer>
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::byte_len(&self) -> usize
@@ -4419,7 +4703,7 @@ pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::copy_to_host(&self, &mut [u8]) 
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::device_ptr(&self) -> u64
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::into_device_buffer(self) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
-pub fn j2k_cuda_runtime::transcode_kernels_built() -> bool
+pub fn j2k_cuda_runtime::cuda_kernel_param<T>(&mut T) -> *mut core::ffi::c_void where T: j2k_cuda_runtime::CudaKernelParam
 pub j2k_cuda_runtime::CudaError::CompletionFailed
 pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
 pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
@@ -4469,8 +4753,14 @@ pub mod j2k_cuda_runtime
 pub struct j2k_cuda_runtime::CudaBufferPool
 pub struct j2k_cuda_runtime::CudaContext
 pub struct j2k_cuda_runtime::CudaDeviceBuffer
+pub struct j2k_cuda_runtime::CudaEvent
 pub struct j2k_cuda_runtime::CudaExecutionStats
+pub struct j2k_cuda_runtime::CudaKernelSpec
+pub struct j2k_cuda_runtime::CudaLaunchGeometry
 pub struct j2k_cuda_runtime::CudaPooledDeviceBuffer
+pub unsafe fn j2k_cuda_runtime::CudaContext::launch_compiled_kernel(&self, j2k_cuda_runtime::CudaKernelSpec, j2k_cuda_runtime::CudaLaunchGeometry, &mut [*mut core::ffi::c_void]) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
+pub unsafe fn j2k_cuda_runtime::CudaContext::launch_compiled_kernel_queued(&self, j2k_cuda_runtime::CudaKernelSpec, j2k_cuda_runtime::CudaLaunchGeometry, &mut [*mut core::ffi::c_void], &j2k_cuda_runtime::CudaBufferPool, alloc::vec::Vec<j2k_cuda_runtime::CudaPooledDeviceBuffer>, j2k_cuda_runtime::CudaExecutionStats) -> core::result::Result<CudaQueuedExecution, j2k_cuda_runtime::CudaError>
+pub unsafe trait j2k_cuda_runtime::CudaKernelParam
 ```
 
 ## `j2k-profile`
@@ -4583,6 +4873,58 @@ pub type j2k_ml::cuda::CudaUploadBurnDecoder = j2k_ml::CudaBurnDecoder
 pub type j2k_ml::cuda::SubmittedCudaUploadBurnBatch = j2k_ml::SubmittedCudaBurnBatch
 pub type j2k_ml::metal::MetalUploadBurnDecoder = j2k_ml::MetalBurnDecoder
 pub type j2k_ml::metal::SubmittedMetalUploadBurnBatch = j2k_ml::SubmittedMetalBurnBatch
+```
+
+## `j2k-cuda-build-support`
+
+```text
+pub fn j2k_cuda_build_support::build_cuda_oxide_projects(&[j2k_cuda_build_support::CudaOxideProject], core::option::Option<&str>) -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub j2k_cuda_build_support::CudaOxideProject::artifact_name: &'static str
+pub j2k_cuda_build_support::CudaOxideProject::built_cfg: &'static str
+pub j2k_cuda_build_support::CudaOxideProject::display_name: &'static str
+pub j2k_cuda_build_support::CudaOxideProject::extra_sources: &'static [&'static str]
+pub j2k_cuda_build_support::CudaOxideProject::feature_env: &'static str
+pub j2k_cuda_build_support::CudaOxideProject::output_name: &'static str
+pub j2k_cuda_build_support::CudaOxideProject::source_dir: &'static str
+pub mod j2k_cuda_build_support
+pub struct j2k_cuda_build_support::CudaOxideProject
+```
+
+## `j2k-cuda-j2k-engine`
+
+```text
+impl<'context> j2k_cuda_j2k_engine::J2kCudaEngine<'context>
+pub const fn j2k_cuda_j2k_engine::J2kCudaEngine<'context>::context(&self) -> &'context j2k_cuda_runtime::context::CudaContext
+pub const fn j2k_cuda_j2k_engine::J2kCudaEngine<'context>::new(&'context j2k_cuda_runtime::context::CudaContext) -> Self
+pub mod j2k_cuda_j2k_engine
+pub struct j2k_cuda_j2k_engine::J2kCudaEngine<'context>
+```
+
+## `j2k-cuda-jpeg-engine`
+
+```text
+impl<'context> j2k_cuda_jpeg_engine::JpegCudaEngine<'context>
+pub const fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::context(self) -> &'context j2k_cuda_runtime::context::CudaContext
+pub const fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::new(&'context j2k_cuda_runtime::context::CudaContext) -> Self
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::decode_rgb8_owned_into_with_external_live(self, &CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::decode_rgb8_owned_with_external_live(self, &CudaJpegRgb8DecodePlan<'_>, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaKernelOutput, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::diagnose_entropy_with_pinned_upload_operation(self, &CudaJpegChunkedEntropyPlan<'_>, usize, &j2k_cuda_runtime::memory::pinned_staging::operations::gate::CudaPinnedUploadOperationGuard<'_>) -> core::result::Result<CudaJpegChunkedEntropyReport, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::encode_baseline_entropy_batch_with_external_live(self, &CudaJpegBaselineEntropyEncodeBatchJob<'_>, usize) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::encode_baseline_entropy_with_external_live(self, &CudaJpegBaselineEntropyEncodeJob<'_>, usize) -> core::result::Result<alloc::vec::Vec<u8>, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::validate_output_buffer(self, &j2k_cuda_runtime::memory::CudaDeviceBuffer) -> core::result::Result<(), j2k_cuda_runtime::error::CudaError>
+pub mod j2k_cuda_jpeg_engine
+pub struct j2k_cuda_jpeg_engine::JpegCudaEngine<'context>
+```
+
+## `j2k-cuda-transcode-engine`
+
+```text
+impl<'context> j2k_cuda_transcode_engine::CudaTranscodeEngine<'context>
+pub const fn j2k_cuda_transcode_engine::CudaTranscodeEngine<'context>::context(&self) -> &'context j2k_cuda_runtime::context::CudaContext
+pub const fn j2k_cuda_transcode_engine::CudaTranscodeEngine<'context>::new(&'context j2k_cuda_runtime::context::CudaContext) -> Self
+pub fn j2k_cuda_transcode_engine::transcode_kernels_built() -> bool
+pub mod j2k_cuda_transcode_engine
+pub struct j2k_cuda_transcode_engine::CudaTranscodeEngine<'context>
 ```
 
 ## `j2k-cli`

@@ -156,9 +156,9 @@ fn supports_metal_output_format(fmt: PixelFormat) -> bool {
 
 pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
     match decision {
-        RouteDecision::RejectExplicitMetal { reason } => Some(Error::UnsupportedMetalRequest {
-            reason: reason.error_reason(),
-        }),
+        RouteDecision::RejectExplicitMetal { reason } => Some(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(reason.error_reason()),
+        )),
         RouteDecision::RejectUnsupportedBackend { request } => {
             Some(Error::UnsupportedBackend { request })
         }

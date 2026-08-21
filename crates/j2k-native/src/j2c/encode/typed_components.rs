@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use j2k_codec_math::dwt::max_decomposition_levels;
+use j2k_types::encode_geometry::maximum_decomposition_levels;
 
 use super::{
     checked_add_bytes, checked_element_bytes, cpu_dwt_transient_bytes,
@@ -112,7 +112,7 @@ fn try_typed_component_plan(
         .map(|plane| {
             let component_width = width.div_ceil(u32::from(plane.x_rsiz));
             let component_height = height.div_ceil(u32::from(plane.y_rsiz));
-            max_decomposition_levels(component_width, component_height)
+            maximum_decomposition_levels(component_width, component_height)
         })
         .min()
         .unwrap_or(0);

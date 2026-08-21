@@ -9,7 +9,7 @@ use super::super::single_tile::ownership::encode_params_retained_bytes;
 use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePart};
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    max_decomposition_levels, max_total_bitplanes_for_components, quantize,
+    max_total_bitplanes_for_components, maximum_decomposition_levels, quantize,
     reversible_guard_bits_for_marker_limit, validate_precinct_exponents_for_options,
     validate_roi_encode_options_nonallocating, BlockCodingMode, EncodeComponentSampleInfo,
     EncodeOptions, EncodeParams, EncodeRoiRegion, NativeEncodePipelineError,
@@ -94,7 +94,10 @@ pub(super) fn build_loop_plan(
     let num_levels = request
         .options
         .num_decomposition_levels
-        .min(max_decomposition_levels(min_tile_width, min_tile_height));
+        .min(maximum_decomposition_levels(
+            min_tile_width,
+            min_tile_height,
+        ));
     validate_precinct_exponents_for_options(request.options, num_levels)
         .map_err(NativeEncodePipelineError::invalid_input)?;
     let use_mct = request.options.use_mct && matches!(request.num_components, 3 | 4);

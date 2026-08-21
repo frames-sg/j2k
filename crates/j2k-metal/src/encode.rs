@@ -46,7 +46,7 @@ mod unavailable;
 mod validation;
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use crate::metal_types::Buffer;
 use j2k::J2kLosslessEncodeOptions;
@@ -82,7 +82,7 @@ use self::packet_plan::{
     cpu_packetization_resolutions_from_lossless_device_plan,
     lossless_options_for_resident_htj2k_tile_job, packet_descriptors_for_lossless_device_order,
     packetization_progression_order, resident_packetization_resolutions_from_lossless_device_plan,
-    should_use_resident_htj2k_host_shape_for_auto, should_use_resident_htj2k_host_tile_for_auto,
+    should_use_resident_htj2k_host_tile_for_auto,
 };
 #[cfg(target_os = "macos")]
 use self::plan::{

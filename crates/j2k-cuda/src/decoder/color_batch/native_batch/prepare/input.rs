@@ -50,9 +50,11 @@ pub(super) fn prepare_native_color_input<'a>(
         (None, None) => {
             prepare_native_color_from_bytes(input, fmt, native_context, colors, shared_payload)
         }
-        (Some(_), Some(_)) => Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA color input contains conflicting codec plans",
-        }),
+        (Some(_), Some(_)) => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "prepared CUDA color input contains conflicting codec plans",
+            ),
+        )),
     }
 }
 

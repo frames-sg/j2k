@@ -115,6 +115,14 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
                 report.detail.fused_dequant_dispatch_count,
             )?,
             ProfileField::metric("idwt_dispatch_count", report.detail.idwt_dispatch_count)?,
+            ProfileField::metric(
+                "idwt_final_interleave_horizontal_us",
+                report.detail.idwt_final_interleave_horizontal_us,
+            )?,
+            ProfileField::metric(
+                "idwt_final_vertical_us",
+                report.detail.idwt_final_vertical_us,
+            )?,
             ProfileField::metric("mct_dispatch_count", report.detail.mct_dispatch_count)?,
             ProfileField::metric("store_dispatch_count", report.detail.store_dispatch_count)?,
         ])

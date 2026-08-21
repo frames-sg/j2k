@@ -4,13 +4,12 @@ use crate::metal_types::prelude::*;
 
 use super::super::{
     checked_u32, dispatch_1d_pipeline, fast420_batch_timing_enabled, new_compute_command_encoder,
-    pack_420_pipeline_for_format, pack_420_windowed_pipeline_for_format,
-    pack_422_pipeline_for_format, pack_422_windowed_pipeline_for_format, BatchedFastPacket,
-    ComputePipelineState, Error, JpegFast420PacketV1, JpegFast420TextureBatchParams,
-    JpegFast422PacketV1, JpegFast444PacketV1, MetalRuntime, PixelFormat, PlaneMode,
-    FAST420_TEXTURE_BOUNDARY_META_WORDS, FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES,
-    FAST420_TEXTURE_VERTICAL_META_WORDS, FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES,
-    FAST422_TEXTURE_BOUNDARY_META_WORDS, FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
+    BatchedFastPacket, ComputePipelineState, Error, JpegFast420PacketV1,
+    JpegFast420TextureBatchParams, JpegFast422PacketV1, JpegFast444PacketV1, MetalRuntime,
+    PixelFormat, PlaneMode, FAST420_TEXTURE_BOUNDARY_META_WORDS,
+    FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES, FAST420_TEXTURE_VERTICAL_META_WORDS,
+    FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES, FAST422_TEXTURE_BOUNDARY_META_WORDS,
+    FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
 };
 use super::descriptors::{
     FastRegionScaledMetal, FastScratchKeys, FastSubsampledMetal, FastTextureRepairCtx,
@@ -83,49 +82,49 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
         BatchedFastPacket::Fast420(self)
     }
     fn decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_decode_pipeline
+        &runtime.pipelines.fast420_decode
     }
     fn region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_region_decode_pipeline
+        &runtime.pipelines.fast420_region_decode
     }
     fn scaled_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_scaled_decode_pipeline
+        &runtime.pipelines.fast420_scaled_decode
     }
     fn scaled_region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_scaled_region_decode_pipeline
+        &runtime.pipelines.fast420_scaled_region_decode
     }
     fn pack_pipeline_for_format(
         runtime: &MetalRuntime,
         fmt: PixelFormat,
     ) -> Option<&ComputePipelineState> {
-        Some(pack_420_pipeline_for_format(runtime, fmt))
+        Some(runtime.pipelines.pack_420_for_format(fmt))
     }
     fn pack_windowed_pipeline_for_format(
         runtime: &MetalRuntime,
         fmt: PixelFormat,
     ) -> &ComputePipelineState {
-        pack_420_windowed_pipeline_for_format(runtime, fmt)
+        runtime.pipelines.pack_420_windowed_for_format(fmt)
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast420_scaled_region_batch_decode
     }
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_420_windowed_rgba_texture_pipeline
+        &runtime.pipelines.pack_420_windowed_rgba_texture
     }
     fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_batch_decode_pipeline
+        &runtime.pipelines.fast420_batch_decode
     }
     fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_420_rgb_batch_pipeline
+        &runtime.pipelines.pack_420_rgb_batch
     }
     fn pack_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_420_rgba_texture_pipeline
+        &runtime.pipelines.pack_420_rgba_texture
     }
     fn rgba_texture_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_rgba_texture_batch_decode_pipeline
+        &runtime.pipelines.fast420_rgba_texture_batch_decode
     }
     fn rgba_texture_boundary_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_rgba_texture_boundary_pipeline
+        &runtime.pipelines.fast420_rgba_texture_boundary
     }
     fn full_rgb_batch_timing_enabled() -> bool {
         fast420_batch_timing_enabled()
@@ -179,7 +178,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 };
                 let boundary_encoder = new_compute_command_encoder(ctx.command_buffer)?;
                 boundary_encoder.setComputePipelineState(
-                    &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
+                    &runtime.pipelines.fast420_rgba_texture_vertical_boundary,
                 );
                 boundary_encoder.bind_buffer(0, Some(vertical_meta_buffer), 0);
                 boundary_encoder.bind_buffer(1, Some(vertical_samples_buffer), 0);
@@ -187,7 +186,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 boundary_encoder.bind_texture(0, Some(texture));
                 dispatch_1d_pipeline(
                     &boundary_encoder,
-                    &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
+                    &runtime.pipelines.fast420_rgba_texture_vertical_boundary,
                     mcu_threads,
                 );
                 boundary_encoder.endEncoding();
@@ -207,7 +206,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 };
                 let corner_encoder = new_compute_command_encoder(ctx.command_buffer)?;
                 corner_encoder
-                    .setComputePipelineState(&runtime.fast420_rgba_texture_corner_pipeline);
+                    .setComputePipelineState(&runtime.pipelines.fast420_rgba_texture_corner);
                 corner_encoder.bind_buffer(0, Some(ctx.boundary_meta_buffer), 0);
                 corner_encoder.bind_buffer(1, Some(vertical_meta_buffer), 0);
                 corner_encoder.bind_buffer(2, Some(vertical_samples_buffer), 0);
@@ -215,7 +214,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 corner_encoder.bind_texture(0, Some(texture));
                 dispatch_1d_pipeline(
                     &corner_encoder,
-                    &runtime.fast420_rgba_texture_corner_pipeline,
+                    &runtime.pipelines.fast420_rgba_texture_corner,
                     mcu_threads,
                 );
                 corner_encoder.endEncoding();
@@ -228,8 +227,8 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
         runtime: &MetalRuntime,
     ) -> Option<(&ComputePipelineState, &ComputePipelineState)> {
         Some((
-            &runtime.fast420_batch_coeffs_decode_pipeline,
-            &runtime.fast420_batch_idct_deposit_pipeline,
+            &runtime.pipelines.fast420_batch_coeffs_decode,
+            &runtime.pipelines.fast420_batch_idct_deposit,
         ))
     }
     #[cfg(test)]
@@ -300,49 +299,49 @@ impl FastSubsampledMetal for JpegFast422PacketV1 {
         BatchedFastPacket::Fast422(self)
     }
     fn decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_decode_pipeline
+        &runtime.pipelines.fast422_decode
     }
     fn region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_region_decode_pipeline
+        &runtime.pipelines.fast422_region_decode
     }
     fn scaled_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_scaled_decode_pipeline
+        &runtime.pipelines.fast422_scaled_decode
     }
     fn scaled_region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_scaled_region_decode_pipeline
+        &runtime.pipelines.fast422_scaled_region_decode
     }
     fn pack_pipeline_for_format(
         runtime: &MetalRuntime,
         fmt: PixelFormat,
     ) -> Option<&ComputePipelineState> {
-        pack_422_pipeline_for_format(runtime, fmt)
+        runtime.pipelines.pack_422_for_format(fmt)
     }
     fn pack_windowed_pipeline_for_format(
         runtime: &MetalRuntime,
         fmt: PixelFormat,
     ) -> &ComputePipelineState {
-        pack_422_windowed_pipeline_for_format(runtime, fmt)
+        runtime.pipelines.pack_422_windowed_for_format(fmt)
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast422_scaled_region_batch_decode
     }
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_422_windowed_rgba_texture_pipeline
+        &runtime.pipelines.pack_422_windowed_rgba_texture
     }
     fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_batch_decode_pipeline
+        &runtime.pipelines.fast422_batch_decode
     }
     fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_422_rgb_batch_pipeline
+        &runtime.pipelines.pack_422_rgb_batch
     }
     fn pack_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_422_rgba_texture_pipeline
+        &runtime.pipelines.pack_422_rgba_texture
     }
     fn rgba_texture_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_rgba_texture_batch_decode_pipeline
+        &runtime.pipelines.fast422_rgba_texture_batch_decode
     }
     fn rgba_texture_boundary_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_rgba_texture_boundary_pipeline
+        &runtime.pipelines.fast422_rgba_texture_boundary
     }
     fn full_rgb_batch_timing_enabled() -> bool {
         false
@@ -453,24 +452,24 @@ impl FastSubsampledMetal for JpegFast444PacketV1 {
         }
     }
     fn decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_decode_pipeline
+        &runtime.pipelines.fast444_decode
     }
     fn region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_region_decode_pipeline
+        &runtime.pipelines.fast444_region_decode
     }
     fn scaled_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_scaled_decode_pipeline
+        &runtime.pipelines.fast444_scaled_decode
     }
     fn scaled_region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_scaled_region_decode_pipeline
+        &runtime.pipelines.fast444_scaled_region_decode
     }
     fn pack_pipeline_for_format(
         runtime: &MetalRuntime,
         fmt: PixelFormat,
     ) -> Option<&ComputePipelineState> {
         match fmt {
-            PixelFormat::Rgb8 => Some(&runtime.pack_444_rgb_batch_pipeline),
-            PixelFormat::Rgba8 => Some(&runtime.pack_444_rgba_texture_pipeline),
+            PixelFormat::Rgb8 => Some(&runtime.pipelines.pack_444_rgb_batch),
+            PixelFormat::Rgba8 => Some(&runtime.pipelines.pack_444_rgba_texture),
             _ => None,
         }
     }
@@ -479,30 +478,30 @@ impl FastSubsampledMetal for JpegFast444PacketV1 {
         fmt: PixelFormat,
     ) -> &ComputePipelineState {
         match fmt {
-            PixelFormat::Rgba8 => &runtime.pack_444_rgba_texture_pipeline,
-            _ => &runtime.pack_444_rgb_batch_pipeline,
+            PixelFormat::Rgba8 => &runtime.pipelines.pack_444_rgba_texture,
+            _ => &runtime.pipelines.pack_444_rgb_batch,
         }
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast444_scaled_region_batch_decode
     }
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_444_rgba_texture_pipeline
+        &runtime.pipelines.pack_444_rgba_texture
     }
     fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast444_scaled_region_batch_decode
     }
     fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_444_rgb_batch_pipeline
+        &runtime.pipelines.pack_444_rgb_batch
     }
     fn pack_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_444_rgba_texture_pipeline
+        &runtime.pipelines.pack_444_rgba_texture
     }
     fn rgba_texture_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_rgba_texture_batch_decode_pipeline
+        &runtime.pipelines.fast444_rgba_texture_batch_decode
     }
     fn rgba_texture_boundary_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_rgba_texture_batch_decode_pipeline
+        &runtime.pipelines.fast444_rgba_texture_batch_decode
     }
     fn full_rgb_batch_timing_enabled() -> bool {
         false
@@ -559,10 +558,10 @@ impl FastRegionScaledMetal for JpegFast420PacketV1 {
         BatchedFastPacket::Fast420(self)
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast420_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast420_scaled_region_batch_decode
     }
     fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_420_windowed_rgb_batch_pipeline
+        &runtime.pipelines.pack_420_windowed_rgb_batch
     }
 }
 
@@ -582,10 +581,10 @@ impl FastRegionScaledMetal for JpegFast422PacketV1 {
         BatchedFastPacket::Fast422(self)
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast422_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast422_scaled_region_batch_decode
     }
     fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_422_windowed_rgb_batch_pipeline
+        &runtime.pipelines.pack_422_windowed_rgb_batch
     }
 }
 
@@ -605,9 +604,9 @@ impl FastRegionScaledMetal for JpegFast444PacketV1 {
         BatchedFastPacket::Fast444(self, mode)
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.fast444_scaled_region_batch_decode_pipeline
+        &runtime.pipelines.fast444_scaled_region_batch_decode
     }
     fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_444_rgb_batch_pipeline
+        &runtime.pipelines.pack_444_rgb_batch
     }
 }

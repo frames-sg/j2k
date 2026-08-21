@@ -37,9 +37,9 @@ impl CudaHtj2kDecodePlan {
                 classic_payloads,
                 classic_ranges,
             )?)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))?;
         if payload_bytes != 0 {
             host_budget.try_vec_reserve(shared_payload, payload_bytes)?;
         }
@@ -82,9 +82,9 @@ impl CudaHtj2kDecodePlan {
             }
         }
         if ht_payloads.next().is_some() || classic_payloads.next().is_some() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: REFERENCED_PLAN_PAYLOAD_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(REFERENCED_PLAN_PAYLOAD_MISMATCH),
+            ));
         }
         owners.finish(plan, output_format, output_origin, output_dimensions)
     }

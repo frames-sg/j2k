@@ -4,7 +4,7 @@
 
 use crate::j2c::encode::allocation::checked_element_bytes;
 use crate::j2c::encode::{
-    ht_target_coding_passes_for_options, max_decomposition_levels,
+    ht_target_coding_passes_for_options, maximum_decomposition_levels,
     reversible_guard_bits_for_marker_limit, BlockCodingMode, CodeBlockGeometry,
     EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, NativeEncodePipelineError,
     NativeEncodePipelineResult, NativeEncodeSession,
@@ -122,7 +122,7 @@ fn resolve_geometry(
     let num_levels = request
         .options
         .num_decomposition_levels
-        .min(max_decomposition_levels(request.width, request.height));
+        .min(maximum_decomposition_levels(request.width, request.height));
     let requested_guard_bits = requested_guard_bits(request.options, use_mct);
     let guard_bits = if high_bit_exact && request.options.reversible {
         reversible_guard_bits_for_marker_limit(request.bit_depth, num_levels, requested_guard_bits)

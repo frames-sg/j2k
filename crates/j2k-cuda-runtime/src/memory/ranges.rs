@@ -19,7 +19,8 @@ struct CheckedDeviceBufferRange {
     original_index: usize,
 }
 
-pub(crate) struct CheckedDeviceBufferRanges {
+#[doc(hidden)]
+pub struct CheckedDeviceBufferRanges {
     context: CudaContext,
     sorted: Vec<CheckedDeviceBufferRange>,
 }
@@ -101,7 +102,8 @@ fn checked_device_ranges_overlap(
 }
 
 impl CheckedDeviceBufferRanges {
-    pub(crate) fn from_same_context<'a>(
+    #[doc(hidden)]
+    pub fn from_same_context<'a>(
         context: &CudaContext,
         buffers: impl IntoIterator<Item = (usize, &'a CudaDeviceBuffer)>,
     ) -> Result<Self, CudaError> {
@@ -129,14 +131,13 @@ impl CheckedDeviceBufferRanges {
         })
     }
 
-    pub(crate) fn first_self_overlap(&self) -> Option<(usize, usize)> {
+    #[doc(hidden)]
+    pub fn first_self_overlap(&self) -> Option<(usize, usize)> {
         first_self_overlap(&self.sorted)
     }
 
-    pub(crate) fn first_cross_overlap(
-        &self,
-        other: &Self,
-    ) -> Result<Option<(usize, usize)>, CudaError> {
+    #[doc(hidden)]
+    pub fn first_cross_overlap(&self, other: &Self) -> Result<Option<(usize, usize)>, CudaError> {
         if !self.context.is_same_context(&other.context) {
             return Err(one_owning_context_error());
         }
@@ -145,12 +146,31 @@ impl CheckedDeviceBufferRanges {
 }
 
 impl CudaDeviceBuffer {
-    pub(crate) fn overlaps(&self, other: &Self) -> Result<bool, CudaError> {
+    #[doc(hidden)]
+    pub fn overlaps(&self, other: &Self) -> Result<bool, CudaError> {
         checked_device_ranges_overlap(
             self.context.is_same_context(&other.context),
             (self.ptr, self.len),
             (other.ptr, other.len),
         )
+    }
+}
+
+impl CudaContext {
+    /// Validate that all buffers belong to this context and are pairwise disjoint.
+    #[doc(hidden)]
+    pub fn validate_disjoint_device_buffers<'a>(
+        &self,
+        buffers: impl IntoIterator<Item = &'a CudaDeviceBuffer>,
+    ) -> Result<(), CudaError> {
+        let ranges =
+            CheckedDeviceBufferRanges::from_same_context(self, buffers.into_iter().enumerate())?;
+        if ranges.first_self_overlap().is_some() {
+            return Err(CudaError::InvalidArgument {
+                message: "CUDA device buffer allocations must be pairwise disjoint".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 

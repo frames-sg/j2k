@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(not(feature = "cuda-runtime"))]
+use j2k::J2kEncodeDispatchReport;
 use j2k::{J2kEncodeStageAccelerator, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder};
 use j2k_cuda::{CudaEncodeStageAccelerator, CudaEncodeStageTimings};
 
@@ -35,6 +37,17 @@ fn cuda_encode_stage_timings_are_publicly_readable_and_resettable() {
     assert_eq!(
         accelerator.collected_stage_timings(),
         CudaEncodeStageTimings::default()
+    );
+}
+
+#[cfg(not(feature = "cuda-runtime"))]
+#[test]
+fn cuda_encode_stage_default_dispatch_report_is_zero_without_runtime() {
+    let accelerator = CudaEncodeStageAccelerator::default();
+
+    assert_eq!(
+        accelerator.dispatch_report(),
+        J2kEncodeDispatchReport::default()
     );
 }
 

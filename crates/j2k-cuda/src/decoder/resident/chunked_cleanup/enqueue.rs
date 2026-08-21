@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{plan_ht_gpu_job_chunks, HtGpuJobChunkLimits, HtGpuJobPassBucket};
-use j2k_cuda_runtime::{
-    CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup, CudaQueuedHtj2kCleanupGroup,
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup, CudaQueuedHtj2kCleanupGroup, J2kCudaEngine,
 };
 
 mod kernel;
@@ -27,6 +27,12 @@ struct SubmittedHtj2kChunk {
     cleanup: CudaQueuedHtj2kCleanup,
     resources: CudaHtj2kDecodeResources,
     identities: Vec<Htj2kChunkJobIdentity>,
+}
+
+fn chunk_plan_invariant_error() -> Error {
+    Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+        CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+    ))
 }
 
 /// Flatten, pass-bucket, and asynchronously enqueue bounded HTJ2K arenas.
@@ -54,9 +60,11 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
             dequant_chunk_count: 0,
         });
     }
-    let tables = tables.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA HTJ2K chunks require resident cleanup lookup tables",
-    })?;
+    let tables = tables.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA HTJ2K chunks require resident cleanup lookup tables",
+        ),
+    ))?;
     let requests = chunk_requests(component_work, &locations)?;
     let plan = plan_ht_gpu_job_chunks(&requests, limits)?;
     let status_group =
@@ -91,9 +99,7 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
     for (chunk_index, chunk) in plan.chunks().iter().copied().enumerate() {
         let entries = plan
             .chunk_entries(chunk_index)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
+            .ok_or_else(chunk_plan_invariant_error)?;
         let submission = enqueue_one_chunk(
             context,
             tables,
@@ -105,9 +111,10 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
             chunk.payload_bytes(),
             pool,
             live_host_bytes,
-            owner.group.as_ref().ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?,
+            owner
+                .group
+                .as_ref()
+                .ok_or_else(chunk_plan_invariant_error)?,
             owner.identities.len(),
         );
         match submission {
@@ -120,9 +127,7 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
                 if let Err(error) = owner
                     .group
                     .as_mut()
-                    .ok_or(Error::UnsupportedCudaRequest {
-                        reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                    })?
+                    .ok_or_else(chunk_plan_invariant_error)?
                     .retain(cleanup)
                     .map_err(cuda_error)
                 {
@@ -176,11 +181,11 @@ fn enqueue_one_chunk(
         &mut budget,
     )?;
     if payload.len() != payload_bytes {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+        ));
     }
-    let resources = context
+    let resources = J2kCudaEngine::new(context)
         .upload_htj2k_decode_resources_with_tables_and_pool(&payload, tables, pool)
         .map_err(cuda_error)?;
     let targets = build_chunk_targets(component_work, &selected, &jobs, &mut budget)?;

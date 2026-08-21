@@ -13,6 +13,7 @@ pub(crate) fn copy_pooled_bytes_to_vec_uninit(
     copy_pooled_bytes_to_vec_uninit_with_budget(buffer, byte_len, &mut host_budget)
 }
 
+#[cfg(test)]
 pub(crate) fn copy_pooled_bytes_to_vec_uninit_with_budget(
     buffer: &CudaPooledDeviceBuffer,
     byte_len: usize,

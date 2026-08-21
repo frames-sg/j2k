@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use crate::metal_types::Buffer;
 use j2k_native::{HtCodeBlockDecoder, J2kInverseMctJob, Result};
@@ -270,7 +270,7 @@ mod tests {
             let captured = decoder.take_captured_planes();
             assert_eq!(captured.len(), components.planes().len());
             for (plane, buffer) in components.planes().iter().zip(captured.iter()) {
-                let captured = crate::compute::checked_buffer_slice::<f32>(
+                let captured = crate::engine::checked_buffer_slice::<f32>(
                     buffer,
                     plane.samples().len(),
                     "MCT test",

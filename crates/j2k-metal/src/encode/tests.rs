@@ -6,7 +6,7 @@ use super::stage_accelerator::{
 };
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k::encode_j2k_lossless;
 use j2k::{
@@ -21,8 +21,8 @@ use j2k::{
 };
 #[cfg(target_os = "macos")]
 use j2k::{
-    J2kDeinterleaveToF32Job, J2kEncodeContext, J2kForwardDwt53Job, J2kForwardDwt97Job,
-    J2kForwardIctJob, J2kQuantizeSubbandJob,
+    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kEncodeContext, J2kForwardDwt53Job,
+    J2kForwardDwt97Job, J2kForwardIctJob, J2kQuantizeSubbandJob,
 };
 use j2k::{J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob};
 #[cfg(target_os = "macos")]
@@ -32,7 +32,7 @@ use j2k_core::DeviceSubmission;
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
-    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference,
+    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference, forward_rct_reference,
     quantize_subband_reference as quantize_reference, try_deinterleave_reference, EncodeOptions,
     J2kCodeBlockStyle,
 };

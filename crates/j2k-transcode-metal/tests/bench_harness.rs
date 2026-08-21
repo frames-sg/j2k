@@ -31,6 +31,8 @@ fn dct97_benchmark_groups_are_stable() {
         "rayon_1024x1024_batch_128",
         "rayon_2048x2048_batch_32",
         "dct97_metal_idct_dwt",
+        "dct97_metal_column_quantize",
+        "metal_explicit_512x512_batch_16",
         "cpu_idct_dwt_224x224",
         "metal_explicit_224x224",
         "cpu_idct_dwt_512x512",

@@ -14,6 +14,8 @@ use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, Dwt97TwoDimensional,
     Htj2k97CodeBlockOptions,
 };
+#[cfg(test)]
+use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
 use j2k_types::{
     J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
@@ -178,10 +180,11 @@ mod tests {
     fn prequantized_oracle_matches_native_precomputed_codestream() {
         let width = 17u32;
         let height = 13u32;
-        let low_width = usize::try_from(width.div_ceil(2)).expect("fixture width fits usize");
-        let low_height = usize::try_from(height.div_ceil(2)).expect("fixture height fits usize");
-        let high_width = usize::try_from(width / 2).expect("fixture width fits usize");
-        let high_height = usize::try_from(height / 2).expect("fixture height fits usize");
+        let level = encode_dwt_level_dimensions_for_input(width, height);
+        let low_width = usize::try_from(level.low_width).expect("fixture width fits usize");
+        let low_height = usize::try_from(level.low_height).expect("fixture height fits usize");
+        let high_width = usize::try_from(level.high_width).expect("fixture width fits usize");
+        let high_height = usize::try_from(level.high_height).expect("fixture height fits usize");
 
         let ll = sample_band(low_width * low_height, 0.25);
         let hl = sample_band(high_width * low_height, -0.75);

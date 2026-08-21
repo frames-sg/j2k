@@ -2,6 +2,8 @@
 
 //! Fallible preparation for shared Tier-1 precomputed 9/7 batches.
 
+use j2k_types::encode_geometry::code_block_dimension;
+
 use super::precomputed::allocation::ConstructionTracker;
 use super::precomputed::orchestrator::{self, Prepared97PacketPlan};
 use super::precomputed::{precomputed_97_level_count, validate_precomputed_dwt97_geometry};
@@ -38,16 +40,12 @@ pub(super) fn prepare_precomputed_htj2k97_image_for_batch(
         options,
         &mut tracker,
     )?;
-    let code_block_width = code_block_dimension(
-        options.code_block_width_exp,
-        "code-block width exponent exceeds supported range",
-    )
-    .map_err(NativeEncodePipelineError::invalid_input)?;
-    let code_block_height = code_block_dimension(
-        options.code_block_height_exp,
-        "code-block height exponent exceeds supported range",
-    )
-    .map_err(NativeEncodePipelineError::invalid_input)?;
+    let code_block_width = code_block_dimension(options.code_block_width_exp)
+        .map_err(|_| "code-block width exponent exceeds supported range")
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let code_block_height = code_block_dimension(options.code_block_height_exp)
+        .map_err(|_| "code-block height exponent exceeds supported range")
+        .map_err(NativeEncodePipelineError::invalid_input)?;
     let mut component_packets = tracker.try_vec::<Vec<PreparedResolutionPacket>>(
         image.components.len(),
         "batch precomputed 9/7 component packet owners",
@@ -272,11 +270,6 @@ fn try_prepared_subband(
     let retained = prepared_subbands_ownership(core::slice::from_ref(&prepared), 0)?.total()?;
     tracker.retain_existing(retained, "batch precomputed 9/7 prepared subband")?;
     Ok(prepared)
-}
-
-fn code_block_dimension(exponent: u8, what: &'static str) -> Result<u32, &'static str> {
-    let exponent = exponent.checked_add(2).ok_or(what)?;
-    1_u32.checked_shl(u32::from(exponent)).ok_or(what)
 }
 
 #[cfg(test)]

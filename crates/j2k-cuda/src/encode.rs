@@ -10,7 +10,9 @@ use j2k_core::BackendKind;
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::{DeviceSubmission, DeviceSubmitSession, PixelFormat, ReadySubmission};
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaHtj2kEncodeResources};
+use j2k_cuda_j2k_engine::CudaHtj2kEncodeResources;
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use std::{
     sync::Arc,
@@ -159,9 +161,11 @@ pub fn encode_lossless_from_cuda_buffers_with_report(
     session: &mut CudaSession,
 ) -> Result<Vec<CudaLosslessEncodeOutcome>, crate::Error> {
     if tiles.is_empty() {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode received an empty tile batch",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "J2K CUDA encode received an empty tile batch",
+            ),
+        ));
     }
     validate_cuda_encode_options(*options)?;
     let mut host_budget = HostPhaseBudget::new("j2k CUDA host batch encode outcomes");
@@ -279,14 +283,14 @@ fn validate_cuda_encode_options(
     options: j2k::J2kLosslessEncodeOptions,
 ) -> Result<(), crate::Error> {
     if options.block_coding_mode != j2k::J2kBlockCodingMode::HighThroughput {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA device-buffer encode currently requires HTJ2K block coding",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "J2K CUDA device-buffer encode currently requires HTJ2K block coding",
+            ),
+        ));
     }
     if options.validation != j2k::J2kEncodeValidation::External {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA device-buffer encode requires external validation to avoid host input readback",
-        });
+        return Err(crate::Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_operation("J2K CUDA device-buffer encode requires external validation to avoid host input readback")));
     }
     Ok(())
 }
@@ -294,25 +298,33 @@ fn validate_cuda_encode_options(
 #[cfg(feature = "cuda-runtime")]
 fn validate_cuda_encode_tile(tile: CudaLosslessEncodeTile<'_>) -> Result<(), crate::Error> {
     if tile.width == 0 || tile.height == 0 || tile.output_width == 0 || tile.output_height == 0 {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode tile dimensions must be nonzero",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "J2K CUDA encode tile dimensions must be nonzero",
+            ),
+        ));
     }
     if tile.width != tile.output_width || tile.height != tile.output_height {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA device-buffer encode does not yet support input padding",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "J2K CUDA device-buffer encode does not yet support input padding",
+            ),
+        ));
     }
     let format = cuda_encode_format(tile.format)?;
     let row_bytes = (tile.width as usize)
         .checked_mul(format.bytes_per_pixel)
-        .ok_or(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode row byte count overflow",
-        })?;
+        .ok_or(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(
+                "J2K CUDA encode row byte count overflow",
+            ),
+        ))?;
     if tile.pitch_bytes < row_bytes {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode tile pitch is shorter than one row",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "J2K CUDA encode tile pitch is shorter than one row",
+            ),
+        ));
     }
     let required_end = tile
         .byte_offset
@@ -320,17 +332,23 @@ fn validate_cuda_encode_tile(tile: CudaLosslessEncodeTile<'_>) -> Result<(), cra
             tile.pitch_bytes
                 .checked_mul(tile.height.saturating_sub(1) as usize)
                 .and_then(|prefix| prefix.checked_add(row_bytes))
-                .ok_or(crate::Error::UnsupportedCudaRequest {
-                    reason: "J2K CUDA encode input byte range overflow",
-                })?,
+                .ok_or(crate::Error::capability_rejected(
+                    j2k_core::CapabilityRejection::resource_limit(
+                        "J2K CUDA encode input byte range overflow",
+                    ),
+                ))?,
         )
-        .ok_or(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode input byte range overflow",
-        })?;
+        .ok_or(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(
+                "J2K CUDA encode input byte range overflow",
+            ),
+        ))?;
     if required_end > tile.buffer.byte_len() {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode input byte range exceeds buffer length",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(
+                "J2K CUDA encode input byte range exceeds buffer length",
+            ),
+        ));
     }
     Ok(())
 }
@@ -353,17 +371,20 @@ pub(super) fn cuda_component_count_u8(
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn cuda_encode_format(format: PixelFormat) -> Result<CudaEncodeFormat, crate::Error> {
-    let components =
-        u8::try_from(format.channels()).map_err(|_| crate::Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA encode received a pixel format with too many components",
-        })?;
+    let components = u8::try_from(format.channels()).map_err(|_| {
+        crate::Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_format(
+            "J2K CUDA encode received a pixel format with too many components",
+        ))
+    })?;
     let bit_depth = match format.bytes_per_sample() {
         1 => 8,
         2 => 16,
         _ => {
-            return Err(crate::Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA encode received an unsupported sample width",
-            });
+            return Err(crate::Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA encode received an unsupported sample width",
+                ),
+            ));
         }
     };
     Ok(CudaEncodeFormat {
@@ -424,14 +445,24 @@ fn encode_lossless_cuda_tile_with_report(
 
 #[cfg(feature = "cuda-runtime")]
 fn cuda_resident_input_error(error: J2kResidentEncodeInputError) -> crate::Error {
-    let reason = match error {
-        J2kResidentEncodeInputError::EmptyGeometry { .. }
-        | J2kResidentEncodeInputError::ComponentCountOutOfRange { .. }
-        | J2kResidentEncodeInputError::PrecisionOutOfRange { .. }
-        | J2kResidentEncodeInputError::AddressSpaceOverflow => error.reason(),
-        _ => "J2K CUDA resident input validation failed",
+    let rejection = match error {
+        J2kResidentEncodeInputError::EmptyGeometry { .. } => {
+            j2k_core::CapabilityRejection::geometry_mismatch(error.reason())
+        }
+        J2kResidentEncodeInputError::ComponentCountOutOfRange { .. } => {
+            j2k_core::CapabilityRejection::unsupported_format(error.reason())
+        }
+        J2kResidentEncodeInputError::PrecisionOutOfRange { .. } => {
+            j2k_core::CapabilityRejection::unsupported_bit_depth(error.reason())
+        }
+        J2kResidentEncodeInputError::AddressSpaceOverflow => {
+            j2k_core::CapabilityRejection::resource_limit(error.reason())
+        }
+        _ => j2k_core::CapabilityRejection::contract_violation(
+            "J2K CUDA resident input validation failed",
+        ),
     };
-    crate::Error::UnsupportedCudaRequest { reason }
+    crate::Error::capability_rejected(rejection)
 }
 
 #[cfg(feature = "cuda-runtime")]

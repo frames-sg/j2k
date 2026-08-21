@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k_native::DecodingError;
 use j2k_native::{
@@ -212,7 +212,7 @@ pub(crate) fn supports_metal_ht_geometry(width: u32, height: u32) -> bool {
 mod tests {
     use super::MetalHtBlockDecoder;
     #[cfg(target_os = "macos")]
-    use crate::compute;
+    use crate::engine as compute;
     #[cfg(target_os = "macos")]
     use j2k_native::{decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder};
     use j2k_native::{

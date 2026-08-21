@@ -58,9 +58,11 @@ pub(super) fn finish_and_store_native_color(
         (_, Some(queued)) => queued.execution(),
         (NativeColorBatchOutput::Owned(output), None) => output.execution,
         (NativeColorBatchOutput::External(_), None) => {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "CUDA exact RGB external store lost its execution counters",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "CUDA exact RGB external store lost its execution counters",
+                ),
+            ));
         }
     };
     if let Some(report) = reports.first_mut() {
@@ -97,9 +99,9 @@ fn finish_components(
         decoded.push(finish_cuda_component_decode(work)?);
     }
     if decoded.len() != expected_components {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ));
     }
     Ok(decoded)
 }

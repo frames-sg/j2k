@@ -128,7 +128,7 @@ pub(crate) trait J2kBlitEncoderExt {
         destination: &ProtocolObject<dyn MTLBuffer>,
         destination_offset: u64,
         size: u64,
-    );
+    ) -> Result<(), crate::Error>;
 }
 
 impl J2kBlitEncoderExt for ProtocolObject<dyn MTLBlitCommandEncoder> {
@@ -139,21 +139,34 @@ impl J2kBlitEncoderExt for ProtocolObject<dyn MTLBlitCommandEncoder> {
         destination: &ProtocolObject<dyn MTLBuffer>,
         destination_offset: u64,
         size: u64,
-    ) {
-        let source_offset = usize::try_from(source_offset).expect("Metal source offset fits usize");
+    ) -> Result<(), crate::Error> {
+        let source_offset =
+            usize::try_from(source_offset).map_err(|_| crate::Error::MetalKernel {
+                message: "Metal source copy offset exceeds usize".to_string(),
+            })?;
         let destination_offset =
-            usize::try_from(destination_offset).expect("Metal destination offset fits usize");
-        let size = usize::try_from(size).expect("Metal copy size fits usize");
-        source_offset
+            usize::try_from(destination_offset).map_err(|_| crate::Error::MetalKernel {
+                message: "Metal destination copy offset exceeds usize".to_string(),
+            })?;
+        let size = usize::try_from(size).map_err(|_| crate::Error::MetalKernel {
+            message: "Metal copy size exceeds usize".to_string(),
+        })?;
+        let source_in_bounds = source_offset
             .checked_add(size)
-            .is_some_and(|end| end <= source.length())
-            .then_some(())
-            .expect("Metal source copy range is out of bounds");
-        destination_offset
+            .is_some_and(|end| end <= source.length());
+        if !source_in_bounds {
+            return Err(crate::Error::MetalKernel {
+                message: "Metal source copy range is out of bounds".to_string(),
+            });
+        }
+        let destination_in_bounds = destination_offset
             .checked_add(size)
-            .is_some_and(|end| end <= destination.length())
-            .then_some(())
-            .expect("Metal destination copy range is out of bounds");
+            .is_some_and(|end| end <= destination.length());
+        if !destination_in_bounds {
+            return Err(crate::Error::MetalKernel {
+                message: "Metal destination copy range is out of bounds".to_string(),
+            });
+        }
         // SAFETY: Both byte ranges were checked against their allocations.
         // The encoder belongs to a support-created retaining command buffer,
         // which retains both resources until completion; private call sites
@@ -167,6 +180,7 @@ impl J2kBlitEncoderExt for ProtocolObject<dyn MTLBlitCommandEncoder> {
                 size,
             );
         };
+        Ok(())
     }
 }
 
@@ -267,10 +281,12 @@ mod tests {
             checked_blit_command_encoder(&command_buffer).expect("Metal blit command encoder");
         let buffer = checked_shared_buffer(&device, 4).expect("Metal test buffer");
 
-        assert_panics_with(
-            || encoder.copy_from_buffer(&buffer, u64::MAX, &buffer, 0, 1),
-            "Metal source copy range is out of bounds",
-        );
+        let error = encoder
+            .copy_from_buffer(&buffer, u64::MAX, &buffer, 0, 1)
+            .expect_err("overflowing source range must fail");
+        assert!(error
+            .to_string()
+            .contains("Metal source copy range is out of bounds"));
         encoder.endEncoding();
     }
 }

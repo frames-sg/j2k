@@ -2,17 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::{
-    error::CudaError,
-    execution::CudaExecutionStats,
-    htj2k_decode::{
-        htj2k_decode_needs_zero_fill, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeOutput,
-        CudaHtj2kDecodeStageTimings,
-    },
-};
+use crate::error::CudaError;
 
-mod band_transfer;
-mod compact;
 mod creation;
 mod device;
 mod diagnostics;
@@ -28,7 +19,6 @@ mod resource_creation;
 #[cfg(test)]
 mod test_kernels;
 
-pub use self::compact::{CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks};
 pub use self::diagnostics::CudaContextDiagnostics;
 #[doc(hidden)]
 pub use self::host_budget::{CudaExternalHostOwner, CudaExternalHostReservation};
@@ -37,12 +27,9 @@ pub(crate) use self::pinned_host::validate_non_null_pinned_host_allocation;
 #[cfg(test)]
 pub(crate) use self::test_kernels::{CudaKernelModule, CudaKernelName};
 pub(crate) use self::{
-    band_transfer::cuda_idwt_trace_enabled,
-    compact::HTJ2K_UVLC_ENCODE_TABLE_BYTES,
     inner::{ContextInner, ContextOwnership},
     kernel_cache::{CompiledKernel, CompiledKernelKey},
     lifecycle::ContextResourceLifecycle,
-    operations::ensure_context_ownership,
     pinned_host::PinnedUploadStaging,
     resource_creation::{validate_device_allocation, validate_resource_handle},
 };
@@ -54,6 +41,19 @@ pub struct CudaContext {
 }
 
 impl CudaContext {
+    /// Bind this context for an engine operation without submitting work.
+    #[doc(hidden)]
+    pub fn prepare_operation(&self) -> Result<(), CudaError> {
+        self.inner.set_current()
+    }
+
+    /// Return whether uncertain completion quarantined resource lifetimes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn resource_lifetimes_poisoned(&self) -> bool {
+        self.inner.resource_lifetimes_poisoned()
+    }
+
     /// Returns whether both handles own the same CUDA driver context.
     #[doc(hidden)]
     #[must_use]
@@ -68,26 +68,18 @@ impl CudaContext {
         self.inner.device_ordinal
     }
 
-    pub(crate) fn decode_empty_htj2k_codeblocks(
-        &self,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-    ) -> Result<CudaHtj2kDecodeOutput, CudaError> {
-        self.inner.set_current()?;
-        let output_bytes = output_words
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(CudaError::LengthTooLarge { len: output_words })?;
-        let coefficients = self.allocate(output_bytes)?;
-        if htj2k_decode_needs_zero_fill(jobs, output_words)? {
-            self.memset_d32(&coefficients, 0, output_words)?;
-            self.synchronize()?;
-        }
-        Ok(CudaHtj2kDecodeOutput {
-            coefficients,
-            execution: CudaExecutionStats::default(),
-            statuses: Vec::new(),
-            stage_timings: CudaHtj2kDecodeStageTimings::default(),
-        })
+    /// Validate and resolve a raw device pointer for this context.
+    ///
+    /// Stream-ordered allocations whose pointer attributes omit a direct
+    /// context are resolved through the runtime's allocation provenance path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver or validation error when the pointer is not a live
+    /// allocation associated with this context.
+    #[doc(hidden)]
+    pub fn validate_device_pointer(&self, ptr: u64) -> Result<u64, CudaError> {
+        self.inner.resolve_pointer_for_context(ptr)
     }
 }
 

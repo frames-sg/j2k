@@ -10,7 +10,22 @@ use crate::repo_lint_support::{repo_root, repo_text_files};
 const REVIEWED_SAFETY_ALLOWS: &[(&str, &str, &str)] = &[
     ("crates/j2k-alloc-probe/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-core/Cargo.toml", "rust", "unsafe_code"),
+    (
+        "crates/j2k-cuda-j2k-engine/Cargo.toml",
+        "rust",
+        "unsafe_code",
+    ),
+    (
+        "crates/j2k-cuda-jpeg-engine/Cargo.toml",
+        "rust",
+        "unsafe_code",
+    ),
     ("crates/j2k-cuda-runtime/Cargo.toml", "rust", "unsafe_code"),
+    (
+        "crates/j2k-cuda-transcode-engine/Cargo.toml",
+        "rust",
+        "unsafe_code",
+    ),
     ("crates/j2k-cuda/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-jpeg-cuda/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-jpeg-metal/Cargo.toml", "rust", "unsafe_code"),
@@ -48,6 +63,46 @@ const REVIEWED_ALLOW_CEILING: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/j2k-cuda-runtime/Cargo.toml",
+        "clippy",
+        "must_use_candidate",
+    ),
+    (
+        "crates/j2k-cuda-j2k-engine/Cargo.toml",
+        "clippy",
+        "missing_errors_doc",
+    ),
+    (
+        "crates/j2k-cuda-j2k-engine/Cargo.toml",
+        "clippy",
+        "must_use_candidate",
+    ),
+    (
+        "crates/j2k-cuda-jpeg-engine/Cargo.toml",
+        "clippy",
+        "missing_errors_doc",
+    ),
+    (
+        "crates/j2k-cuda-jpeg-engine/Cargo.toml",
+        "clippy",
+        "must_use_candidate",
+    ),
+    (
+        "crates/j2k-cuda-transcode-engine/Cargo.toml",
+        "clippy",
+        "missing_errors_doc",
+    ),
+    (
+        "crates/j2k-cuda-transcode-engine/Cargo.toml",
+        "clippy",
+        "missing_panics_doc",
+    ),
+    (
+        "crates/j2k-cuda-transcode-engine/Cargo.toml",
+        "clippy",
+        "module_name_repetitions",
+    ),
+    (
+        "crates/j2k-cuda-transcode-engine/Cargo.toml",
         "clippy",
         "must_use_candidate",
     ),

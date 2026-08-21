@@ -38,7 +38,10 @@ use j2k::{
     J2kLosslessSamples,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k::{J2kDeinterleaveToF32Job, J2kHtCodeBlockEncodeJob, J2kResidentEncodeInputError};
+use j2k::{
+    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kHtCodeBlockEncodeJob,
+    J2kResidentEncodeInputError,
+};
 use j2k::{
     J2kEncodeStageAccelerator, J2kEncodeStageError, J2kHtSubbandEncodeJob,
     J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
@@ -49,9 +52,11 @@ use j2k::{
 use j2k_core::PixelFormat;
 use j2k_core::{BackendKind, CodecError};
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{
-    CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob,
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob,
 };
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::CudaContext;
 use j2k_native::{
     encode_with_accelerator as encode_with_native_accelerator, DecodeSettings, EncodeOptions,
     EncodeResult, Image,

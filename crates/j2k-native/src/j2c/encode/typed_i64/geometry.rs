@@ -2,7 +2,7 @@
 
 //! Sampling-aware high-bit tile geometry.
 
-use super::super::{max_decomposition_levels, EncodeTypedComponentPlane};
+use super::super::{maximum_decomposition_levels, EncodeTypedComponentPlane};
 
 #[expect(
     clippy::similar_names,
@@ -34,7 +34,7 @@ pub(super) fn min_sampled_tile_component_decomposition_levels(
                 let (_, component_tile_height) =
                     sampled_tile_component_axis(y0, actual_height, y_rsiz, component_image_height)?;
                 let component_levels =
-                    max_decomposition_levels(component_tile_width, component_tile_height);
+                    maximum_decomposition_levels(component_tile_width, component_tile_height);
                 levels = Some(levels.map_or(component_levels, |min| min.min(component_levels)));
             }
         }

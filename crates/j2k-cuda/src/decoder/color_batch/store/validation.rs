@@ -11,9 +11,9 @@ pub(in crate::decoder::color_batch) fn validate_color_stores<const N: usize>(
     stores: [&CudaHtj2kStoreStep; N],
     dimensions: (u32, u32),
 ) -> Result<(), Error> {
-    let first = stores.first().ok_or(Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-    })?;
+    let first = stores.first().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+    ))?;
     for store in stores {
         let input_width = store.input_rect.x1.saturating_sub(store.input_rect.x0);
         let input_height = store.input_rect.y1.saturating_sub(store.input_rect.y0);
@@ -21,30 +21,38 @@ pub(in crate::decoder::color_batch) fn validate_color_stores<const N: usize>(
             store
                 .source_x
                 .checked_add(store.copy_width)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(
+                        CUDA_HTJ2K_KERNELS_NOT_READY,
+                    ),
+                ))?;
         let source_end_y =
             store
                 .source_y
                 .checked_add(store.copy_height)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(
+                        CUDA_HTJ2K_KERNELS_NOT_READY,
+                    ),
+                ))?;
         let output_end_x =
             store
                 .output_x
                 .checked_add(store.copy_width)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(
+                        CUDA_HTJ2K_KERNELS_NOT_READY,
+                    ),
+                ))?;
         let output_end_y =
             store
                 .output_y
                 .checked_add(store.copy_height)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(
+                        CUDA_HTJ2K_KERNELS_NOT_READY,
+                    ),
+                ))?;
         if store.output_width != dimensions.0
             || store.output_height != dimensions.1
             || output_end_x > dimensions.0
@@ -58,9 +66,9 @@ pub(in crate::decoder::color_batch) fn validate_color_stores<const N: usize>(
             || store.output_x != first.output_x
             || store.output_y != first.output_y
         {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+            ));
         }
     }
     Ok(())

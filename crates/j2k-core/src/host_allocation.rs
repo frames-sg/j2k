@@ -61,6 +61,314 @@ pub struct HostAllocationBudget {
     cap_bytes: usize,
 }
 
+/// Error returned by a complete host phase allocation or live-byte budget.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum HostPhaseError {
+    /// A fallible host allocation could not reserve its requested minimum bytes.
+    #[error("host allocation failed for {requested_bytes} bytes while allocating {what}")]
+    AllocationFailed {
+        /// Minimum requested allocation size, saturated on overflow.
+        requested_bytes: usize,
+        /// Static operation or owner description.
+        what: &'static str,
+    },
+    /// A logical request or allocator-reported capacity exceeded the phase cap.
+    #[error(
+        "host phase {what} requires {requested_bytes} bytes, exceeding its {cap_bytes}-byte cap"
+    )]
+    LimitExceeded {
+        /// Aggregate bytes that would be simultaneously live, saturated on overflow.
+        requested_bytes: usize,
+        /// Maximum permitted simultaneously live host bytes.
+        cap_bytes: usize,
+        /// Static host-phase description.
+        what: &'static str,
+    },
+}
+
+/// Codec-neutral owner of one simultaneously-live host allocation budget.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostPhaseBudget {
+    inner: HostAllocationBudget,
+    what: &'static str,
+}
+
+impl HostPhaseBudget {
+    /// Start an empty phase using the workspace host-allocation ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(what: &'static str) -> Self {
+        Self::with_cap(what, crate::DEFAULT_MAX_HOST_ALLOCATION_BYTES)
+    }
+
+    /// Start an empty phase with an explicit ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_cap(what: &'static str, cap_bytes: usize) -> Self {
+        Self {
+            inner: HostAllocationBudget::new(cap_bytes),
+            what,
+        }
+    }
+
+    /// Start a default-cap phase and charge already-live owners.
+    #[doc(hidden)]
+    pub fn with_live_bytes(what: &'static str, live_bytes: usize) -> Result<Self, HostPhaseError> {
+        let mut budget = Self::new(what);
+        budget.account_bytes(live_bytes)?;
+        Ok(budget)
+    }
+
+    /// Allocator-reported bytes currently charged to this phase.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn live_bytes(&self) -> usize {
+        self.inner.live_bytes()
+    }
+
+    /// Check one logical element capacity without mutating the phase.
+    #[doc(hidden)]
+    pub fn preflight_capacity<T>(&self, capacity: usize) -> Result<usize, HostPhaseError> {
+        self.inner
+            .check_capacity::<T>(capacity)
+            .map_err(|error| self.limit_error(error))
+    }
+
+    /// Check additional byte ownership without mutating the phase.
+    #[doc(hidden)]
+    pub fn preflight_bytes(&self, additional: usize) -> Result<(), HostPhaseError> {
+        let mut projected = self.inner;
+        projected
+            .account_bytes(additional)
+            .map_err(|error| self.limit_error(error))
+    }
+
+    /// Charge allocator-reported element capacity.
+    #[doc(hidden)]
+    pub fn account_capacity<T>(&mut self, capacity: usize) -> Result<usize, HostPhaseError> {
+        self.inner
+            .account_capacity::<T>(capacity)
+            .map_err(|error| self.limit_error(error))
+    }
+
+    /// Charge an already-known owner byte count.
+    #[doc(hidden)]
+    pub fn account_bytes(&mut self, bytes: usize) -> Result<(), HostPhaseError> {
+        self.inner
+            .account_bytes(bytes)
+            .map_err(|error| self.limit_error(error))
+    }
+
+    /// Charge one vector by its actual allocator-reported capacity.
+    #[doc(hidden)]
+    pub fn account_vec<T>(&mut self, values: &Vec<T>) -> Result<usize, HostPhaseError> {
+        self.account_capacity::<T>(values.capacity())
+    }
+
+    /// Fallibly reserve a vector and charge its actual capacity.
+    #[doc(hidden)]
+    pub fn try_vec_with_capacity<T>(&mut self, capacity: usize) -> Result<Vec<T>, HostPhaseError> {
+        self.try_vec_with_capacity_named(capacity, self.what)
+    }
+
+    /// Fallibly reserve a named vector owner and charge its actual capacity.
+    #[doc(hidden)]
+    pub fn try_vec_with_capacity_named<T>(
+        &mut self,
+        capacity: usize,
+        allocation_what: &'static str,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        self.preflight_capacity::<T>(capacity)?;
+        let values = try_host_vec_with_capacity(capacity)
+            .map_err(|error| allocation_phase_error(error, allocation_what))?;
+        self.account_vec(&values)?;
+        Ok(values)
+    }
+
+    /// Fallibly allocate a filled vector and charge its actual capacity.
+    #[doc(hidden)]
+    pub fn try_vec_filled<T: Clone>(
+        &mut self,
+        len: usize,
+        value: T,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        self.preflight_capacity::<T>(len)?;
+        let values = try_host_vec_filled(len, value)
+            .map_err(|error| allocation_phase_error(error, self.what))?;
+        self.account_vec(&values)?;
+        Ok(values)
+    }
+
+    /// Fallibly copy a slice and charge the vector's actual capacity.
+    #[doc(hidden)]
+    pub fn try_vec_from_slice<T: Copy>(&mut self, source: &[T]) -> Result<Vec<T>, HostPhaseError> {
+        self.try_vec_from_slice_named(source, self.what)
+    }
+
+    /// Fallibly clone a slice and charge the vector's actual capacity.
+    #[doc(hidden)]
+    pub fn try_clone_slice<T: Clone>(&mut self, source: &[T]) -> Result<Vec<T>, HostPhaseError> {
+        let mut values = self.try_vec_with_capacity(source.len())?;
+        values.extend_from_slice(source);
+        Ok(values)
+    }
+
+    /// Fallibly copy a named slice owner and charge its actual capacity.
+    #[doc(hidden)]
+    pub fn try_vec_from_slice_named<T: Copy>(
+        &mut self,
+        source: &[T],
+        allocation_what: &'static str,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        let mut values = self.try_vec_with_capacity_named(source.len(), allocation_what)?;
+        values.extend_from_slice(source);
+        Ok(values)
+    }
+
+    /// Fallibly move an array into a named vector owner.
+    #[doc(hidden)]
+    pub fn try_vec_from_array_named<T, const N: usize>(
+        &mut self,
+        source: [T; N],
+        allocation_what: &'static str,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        let mut values = self.try_vec_with_capacity_named(N, allocation_what)?;
+        values.extend(source);
+        Ok(values)
+    }
+
+    /// Fallibly reserve a vector sized by a checked product.
+    #[doc(hidden)]
+    pub fn try_vec_for_product<T>(
+        &mut self,
+        factors: &[usize],
+        allocation_what: &'static str,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        let count = checked_host_phase_product(factors, allocation_what)?;
+        self.try_vec_with_capacity_named(count, allocation_what)
+    }
+
+    /// Fallibly collect an exact-size iterator.
+    #[doc(hidden)]
+    pub fn try_collect_exact<T>(
+        &mut self,
+        iter: impl ExactSizeIterator<Item = T>,
+    ) -> Result<Vec<T>, HostPhaseError> {
+        let mut values = self.try_vec_with_capacity(iter.len())?;
+        values.extend(iter);
+        Ok(values)
+    }
+
+    /// Fallibly collect an exact-size iterator whose items use an adapter error.
+    #[doc(hidden)]
+    pub fn try_collect_results_exact<T, E>(
+        &mut self,
+        iter: impl ExactSizeIterator<Item = Result<T, E>>,
+    ) -> Result<Vec<T>, E>
+    where
+        E: From<HostPhaseError>,
+    {
+        let mut values = self.try_vec_with_capacity(iter.len()).map_err(E::from)?;
+        for value in iter {
+            values.push(value?);
+        }
+        Ok(values)
+    }
+
+    /// Fallibly grow an existing vector and charge only actual capacity growth.
+    #[doc(hidden)]
+    pub fn try_vec_reserve<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        additional: usize,
+    ) -> Result<(), HostPhaseError> {
+        let required_capacity = values.len().saturating_add(additional);
+        let previous_capacity = values.capacity();
+        let minimum_growth = required_capacity.saturating_sub(previous_capacity);
+        self.preflight_capacity::<T>(minimum_growth)?;
+        values.try_reserve_exact(additional).map_err(|_| {
+            allocation_phase_error(
+                HostAllocationError::for_elements::<T>(required_capacity),
+                self.what,
+            )
+        })?;
+        let actual_growth = values.capacity().saturating_sub(previous_capacity);
+        self.account_capacity::<T>(actual_growth)?;
+        Ok(())
+    }
+
+    /// Fallibly reserve and push one value.
+    #[doc(hidden)]
+    pub fn try_vec_push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), HostPhaseError> {
+        self.try_vec_reserve(values, 1)?;
+        values.push(value);
+        Ok(())
+    }
+
+    /// Fallibly reserve and extend a vector from a slice.
+    #[doc(hidden)]
+    pub fn try_vec_extend_from_slice<T: Copy>(
+        &mut self,
+        values: &mut Vec<T>,
+        source: &[T],
+    ) -> Result<(), HostPhaseError> {
+        self.try_vec_reserve(values, source.len())?;
+        values.extend_from_slice(source);
+        Ok(())
+    }
+
+    fn limit_error(&self, error: HostAllocationLimitError) -> HostPhaseError {
+        HostPhaseError::LimitExceeded {
+            requested_bytes: error.requested_bytes(),
+            cap_bytes: error.cap_bytes(),
+            what: self.what,
+        }
+    }
+}
+
+/// Checked product for host allocation element counts.
+#[doc(hidden)]
+pub fn checked_host_phase_product(
+    factors: &[usize],
+    what: &'static str,
+) -> Result<usize, HostPhaseError> {
+    factors.iter().try_fold(1usize, |count, factor| {
+        count
+            .checked_mul(*factor)
+            .ok_or(HostPhaseError::LimitExceeded {
+                requested_bytes: usize::MAX,
+                cap_bytes: crate::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what,
+            })
+    })
+}
+
+/// Checked sum for host allocation element or byte counts.
+#[doc(hidden)]
+pub fn checked_host_phase_sum(
+    values: &[usize],
+    what: &'static str,
+) -> Result<usize, HostPhaseError> {
+    values.iter().try_fold(0usize, |total, value| {
+        total
+            .checked_add(*value)
+            .ok_or(HostPhaseError::LimitExceeded {
+                requested_bytes: usize::MAX,
+                cap_bytes: crate::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what,
+            })
+    })
+}
+
+const fn allocation_phase_error(error: HostAllocationError, what: &'static str) -> HostPhaseError {
+    HostPhaseError::AllocationFailed {
+        requested_bytes: error.requested_bytes(),
+        what,
+    }
+}
+
 impl HostAllocationBudget {
     /// Start an empty host phase with an explicit byte cap.
     #[doc(hidden)]
@@ -198,7 +506,10 @@ mod tests {
     use super::{
         host_capacity_bytes, try_host_vec_filled, try_host_vec_from_slice, try_host_vec_resize,
         try_host_vec_with_capacity, HostAllocationBudget, HostAllocationLimitError,
+        HostPhaseBudget, HostPhaseError,
     };
+    use alloc::vec::Vec;
+    use core::mem::size_of;
 
     #[test]
     fn impossible_capacity_reports_saturated_requested_bytes() {
@@ -291,5 +602,56 @@ mod tests {
         assert_eq!(host_capacity_bytes::<()>(usize::MAX), 0);
         let mut budget = HostAllocationBudget::new(0);
         assert_eq!(budget.account_capacity::<()>(usize::MAX), Ok(0));
+    }
+
+    #[test]
+    fn phase_budget_reports_exact_cap_and_one_byte_over_with_context() {
+        let mut exact = HostPhaseBudget::with_cap("test phase", 8);
+        let values = exact
+            .try_vec_with_capacity::<u32>(2)
+            .expect("exact phase cap");
+        assert_eq!(exact.live_bytes(), values.capacity() * size_of::<u32>());
+
+        let mut one_under =
+            HostPhaseBudget::with_cap("test phase", values.capacity() * size_of::<u32>() - 1);
+        assert!(matches!(
+            one_under.account_vec(&values),
+            Err(HostPhaseError::LimitExceeded {
+                requested_bytes,
+                cap_bytes,
+                what: "test phase",
+            }) if requested_bytes == values.capacity() * size_of::<u32>()
+                && cap_bytes + 1 == requested_bytes
+        ));
+    }
+
+    #[test]
+    fn phase_budget_growth_and_zero_sized_values_use_actual_capacity() {
+        let mut budget = HostPhaseBudget::with_cap("growth", usize::MAX);
+        let mut values = Vec::<u8>::new();
+        budget.try_vec_push(&mut values, 1).expect("first growth");
+        let first_capacity = values.capacity();
+        assert_eq!(budget.live_bytes(), first_capacity);
+        budget
+            .try_vec_push(&mut values, 2)
+            .expect("reused capacity");
+        assert_eq!(budget.live_bytes(), values.capacity());
+
+        let mut zero = HostPhaseBudget::with_cap("zst", 0);
+        assert!(zero.try_vec_with_capacity::<()>(usize::MAX).is_ok());
+        assert_eq!(zero.live_bytes(), 0);
+    }
+
+    #[test]
+    fn failed_phase_allocation_does_not_charge_the_budget() {
+        let mut budget = HostPhaseBudget::with_cap("failure", usize::MAX);
+        assert!(matches!(
+            budget.try_vec_with_capacity::<u32>(usize::MAX),
+            Err(HostPhaseError::AllocationFailed {
+                requested_bytes: usize::MAX,
+                what: "failure",
+            })
+        ));
+        assert_eq!(budget.live_bytes(), 0);
     }
 }

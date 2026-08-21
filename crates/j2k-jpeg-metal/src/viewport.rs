@@ -114,7 +114,7 @@ pub(crate) fn compose_viewport_hybrid(
     tiles: &[ViewportTile],
     external_live_bytes: usize,
 ) -> Result<Surface, Error> {
-    crate::compute::compose_rgb_viewport_from_regions(
+    crate::compute::viewport_compose::compose_rgb_viewport_from_regions(
         decoder,
         pool,
         scale,
@@ -135,7 +135,7 @@ pub(crate) fn decode_viewport_region_hybrid(
 ) -> Result<Surface, Error> {
     let use_direct_kernel = decoder.info().restart_interval.is_some();
     let fast_packet = if use_direct_kernel { fast_packet } else { None };
-    crate::compute::decode_region_scaled_to_surface(
+    crate::compute::single_decode::decode_region_scaled_to_surface(
         decoder,
         pool,
         PixelFormat::Rgb8,

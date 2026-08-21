@@ -24,15 +24,18 @@ use j2k_transcode::{
 
 use std::sync::Arc;
 
-use j2k_cuda_runtime::{
-    transcode_kernels_built, CudaBufferPool, CudaContext, CudaDwt97BatchGeometry,
-    CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
-    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,
-    CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
+use j2k_cuda_j2k_engine::{
     CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeResidentTarget,
     CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeTables,
-    CudaHtj2kEncodedCodeBlock, CudaPooledDeviceBuffer, CudaTranscodeDwt97Bands,
-    CudaTranscodeReversible53Bands,
+    CudaHtj2kEncodedCodeBlock,
+};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaPooledDeviceBuffer};
+use j2k_cuda_transcode_engine::{
+    transcode_kernels_built, CudaDwt97BatchGeometry, CudaDwt97BatchStageTimings,
+    CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
+    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,
+    CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
+    CudaTranscodeDwt97Bands, CudaTranscodeEngine, CudaTranscodeReversible53Bands,
 };
 
 use crate::CudaTranscodeError;
@@ -51,7 +54,9 @@ pub(crate) use self::transform::{
     dispatch_htj2k97_preencoded_batch, dispatch_reversible_dwt53, dispatch_reversible_dwt53_batch,
 };
 mod resident_dispatch;
-use self::resident_dispatch::{device_bands_to_preencoded_components, htj2k97_quantize_params};
+use self::resident_dispatch::{
+    device_bands_to_preencoded_components, htj2k97_quantize_params, resident_dwt_handoff_count,
+};
 pub(crate) use self::resident_dispatch::{
     dispatch_htj2k97_compact_preencoded_i16_batch,
     dispatch_htj2k97_compact_preencoded_i16_batch_groups, dispatch_htj2k97_preencoded_i16_batch,
@@ -122,7 +127,7 @@ impl CudaTranscodeSession {
             return Ok(Arc::clone(resources));
         }
         let resources = Arc::new(
-            context
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
                 .map_err(|error| {
                     CudaTranscodeError::runtime("CUDA HTJ2K encode resource upload", error)

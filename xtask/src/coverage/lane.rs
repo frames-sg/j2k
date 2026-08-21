@@ -39,14 +39,27 @@ pub(super) fn run_lane(
     // A unique empty target gives every scanned build-script output current-run
     // provenance. It avoids relying on cargo-llvm-cov's best-effort clean or on
     // byte/mtime comparisons that cannot distinguish deterministic reruns.
-    let current_build_target = CurrentBuildTarget::create(root)?;
+    let mut current_build_target = CurrentBuildTarget::create(root)?;
     let target_dir = current_build_target.path()?;
-    match lane {
-        CoverageLane::Host => run_host_coverage(lcov_path, compiler_regions_path, target_dir),
-        CoverageLane::Metal => run_metal_coverage(lcov_path, compiler_regions_path, target_dir),
-        CoverageLane::Cuda => run_cuda_coverage(lcov_path, compiler_regions_path, target_dir),
-    }?;
-    let build_output_evidence = BuildOutputEvidence::capture(current_build_target)?;
+    let build_output_evidence = match lane {
+        CoverageLane::Host => {
+            run_host_coverage(lcov_path, compiler_regions_path, target_dir)?;
+            BuildOutputEvidence::snapshot(&current_build_target)?
+        }
+        CoverageLane::Metal => run_metal_coverage(
+            lcov_path,
+            compiler_regions_path,
+            target_dir,
+            &current_build_target,
+        )?,
+        CoverageLane::Cuda => run_cuda_coverage(
+            lcov_path,
+            compiler_regions_path,
+            target_dir,
+            &current_build_target,
+        )?,
+    };
+    current_build_target.cleanup()?;
     Ok(CoverageLaneRun {
         cargo_llvm_cov_version,
         build_output_evidence,
@@ -67,27 +80,41 @@ fn run_metal_coverage(
     lcov_path: &Path,
     compiler_regions_path: &Path,
     target_dir: &Path,
-) -> Result<(), String> {
+    current_build_target: &CurrentBuildTarget,
+) -> Result<BuildOutputEvidence, String> {
     let args = accelerator_coverage_args(CoverageLane::Metal)?;
     run_llvm_cov(&args, METAL_COVERAGE_ENV, target_dir)?;
+    // The primary all-feature package graph defines cfg provenance for source
+    // reachability. Follow-up feature-scoped and hardware passes accumulate
+    // execution profiles, but may legitimately rebuild shared dependencies
+    // under narrower feature scopes in the same Cargo target directory.
+    let build_output_evidence = BuildOutputEvidence::snapshot(current_build_target)?;
+    run_feature_coverage(CoverageLane::Metal, METAL_COVERAGE_ENV, target_dir)?;
     run_llvm_cov(
         metal_hardware_coverage_args(),
         METAL_COVERAGE_ENV,
         target_dir,
     )?;
     report_lcov(lcov_path, METAL_COVERAGE_ENV, target_dir)?;
-    report_compiler_regions(compiler_regions_path, METAL_COVERAGE_ENV, target_dir)
+    report_compiler_regions(compiler_regions_path, METAL_COVERAGE_ENV, target_dir)?;
+    Ok(build_output_evidence)
 }
 
 fn run_cuda_coverage(
     lcov_path: &Path,
     compiler_regions_path: &Path,
     target_dir: &Path,
-) -> Result<(), String> {
+    current_build_target: &CurrentBuildTarget,
+) -> Result<BuildOutputEvidence, String> {
     let args = accelerator_coverage_args(CoverageLane::Cuda)?;
     run_llvm_cov(&args, CUDA_COVERAGE_ENV, target_dir)?;
+    // See the Metal lane: the primary all-feature graph is the lane's cfg
+    // provenance authority; the CUDA-only ML pass contributes profiles only.
+    let build_output_evidence = BuildOutputEvidence::snapshot(current_build_target)?;
+    run_feature_coverage(CoverageLane::Cuda, CUDA_COVERAGE_ENV, target_dir)?;
     report_lcov(lcov_path, CUDA_COVERAGE_ENV, target_dir)?;
-    report_compiler_regions(compiler_regions_path, CUDA_COVERAGE_ENV, target_dir)
+    report_compiler_regions(compiler_regions_path, CUDA_COVERAGE_ENV, target_dir)?;
+    Ok(build_output_evidence)
 }
 
 fn host_coverage_args(output: &str) -> Vec<&str> {
@@ -144,13 +171,43 @@ const fn metal_hardware_coverage_args() -> &'static [&'static str] {
 fn package_coverage_args(base: &[&'static str], lane: CoverageLane) -> Vec<&'static str> {
     let mut args = base.to_vec();
     for package in lane
-        .coverage_packages()
+        .all_feature_coverage_packages()
         .chain(shared_accelerator_packages())
     {
         args.push("-p");
         args.push(package);
     }
     args
+}
+
+fn feature_coverage_args(package: &'static str, feature: &'static str) -> Vec<&'static str> {
+    vec![
+        "llvm-cov",
+        "--no-clean",
+        "--no-default-features",
+        "--features",
+        feature,
+        "--lib",
+        "--tests",
+        "--no-fail-fast",
+        "-p",
+        package,
+    ]
+}
+
+fn run_feature_coverage(
+    lane: CoverageLane,
+    envs: &[(&str, &str)],
+    target_dir: &Path,
+) -> Result<(), String> {
+    for (package, feature) in lane.feature_coverage_packages() {
+        let mut args = feature_coverage_args(package, feature);
+        if lane == CoverageLane::Cuda {
+            args.push("--coverage-host-only");
+        }
+        run_llvm_cov(&args, envs, target_dir)?;
+    }
+    Ok(())
 }
 
 fn report_lcov(lcov_path: &Path, envs: &[(&str, &str)], target_dir: &Path) -> Result<(), String> {
@@ -267,7 +324,7 @@ mod tests {
     use crate::test_command::RecordingProgram;
 
     use super::{
-        accelerator_coverage_args, current_build_env, host_coverage_args,
+        accelerator_coverage_args, current_build_env, feature_coverage_args, host_coverage_args,
         metal_hardware_coverage_args, package_coverage_args, parse_coverage_tool_version,
         report_compiler_regions_args, report_lcov_args, run_lane, CoverageLane, CUDA_COVERAGE_ENV,
         METAL_COVERAGE_ENV,
@@ -300,6 +357,8 @@ mod tests {
         assert!(log.contains("--workspace --all-features --lib --bins --tests"));
         assert!(log.contains("-p j2k-metal -- --ignored --test-threads=1"));
         assert!(log.contains("-p j2k-cuda-runtime"));
+        assert!(log.contains("--no-default-features --features metal --lib --tests"));
+        assert!(log.contains("--no-default-features --features cuda --lib --tests"));
         assert!(log.contains("llvm-cov report --include-build-script --lcov"));
         assert!(log.contains("llvm-cov report --include-build-script --json"));
     }
@@ -330,8 +389,15 @@ mod tests {
     fn lane_spec_drives_package_args_and_source_ownership() {
         for lane in [CoverageLane::Metal, CoverageLane::Cuda] {
             let args = package_coverage_args(&[], lane);
+            let feature_packages = lane
+                .feature_coverage_packages()
+                .map(|(package, _)| package)
+                .collect::<BTreeSet<_>>();
             for package in lane.coverage_packages() {
-                assert!(args.windows(2).any(|pair| pair == ["-p", package]));
+                assert!(
+                    args.windows(2).any(|pair| pair == ["-p", package])
+                        || feature_packages.contains(package)
+                );
             }
             for prefix in lane.accelerator_source_prefixes() {
                 assert!(lane.owns_path(prefix));
@@ -406,6 +472,154 @@ mod tests {
                 "{lane:?} command contains duplicate package selections"
             );
         }
+    }
+
+    #[test]
+    fn cuda_coverage_does_not_enable_j2k_ml_metal_dependencies() {
+        let cuda = accelerator_coverage_args(CoverageLane::Cuda).unwrap();
+        let packages = cuda
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "-p").then_some(pair[1]))
+            .collect::<BTreeSet<_>>();
+
+        for package in [
+            "j2k-cuda-build-support",
+            "j2k-cuda-runtime",
+            "j2k-cuda-j2k-engine",
+            "j2k-cuda-jpeg-engine",
+            "j2k-cuda-transcode-engine",
+            "j2k-jpeg-cuda",
+            "j2k-cuda",
+            "j2k-transcode-cuda",
+        ] {
+            assert!(
+                packages.contains(package),
+                "CUDA coverage omitted {package}"
+            );
+        }
+        for package in ["j2k-metal", "j2k-jpeg-metal", "j2k-transcode-metal"] {
+            assert!(
+                !packages.contains(package),
+                "CUDA coverage selected Metal-only package {package}"
+            );
+        }
+        assert!(
+            !packages.contains("j2k-ml"),
+            "CUDA coverage must not select j2k-ml under --all-features because that enables its Metal dependencies"
+        );
+        assert_eq!(
+            feature_coverage_args("j2k-ml", "cuda"),
+            [
+                "llvm-cov",
+                "--no-clean",
+                "--no-default-features",
+                "--features",
+                "cuda",
+                "--lib",
+                "--tests",
+                "--no-fail-fast",
+                "-p",
+                "j2k-ml",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_coverage_uses_a_cargo_llvm_cov_0_8_7_compatible_accumulation_plan() {
+        for feature in ["metal", "cuda"] {
+            let args = feature_coverage_args("j2k-ml", feature);
+            assert!(args.contains(&"--no-clean"));
+            assert!(
+                !(args.contains(&"--no-clean") && args.contains(&"--no-report")),
+                "cargo-llvm-cov 0.8.7 rejects --no-clean together with --no-report"
+            );
+        }
+    }
+
+    #[test]
+    fn cuda_lane_orchestrator_selects_only_cuda_feature_family() {
+        let recording = RecordingProgram::new(
+            "cuda-coverage-package-selection-test",
+            "if [ \"$1\" = llvm-cov ] && [ \"$2\" = --version ]; then printf 'cargo-llvm-cov 0.8.7\\n'; fi",
+        );
+        let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask manifest has workspace parent");
+
+        run_lane(
+            root,
+            CoverageLane::Cuda,
+            &root.join("target/test-cuda-selection.info"),
+            &root.join("target/test-cuda-selection-regions.json"),
+        )
+        .expect("hermetic CUDA coverage lane");
+
+        let commands = recording.log();
+        let primary = commands
+            .lines()
+            .find(|line| line.contains("llvm-cov --no-report --all-features"))
+            .expect("CUDA lane runs an all-feature primary package command");
+        assert!(!primary.contains("-p j2k-ml"));
+        let ml = commands
+            .lines()
+            .find(|line| line.contains("--features cuda") && line.contains("-p j2k-ml"))
+            .expect("CUDA lane runs j2k-ml with only its CUDA feature");
+        assert!(ml.contains("--no-default-features"));
+        assert!(ml.contains("--coverage-host-only"));
+        assert!(!ml.contains("--all-features"));
+        for package in ["j2k-metal", "j2k-jpeg-metal", "j2k-transcode-metal"] {
+            assert!(
+                !commands.contains(&format!("-p {package}")),
+                "CUDA coverage selected Metal-only package {package}"
+            );
+        }
+    }
+
+    #[test]
+    fn cuda_lane_uses_primary_build_scope_for_cfg_provenance() {
+        let recording = RecordingProgram::new(
+            "cuda-coverage-primary-provenance-test",
+            r#"
+if [ "$1" = llvm-cov ] && [ "$2" = --version ]; then
+    printf 'cargo-llvm-cov 0.8.7\n'
+fi
+case "$*" in
+  *'llvm-cov --no-report --all-features'*)
+    scope=j2k-cuda-j2k-engine-cd0e0123456789ab
+    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_ml_built)\ncargo::rustc-cfg=j2k_cuda_oxide_j2k_ml_built\n'
+    ;;
+  *'llvm-cov --no-clean --no-default-features --features cuda'*)
+    scope=j2k-cuda-j2k-engine-d1aa0123456789ab
+    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_ml_built)\n'
+    ;;
+  *) exit 0 ;;
+esac
+directory="$CARGO_LLVM_COV_TARGET_DIR/debug/build/$scope"
+mkdir -p "$directory"
+printf '%b' "$cfg" > "$directory/output"
+"#,
+        );
+        let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask manifest has workspace parent");
+
+        let result = run_lane(
+            root,
+            CoverageLane::Cuda,
+            &root.join("target/test-cuda-provenance.info"),
+            &root.join("target/test-cuda-provenance-regions.json"),
+        )
+        .expect("hermetic CUDA coverage lane");
+        let package = "j2k-cuda-j2k-engine".to_string();
+        let packages = BTreeSet::from([package.clone()]);
+        let flags = result
+            .build_output_evidence
+            .current_cfg_flags(&packages, &packages)
+            .expect("primary all-feature cfg provenance");
+
+        assert!(flags[&package]["j2k_cuda_oxide_j2k_ml_built"]);
     }
 
     #[test]

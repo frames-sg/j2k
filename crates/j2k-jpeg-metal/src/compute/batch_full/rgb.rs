@@ -132,10 +132,8 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
 
     let tile_count = family_packets.len();
     let shape = full_rgb_surface_batch_shape::<P>(first, tile_count, segment_count)?;
-    if timing_enabled {
-        timing.accepted = timing_total_start
-            .expect("timing start is set when timing is enabled")
-            .elapsed();
+    if let Some(start) = timing_total_start {
+        timing.accepted = start.elapsed();
     }
 
     let timing_entropy_start = timing_enabled.then(Instant::now);
@@ -159,10 +157,8 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     else {
         return Ok(None);
     };
-    if timing_enabled {
-        timing.entropy_concat = timing_entropy_start
-            .expect("timing start is set when timing is enabled")
-            .elapsed();
+    if let Some(start) = timing_entropy_start {
+        timing.entropy_concat = start.elapsed();
     }
 
     let timing_buffer_start = timing_enabled.then(Instant::now);
@@ -176,10 +172,8 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
         shape,
         &entropy_data,
     )?;
-    if timing_enabled {
-        timing.buffer_alloc = timing_buffer_start
-            .expect("timing start is set when timing is enabled")
-            .elapsed();
+    if let Some(start) = timing_buffer_start {
+        timing.buffer_alloc = start.elapsed();
     }
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
@@ -490,10 +484,8 @@ fn encode_fast_subsampled_full_rgb_decode<P: FastSubsampledMetal>(
                 pass.shape.total_decode_threads,
             );
             decoder_encoder.endEncoding();
-            if timing_enabled {
-                timing.encode_decode = timing_encode_start
-                    .expect("timing start is set when timing is enabled")
-                    .elapsed();
+            if let Some(start) = timing_encode_start {
+                timing.encode_decode = start.elapsed();
                 command_buffer.commit();
                 let timing_wait_start = Instant::now();
                 let completed =
@@ -618,10 +610,8 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
         ),
     );
     pack_encoder.endEncoding();
-    if timing.enabled {
-        timing.timing.encode_pack = timing_pack_encode_start
-            .expect("timing start is set when timing is enabled")
-            .elapsed();
+    if let Some(start) = timing_pack_encode_start {
+        timing.timing.encode_pack = start.elapsed();
     }
 
     command_buffer.commit();
@@ -629,10 +619,9 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
         let timing_wait_start = Instant::now();
         wait_for_completion_jpeg(command_buffer)?;
         timing.timing.wait_pack = timing_wait_start.elapsed();
-        timing.timing.total = timing
-            .total_start
-            .expect("timing start is set when timing is enabled")
-            .elapsed();
+        if let Some(start) = timing.total_start {
+            timing.timing.total = start.elapsed();
+        }
         timing.timing.log(
             P::FULL_RGB_BATCH_TIMING_TAG,
             "fused-stages",

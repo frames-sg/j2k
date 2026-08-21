@@ -1,0 +1,21 @@
+[package]
+name = "j2k-cuda-build-support"
+description = "CUDA-Oxide kernel packaging support for J2K engine build scripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "README.md", "src/**"]
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[lib]
+name = "j2k_cuda_build_support"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

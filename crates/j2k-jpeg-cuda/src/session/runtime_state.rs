@@ -54,9 +54,11 @@ impl SharedCudaRuntimeState {
             .map_err(|_| Error::CudaSessionRuntimePoisoned)?;
         if let Some(existing) = &state.context {
             if !existing.is_same_context(context) {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: "CUDA JPEG session is already bound to a different CUDA context",
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::contract_violation(
+                        "CUDA JPEG session is already bound to a different CUDA context",
+                    ),
+                ));
             }
             return Ok(existing.clone());
         }

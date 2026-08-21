@@ -39,10 +39,10 @@ pub(crate) fn decode_region_scaled_grayscale_batch_direct_to_device_routed(
             let plan = build_region_scaled_direct_gray_plan(input.as_ref(), *roi, *scale)?;
             plans.push(Arc::new(plan));
         }
-        crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+        crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
     };
     match session {
-        Some(session) => crate::compute::with_runtime_for_session(session, |_| decode()),
+        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
         None => decode(),
     }
 }
@@ -104,10 +104,10 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device_routed(
                 )
             })?
         };
-        crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
+        crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
     };
     match session {
-        Some(session) => crate::compute::with_runtime_for_session(session, |_| decode()),
+        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
         None => decode(),
     }
 }
@@ -125,6 +125,7 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device_routed(
     input: &[u8],
     roi: Rect,
@@ -160,10 +161,10 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device_routed(
         );
         let plans =
             budget.try_filled(count, plan, "J2K Metal repeated region-scaled color plans")?;
-        crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
+        crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
     };
     match session {
-        Some(session) => crate::compute::with_runtime_for_session(session, |_| decode()),
+        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
         None => decode(),
     }
 }

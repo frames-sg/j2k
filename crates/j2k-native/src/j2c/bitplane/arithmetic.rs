@@ -225,7 +225,6 @@ pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_N
                 let state = ctx.coefficient_states[idx].0;
 
                 debug_assert!(state & SIGNIFICANCE_MASK != 0);
-                debug_assert!(state & HAS_ZERO_CODING_MASK == 0);
 
                 let ctx_label =
                     context_label_magnitude_refinement_coding_from_state_lazy(state, || {
@@ -276,10 +275,8 @@ fn cleanup_run_length_candidate_with_neighbors<const NORMAL_NEIGHBORS: bool>(
         }
         idx += padded_width;
     }
-
     true
 }
-
 #[expect(
     clippy::inline_always,
     reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
@@ -292,16 +289,14 @@ fn cleanup_coefficient_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     y: usize,
     padded_width: usize,
 ) {
-    if ctx.coefficient_states[idx].0 & (SIGNIFICANCE_MASK | HAS_ZERO_CODING_MASK) == 0 {
-        let neighbors = neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y);
-        let ctx_label = context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
-        let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
-        ctx.push_magnitude_bit_index(idx, bit);
+    let neighbors = neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y);
+    let ctx_label = context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
+    let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
+    ctx.push_magnitude_bit_index(idx, bit);
 
-        if bit == 1 {
-            decode_sign_bit_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(idx, y, ctx, decoder);
-            ctx.set_significant_index_for_path::<NORMAL_NEIGHBORS>(idx, padded_width);
-        }
+    if bit == 1 {
+        decode_sign_bit_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(idx, y, ctx, decoder);
+        ctx.set_significant_index_for_path::<NORMAL_NEIGHBORS>(idx, padded_width);
     }
 }
 

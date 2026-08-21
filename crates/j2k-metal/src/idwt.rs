@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k_native::J2kWaveletTransform;
 use j2k_native::{HtCodeBlockDecoder, J2kIdwtNormalization, J2kSingleDecompositionIdwtJob, Result};
@@ -369,7 +369,7 @@ mod tests {
         };
         let mut actual = vec![0.0; EXPECTED_BITS.len()];
 
-        crate::compute::decode_irreversible97_staged_single_decomposition_idwt(job, &mut actual)
+        crate::engine::decode_irreversible97_staged_single_decomposition_idwt(job, &mut actual)
             .expect("staged irreversible Metal IDWT");
 
         for (index, (actual, expected_bits)) in actual.iter().zip(EXPECTED_BITS).enumerate() {
@@ -415,11 +415,8 @@ mod tests {
             };
             let mut actual = [0.0];
 
-            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
-                job,
-                &mut actual,
-            )
-            .expect("degenerate staged irreversible Metal IDWT");
+            crate::engine::decode_irreversible97_staged_single_decomposition_idwt(job, &mut actual)
+                .expect("degenerate staged irreversible Metal IDWT");
 
             assert_eq!(
                 actual[0].to_bits(),
@@ -563,8 +560,8 @@ mod tests {
         let fixture = IrreversibleIdwtPerfFixture::new();
         let mut output = IrreversibleIdwtPerfFixture::output();
         let device = j2k_metal_support::system_default_device().expect("Metal capture device");
-        crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
-            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+        crate::engine::with_isolated_runtime_for_device_for_test(&device, || {
+            crate::engine::decode_irreversible97_staged_single_decomposition_idwt(
                 fixture.job(),
                 &mut output,
             )?;
@@ -595,7 +592,7 @@ mod tests {
                     message: error.to_string(),
                 })?;
             let capture = MetalCaptureGuard { manager };
-            let result = crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+            let result = crate::engine::decode_irreversible97_staged_single_decomposition_idwt(
                 fixture.job(),
                 &mut output,
             );
@@ -622,7 +619,7 @@ mod tests {
         }
         let fixture = IrreversibleIdwtPerfFixture::new();
         let mut output = IrreversibleIdwtPerfFixture::output();
-        crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+        crate::engine::decode_irreversible97_staged_single_decomposition_idwt(
             fixture.job(),
             &mut output,
         )
@@ -630,7 +627,7 @@ mod tests {
         let mut samples = Vec::with_capacity(ITERS);
         for _ in 0..ITERS {
             let started = std::time::Instant::now();
-            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+            crate::engine::decode_irreversible97_staged_single_decomposition_idwt(
                 fixture.job(),
                 &mut output,
             )

@@ -9,7 +9,7 @@ fn metal_raw_buffer_contents_access_stays_confined_to_checked_helpers() {
     let root = repo_root();
     let allowed = BTreeSet::from([
         "crates/j2k-metal-support/src/buffer_access.rs",
-        "crates/j2k-metal/src/compute/direct_buffers.rs",
+        "crates/j2k-metal/src/engine/direct_buffers.rs",
         "crates/j2k-jpeg-metal/src/buffers.rs",
     ]);
 

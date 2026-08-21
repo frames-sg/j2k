@@ -2,10 +2,10 @@
 
 use super::super::{
     buffer_with_slice, checked_batch_len, checked_command_buffer, checked_compute_command_encoder,
-    commit_and_wait, dispatch_reversible_band, output_i32_buffer, read_i32_buffer_at,
-    reversible_band_geometry, try_transcode_vec_with_capacity, u32_param, Buffer, MetalRuntime,
-    MetalTranscodeError, ReversibleBatchKernelGeometry, ReversibleDwt53FirstLevel,
-    TranscodeComputeEncoderExt, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    checked_dwt_level_shape, commit_and_wait, dispatch_reversible_band, output_i32_buffer,
+    read_i32_buffer_at, reversible_band_geometry, try_transcode_vec_with_capacity, u32_param,
+    Buffer, MetalRuntime, MetalTranscodeError, ReversibleBatchKernelGeometry,
+    ReversibleDwt53FirstLevel, TranscodeComputeEncoderExt, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
 use objc2_foundation::NSString;
 use objc2_metal::{MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _};
@@ -73,10 +73,11 @@ fn reversible_batch_shapes(
         blocks_per_item: u32_param(blocks_per_item, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
         batch_count: u32_param(batch_count, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
     };
-    let low_width = width.div_ceil(2);
-    let high_width = width / 2;
-    let low_height = height.div_ceil(2);
-    let high_height = height / 2;
+    let level = checked_dwt_level_shape(width, height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let low_width = level.low_width;
+    let high_width = level.high_width;
+    let low_height = level.low_height;
+    let high_height = level.high_height;
     let band_len = |band_width: usize, band_height: usize| {
         band_width
             .checked_mul(band_height)
@@ -157,7 +158,7 @@ fn dispatch_reversible_projection(
         MetalTranscodeError::support("Metal reversible 5/3 compute encoder creation", error)
     })?;
     encoder.setComputePipelineState(&runtime.reversible53_project_band);
-    encoder.set_buffer(0, Some(blocks), 0);
+    encoder.set_buffer(0, Some(blocks), 0)?;
 
     let dispatch = |output: &Buffer,
                     width,
@@ -170,8 +171,7 @@ fn dispatch_reversible_projection(
             &encoder,
             output,
             reversible_band_geometry(kernel, width, height, stride, vertical_low, horizontal_low)?,
-        );
-        Ok(())
+        )
     };
     dispatch(
         &buffers.ll,

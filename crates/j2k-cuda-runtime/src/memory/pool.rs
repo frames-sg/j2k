@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod cache_policy;
+#[cfg(test)]
 mod readback;
 mod reuse_guard;
 mod size_buckets;
@@ -11,8 +12,7 @@ use self::cache_policy::{
 pub use self::cache_policy::{CudaBufferPoolDiagnostics, CudaBufferPoolLimits};
 #[cfg(test)]
 pub(crate) use self::readback::copy_pooled_bytes_to_vec_uninit;
-pub(crate) use self::readback::copy_pooled_bytes_to_vec_uninit_with_budget;
-pub(crate) use self::reuse_guard::CudaBufferPoolReuseGuard;
+pub use self::reuse_guard::CudaBufferPoolReuseGuard;
 use self::size_buckets::CudaBufferPoolSizeBuckets;
 use super::{pinned_staging::select_pinned_upload_result, CudaDeviceBuffer};
 use crate::{
@@ -390,7 +390,9 @@ impl CudaBufferPool {
             .cached_count())
     }
 
-    pub(crate) fn defer_reuse(&self) -> Result<CudaBufferPoolReuseGuard, CudaError> {
+    /// Hold deferred buffers out of the reuse cache until completion.
+    #[doc(hidden)]
+    pub fn defer_reuse(&self) -> Result<CudaBufferPoolReuseGuard, CudaError> {
         self.inner
             .context
             .inner
@@ -410,7 +412,10 @@ impl CudaBufferPool {
         })
     }
 
-    pub(crate) fn is_owned_by(&self, context: &CudaContext) -> bool {
+    /// Return whether this pool belongs to `context`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_owned_by(&self, context: &CudaContext) -> bool {
         self.inner.context.is_same_context(context)
     }
 }
@@ -551,6 +556,7 @@ impl Drop for CudaPooledDeviceBuffer {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn pooled_device_buffer(
     buffer: &CudaPooledDeviceBuffer,
 ) -> Result<&CudaDeviceBuffer, CudaError> {

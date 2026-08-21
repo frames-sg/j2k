@@ -2,7 +2,7 @@
 
 //! Shared lifetime state for asynchronous resident and external batch completion.
 
-use j2k_cuda_runtime::{CudaHtj2kDecodeResources, CudaQueuedJ2kStoreBatch};
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, CudaQueuedJ2kStoreBatch};
 
 use super::resident::{ChunkedHtj2kCleanup, QueuedComponentClassicDecode};
 use super::{
@@ -30,23 +30,23 @@ pub(in crate::decoder) fn retire_decode_after_error<C: PendingCleanup>(
     cleanup: Option<C>,
     classic: Option<QueuedComponentClassicDecode>,
 ) -> Error {
-    let mut completion_error = Some(error);
+    let mut completion_error = error;
     if let Some(idwt) = idwt {
         if let Err(error) = idwt.finish() {
-            accumulate_completion_error(&mut completion_error, error);
+            completion_error = combine_cuda_cleanup_errors(completion_error, error);
         }
     }
     if let Some(cleanup) = cleanup {
         if let Err(error) = cleanup.finish() {
-            accumulate_completion_error(&mut completion_error, error);
+            completion_error = combine_cuda_cleanup_errors(completion_error, error);
         }
     }
     if let Some(classic) = classic {
         if let Err(error) = classic.finish() {
-            accumulate_completion_error(&mut completion_error, error);
+            completion_error = combine_cuda_cleanup_errors(completion_error, error);
         }
     }
-    completion_error.expect("primary decode error is always present")
+    completion_error
 }
 
 pub(in crate::decoder) fn finish_decode_statuses<C: PendingCleanup>(
@@ -156,9 +156,12 @@ impl<C: PendingCleanup> PendingDecodeCompletion<C> {
                 store.finish().map(|_| ()).map_err(cuda_error)
             };
             if let Err(error) = store_result {
-                accumulate_completion_error(&mut completion_error, error);
+                let error = match completion_error.take() {
+                    Some(primary) => combine_cuda_cleanup_errors(primary, error),
+                    None => error,
+                };
                 self.abandon_remaining();
-                return Err(completion_error.expect("store error was recorded"));
+                return Err(error);
             }
         }
         if let Some(mut idwt) = self.idwt.take() {
@@ -206,9 +209,9 @@ mod tests {
 
         fn finish(self) -> Result<(), Error> {
             self.finished.store(true, Ordering::Relaxed);
-            Err(Error::UnsupportedCudaRequest {
-                reason: "cleanup failure",
-            })
+            Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation("cleanup failure"),
+            ))
         }
     }
 
@@ -216,9 +219,9 @@ mod tests {
     fn error_retirement_attempts_cleanup_and_preserves_both_errors() {
         let finished = Arc::new(AtomicBool::new(false));
         let error = retire_decode_after_error(
-            Error::UnsupportedCudaRequest {
-                reason: "primary failure",
-            },
+            Error::capability_rejected(j2k_core::CapabilityRejection::contract_violation(
+                "primary failure",
+            )),
             None,
             Some(FailingCleanup {
                 finished: finished.clone(),

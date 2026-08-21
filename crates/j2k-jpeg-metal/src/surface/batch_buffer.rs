@@ -111,9 +111,11 @@ impl MetalBatchOutputBuffer {
         tile_capacity: usize,
     ) -> Result<Self, Error> {
         if dimensions.0 == 0 || dimensions.1 == 0 || tile_capacity == 0 {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: "JPEG Metal batch output requires nonzero dimensions and tile capacity",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(
+                    "JPEG Metal batch output requires nonzero dimensions and tile capacity",
+                ),
+            ));
         }
         let row_bytes = dimensions
             .0

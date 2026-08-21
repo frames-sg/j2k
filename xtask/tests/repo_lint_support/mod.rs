@@ -8,14 +8,23 @@ use std::{
     process::Command,
 };
 
+pub(crate) mod allocation_policy;
 pub(crate) mod architecture_policy;
+pub(crate) mod benchmark_harness_policy;
 pub(crate) mod corpus_policy;
 pub(crate) mod dependency_policy;
 pub(crate) mod docs_and_workflows_policy;
+pub(crate) mod encode_geometry_policy;
+pub(crate) mod error_taxonomy_policy;
+pub(crate) mod experiment_policy;
 pub(crate) mod j2k_ml_policy;
+pub(crate) mod packing_policy;
 pub(crate) mod phase_order_policy;
+pub(crate) mod prepared_plan_policy;
 pub(crate) mod public_docs_policy;
+pub(crate) mod routing_policy;
 pub(crate) mod rust_function_policy;
+pub(crate) mod source_size_policy;
 pub(crate) mod suppression_policy;
 pub(crate) mod workflow_structure_policy;
 
@@ -310,6 +319,8 @@ pub(crate) fn is_internal_j2k_token(token: &str) -> bool {
                 | "J2K_PI"
                 | "J2K_PLAN"
                 | "J2K_PROFILE_TEST_STAGE_MODE"
+                | "J2K_THREADS_X"
+                | "J2K_THREADS_Y"
                 | "J2K_GPU_TEST_SKIPPED"
                 | "J2K_REFINEMENT_FIXTURE"
                 | "J2K_SPEC_COMPONENTS"

@@ -63,7 +63,7 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
         resident_lossless_code_block_chunk_cap(&code_block_counts),
     );
     let family = ResidentSubmissionFamily::HighThroughput(
-        crate::compute::ht_packet_output_capacity_mode_from_env(),
+        crate::engine::ht_packet_output_capacity_mode_from_env(),
     );
     SubmittedResidentLosslessChunkPipeline::new(planned, chunk_ranges, family, session, stats)
         .map(Some)

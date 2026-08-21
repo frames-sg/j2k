@@ -2,7 +2,7 @@
 
 use j2k::BatchLayout;
 use j2k_core::PixelFormat;
-use j2k_cuda_runtime::{CudaJ2kStoreRgbNativeTarget, CudaJ2kStoreRgbaNativeTarget};
+use j2k_cuda_j2k_engine::{CudaJ2kStoreRgbNativeTarget, CudaJ2kStoreRgbaNativeTarget};
 
 use super::jobs::{
     native_level_shift, native_rgba_store_job, native_store_job, transform_selector,
@@ -106,9 +106,9 @@ fn decoded_color_components<'a>(
     let components =
         decoded
             .get(*component_offset..component_end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+            ))?;
     *component_offset = component_end;
     Ok(components)
 }

@@ -1,6 +1,6 @@
 {
-  "threshold": 2.01,
-  "minLines": 20,
+  "threshold": 4.32,
+  "minLines": 12,
   "minTokens": 50,
   "maxLines": 20000,
   "maxSize": "2mb",

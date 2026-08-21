@@ -1356,6 +1356,23 @@ fn max_decomposition_level_option_caps_rpcl_without_forcing_small_tiles() {
 }
 
 #[test]
+fn explicit_shared_geometry_is_written_to_cod_and_round_trips() {
+    for (width, height, requested, expected) in [(63, 128, u8::MAX, 0), (128, 128, 5, 5)] {
+        let pixels = vec![0_u8; usize::try_from(width * height).expect("fixture dimensions")];
+        let samples =
+            J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).expect("valid samples");
+        let encoded = encode_j2k_lossless(
+            samples,
+            &cpu_options().with_max_decomposition_levels(Some(requested)),
+        )
+        .expect("lossless encode");
+        let cod_offset = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
+        assert_eq!(encoded.codestream[cod_offset + 9], expected);
+        assert_eq!(decode_native(&encoded.codestream).data, pixels);
+    }
+}
+
+#[test]
 fn cpu_lossless_round_trips_gray8() {
     let pixels: Vec<u8> = (0_u8..35).map(|value| value * 7).collect();
     let samples = J2kLosslessSamples::new(&pixels, 7, 5, 1, 8, false).unwrap();

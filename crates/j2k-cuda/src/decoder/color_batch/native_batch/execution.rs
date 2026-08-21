@@ -87,9 +87,11 @@ fn validate_native_color_layout(layout: BatchLayout) -> Result<(), Error> {
     if matches!(layout, BatchLayout::Nhwc | BatchLayout::Nchw) {
         return Ok(());
     }
-    Err(Error::UnsupportedCudaRequest {
-        reason: "exact CUDA RGB batch layout must be NHWC or NCHW",
-    })
+    Err(Error::capability_rejected(
+        j2k_core::CapabilityRejection::unsupported_format(
+            "exact CUDA RGB batch layout must be NHWC or NCHW",
+        ),
+    ))
 }
 
 fn finish_submitted_native_color_execution(
@@ -122,9 +124,11 @@ fn finish_submitted_native_color_execution(
             ));
         }
     };
-    let store = stored.queued.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA exact RGB external store did not return a completion guard",
-    })?;
+    let store = stored.queued.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA exact RGB external store did not return a completion guard",
+        ),
+    ))?;
     let pending = NativeColorPendingCompletion::new(
         Some(store),
         pending_idwt,
@@ -150,9 +154,11 @@ fn finish_synchronous_native_color_execution(
 ) -> Result<(NativeColorBatchOutput, Vec<CudaHtj2kProfileReport>), Error> {
     let completion_result = completion_result.and_then(|(stored, reports, decoded)| {
         if stored.queued.is_some() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "synchronous exact CUDA RGB store unexpectedly returned pending work",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "synchronous exact CUDA RGB store unexpectedly returned pending work",
+                ),
+            ));
         }
         Ok(((stored.output, reports, decoded), true))
     });

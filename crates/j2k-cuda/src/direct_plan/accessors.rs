@@ -69,15 +69,17 @@ impl CudaHtj2kDecodePlan {
         shared_payload: &mut Vec<u8>,
         host_budget: &mut HostPhaseBudget,
     ) -> Result<(), Error> {
-        let base =
-            u64::try_from(shared_payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })?;
-        shared_payload.len().checked_add(self.payload.len()).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            },
-        )?;
+        let base = u64::try_from(shared_payload.len()).map_err(|_| {
+            Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+                PLAN_PAYLOAD_TOO_LARGE,
+            ))
+        })?;
+        shared_payload
+            .len()
+            .checked_add(self.payload.len())
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))?;
         if !shared_payload.is_empty() {
             host_budget.try_vec_reserve(shared_payload, self.payload.len())?;
         }
@@ -86,18 +88,18 @@ impl CudaHtj2kDecodePlan {
                 block
                     .payload_offset
                     .checked_add(base)
-                    .ok_or(Error::UnsupportedCudaRequest {
-                        reason: PLAN_PAYLOAD_TOO_LARGE,
-                    })?;
+                    .ok_or(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                    ))?;
         }
         for block in &mut self.classic_code_blocks {
             block.payload_offset =
                 block
                     .payload_offset
                     .checked_add(base)
-                    .ok_or(Error::UnsupportedCudaRequest {
-                        reason: PLAN_PAYLOAD_TOO_LARGE,
-                    })?;
+                    .ok_or(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                    ))?;
         }
         if shared_payload.is_empty() {
             *shared_payload = core::mem::take(&mut self.payload);
@@ -134,18 +136,18 @@ impl CudaHtj2kDecodePlan {
                 block
                     .payload_offset
                     .checked_add(base)
-                    .ok_or(Error::UnsupportedCudaRequest {
-                        reason: PLAN_PAYLOAD_TOO_LARGE,
-                    })?;
+                    .ok_or(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                    ))?;
         }
         for block in &mut self.classic_code_blocks {
             block.payload_offset =
                 block
                     .payload_offset
                     .checked_add(base)
-                    .ok_or(Error::UnsupportedCudaRequest {
-                        reason: PLAN_PAYLOAD_TOO_LARGE,
-                    })?;
+                    .ok_or(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                    ))?;
         }
         Ok(())
     }

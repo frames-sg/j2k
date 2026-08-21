@@ -8,7 +8,7 @@ use super::{
     PendingDecodeCompletion, Surface,
 };
 use crate::decoder::pending_completion::{finish_decode_statuses, retire_decode_after_error};
-use j2k_cuda_runtime::CudaHtj2kDecodeResources;
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup};
 
 pub(crate) struct GrayscaleOwnedBatch {
     pub(crate) surfaces: Vec<Surface>,
@@ -46,9 +46,11 @@ pub(super) fn finish_submitted_grayscale_batch(
             ));
         }
     };
-    let store = stored.queued.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA external batch store did not return a completion guard",
-    })?;
+    let store = stored.queued.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA external batch store did not return a completion guard",
+        ),
+    ))?;
     Ok((
         stored.output,
         GrayscalePendingCompletion::new(
@@ -70,9 +72,11 @@ pub(super) fn finish_synchronous_grayscale_batch(
 ) -> Result<GrayscaleBatchOutput, Error> {
     let completion_result = completion_result.and_then(|(stored, decoded)| {
         if stored.queued.is_some() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "synchronous CUDA grayscale store unexpectedly returned pending work",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "synchronous CUDA grayscale store unexpectedly returned pending work",
+                ),
+            ));
         }
         Ok(((stored.output, decoded), true))
     });
@@ -99,13 +103,13 @@ pub(super) struct GrayscaleJobIdentity {
 }
 
 pub(super) struct GrayscaleHtj2kCleanup {
-    queued: Option<j2k_cuda_runtime::CudaQueuedHtj2kCleanup>,
+    queued: Option<CudaQueuedHtj2kCleanup>,
     identities: Vec<GrayscaleJobIdentity>,
 }
 
 impl GrayscaleHtj2kCleanup {
     pub(super) fn new(
-        queued: j2k_cuda_runtime::CudaQueuedHtj2kCleanup,
+        queued: CudaQueuedHtj2kCleanup,
         identities: Vec<GrayscaleJobIdentity>,
     ) -> Self {
         Self {
@@ -181,9 +185,11 @@ impl SubmittedGrayscaleResidentBatch {
                 return Err(error);
             }
         }
-        let output = self.output.take().ok_or(Error::UnsupportedCudaRequest {
-            reason: "CUDA resident grayscale submission lost its output owner",
-        })?;
+        let output = self.output.take().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "CUDA resident grayscale submission lost its output owner",
+            ),
+        ))?;
         Ok((output, self.report.clone()))
     }
 }
@@ -229,9 +235,11 @@ pub(super) fn grayscale_htj2k_job_identities(
     live_host_bytes: usize,
 ) -> Result<Vec<GrayscaleJobIdentity>, Error> {
     if component_work.len() != source_indices.len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "CUDA grayscale source identity count does not match component work",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "CUDA grayscale source identity count does not match component work",
+            ),
+        ));
     }
     let job_count = component_work
         .iter()

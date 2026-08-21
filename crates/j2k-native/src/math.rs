@@ -974,7 +974,8 @@ mod floating_point_tests {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            let bits = state as u32;
+            let bits =
+                u32::try_from(state & u64::from(u32::MAX)).expect("masked random state fits u32");
             let value = f32::from_bits(bits);
             if value.is_finite() {
                 break value;

@@ -3,65 +3,66 @@
 //! Facade-owned views over retained HTJ2K preparation metadata.
 
 use alloc::sync::Arc;
-use core::any::Any;
 
 pub use j2k_types::{
     HtCodeBlockPayloadRanges as Htj2kPayloadRanges,
     J2kClassicCodeBlockPayload as ClassicCodeBlockPayload, J2kCodestreamRange,
 };
 
-/// Opaque retained classic JPEG 2000 execution plan for one prepared image.
-///
-/// Public callers inspect fragment byte ranges without depending on native
-/// implementation types. Backend crates use [`Self::adapter_view`] to borrow
-/// the immutable native geometry and segment metadata.
+/// Backend-neutral retained execution geometry for a classic JPEG 2000 image.
+pub type ClassicPreparedGeometry = j2k_types::J2kReferencedClassicPlan;
+
+/// Backend-neutral retained execution geometry for an HTJ2K image.
+pub type Htj2kPreparedGeometry = j2k_types::J2kReferencedHtj2kPlan;
+
+/// Image-level geometry shared by classic and HTJ2K prepared plans.
+pub type PreparedImageGeometry<'a> = j2k_types::J2kReferencedImageGeometry<'a>;
+
+/// Typed retained classic JPEG 2000 execution plan for one prepared image.
 #[derive(Debug, Clone)]
 pub struct PreparedClassicPlan {
-    plan: Arc<j2k_native::J2kReferencedClassicPlan>,
+    plan: Arc<ClassicPreparedGeometry>,
 }
 
 impl PreparedClassicPlan {
-    pub(super) fn from_native(plan: j2k_native::J2kReferencedClassicPlan) -> Self {
+    pub(super) fn from_native(plan: ClassicPreparedGeometry) -> Self {
         Self {
             plan: Arc::new(plan),
         }
     }
 
-    pub(crate) fn native_plan(&self) -> &j2k_native::J2kReferencedClassicPlan {
+    pub(crate) fn native_plan(&self) -> &ClassicPreparedGeometry {
         &self.plan
+    }
+
+    /// Borrow the immutable execution geometry shared by all decode backends.
+    #[must_use]
+    pub fn geometry(&self) -> &ClassicPreparedGeometry {
+        &self.plan
+    }
+
+    /// Borrow image-level geometry whose semantics are independent of block coding mode.
+    #[must_use]
+    pub fn image_geometry(&self) -> PreparedImageGeometry<'_> {
+        self.plan.image_geometry()
     }
 
     /// Whether the retained geometry decodes one grayscale component.
     #[must_use]
     pub fn is_grayscale(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.grayscale_geometry().is_some())
+        self.image_geometry().is_grayscale()
     }
 
     /// Whether the retained geometry decodes three color components.
     #[must_use]
     pub fn is_color(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.color_geometry().is_some())
+        self.image_geometry().is_color()
     }
 
     /// Whether the retained geometry decodes four components in R, G, B, A order.
     #[must_use]
     pub fn is_rgba(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.rgba_geometry().is_some())
+        self.image_geometry().is_rgba()
     }
 
     /// Number of referenced classic code-block payloads.
@@ -83,7 +84,7 @@ impl PreparedClassicPlan {
     }
 
     pub(super) fn uniform_wavelet_transform(&self) -> Option<j2k_native::J2kWaveletTransform> {
-        uniform_wavelet_transform(self.plan.tiles())
+        self.image_geometry().uniform_wavelet_transform()
     }
 
     /// Return one code-block payload descriptor by traversal index.
@@ -107,67 +108,53 @@ impl PreparedClassicPlan {
     pub fn ranges(&self) -> impl ExactSizeIterator<Item = J2kCodestreamRange> + '_ {
         self.plan.ranges().iter().copied()
     }
-
-    /// Borrow immutable backend-specific geometry for adapter downcasting.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn adapter_view(&self) -> &(dyn Any + Send + Sync) {
-        self.plan.as_ref()
-    }
 }
 
-/// Opaque retained HTJ2K execution plan for one prepared image.
-///
-/// Public callers can inspect payload byte ranges without depending on native
-/// implementation types. Device backend crates use [`Self::adapter_view`] to
-/// borrow the immutable native plan for the lifetime of this value.
+/// Typed retained HTJ2K execution plan for one prepared image.
 #[derive(Debug, Clone)]
 pub struct PreparedHtj2kPlan {
-    plan: Arc<j2k_native::J2kReferencedHtj2kPlan>,
+    plan: Arc<Htj2kPreparedGeometry>,
 }
 
 impl PreparedHtj2kPlan {
-    pub(super) fn from_native(plan: j2k_native::J2kReferencedHtj2kPlan) -> Self {
+    pub(super) fn from_native(plan: Htj2kPreparedGeometry) -> Self {
         Self {
             plan: Arc::new(plan),
         }
     }
 
-    pub(crate) fn native_plan(&self) -> &j2k_native::J2kReferencedHtj2kPlan {
+    pub(crate) fn native_plan(&self) -> &Htj2kPreparedGeometry {
         &self.plan
+    }
+
+    /// Borrow the immutable execution geometry shared by all decode backends.
+    #[must_use]
+    pub fn geometry(&self) -> &Htj2kPreparedGeometry {
+        &self.plan
+    }
+
+    /// Borrow image-level geometry whose semantics are independent of block coding mode.
+    #[must_use]
+    pub fn image_geometry(&self) -> PreparedImageGeometry<'_> {
+        self.plan.image_geometry()
     }
 
     /// Whether the retained geometry decodes one grayscale component.
     #[must_use]
     pub fn is_grayscale(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.grayscale_geometry().is_some())
+        self.image_geometry().is_grayscale()
     }
 
     /// Whether the retained geometry decodes three color components.
     #[must_use]
     pub fn is_color(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.color_geometry().is_some())
+        self.image_geometry().is_color()
     }
 
     /// Whether the retained geometry decodes four components in R, G, B, A order.
     #[must_use]
     pub fn is_rgba(&self) -> bool {
-        !self.plan.tiles().is_empty()
-            && self
-                .plan
-                .tiles()
-                .iter()
-                .all(|tile| tile.rgba_geometry().is_some())
+        self.image_geometry().is_rgba()
     }
 
     /// Number of referenced HTJ2K payload records, including refinement continuations.
@@ -183,7 +170,7 @@ impl PreparedHtj2kPlan {
     }
 
     pub(super) fn uniform_wavelet_transform(&self) -> Option<j2k_native::J2kWaveletTransform> {
-        uniform_wavelet_transform(self.plan.tiles())
+        self.image_geometry().uniform_wavelet_transform()
     }
 
     /// Return one referenced payload record by traversal index.
@@ -196,25 +183,4 @@ impl PreparedHtj2kPlan {
     pub fn payloads(&self) -> impl ExactSizeIterator<Item = Htj2kPayloadRanges> + '_ {
         self.plan.payloads().iter().copied()
     }
-
-    /// Borrow the immutable backend-specific plan for adapter downcasting.
-    ///
-    /// The returned view is tied to `self`, cannot be mutated, and does not
-    /// expose an owning or raw handle. Backend crates that depend directly on
-    /// `j2k-native` may downcast it to their supported plan implementation.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn adapter_view(&self) -> &(dyn Any + Send + Sync) {
-        self.plan.as_ref()
-    }
-}
-
-fn uniform_wavelet_transform(
-    tiles: &[j2k_native::J2kReferencedTilePlan],
-) -> Option<j2k_native::J2kWaveletTransform> {
-    let first = tiles.first()?.wavelet_transform();
-    tiles
-        .iter()
-        .all(|tile| tile.wavelet_transform() == first)
-        .then_some(first)
 }
