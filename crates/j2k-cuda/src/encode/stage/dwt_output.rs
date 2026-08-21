@@ -3,7 +3,7 @@
 use j2k::{
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
 };
-use j2k_cuda_runtime::{CudaDwt53LevelShape, CudaDwt53Output, CudaDwt97Output};
+use j2k_cuda_j2k_engine::{CudaDwt53LevelShape, CudaDwt53Output, CudaDwt97Output};
 
 use crate::allocation::HostPhaseBudget;
 use crate::encode::stage_error::{

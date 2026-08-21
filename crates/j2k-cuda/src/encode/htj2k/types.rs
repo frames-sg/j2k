@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::EncodedHtJ2kCodeBlock;
-use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaHtj2kEncodeResources};
+use j2k_cuda_j2k_engine::CudaHtj2kEncodeResources;
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext};
 
 use super::super::CudaEncodeStageTimings;
 
@@ -82,6 +83,6 @@ pub(super) struct CudaHtj2kEncodeRuntime<'a> {
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) struct CudaEncodedHtSubband {
     pub(in crate::encode) quantize_dispatches: usize,
-    pub(in crate::encode) encode: j2k_cuda_runtime::CudaHtj2kEncodedCodeBlocks,
+    pub(in crate::encode) encode: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks,
     pub(in crate::encode) timings: CudaEncodeStageTimings,
 }

@@ -27,7 +27,7 @@ pub(in crate::cuda) fn encode_resident_subbands(
     let mut budget = ResidentMetadataBudget::new("CUDA resident aggregate metadata");
     let plans = resident_subband_encode_plans(bands, item_count, options, &mut budget)?;
     let targets = resident_targets(&plans, &mut budget)?;
-    let encoded = context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool_and_live_host_bytes(
             &targets,
             resources,
@@ -102,7 +102,7 @@ pub(in crate::cuda) fn encode_resident_compact_subbands(
     let mut budget = ResidentMetadataBudget::new("CUDA compact resident aggregate metadata");
     let plans = resident_subband_encode_plans(bands, item_count, options, &mut budget)?;
     let targets = resident_targets(&plans, &mut budget)?;
-    let encoded = context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool_and_live_host_bytes(
             &targets,
             resources,
@@ -195,7 +195,7 @@ pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97Com
     let (group_plans, mut budget) =
         build_resident_subband_group_plans(groups, options, live_metadata_bytes)?;
     let targets = resident_group_targets(&group_plans, &mut budget)?;
-    let encoded = context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool_and_live_host_bytes(
             &targets,
             resources,
@@ -224,8 +224,8 @@ pub(in crate::cuda) fn device_band_groups_to_preencoded_components<J: Htj2k97Com
     let encoded_blocks = encoded.into_code_blocks();
     budget.account_vec(&encoded_blocks)?;
     let mut encoded_blocks = encoded_blocks.into_iter();
-    let mut outputs =
-        budget.try_vec_with_capacity(group_plans.len(), "CUDA grouped resident encoded outputs")?;
+    let mut outputs = budget
+        .try_vec_with_capacity_named(group_plans.len(), "CUDA grouped resident encoded outputs")?;
 
     for (group, required_magnitude_bounds) in group_plans.iter().zip(required_magnitude_bounds) {
         let item_count = group.jobs.len();
@@ -263,7 +263,7 @@ pub(in crate::cuda) fn device_band_groups_to_compact_preencoded_components<
     let (group_plans, mut budget) =
         build_resident_subband_group_plans(groups, options, live_metadata_bytes)?;
     let targets = resident_group_targets(&group_plans, &mut budget)?;
-    let encoded = context
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool_and_live_host_bytes(
             &targets,
             resources,
@@ -296,7 +296,7 @@ pub(in crate::cuda) fn device_band_groups_to_compact_preencoded_components<
     budget.account_vec(&payload)?;
     budget.account_vec(&encoded_blocks)?;
     let mut encoded_blocks = encoded_blocks.into_iter();
-    let mut outputs = budget.try_vec_with_capacity(
+    let mut outputs = budget.try_vec_with_capacity_named(
         group_plans.len(),
         "CUDA grouped compact resident encoded outputs",
     )?;

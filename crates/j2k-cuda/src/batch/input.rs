@@ -12,17 +12,20 @@ use super::{
 };
 
 pub(super) fn group_pixel_format(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
-    info.native_pixel_format()
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: "CUDA batch output color/sample type is unsupported",
-        })
+    info.native_pixel_format().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::unsupported_format(
+            "CUDA batch output color/sample type is unsupported",
+        ),
+    ))
 }
 
 pub(super) fn validate_layout(info: &BatchGroupInfo) -> Result<(), Error> {
     if !matches!(info.layout, BatchLayout::Nchw | BatchLayout::Nhwc) {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "CUDA batch output layout is unsupported",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "CUDA batch output layout is unsupported",
+            ),
+        ));
     }
     Ok(())
 }
@@ -39,23 +42,15 @@ pub(super) fn native_decode_settings(settings: j2k::DecodeSettings) -> j2k_nativ
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn native_referenced_htj2k_plan(
     plan: &j2k::PreparedHtj2kPlan,
-) -> Result<&j2k_native::J2kReferencedHtj2kPlan, Error> {
-    plan.adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: "prepared HTJ2K plan is not compatible with the CUDA adapter",
-        })
+) -> &j2k_native::J2kReferencedHtj2kPlan {
+    plan.geometry()
 }
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn native_referenced_classic_plan(
     plan: &j2k::PreparedClassicPlan,
-) -> Result<&j2k_native::J2kReferencedClassicPlan, Error> {
-    plan.adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedClassicPlan>()
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: "prepared classic plan is not compatible with the CUDA adapter",
-        })
+) -> &j2k_native::J2kReferencedClassicPlan {
+    plan.geometry()
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -71,17 +66,19 @@ pub(super) fn native_color_inputs(
                 Some(prepared_plan)
                     if group.info().color == BatchColor::Rgb && prepared_plan.is_color() =>
                 {
-                    Some(native_referenced_htj2k_plan(prepared_plan)?)
+                    Some(native_referenced_htj2k_plan(prepared_plan))
                 }
                 Some(prepared_plan)
                     if group.info().color == BatchColor::Rgba && prepared_plan.is_rgba() =>
                 {
-                    Some(native_referenced_htj2k_plan(prepared_plan)?)
+                    Some(native_referenced_htj2k_plan(prepared_plan))
                 }
                 Some(_) => {
-                    return Err(Error::UnsupportedCudaRequest {
-                        reason: "exact CUDA color batch received incompatible prepared geometry",
-                    })
+                    return Err(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::geometry_mismatch(
+                            "exact CUDA color batch received incompatible prepared geometry",
+                        ),
+                    ))
                 }
                 None => None,
             };
@@ -89,24 +86,28 @@ pub(super) fn native_color_inputs(
                 Some(prepared_plan)
                     if group.info().color == BatchColor::Rgb && prepared_plan.is_color() =>
                 {
-                    Some(native_referenced_classic_plan(prepared_plan)?)
+                    Some(native_referenced_classic_plan(prepared_plan))
                 }
                 Some(prepared_plan)
                     if group.info().color == BatchColor::Rgba && prepared_plan.is_rgba() =>
                 {
-                    Some(native_referenced_classic_plan(prepared_plan)?)
+                    Some(native_referenced_classic_plan(prepared_plan))
                 }
                 Some(_) => {
-                    return Err(Error::UnsupportedCudaRequest {
-                        reason: "exact CUDA color batch received incompatible classic geometry",
-                    });
+                    return Err(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::geometry_mismatch(
+                            "exact CUDA color batch received incompatible classic geometry",
+                        ),
+                    ));
                 }
                 None => None,
             };
             if referenced_plan.is_none() && referenced_classic_plan.is_none() {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: "exact CUDA color batch requires a supported prepared device plan",
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(
+                        "exact CUDA color batch requires a supported prepared device plan",
+                    ),
+                ));
             }
             Ok(crate::decoder::NativeColorBatchInput {
                 source_index,

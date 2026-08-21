@@ -6,10 +6,12 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
+use j2k_native::{DecodeSettings, Image};
 use j2k_profile::emit_profile_error;
 use j2k_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
-    DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
+    IrreversibleQuantizationSubbandScales, RayonReversibleDwt53Accelerator,
 };
 use j2k_transcode::{
     dev_support::{
@@ -275,6 +277,174 @@ fn bench_dct97_idct_dwt(c: &mut Criterion) {
         }
     }
 
+    group.finish();
+}
+
+fn bench_dct97_column_quantize(c: &mut Criterion) {
+    const DIM: usize = 512;
+    const BATCH_SIZE: usize = 16;
+
+    let mut group = c.benchmark_group("dct97_metal_column_quantize");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+    group.throughput(Throughput::Elements((DIM * DIM * BATCH_SIZE) as u64));
+
+    let block_cols = DIM / 8;
+    let block_rows = DIM / 8;
+    let batch_blocks: Vec<_> = (0..BATCH_SIZE)
+        .map(|_| structured_blocks(block_cols, block_rows))
+        .collect();
+    let jobs: Vec<_> = batch_blocks
+        .iter()
+        .map(|blocks| DctGridToHtj2k97CodeBlockJob {
+            blocks,
+            block_cols,
+            block_rows,
+            width: DIM,
+            height: DIM,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        })
+        .collect();
+    let options = Htj2k97CodeBlockOptions {
+        bit_depth: 8,
+        guard_bits: 2,
+        code_block_width_exp: 4,
+        code_block_height_exp: 4,
+        irreversible_quantization_scale: 1.0,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales::default(),
+    };
+
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    match accelerator.dct_grid_to_htj2k97_codeblock_batch(&jobs, options) {
+        Ok(Some(output)) => {
+            assert_eq!(output.len(), BATCH_SIZE, "Metal benchmark output count");
+            let output_bytes = output
+                .iter()
+                .flat_map(|component| &component.resolutions)
+                .flat_map(|resolution| &resolution.subbands)
+                .flat_map(|subband| &subband.code_blocks)
+                .flat_map(|block| &block.coefficients)
+                .flat_map(|coefficient| coefficient.to_le_bytes())
+                .collect::<Vec<_>>();
+            eprintln!(
+                "j2k_transcode_metal_column_quantize output_sha256={}",
+                j2k_test_support::auto_routing_sha256(&output_bytes)
+            );
+            group.bench_function("metal_explicit_512x512_batch_16", |b| {
+                b.iter(|| {
+                    std::hint::black_box(
+                        accelerator
+                            .dct_grid_to_htj2k97_codeblock_batch(
+                                std::hint::black_box(&jobs),
+                                options,
+                            )
+                            .expect("Metal fused column-quantize benchmark succeeds")
+                            .expect("explicit Metal handles column-quantize benchmark"),
+                    );
+                });
+            });
+        }
+        Ok(None) | Err(_) => {
+            eprintln!("skipping dct97 Metal column-quantize benchmark: {METAL_UNAVAILABLE}");
+        }
+    }
+    group.finish();
+}
+
+fn p12_batch_output_sha256(batch: &EncodedTranscodeBatch) -> String {
+    let mut framed = Vec::new();
+    for tile in &batch.tiles {
+        let codestream = &tile
+            .as_ref()
+            .expect("P12 end-to-end probe tile succeeds")
+            .codestream;
+        framed.extend_from_slice(
+            &u64::try_from(codestream.len())
+                .expect("P12 codestream length fits u64")
+                .to_le_bytes(),
+        );
+        framed.extend_from_slice(codestream);
+    }
+    j2k_test_support::auto_routing_sha256(&framed)
+}
+
+fn bench_p12_jpeg_to_htj2k_end_to_end(c: &mut Criterion) {
+    const DIM: usize = 512;
+    const DIM_U32: u32 = 512;
+    const BATCH_SIZE: usize = 16;
+
+    let spec = WsiFixtureSpec {
+        name: "p12_srgb_ybr420_512",
+        dim: DIM,
+        subsampling: JpegSubsampling::Ybr420,
+        generator: rgb_srgb_pattern,
+    };
+    let jpeg = encoded_fixture(spec);
+    let inputs = tile_batch_inputs(&jpeg, BATCH_SIZE);
+    let options = JpegToHtj2kOptions::lossy_97();
+    let mut probe_transcoder = JpegToHtj2kTranscoder::default();
+    let mut probe_accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    let probe = expect_successful_batch(
+        probe_transcoder
+            .transcode_batch_with_accelerator(&inputs, &options, &mut probe_accelerator)
+            .expect("P12 end-to-end probe succeeds"),
+        "p12_srgb_ybr420_512_batch_16",
+        TranscodeBatchProfileRequest::MetalExplicit,
+    );
+    let first = probe.tiles[0]
+        .as_ref()
+        .expect("P12 first probe tile succeeds");
+    let decoded = Image::new(&first.codestream, &DecodeSettings::default())
+        .expect("P12 output codestream parses")
+        .decode_native()
+        .expect("P12 output codestream decodes");
+    assert_eq!((decoded.width, decoded.height), (DIM_U32, DIM_U32));
+    let timing = &probe.report.timings;
+    assert!(timing.accelerator_work_observed());
+    assert_eq!(timing.cpu_fallback_jobs, 0);
+    eprintln!(
+        "j2k_transcode_metal_p12_end_to_end input_sha256={} output_sha256={} input_bytes={} output_tiles={} pack_upload_us={} pack_upload_transfers={} pack_upload_bytes={} idct_row_lift_us={} column_lift_us={} quantize_codeblock_us={} readback_us={} readback_transfers={} readback_bytes={} resident_dwt_handoffs={} accelerator_dispatches={}",
+        j2k_test_support::auto_routing_sha256(&jpeg),
+        p12_batch_output_sha256(&probe),
+        jpeg.len() * BATCH_SIZE,
+        probe.tiles.len(),
+        timing.dwt97_batch_pack_upload_us,
+        timing.dwt97_batch_pack_upload_transfers,
+        timing.dwt97_batch_pack_upload_bytes,
+        timing.dwt97_batch_idct_row_lift_us,
+        timing.dwt97_batch_column_lift_us,
+        timing.dwt97_batch_quantize_codeblock_us,
+        timing.dwt97_batch_readback_us,
+        timing.dwt97_batch_readback_transfers,
+        timing.dwt97_batch_readback_bytes,
+        timing.dwt97_batch_resident_dwt_handoff_count,
+        timing.accelerator_dispatches,
+    );
+
+    let mut group = c.benchmark_group("p12_jpeg_to_htj2k_end_to_end");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+    group.throughput(Throughput::Bytes(
+        u64::try_from(jpeg.len() * BATCH_SIZE).expect("P12 input bytes fit u64"),
+    ));
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    group.bench_function("srgb_ybr420_512_batch_16", |b| {
+        b.iter(|| {
+            std::hint::black_box(expect_successful_batch(
+                transcoder
+                    .transcode_batch_with_accelerator(
+                        std::hint::black_box(&inputs),
+                        &options,
+                        &mut accelerator,
+                    )
+                    .expect("P12 end-to-end benchmark succeeds"),
+                "p12_srgb_ybr420_512_batch_16",
+                TranscodeBatchProfileRequest::MetalExplicit,
+            ));
+        });
+    });
     group.finish();
 }
 
@@ -1067,6 +1237,11 @@ fn structured_i16_blocks_with_offset(
 
 criterion_group!(dct53_metal_projection, bench_dct53_projection);
 criterion_group!(dct97_metal_idct_dwt, bench_dct97_idct_dwt);
+criterion_group!(dct97_metal_column_quantize, bench_dct97_column_quantize);
+criterion_group!(
+    p12_jpeg_to_htj2k_end_to_end,
+    bench_p12_jpeg_to_htj2k_end_to_end
+);
 criterion_group!(jpeg_to_htj2k_wsi_53, bench_jpeg_to_htj2k_wsi_53);
 criterion_group!(
     reversible_dct53_metal_projection,
@@ -1088,6 +1263,8 @@ criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
 criterion_main!(
     dct53_metal_projection,
     dct97_metal_idct_dwt,
+    dct97_metal_column_quantize,
+    p12_jpeg_to_htj2k_end_to_end,
     reversible_dct53_metal_projection,
     reversible_dct53_batch_metal_projection,
     jpeg_to_htj2k_wsi_53,

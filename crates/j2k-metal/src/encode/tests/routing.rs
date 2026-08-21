@@ -590,12 +590,21 @@ fn auto_resident_host_output_policy_requires_batched_work() {
         1024,
         1024,
     ));
+    assert!(
+        !super::super::should_try_auto_resident_lossless_host_format(
+            PixelFormat::Gray8,
+            ReversibleTransform::None53,
+            2,
+            512,
+            512,
+        )
+    );
     assert!(super::super::should_try_auto_resident_lossless_host_format(
         PixelFormat::Gray8,
         ReversibleTransform::None53,
         2,
-        512,
-        512,
+        2048,
+        2048,
     ));
     assert!(
         !super::super::should_try_auto_resident_lossless_host_format(
@@ -738,7 +747,7 @@ fn auto_htj2k_padded_private_gray8_single_host_output_stays_cpu() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
+fn auto_htj2k_padded_private_gray8_batch_keeps_unqualified_cell_on_cpu() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -792,11 +801,10 @@ fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
 
     assert_eq!(encoded.len(), 2);
     for (frame, expected) in encoded.iter().zip([first, second]) {
-        assert_eq!(frame.encoded.backend, BackendKind::Metal);
-        assert!(!frame.input_copy_used);
-        assert!(frame.resident.coefficient_prep_used);
-        assert!(frame.resident.packetization_used);
-        assert!(frame.resident.codestream_assembly_used);
+        assert_eq!(frame.encoded.backend, BackendKind::Cpu);
+        assert!(!frame.resident.coefficient_prep_used);
+        assert!(!frame.resident.packetization_used);
+        assert!(!frame.resident.codestream_assembly_used);
         let decoded = Image::new(&frame.encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()

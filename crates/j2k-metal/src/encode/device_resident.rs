@@ -221,9 +221,11 @@ pub(super) fn encode_lossless_tile_to_metal_buffer_with_report(
     validate_metal_encode_tile(tile)?;
     lossless_sample_shape(tile.format)?;
     if options.backend == EncodeBackendPreference::CpuOnly {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal buffer output encode requires a device backend",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "J2K Metal buffer output encode requires a device backend",
+            ),
+        ));
     }
     let bytes_per_pixel = tile.format.bytes_per_pixel();
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
@@ -234,7 +236,5 @@ pub(super) fn encode_lossless_tile_to_metal_buffer_with_report(
     )? {
         return Ok(outcome);
     }
-    Err(crate::Error::UnsupportedMetalRequest {
-        reason: "J2K Metal buffer output encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level",
-    })
+    Err(crate::Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit("J2K Metal buffer output encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level")))
 }

@@ -10,19 +10,14 @@ use super::{
 fn prepare_referenced_gray_plan(
     session: &MetalBackendSession,
     image: &PreparedImage,
-) -> Result<Option<crate::compute::PreparedDirectGrayscalePlan>, Error> {
+) -> Result<Option<crate::engine::PreparedDirectGrayscalePlan>, Error> {
     if let Some(prepared) = image.htj2k_plan() {
         if !prepared.is_grayscale() {
             return Ok(None);
         }
-        let referenced = prepared
-            .adapter_view()
-            .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-            .ok_or(Error::UnsupportedMetalRequest {
-                reason: "J2K Metal does not recognize the prepared HTJ2K grayscale plan adapter",
-            })?;
-        return crate::compute::with_runtime_for_session(session, |_| {
-            crate::compute::prepare_referenced_htj2k_grayscale_plan(referenced, image.bytes())
+        let referenced = prepared.geometry();
+        return crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::prepare_referenced_htj2k_grayscale_plan(referenced, image.bytes())
                 .map(Some)
         });
     }
@@ -32,14 +27,9 @@ fn prepare_referenced_gray_plan(
     if !prepared.is_grayscale() {
         return Ok(None);
     }
-    let referenced = prepared
-        .adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedClassicPlan>()
-        .ok_or(Error::UnsupportedMetalRequest {
-            reason: "J2K Metal does not recognize the prepared classic grayscale plan adapter",
-        })?;
-    crate::compute::with_runtime_for_session(session, |_| {
-        crate::compute::prepare_referenced_classic_grayscale_plan(referenced, image.bytes())
+    let referenced = prepared.geometry();
+    crate::engine::with_runtime_for_session(session, |_| {
+        crate::engine::prepare_referenced_classic_grayscale_plan(referenced, image.bytes())
             .map(Some)
     })
 }
@@ -49,7 +39,7 @@ fn prepare_referenced_color_plan(
     session: &MetalBackendSession,
     image: &PreparedImage,
     fmt: PixelFormat,
-) -> Result<Option<crate::compute::PreparedDirectColorPlan>, Error> {
+) -> Result<Option<crate::engine::PreparedDirectColorPlan>, Error> {
     let rgba = matches!(
         fmt,
         PixelFormat::Rgba8 | PixelFormat::Rgba16 | PixelFormat::RgbaI16
@@ -59,21 +49,12 @@ fn prepare_referenced_color_plan(
         if (rgba && !prepared.is_rgba()) || (!rgba && !prepared.is_color()) {
             return Ok(None);
         }
-        let referenced = prepared
-            .adapter_view()
-            .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-            .ok_or(Error::UnsupportedMetalRequest {
-                reason: "J2K Metal does not recognize the prepared HTJ2K color plan adapter",
-            })?;
-        crate::compute::with_runtime_for_session(session, |_| {
+        let referenced = prepared.geometry();
+        crate::engine::with_runtime_for_session(session, |_| {
             if rgba {
-                crate::compute::prepare_referenced_htj2k_rgba_plan(
-                    referenced,
-                    image.bytes(),
-                    signed,
-                )
+                crate::engine::prepare_referenced_htj2k_rgba_plan(referenced, image.bytes(), signed)
             } else {
-                crate::compute::prepare_referenced_htj2k_color_plan(
+                crate::engine::prepare_referenced_htj2k_color_plan(
                     referenced,
                     image.bytes(),
                     signed,
@@ -84,21 +65,16 @@ fn prepare_referenced_color_plan(
         if (rgba && !prepared.is_rgba()) || (!rgba && !prepared.is_color()) {
             return Ok(None);
         }
-        let referenced = prepared
-            .adapter_view()
-            .downcast_ref::<j2k_native::J2kReferencedClassicPlan>()
-            .ok_or(Error::UnsupportedMetalRequest {
-                reason: "J2K Metal does not recognize the prepared classic color plan adapter",
-            })?;
-        crate::compute::with_runtime_for_session(session, |_| {
+        let referenced = prepared.geometry();
+        crate::engine::with_runtime_for_session(session, |_| {
             if rgba {
-                crate::compute::prepare_referenced_classic_rgba_plan(
+                crate::engine::prepare_referenced_classic_rgba_plan(
                     referenced,
                     image.bytes(),
                     signed,
                 )
             } else {
-                crate::compute::prepare_referenced_classic_color_plan(
+                crate::engine::prepare_referenced_classic_color_plan(
                     referenced,
                     image.bytes(),
                     signed,
@@ -113,11 +89,11 @@ fn prepare_referenced_color_plan(
 
 #[cfg(target_os = "macos")]
 pub(super) type PreparedGrayPlanCache =
-    crate::session::PreparedPlanCache<Arc<crate::compute::PreparedDirectGrayscalePlan>>;
+    crate::session::PreparedPlanCache<Arc<crate::engine::PreparedDirectGrayscalePlan>>;
 
 #[cfg(target_os = "macos")]
 pub(super) type PreparedColorPlanCache =
-    crate::session::PreparedPlanCache<Arc<crate::compute::PreparedDirectColorPlan>>;
+    crate::session::PreparedPlanCache<Arc<crate::engine::PreparedDirectColorPlan>>;
 
 #[cfg(target_os = "macos")]
 pub(super) const PREPARED_BATCH_PLAN_CACHE_CAP: usize = 128;
@@ -128,7 +104,7 @@ impl MetalBatchDecoder {
         group: &PreparedBatchGroup,
         fmt: PixelFormat,
         asynchronous: bool,
-    ) -> Result<Vec<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
+    ) -> Result<Vec<Arc<crate::engine::PreparedDirectGrayscalePlan>>, Error> {
         let mut plans = Vec::new();
         plans
             .try_reserve_exact(group.images().len())
@@ -142,13 +118,14 @@ impl MetalBatchDecoder {
                 continue;
             }
             if image.request() != DecodeRequest::Full {
-                return Err(Error::UnsupportedMetalRequest {
-                    reason: if asynchronous {
-                        "J2K Metal asynchronous external ROI/reduction requires a prepared HTJ2K offset plan"
-                    } else {
-                        "J2K Metal external ROI/reduction requires a prepared HTJ2K offset plan"
-                    },
-                });
+                let reason = if asynchronous {
+                    "J2K Metal asynchronous external ROI/reduction requires a prepared HTJ2K offset plan"
+                } else {
+                    "J2K Metal external ROI/reduction requires a prepared HTJ2K offset plan"
+                };
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(reason),
+                ));
             }
             plans.push(
                 crate::decoder::prepare_full_grayscale_direct_plan_with_session(
@@ -166,7 +143,7 @@ impl MetalBatchDecoder {
         &mut self,
         group: &PreparedBatchGroup,
         fmt: PixelFormat,
-    ) -> Result<Vec<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+    ) -> Result<Vec<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
         let mut plans = Vec::new();
         plans
             .try_reserve_exact(group.images().len())
@@ -176,16 +153,17 @@ impl MetalBatchDecoder {
             })?;
         for image in group.images() {
             let Some(plan) = self.prepared_color_plan_for_image(image, fmt)? else {
-                return Err(Error::UnsupportedMetalRequest {
-                    reason: if matches!(
-                        fmt,
-                        PixelFormat::Rgba8 | PixelFormat::Rgba16 | PixelFormat::RgbaI16
-                    ) {
-                        "J2K Metal exact RGBA final-store requires a prepared classic or HTJ2K four-component offset plan"
-                    } else {
-                        "J2K Metal exact RGB final-store requires a prepared classic or HTJ2K three-component offset plan"
-                    },
-                });
+                let reason = if matches!(
+                    fmt,
+                    PixelFormat::Rgba8 | PixelFormat::Rgba16 | PixelFormat::RgbaI16
+                ) {
+                    "J2K Metal exact RGBA final-store requires a prepared classic or HTJ2K four-component offset plan"
+                } else {
+                    "J2K Metal exact RGB final-store requires a prepared classic or HTJ2K three-component offset plan"
+                };
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::missing_prepared_plan(reason),
+                ));
             };
             plans.push(plan);
         }
@@ -197,7 +175,7 @@ impl MetalBatchDecoder {
         &mut self,
         image: &PreparedImage,
         fmt: PixelFormat,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
+    ) -> Result<Option<Arc<crate::engine::PreparedDirectGrayscalePlan>>, Error> {
         let key = crate::session::PreparedPlanCacheKey::prepared_gray(
             image.bytes(),
             image.request(),
@@ -226,7 +204,7 @@ impl MetalBatchDecoder {
         &mut self,
         image: &PreparedImage,
         fmt: PixelFormat,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+    ) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
         let key = crate::session::PreparedPlanCacheKey::prepared_color(
             image.bytes(),
             image.request(),

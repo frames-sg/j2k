@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::PixelFormat;
-use j2k_cuda_runtime::{
-    CudaExternalDeviceBufferViewMut, CudaJ2kStoreRgbNativeTarget, CudaJ2kStoreRgbaNativeTarget,
-};
+use j2k_cuda_j2k_engine::{CudaJ2kStoreRgbNativeTarget, CudaJ2kStoreRgbaNativeTarget};
+use j2k_cuda_runtime::CudaExternalDeviceBufferViewMut;
 
 use super::super::targets::NativeColorStoreTargets;
 use crate::decoder::color_batch::cuda_error;
@@ -36,11 +35,11 @@ fn enqueue_external_rgb_store(
     // store metadata, and the caller-owned destination through completion.
     let result = unsafe {
         match fmt {
-            PixelFormat::Rgb8 => context
+            PixelFormat::Rgb8 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgb8_native_batch_into_external_device_enqueue(targets, destination),
-            PixelFormat::Rgb16 => context
+            PixelFormat::Rgb16 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgb16_native_batch_into_external_device_enqueue(targets, destination),
-            PixelFormat::RgbI16 => context
+            PixelFormat::RgbI16 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgbi16_native_batch_into_external_device_enqueue(targets, destination),
             _ => return Err(unsupported_store()),
         }
@@ -62,11 +61,11 @@ fn enqueue_external_rgba_store(
     // metadata, and the caller-owned destination through completion.
     let result = unsafe {
         match fmt {
-            PixelFormat::Rgba8 => context
+            PixelFormat::Rgba8 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgba8_native_batch_into_external_device_enqueue(targets, destination),
-            PixelFormat::Rgba16 => context
+            PixelFormat::Rgba16 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgba16_native_batch_into_external_device_enqueue(targets, destination),
-            PixelFormat::RgbaI16 => context
+            PixelFormat::RgbaI16 => j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .j2k_store_rgbai16_native_batch_into_external_device_enqueue(targets, destination),
             _ => return Err(unsupported_store()),
         }
@@ -79,7 +78,7 @@ fn enqueue_external_rgba_store(
 }
 
 const fn unsupported_store() -> Error {
-    Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-    }
+    Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_format(
+        CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    ))
 }

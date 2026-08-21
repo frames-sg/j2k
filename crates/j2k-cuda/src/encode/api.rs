@@ -73,8 +73,10 @@ pub(super) fn reject_non_cuda_encode_backend(
     if encoded.backend == BackendKind::Cuda {
         Ok(())
     } else {
-        Err(crate::Error::UnsupportedCudaRequest {
-            reason: "strict CUDA HTJ2K encode did not dispatch all required stages",
-        })
+        Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "strict CUDA HTJ2K encode did not dispatch all required stages",
+            ),
+        ))
     }
 }

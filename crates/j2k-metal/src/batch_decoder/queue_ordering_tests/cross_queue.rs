@@ -109,7 +109,8 @@ fn known_cross_queue_wait_orders_subsequent_consumer_work() {
         j2k_metal_support::checked_command_buffer(&consumer_queue).expect("consumer command");
     let blit =
         j2k_metal_support::checked_blit_command_encoder(&consumer_command).expect("consumer blit");
-    blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16);
+    blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16)
+        .expect("consumer buffer copy");
     blit.endEncoding();
     consumer_command.commit();
 
@@ -200,7 +201,8 @@ fn cloned_sessions_assign_cross_queue_values_in_commit_order() {
                     .expect("worker consumer command");
                 let blit = j2k_metal_support::checked_blit_command_encoder(&consumer_command)
                     .expect("worker consumer blit");
-                blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16);
+                blit.copy_from_buffer(&destination_buffer, 0, &copy_buffer, 0, 16)
+                    .expect("worker consumer buffer copy");
                 blit.endEncoding();
                 consumer_command.commit();
                 pending.wait().expect("worker completion");

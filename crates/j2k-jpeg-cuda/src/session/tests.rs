@@ -58,7 +58,7 @@ fn retained_pinned_upload_capacity_blocks_later_host_owner_over_admission() {
     let mut session = CudaSession::default();
     let report = crate::owned_decode::diagnose_owned_cuda_420_entropy(
         BASELINE_420,
-        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+        j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig::default(),
         &mut session,
     )
     .expect("seed retained CUDA pinned upload staging");

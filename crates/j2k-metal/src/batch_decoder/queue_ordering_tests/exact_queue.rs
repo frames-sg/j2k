@@ -66,14 +66,14 @@ fn synchronous_external_decode_has_no_consumer_event_bridge() {
     let prepared = prepared_gray_group(&decoder).expect("prepare Gray8 group");
     let destination = gray8_destination(decoder.backend_session().device())
         .expect("synchronous Gray8 destination");
-    crate::compute::reset_direct_destination_event_bridge_for_test();
+    crate::engine::reset_direct_destination_event_bridge_for_test();
 
     decoder
         .decode_prepared_group_into(&prepared.groups()[0], &destination)
         .expect("synchronous external decode");
 
     assert_eq!(
-        crate::compute::direct_destination_event_bridge_for_test(),
+        crate::engine::direct_destination_event_bridge_for_test(),
         (0, 0, 0),
         "host-completed external decode must not allocate, signal, or wait on an event"
     );
@@ -87,14 +87,14 @@ fn codec_owned_resident_decode_has_no_consumer_event_bridge() {
 
     let mut decoder = MetalBatchDecoder::system_default().expect("persistent Metal decoder");
     let prepared = prepared_gray_group(&decoder).expect("prepare Gray8 group");
-    crate::compute::reset_direct_destination_event_bridge_for_test();
+    crate::engine::reset_direct_destination_event_bridge_for_test();
 
     let result = decoder
         .decode_prepared(&prepared)
         .expect("codec-owned resident decode");
     assert_eq!(result.groups().len(), 1);
     assert_eq!(
-        crate::compute::direct_destination_event_bridge_for_test(),
+        crate::engine::direct_destination_event_bridge_for_test(),
         (0, 0, 0),
         "codec-owned output hidden behind host completion needs no consumer event bridge"
     );

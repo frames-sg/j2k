@@ -695,7 +695,7 @@ impl<'a> Image<'a> {
                 width as usize,
                 (0, 0, width, height),
                 &mut data,
-            );
+            )?;
             let bitmap = Bitmap {
                 color_space,
                 data,

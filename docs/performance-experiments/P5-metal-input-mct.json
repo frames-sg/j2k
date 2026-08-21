@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "experiment_id": "P5-METAL-INPUT-DEINTERLEAVE-MCT",
+  "status": "promoted",
+  "environment": {
+    "commit": "f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5",
+    "branch": "main",
+    "dirty": true,
+    "cpu": "Apple M4 Pro, 12 cores",
+    "gpu": "Apple M4 Pro, 16 cores, Metal 4",
+    "ram_bytes": 51539607552,
+    "os": "macOS 26.5.2 build 25F84, Darwin 25.5.0",
+    "driver_runtime": "Metal 4",
+    "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "llvm_version": "LLVM 22.1.2",
+    "gpu_toolchain": "Apple metal 32023.883 (metalfe-32023.883)",
+    "build_profile": "release-bench",
+    "feature_flags": [],
+    "environment_variables": {
+      "J2K_REQUIRE_METAL_BENCH": "1",
+      "J2K_METAL_DISABLE_FUSED_INPUT_MCT": "baseline:1;treatment:unset"
+    },
+    "input_corpus_sha256": "b59081e9372a21d1f95612ff455ba8918d63db3e7ec0dc0b73ef8ca9972caaa2",
+    "sample_count": 10,
+    "warm_up_seconds": 3.0,
+    "measurement_seconds": 5.0
+  },
+  "workloads": [
+    {
+      "id": "encode-rgb8-512-rct-l3",
+      "transform": "reversible_5_3",
+      "entropy": "ht",
+      "code_block": "64x64",
+      "image": "512x512",
+      "batch": 1,
+      "components": 3,
+      "output": "htj2k_codestream",
+      "operation": "full_encode",
+      "axis_class": "at_512",
+      "jpeg_sampling": null,
+      "jpeg_restart": null
+    },
+    {
+      "id": "encode-rgb8-512-ict-l3",
+      "transform": "irreversible_9_7",
+      "entropy": "ht",
+      "code_block": "64x64",
+      "image": "512x512",
+      "batch": 1,
+      "components": 3,
+      "output": "htj2k_codestream",
+      "operation": "full_encode",
+      "axis_class": "at_512",
+      "jpeg_sampling": null,
+      "jpeg_restart": null
+    },
+    {
+      "id": "encode-rgb8-512-classic-rct-l3",
+      "transform": "reversible_5_3",
+      "entropy": "classic",
+      "code_block": "64x64",
+      "image": "512x512",
+      "batch": 1,
+      "components": 3,
+      "output": "j2k_codestream",
+      "operation": "full_encode",
+      "axis_class": "at_512",
+      "jpeg_sampling": null,
+      "jpeg_restart": null
+    },
+    {
+      "id": "encode-rgb8-512-classic-ict-l3",
+      "transform": "irreversible_9_7",
+      "entropy": "classic",
+      "code_block": "64x64",
+      "image": "512x512",
+      "batch": 1,
+      "components": 3,
+      "output": "j2k_codestream",
+      "operation": "full_encode",
+      "axis_class": "at_512",
+      "jpeg_sampling": null,
+      "jpeg_restart": null
+    }
+  ],
+  "measurements": [
+    {
+      "workload_id": "encode-rgb8-512-rct-l3", "variant": "baseline",
+      "wall_time_ns": 41107000.0, "wall_time_ci_lower_ns": 41055000.0, "wall_time_ci_upper_ns": 41153000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "Public Metal resource counters unavailable; baseline used separate deinterleave and RCT stages.",
+      "output_sha256": "0e57f7e647be2898b24346d7a6752d9b5f57ab4a0690a32d5f352057123efab5", "exact_parity": true,
+      "conformance": "native orchestration, signed/unsigned 1-16-bit matrix, fallback, and full encode parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-rct-l3", "variant": "treatment",
+      "wall_time_ns": 40691000.0, "wall_time_ci_lower_ns": 40663000.0, "wall_time_ci_upper_ns": 40707000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "One combined deinterleave, level-shift, and RCT dispatch; public Metal resource counters unavailable.",
+      "output_sha256": "0e57f7e647be2898b24346d7a6752d9b5f57ab4a0690a32d5f352057123efab5", "exact_parity": true,
+      "conformance": "native orchestration, signed/unsigned 1-16-bit matrix, fallback, and full encode parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-ict-l3", "variant": "baseline",
+      "wall_time_ns": 50972000.0, "wall_time_ci_lower_ns": 50845000.0, "wall_time_ci_upper_ns": 51157000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "Public Metal resource counters unavailable; baseline used separate deinterleave and ICT stages.",
+      "output_sha256": "d1a89d58630296ed708e795bd1dcd60409491641e94b50aa2a0aec103bfc96d0", "exact_parity": true,
+      "conformance": "native orchestration, signed/unsigned 1-16-bit matrix, fallback, and full encode parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-ict-l3", "variant": "treatment",
+      "wall_time_ns": 50559000.0, "wall_time_ci_lower_ns": 50435000.0, "wall_time_ci_upper_ns": 50651000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "One combined deinterleave, level-shift, and nested-FMA ICT dispatch; public Metal resource counters unavailable.",
+      "output_sha256": "d1a89d58630296ed708e795bd1dcd60409491641e94b50aa2a0aec103bfc96d0", "exact_parity": true,
+      "conformance": "native orchestration, signed/unsigned 1-16-bit matrix, fallback, and full encode parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-classic-rct-l3", "variant": "baseline",
+      "wall_time_ns": 112680000.0, "wall_time_ci_lower_ns": 112190000.0, "wall_time_ci_upper_ns": 112920000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "Public Metal resource counters unavailable; baseline used separate deinterleave and RCT stages.",
+      "output_sha256": "09523416f80df94209b338f2694ac8270ac1f26c7f4cd4358dadac8e700ff658", "exact_parity": true,
+      "conformance": "Classic full encode parsed and decoded natively; exact codestream parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-classic-rct-l3", "variant": "treatment",
+      "wall_time_ns": 111570000.0, "wall_time_ci_lower_ns": 111500000.0, "wall_time_ci_upper_ns": 111670000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "One combined deinterleave, level-shift, and RCT dispatch; public Metal resource counters unavailable.",
+      "output_sha256": "09523416f80df94209b338f2694ac8270ac1f26c7f4cd4358dadac8e700ff658", "exact_parity": true,
+      "conformance": "Classic full encode parsed and decoded natively; exact codestream parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-classic-ict-l3", "variant": "baseline",
+      "wall_time_ns": 125460000.0, "wall_time_ci_lower_ns": 125290000.0, "wall_time_ci_upper_ns": 125620000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "Public Metal resource counters unavailable; baseline used separate deinterleave and ICT stages.",
+      "output_sha256": "ccec07e262b98a9ab991dc1bfeae2b8cd4aa9ffa88f1b337239253f1f58492a7", "exact_parity": true,
+      "conformance": "Classic full encode parsed and decoded natively; exact codestream parity passed"
+    },
+    {
+      "workload_id": "encode-rgb8-512-classic-ict-l3", "variant": "treatment",
+      "wall_time_ns": 125030000.0, "wall_time_ci_lower_ns": 124970000.0, "wall_time_ci_upper_ns": 125110000.0,
+      "gpu_time_ns": null, "stage_times_ns": {}, "dispatch_count": null,
+      "host_to_device_bytes": null, "device_to_host_bytes": null, "device_read_bytes": null, "device_write_bytes": null,
+      "registers_per_thread": null, "private_bytes_per_thread": null, "shared_bytes_per_group": 0, "occupancy_percent": null,
+      "spill_loads": null, "spill_stores": null, "cache_observation": "One combined deinterleave, level-shift, and nested-FMA ICT dispatch; public Metal resource counters unavailable.",
+      "output_sha256": "ccec07e262b98a9ab991dc1bfeae2b8cd4aa9ffa88f1b337239253f1f58492a7", "exact_parity": true,
+      "conformance": "Classic full encode parsed and decoded natively; exact codestream parity passed"
+    }
+  ],
+  "decision": {
+    "priority_workload_id": "encode-rgb8-512-ict-l3",
+    "confidence_interval_supports_improvement": true,
+    "representative_regression_percent": 0.0,
+    "complexity_is_proportional": true,
+    "rationale": "Promoted only for the measured unsigned RGB8 512x512 production geometry; all other sizes, bit depths, signed inputs, and component counts use the existing separate-stage fallback. Exact RCT and nested-FMA ICT semantics pass the broader direct-kernel signed/unsigned 1-16-bit matrix. Same-host batch-1 full encode improved 0.63-1.15% for HT RCT, 0.55-1.14% for HT ICT, 0.28-0.88% for Classic RCT, and 0.13-0.46% for Classic ICT, all p=0.00, with identical codestream hashes and no measured regression. The historical A/B environment switch was removed from production after promotion."
+  }
+}

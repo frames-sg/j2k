@@ -39,20 +39,34 @@ fn bench_sources_under(path: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn j2k_metal_declares_only_the_auto_routing_criterion_bench() {
+fn j2k_metal_declares_the_audited_routing_and_decode_stage_benches() {
     let cargo = cargo_toml();
 
     assert_eq!(
         cargo.matches("[[bench]]").count(),
-        1,
-        "j2k-metal must keep one audited benchmark target"
+        4,
+        "j2k-metal must keep all audited benchmark targets"
     );
     assert!(
         cargo.contains("[[bench]]\nname = \"auto_routing\"\nharness = false\ntest = false"),
         "j2k-metal must keep the release-routing benchmark explicit"
     );
+    assert!(
+        cargo.contains("[[bench]]\nname = \"decode_stages\"\nharness = false\ntest = false"),
+        "j2k-metal must keep the decode-stage benchmark explicit"
+    );
+    assert!(
+        cargo.contains("[[bench]]\nname = \"transform_stages\"\nharness = false\ntest = false"),
+        "j2k-metal must keep the transform-stage benchmark explicit"
+    );
+    assert!(
+        cargo.contains(
+            "[[bench]]\nname = \"resident_packetization\"\nharness = false\ntest = false"
+        ),
+        "j2k-metal must keep the resident packetization benchmark explicit"
+    );
 
-    for target in ["device_upload", "compare", "encode_stages", "decode_stages"] {
+    for target in ["device_upload", "compare", "encode_stages"] {
         assert!(
             !cargo.contains(&format!("name = \"{target}\"")),
             "legacy j2k-metal bench target must stay removed: {target}"
@@ -61,7 +75,7 @@ fn j2k_metal_declares_only_the_auto_routing_criterion_bench() {
 }
 
 #[test]
-fn j2k_metal_bench_dependencies_are_limited_to_auto_routing() {
+fn j2k_metal_bench_dependencies_are_limited_to_the_audited_targets() {
     let cargo = cargo_toml();
 
     assert_eq!(cargo.matches("criterion =").count(), 1);
@@ -72,7 +86,7 @@ fn j2k_metal_bench_dependencies_are_limited_to_auto_routing() {
 }
 
 #[test]
-fn j2k_metal_benches_directory_contains_only_auto_routing() {
+fn j2k_metal_benches_directory_matches_the_audited_targets() {
     let sources = bench_sources_under(&manifest_dir().join("benches"));
 
     assert_eq!(
@@ -82,8 +96,41 @@ fn j2k_metal_benches_directory_contains_only_auto_routing() {
             manifest_dir().join("benches/auto_routing/encode.rs"),
             manifest_dir().join("benches/auto_routing/runner.rs"),
             manifest_dir().join("benches/auto_routing.rs"),
+            manifest_dir().join("benches/decode_stages.rs"),
+            manifest_dir().join("benches/resident_packetization.rs"),
+            manifest_dir().join("benches/transform_stages.rs"),
         ],
-        "j2k-metal benchmark sources must stay limited to release routing evidence"
+        "j2k-metal benchmark sources must stay limited to audited evidence targets"
+    );
+}
+
+#[test]
+fn resident_packetization_bench_has_exact_output_probes() {
+    let path = manifest_dir().join("benches/resident_packetization.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()));
+
+    for expected in [
+        "const BATCH_SIZE: usize = 16",
+        "J2kBlockCodingMode::Classic",
+        "J2kBlockCodingMode::HighThroughput",
+        "submit_lossless_batch_to_metal",
+        "codestream_bytes()",
+        "auto_routing_sha256",
+    ] {
+        assert!(
+            source.contains(expected),
+            "resident packetization benchmark is missing `{expected}`"
+        );
+    }
+    assert!(
+        !source.contains("env_flag_from_env") && !source.contains("route="),
+        "the durable packetization benchmark must measure the production route"
+    );
+    assert!(
+        !source.contains("packet_payload_copy_job_count_total")
+            && !source.contains("packet_payload_copy_launched_stripe_count_total"),
+        "the public batch outcome only publishes resident route counters when stage profiling is enabled"
     );
 }
 

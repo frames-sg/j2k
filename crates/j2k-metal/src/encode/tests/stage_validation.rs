@@ -4,6 +4,51 @@ use super::*;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn combined_input_mct_production_route_is_limited_to_measured_rgb8_geometry() {
+    for context in [
+        J2kEncodeContext {
+            num_pixels: 64 * 64,
+            num_components: 3,
+            bit_depth: 8,
+            signed: false,
+            reversible: false,
+        },
+        J2kEncodeContext {
+            num_pixels: 1024 * 1024,
+            num_components: 3,
+            bit_depth: 8,
+            signed: false,
+            reversible: false,
+        },
+        J2kEncodeContext {
+            num_pixels: 512 * 512,
+            num_components: 3,
+            bit_depth: 12,
+            signed: false,
+            reversible: false,
+        },
+    ] {
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+        accelerator
+            .begin_encode(context)
+            .expect("valid route context");
+        let pixels = [0_u8; 3];
+        let output = accelerator
+            .encode_deinterleave_mct(J2kDeinterleaveMctToF32Job {
+                pixels: &pixels,
+                num_pixels: 1,
+                bit_depth: 8,
+                signed: false,
+                reversible: false,
+            })
+            .expect("unmeasured route declines without backend work");
+        assert!(output.is_none());
+        assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_encode_deinterleave_invalid_component_count_errors_without_dispatch() {
     let pixels = [0_u8; 10];
     let mut accelerator = MetalEncodeStageAccelerator::default();
@@ -255,6 +300,39 @@ fn auto_encode_deinterleave_disabled_fallback_still_encodes() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn disabled_combined_input_mct_uses_exact_separate_stage_fallback() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let _route = crate::profile_env::override_fused_input_mct_disabled(true);
+    let pixels = (0_u8..192)
+        .map(|index| index.wrapping_mul(37).wrapping_add(11))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).expect("valid RGB8 samples");
+    let options = J2kLosslessEncodeOptions::default().with_max_decomposition_levels(Some(0));
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        j2k_core::BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("separate-stage fallback encode");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+
+    assert_eq!(decoded.data, pixels);
+    assert_eq!(accelerator.combined_input_mct_attempts(), 1);
+    assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert_eq!(accelerator.forward_rct_dispatches(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_dispatch_option_treats_unavailable_as_no_dispatch() {
     let result: j2k::J2kEncodeStageResult<Option<u8>> =
         super::super::metal_dispatch_option(Err(crate::Error::MetalUnavailable), "kernel failed");
@@ -314,6 +392,10 @@ fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
     assert_eq!(decoded.height, 8);
     assert_eq!(decoded.num_components, 3);
     assert_eq!(decoded.bit_depth, 8);
+    assert_eq!(accelerator.combined_input_mct_attempts(), 1);
+    assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert_eq!(accelerator.forward_rct_attempts(), 1);
     assert_eq!(accelerator.forward_dwt53_attempts(), 3);
     assert!(accelerator.tier1_code_block_attempts() > 0);
@@ -475,6 +557,8 @@ fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
 
     assert_eq!(decoded.data, pixels);
     assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(accelerator.combined_input_mct_attempts(), 1);
+    assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert_eq!(accelerator.forward_rct_attempts(), 1);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::BatchLayout;
-use j2k_cuda_runtime::{CudaJ2kStoreRgbNativeJob, CudaJ2kStoreRgbaNativeJob};
+use j2k_cuda_j2k_engine::{CudaJ2kStoreRgbNativeJob, CudaJ2kStoreRgbaNativeJob};
 
 use crate::decoder::CudaHtj2kTransform;
 

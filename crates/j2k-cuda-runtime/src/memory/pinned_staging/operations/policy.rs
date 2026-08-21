@@ -11,7 +11,7 @@ pub(super) fn validate_pinned_upload_staging_len(len: usize, cap: usize) -> Resu
             message: "prepared CUDA pinned upload staging cannot be empty".to_string(),
         });
     }
-    HostPhaseBudget::with_cap(PINNED_UPLOAD_STAGING_ALLOCATION, cap).account_bytes(len)
+    Ok(HostPhaseBudget::with_cap(PINNED_UPLOAD_STAGING_ALLOCATION, cap).account_bytes(len)?)
 }
 
 pub(super) fn lock_pinned_upload_operation(

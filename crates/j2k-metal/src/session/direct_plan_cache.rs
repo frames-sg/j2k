@@ -15,23 +15,23 @@ const DIRECT_PLAN_CACHE_CAP: usize = 128;
 #[derive(Clone)]
 struct DirectGrayPlanCacheEntry {
     plan: Arc<J2kDirectGrayscalePlan>,
-    prepared: Arc<crate::compute::PreparedDirectGrayscalePlan>,
+    prepared: Arc<crate::engine::PreparedDirectGrayscalePlan>,
 }
 
 #[derive(Clone)]
 struct DirectColorPlanCacheEntry {
     plan: Arc<J2kDirectColorPlan>,
-    prepared: Arc<crate::compute::PreparedDirectColorPlan>,
+    prepared: Arc<crate::engine::PreparedDirectColorPlan>,
 }
 
 type CachedDirectGrayPlan = (
     Arc<J2kDirectGrayscalePlan>,
-    Arc<crate::compute::PreparedDirectGrayscalePlan>,
+    Arc<crate::engine::PreparedDirectGrayscalePlan>,
 );
 
 type CachedDirectColorPlan = (
     Arc<J2kDirectColorPlan>,
-    Arc<crate::compute::PreparedDirectColorPlan>,
+    Arc<crate::engine::PreparedDirectColorPlan>,
 );
 
 #[derive(Clone)]
@@ -39,7 +39,7 @@ pub(super) struct DirectPlanCaches {
     gray: Arc<Mutex<cache::PreparedPlanCache<DirectGrayPlanCacheEntry>>>,
     color: Arc<Mutex<cache::PreparedPlanCache<DirectColorPlanCacheEntry>>>,
     region_scaled_color:
-        Arc<Mutex<cache::PreparedPlanCache<Arc<crate::compute::PreparedDirectColorPlan>>>>,
+        Arc<Mutex<cache::PreparedPlanCache<Arc<crate::engine::PreparedDirectColorPlan>>>>,
 }
 
 impl DirectPlanCaches {
@@ -84,7 +84,7 @@ impl cache::PreparedPlanCacheValue for DirectGrayPlanCacheEntry {
             core::mem::size_of::<J2kDirectGrayscalePlan>(),
             prepared.host,
             prepared.device,
-            core::mem::size_of::<crate::compute::PreparedDirectGrayscalePlan>(),
+            core::mem::size_of::<crate::engine::PreparedDirectGrayscalePlan>(),
         )
     }
 }
@@ -106,12 +106,12 @@ impl cache::PreparedPlanCacheValue for DirectColorPlanCacheEntry {
             core::mem::size_of::<J2kDirectColorPlan>(),
             prepared.host,
             prepared.device,
-            core::mem::size_of::<crate::compute::PreparedDirectColorPlan>(),
+            core::mem::size_of::<crate::engine::PreparedDirectColorPlan>(),
         )
     }
 }
 
-impl cache::PreparedPlanCacheValue for Arc<crate::compute::PreparedDirectColorPlan> {
+impl cache::PreparedPlanCacheValue for Arc<crate::engine::PreparedDirectColorPlan> {
     fn retained_cache_weight(
         &self,
     ) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
@@ -119,7 +119,7 @@ impl cache::PreparedPlanCacheValue for Arc<crate::compute::PreparedDirectColorPl
             .retained_cache_bytes()
             .map_err(cache::PreparedPlanCacheError::Invariant)?;
         let host_bytes = arc_owner_bytes(
-            core::mem::size_of::<crate::compute::PreparedDirectColorPlan>(),
+            core::mem::size_of::<crate::engine::PreparedDirectColorPlan>(),
             prepared.host,
         )?;
         Ok(cache::PreparedPlanCacheWeight::new(
@@ -129,7 +129,7 @@ impl cache::PreparedPlanCacheValue for Arc<crate::compute::PreparedDirectColorPl
     }
 }
 
-impl cache::PreparedPlanCacheValue for Arc<crate::compute::PreparedDirectGrayscalePlan> {
+impl cache::PreparedPlanCacheValue for Arc<crate::engine::PreparedDirectGrayscalePlan> {
     fn retained_cache_weight(
         &self,
     ) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
@@ -137,7 +137,7 @@ impl cache::PreparedPlanCacheValue for Arc<crate::compute::PreparedDirectGraysca
             .retained_cache_bytes()
             .map_err(cache::PreparedPlanCacheError::Invariant)?;
         let host_bytes = arc_owner_bytes(
-            core::mem::size_of::<crate::compute::PreparedDirectGrayscalePlan>(),
+            core::mem::size_of::<crate::engine::PreparedDirectGrayscalePlan>(),
             prepared.host,
         )?;
         Ok(cache::PreparedPlanCacheWeight::new(
@@ -215,7 +215,7 @@ pub(crate) fn store_session_direct_gray_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
     plan: Arc<J2kDirectGrayscalePlan>,
-    prepared: Arc<crate::compute::PreparedDirectGrayscalePlan>,
+    prepared: Arc<crate::engine::PreparedDirectGrayscalePlan>,
 ) -> Result<(), Error> {
     prepared.disable_cpu_tier1_retention()?;
     let mut guard =
@@ -250,7 +250,7 @@ pub(crate) fn store_session_direct_color_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
     plan: Arc<J2kDirectColorPlan>,
-    prepared: Arc<crate::compute::PreparedDirectColorPlan>,
+    prepared: Arc<crate::engine::PreparedDirectColorPlan>,
 ) -> Result<(), Error> {
     prepared.disable_dynamic_cpu_tier1_retention()?;
     let mut guard =
@@ -271,7 +271,7 @@ pub(crate) fn store_session_direct_color_plan(
 pub(crate) fn cached_session_region_scaled_color_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
     let mut guard = session
         .direct_plan_caches
         .region_scaled_color
@@ -285,7 +285,7 @@ pub(crate) fn cached_session_region_scaled_color_plan(
 pub(crate) fn store_session_region_scaled_color_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-    plan: Arc<crate::compute::PreparedDirectColorPlan>,
+    plan: Arc<crate::engine::PreparedDirectColorPlan>,
 ) -> Result<(), Error> {
     let mut guard = session
         .direct_plan_caches

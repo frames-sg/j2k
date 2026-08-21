@@ -72,7 +72,8 @@ fn materialize_gray8_output(
             // coefficient buffer and the caller guarantees the external
             // allocation lifetime until that owner is retired.
             let (ranges, queued) = unsafe {
-                context.j2k_store_gray8_batch_into_external_device_enqueue(targets, destination)
+                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                    .j2k_store_gray8_batch_into_external_device_enqueue(targets, destination)
             }
             .map_err(cuda_error)?;
             return Ok(StoredGrayscaleBatch {
@@ -83,16 +84,18 @@ fn materialize_gray8_output(
         // SAFETY: this synchronous path retains all decoded coefficient
         // owners and the caller-owned destination through the completion
         // boundary. Its public caller carries the quarantine-on-error contract.
-        let (ranges, _) =
-            unsafe { context.j2k_store_gray8_batch_into_external_device(targets, destination) }
-                .map_err(cuda_error)?;
+        let (ranges, _) = unsafe {
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                .j2k_store_gray8_batch_into_external_device(targets, destination)
+        }
+        .map_err(cuda_error)?;
         return Ok(StoredGrayscaleBatch {
             output: GrayscaleBatchOutput::External(ranges),
             queued: None,
         });
     }
     if enqueue_external {
-        let (buffer, ranges, queued) = context
+        let (buffer, ranges, queued) = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
             .j2k_store_gray8_batch_contiguous_device_enqueue(targets)
             .map_err(cuda_error)?;
         let stats = queued.execution();
@@ -107,7 +110,7 @@ fn materialize_gray8_output(
             queued: Some(queued),
         });
     }
-    let output = context
+    let output = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .j2k_store_gray8_batch_contiguous_device(targets)
         .map_err(cuda_error)?;
     let (buffer, ranges, stats) = output.into_parts();
@@ -163,7 +166,8 @@ pub(super) fn store_gray16_batch(
             // coefficient buffer and the caller guarantees the external
             // allocation lifetime until that owner is retired.
             let (ranges, queued) = unsafe {
-                context.j2k_store_gray16_batch_into_external_device_enqueue(&targets, destination)
+                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                    .j2k_store_gray16_batch_into_external_device_enqueue(&targets, destination)
             }
             .map_err(cuda_error)?;
             return Ok(StoredGrayscaleBatch {
@@ -174,16 +178,18 @@ pub(super) fn store_gray16_batch(
         // SAFETY: this synchronous path retains all decoded coefficient
         // owners and the caller-owned destination through the completion
         // boundary. Its public caller carries the quarantine-on-error contract.
-        let (ranges, _) =
-            unsafe { context.j2k_store_gray16_batch_into_external_device(&targets, destination) }
-                .map_err(cuda_error)?;
+        let (ranges, _) = unsafe {
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                .j2k_store_gray16_batch_into_external_device(&targets, destination)
+        }
+        .map_err(cuda_error)?;
         return Ok(StoredGrayscaleBatch {
             output: GrayscaleBatchOutput::External(ranges),
             queued: None,
         });
     }
     if enqueue_external {
-        let (buffer, ranges, queued) = context
+        let (buffer, ranges, queued) = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
             .j2k_store_gray16_batch_contiguous_device_enqueue(&targets)
             .map_err(cuda_error)?;
         let stats = queued.execution();
@@ -198,7 +204,7 @@ pub(super) fn store_gray16_batch(
             queued: Some(queued),
         });
     }
-    let output = context
+    let output = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .j2k_store_gray16_batch_contiguous_device(&targets)
         .map_err(cuda_error)?;
     let (buffer, ranges, stats) = output.into_parts();
@@ -254,7 +260,8 @@ pub(super) fn store_grayi16_batch(
             // coefficient buffer and the caller guarantees the external
             // allocation lifetime until that owner is retired.
             let (ranges, queued) = unsafe {
-                context.j2k_store_grayi16_batch_into_external_device_enqueue(&targets, destination)
+                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                    .j2k_store_grayi16_batch_into_external_device_enqueue(&targets, destination)
             }
             .map_err(cuda_error)?;
             return Ok(StoredGrayscaleBatch {
@@ -265,16 +272,18 @@ pub(super) fn store_grayi16_batch(
         // SAFETY: this synchronous path retains all decoded coefficient
         // owners and the caller-owned destination through the completion
         // boundary. Its public caller carries the quarantine-on-error contract.
-        let (ranges, _) =
-            unsafe { context.j2k_store_grayi16_batch_into_external_device(&targets, destination) }
-                .map_err(cuda_error)?;
+        let (ranges, _) = unsafe {
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                .j2k_store_grayi16_batch_into_external_device(&targets, destination)
+        }
+        .map_err(cuda_error)?;
         return Ok(StoredGrayscaleBatch {
             output: GrayscaleBatchOutput::External(ranges),
             queued: None,
         });
     }
     if enqueue_external {
-        let (buffer, ranges, queued) = context
+        let (buffer, ranges, queued) = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
             .j2k_store_grayi16_batch_contiguous_device_enqueue(&targets)
             .map_err(cuda_error)?;
         let stats = queued.execution();
@@ -289,7 +298,7 @@ pub(super) fn store_grayi16_batch(
             queued: Some(queued),
         });
     }
-    let output = context
+    let output = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .j2k_store_grayi16_batch_contiguous_device(&targets)
         .map_err(cuda_error)?;
     let (buffer, ranges, stats) = output.into_parts();

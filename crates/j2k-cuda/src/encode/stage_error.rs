@@ -14,8 +14,11 @@ pub(super) const fn internal_invariant(what: &'static str) -> J2kEncodeStageErro
     J2kEncodeStageError::internal_invariant(what)
 }
 
-pub(super) fn adapter_error(operation: &'static str, error: crate::Error) -> J2kEncodeStageError {
-    match error {
+pub(super) fn adapter_error(
+    operation: &'static str,
+    error: impl Into<crate::Error>,
+) -> J2kEncodeStageError {
+    match error.into() {
         crate::Error::HostAllocationFailed { bytes, what } => {
             J2kEncodeStageError::host_allocation_failed(what, bytes)
         }

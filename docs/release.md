@@ -87,12 +87,17 @@ directly; the obsolete helper and unreachable raw-message-send errors are
 removed. The break ledger enumerates every removed item in the four affected
 Metal crates. The one-time transition was consumed by `0.9.0`.
 
-The staged `0.9.1` patch candidate compares directly with published `v0.9.0`
-at peeled commit `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its provisional
-[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.9.1.md)
-and [review configuration](release-evidence/public-api/public-api-review-0.9.1.yml)
-must remain additive or compatible: the one-time `0.9.0` break transition is
-disabled.
+The staged `0.10.0` pre-1.0 minor candidate compares directly with published
+`v0.9.0` at peeled commit
+`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its provisional
+[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md)
+and [review configuration](release-evidence/public-api/public-api-review-0.10.0.yml)
+record the intentional architecture transition. Most generated removals are
+canonical defining-path changes whose supported root re-exports remain. The
+break ledger also records moving `transcode_kernels_built` from the low-level
+CUDA runtime to the CUDA transcode engine and generalizing the Metal resident
+codestream handoff to `DeviceCodestream`. This one-time transition applies only
+to the `0.10.0` candidate and must be disabled after publication.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
@@ -210,21 +215,25 @@ Publish in this order:
 2. `j2k-profile`
 3. `j2k-types`
 4. `j2k-codec-math`
-5. `j2k-cuda-runtime`
-6. `j2k-metal-support`
-7. `j2k-native`
-8. `j2k-jpeg`
-9. `j2k-tilecodec`
-10. `j2k`
-11. `j2k-transcode`
-12. `j2k-transcode-cuda`
-13. `j2k-jpeg-metal`
-14. `j2k-metal`
-15. `j2k-transcode-metal`
-16. `j2k-jpeg-cuda`
-17. `j2k-cuda`
-18. `j2k-ml`
-19. `j2k-cli`
+5. `j2k-cuda-build-support`
+6. `j2k-cuda-runtime`
+7. `j2k-cuda-j2k-engine`
+8. `j2k-cuda-jpeg-engine`
+9. `j2k-cuda-transcode-engine`
+10. `j2k-metal-support`
+11. `j2k-native`
+12. `j2k-jpeg`
+13. `j2k-tilecodec`
+14. `j2k`
+15. `j2k-transcode`
+16. `j2k-transcode-cuda`
+17. `j2k-jpeg-metal`
+18. `j2k-metal`
+19. `j2k-transcode-metal`
+20. `j2k-jpeg-cuda`
+21. `j2k-cuda`
+22. `j2k-ml`
+23. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
 Use the repo-owned package gate from a clean worktree:
@@ -242,9 +251,9 @@ cargo package --no-verify
 cargo publish --dry-run
 ```
 
-The gate lists all 19 package contents. It derives dependency closure and
+The gate lists all 23 package contents. It derives dependency closure and
 registry independence from locked Cargo metadata, then constructs `.crate`
-archives with `cargo package --no-verify` for the 15 staged packages whose
+archives with `cargo package --no-verify` for the 19 staged packages whose
 workspace dependencies are not yet available from crates.io. The four derived
 registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `j2k-codec-math`) run
@@ -277,7 +286,7 @@ intentional partial retry, `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits only
 the checksum-matched already-published prefix without moving the tag.
 
 After `crates-io-publish` environment approval, one runner repeats the canonical
-tag and prefix proof, packages all 19 archives, and publishes the remaining
+tag and prefix proof, packages all 23 archives, and publishes the remaining
 manifest entries sequentially with `cargo publish --locked -p <crate>`. Cargo's
 verification build stays enabled. There are no unconditional registry sleeps;
 only retryable transport, HTTP 429, or server failures are retried with bounded

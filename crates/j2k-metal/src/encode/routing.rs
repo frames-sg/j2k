@@ -2,13 +2,10 @@
 
 #[cfg(target_os = "macos")]
 use super::{
-    should_use_resident_htj2k_host_shape_for_auto, Buffer, EncodeBackendPreference,
-    J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, MetalEncodeInputStaging,
-    MetalLosslessEncodeTile, PixelFormat, ReversibleTransform,
+    Buffer, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
+    J2kLosslessEncodeOptions, MetalEncodeInputStaging, MetalLosslessEncodeTile, PixelFormat,
+    ReversibleTransform,
 };
-
-#[cfg(target_os = "macos")]
-const AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS: usize = 1024 * 1024;
 
 #[cfg(target_os = "macos")]
 pub(super) fn should_try_resident_lossless_host_encode(options: J2kLosslessEncodeOptions) -> bool {
@@ -58,16 +55,23 @@ pub(super) fn should_try_auto_resident_lossless_host_format(
     output_width: u32,
     output_height: u32,
 ) -> bool {
-    let pixels = (output_width as usize).saturating_mul(output_height as usize);
     match format {
         PixelFormat::Gray8 => {
             batch_size > 1
-                && should_use_resident_htj2k_host_shape_for_auto(output_width, output_height)
+                && crate::generated::promotion::auto_host_output_encode_qualifies(
+                    1,
+                    output_width,
+                    output_height,
+                )
         }
         PixelFormat::Rgb8 => {
             batch_size > 1
                 && reversible_transform == ReversibleTransform::Rct53
-                && pixels >= AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS
+                && crate::generated::promotion::auto_host_output_encode_qualifies(
+                    3,
+                    output_width,
+                    output_height,
+                )
         }
         _ => false,
     }

@@ -10,7 +10,7 @@ use super::super::exclusion_policy::{
 #[test]
 fn metal_raw_shader_span_is_narrower_than_the_host_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let path = "crates/j2k-metal/src/compute/shader_source.rs";
+    let path = "crates/j2k-metal/src/engine/shader_source.rs";
     let source = fs::read_to_string(root.join(path)).unwrap();
     let lines = source.lines().collect::<Vec<_>>();
     let embedded_shader_line = lines
@@ -37,22 +37,37 @@ fn metal_raw_shader_span_is_narrower_than_the_host_source_file() {
 
 #[test]
 fn cuda_simt_exclusion_covers_split_device_modules_only() {
-    let split_device_module =
-        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/exports.rs";
-    assert_eq!(
-        matching_exclusion(split_device_module, 1, &[])
-            .unwrap()
-            .map(|rule| rule.id),
-        Some("cuda-simt-device-rust")
-    );
+    for root in [
+        "crates/j2k-cuda-runtime",
+        "crates/j2k-cuda-j2k-engine",
+        "crates/j2k-cuda-jpeg-engine",
+        "crates/j2k-cuda-transcode-engine",
+    ] {
+        let split_device_module = format!("{root}/src/cuda_oxide_demo/simt/src/exports.rs");
+        assert_eq!(
+            matching_exclusion(&split_device_module, 1, &[])
+                .unwrap()
+                .map(|rule| rule.id),
+            Some("cuda-simt-device-rust"),
+            "{root}"
+        );
 
-    let host_module = "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/src/main.rs";
-    assert_eq!(
-        matching_exclusion(host_module, 1, &[])
-            .unwrap()
-            .map(|rule| rule.id),
-        Some("cuda-generated-host-scaffold")
-    );
+        let host_module = format!("{root}/src/cuda_oxide_demo/src/main.rs");
+        assert_eq!(
+            matching_exclusion(&host_module, 1, &[])
+                .unwrap()
+                .map(|rule| rule.id),
+            Some("cuda-generated-host-scaffold"),
+            "{root}"
+        );
+    }
+    for near_miss in [
+        "crates/j2k-cuda-j2k-engine/src/not_cuda_oxide/simt/src/exports.rs",
+        "crates/j2k-cuda-other-engine/src/cuda_oxide_demo/simt/src/exports.rs",
+        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_demo/host/src/main.rs",
+    ] {
+        assert!(matching_exclusion(near_miss, 1, &[]).unwrap().is_none());
+    }
     assert!(
         matching_exclusion("crates/j2k-cuda-runtime/src/j2k_encode.rs", 1, &[])
             .unwrap()

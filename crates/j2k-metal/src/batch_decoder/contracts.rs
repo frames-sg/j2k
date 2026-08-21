@@ -14,14 +14,17 @@ use crate::MetalDecodeDispatchReport;
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn validate_group_contract(info: &BatchGroupInfo) -> Result<PixelFormat, Error> {
     if !matches!(info.layout, BatchLayout::Nchw | BatchLayout::Nhwc) {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "J2K Metal batch received an unknown output layout",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "J2K Metal batch received an unknown output layout",
+            ),
+        ));
     }
-    info.native_pixel_format()
-        .ok_or(Error::UnsupportedMetalRequest {
-            reason: "J2K Metal batch metadata contains an unsupported color/sample combination",
-        })
+    info.native_pixel_format().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::unsupported_operation(
+            "J2K Metal batch metadata contains an unsupported color/sample combination",
+        ),
+    ))
 }
 
 /// Codec metadata released only after a caller-owned Metal group destination

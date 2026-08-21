@@ -1,0 +1,13 @@
+{
+  "threshold": 25.09,
+  "minLines": 10,
+  "minTokens": 40,
+  "maxLines": 20000,
+  "maxSize": "2mb",
+  "mode": "mild",
+  "format": ["opencl"],
+  "reporters": ["console", "json"],
+  "output": "target/clone-audit/metal-report",
+  "gitignore": false,
+  "ignore": []
+}

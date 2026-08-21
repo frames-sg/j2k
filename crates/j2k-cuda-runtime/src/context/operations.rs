@@ -4,19 +4,6 @@ use crate::error::CudaError;
 
 use super::ContextInner;
 
-pub(crate) fn ensure_context_ownership(
-    matches_context: impl IntoIterator<Item = bool>,
-    mismatch_message: &'static str,
-) -> Result<(), CudaError> {
-    if matches_context.into_iter().all(|matches| matches) {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: mismatch_message.to_string(),
-        })
-    }
-}
-
 impl ContextInner {
     pub(crate) fn set_current(&self) -> Result<(), CudaError> {
         self.resource_lifecycle.run_recoverable(
@@ -39,11 +26,6 @@ impl ContextInner {
     }
 
     /// Serialize a context-bound driver operation and recover its context.
-    ///
-    /// A CUDA driver call may surface a failure from earlier asynchronous work.
-    /// On failure, the lifecycle gate remains held while a context-wide
-    /// synchronization establishes completion. The context is poisoned only
-    /// when that recovery cannot establish completion.
     pub(crate) fn with_current_resource_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T, CudaError>,
@@ -63,9 +45,7 @@ impl ContextInner {
             .run_completion(|| self.set_current_for_resource_release(), operation)
     }
 
-    /// Run an operation that creates, destroys, or transfers ownership of a
-    /// CUDA resource. Any failure quarantines the context because successful
-    /// synchronization cannot prove whether that state transition committed.
+    /// Run a resource state transition, quarantining uncertain failure.
     pub(crate) fn with_current_stateful_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T, CudaError>,

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "experiment_id": "P14-CUDA-WIDE-IDWT",
+  "status": "rejected",
+  "environment": {
+    "commit": "f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5",
+    "branch": "main",
+    "dirty": true,
+    "cpu": "AMD Ryzen 7 5800X3D, 16 logical CPUs",
+    "gpu": "NVIDIA GeForce RTX 4070 SUPER, compute capability 8.9, 12282 MiB",
+    "ram_bytes": 50518622208,
+    "os": "Ubuntu 24.04.4 LTS; Linux 5.15.153.1-microsoft-standard-WSL2 x86_64",
+    "driver_runtime": "NVIDIA driver 610.88; CUDA 13.2",
+    "rust_version": "rustc 1.96.1",
+    "llvm_version": "LLVM 22.1.2",
+    "gpu_toolchain": "cargo-oxide 0.2.1; CUDA-Oxide sm_80 PTX executed on sm_89",
+    "build_profile": "release-bench",
+    "feature_flags": ["benchmark-internals", "cuda-oxide-j2k-idwt"],
+    "environment_variables": {
+      "J2K_REQUIRE_CUDA_RUNTIME": "1",
+      "J2K_REQUIRE_CUDA_OXIDE_BUILD": "1",
+      "J2K_CUDA_IDWT_WIDE_TILED": "historical baseline:unset;treatment:1"
+    },
+    "input_corpus_sha256": "7f433c1c7c1cc080385154aa57ce5b0d952b1a3ff101f8b27d3f31001c144a50",
+    "sample_count": 10,
+    "warm_up_seconds": 3.0,
+    "measurement_seconds": 5.0
+  },
+  "workloads": [
+    {"id":"p14-r53-narrow-b1","transform":"reversible_5_3","entropy":"none","code_block":"none","image":"512x512","batch":1,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"at_512","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-r53-narrow-b16","transform":"reversible_5_3","entropy":"none","code_block":"none","image":"512x512","batch":16,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"at_512","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-r53-wide-b1","transform":"reversible_5_3","entropy":"none","code_block":"none","image":"2592x1944","batch":1,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"wide","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-r53-wide-b16","transform":"reversible_5_3","entropy":"none","code_block":"none","image":"2592x1944","batch":16,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"wide","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-i97-narrow-b1","transform":"irreversible_9_7","entropy":"none","code_block":"none","image":"512x512","batch":1,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"at_512","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-i97-narrow-b16","transform":"irreversible_9_7","entropy":"none","code_block":"none","image":"512x512","batch":16,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"at_512","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-i97-wide-b1","transform":"irreversible_9_7","entropy":"none","code_block":"none","image":"2592x1944","batch":1,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"wide","jpeg_sampling":null,"jpeg_restart":null},
+    {"id":"p14-i97-wide-b16","transform":"irreversible_9_7","entropy":"none","code_block":"none","image":"2592x1944","batch":16,"components":1,"output":"decoded_samples","operation":"cuda_wide_idwt","axis_class":"wide","jpeg_sampling":null,"jpeg_restart":null}
+  ],
+  "measurements": [
+    {"workload_id":"p14-r53-narrow-b1","variant":"baseline","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":88489.0,"wall_time_ci_lower_ns":87921.0,"wall_time_ci_upper_ns":89362.0,"stage_times_ns":{"idwt":88489.0},"dispatch_count":2,"output_sha256":"6c513547c74d47456591a251cb98d874d992184c45a3f6222864fb1c666b6186","exact_parity":true,"conformance":"pass: odd-origin batch output matched the generic single-output oracle bit-for-bit"},
+    {"workload_id":"p14-r53-narrow-b1","variant":"treatment","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":224450.0,"wall_time_ci_lower_ns":216600.0,"wall_time_ci_upper_ns":230580.0,"stage_times_ns":{"idwt":224450.0},"dispatch_count":5,"output_sha256":"6c513547c74d47456591a251cb98d874d992184c45a3f6222864fb1c666b6186","exact_parity":true,"conformance":"pass: benchmark-forced tiled output matched the oracle bit-for-bit"},
+    {"workload_id":"p14-r53-narrow-b16","variant":"baseline","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":348950.0,"wall_time_ci_lower_ns":347890.0,"wall_time_ci_upper_ns":350460.0,"stage_times_ns":{"idwt":348950.0},"dispatch_count":2,"output_sha256":"7a1e5c473d2983962d53f19f7e1629e6f3a9792f9a90b8d15fe15b3a0fa4fb65","exact_parity":true,"conformance":"pass: all 16 odd-origin outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-r53-narrow-b16","variant":"treatment","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":739860.0,"wall_time_ci_lower_ns":735890.0,"wall_time_ci_upper_ns":747250.0,"stage_times_ns":{"idwt":739860.0},"dispatch_count":5,"output_sha256":"7a1e5c473d2983962d53f19f7e1629e6f3a9792f9a90b8d15fe15b3a0fa4fb65","exact_parity":true,"conformance":"pass: all 16 benchmark-forced tiled outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-r53-wide-b1","variant":"baseline","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":2331400.0,"wall_time_ci_lower_ns":2328200.0,"wall_time_ci_upper_ns":2335000.0,"stage_times_ns":{"idwt":2331400.0},"dispatch_count":2,"output_sha256":"dcd554537ea70556400ea0d4f81264f977ccc21be5aed016e578bc827b21fdd0","exact_parity":true,"conformance":"pass: 2592-wide odd-origin output matched the generic single-output oracle bit-for-bit"},
+    {"workload_id":"p14-r53-wide-b1","variant":"treatment","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":944280.0,"wall_time_ci_lower_ns":936310.0,"wall_time_ci_upper_ns":950900.0,"stage_times_ns":{"idwt":944280.0},"dispatch_count":5,"output_sha256":"dcd554537ea70556400ea0d4f81264f977ccc21be5aed016e578bc827b21fdd0","exact_parity":true,"conformance":"pass: 2592-wide tiled output matched the oracle bit-for-bit"},
+    {"workload_id":"p14-r53-wide-b16","variant":"baseline","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":15087000.0,"wall_time_ci_lower_ns":15077000.0,"wall_time_ci_upper_ns":15099000.0,"stage_times_ns":{"idwt":15087000.0},"dispatch_count":2,"output_sha256":"5aa5f01751bce30852e8eaa0d2e5df7f3a075273d19dff37e317391fba7166a5","exact_parity":true,"conformance":"pass: all 16 2592-wide odd-origin outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-r53-wide-b16","variant":"treatment","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":18353000.0,"wall_time_ci_lower_ns":18333000.0,"wall_time_ci_upper_ns":18370000.0,"stage_times_ns":{"idwt":18353000.0},"dispatch_count":5,"output_sha256":"5aa5f01751bce30852e8eaa0d2e5df7f3a075273d19dff37e317391fba7166a5","exact_parity":true,"conformance":"pass: all 16 2592-wide tiled outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-narrow-b1","variant":"baseline","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":90310.0,"wall_time_ci_lower_ns":87606.0,"wall_time_ci_upper_ns":93135.0,"stage_times_ns":{"idwt":90310.0},"dispatch_count":2,"output_sha256":"207b093e7f830a4a99e620c991e87c4464d10dce29c25f88c9d16806b7563f65","exact_parity":true,"conformance":"pass: odd-origin irreversible output matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-narrow-b1","variant":"treatment","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":468820.0,"wall_time_ci_lower_ns":462880.0,"wall_time_ci_upper_ns":474390.0,"stage_times_ns":{"idwt":468820.0},"dispatch_count":11,"output_sha256":"207b093e7f830a4a99e620c991e87c4464d10dce29c25f88c9d16806b7563f65","exact_parity":true,"conformance":"pass: benchmark-forced tiled irreversible output matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-narrow-b16","variant":"baseline","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":364510.0,"wall_time_ci_lower_ns":363990.0,"wall_time_ci_upper_ns":365270.0,"stage_times_ns":{"idwt":364510.0},"dispatch_count":2,"output_sha256":"ccdc8b6530dcba1c05e49532fa572d4c916ddde4a25431ab64151332e3b1f74b","exact_parity":true,"conformance":"pass: all 16 odd-origin irreversible outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-narrow-b16","variant":"treatment","input_sha256":"959e703820d091fdea7dca1b47c7ed8cb227b9059628e357ea180f66f96124eb","wall_time_ns":1749100.0,"wall_time_ci_lower_ns":1735900.0,"wall_time_ci_upper_ns":1764100.0,"stage_times_ns":{"idwt":1749100.0},"dispatch_count":11,"output_sha256":"ccdc8b6530dcba1c05e49532fa572d4c916ddde4a25431ab64151332e3b1f74b","exact_parity":true,"conformance":"pass: all 16 benchmark-forced tiled irreversible outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-wide-b1","variant":"baseline","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":4589600.0,"wall_time_ci_lower_ns":4586200.0,"wall_time_ci_upper_ns":4593300.0,"stage_times_ns":{"idwt":4589600.0},"dispatch_count":2,"output_sha256":"ef104976a68a0f2193efed831c4dd347824837557be46bf658d58093efd34194","exact_parity":true,"conformance":"pass: 2592-wide irreversible output matched the generic single-output oracle bit-for-bit"},
+    {"workload_id":"p14-i97-wide-b1","variant":"treatment","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":2266400.0,"wall_time_ci_lower_ns":2253400.0,"wall_time_ci_upper_ns":2283700.0,"stage_times_ns":{"idwt":2266400.0},"dispatch_count":11,"output_sha256":"ef104976a68a0f2193efed831c4dd347824837557be46bf658d58093efd34194","exact_parity":true,"conformance":"pass: 2592-wide tiled irreversible output matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-wide-b16","variant":"baseline","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":32040000.0,"wall_time_ci_lower_ns":32022000.0,"wall_time_ci_upper_ns":32060000.0,"stage_times_ns":{"idwt":32040000.0},"dispatch_count":2,"output_sha256":"a1146ac24ca89549fe51d57e12fae0cf3c53865c23006976b1c68bd739e4c06a","exact_parity":true,"conformance":"pass: all 16 2592-wide irreversible outputs matched the oracle bit-for-bit"},
+    {"workload_id":"p14-i97-wide-b16","variant":"treatment","input_sha256":"18bbb9e79fa295b9e0efc9a94fa42c9310d2e996b7f8b992442de584b447e862","wall_time_ns":44779000.0,"wall_time_ci_lower_ns":44737000.0,"wall_time_ci_upper_ns":44817000.0,"stage_times_ns":{"idwt":44779000.0},"dispatch_count":11,"output_sha256":"a1146ac24ca89549fe51d57e12fae0cf3c53865c23006976b1c68bd739e4c06a","exact_parity":true,"conformance":"pass: all 16 2592-wide tiled irreversible outputs matched the oracle bit-for-bit"}
+  ],
+  "decision": {
+    "priority_workload_id": "p14-i97-wide-b16",
+    "confidence_interval_supports_improvement": false,
+    "representative_regression_percent": 40.03,
+    "complexity_is_proportional": false,
+    "rationale": "Rejected and removed. Tiled IDWT was exact and improved 2592-wide batch-1 5/3 by 59.45-59.90% and 9/7 by 50.40-51.04%, but the required batch-16 cells regressed by 21.44-21.73% and 39.63-40.03%. Narrow benchmark-forced cells regressed by 111-432%. Production had no batch-aware selector, so a wide-shape-only promotion would route the measured batch-16 cliff into production. The candidate kernels, switch, and benchmark-only force seam were removed; generic wide and bounded whole-line cooperative routes remain."
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "experiment_id": "P19-METAL-JPEG-DECODE-DEFUSION",
+  "status": "rejected",
+  "environment": {
+    "commit": "f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5",
+    "branch": "main",
+    "dirty": true,
+    "cpu": "Apple M4 Pro, 12 cores",
+    "gpu": "Apple M4 Pro, 16 cores, Metal 4",
+    "ram_bytes": 51539607552,
+    "os": "macOS 26.5.2 build 25F84, Darwin 25.5.0",
+    "driver_runtime": "Metal 4",
+    "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "llvm_version": "LLVM 22.1.2",
+    "gpu_toolchain": "Apple metal 32023.883 (metalfe-32023.883)",
+    "build_profile": "release-bench",
+    "feature_flags": [],
+    "environment_variables": {
+      "J2K_REQUIRE_METAL_BENCH": "1",
+      "J2K_GPU_BENCH_BATCH_DIM": "512",
+      "J2K_GPU_BENCH_BATCH": "16",
+      "J2K_JPEG_METAL_DISABLE_SPLIT_COEFF_IDCT": "baseline:1;treatment:unset"
+    },
+    "input_corpus_sha256": "1d71a09db920cd02e78c265c658e50007028d5d2adb2b12a9f10d26130208200",
+    "sample_count": 10,
+    "warm_up_seconds": 3.0,
+    "measurement_seconds": 5.0
+  },
+  "workloads": [
+    {
+      "id": "decode-rgb8-512-b16-fast420",
+      "transform": "jpeg_idct",
+      "entropy": "huffman",
+      "code_block": "8x8",
+      "image": "512x512",
+      "batch": 16,
+      "components": 3,
+      "output": "rgb8",
+      "operation": "metal_jpeg_decode_defusion",
+      "axis_class": "at_512",
+      "jpeg_sampling": "4:2:0",
+      "jpeg_restart": "none"
+    }
+  ],
+  "measurements": [
+    {
+      "workload_id": "decode-rgb8-512-b16-fast420",
+      "variant": "baseline",
+      "wall_time_ns": 10533000.0,
+      "wall_time_ci_lower_ns": 10456000.0,
+      "wall_time_ci_upper_ns": 10688000.0,
+      "gpu_time_ns": null,
+      "stage_times_ns": {},
+      "dispatch_count": null,
+      "host_to_device_bytes": null,
+      "device_to_host_bytes": null,
+      "device_read_bytes": null,
+      "device_write_bytes": null,
+      "registers_per_thread": null,
+      "private_bytes_per_thread": null,
+      "shared_bytes_per_group": null,
+      "occupancy_percent": null,
+      "spill_loads": null,
+      "spill_stores": null,
+      "cache_observation": "The fused entropy/IDCT path writes component planes directly and allocates no coefficient-block scratch; public Metal traffic/cache counters are unavailable.",
+      "output_sha256": "5dba2f55e66faeb53e1d28f5a6dd1e14823eddc707d4c6cdcbca2a771dba315e",
+      "exact_parity": true,
+      "conformance": "CPU parity and exact fused/split output-buffer and texture probes passed, including multi-axis 4:2:0 boundary repair."
+    },
+    {
+      "workload_id": "decode-rgb8-512-b16-fast420",
+      "variant": "treatment",
+      "wall_time_ns": 11872000.0,
+      "wall_time_ci_lower_ns": 10621000.0,
+      "wall_time_ci_upper_ns": 13562000.0,
+      "gpu_time_ns": null,
+      "stage_times_ns": {},
+      "dispatch_count": null,
+      "host_to_device_bytes": null,
+      "device_to_host_bytes": null,
+      "device_read_bytes": null,
+      "device_write_bytes": null,
+      "registers_per_thread": null,
+      "private_bytes_per_thread": null,
+      "shared_bytes_per_group": null,
+      "occupancy_percent": null,
+      "spill_loads": null,
+      "spill_stores": null,
+      "cache_observation": "The split route allocates 12,681,216 bytes of coefficient and DC-only scratch for this batch, plus private component planes for texture output; public Metal traffic/cache counters are unavailable.",
+      "output_sha256": "5dba2f55e66faeb53e1d28f5a6dd1e14823eddc707d4c6cdcbca2a771dba315e",
+      "exact_parity": true,
+      "conformance": "CPU parity and exact fused/split output-buffer and texture probes passed, including multi-axis 4:2:0 boundary repair."
+    }
+  ],
+  "decision": {
+    "priority_workload_id": "decode-rgb8-512-b16-fast420",
+    "confidence_interval_supports_improvement": false,
+    "representative_regression_percent": 14.14,
+    "complexity_is_proportional": false,
+    "rationale": "Rejected and removed from production. Fused profiling showed decode wait dominated the eligible full 4:2:0 batch, so the existing test-only split coefficient/IDCT prototype was promoted temporarily behind a disable switch for exact A/B. It preserved output-buffer and texture bytes, including boundary repair, but added 12,681,216 bytes of scratch for 512x512 batch 16 and produced an inconclusive -0.57% to +14.14% interval (p=0.30) rather than a supported improvement. The production fused path remains unchanged; the pre-existing test-only diagnostic stays test-scoped."
+  }
+}

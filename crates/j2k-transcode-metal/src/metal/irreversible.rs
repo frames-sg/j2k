@@ -269,8 +269,9 @@ pub(super) fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
         projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
     timings.pack_upload_transfers = usize::from(blocks.length() > 0);
-    timings.pack_upload_bytes =
-        u64::try_from(blocks.length()).expect("macOS Metal buffer length fits u64");
+    timings.pack_upload_bytes = u64::try_from(blocks.length()).map_err(|_| {
+        MetalTranscodeError::Kernel("Metal staged 9/7 upload byte count does not fit u64")
+    })?;
     timings.resident_dct_handoff_count =
         validate_resident_dct_handoffs_for_dwt97_jobs(&blocks, jobs)?;
     timings.resident_dwt_handoff_count =
@@ -338,8 +339,9 @@ pub(super) fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
         dwt97_codeblock_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
     timings.pack_upload_transfers = usize::from(blocks.length() > 0);
-    timings.pack_upload_bytes =
-        u64::try_from(blocks.length()).expect("macOS Metal buffer length fits u64");
+    timings.pack_upload_bytes = u64::try_from(blocks.length()).map_err(|_| {
+        MetalTranscodeError::Kernel("Metal staged HTJ2K upload byte count does not fit u64")
+    })?;
     timings.resident_dct_handoff_count =
         validate_resident_dct_handoffs_for_htj2k_jobs(&blocks, jobs)?;
     timings.resident_dwt_handoff_count =
@@ -436,11 +438,11 @@ fn encode_dwt97_staged_row_lift(
         MetalTranscodeError::support("Metal 9/7 row-lift compute encoder creation", error)
     })?;
     encoder.setComputePipelineState(&runtime.dct97_idct_row_lift_batch);
-    encoder.set_buffer(0, Some(blocks), 0);
-    encoder.set_buffer(1, Some(&runtime.idct_basis), 0);
-    encoder.set_buffer(2, Some(&row_buffers.low), 0);
-    encoder.set_buffer(3, Some(&row_buffers.high), 0);
-    encoder.set_bytes::<Dct97IdctRowLiftParams>(4, &params);
+    encoder.set_buffer(0, Some(blocks), 0)?;
+    encoder.set_buffer(1, Some(&runtime.idct_basis), 0)?;
+    encoder.set_buffer(2, Some(&row_buffers.low), 0)?;
+    encoder.set_buffer(3, Some(&row_buffers.high), 0)?;
+    encoder.set_bytes::<Dct97IdctRowLiftParams>(4, &params)?;
     encoder.dispatchThreadgroups_threadsPerThreadgroup(
         super::mtl_size(row_groups as u64, u64::from(shape.batch_count_u32), 1),
         staged_threads_per_group(),
@@ -486,13 +488,13 @@ fn encode_dwt97_staged_column_lift(
         MetalTranscodeError::support("Metal 9/7 column-lift compute encoder creation", error)
     })?;
     encoder.setComputePipelineState(&runtime.dct97_column_lift_batch);
-    encoder.set_buffer(0, Some(&row_buffers.low), 0);
-    encoder.set_buffer(1, Some(&row_buffers.high), 0);
-    encoder.set_buffer(2, Some(&output_buffers.ll), 0);
-    encoder.set_buffer(3, Some(&output_buffers.hl), 0);
-    encoder.set_buffer(4, Some(&output_buffers.lh), 0);
-    encoder.set_buffer(5, Some(&output_buffers.hh), 0);
-    encoder.set_bytes::<Dct97ColumnLiftParams>(6, &params);
+    encoder.set_buffer(0, Some(&row_buffers.low), 0)?;
+    encoder.set_buffer(1, Some(&row_buffers.high), 0)?;
+    encoder.set_buffer(2, Some(&output_buffers.ll), 0)?;
+    encoder.set_buffer(3, Some(&output_buffers.hl), 0)?;
+    encoder.set_buffer(4, Some(&output_buffers.lh), 0)?;
+    encoder.set_buffer(5, Some(&output_buffers.hh), 0)?;
+    encoder.set_bytes::<Dct97ColumnLiftParams>(6, &params)?;
     encoder.dispatchThreadgroups_threadsPerThreadgroup(
         super::mtl_size(column_groups as u64, u64::from(shape.batch_count_u32), 2),
         staged_threads_per_group(),
@@ -603,9 +605,9 @@ pub(super) fn dispatch_dwt97_quantize_codeblock_band(
         code_block_height: u32_param(band.cb_height, METAL_DCT97_UNSUPPORTED_GRID)?,
         inv_delta: band.inv_delta,
     };
-    encoder.set_buffer(0, Some(band_buffer), 0);
-    encoder.set_buffer(1, Some(codeblock_buffer), 0);
-    encoder.set_bytes::<Dct97QuantizeCodeblocksParams>(2, &params);
+    encoder.set_buffer(0, Some(band_buffer), 0)?;
+    encoder.set_buffer(1, Some(codeblock_buffer), 0)?;
+    encoder.set_bytes::<Dct97QuantizeCodeblocksParams>(2, &params)?;
     dispatch_projection_threads(
         encoder,
         band.width as u64,

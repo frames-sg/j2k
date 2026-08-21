@@ -6,7 +6,9 @@
 // CI CUDA runner.
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaJ2kQuantizeJob};
+use j2k_cuda_j2k_engine::{CudaJ2kQuantizeJob, J2kCudaEngine};
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
     forward_rct_reference, quantize_reversible_reference, try_deinterleave_reference,
@@ -56,8 +58,9 @@ fn cuda_forward_rct_matches_native_reference_when_required() {
     let mut cuda_plane0 = plane0.clone();
     let mut cuda_plane1 = plane1.clone();
     let mut cuda_plane2 = plane2.clone();
-    let context = CudaContext::system_default().expect("CUDA context");
-    let stats = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let stats = engine
         .j2k_forward_rct(&mut cuda_plane0, &mut cuda_plane1, &mut cuda_plane2)
         .expect("CUDA forward RCT");
 
@@ -96,8 +99,9 @@ fn cuda_quantize_reversible_matches_native_reference_when_required() {
     );
 
     // CUDA (lib.rs line 2936).
-    let context = CudaContext::system_default().expect("CUDA context");
-    let cuda_out = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let cuda_out = engine
         .j2k_quantize_subband(
             &coefficients,
             CudaJ2kQuantizeJob {
@@ -128,7 +132,8 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         return;
     }
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
 
     // --- 4a: 8-bit unsigned RGB, 4 pixels ---
     {
@@ -151,7 +156,7 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             signed,
         )
         .expect("valid native deinterleave reference input");
-        let cuda_out = context
+        let cuda_out = engine
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit unsigned RGB");
 
@@ -184,7 +189,7 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             signed,
         )
         .expect("valid native deinterleave reference input");
-        let cuda_out = context
+        let cuda_out = engine
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit signed gray");
 
@@ -219,7 +224,7 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             signed,
         )
         .expect("valid native deinterleave reference input");
-        let cuda_out = context
+        let cuda_out = engine
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit unsigned RGB");
 
@@ -251,7 +256,7 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             signed,
         )
         .expect("valid native deinterleave reference input");
-        let cuda_out = context
+        let cuda_out = engine
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit signed gray");
 
@@ -282,7 +287,7 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             signed,
         )
         .expect("valid native 12-bit signed deinterleave input");
-        let cuda_out = context
+        let cuda_out = engine
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 12-bit signed gray");
 

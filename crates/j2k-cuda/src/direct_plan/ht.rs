@@ -38,22 +38,22 @@ pub(super) fn append_ht_subband(
         let expected_len = job
             .cleanup_length
             .checked_add(job.refinement_length)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ))?;
         if expected_len != payload_len {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ));
         }
         if job
             .num_bitplanes
             .checked_add(job.roi_shift)
             .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
         {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BITPLANES_UNSUPPORTED,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_bit_depth(PLAN_BITPLANES_UNSUPPORTED),
+            ));
         }
         let output_stride = checked_u32(job.output_stride)?;
         owners.payload.extend_from_slice(&job.data);
@@ -108,18 +108,18 @@ pub(super) fn append_referenced_ht_subband<'a>(
             })
         });
         if !job.data.is_empty() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ));
         }
         if job
             .num_bitplanes
             .checked_add(job.roi_shift)
             .is_none_or(|coded_bitplanes| coded_bitplanes > 31)
         {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BITPLANES_UNSUPPORTED,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_bit_depth(PLAN_BITPLANES_UNSUPPORTED),
+            ));
         }
         let payload_offset = checked_u64(shared_payload.len())?;
         let (payload_len, _) = consume_referenced_ht_payload(
@@ -174,15 +174,15 @@ fn consume_referenced_ht_payload<'a>(
 ) -> Result<(usize, usize), Error> {
     let output_start = output.as_ref().map_or(0, |bytes| bytes.len());
     let result = (|| {
-        let first = payloads.next().ok_or(Error::UnsupportedCudaRequest {
-            reason: PLAN_BLOCK_LENGTH_MISMATCH,
-        })?;
+        let first = payloads.next().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+        ))?;
         let mut record_count = 1usize;
         let cleanup = referenced_slice(encoded, first.cleanup)?;
         if cleanup.len() != job.cleanup_length as usize {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ));
         }
         if let Some(bytes) = output.as_deref_mut() {
             bytes.extend_from_slice(cleanup);
@@ -198,57 +198,56 @@ fn consume_referenced_ht_payload<'a>(
             }
         }
         while refinement_len < expected_refinement {
-            let continuation = payloads.next().ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            })?;
+            let continuation = payloads.next().ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ))?;
             record_count = record_count
                 .checked_add(1)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_PAYLOAD_TOO_LARGE,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                ))?;
             if continuation.cleanup.length != 0 {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+                ));
             }
             referenced_slice(encoded, continuation.cleanup)?;
-            let range = continuation
-                .refinement
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
-                })?;
+            let range = continuation.refinement.ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ))?;
             let refinement = referenced_slice(encoded, range)?;
             if refinement.is_empty() {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+                ));
             }
-            refinement_len = refinement_len.checked_add(refinement.len()).ok_or(
-                Error::UnsupportedCudaRequest {
-                    reason: PLAN_PAYLOAD_TOO_LARGE,
-                },
-            )?;
+            refinement_len =
+                refinement_len
+                    .checked_add(refinement.len())
+                    .ok_or(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                    ))?;
             if refinement_len > expected_refinement {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: PLAN_BLOCK_LENGTH_MISMATCH,
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+                ));
             }
             if let Some(bytes) = output.as_deref_mut() {
                 bytes.extend_from_slice(refinement);
             }
         }
         if refinement_len != expected_refinement {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: PLAN_BLOCK_LENGTH_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+            ));
         }
         let payload_len =
             cleanup
                 .len()
                 .checked_add(refinement_len)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_PAYLOAD_TOO_LARGE,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                ))?;
         Ok((payload_len, record_count))
     })();
     if result.is_err() {
@@ -274,9 +273,9 @@ pub(crate) fn referenced_ht_payload_record_count(
                 record_count =
                     record_count
                         .checked_add(consumed)
-                        .ok_or(Error::UnsupportedCudaRequest {
-                            reason: PLAN_PAYLOAD_TOO_LARGE,
-                        })?;
+                        .ok_or(Error::capability_rejected(
+                            j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+                        ))?;
             }
         }
     }
@@ -295,31 +294,35 @@ pub(super) fn referenced_payload_bytes(
         total
             .checked_add(cleanup)
             .and_then(|value| value.checked_add(refinement))
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))
     })
 }
 
 fn referenced_slice(encoded: &[u8], range: J2kCodestreamRange) -> Result<&[u8], Error> {
-    let end = range.end().ok_or(Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
-    })?;
+    let end = range.end().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+    ))?;
     encoded
         .get(range.offset..end)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: PLAN_BLOCK_LENGTH_MISMATCH,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
+        ))
 }
 
 fn checked_u32(value: usize) -> Result<u32, Error> {
-    u32::try_from(value).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
+    u32::try_from(value).map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+            PLAN_PAYLOAD_TOO_LARGE,
+        ))
     })
 }
 
 fn checked_u64(value: usize) -> Result<u64, Error> {
-    u64::try_from(value).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
+    u64::try_from(value).map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+            PLAN_PAYLOAD_TOO_LARGE,
+        ))
     })
 }

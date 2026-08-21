@@ -1,14 +1,34 @@
 use j2k_test_support::unwired_metal_kernels;
 
 const HOST_SOURCE: &str = concat!(
-    include_str!("../src/compute.rs"),
+    include_str!("../src/engine.rs"),
     "\n",
-    include_str!("../src/compute/runtime.rs"),
+    include_str!("../src/engine/runtime.rs"),
 );
 const NATIVE_COLOR_BATCH_SOURCE: &str = include_str!("../src/store_native_color_batch.metal");
+const PACKETIZATION_SOURCE: &str = include_str!("../src/encode_bitstream_packetize.metal");
+const CLASSIC_SOURCE: &str = concat!(
+    include_str!("../src/classic/abi.metal"),
+    "\n",
+    include_str!("../src/classic/constants.metal"),
+    "\n",
+    include_str!("../src/classic/qe_table.metal"),
+    "\n",
+    include_str!("../src/classic/context_tables.metal"),
+    "\n",
+    include_str!("../src/classic/support.metal"),
+    "\n",
+    include_str!("../src/classic/mq_decoder.metal"),
+    "\n",
+    include_str!("../src/classic/bypass_decoder.metal"),
+    "\n",
+    include_str!("../src/classic/pass_logic.metal"),
+    "\n",
+    include_str!("../src/classic/decode_kernels.metal"),
+);
 const SHADER_SOURCES: &[&str] = &[
     HOST_SOURCE,
-    include_str!("../src/classic.metal"),
+    CLASSIC_SOURCE,
     include_str!("../src/encode_bitstream.metal"),
     include_str!("../src/encode_bitstream_shared.metal"),
     include_str!("../src/encode_bitstream_classic_core.metal"),
@@ -16,7 +36,7 @@ const SHADER_SOURCES: &[&str] = &[
     include_str!("../src/encode_bitstream_classic_symbol_plan.metal"),
     include_str!("../src/encode_bitstream_classic_kernels.metal"),
     include_str!("../src/encode_bitstream_ht.metal"),
-    include_str!("../src/encode_bitstream_packetize.metal"),
+    PACKETIZATION_SOURCE,
     include_str!("../src/fdwt.metal"),
     include_str!("../src/ht_cleanup.metal"),
     include_str!("../src/idwt.metal"),
@@ -25,6 +45,21 @@ const SHADER_SOURCES: &[&str] = &[
     include_str!("../src/store.metal"),
     NATIVE_COLOR_BATCH_SOURCE,
 ];
+
+#[test]
+fn classic_shader_split_preserves_the_original_bytes() {
+    const ORIGINAL_BYTE_LEN: usize = 77_178;
+    const ORIGINAL_FNV1A64: u64 = 4_431_697_704_945_636_949;
+
+    let hash = CLASSIC_SOURCE
+        .as_bytes()
+        .iter()
+        .fold(14_695_981_039_346_656_037_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        });
+    assert_eq!(CLASSIC_SOURCE.len(), ORIGINAL_BYTE_LEN);
+    assert_eq!(hash, ORIGINAL_FNV1A64);
+}
 
 #[test]
 fn shader_inventory_includes_batch_capable_native_color_store() {

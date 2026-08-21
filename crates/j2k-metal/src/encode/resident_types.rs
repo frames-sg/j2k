@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use j2k::J2kLosslessEncodeOptions;
 use j2k_native::J2kPacketizationPacketDescriptor;
 
-use crate::compute;
+use crate::engine as compute;
 
 use super::{
     resident_schedule::SubmittedResidentLosslessChunkPipeline,

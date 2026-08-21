@@ -221,7 +221,7 @@ fn bench_chunked_entropy_diagnostic(c: &mut Criterion) {
         b.iter(|| {
             let report = CudaCodec::diagnose_tile_rgb8_chunked_entropy_with_session(
                 &input,
-                j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+                j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig::default(),
                 &mut session,
             )
             .expect("chunked entropy diagnostic");
@@ -250,7 +250,7 @@ fn probe_chunked_entropy_diagnostic(input: &[u8]) -> Result<(), j2k_jpeg_cuda::E
     let mut session = CudaSession::default();
     CudaCodec::diagnose_tile_rgb8_chunked_entropy_with_session(
         input,
-        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+        j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig::default(),
         &mut session,
     )
     .map(|_| ())

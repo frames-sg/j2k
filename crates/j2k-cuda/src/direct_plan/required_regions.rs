@@ -43,16 +43,16 @@ pub(super) fn required_regions_for_direct_plan(
             store
                 .source_x
                 .checked_add(store.copy_width)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_OUTPUT_RECT_MISMATCH,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(PLAN_OUTPUT_RECT_MISMATCH),
+                ))?;
         let source_bottom =
             store
                 .source_y
                 .checked_add(store.copy_height)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_OUTPUT_RECT_MISMATCH,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(PLAN_OUTPUT_RECT_MISMATCH),
+                ))?;
         if let Some(region) =
             RequiredBandRegion::new(store.source_x, store.source_y, source_right, source_bottom)
         {
@@ -86,9 +86,9 @@ fn required_region_capacity(plan: &J2kDirectGrayscalePlan) -> Result<usize, Erro
         };
         capacity
             .checked_add(additional)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))
     })
 }
 
@@ -125,7 +125,6 @@ fn add_idwt_input_required_regions(
 #[cfg(test)]
 mod tests {
     use crate::allocation::HostPhaseBudget;
-    use crate::Error;
 
     #[test]
     fn direct_plan_actual_capacities_accept_exact_cap_and_reject_one_over() {
@@ -137,9 +136,9 @@ mod tests {
         one_over.account_bytes(12).expect("retained plan fits");
         assert!(matches!(
             one_over.account_capacity::<u32>(2),
-            Err(Error::HostAllocationTooLarge {
-                requested: 20,
-                cap: 16,
+            Err(j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes: 20,
+                cap_bytes: 16,
                 what: "test direct plan",
             })
         ));

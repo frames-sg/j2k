@@ -10,7 +10,7 @@ pub(crate) use stream::CudaStream;
 
 /// CUDA event RAII handle for timing and synchronization.
 #[derive(Debug)]
-pub(crate) struct CudaEvent {
+pub struct CudaEvent {
     pub(crate) context: CudaContext,
     pub(crate) event: CuEvent,
 }
@@ -33,7 +33,8 @@ impl CudaEvent {
         })
     }
 
-    pub(crate) fn record_default_stream(&self) -> Result<(), CudaError> {
+    #[doc(hidden)]
+    pub fn record_default_stream(&self) -> Result<(), CudaError> {
         self.context.inner.with_current_resource_operation(|| {
             // SAFETY: a null stream is this current context's default stream,
             // and the context lifecycle gate is held.
@@ -71,7 +72,8 @@ impl CudaEvent {
     }
 
     /// Wait for this event to complete.
-    pub(crate) fn synchronize(&self) -> Result<(), CudaError> {
+    #[doc(hidden)]
+    pub fn synchronize(&self) -> Result<(), CudaError> {
         self.context.inner.with_current_resource_operation(|| {
             // SAFETY: event is a live CUDA event owned by this context, and the
             // context lifecycle gate is held.
@@ -87,7 +89,8 @@ impl CudaEvent {
     }
 
     /// Query whether this event has completed without waiting on the host.
-    pub(crate) fn is_complete(&self) -> Result<bool, CudaError> {
+    #[doc(hidden)]
+    pub fn is_complete(&self) -> Result<bool, CudaError> {
         self.context.inner.with_current_resource_operation(|| {
             // SAFETY: event is a live CUDA event owned by this context, and
             // the context lifecycle gate is held for the query.
@@ -104,7 +107,8 @@ impl CudaEvent {
     }
 
     /// Elapsed time in microseconds from `start` to `end`.
-    pub(crate) fn elapsed_time_us(start: &Self, end: &Self) -> Result<f32, CudaError> {
+    #[doc(hidden)]
+    pub fn elapsed_time_us(start: &Self, end: &Self) -> Result<f32, CudaError> {
         if !start.context.is_same_context(&end.context) {
             return Err(CudaError::InvalidArgument {
                 message: "CUDA timing events must belong to the same context".to_string(),

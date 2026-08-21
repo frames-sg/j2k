@@ -40,9 +40,7 @@ pub(super) fn encode_lossless_tile_with_report(
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
         && options.backend == EncodeBackendPreference::RequireDevice
     {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal resident encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level",
-        });
+        return Err(crate::Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit("J2K Metal resident encode requires classic padded contiguous Gray/RGB lossless input with at most one DWT level")));
     }
     let mut input_copy_used = false;
     let mut input_copy_duration = Duration::ZERO;
@@ -102,9 +100,11 @@ pub(super) fn encode_lossless_tile_with_report(
     } {
         Ok(data) => data,
         Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "J2K Metal encode input buffer is not host-visible",
-            });
+            return Err(crate::Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K Metal encode input buffer is not host-visible",
+                ),
+            ));
         }
         Err(error) => {
             return Err(metal_kernel_support_error(

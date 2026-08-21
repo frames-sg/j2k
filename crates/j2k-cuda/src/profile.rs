@@ -42,6 +42,10 @@ pub struct CudaHtj2kDecodeProfileDetail {
     pub fused_dequant_dispatch_count: usize,
     /// Inverse DWT CUDA dispatch count.
     pub idwt_dispatch_count: usize,
+    /// Final IDWT-stage interleave plus horizontal GPU time.
+    pub idwt_final_interleave_horizontal_us: u128,
+    /// Final IDWT-stage vertical synthesis GPU time.
+    pub idwt_final_vertical_us: u128,
     /// Inverse MCT CUDA dispatch count.
     pub mct_dispatch_count: usize,
     /// Store/format conversion CUDA dispatch count.

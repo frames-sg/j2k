@@ -176,8 +176,8 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
             .expect("structural destination")
     };
 
-    crate::compute::reset_metal_command_buffers_for_test();
-    crate::compute::reset_metal_compute_encoders_for_test();
+    crate::engine::reset_metal_command_buffers_for_test();
+    crate::engine::reset_metal_compute_encoders_for_test();
     let completion = decoder
         .submit_prepared_group_into(group, destination)
         .expect("submit structural group")
@@ -203,8 +203,8 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
     );
 
     Some((
-        crate::compute::metal_command_buffers_for_test(),
-        crate::compute::metal_compute_encoders_for_test(),
+        crate::engine::metal_command_buffers_for_test(),
+        crate::engine::metal_compute_encoders_for_test(),
     ))
 }
 

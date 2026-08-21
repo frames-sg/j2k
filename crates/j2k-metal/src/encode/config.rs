@@ -106,14 +106,18 @@ pub(super) fn resolve_lossless_encode_config(
     config: MetalLosslessEncodeConfig,
 ) -> Result<MetalLosslessEncodeBatchStats, crate::Error> {
     if config.gpu_encode_inflight_tiles == Some(0) {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal encode in-flight tile cap must be greater than zero",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "J2K Metal encode in-flight tile cap must be greater than zero",
+            ),
+        ));
     }
     if config.gpu_encode_memory_budget_bytes == Some(0) {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal encode memory budget must be greater than zero",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "J2K Metal encode memory budget must be greater than zero",
+            ),
+        ));
     }
 
     let effective_memory_budget_bytes = config

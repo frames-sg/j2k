@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 
 use super::MetalLosslessBufferEncodeOutcome;
 

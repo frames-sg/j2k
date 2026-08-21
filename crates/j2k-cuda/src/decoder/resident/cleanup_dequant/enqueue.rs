@@ -3,7 +3,7 @@
 use super::{
     cuda_error, pooled_cuda_buffer, run_component_cleanup_dequant_batches, CudaBufferPool,
     CudaComponentDecodeWork, CudaHtj2kCleanupTarget, CudaHtj2kDecodeResources,
-    CudaQueuedHtj2kCleanup, Error, HostPhaseBudget, CUDA_HTJ2K_KERNELS_NOT_READY,
+    CudaQueuedHtj2kCleanup, Error, HostPhaseBudget, J2kCudaEngine, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 
 /// Enqueue the HT cleanup/dequantization portion of a batch without a host
@@ -44,9 +44,9 @@ pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
     let accounting_index = component_work
         .iter()
         .position(|work| !work.pending_dequant_bands.is_empty())
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?;
     let has_refinement = component_work.iter().any(|work| {
         work.pending_dequant_bands.iter().any(|pending| {
             pending
@@ -73,7 +73,7 @@ pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
     // final same-stream store has established completion.
     let queued = unsafe {
         if has_refinement {
-            context
+            J2kCudaEngine::new(context)
                 .decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool_and_live_host_bytes(
                     decode_resources,
                     &targets,
@@ -82,7 +82,7 @@ pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
                 )
                 .map_err(cuda_error)?
         } else {
-            context
+            J2kCudaEngine::new(context)
                 .decode_htj2k_codeblocks_cleanup_dequantize_multi_enqueue_with_resources_and_pool(
                     decode_resources,
                     &targets,
@@ -97,7 +97,7 @@ pub(in crate::decoder) fn enqueue_component_cleanup_dequant_batches(
         // SAFETY: the queued guard owns the uploaded job metadata and remains
         // live through final store completion; coefficient owners remain in
         // component_work for the same duration.
-        unsafe { context.j2k_dequantize_queued_htj2k_cleanup_enqueue(&queued) }
+        unsafe { J2kCudaEngine::new(context).j2k_dequantize_queued_htj2k_cleanup_enqueue(&queued) }
             .map_err(cuda_error)?
     } else {
         j2k_cuda_runtime::CudaExecutionStats::default()

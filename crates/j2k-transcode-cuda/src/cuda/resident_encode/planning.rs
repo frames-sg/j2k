@@ -103,7 +103,7 @@ pub(super) fn reserve_component_assembly_budget<Component, Resolution, Subband>(
         ],
         what,
     )?;
-    budget.preflight_bytes(additional)
+    Ok(budget.preflight_bytes(additional)?)
 }
 
 pub(super) fn build_resident_subband_group_plans<'a, J>(
@@ -122,7 +122,7 @@ pub(super) fn build_resident_subband_group_plans<'a, J>(
         live_metadata_bytes,
     )?;
     let mut group_plans =
-        budget.try_vec_with_capacity(groups.len(), "CUDA resident subband group plans")?;
+        budget.try_vec_with_capacity_named(groups.len(), "CUDA resident subband group plans")?;
     for group in groups {
         if group.bands.item_count != group.jobs.len() {
             return Err(CudaTranscodeError::Kernel(
@@ -155,8 +155,8 @@ pub(super) fn resident_group_targets<'a, J>(
         &[group_plans.len(), 4],
         "CUDA resident grouped encode targets",
     )?;
-    let mut targets =
-        budget.try_vec_with_capacity(target_capacity, "CUDA resident grouped encode targets")?;
+    let mut targets = budget
+        .try_vec_with_capacity_named(target_capacity, "CUDA resident grouped encode targets")?;
     for plan in group_plans
         .iter()
         .flat_map(ResidentSubbandGroupPlans::plans)
@@ -175,7 +175,8 @@ pub(super) fn resident_targets<'a>(
     plans: &'a [ResidentSubbandEncodePlan<'a>],
     budget: &mut ResidentMetadataBudget,
 ) -> Result<Vec<CudaHtj2kEncodeResidentTarget<'a>>, CudaTranscodeError> {
-    let mut targets = budget.try_vec_with_capacity(plans.len(), "CUDA resident encode targets")?;
+    let mut targets =
+        budget.try_vec_with_capacity_named(plans.len(), "CUDA resident encode targets")?;
     for plan in plans.iter().filter(|plan| !plan.jobs.is_empty()) {
         targets.push(CudaHtj2kEncodeResidentTarget {
             coefficients: plan.coefficients,
@@ -257,9 +258,9 @@ pub(super) fn resident_subband_encode_plan<'a>(
         "CUDA resident 9/7 code-block metadata",
     )?;
     let mut encode_jobs =
-        budget.try_vec_with_capacity(job_count, "CUDA resident 9/7 code-block jobs")?;
+        budget.try_vec_with_capacity_named(job_count, "CUDA resident 9/7 code-block jobs")?;
     let mut shapes =
-        budget.try_vec_with_capacity(job_count, "CUDA resident 9/7 code-block shapes")?;
+        budget.try_vec_with_capacity_named(job_count, "CUDA resident 9/7 code-block shapes")?;
     for item in 0..item_count {
         let item_offset = item
             .checked_mul(item_stride)
@@ -323,7 +324,7 @@ mod tests {
         budget.account_bytes(half_plus_one).unwrap();
         assert!(matches!(
             budget.account_bytes(half_plus_one),
-            Err(CudaTranscodeError::HostAllocationTooLarge {
+            Err(j2k_core::HostPhaseError::LimitExceeded {
                 what: "CUDA resident aggregate metadata",
                 ..
             })
@@ -340,7 +341,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             budget.preflight_bytes(half_plus_one),
-            Err(CudaTranscodeError::HostAllocationTooLarge {
+            Err(j2k_core::HostPhaseError::LimitExceeded {
                 what: "CUDA resident aggregate metadata",
                 ..
             })

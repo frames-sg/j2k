@@ -9,6 +9,7 @@ use super::{
     MetalWeightTap, Reversible53ProjectionParams, SparseWeightRow, TranscodeComputeEncoderExt,
     METAL_DCT97_UNSUPPORTED_GRID, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
+use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
 
 mod allocation;
 pub(super) use allocation::{
@@ -22,6 +23,36 @@ pub(super) struct BandGeometry {
     pub(super) block_cols: u32,
     pub(super) band_width: u32,
     pub(super) band_height: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct DwtLevelShape {
+    pub(super) low_width: usize,
+    pub(super) low_height: usize,
+    pub(super) high_width: usize,
+    pub(super) high_height: usize,
+}
+
+pub(super) fn checked_dwt_level_shape(
+    width: usize,
+    height: usize,
+    unsupported_grid: &'static str,
+) -> Result<DwtLevelShape, MetalTranscodeError> {
+    let width =
+        u32::try_from(width).map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
+    let height =
+        u32::try_from(height).map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
+    let dimensions = encode_dwt_level_dimensions_for_input(width, height);
+    Ok(DwtLevelShape {
+        low_width: usize::try_from(dimensions.low_width)
+            .map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?,
+        low_height: usize::try_from(dimensions.low_height)
+            .map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?,
+        high_width: usize::try_from(dimensions.high_width)
+            .map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?,
+        high_height: usize::try_from(dimensions.high_height)
+            .map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -85,9 +116,9 @@ pub(super) fn dispatch_reversible_band(
     encoder: &ComputeCommandEncoderRef,
     output: &Buffer,
     geometry: ReversibleBandGeometry,
-) {
+) -> Result<(), MetalTranscodeError> {
     if geometry.band_width == 0 || geometry.band_height == 0 {
-        return;
+        return Ok(());
     }
 
     let params = Reversible53ProjectionParams {
@@ -101,14 +132,15 @@ pub(super) fn dispatch_reversible_band(
         vertical_low: u32::from(geometry.vertical_low),
         horizontal_low: u32::from(geometry.horizontal_low),
     };
-    encoder.set_buffer(1, Some(output), 0);
-    encoder.set_bytes::<Reversible53ProjectionParams>(2, &params);
+    encoder.set_buffer(1, Some(output), 0)?;
+    encoder.set_bytes::<Reversible53ProjectionParams>(2, &params)?;
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),
         u64::from(geometry.band_height),
         u64::from(geometry.batch_count),
     );
+    Ok(())
 }
 
 pub(super) fn dispatch_band(
@@ -117,9 +149,9 @@ pub(super) fn dispatch_band(
     y_weights: (&Buffer, &Buffer),
     output: &Buffer,
     geometry: BandGeometry,
-) {
+) -> Result<(), MetalTranscodeError> {
     if geometry.band_width == 0 || geometry.band_height == 0 {
-        return;
+        return Ok(());
     }
 
     let params = DctProjectionParams {
@@ -129,14 +161,15 @@ pub(super) fn dispatch_band(
         band_width: geometry.band_width,
         band_height: geometry.band_height,
     };
-    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
-    encoder.set_bytes::<DctProjectionParams>(7, &params);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output)?;
+    encoder.set_bytes::<DctProjectionParams>(7, &params)?;
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),
         u64::from(geometry.band_height),
         1,
     );
+    Ok(())
 }
 
 pub(super) fn dispatch_band_batch(
@@ -145,9 +178,9 @@ pub(super) fn dispatch_band_batch(
     y_weights: (&Buffer, &Buffer),
     output: &Buffer,
     geometry: BatchBandGeometry,
-) {
+) -> Result<(), MetalTranscodeError> {
     if geometry.band_width == 0 || geometry.band_height == 0 {
-        return;
+        return Ok(());
     }
 
     let params = DctBatchProjectionParams {
@@ -159,14 +192,15 @@ pub(super) fn dispatch_band_batch(
         band_height: geometry.band_height,
         output_stride: geometry.output_stride,
     };
-    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
-    encoder.set_bytes::<DctBatchProjectionParams>(7, &params);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output)?;
+    encoder.set_bytes::<DctBatchProjectionParams>(7, &params)?;
     dispatch_projection_threads(
         encoder,
         u64::from(geometry.band_width),
         u64::from(geometry.band_height),
         u64::from(geometry.batch_count),
     );
+    Ok(())
 }
 
 pub(super) fn validate_grid(

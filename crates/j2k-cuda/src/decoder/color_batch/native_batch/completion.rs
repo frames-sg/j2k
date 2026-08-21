@@ -49,9 +49,11 @@ impl SubmittedNativeColorResidentBatch {
                 return Err(error);
             }
         }
-        let output = self.output.take().ok_or(Error::UnsupportedCudaRequest {
-            reason: "CUDA resident RGB submission lost its output owner",
-        })?;
+        let output = self.output.take().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "CUDA resident RGB submission lost its output owner",
+            ),
+        ))?;
         Ok((output, self.report.clone()))
     }
 }

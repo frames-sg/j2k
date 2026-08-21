@@ -1,0 +1,215 @@
+version: 3
+baseline_tag: v0.9.0
+baseline_version: 0.9.0
+candidate_version: "0.10.0"
+break_ledger:
+  - id: canonical-module-paths
+    kind: source
+    packages: [j2k-native, j2k, j2k-transcode, j2k-cuda]
+    removed_items:
+      - package: j2k-native
+        item: "pub j2k_native::EncodeError::Accelerator::source: j2k_types::stage_error::J2kEncodeStageError"
+      - package: j2k-native
+        item: "pub j2k_native::EncodeOptions::irreversible_quantization_subband_scales: j2k_types::IrreversibleQuantizationSubbandScales"
+      - package: j2k-native
+        item: "pub j2k_native::Reversible53CoefficientImage::image: j2k_types::PrecomputedHtj2k53Image"
+      - package: j2k
+        item: "pub fn j2k::encode_j2k_lossless_with_accelerator(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedJ2k, j2k::J2kError>"
+      - package: j2k
+        item: "pub fn j2k::encode_j2k_lossy_with_accelerator(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k_types::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::J2kError>"
+      - package: j2k
+        item: "pub j2k::EncodedJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport"
+      - package: j2k
+        item: "pub j2k::EncodedLossyJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>>, j2k_transcode::TranscodeStageError>"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_codeblock_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PrequantizedHtj2k97Component>>, j2k_transcode::TranscodeStageError>"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::htj2k97_subband_delta(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> f64"
+      - package: j2k-transcode
+        item: "pub fn j2k_transcode::htj2k97_subband_total_bitplanes(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> u8"
+      - package: j2k-transcode
+        item: "pub j2k_transcode::Htj2k97CodeBlockOptions::irreversible_quantization_subband_scales: j2k_types::IrreversibleQuantizationSubbandScales"
+      - package: j2k-transcode
+        item: "pub j2k_transcode::PreencodedHtj2k97CompactBatch::components: alloc::vec::Vec<j2k_types::PreencodedHtj2k97CompactComponent>"
+      - package: j2k-transcode
+        item: "pub j2k_transcode::PreencodedHtj2k97CompactBatchGroups::groups: alloc::vec::Vec<alloc::vec::Vec<j2k_types::PreencodedHtj2k97CompactComponent>>"
+      - package: j2k-cuda
+        item: "pub const fn j2k_cuda::CudaLosslessEncodeResult::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport"
+      - package: j2k-cuda
+        item: "pub j2k_cuda::CudaEncodedJ2kMetadata::dispatch_report: j2k_types::J2kEncodeDispatchReport"
+    summary: "Public signatures now expose the focused j2k-types defining modules established by the ownership refactor; the root names remain compatibility re-exports."
+    migration: "Existing root imports remain available through compatibility re-exports; only code that spells canonical defining paths in public signatures should migrate to the focused dispatch, prepared_plan, tier1, or transform modules shown in the added inventory."
+  - id: cuda-transcode-engine-ownership
+    kind: source
+    packages: [j2k-cuda-runtime]
+    removed_items:
+      - package: j2k-cuda-runtime
+        item: "pub fn j2k_cuda_runtime::transcode_kernels_built() -> bool"
+    summary: "The codec-neutral CUDA runtime no longer reports availability for codec-specific transcode kernels owned by the transcode engine."
+    migration: "Call j2k_cuda_transcode_engine::transcode_kernels_built from code that explicitly depends on the CUDA transcode engine."
+  - id: generic-metal-resident-handoff
+    kind: source
+    packages: [j2k-transcode-metal]
+    removed_items:
+      - package: j2k-transcode-metal
+        item: "pub fn j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&j2k_metal::encode::encoded::MetalEncodedJ2k) -> core::result::Result<j2k_transcode::resident::ResidentCodestreamBuffer<'_>, j2k_transcode::resident::ResidentHandoffError>"
+    summary: "The Metal transcode handoff now consumes the backend-neutral DeviceCodestream contract instead of depending on the full j2k-metal adapter type."
+    migration: "Pass MetalEncodedJ2k, or another DeviceCodestream implementation, to the same resident_codestream_buffer_from_metal_encoded_j2k function."
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:0f9439b457b6d9f8"
+    hidden_count: 223
+    hidden_fingerprint: "fnv1a64:5eeeb03b82ab7efe"
+    rationale: "Reviewed the complete ordinary j2k-core diff: it adds the typed CapabilityRejection taxonomy and backend-neutral DeviceCodestream contract required by A8 and the Metal engine boundary, without removing an existing item."
+    hidden_rationale: "Reviewed all 223 hidden j2k-core items after the host-allocation, capability, and resident-codestream ownership changes; the inventory is implementation-facing and its exact fingerprint is recorded here."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the complete ordinary j2k-profile surface against v0.9.0; its documented surface remains the crate module root only."
+    hidden_rationale: "Reviewed the complete hidden profiling inventory; capture ownership, controls, and callable profiling surfaces are unchanged from v0.9.0."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:f7bf662d894cec3c"
+    hidden_count: 87
+    hidden_fingerprint: "fnv1a64:6924f5f92bd20fd3"
+    rationale: "Reviewed the complete ordinary j2k-types diff: it adds the shared typed prepared-plan geometry, owned accelerator jobs, allocation errors, and focused ownership-module surface required by A1, A2, and A6."
+    hidden_rationale: "Reviewed all 87 hidden j2k-types items after extracting transform, tier1, packetization, dispatch, and prepared-plan owners; the exact implementation-facing inventory is recorded here."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:f2313be308412362"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete ordinary j2k-codec-math diff: it adds the named OpenJPEG inverse 9/7 scaling constant used to make the cross-backend numerical contract explicit; no item is removed."
+  j2k-cuda-build-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:336672b34c3be7a1"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete first-release j2k-cuda-build-support surface: its ten items provide the shared, deterministic CUDA-Oxide build boundary used by the three codec engines."
+  j2k-cuda-runtime:
+    removed_fingerprint: "fnv1a64:de2b8b0fd86c7229"
+    added_fingerprint: "fnv1a64:54c7a62865f7dec4"
+    hidden_count: 251
+    hidden_fingerprint: "fnv1a64:20a941ec03c4ff5f"
+    rationale: "Reviewed the complete ordinary CUDA runtime diff: it removes the codec-specific transcode availability probe and adds the codec-neutral compiled-kernel, launch-geometry, event, memset, and parameter APIs consumed by engine crates."
+    hidden_rationale: "Reviewed all 251 hidden CUDA runtime items after codec implementations moved into engines; the remaining inventory is limited to driver, context, allocation, synchronization, and low-level launch responsibilities."
+  j2k-cuda-j2k-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:8df2711346a99013"
+    hidden_count: 695
+    hidden_fingerprint: "fnv1a64:809f589a3836ab70"
+    rationale: "Reviewed the complete first-release ordinary j2k-cuda-j2k-engine surface: its five entry points expose only the borrowed-context engine boundary and J2K kernel availability checks."
+    hidden_rationale: "Reviewed all 695 hidden J2K engine items after classic, HTJ2K, transform, store, encode, and ML kernel ownership moved out of the low-level runtime; the exact inventory is recorded here."
+  j2k-cuda-jpeg-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:a77ba816ebfa6aad"
+    hidden_count: 176
+    hidden_fingerprint: "fnv1a64:e88101299bf042a3"
+    rationale: "Reviewed the complete first-release ordinary j2k-cuda-jpeg-engine surface: its eleven items define the borrowed-context JPEG engine boundary, prepared decode data, and kernel availability checks."
+    hidden_rationale: "Reviewed all 176 hidden JPEG engine items after JPEG ABI, validation, launch, completion, and CUDA-Oxide projects moved out of the low-level runtime; the exact inventory is recorded here."
+  j2k-cuda-transcode-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:4557f66a34d3d69f"
+    hidden_count: 84
+    hidden_fingerprint: "fnv1a64:b2fcaa9b0171aba7"
+    rationale: "Reviewed the complete first-release ordinary j2k-cuda-transcode-engine surface: its six items define the borrowed-context coefficient-domain engine and transcode-kernel availability contract."
+    hidden_rationale: "Reviewed all 84 hidden transcode engine items after reversible 5/3, irreversible 9/7, quantization, launch, and PTX ownership moved out of the low-level runtime; the exact inventory is recorded here."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:02139606f1202938"
+    rationale: "Reviewed the complete ordinary j2k-metal-support surface against v0.9.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden Metal support inventory; retained ownership, checked allocation, command submission, and audited unsafe boundaries are unchanged from v0.9.0."
+  j2k-native:
+    removed_fingerprint: "fnv1a64:c43cf8aa5bb2b495"
+    added_fingerprint: "fnv1a64:09475401b85d7ab4"
+    hidden_count: 544
+    hidden_fingerprint: "fnv1a64:30485095f90fe9fb"
+    rationale: "Reviewed the complete ordinary j2k-native diff: three signature paths now expose their focused j2k-types owners, matching added signatures with the same semantics, and DecodePlanAllocationError gains a typed conversion."
+    hidden_rationale: "Reviewed all 544 hidden native-codec items after prepared-plan, packing, allocation, and error ownership consolidation; the exact decode, transform, color, and SIMD inventory is recorded here."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 574
+    hidden_fingerprint: "fnv1a64:b3e5271cb5d45bac"
+    rationale: "Reviewed the complete ordinary j2k-jpeg surface against v0.9.0; the safe SIMD refactor adds, removes, and changes no public API item."
+    hidden_rationale: "Reviewed the complete hidden JPEG inventory. The added benchmark-only gray, RGB, cropped 4:2:0, unaligned-row, and NEON IDCT surfaces validate the private safe SIMD kernels; codec entry points and downstream implementation contracts remain compatible with v0.9.0."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the complete ordinary j2k-tilecodec surface against v0.9.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed the complete hidden tile-codec inventory; codec, scratch, and source-preserving error boundaries are unchanged from v0.9.0."
+  j2k:
+    removed_fingerprint: "fnv1a64:2fe0a6167211371d"
+    added_fingerprint: "fnv1a64:1dd75ca4382819dc"
+    hidden_count: 106
+    hidden_fingerprint: "fnv1a64:ae08920eeb566bb7"
+    rationale: "Reviewed the complete ordinary facade diff: accelerator and dispatch-report signature paths now expose focused j2k-types modules, while typed Classic and HT prepared-plan geometry accessors replace downcast-oriented use."
+    hidden_rationale: "Reviewed all 106 hidden j2k facade items after typed prepared plans and shared geometry were adopted; retained-plan, validation, accelerator-context, and typed-error implementation contracts are covered."
+  j2k-transcode:
+    removed_fingerprint: "fnv1a64:7d3992c196a64906"
+    added_fingerprint: "fnv1a64:8392552cc2b1fe45"
+    hidden_count: 458
+    hidden_fingerprint: "fnv1a64:449a76476549c1e2"
+    rationale: "Reviewed the complete ordinary transcode diff: nine signatures now expose focused prepared_plan, tier1, and transform defining paths while preserving the operations and value contracts through root compatibility aliases."
+    hidden_rationale: "Reviewed all 458 hidden transcode items after focused type-path ownership and resident handoff changes; transforms, packetization, accounting, and source-preserving errors remain represented in the exact inventory."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 20
+    hidden_fingerprint: "fnv1a64:be22ca1d5e12b043"
+    rationale: "Reviewed the complete ordinary j2k-transcode-cuda surface against v0.9.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed all 20 hidden CUDA transcode adapter items after binding operations through the borrowed transcode engine; routing, resident handoff, allocation caps, and source-preserving failures are covered."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:79397ffc221464c3"
+    rationale: "Reviewed the complete ordinary j2k-jpeg-metal surface against v0.9.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed all 83 hidden JPEG Metal items after the shared batch-plan and compute-module decomposition; resident-image ownership, session lifetime, normalized sampling, and typed failures are covered."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:07ac16c3eaae6cb8"
+    hidden_count: 316
+    hidden_fingerprint: "fnv1a64:62663f75c0f926b3"
+    rationale: "Reviewed the complete ordinary j2k-metal diff: MetalEncodedJ2k now implements DeviceCodestream and exposes byte length and capacity so resident handoff no longer requires an adapter-to-adapter dependency."
+    hidden_rationale: "Reviewed all 316 hidden j2k-metal items after the private J2K engine boundary and resident-codestream contract were introduced; encode routing, retained resources, and adapter behavior are covered."
+  j2k-transcode-metal:
+    removed_fingerprint: "fnv1a64:2f6cfda5651faaa3"
+    added_fingerprint: "fnv1a64:3983c4b78178182b"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:b4a8b53d5e10bb00"
+    rationale: "Reviewed the complete ordinary Metal transcode diff: the resident handoff keeps its function name and result semantics but generalizes its input from MetalEncodedJ2k to the backend-neutral DeviceCodestream contract."
+    hidden_rationale: "Reviewed all 49 hidden Metal transcode items after removing the full j2k-metal dependency; transforms, buffers, resident handoff, fallback, and typed source chains are covered."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 133
+    hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
+    rationale: "Reviewed the complete ordinary j2k-jpeg-cuda surface against v0.9.0; no public API item was added, removed, or changed."
+    hidden_rationale: "Reviewed all 133 hidden JPEG CUDA adapter items after execution moved behind the JPEG engine boundary; session ownership, allocation accounting, decode planning, and typed failures are covered."
+  j2k-cuda:
+    removed_fingerprint: "fnv1a64:8c14b4c94b6777f3"
+    added_fingerprint: "fnv1a64:711c42364b8efc73"
+    hidden_count: 190
+    hidden_fingerprint: "fnv1a64:4da267f54ebaba53"
+    rationale: "Reviewed the complete ordinary J2K CUDA adapter diff: two dispatch-report signatures now expose the focused j2k-types defining module while retaining the same returned and stored report contract."
+    hidden_rationale: "Reviewed all 190 hidden J2K CUDA adapter items after codec execution moved behind the J2K engine; completion state, session usability, device identity, ordering, pooling, and guarded interop are covered."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete ordinary and hidden j2k-ml inventories against v0.9.0; no public API item was added, removed, or changed."

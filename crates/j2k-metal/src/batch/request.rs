@@ -9,7 +9,7 @@ use std::{
 
 use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 
-use crate::{Error, J2kDecoder};
+use crate::Error;
 
 use super::heuristics::group_metal_requests;
 
@@ -28,7 +28,6 @@ pub(super) struct QueuedRequest {
     pub(super) backend: BackendRequest,
     pub(super) op: BatchOp,
     pub(super) output_slot: usize,
-    pub(super) max_image_dim: OnceCell<Option<u32>>,
     pub(super) input_fingerprint: OnceCell<u64>,
 }
 
@@ -46,17 +45,8 @@ impl QueuedRequest {
             backend,
             op,
             output_slot,
-            max_image_dim: OnceCell::new(),
             input_fingerprint: OnceCell::new(),
         }
-    }
-
-    pub(super) fn max_image_dim(&self) -> Option<u32> {
-        *self.max_image_dim.get_or_init(|| {
-            let decoder = J2kDecoder::new(self.input.as_ref()).ok()?;
-            let dims = decoder.inner.info().dimensions;
-            Some(dims.0.max(dims.1))
-        })
     }
 
     pub(super) fn input_fingerprint(&self) -> u64 {
@@ -72,11 +62,6 @@ impl QueuedRequest {
             }
             hasher.finish()
         })
-    }
-
-    #[cfg(test)]
-    pub(super) fn max_image_dim_cache_filled_for_test(&self) -> bool {
-        self.max_image_dim.get().is_some()
     }
 
     #[cfg(test)]

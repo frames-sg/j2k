@@ -13,9 +13,9 @@ pub(super) fn find_cuda_band(
     bands
         .iter()
         .find(|band| band.band_id == band_id)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))
 }
 
 #[cfg(feature = "cuda-runtime")]

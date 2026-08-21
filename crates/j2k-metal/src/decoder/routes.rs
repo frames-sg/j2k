@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::{DeviceDecodePlan, DeviceDecodeRequest};
+use j2k::DeviceDecodePlan;
 use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 
 use super::surface::{allocate_cpu_surface, upload_surface};
 use super::J2kDecoder;
+use super::{MetalDecodeOp, MetalDecodeRequest};
 #[cfg(target_os = "macos")]
 use crate::MetalBackendSession;
 use crate::{routing, Error, Surface};
@@ -58,25 +59,6 @@ impl J2kDecoder<'_> {
     }
 
     #[cfg(target_os = "macos")]
-    fn decode_region_to_metal_surface(
-        &mut self,
-        fmt: PixelFormat,
-        plan: DeviceDecodePlan,
-    ) -> Result<Surface, Error> {
-        self.decode_region_scaled_to_metal_surface(fmt, plan.source_rect(), Downscale::None, plan)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn decode_scaled_to_metal_surface(
-        &mut self,
-        fmt: PixelFormat,
-        scale: Downscale,
-        plan: DeviceDecodePlan,
-    ) -> Result<Surface, Error> {
-        self.decode_region_scaled_to_metal_surface(fmt, plan.source_rect(), scale, plan)
-    }
-
-    #[cfg(target_os = "macos")]
     fn decode_region_scaled_to_metal_surface(
         &mut self,
         fmt: PixelFormat,
@@ -89,7 +71,7 @@ impl J2kDecoder<'_> {
         {
             return Ok(surface);
         }
-        crate::compute::decode_region_scaled_to_surface(
+        crate::engine::decode_region_scaled_to_surface(
             self.bytes,
             plan.source_dims(),
             fmt,
@@ -112,8 +94,8 @@ impl J2kDecoder<'_> {
         )? {
             return Ok(surface);
         }
-        crate::compute::with_runtime_for_session(session, |_| {
-            crate::compute::decode_region_scaled_to_surface_with_device(
+        crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::decode_region_scaled_to_surface_with_device(
                 self.bytes,
                 plan.source_dims(),
                 fmt,
@@ -124,136 +106,79 @@ impl J2kDecoder<'_> {
         })
     }
 
-    pub(crate) fn decode_to_surface_impl(
+    pub(crate) fn decode_op_to_surface_impl(
         &mut self,
-        fmt: PixelFormat,
-        backend: BackendRequest,
+        request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
-        let route = routing::decide_route(backend, fmt);
-        if let Some(error) = routing::decision_error(route) {
-            return Err(error);
-        }
+        let plan =
+            DeviceDecodePlan::for_image(self.inner.info().dimensions, request.op.device_request())?;
 
-        match route {
-            routing::RouteDecision::CpuHost => self.decode_to_cpu_surface(fmt),
-            #[cfg(target_os = "macos")]
-            routing::RouteDecision::MetalKernel => {
-                if let Some(surface) = self.decode_direct_to_surface(fmt)? {
-                    Ok(surface)
-                } else {
-                    self.decode_full_to_metal_surface(fmt)
-                }
-            }
-            routing::RouteDecision::RejectExplicitMetal { .. }
-            | routing::RouteDecision::RejectUnsupportedBackend { .. } => {
-                unreachable!("handled by decision_error")
-            }
-            #[cfg(not(target_os = "macos"))]
-            routing::RouteDecision::MetalUnavailable => unreachable!("handled by decision_error"),
-        }
-    }
-
-    pub(crate) fn decode_region_to_surface_impl(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        let route = routing::decide_route(backend, fmt);
-        if let Some(error) = routing::decision_error(route) {
-            return Err(error);
-        }
-
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::Region { roi },
-        )?;
-        match route {
-            routing::RouteDecision::CpuHost => self.decode_region_to_cpu_surface(fmt, plan),
-            #[cfg(target_os = "macos")]
-            routing::RouteDecision::MetalKernel => self.decode_region_to_metal_surface(fmt, plan),
-            routing::RouteDecision::RejectExplicitMetal { .. }
-            | routing::RouteDecision::RejectUnsupportedBackend { .. } => {
-                unreachable!("handled by decision_error")
-            }
-            #[cfg(not(target_os = "macos"))]
-            routing::RouteDecision::MetalUnavailable => unreachable!("handled by decision_error"),
-        }
-    }
-
-    pub(crate) fn decode_scaled_to_surface_impl(
-        &mut self,
-        fmt: PixelFormat,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::Scaled { scale },
-        )?;
         #[cfg(target_os = "macos")]
-        let selected = if backend == BackendRequest::Auto
-            && j2k::J2kDecoder::inspect_support(self.bytes)
-                .ok()
-                .is_some_and(|support| {
-                    routing::auto_scaled_decode_uses_metal(
-                        plan.output_dims(),
-                        support.component_count(),
-                        fmt,
-                        support.transfer_syntax,
-                        support.payload_kind,
-                        scale,
-                    )
-                }) {
-            BackendRequest::Metal
-        } else {
-            backend
+        let selected = match request.op {
+            MetalDecodeOp::Scaled(scale)
+                if request.backend == BackendRequest::Auto
+                    && j2k::J2kDecoder::inspect_support(self.bytes)
+                        .ok()
+                        .is_some_and(|support| {
+                            routing::auto_scaled_decode_uses_metal(
+                                plan.output_dims(),
+                                support.component_count(),
+                                request.fmt,
+                                support.transfer_syntax,
+                                support.payload_kind,
+                                scale,
+                            )
+                        }) =>
+            {
+                BackendRequest::Metal
+            }
+            _ => request.backend,
         };
         #[cfg(not(target_os = "macos"))]
-        let selected = backend;
-        let route = routing::decide_route(selected, fmt);
+        let selected = request.backend;
+        let route = routing::decide_route(selected, request.fmt);
         if let Some(error) = routing::decision_error(route) {
             return Err(error);
         }
 
         match route {
-            routing::RouteDecision::CpuHost => self.decode_scaled_to_cpu_surface(fmt, scale, plan),
+            routing::RouteDecision::CpuHost => match request.op {
+                MetalDecodeOp::Full => self.decode_to_cpu_surface(request.fmt),
+                MetalDecodeOp::Region(_) => self.decode_region_to_cpu_surface(request.fmt, plan),
+                MetalDecodeOp::Scaled(scale) => {
+                    self.decode_scaled_to_cpu_surface(request.fmt, scale, plan)
+                }
+                MetalDecodeOp::RegionScaled { scale, .. } => self
+                    .decode_region_scaled_to_cpu_surface(
+                        request.fmt,
+                        plan.source_rect(),
+                        scale,
+                        plan,
+                    ),
+            },
             #[cfg(target_os = "macos")]
-            routing::RouteDecision::MetalKernel => {
-                self.decode_scaled_to_metal_surface(fmt, scale, plan)
-            }
-            routing::RouteDecision::RejectExplicitMetal { .. }
-            | routing::RouteDecision::RejectUnsupportedBackend { .. } => {
-                unreachable!("handled by decision_error")
-            }
-            #[cfg(not(target_os = "macos"))]
-            routing::RouteDecision::MetalUnavailable => unreachable!("handled by decision_error"),
-        }
-    }
-
-    pub(crate) fn decode_region_scaled_to_surface_impl(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        let route = routing::decide_route(backend, fmt);
-        if let Some(error) = routing::decision_error(route) {
-            return Err(error);
-        }
-        let plan = DeviceDecodePlan::for_image(
-            self.inner.info().dimensions,
-            DeviceDecodeRequest::RegionScaled { roi, scale },
-        )?;
-        match route {
-            routing::RouteDecision::CpuHost => {
-                self.decode_region_scaled_to_cpu_surface(fmt, roi, scale, plan)
-            }
-            #[cfg(target_os = "macos")]
-            routing::RouteDecision::MetalKernel => {
-                self.decode_region_scaled_to_metal_surface(fmt, roi, scale, plan)
-            }
+            routing::RouteDecision::MetalKernel => match request.op {
+                MetalDecodeOp::Full => {
+                    if let Some(surface) = self.decode_direct_to_surface(request.fmt)? {
+                        Ok(surface)
+                    } else {
+                        self.decode_full_to_metal_surface(request.fmt)
+                    }
+                }
+                MetalDecodeOp::Region(_) => self.decode_region_scaled_to_metal_surface(
+                    request.fmt,
+                    plan.source_rect(),
+                    Downscale::None,
+                    plan,
+                ),
+                MetalDecodeOp::Scaled(scale) | MetalDecodeOp::RegionScaled { scale, .. } => self
+                    .decode_region_scaled_to_metal_surface(
+                        request.fmt,
+                        plan.source_rect(),
+                        scale,
+                        plan,
+                    ),
+            },
             routing::RouteDecision::RejectExplicitMetal { .. }
             | routing::RouteDecision::RejectUnsupportedBackend { .. } => {
                 unreachable!("handled by decision_error")

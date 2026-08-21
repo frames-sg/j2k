@@ -78,7 +78,7 @@ pub(super) fn cuda_packetize_tile_body(
     let blocks = cuda_packetization_blocks(&plan, &mut host_budget)?;
     let tag_states = cuda_packetization_tag_states(&plan, &mut host_budget)?;
     let tag_nodes = cuda_packetization_tag_nodes(&plan, &mut host_budget)?;
-    let packetized = context
+    let packetized = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(
             &plan.payload,
             &packets,

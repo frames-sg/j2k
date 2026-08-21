@@ -65,7 +65,7 @@ pub fn download_surfaces_packed(
             u64::try_from(len).map_err(|_| Error::MetalKernel {
                 message: "J2K Metal packed surface length exceeds u64".to_string(),
             })?,
-        );
+        )?;
         destination_offset =
             destination_offset
                 .checked_add(len)

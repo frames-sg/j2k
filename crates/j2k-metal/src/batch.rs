@@ -15,10 +15,8 @@ use self::request::{batch_scheduler_invariant, QueuedRequest};
 pub use self::request::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
 use self::routes::{
     decode_distinct_full_color_batch, decode_distinct_full_grayscale_batch,
-    decode_distinct_region_scaled_direct_batch,
-    decode_distinct_region_scaled_direct_batch_prechecked, decode_individual,
-    decode_repeated_full_color, decode_repeated_full_grayscale,
-    decode_repeated_region_scaled_direct_batch_prechecked,
+    decode_distinct_region_scaled_direct_batch, decode_individual, decode_repeated_full_color,
+    decode_repeated_full_grayscale,
 };
 pub use self::session::MetalSubmission;
 use self::session::SessionState;

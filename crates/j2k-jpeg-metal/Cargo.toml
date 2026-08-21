@@ -19,10 +19,10 @@ name = "j2k_jpeg_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.9.1" }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.9.1" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.9.1" }
-j2k-profile = { path = "../j2k-profile", version = "=0.9.1" }
+j2k-core = { path = "../j2k-core", version = "=0.10.0" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.10.0" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.10.0" }
+j2k-profile = { path = "../j2k-profile", version = "=0.10.0" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -34,6 +34,7 @@ criterion = { workspace = true }
 jpeg-encoder = { workspace = true }
 jpeg-decoder = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support" }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "device_upload"

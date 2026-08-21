@@ -18,7 +18,7 @@ fn generated_420_chunked_entropy_diagnostic_runs_when_cuda_runtime_required() {
     let mut session = CudaSession::default();
     let report = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
         &input,
-        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig {
+        j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig {
             subsequence_words: 64,
             sequence_len: 32,
             max_overflow_subsequences: 4,
@@ -37,7 +37,7 @@ fn generated_422_chunked_entropy_diagnostic_returns_diagnostic_420_only_error() 
     let mut session = CudaSession::default();
     let error = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
         &input,
-        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig {
+        j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig {
             subsequence_words: 64,
             sequence_len: 32,
             max_overflow_subsequences: 4,
@@ -62,7 +62,7 @@ fn generated_420_chunked_entropy_diagnostic_rejects_invalid_config_before_runtim
     let mut session = CudaSession::default();
     let error = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
         &input,
-        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig {
+        j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig {
             subsequence_words: 0,
             sequence_len: 32,
             max_overflow_subsequences: 4,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::HtGpuJobChunkEntry;
-use j2k_cuda_runtime::CudaHtj2kCodeBlockJob;
+use j2k_cuda_j2k_engine::CudaHtj2kCodeBlockJob;
 
 use super::super::super::super::{
     CudaComponentDecodeWork, Error, CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
@@ -28,13 +28,15 @@ pub(super) fn select_chunk_jobs(
         let location =
             *locations
                 .get(entry.original_job_index())
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
+                .ok_or(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::geometry_mismatch(
+                        CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+                    ),
+                ))?;
         if location.source != entry.source_index() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+            ));
         }
         selected.push(SelectedHtj2kChunkJob {
             location,
@@ -58,25 +60,26 @@ pub(super) fn materialize_chunk_payload(
     let mut identities = budget.try_vec_with_capacity(selected.len())?;
     for selected in selected {
         let mut job = *job_at(component_work, selected.location)?;
-        let start =
-            usize::try_from(job.payload_offset).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        let end =
-            start
-                .checked_add(job.payload_len as usize)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
+        let start = usize::try_from(job.payload_offset).map_err(|_| {
+            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+                CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+            ))
+        })?;
+        let end = start
+            .checked_add(job.payload_len as usize)
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+            ))?;
         let bytes = shared_payload
             .get(start..end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        job.payload_offset =
-            u64::try_from(payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+            ))?;
+        job.payload_offset = u64::try_from(payload.len()).map_err(|_| {
+            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
+                CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+            ))
+        })?;
         payload.extend_from_slice(bytes);
         jobs.push(job);
         identities.push(Htj2kChunkJobIdentity::new(

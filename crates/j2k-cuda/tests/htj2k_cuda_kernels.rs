@@ -1,10 +1,12 @@
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{
-    CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
     CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState,
     CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
+    J2kCudaEngine,
 };
+use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
     decode_ht_code_block_scalar, encode_ht_code_block_scalar, ht_uvlc_encode_table_bytes,
@@ -62,9 +64,10 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
     let expected =
         encode_ht_code_block_scalar(&coefficients, 8, 8, 8).expect("native scalar HT encode");
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded_blocks = context
+    let encoded_blocks = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[CudaHtj2kEncodeCodeBlockJob {
@@ -103,9 +106,10 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
 
     let coefficients = [0, 3, -5, 3, 5, 0, -3, 3, 7, -3, 0, 3, 0, 0, 5, -5];
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
+    let encoded = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[CudaHtj2kEncodeCodeBlockJob {
@@ -174,9 +178,10 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_re
 
     let coefficients = [5, -7, 9, -11];
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
+    let encoded = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[CudaHtj2kEncodeCodeBlockJob {
@@ -245,9 +250,10 @@ fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_requir
 
     let coefficients = [7; 8];
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
+    let encoded = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[CudaHtj2kEncodeCodeBlockJob {
@@ -316,9 +322,10 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_requir
 
     let coefficients = [0, 3, -5, 7];
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
+    let encoded = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[CudaHtj2kEncodeCodeBlockJob {
@@ -401,9 +408,10 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
     let block1_offset = u32::try_from(coefficients.len()).expect("test offset fits in u32");
     coefficients.extend_from_slice(&block1);
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
+    let encoded = engine
         .encode_htj2k_codeblocks(
             &coefficients,
             &[
@@ -486,8 +494,9 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
         expected.push(0.5 * r - 0.41869 * g - 0.08131 * b);
     }
 
-    let context = CudaContext::system_default().expect("CUDA context");
-    let stats = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let stats = engine
         .j2k_forward_ict(&mut red, &mut green, &mut blue)
         .expect("CUDA forward ICT");
 
@@ -549,9 +558,10 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
     })
     .expect("native scalar packetization");
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let payload_len = u32::try_from(payload.len()).expect("test payload length fits in u32");
-    let packetized = context
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
@@ -695,8 +705,9 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
             inclusion_layer: 0,
         },
     ];
-    let context = CudaContext::system_default().expect("CUDA context");
-    let packetized = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
@@ -770,8 +781,9 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
     })
     .expect("native scalar refinement packetization");
 
-    let context = CudaContext::system_default().expect("CUDA context");
-    let packetized = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
@@ -889,8 +901,9 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
     .expect("native scalar stateful packetization");
 
     let payload = [first_payload.as_slice(), second_payload.as_slice()].concat();
-    let context = CudaContext::system_default().expect("CUDA context");
-    let packetized = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[
@@ -1040,8 +1053,9 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
     })
     .expect("native scalar deferred inclusion packetization");
 
-    let context = CudaContext::system_default().expect("CUDA context");
-    let packetized = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[
@@ -1214,8 +1228,9 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
     .expect("native scalar deferred first inclusion after non-empty packetization");
 
     let payload = [first_payload.as_slice(), second_payload.as_slice()].concat();
-    let context = CudaContext::system_default().expect("CUDA context");
-    let packetized = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let packetized = engine
         .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[
@@ -1395,11 +1410,12 @@ fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required()
         expected.push(rounded_u8(y1 + green + 128.0));
     }
 
-    let context = CudaContext::system_default().expect("CUDA context");
-    let plane0_buffer = context.upload_f32(&plane0).expect("upload plane 0");
-    let plane1_buffer = context.upload_f32(&plane1).expect("upload plane 1");
-    let plane2_buffer = context.upload_f32(&plane2).expect("upload plane 2");
-    let stats = context
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
+    let plane0_buffer = runtime.upload_f32(&plane0).expect("upload plane 0");
+    let plane1_buffer = runtime.upload_f32(&plane1).expect("upload plane 1");
+    let plane2_buffer = runtime.upload_f32(&plane2).expect("upload plane 2");
+    let stats = engine
         .j2k_inverse_mct_device(
             &plane0_buffer,
             &plane1_buffer,
@@ -1415,7 +1431,7 @@ fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required()
         .expect("CUDA inverse RCT");
     assert_eq!(stats.kernel_dispatches(), 1);
 
-    let stored = context
+    let stored = engine
         .j2k_store_rgb8_device(
             &plane0_buffer,
             &plane1_buffer,
@@ -1463,10 +1479,11 @@ fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
         return;
     }
 
-    let context = CudaContext::system_default().expect("CUDA context");
+    let runtime = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&runtime);
     let gray = [0.0f32, 128.0, 255.0, 300.0];
-    let gray_buffer = context.upload_f32(&gray).expect("upload gray plane");
-    let gray_output = context
+    let gray_buffer = runtime.upload_f32(&gray).expect("upload gray plane");
+    let gray_output = engine
         .j2k_store_gray16_device(
             &gray_buffer,
             CudaJ2kStoreGray16Job {
@@ -1500,10 +1517,10 @@ fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
     let red = [0.0f32, 64.0, 128.0, 255.0];
     let green = [255.0f32, 128.0, 64.0, 0.0];
     let blue = [12.0f32, 34.0, 56.0, 78.0];
-    let red_buffer = context.upload_f32(&red).expect("upload red plane");
-    let green_buffer = context.upload_f32(&green).expect("upload green plane");
-    let blue_buffer = context.upload_f32(&blue).expect("upload blue plane");
-    let rgb_output = context
+    let red_buffer = runtime.upload_f32(&red).expect("upload red plane");
+    let green_buffer = runtime.upload_f32(&green).expect("upload green plane");
+    let blue_buffer = runtime.upload_f32(&blue).expect("upload blue plane");
+    let rgb_output = engine
         .j2k_store_rgb16_device(
             &red_buffer,
             &green_buffer,

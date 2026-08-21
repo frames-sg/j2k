@@ -5,17 +5,43 @@ use alloc::{format, vec::Vec};
 use j2k_core::Unsupported;
 use j2k_native::EncodeRoiRegion as NativeEncodeRoiRegion;
 
+use super::accelerator::resolve_encode_backend;
 use super::contracts::{
-    J2kBlockCodingMode, J2kLossyEncodeOptions, J2kLossyEncodeReport, J2kRateTarget,
+    EncodedLossyJ2k, J2kBlockCodingMode, J2kLossyEncodeOptions, J2kLossyEncodeReport, J2kRateTarget,
 };
-use super::native::native_lossy_options;
+use super::cpu::native_lossy_options;
+use super::high_bit;
 use super::samples::J2kLossySamples;
 use super::validation::{decoded_psnr, validate_lossy_roundtrip};
-use crate::J2kError;
+use crate::{J2kEncodeDispatchReport, J2kError};
 
 pub(super) struct LossyAttempt {
     pub(super) codestream: Vec<u8>,
     pub(super) quantization_scale: f32,
+}
+
+pub(super) fn encode(
+    samples: J2kLossySamples<'_>,
+    options: &J2kLossyEncodeOptions,
+) -> Result<EncodedLossyJ2k, J2kError> {
+    validate_lossy_options(options)?;
+    high_bit::validate_lossy_options(samples, options)?;
+    let target = effective_lossy_target(options)?;
+    let attempt = encode_lossy_targeted(samples, options, target, |scale| {
+        encode_cpu_lossy(samples, options, scale)
+    })?;
+    let report = lossy_report(samples, options, target, &attempt)?;
+    Ok(EncodedLossyJ2k {
+        codestream: attempt.codestream,
+        backend: resolve_encode_backend(options.backend)?,
+        dispatch_report: J2kEncodeDispatchReport::default(),
+        width: samples.width,
+        height: samples.height,
+        components: samples.components,
+        bit_depth: samples.bit_depth,
+        signed: samples.signed,
+        report,
+    })
 }
 
 pub(super) fn encode_cpu_lossy(

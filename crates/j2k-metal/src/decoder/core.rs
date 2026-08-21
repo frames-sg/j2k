@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use j2k::{
-    DeviceDecodePlan, DeviceDecodeRequest, J2kDecoder as CpuDecoder,
-    J2kScratchPool as CpuJ2kScratchPool, J2kView,
+    DeviceDecodePlan, J2kDecoder as CpuDecoder, J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
 use j2k_core::BackendRequest;
 #[cfg(target_os = "macos")]
@@ -35,14 +34,14 @@ pub struct J2kDecoder<'a> {
     pub(super) native_direct_gray_plan: Option<Arc<J2kDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_gray_plan:
-        Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>,
+        Option<Arc<crate::engine::PreparedDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_gray_device_registry_id: Option<u64>,
     #[cfg(target_os = "macos")]
     pub(super) native_direct_color_plan: Option<Arc<J2kDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_plan:
-        Option<Arc<crate::compute::PreparedDirectColorPlan>>,
+        Option<Arc<crate::engine::PreparedDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_device_registry_id: Option<u64>,
 }
@@ -113,18 +112,7 @@ impl<'a> J2kDecoder<'a> {
         &mut self,
         request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
-        match request.op {
-            MetalDecodeOp::Full => self.decode_to_surface_impl(request.fmt, request.backend),
-            MetalDecodeOp::Region(roi) => {
-                self.decode_region_to_surface_impl(request.fmt, roi, request.backend)
-            }
-            MetalDecodeOp::Scaled(scale) => {
-                self.decode_scaled_to_surface_impl(request.fmt, scale, request.backend)
-            }
-            MetalDecodeOp::RegionScaled { roi, scale } => {
-                self.decode_region_scaled_to_surface_impl(request.fmt, roi, scale, request.backend)
-            }
-        }
+        self.decode_op_to_surface_impl(request)
     }
 
     /// Decode into a device surface and return route details.
@@ -159,8 +147,12 @@ impl<'a> J2kDecoder<'a> {
 
         #[cfg(target_os = "macos")]
         {
+            let plan = DeviceDecodePlan::for_image(
+                self.inner.info().dimensions,
+                request.op.device_request(),
+            )?;
             match request.op {
-                MetalDecodeOp::Full => crate::compute::with_runtime_for_session(session, |_| {
+                MetalDecodeOp::Full => crate::engine::with_runtime_for_session(session, |_| {
                     if let Some(surface) =
                         self.decode_direct_to_surface_with_session(request.fmt, session)?
                     {
@@ -172,45 +164,30 @@ impl<'a> J2kDecoder<'a> {
                         )
                     }
                 }),
-                MetalDecodeOp::Region(roi) => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::Region { roi },
-                    )?;
-                    self.decode_region_scaled_to_metal_surface_with_session(
+                MetalDecodeOp::Region(roi) => self
+                    .decode_region_scaled_to_metal_surface_with_session(
                         request.fmt,
                         roi,
                         j2k_core::Downscale::None,
                         plan,
                         session,
-                    )
-                }
-                MetalDecodeOp::Scaled(scale) => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::Scaled { scale },
-                    )?;
-                    self.decode_region_scaled_to_metal_surface_with_session(
+                    ),
+                MetalDecodeOp::Scaled(scale) => self
+                    .decode_region_scaled_to_metal_surface_with_session(
                         request.fmt,
                         plan.source_rect(),
                         scale,
                         plan,
                         session,
-                    )
-                }
-                MetalDecodeOp::RegionScaled { roi, scale } => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::RegionScaled { roi, scale },
-                    )?;
-                    self.decode_region_scaled_to_metal_surface_with_session(
+                    ),
+                MetalDecodeOp::RegionScaled { roi, scale } => self
+                    .decode_region_scaled_to_metal_surface_with_session(
                         request.fmt,
                         roi,
                         scale,
                         plan,
                         session,
-                    )
-                }
+                    ),
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -225,27 +202,15 @@ impl<'a> J2kDecoder<'a> {
         &mut self,
         request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
+        let plan =
+            DeviceDecodePlan::for_image(self.inner.info().dimensions, request.op.device_request())?;
         match request.op {
             MetalDecodeOp::Full => self.decode_to_cpu_surface(request.fmt),
-            MetalDecodeOp::Region(roi) => {
-                let plan = DeviceDecodePlan::for_image(
-                    self.inner.info().dimensions,
-                    DeviceDecodeRequest::Region { roi },
-                )?;
-                self.decode_region_to_cpu_surface(request.fmt, plan)
-            }
+            MetalDecodeOp::Region(_) => self.decode_region_to_cpu_surface(request.fmt, plan),
             MetalDecodeOp::Scaled(scale) => {
-                let plan = DeviceDecodePlan::for_image(
-                    self.inner.info().dimensions,
-                    DeviceDecodeRequest::Scaled { scale },
-                )?;
                 self.decode_scaled_to_cpu_surface(request.fmt, scale, plan)
             }
             MetalDecodeOp::RegionScaled { roi, scale } => {
-                let plan = DeviceDecodePlan::for_image(
-                    self.inner.info().dimensions,
-                    DeviceDecodeRequest::RegionScaled { roi, scale },
-                )?;
                 self.decode_region_scaled_to_cpu_surface(request.fmt, roi, scale, plan)
             }
         }
@@ -259,6 +224,10 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         #[cfg(target_os = "macos")]
         {
+            let plan = DeviceDecodePlan::for_image(
+                self.inner.info().dimensions,
+                request.op.device_request(),
+            )?;
             match request.op {
                 MetalDecodeOp::Full => {
                     let dims = self.inner.info().dimensions;
@@ -271,11 +240,7 @@ impl<'a> J2kDecoder<'a> {
                     )?;
                     upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
-                MetalDecodeOp::Region(roi) => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::Region { roi },
-                    )?;
+                MetalDecodeOp::Region(_) => {
                     let dims = plan.output_dims();
                     let (mut out, stride) = allocate_cpu_surface(dims, request.fmt)?;
                     self.inner.decode_region_into(
@@ -288,10 +253,6 @@ impl<'a> J2kDecoder<'a> {
                     upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
                 MetalDecodeOp::Scaled(scale) => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::Scaled { scale },
-                    )?;
                     let dims = plan.output_dims();
                     let (mut out, stride) = allocate_cpu_surface(dims, request.fmt)?;
                     self.inner.decode_scaled_into(
@@ -304,10 +265,6 @@ impl<'a> J2kDecoder<'a> {
                     upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
                 MetalDecodeOp::RegionScaled { roi, scale } => {
-                    let plan = DeviceDecodePlan::for_image(
-                        self.inner.info().dimensions,
-                        DeviceDecodeRequest::RegionScaled { roi, scale },
-                    )?;
                     let dims = plan.output_dims();
                     let (mut out, stride) = allocate_cpu_surface(dims, request.fmt)?;
                     self.inner.decode_region_scaled_into(

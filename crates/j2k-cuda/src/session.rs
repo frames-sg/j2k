@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{
-    CudaBufferPool, CudaClassicDecodeTableResources, CudaContext, CudaContextDiagnostics,
-    CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables, CudaHtj2kEncodeResources,
+use j2k_cuda_j2k_engine::{
+    CudaClassicDecodeTableResources, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables,
+    CudaHtj2kEncodeResources, J2kCudaEngine,
 };
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaContextDiagnostics};
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
 #[cfg(feature = "cuda-runtime")]
@@ -186,9 +188,11 @@ impl CudaSession {
     ) -> Result<CudaContext, Error> {
         if let Some(context) = &self.context {
             if context.device_ordinal() != device_ordinal {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: "J2K CUDA interop device does not match the persistent session",
-                });
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::context_mismatch(
+                        "J2K CUDA interop device does not match the persistent session",
+                    ),
+                ));
             }
             return Ok(context.clone());
         }
@@ -221,7 +225,7 @@ impl CudaSession {
             uvlc_table0: ht_uvlc_table0(),
             uvlc_table1: ht_uvlc_table1(),
         };
-        let resources = context
+        let resources = J2kCudaEngine::new(&context)
             .upload_htj2k_decode_table_resources(tables)
             .map_err(cuda_error)?;
         #[cfg(test)]
@@ -238,7 +242,7 @@ impl CudaSession {
             return Ok(tables.clone());
         }
         let context = self.cuda_context()?;
-        let tables = context
+        let tables = J2kCudaEngine::new(&context)
             .upload_classic_decode_table_resources()
             .map_err(cuda_error)?;
         #[cfg(test)]
@@ -257,11 +261,13 @@ impl CudaSession {
             &mut self.htj2k_encode_resources,
             requested_context,
             CudaContext::is_same_context,
-            || Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA encode tile belongs to a different context than the session",
+            || {
+                Error::capability_rejected(j2k_core::CapabilityRejection::context_mismatch(
+                    "J2K CUDA encode tile belongs to a different context than the session",
+                ))
             },
             |context| {
-                context
+                J2kCudaEngine::new(context)
                     .upload_htj2k_encode_resources(crate::encode::cuda_htj2k_encode_tables())
                     .map_err(cuda_error)
             },
@@ -351,7 +357,7 @@ impl CudaSession {
             64 * 1024 * 1024,
             max_jobs
                 .get()
-                .saturating_mul(j2k_cuda_runtime::htj2k_cleanup_multi_descriptor_bytes()),
+                .saturating_mul(j2k_cuda_j2k_engine::htj2k_cleanup_multi_descriptor_bytes()),
         )
     }
 

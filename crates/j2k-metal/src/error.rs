@@ -172,6 +172,12 @@ impl MetalKernelRetryClass {
 }
 
 impl Error {
+    pub(crate) const fn capability_rejected(rejection: j2k_core::CapabilityRejection) -> Self {
+        Self::UnsupportedMetalRequest {
+            reason: rejection.reason(),
+        }
+    }
+
     /// Whether this failure invalidates retained Metal session state or an
     /// operation-wide ownership boundary.
     #[doc(hidden)]

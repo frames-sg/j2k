@@ -269,6 +269,22 @@ fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
         resident_batch
             .report
             .timings
+            .dwt97_batch_resident_dct_handoff_count,
+        6,
+        "resident path should validate one DCT-grid handoff per tile component"
+    );
+    assert_eq!(
+        resident_batch
+            .report
+            .timings
+            .dwt97_batch_resident_dwt_handoff_count,
+        24,
+        "resident path should validate four DWT-to-HT subband handoffs per tile component"
+    );
+    assert_eq!(
+        resident_batch
+            .report
+            .timings
             .dwt97_batch_ht_codeblock_dispatches,
         1,
         "resident path should share one CUDA HT code-block encode across compatible batch groups"

@@ -308,18 +308,24 @@ impl BitPlaneDecodeContext {
 
     /// Reset state that is transient for each bitplane that is decoded.
     pub(super) fn reset_for_next_bitplane(&mut self) {
-        let padded_width = self.padded_width as usize;
-        let width = self.width as usize;
-        let row_start = COEFFICIENTS_PADDING as usize;
+        // Arithmetic passes select cleanup and refinement coefficients from
+        // `zero_coding_scan_masks`, which is reset below. Raw bypass cleanup
+        // also reads the per-coefficient marker and therefore still needs it
+        // cleared explicitly.
+        if self.style.selective_arithmetic_coding_bypass {
+            let padded_width = self.padded_width as usize;
+            let width = self.width as usize;
+            let row_start = COEFFICIENTS_PADDING as usize;
 
-        for row in self
-            .coefficient_states
-            .chunks_exact_mut(padded_width)
-            .skip(COEFFICIENTS_PADDING as usize)
-            .take(self.height as usize)
-        {
-            for state in &mut row[row_start..row_start + width] {
-                state.0 &= !HAS_ZERO_CODING_MASK;
+            for row in self
+                .coefficient_states
+                .chunks_exact_mut(padded_width)
+                .skip(COEFFICIENTS_PADDING as usize)
+                .take(self.height as usize)
+            {
+                for state in &mut row[row_start..row_start + width] {
+                    state.0 &= !HAS_ZERO_CODING_MASK;
+                }
             }
         }
         self.zero_coding_scan_masks.fill(0);

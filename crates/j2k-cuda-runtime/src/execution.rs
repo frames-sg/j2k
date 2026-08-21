@@ -5,9 +5,11 @@ mod events;
 mod memory_ops;
 mod queued;
 
-pub(crate) use completion::{select_uncertain_completion_error, CudaSynchronizationOutcome};
-pub(crate) use events::elapsed_event_us_ceil;
-pub(crate) use events::CudaEvent;
+pub(crate) use completion::select_uncertain_completion_error;
+pub use completion::CudaSynchronizationOutcome;
+#[doc(hidden)]
+pub use events::elapsed_event_us_ceil;
+pub use events::CudaEvent;
 pub use queued::{
     CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput, CudaKernelOutput,
     CudaPooledKernelOutput, CudaQueuedExecution,
@@ -20,15 +22,9 @@ use crate::{
     driver::{CuDevicePtr, CuFunction},
     error::CudaError,
     kernels::{self, copy_u8_launch_geometry},
-    memory::CudaDeviceBuffer,
+    memory::{CudaBufferPool, CudaDeviceBuffer, CudaPooledDeviceBuffer},
 };
 use std::{ffi::c_void, ops::Range};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CudaLaunchMode {
-    Sync,
-    Async,
-}
 
 /// Marker for values that can be passed by address to a CUDA kernel launch.
 ///
@@ -36,7 +32,7 @@ pub(crate) enum CudaLaunchMode {
 ///
 /// Implementors must have a stable, CUDA-compatible by-value representation for
 /// the duration of `cuLaunchKernel`.
-pub(crate) unsafe trait CudaKernelParam {}
+pub unsafe trait CudaKernelParam {}
 
 // SAFETY: `CuDevicePtr` is the raw CUDA device pointer value expected by kernels.
 unsafe impl CudaKernelParam for CuDevicePtr {}
@@ -47,7 +43,11 @@ unsafe impl CudaKernelParam for i32 {}
 // SAFETY: CUDA kernels receive these scalar ABI types by value via parameter pointers.
 unsafe impl CudaKernelParam for f32 {}
 
-pub(crate) fn cuda_kernel_param<T>(value: &mut T) -> *mut c_void
+/// Return the address CUDA expects for one by-value kernel argument.
+///
+/// The returned pointer is valid only while `value` remains alive and is not
+/// moved. [`CudaContext::launch_compiled_kernel`] consumes it synchronously.
+pub fn cuda_kernel_param<T>(value: &mut T) -> *mut c_void
 where
     T: CudaKernelParam,
 {
@@ -55,6 +55,83 @@ where
 }
 
 impl CudaContext {
+    /// Load/cache a validated static kernel and launch it synchronously.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer in `params` must address a live value whose layout matches
+    /// the corresponding CUDA kernel parameter. Device pointers embedded in
+    /// those values must belong to this context. `spec` must describe matching
+    /// PTX and entry-point ABI. The values must remain alive until this method
+    /// returns.
+    pub unsafe fn launch_compiled_kernel(
+        &self,
+        spec: crate::CudaKernelSpec,
+        geometry: crate::CudaLaunchGeometry,
+        params: &mut [*mut c_void],
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function_from_spec(spec)?;
+        self.launch_kernel(function, geometry, params)
+    }
+
+    /// Load/cache a validated static kernel and submit it asynchronously.
+    ///
+    /// # Safety
+    ///
+    /// The parameter ABI and device-pointer requirements match the synchronous
+    /// launch primitive. Callers must additionally retain every referenced
+    /// allocation and establish context completion before reuse or release.
+    #[doc(hidden)]
+    pub unsafe fn launch_compiled_kernel_async(
+        &self,
+        spec: crate::CudaKernelSpec,
+        geometry: crate::CudaLaunchGeometry,
+        params: &mut [*mut c_void],
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function_from_spec(spec)?;
+        self.launch_kernel_async(function, geometry, params)
+    }
+
+    /// Launch a compiled kernel asynchronously while retaining pooled resources.
+    ///
+    /// The returned guard establishes context completion before the resources
+    /// can be reused. Call
+    /// [`CudaQueuedExecution::finish_with_resources`](crate::CudaQueuedExecution::finish_with_resources)
+    /// when an engine needs a deferred device-to-host readback after the kernel.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer in `params` must address a live value whose layout matches
+    /// the corresponding kernel parameter. Device pointers must belong to this
+    /// context, and every allocation used by submitted work must outlive the
+    /// returned guard. `resources` transfers ownership only for the listed
+    /// pooled buffers; callers must separately retain all other owners.
+    pub unsafe fn launch_compiled_kernel_queued(
+        &self,
+        spec: crate::CudaKernelSpec,
+        geometry: crate::CudaLaunchGeometry,
+        params: &mut [*mut c_void],
+        pool: &CudaBufferPool,
+        resources: Vec<CudaPooledDeviceBuffer>,
+        execution: CudaExecutionStats,
+    ) -> Result<CudaQueuedExecution, CudaError> {
+        if !pool.is_owned_by(self) {
+            return Err(CudaError::InvalidArgument {
+                message: "queued CUDA resource pool must belong to the launch context".to_string(),
+            });
+        }
+        let function = self.inner.kernel_function_from_spec(spec)?;
+        let pool_reuse_guard = pool.defer_reuse()?;
+        if let Err(error) = self.launch_kernel_async(function, geometry, params) {
+            return pool_reuse_guard.synchronize_then_error(error);
+        }
+        Ok(CudaQueuedExecution {
+            resources,
+            execution,
+            pool_reuse_guard: Some(pool_reuse_guard),
+        })
+    }
+
     #[doc(hidden)]
     /// Copy host bytes through a CUDA copy kernel and return device output.
     pub fn copy_with_kernel(&self, bytes: &[u8]) -> Result<CudaKernelOutput, CudaError> {
@@ -154,7 +231,8 @@ impl CudaContext {
         self.copy_device_range_to_device_with_kernel(src, 0..src.byte_len())
     }
 
-    pub(crate) fn copy_device_range_to_device_with_kernel(
+    #[doc(hidden)]
+    pub fn copy_device_range_to_device_with_kernel(
         &self,
         src: &CudaDeviceBuffer,
         range: Range<usize>,
@@ -229,7 +307,9 @@ impl CudaContext {
         self.synchronize_for_resource_release().into_result()
     }
 
-    pub(crate) fn synchronize_for_resource_release(&self) -> CudaSynchronizationOutcome {
+    /// Synchronize this context for queued-resource release.
+    #[doc(hidden)]
+    pub fn synchronize_for_resource_release(&self) -> CudaSynchronizationOutcome {
         let result = self.inner.with_current_completion_operation(|| {
             // SAFETY: the context lifetime gate is held and this CUDA context
             // is current for the calling thread.
@@ -252,7 +332,8 @@ impl CudaContext {
 
     /// Synchronize before selecting `error`; if synchronization itself fails,
     /// select that completion failure instead.
-    pub(crate) fn error_after_synchronize(&self, error: CudaError) -> CudaError {
+    #[doc(hidden)]
+    pub fn error_after_synchronize(&self, error: CudaError) -> CudaError {
         if self.inner.resource_lifetimes_poisoned() {
             // A synchronous operation may already have surfaced the driver
             // error that poisoned this context. Do not replace that primary
@@ -269,7 +350,8 @@ impl CudaContext {
 
     /// Synchronize before returning `error`; if synchronization itself fails,
     /// return that completion failure instead.
-    pub(crate) fn synchronize_then_error<T>(&self, error: CudaError) -> Result<T, CudaError> {
+    #[doc(hidden)]
+    pub fn synchronize_then_error<T>(&self, error: CudaError) -> Result<T, CudaError> {
         Err(self.error_after_synchronize(error))
     }
 

@@ -568,7 +568,10 @@ mod tests {
     fn irreversible_level_shift_rounds_in_the_centered_domain() {
         let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
         apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, true);
-        assert_eq!(samples, [119.0, 118.0, 120.0]);
+        assert_eq!(
+            samples.map(f32::to_bits),
+            [119.0, 118.0, 120.0].map(f32::to_bits)
+        );
 
         let mut signed_samples = [-9.5, -8.5];
         apply_float_sign_shift(
@@ -577,20 +580,26 @@ mod tests {
             WaveletTransform::Irreversible97,
             true,
         );
-        assert_eq!(signed_samples, [-10.0, -8.0]);
+        assert_eq!(
+            signed_samples.map(f32::to_bits),
+            [-10.0, -8.0].map(f32::to_bits)
+        );
     }
 
     #[test]
     fn component_output_preserves_irreversible_fractional_samples() {
         let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
         apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, false);
-        assert_eq!(samples, [118.5, 118.5, 119.5]);
+        assert_eq!(
+            samples.map(f32::to_bits),
+            [118.5, 118.5, 119.5].map(f32::to_bits)
+        );
     }
 
     #[test]
     fn reversible_level_shift_preserves_fractional_samples() {
         let mut samples = [-9.5, -8.5];
         apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Reversible53, true);
-        assert_eq!(samples, [118.5, 119.5]);
+        assert_eq!(samples.map(f32::to_bits), [118.5, 119.5].map(f32::to_bits));
     }
 }

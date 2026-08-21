@@ -8,13 +8,15 @@ use crate::{
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub(crate) struct CudaBufferPoolReuseGuard {
+#[doc(hidden)]
+pub struct CudaBufferPoolReuseGuard {
     pub(super) pool: Arc<CudaBufferPoolInner>,
     pub(super) active: bool,
 }
 
 impl CudaBufferPoolReuseGuard {
-    pub(crate) fn release(mut self) -> Result<(), CudaError> {
+    /// Release this hold after completion has been established.
+    pub fn release(mut self) -> Result<(), CudaError> {
         if let Err(error) = self.release_inner() {
             if self.active {
                 // A poisoned pool cannot safely transition deferred
@@ -27,11 +29,13 @@ impl CudaBufferPoolReuseGuard {
         Ok(())
     }
 
-    pub(crate) fn synchronize_pool_context(&self) -> crate::execution::CudaSynchronizationOutcome {
+    /// Synchronize the owning pool context.
+    pub fn synchronize_pool_context(&self) -> crate::execution::CudaSynchronizationOutcome {
         self.pool.context.synchronize_for_resource_release()
     }
 
-    pub(crate) fn synchronize_and_release(self) -> Result<(), CudaError> {
+    /// Synchronize the owning context and release the hold.
+    pub fn synchronize_and_release(self) -> Result<(), CudaError> {
         let outcome = self.synchronize_pool_context();
         if !outcome.completion_established() {
             let result = outcome.into_result();
@@ -42,7 +46,8 @@ impl CudaBufferPoolReuseGuard {
         self.release()
     }
 
-    pub(crate) fn synchronize_then_error<T>(self, error: CudaError) -> Result<T, CudaError> {
+    /// Establish completion, release the hold, and preserve a primary error.
+    pub fn synchronize_then_error<T>(self, error: CudaError) -> Result<T, CudaError> {
         if self.pool.context.inner.resource_lifetimes_poisoned() {
             self.abandon();
             return Err(select_uncertain_completion_error(error, None));
@@ -60,7 +65,8 @@ impl CudaBufferPoolReuseGuard {
         }
     }
 
-    pub(crate) fn release_after_recoverable_operation_error<T>(
+    /// Release after a recoverable operation already established completion.
+    pub fn release_after_recoverable_operation_error<T>(
         self,
         primary_error: CudaError,
     ) -> Result<T, CudaError> {
@@ -77,7 +83,8 @@ impl CudaBufferPoolReuseGuard {
         }
     }
 
-    pub(crate) fn abandon(self) {
+    /// Permanently retain the hold when completion cannot be established.
+    pub fn abandon(self) {
         // Completion could not be established. Leaking the guard keeps the
         // pool and its reuse hold alive, so deferred allocations cannot be
         // recycled or freed while CUDA might still reference them.

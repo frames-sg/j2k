@@ -59,8 +59,13 @@ impl PreparedDecodePlan {
     }
 
     pub(crate) fn matches_fast_tile_shape(&self) -> bool {
-        self.restart_interval.is_none()
-            && is_ycbcr_420(self)
+        // The CPU fused route cannot cross restart boundaries; accelerator
+        // packets retain restart checkpoints and use the shape predicate below.
+        self.restart_interval.is_none() && self.matches_fast_420_device_shape()
+    }
+
+    pub(crate) fn matches_fast_420_device_shape(&self) -> bool {
+        is_ycbcr_420(self)
             && self.components.len() == 3
             && self.components[0].output_index == 0
             && self.components[0].h == 2

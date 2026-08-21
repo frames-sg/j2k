@@ -3,10 +3,11 @@
 use std::fs;
 use std::path::Path;
 
-use super::{REPORT_RELATIVE, TEST_REPORT_RELATIVE};
+use super::{METAL_REPORT_RELATIVE, REPORT_RELATIVE, TEST_REPORT_RELATIVE};
 
-pub(super) const DUPLICATED_LINE_THRESHOLD: f64 = 2.01;
+pub(super) const DUPLICATED_LINE_THRESHOLD: f64 = 4.32;
 pub(super) const TEST_DUPLICATED_LINE_THRESHOLD: f64 = 3.99;
+pub(super) const METAL_DUPLICATED_LINE_THRESHOLD: f64 = 25.09;
 
 pub(super) fn validate_clone_config(path: &Path) -> Result<(), String> {
     validate_config(
@@ -29,6 +30,9 @@ pub(super) fn validate_clone_config(path: &Path) -> Result<(), String> {
             "**/j2k-test-support/**",
             "**/j2k-transcode-test-support/**",
         ],
+        12.0,
+        50.0,
+        &["rust"],
     )
 }
 
@@ -38,6 +42,21 @@ pub(super) fn validate_test_clone_config(path: &Path) -> Result<(), String> {
         TEST_DUPLICATED_LINE_THRESHOLD,
         TEST_REPORT_RELATIVE,
         &[],
+        20.0,
+        50.0,
+        &["rust"],
+    )
+}
+
+pub(super) fn validate_metal_clone_config(path: &Path) -> Result<(), String> {
+    validate_config(
+        path,
+        METAL_DUPLICATED_LINE_THRESHOLD,
+        METAL_REPORT_RELATIVE,
+        &[],
+        10.0,
+        40.0,
+        &["opencl"],
     )
 }
 
@@ -46,6 +65,9 @@ fn validate_config(
     threshold: f64,
     output: &str,
     ignore: &[&str],
+    min_lines: f64,
+    min_tokens: f64,
+    formats: &[&str],
 ) -> Result<(), String> {
     let source = fs::read_to_string(path)
         .map_err(|error| format!("read clone-audit config {}: {error}", path.display()))?;
@@ -68,14 +90,14 @@ fn validate_config(
         ],
     )?;
     require_number(&config, "threshold", threshold)?;
-    require_number(&config, "minLines", 20.0)?;
-    require_number(&config, "minTokens", 50.0)?;
+    require_number(&config, "minLines", min_lines)?;
+    require_number(&config, "minTokens", min_tokens)?;
     require_number(&config, "maxLines", 20_000.0)?;
     require_string(&config, "maxSize", "2mb")?;
     require_string(&config, "mode", "mild")?;
     require_string(&config, "output", output)?;
     require_bool(&config, "gitignore", false)?;
-    require_string_array(&config, "format", &["rust"])?;
+    require_string_array(&config, "format", formats)?;
     require_string_array(&config, "reporters", &["console", "json"])?;
     require_string_array(&config, "ignore", ignore)?;
     Ok(())

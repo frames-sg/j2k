@@ -38,6 +38,29 @@ pub enum CudaTranscodeError {
     Runtime(CudaRuntimeFailure),
 }
 
+impl From<j2k_core::HostPhaseError> for CudaTranscodeError {
+    fn from(error: j2k_core::HostPhaseError) -> Self {
+        match error {
+            j2k_core::HostPhaseError::AllocationFailed {
+                requested_bytes,
+                what,
+            } => Self::HostAllocationFailed {
+                requested: requested_bytes,
+                what,
+            },
+            j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes,
+                cap_bytes,
+                what,
+            } => Self::HostAllocationTooLarge {
+                requested: requested_bytes,
+                cap: cap_bytes,
+                what,
+            },
+        }
+    }
+}
+
 impl CudaTranscodeError {
     /// Whether Auto mode may recover from this error by using the scalar
     /// fallback (`Ok(None)`). Hard kernel and allocation failures propagate.

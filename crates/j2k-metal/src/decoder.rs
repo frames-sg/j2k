@@ -34,7 +34,7 @@ pub(crate) fn prepare_full_grayscale_direct_plan_with_session(
     input: &[u8],
     fmt: PixelFormat,
     session: &MetalBackendSession,
-) -> Result<Arc<crate::compute::PreparedDirectGrayscalePlan>, Error> {
+) -> Result<Arc<crate::engine::PreparedDirectGrayscalePlan>, Error> {
     let mut decoder = J2kDecoder::new(input)?;
     decoder
         .ensure_prepared_direct_gray_plan_with_session(fmt, session)?

@@ -11,7 +11,6 @@ use j2k_core::{
 };
 
 const COMPONENT_HANDOFF_WHAT: &str = "J2K decoded component facade handoff";
-type NativePlaneParts = (Vec<u8>, (u32, u32), u8, bool, (u8, u8), u8);
 
 macro_rules! impl_decoded_components_metadata_accessors {
     () => {
@@ -89,7 +88,13 @@ pub struct J2kComponentPlane<'a> {
 
 impl<'a> J2kComponentPlane<'a> {
     fn from_native(plane: j2k_native::ComponentPlane<'a>) -> Self {
-        let (samples, dimensions, bit_depth, signed, sampling) = plane.into_parts();
+        let j2k_native::ComponentPlaneParts {
+            samples,
+            dimensions,
+            bit_depth,
+            signed,
+            sampling,
+        } = plane.into_parts();
         Self {
             samples,
             dimensions,
@@ -123,7 +128,12 @@ impl<'a> J2kDecodedComponents<'a> {
         retained_image_bytes: usize,
     ) -> Result<Self, J2kError> {
         let decoded_live_bytes = decoded.live_bytes();
-        let (dimensions, color_space, has_alpha, native_planes) = decoded.into_parts();
+        let j2k_native::DecodedComponentsParts {
+            dimensions,
+            color_space,
+            has_alpha,
+            planes: native_planes,
+        } = decoded.into_parts();
         let mut planes = try_destination_metadata(
             native_planes.len(),
             retained_image_bytes,
@@ -167,9 +177,15 @@ impl J2kNativeComponentPlane {
         Self::from_parts(plane.into_parts())
     }
 
-    fn from_parts(
-        (data, dimensions, bit_depth, signed, sampling, bytes_per_sample): NativePlaneParts,
-    ) -> Self {
+    fn from_parts(parts: j2k_native::NativeComponentPlaneParts) -> Self {
+        let j2k_native::NativeComponentPlaneParts {
+            data,
+            dimensions,
+            bit_depth,
+            signed,
+            sampling,
+            bytes_per_sample,
+        } = parts;
         Self {
             data,
             dimensions,
@@ -212,7 +228,12 @@ impl J2kDecodedNativeComponents {
         let decoded_live_bytes = decoded
             .allocated_bytes()
             .ok_or_else(handoff_size_overflow)?;
-        let (dimensions, color_space, has_alpha, native_planes) = decoded.into_parts();
+        let j2k_native::DecodedNativeComponentsParts {
+            dimensions,
+            color_space,
+            has_alpha,
+            planes: native_planes,
+        } = decoded.into_parts();
         let mut planes = try_destination_metadata(
             native_planes.len(),
             retained_image_bytes,
@@ -312,7 +333,14 @@ mod tests {
     fn native_plane_parts_move_payload_without_copying() {
         let data = Vec::from([1u8, 2, 3, 4]);
         let pointer = data.as_ptr();
-        let plane = J2kNativeComponentPlane::from_parts((data, (2, 2), 8, false, (1, 1), 1));
+        let plane = J2kNativeComponentPlane::from_parts(j2k_native::NativeComponentPlaneParts {
+            data,
+            dimensions: (2, 2),
+            bit_depth: 8,
+            signed: false,
+            sampling: (1, 1),
+            bytes_per_sample: 1,
+        });
         assert_eq!(plane.data().as_ptr(), pointer);
         assert_eq!(plane.data(), [1, 2, 3, 4]);
     }

@@ -255,7 +255,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pipelines.pack);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -266,7 +266,7 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pipelines.pack, self.dims);
         encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
@@ -300,7 +300,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pipelines.pack);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -311,7 +311,7 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pipelines.pack, self.dims);
         encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
 
@@ -375,7 +375,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let pack_encoder = new_compute_command_encoder(&command_buffer)?;
-        pack_encoder.setComputePipelineState(&runtime.pack_pipeline);
+        pack_encoder.setComputePipelineState(&runtime.pipelines.pack);
         bind_three_plane_pack::<JpegPackParams>(
             &pack_encoder,
             [
@@ -386,17 +386,17 @@ impl PlaneStage {
             &out_buffer,
             &pack_params,
         );
-        dispatch_2d_pipeline(&pack_encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&pack_encoder, &runtime.pipelines.pack, self.dims);
         pack_encoder.endEncoding();
 
         let texture_encoder = new_compute_command_encoder(&command_buffer)?;
-        texture_encoder.setComputePipelineState(&runtime.rgb8_to_rgba_texture_pipeline);
+        texture_encoder.setComputePipelineState(&runtime.pipelines.rgb8_to_rgba_texture);
         texture_encoder.bind_buffer(0, Some(&out_buffer), 0);
         texture_encoder.bind_bytes::<JpegRgb8ToRgbaTextureParams>(1, &texture_params);
         texture_encoder.bind_texture(0, Some(texture));
         dispatch_2d_pipeline(
             &texture_encoder,
-            &runtime.rgb8_to_rgba_texture_pipeline,
+            &runtime.pipelines.rgb8_to_rgba_texture,
             self.dims,
         );
         texture_encoder.endEncoding();
@@ -438,7 +438,7 @@ impl PlaneStage {
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.pack_pipeline);
+        encoder.setComputePipelineState(&runtime.pipelines.pack);
         bind_three_plane_pack::<JpegPackParams>(
             &encoder,
             [
@@ -449,7 +449,7 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pipelines.pack, self.dims);
         encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;
         let command_buffer = command_buffer.clone();

@@ -356,9 +356,11 @@ impl CudaHtj2kDecodePlan {
         for step in &plan.steps {
             match step {
                 J2kDirectGrayscaleStep::HtSubBand(_) => {
-                    return Err(Error::UnsupportedCudaRequest {
-                        reason: REFERENCED_CLASSIC_PLAN_HT_UNSUPPORTED,
-                    });
+                    return Err(Error::capability_rejected(
+                        j2k_core::CapabilityRejection::unsupported_operation(
+                            REFERENCED_CLASSIC_PLAN_HT_UNSUPPORTED,
+                        ),
+                    ));
                 }
                 J2kDirectGrayscaleStep::ClassicSubBand(subband) => {
                     append_referenced_classic_subband(
@@ -383,9 +385,9 @@ impl CudaHtj2kDecodePlan {
             }
         }
         if payloads.next().is_some() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: REFERENCED_PLAN_PAYLOAD_MISMATCH,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(REFERENCED_PLAN_PAYLOAD_MISMATCH),
+            ));
         }
         owners.finish(plan, output_format, output_origin, output_dimensions)
     }

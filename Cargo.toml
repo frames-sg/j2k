@@ -7,7 +7,11 @@ members = [
     "crates/j2k-core",
     "crates/j2k-compare",
     "crates/j2k-cuda",
+    "crates/j2k-cuda-build-support",
+    "crates/j2k-cuda-j2k-engine",
+    "crates/j2k-cuda-jpeg-engine",
     "crates/j2k-cuda-runtime",
+    "crates/j2k-cuda-transcode-engine",
     "crates/j2k-jpeg",
     "crates/j2k-jpeg-cuda",
     "crates/j2k-jpeg-metal",
@@ -28,7 +32,7 @@ members = [
     "xtask",
 ]
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"
 edition      = "2021"
 rust-version = "1.96"
 license      = "MIT OR Apache-2.0"

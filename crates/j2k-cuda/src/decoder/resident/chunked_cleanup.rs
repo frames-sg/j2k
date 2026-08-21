@@ -8,7 +8,7 @@ mod tests;
 
 pub(in crate::decoder) use enqueue::enqueue_chunked_htj2k_cleanup_dequant;
 
-use j2k_cuda_runtime::{CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanupGroup};
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanupGroup};
 
 use super::super::{combine_cuda_cleanup_errors, cuda_error, Error};
 

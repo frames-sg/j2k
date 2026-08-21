@@ -10,7 +10,7 @@ use crate::{
 mod handles;
 mod interop;
 
-pub(crate) use handles::CudaEvent;
+pub use handles::CudaEvent;
 #[cfg(test)]
 use handles::CudaStream;
 
@@ -50,7 +50,8 @@ impl CudaContext {
     }
 
     /// Create a CUDA timing event owned by this context.
-    pub(crate) fn create_event(&self) -> Result<CudaEvent, CudaError> {
+    #[doc(hidden)]
+    pub fn create_event(&self) -> Result<CudaEvent, CudaError> {
         if let Some(event) = self
             .inner
             .event_pool
@@ -214,7 +215,8 @@ impl CudaContext {
     clippy::cast_sign_loss,
     reason = "rounded normalized samples are clamped to the complete u8 output range"
 )]
-pub(crate) fn elapsed_event_us_ceil(start: &CudaEvent, end: &CudaEvent) -> Result<u128, CudaError> {
+#[doc(hidden)]
+pub fn elapsed_event_us_ceil(start: &CudaEvent, end: &CudaEvent) -> Result<u128, CudaError> {
     let elapsed = CudaEvent::elapsed_time_us(start, end)?;
     if elapsed <= 0.0 {
         return Ok(1);

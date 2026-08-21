@@ -16,7 +16,7 @@ use crate::Error;
 pub(crate) const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
 
 static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
-    Mutex<PreparedPlanCache<Arc<crate::compute::PreparedDirectColorPlan>>>,
+    Mutex<PreparedPlanCache<Arc<crate::engine::PreparedDirectColorPlan>>>,
 > = OnceLock::new();
 
 #[cfg(test)]
@@ -75,7 +75,7 @@ impl RegionScaledColorPlanCache<'_> {
     pub(super) fn get(
         self,
         key: PreparedPlanCacheKey<'_>,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+    ) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
         match self {
             Self::Uncached => Ok(None),
             Self::Global => cached_region_scaled_direct_color_plan(key),
@@ -86,7 +86,7 @@ impl RegionScaledColorPlanCache<'_> {
     pub(super) fn store(
         self,
         key: PreparedPlanCacheKey<'_>,
-        plan: Arc<crate::compute::PreparedDirectColorPlan>,
+        plan: Arc<crate::engine::PreparedDirectColorPlan>,
     ) -> Result<(), Error> {
         match self {
             Self::Uncached => Ok(()),
@@ -104,7 +104,7 @@ impl RegionScaledColorPlanCache<'_> {
 
 fn cached_region_scaled_direct_color_plan(
     key: PreparedPlanCacheKey<'_>,
-) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
     let cache = REGION_SCALED_COLOR_PLAN_CACHE
         .get_or_init(|| Mutex::new(PreparedPlanCache::new(REGION_SCALED_COLOR_PLAN_CACHE_CAP)));
     let mut guard = cache.lock().map_err(|_| Error::MetalStatePoisoned {
@@ -115,7 +115,7 @@ fn cached_region_scaled_direct_color_plan(
 
 fn store_region_scaled_direct_color_plan(
     key: PreparedPlanCacheKey<'_>,
-    plan: Arc<crate::compute::PreparedDirectColorPlan>,
+    plan: Arc<crate::engine::PreparedDirectColorPlan>,
 ) -> Result<(), Error> {
     let cache = REGION_SCALED_COLOR_PLAN_CACHE
         .get_or_init(|| Mutex::new(PreparedPlanCache::new(REGION_SCALED_COLOR_PLAN_CACHE_CAP)));

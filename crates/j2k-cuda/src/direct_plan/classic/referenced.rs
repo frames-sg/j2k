@@ -35,9 +35,9 @@ pub(in crate::direct_plan) fn append_referenced_classic_subband<'a>(
     let subband_index = checked_u32(owners.classic_subbands.len())?;
     let code_block_start = checked_u32(owners.classic_code_blocks.len())?;
     for job in &subband.jobs {
-        let payload = payloads.next().ok_or(Error::UnsupportedCudaRequest {
-            reason: CLASSIC_PLAN_INVALID,
-        })?;
+        let payload = payloads.next().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CLASSIC_PLAN_INVALID),
+        ))?;
         let fragments = referenced_classic_ranges(encoded, *payload, ranges)?;
         validate_referenced_classic_job(job, payload.combined_length)?;
         if required_regions.is_some_and(|regions| {
@@ -81,9 +81,9 @@ pub(in crate::direct_plan) fn referenced_classic_payload_bytes(
         referenced_classic_ranges(encoded, *payload, ranges)?;
         total
             .checked_add(payload.combined_length)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))
     })
 }
 
@@ -97,9 +97,9 @@ fn validate_referenced_classic_payload_sequence(
         if payload.first_range != next_range {
             return invalid_classic_plan();
         }
-        next_range = payload.end_range().ok_or(Error::UnsupportedCudaRequest {
-            reason: PLAN_PAYLOAD_TOO_LARGE,
-        })?;
+        next_range = payload.end_range().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+        ))?;
     }
     if next_range != ranges.len() {
         return invalid_classic_plan();
@@ -122,22 +122,21 @@ fn referenced_classic_ranges<'a>(
     payload: J2kClassicCodeBlockPayload,
     ranges: &'a [J2kCodestreamRange],
 ) -> Result<&'a [J2kCodestreamRange], Error> {
-    let end_range = payload.end_range().ok_or(Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
-    })?;
-    let selected =
-        ranges
-            .get(payload.first_range..end_range)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CLASSIC_PLAN_INVALID,
-            })?;
+    let end_range = payload.end_range().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+    ))?;
+    let selected = ranges
+        .get(payload.first_range..end_range)
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CLASSIC_PLAN_INVALID),
+        ))?;
     let mut combined = 0usize;
     for range in selected {
         combined = combined
             .checked_add(referenced_classic_slice(encoded, *range)?.len())
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: PLAN_PAYLOAD_TOO_LARGE,
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+            ))?;
     }
     if combined != payload.combined_length {
         return invalid_classic_plan();
@@ -146,12 +145,12 @@ fn referenced_classic_ranges<'a>(
 }
 
 fn referenced_classic_slice(encoded: &[u8], range: J2kCodestreamRange) -> Result<&[u8], Error> {
-    let end = range.end().ok_or(Error::UnsupportedCudaRequest {
-        reason: PLAN_PAYLOAD_TOO_LARGE,
-    })?;
+    let end = range.end().ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
+    ))?;
     encoded
         .get(range.offset..end)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CLASSIC_PLAN_INVALID,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CLASSIC_PLAN_INVALID),
+        ))
 }

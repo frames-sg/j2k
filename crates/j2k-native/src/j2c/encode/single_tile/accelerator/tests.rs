@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    encode_with_accelerator, EncodeError, EncodeOptions, J2kDeinterleaveToF32Job, J2kEncodeContext,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardIctJob, J2kForwardRctJob,
+    encode_with_accelerator, EncodeError, EncodeOptions, J2kDeinterleaveMctToF32Job,
+    J2kDeinterleaveToF32Job, J2kEncodeContext, J2kEncodeStageAccelerator, J2kForwardDwt53Job,
+    J2kForwardIctJob, J2kForwardRctJob,
 };
 use alloc::{vec, vec::Vec};
 
@@ -10,6 +11,7 @@ use alloc::{vec, vec::Vec};
 enum FailedStage {
     Begin,
     Deinterleave,
+    DeinterleaveMct,
     Rct,
     Ict,
     Dwt53,
@@ -56,6 +58,19 @@ impl J2kEncodeStageAccelerator for FailingAccelerator {
         _job: J2kDeinterleaveToF32Job<'_>,
     ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
         if matches!(self.0, FailedStage::Deinterleave) {
+            Err(crate::J2kEncodeStageError::internal_invariant(
+                "staged test failure",
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn encode_deinterleave_mct(
+        &mut self,
+        _job: J2kDeinterleaveMctToF32Job<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        if matches!(self.0, FailedStage::DeinterleaveMct) {
             Err(crate::J2kEncodeStageError::internal_invariant(
                 "staged test failure",
             ))
@@ -143,9 +158,153 @@ fn assert_stage_error(
 fn staged_accelerator_failures_keep_typed_operation_taxonomy() {
     assert_stage_error(FailedStage::Begin, "encode route selection", 1, true);
     assert_stage_error(FailedStage::Deinterleave, "pixel deinterleave", 1, true);
+    assert_stage_error(
+        FailedStage::DeinterleaveMct,
+        "pixel deinterleave and forward MCT",
+        3,
+        true,
+    );
     assert_stage_error(FailedStage::Rct, "forward RCT", 3, true);
     assert_stage_error(FailedStage::Ict, "forward ICT", 3, false);
     assert_stage_error(FailedStage::Dwt53, "forward 5/3 DWT", 1, true);
+}
+
+#[derive(Default)]
+struct CombinedInputRecordingAccelerator {
+    accept: bool,
+    combined: usize,
+    deinterleave: usize,
+    rct: usize,
+    ict: usize,
+}
+
+impl J2kEncodeStageAccelerator for CombinedInputRecordingAccelerator {
+    fn encode_deinterleave_mct(
+        &mut self,
+        job: J2kDeinterleaveMctToF32Job<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        self.combined += 1;
+        if !self.accept {
+            return Ok(None);
+        }
+        let mut planes = super::try_deinterleave_to_f32(
+            job.pixels,
+            job.num_pixels,
+            3,
+            job.bit_depth,
+            job.signed,
+        )
+        .expect("valid test pixels");
+        if job.reversible {
+            super::forward_mct::forward_rct(&mut planes);
+        } else {
+            super::forward_mct::forward_ict(&mut planes);
+        }
+        Ok(Some(planes))
+    }
+
+    fn encode_deinterleave(
+        &mut self,
+        _job: J2kDeinterleaveToF32Job<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        self.deinterleave += 1;
+        Ok(None)
+    }
+
+    fn encode_forward_rct(
+        &mut self,
+        _job: J2kForwardRctJob<'_>,
+    ) -> crate::J2kEncodeStageResult<bool> {
+        self.rct += 1;
+        Ok(false)
+    }
+
+    fn encode_forward_ict(
+        &mut self,
+        _job: J2kForwardIctJob<'_>,
+    ) -> crate::J2kEncodeStageResult<bool> {
+        self.ict += 1;
+        Ok(false)
+    }
+}
+
+#[test]
+fn three_component_mct_tries_combined_input_before_separate_stages() {
+    for reversible in [true, false] {
+        let pixels = vec![17_u8; 8 * 8 * 3];
+        let options = EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible,
+            use_mct: true,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CombinedInputRecordingAccelerator {
+            accept: true,
+            ..CombinedInputRecordingAccelerator::default()
+        };
+
+        encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
+            .expect("combined input encode");
+
+        assert_eq!(accelerator.combined, 1);
+        assert_eq!(accelerator.deinterleave, 0);
+        assert_eq!(accelerator.rct, 0);
+        assert_eq!(accelerator.ict, 0);
+    }
+}
+
+#[test]
+fn combined_input_is_not_offered_without_exact_three_component_mct_eligibility() {
+    for (components, use_mct) in [(1, false), (3, false), (4, true)] {
+        let pixels = vec![17_u8; 8 * 8 * usize::from(components)];
+        let options = EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible: true,
+            use_mct,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CombinedInputRecordingAccelerator {
+            accept: true,
+            ..CombinedInputRecordingAccelerator::default()
+        };
+
+        encode_with_accelerator(
+            &pixels,
+            8,
+            8,
+            components,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("fallback input encode");
+
+        assert_eq!(accelerator.combined, 0);
+        assert_eq!(accelerator.deinterleave, 1);
+    }
+}
+
+#[test]
+fn declined_combined_input_preserves_separate_mct_fallback() {
+    for reversible in [true, false] {
+        let pixels = vec![17_u8; 8 * 8 * 3];
+        let options = EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible,
+            use_mct: true,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CombinedInputRecordingAccelerator::default();
+
+        encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
+            .expect("separate input-stage fallback encode");
+
+        assert_eq!(accelerator.combined, 1);
+        assert_eq!(accelerator.deinterleave, 1);
+        assert_eq!(accelerator.rct, usize::from(reversible));
+        assert_eq!(accelerator.ict, usize::from(!reversible));
+    }
 }
 
 #[test]

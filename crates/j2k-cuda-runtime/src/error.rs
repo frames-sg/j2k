@@ -132,6 +132,27 @@ pub enum CudaError {
     },
 }
 
+impl From<j2k_core::HostPhaseError> for CudaError {
+    fn from(error: j2k_core::HostPhaseError) -> Self {
+        match error {
+            j2k_core::HostPhaseError::AllocationFailed {
+                requested_bytes, ..
+            } => Self::HostAllocationFailed {
+                bytes: requested_bytes,
+            },
+            j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes,
+                cap_bytes,
+                what,
+            } => Self::HostAllocationTooLarge {
+                requested: requested_bytes,
+                cap: cap_bytes,
+                what,
+            },
+        }
+    }
+}
+
 impl CudaError {
     /// True when the error means the CUDA driver or device is unavailable.
     pub fn is_unavailable(&self) -> bool {
@@ -196,7 +217,8 @@ impl CudaError {
     }
 }
 
-pub(crate) fn select_uncertain_completion_error(
+#[doc(hidden)]
+pub fn select_uncertain_completion_error(
     primary_error: CudaError,
     completion_error: Option<CudaError>,
 ) -> CudaError {
@@ -222,7 +244,8 @@ pub(crate) fn select_uncertain_completion_error(
     }
 }
 
-pub(crate) fn select_resource_release_error(
+#[doc(hidden)]
+pub fn select_resource_release_error(
     primary_error: CudaError,
     release_error: CudaError,
 ) -> CudaError {

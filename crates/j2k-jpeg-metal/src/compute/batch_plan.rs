@@ -10,9 +10,6 @@ use super::{entropy_checkpoints_buffer, new_shared_buffer_with_data, pixel_forma
 use super::{MetalRuntime, PlaneMode};
 use crate::{batch, Error, Surface};
 
-const AUTO_METAL_MIN_BATCH_REQUESTS: usize = 8;
-const AUTO_METAL_MIN_BATCH_EDGE: u32 = 512;
-
 pub(super) enum BatchedFastPacket<'a> {
     Fast420(&'a JpegFast420PacketV1),
     Fast422(&'a JpegFast422PacketV1),
@@ -83,32 +80,15 @@ impl BatchDeviceBufferCache {
 }
 
 fn request_allows_batched_packet(
-    requests: &[batch::QueuedRequest],
+    _requests: &[batch::QueuedRequest],
     request: &batch::QueuedRequest,
-    restart_interval_mcus: u32,
-    dimensions: (u32, u32),
+    _restart_interval_mcus: u32,
+    _dimensions: (u32, u32),
 ) -> bool {
     match request.backend {
         BackendRequest::Metal => true,
-        BackendRequest::Auto => match request.op {
-            batch::BatchOp::RegionScaled { .. } => false,
-            _ => {
-                requests.len() >= AUTO_METAL_MIN_BATCH_REQUESTS
-                    && (restart_interval_mcus != 0
-                        || auto_batch_work_is_large_enough(request, dimensions))
-            }
-        },
-        BackendRequest::Cpu | BackendRequest::Cuda => false,
+        BackendRequest::Auto | BackendRequest::Cpu | BackendRequest::Cuda => false,
     }
-}
-
-fn auto_batch_work_is_large_enough(request: &batch::QueuedRequest, dimensions: (u32, u32)) -> bool {
-    let dims = match request.op {
-        batch::BatchOp::Full | batch::BatchOp::Scaled(_) => dimensions,
-        batch::BatchOp::Region(roi) => (roi.w, roi.h),
-        batch::BatchOp::RegionScaled { .. } => return false,
-    };
-    dims.0 >= AUTO_METAL_MIN_BATCH_EDGE && dims.1 >= AUTO_METAL_MIN_BATCH_EDGE
 }
 
 pub(super) fn batched_fast_packets(

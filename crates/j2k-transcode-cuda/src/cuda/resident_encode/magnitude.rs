@@ -32,7 +32,7 @@ pub(super) fn required_magnitude_bounds_for_groups<J>(
     budget: &mut HostPhaseBudget,
 ) -> Result<Vec<Vec<u8>>, CudaTranscodeError> {
     let mut maxima = maxima;
-    let mut grouped = budget.try_vec_with_capacity(
+    let mut grouped = budget.try_vec_with_capacity_named(
         groups.len(),
         "CUDA grouped resident magnitude-bound outputs",
     )?;
@@ -76,8 +76,8 @@ pub(super) fn required_magnitude_bounds_for_items(
     decomposition_level: u8,
     budget: &mut HostPhaseBudget,
 ) -> Result<Vec<u8>, CudaTranscodeError> {
-    let mut required =
-        budget.try_vec_with_capacity(item_count, "CUDA resident HTJ2K magnitude-bound outputs")?;
+    let mut required = budget
+        .try_vec_with_capacity_named(item_count, "CUDA resident HTJ2K magnitude-bound outputs")?;
     required.resize(item_count, 8);
 
     for blocks_per_item in blocks_per_item_by_subband {

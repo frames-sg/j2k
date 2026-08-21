@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use j2k::J2kEncodeStageError;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 use j2k::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeContext,
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeStageResult, J2kForwardDwt53Job,
-    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
-    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
-    J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveMctToF32Job,
+    J2kDeinterleaveToF32Job, J2kEncodeContext, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
+    J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
@@ -22,10 +23,6 @@ use super::{
     lossless_options_for_resident_htj2k_tile_job, should_use_resident_htj2k_host_tile_for_auto,
     MetalEncodeInputStaging, MetalLosslessEncodeTile,
 };
-
-// Minimum qualified cells from verified Auto-routing artifact
-// 162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879.
-const AUTO_LOSSY_RGB8_MIN_PIXELS: usize = 5_038_848;
 
 /// Encode-stage accelerator for JPEG 2000 Metal work.
 ///
@@ -38,8 +35,10 @@ pub struct MetalEncodeStageAccelerator {
     parallel_cpu_code_block_fallback: bool,
     auto_host_output_force_cpu_fallback: bool,
     host_output_stages_enabled: bool,
+    combined_input_mct_evidence: CombinedInputMctEvidence,
     ht_tile_required_magnitude_bound: Option<u8>,
     deinterleave_attempts: usize,
+    combined_input_mct_attempts: usize,
     forward_rct_attempts: usize,
     forward_ict_attempts: usize,
     forward_dwt53_attempts: usize,
@@ -49,6 +48,7 @@ pub struct MetalEncodeStageAccelerator {
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
     deinterleave_dispatches: usize,
+    combined_input_mct_dispatches: usize,
     forward_rct_dispatches: usize,
     forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
@@ -67,8 +67,10 @@ impl Default for MetalEncodeStageAccelerator {
             parallel_cpu_code_block_fallback: false,
             auto_host_output_force_cpu_fallback: false,
             host_output_stages_enabled: false,
+            combined_input_mct_evidence: CombinedInputMctEvidence::Eligible,
             ht_tile_required_magnitude_bound: None,
             deinterleave_attempts: 0,
+            combined_input_mct_attempts: 0,
             forward_rct_attempts: 0,
             forward_ict_attempts: 0,
             forward_dwt53_attempts: 0,
@@ -78,6 +80,7 @@ impl Default for MetalEncodeStageAccelerator {
             ht_code_block_attempts: 0,
             packetization_attempts: 0,
             deinterleave_dispatches: 0,
+            combined_input_mct_dispatches: 0,
             forward_rct_dispatches: 0,
             forward_ict_dispatches: 0,
             forward_dwt53_dispatches: 0,
@@ -88,6 +91,12 @@ impl Default for MetalEncodeStageAccelerator {
             packetization_dispatches: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CombinedInputMctEvidence {
+    Eligible,
+    OutsideMeasuredGeometry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +218,12 @@ impl MetalEncodeStageAccelerator {
         self.deinterleave_attempts
     }
 
+    /// Number of combined input/MCT attempts observed by crate-local diagnostics.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn combined_input_mct_attempts(&self) -> usize {
+        self.combined_input_mct_attempts
+    }
+
     /// Number of forward RCT stage attempts observed by crate-local diagnostics.
     #[cfg(test)]
     pub(crate) fn forward_rct_attempts(&self) -> usize {
@@ -261,6 +276,12 @@ impl MetalEncodeStageAccelerator {
     #[cfg(test)]
     pub(crate) fn deinterleave_dispatches(&self) -> usize {
         self.deinterleave_dispatches
+    }
+
+    /// Number of combined input/MCT Metal dispatches observed by crate-local diagnostics.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn combined_input_mct_dispatches(&self) -> usize {
+        self.combined_input_mct_dispatches
     }
 
     /// Number of forward RCT Metal dispatches observed by crate-local diagnostics.
@@ -321,7 +342,7 @@ pub(super) fn auto_host_output_should_dispatch(context: J2kEncodeContext) -> boo
         return false;
     }
     match context.num_components {
-        3 => context.num_pixels >= AUTO_LOSSY_RGB8_MIN_PIXELS,
+        3 => crate::generated::promotion::auto_lossy_rgb8_encode_qualifies(context.num_pixels),
         _ => false,
     }
 }
@@ -365,6 +386,15 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             MetalEncodeRouteProfile::HostOutputEvidence => {
                 host_output_evidence_should_dispatch(context)
             }
+        };
+        self.combined_input_mct_evidence = if context.num_pixels == 512 * 512
+            && context.num_components == 3
+            && context.bit_depth == 8
+            && !context.signed
+        {
+            CombinedInputMctEvidence::Eligible
+        } else {
+            CombinedInputMctEvidence::OutsideMeasuredGeometry
         };
         Ok(())
     }
@@ -419,6 +449,62 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 Err(source) => Err(J2kEncodeStageError::backend(
                     "metal",
                     "deinterleave encode",
+                    source,
+                )),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            Ok(None)
+        }
+    }
+
+    fn encode_deinterleave_mct(
+        &mut self,
+        job: J2kDeinterleaveMctToF32Job<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        self.combined_input_mct_attempts = self.combined_input_mct_attempts.saturating_add(1);
+        let transform_enabled = if job.reversible {
+            self.dispatch_stages
+                .contains(MetalEncodeDispatchStages::FORWARD_RCT)
+        } else {
+            self.dispatch_stages
+                .contains(MetalEncodeDispatchStages::FORWARD_ICT)
+        };
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::DEINTERLEAVE)
+            || !transform_enabled
+            || self.auto_host_output_force_cpu_fallback
+            || !self.host_output_stage_supported()
+            || self.combined_input_mct_evidence != CombinedInputMctEvidence::Eligible
+            || crate::profile_env::fused_input_mct_disabled()
+        {
+            let _ = job;
+            return Ok(None);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            match compute::encode_deinterleave_mct_to_f32(job) {
+                Ok(components) => {
+                    self.combined_input_mct_dispatches =
+                        self.combined_input_mct_dispatches.saturating_add(1);
+                    self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(1);
+                    if job.reversible {
+                        self.forward_rct_dispatches = self.forward_rct_dispatches.saturating_add(1);
+                    } else {
+                        self.forward_ict_dispatches = self.forward_ict_dispatches.saturating_add(1);
+                    }
+                    Ok(Some(components))
+                }
+                Err(crate::Error::MetalUnavailable) => Ok(None),
+                Err(crate::Error::UnsupportedMetalRequest { reason }) => {
+                    Err(J2kEncodeStageError::unsupported(reason))
+                }
+                Err(source) => Err(J2kEncodeStageError::backend(
+                    "metal",
+                    "combined deinterleave and MCT encode",
                     source,
                 )),
             }

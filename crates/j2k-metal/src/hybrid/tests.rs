@@ -75,10 +75,10 @@ fn assert_plan_build_uses_runtime(
     label: &str,
     decode: impl FnOnce() -> Result<(), Error>,
 ) {
-    crate::compute::reset_direct_tier1_input_buffer_prepares_for_test();
-    crate::compute::with_isolated_runtime_for_device_for_test(device, decode).expect(label);
+    crate::engine::reset_direct_tier1_input_buffer_prepares_for_test();
+    crate::engine::with_isolated_runtime_for_device_for_test(device, decode).expect(label);
     assert_eq!(
-        crate::compute::direct_tier1_input_buffer_runtime_for_test(),
+        crate::engine::direct_tier1_input_buffer_runtime_for_test(),
         expected_runtime,
         "{label} must prepare with the explicit session runtime"
     );

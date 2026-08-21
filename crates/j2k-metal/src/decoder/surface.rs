@@ -47,9 +47,11 @@ pub(super) fn upload_surface(
             #[cfg(target_os = "macos")]
             {
                 let _ = bytes;
-                Err(Error::UnsupportedMetalRequest {
-                    reason: CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
-                })
+                Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_operation(
+                        CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
+                    ),
+                ))
             }
             #[cfg(not(target_os = "macos"))]
             {

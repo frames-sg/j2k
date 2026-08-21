@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::{CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources};
+use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources, J2kCudaEngine};
 
 use super::super::{
     can_batch_color_idwt, cuda_error, decode_cuda_component_subbands_with_resources,
@@ -87,7 +87,7 @@ pub(super) fn enqueue_native_color_entropy(
         .iter()
         .any(|work| !work.pending_classic_bands.is_empty())
     {
-        let resources = context
+        let resources = J2kCudaEngine::new(&context)
             .upload_j2k_decode_payload_with_pool(shared_payload, &pool)
             .map_err(cuda_error)?;
         let tables = session.classic_decode_table_resources()?;

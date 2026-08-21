@@ -23,7 +23,7 @@ fn deferred_async_submission_preserves_the_compatibility_event_bridge() {
     let consumer_queue =
         j2k_metal_support::checked_command_queue(decoder.backend_session().device())
             .expect("compatibility consumer command queue");
-    crate::compute::reset_direct_destination_event_bridge_for_test();
+    crate::engine::reset_direct_destination_event_bridge_for_test();
 
     let mut pending = decoder
         .submit_prepared_group_into(&prepared.groups()[0], destination)
@@ -33,7 +33,7 @@ fn deferred_async_submission_preserves_the_compatibility_event_bridge() {
         .expect("compatibility consumer wait");
 
     assert_eq!(
-        crate::compute::direct_destination_event_bridge_for_test(),
+        crate::engine::direct_destination_event_bridge_for_test(),
         (1, 1, 1),
         "deferred compatibility submission must retain its event bridge"
     );

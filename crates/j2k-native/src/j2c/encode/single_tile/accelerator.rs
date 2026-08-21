@@ -6,9 +6,10 @@ use super::super::{
     encode_forward_dwt, forward_mct, profile, try_deinterleave_to_f32, try_encode_forward_ict,
     try_encode_forward_rct, validate_deinterleaved_components, BlockCodingMode,
     EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, ForwardDwtRequest,
-    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob,
-    J2kResidentEncodeInput, J2kResidentHtj2kTileEncodeJob, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession, ResidentHtj2kEncodeError, Vec,
+    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator,
+    J2kHtj2kTileEncodeJob, J2kResidentEncodeInput, J2kResidentHtj2kTileEncodeJob,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
+    ResidentHtj2kEncodeError, Vec,
 };
 use super::coefficient_source::{validate_component_sampling_dwt_geometry, OwnedDwtComponent};
 use super::ownership::{
@@ -185,9 +186,13 @@ pub(super) fn prepare_accelerated_components(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<PreparedComponentTransforms> {
     let plan_bytes = single_tile_plan_retained_bytes(request.plan)?;
-    let (mut components, component_bytes, deinterleave_us) =
+    let (mut components, component_bytes, deinterleave_us, mct_applied) =
         prepare_deinterleaved_components(request, plan_bytes, accelerator)?;
-    let mct_us = apply_forward_mct(request, &mut components, accelerator)?;
+    let mct_us = if mct_applied {
+        0
+    } else {
+        apply_forward_mct(request, &mut components, accelerator)?
+    };
     let (decompositions, dwt_us) = prepare_dwt_components(
         request,
         components,
@@ -207,7 +212,7 @@ fn prepare_deinterleaved_components(
     request: &AcceleratedComponentRequest<'_, '_>,
     plan_bytes: usize,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> NativeEncodePipelineResult<(Vec<Vec<f32>>, usize, u128)> {
+) -> NativeEncodePipelineResult<(Vec<Vec<f32>>, usize, u128, bool)> {
     let requested_sample_count = request
         .plan
         .num_pixels
@@ -229,42 +234,74 @@ fn prepare_deinterleaved_components(
     )?;
 
     let stage_start = profile::profile_now(request.profile_enabled);
-    let components = accelerator
-        .encode_deinterleave(J2kDeinterleaveToF32Job {
-            pixels: request.pixels,
-            num_pixels: request.plan.num_pixels,
-            num_components: request.num_components,
-            bit_depth: request.bit_depth,
-            signed: request.signed,
-        })
-        .map_err(|source| crate::EncodeError::Accelerator {
-            operation: "pixel deinterleave",
-            source,
-        })?;
-    let components = match components {
-        Some(components) => validate_deinterleaved_components(
-            components,
-            request.num_components,
-            request.plan.num_pixels,
-        )
-        .map_err(|detail| crate::EncodeError::Accelerator {
-            operation: "pixel deinterleave",
-            source: crate::J2kEncodeStageError::internal_invariant(detail),
-        })?,
-        None => try_deinterleave_to_f32(
-            request.pixels,
-            request.plan.num_pixels,
-            request.num_components,
-            request.bit_depth,
-            request.signed,
-        )?,
+    let combined_eligible = request.plan.use_mct && request.num_components == 3;
+    let combined_components = if combined_eligible {
+        accelerator
+            .encode_deinterleave_mct(J2kDeinterleaveMctToF32Job {
+                pixels: request.pixels,
+                num_pixels: request.plan.num_pixels,
+                bit_depth: request.bit_depth,
+                signed: request.signed,
+                reversible: request.options.reversible,
+            })
+            .map_err(|source| crate::EncodeError::Accelerator {
+                operation: "pixel deinterleave and forward MCT",
+                source,
+            })?
+    } else {
+        None
+    };
+    let mct_applied = combined_components.is_some();
+    let components = if let Some(components) = combined_components {
+        validate_deinterleaved_components(components, 3, request.plan.num_pixels).map_err(
+            |detail| crate::EncodeError::Accelerator {
+                operation: "pixel deinterleave and forward MCT",
+                source: crate::J2kEncodeStageError::internal_invariant(detail),
+            },
+        )?
+    } else {
+        let components = accelerator
+            .encode_deinterleave(J2kDeinterleaveToF32Job {
+                pixels: request.pixels,
+                num_pixels: request.plan.num_pixels,
+                num_components: request.num_components,
+                bit_depth: request.bit_depth,
+                signed: request.signed,
+            })
+            .map_err(|source| crate::EncodeError::Accelerator {
+                operation: "pixel deinterleave",
+                source,
+            })?;
+        match components {
+            Some(components) => validate_deinterleaved_components(
+                components,
+                request.num_components,
+                request.plan.num_pixels,
+            )
+            .map_err(|detail| crate::EncodeError::Accelerator {
+                operation: "pixel deinterleave",
+                source: crate::J2kEncodeStageError::internal_invariant(detail),
+            })?,
+            None => try_deinterleave_to_f32(
+                request.pixels,
+                request.plan.num_pixels,
+                request.num_components,
+                request.bit_depth,
+                request.signed,
+            )?,
+        }
     };
     let actual_bytes = component_planes_retained_bytes(&components, components.capacity())?;
     request.session.checked_phase(
         checked_add_bytes(plan_bytes, actual_bytes, "deinterleave output phase")?,
         "native encode deinterleave output",
     )?;
-    Ok((components, actual_bytes, profile::elapsed_us(stage_start)))
+    Ok((
+        components,
+        actual_bytes,
+        profile::elapsed_us(stage_start),
+        mct_applied,
+    ))
 }
 
 fn apply_forward_mct(

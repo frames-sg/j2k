@@ -28,8 +28,8 @@ const SEMVER_TOOLCHAIN: &str = "1.96";
 const SEMVER_BASELINE_VERSION: &str = "0.9.0";
 const SEMVER_BASELINE_TAG: &str = "v0.9.0";
 const SEMVER_BASELINE_COMMIT: &str = "b197f01ab4b9271f1cbc36921755a5b9d588bd5a";
-const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.9.1.md";
-const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.9.1.yml";
+const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.10.0.md";
+const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.10.0.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {
@@ -38,7 +38,12 @@ struct BaselineTransition<'a> {
     required_next_baseline_tag: &'a str,
 }
 
-const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> = None;
+const INTENTIONAL_BREAK_TRANSITION: Option<BaselineTransition<'static>> =
+    Some(BaselineTransition {
+        candidate_version: "0.10.0",
+        required_next_baseline_version: "0.10.0",
+        required_next_baseline_tag: "v0.10.0",
+    });
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",
@@ -61,7 +66,12 @@ const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k-ml",
 ];
 
-const SEMVER_NEW_PACKAGES: &[&str] = &[];
+const SEMVER_NEW_PACKAGES: &[&str] = &[
+    "j2k-cuda-build-support",
+    "j2k-cuda-j2k-engine",
+    "j2k-cuda-jpeg-engine",
+    "j2k-cuda-transcode-engine",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Version {
@@ -282,7 +292,7 @@ fn validate_baseline_transition(
     if transition.required_next_baseline_version != transition.candidate_version {
         return Err(format!(
             "intentional-break transition candidate {} must equal its required next baseline \
-             version {}, so later 0.8.x checks cannot keep using the older baseline",
+             version {}, so later candidate checks cannot keep using the older baseline",
             transition.candidate_version, transition.required_next_baseline_version
         ));
     }

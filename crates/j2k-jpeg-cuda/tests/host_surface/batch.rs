@@ -5,6 +5,8 @@ use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, CudaSession, Error};
 use j2k_test_support::cuda_jpeg_hardware_decode_gate;
 
+#[cfg(feature = "cuda-runtime")]
+use super::support::generated_rgb_jpeg_with_restart;
 use super::support::{assert_cuda_surface, assert_surface_bytes_match_or_are_close, BASELINE_420};
 
 #[test]
@@ -79,6 +81,34 @@ fn decode_tiles_to_device_with_session_auto_preserves_order_and_matches_host_byt
             j2k_core::BackendKind::Metal => panic!("JPEG CUDA batch returned Metal surface"),
         }
     }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn profiled_restart_420_remains_eligible_for_session_batch_decode() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
+        return;
+    }
+
+    let input = generated_rgb_jpeg_with_restart(j2k_jpeg::JpegSubsampling::Ybr420, 32, 16, Some(1));
+    let mut session = CudaSession::default();
+    let first = Codec::profile_tile_rgb8_with_session(&input, &mut session)
+        .expect("first restart-coded profile");
+    let repeat = Codec::profile_tile_rgb8_with_session(&input, &mut session)
+        .expect("repeated restart-coded profile");
+
+    let surfaces = Codec::decode_tiles_to_device_with_session(
+        &[input.as_slice()],
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+        &mut session,
+    )
+    .expect("restart-coded session batch decode after profiling");
+
+    assert_eq!(surfaces.len(), 1);
+    assert_cuda_surface(&surfaces[0]);
+    assert_eq!(first.surface().dimensions(), (32, 16));
+    assert_eq!(repeat.surface().dimensions(), (32, 16));
 }
 
 #[test]

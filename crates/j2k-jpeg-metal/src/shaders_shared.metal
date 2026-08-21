@@ -679,13 +679,24 @@ inline bool jpeg_encode_block(
     return true;
 }
 
-inline void jpeg_encode_baseline_entropy_one(
-    device const uchar *input,
+inline uint jpeg_encode_blocks_per_mcu(
+    constant JpegBaselineEncodeParams &params
+) {
+    uint blocks = params.h0 * params.v0;
+    if (params.components > 1u) {
+        blocks += params.h1 * params.v1;
+    }
+    if (params.components > 2u) {
+        blocks += params.h2 * params.v2;
+    }
+    return blocks;
+}
+
+inline void jpeg_encode_baseline_entropy_from_coeffs_one(
+    device const int *tile_coeffs,
     device uchar *entropy,
     device JpegBaselineEncodeStatus *status,
     constant JpegBaselineEncodeParams &params,
-    constant uchar *q_luma,
-    constant uchar *q_chroma,
     constant JpegBaselineEncodeHuffmanTable &dc_luma,
     constant JpegBaselineEncodeHuffmanTable &ac_luma,
     constant JpegBaselineEncodeHuffmanTable &dc_chroma,
@@ -695,17 +706,13 @@ inline void jpeg_encode_baseline_entropy_one(
     status->entropy_len = 0u;
     status->detail = 0u;
 
+    const uint blocks_per_mcu = jpeg_encode_blocks_per_mcu(params);
     if (
-        params.input_width == 0u ||
-        params.input_height == 0u ||
         params.output_width == 0u ||
         params.output_height == 0u ||
         params.mcus_per_row == 0u ||
         params.mcu_rows == 0u ||
-        params.max_h == 0u ||
-        params.max_v == 0u ||
-        params.h0 == 0u ||
-        params.v0 == 0u
+        blocks_per_mcu == 0u
     ) {
         status->code = JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS;
         return;
@@ -719,6 +726,7 @@ inline void jpeg_encode_baseline_entropy_one(
     thread int prev_dc[3] = {0, 0, 0};
     uint mcus_since_restart = 0u;
     uint rst = 0u;
+    uint block_index = 0u;
 
     for (uint mcu_y = 0u; mcu_y < params.mcu_rows; mcu_y++) {
         for (uint mcu_x = 0u; mcu_x < params.mcus_per_row; mcu_x++) {
@@ -744,13 +752,14 @@ inline void jpeg_encode_baseline_entropy_one(
                 }
                 for (uint block_y = 0u; block_y < v; block_y++) {
                     for (uint block_x = 0u; block_x < h; block_x++) {
-                        thread uchar block[64];
                         thread int coeffs[64];
-                        jpeg_encode_sample_block(input, params, component, mcu_x, mcu_y, block_x, block_y, block);
-                        bool ok;
-                        if (component == 0u) {
-                            jpeg_encode_fdct_quantize(block, q_luma, coeffs);
-                            ok = jpeg_encode_block(
+                        device const int *source = tile_coeffs + block_index * 64u;
+                        for (uint index = 0u; index < 64u; index++) {
+                            coeffs[index] = source[index];
+                        }
+                        block_index += 1u;
+                        const bool ok = component == 0u
+                            ? jpeg_encode_block(
                                 coeffs,
                                 prev_dc[component],
                                 dc_luma,
@@ -759,10 +768,8 @@ inline void jpeg_encode_baseline_entropy_one(
                                 params.entropy_capacity,
                                 writer,
                                 status
-                            );
-                        } else {
-                            jpeg_encode_fdct_quantize(block, q_chroma, coeffs);
-                            ok = jpeg_encode_block(
+                            )
+                            : jpeg_encode_block(
                                 coeffs,
                                 prev_dc[component],
                                 dc_chroma,
@@ -772,7 +779,6 @@ inline void jpeg_encode_baseline_entropy_one(
                                 writer,
                                 status
                             );
-                        }
                         if (!ok) {
                             return;
                         }

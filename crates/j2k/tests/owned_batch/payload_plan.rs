@@ -4,20 +4,99 @@ use std::sync::Arc;
 
 use j2k::{prepare_batch, BatchDecodeOptions, EncodedImage};
 
-pub(super) fn native_prepared_plan(
-    plan: &j2k::PreparedHtj2kPlan,
-) -> &j2k_native::J2kReferencedHtj2kPlan {
-    plan.adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .expect("j2k-native prepared-plan adapter")
+use super::fixtures::{
+    classic_gray8_fixture, htj2k_gray8_fixture, htj2k_native_fixture, rgb8_fixture,
+};
+
+#[test]
+fn classic_and_ht_plans_share_one_image_geometry_contract() {
+    let classic_bytes = Arc::<[u8]>::from(classic_gray8_fixture(8, 6));
+    let ht_bytes = Arc::<[u8]>::from(htj2k_gray8_fixture(8, 6));
+
+    let classic_batch = prepare_batch(
+        vec![EncodedImage::full(classic_bytes)],
+        BatchDecodeOptions::default(),
+    )
+    .expect("prepare classic geometry");
+    let ht_batch = prepare_batch(
+        vec![EncodedImage::full(ht_bytes)],
+        BatchDecodeOptions::default(),
+    )
+    .expect("prepare HT geometry");
+    let classic = classic_batch.groups()[0].images()[0]
+        .classic_plan()
+        .expect("classic plan");
+    let ht = ht_batch.groups()[0].images()[0]
+        .htj2k_plan()
+        .expect("HT plan");
+    let classic_image = classic.geometry().image_geometry();
+    let ht_image = ht.geometry().image_geometry();
+
+    for geometry in [classic_image, ht_image] {
+        assert!(!geometry.is_empty());
+        assert!(geometry.is_grayscale());
+        assert!(!geometry.is_color());
+        assert!(!geometry.is_rgba());
+        assert_eq!(geometry.full_dimensions(), (8, 6));
+        let output = geometry.output_rect();
+        assert_eq!((output.x1 - output.x0, output.y1 - output.y0), (8, 6));
+        assert_eq!(geometry.tiles().len(), 1);
+        assert!(geometry.grayscale_geometry().is_some());
+        assert!(geometry.color_geometry().is_none());
+        assert!(geometry.rgba_geometry().is_none());
+        assert_eq!(
+            geometry.uniform_wavelet_transform(),
+            Some(j2k_native::J2kWaveletTransform::Reversible53)
+        );
+    }
+
+    assert_eq!(classic.is_grayscale(), classic_image.is_grayscale());
+    assert_eq!(ht.is_grayscale(), ht_image.is_grayscale());
+}
+
+#[test]
+fn classic_and_ht_color_plans_use_the_shared_component_geometry() {
+    let sources = [
+        Arc::<[u8]>::from(rgb8_fixture()),
+        Arc::<[u8]>::from(htj2k_native_fixture(3, 8, false, 4, 4)),
+    ];
+    let prepared = prepare_batch(
+        sources.into_iter().map(EncodedImage::full).collect(),
+        BatchDecodeOptions::default(),
+    )
+    .expect("prepare classic and HT color geometry");
+
+    for image in prepared
+        .groups()
+        .iter()
+        .flat_map(j2k::PreparedBatchGroup::images)
+    {
+        let geometry = image
+            .classic_plan()
+            .map(j2k::PreparedClassicPlan::image_geometry)
+            .or_else(|| {
+                image
+                    .htj2k_plan()
+                    .map(j2k::PreparedHtj2kPlan::image_geometry)
+            })
+            .expect("prepared image geometry");
+        assert!(!geometry.is_grayscale());
+        assert!(geometry.is_color());
+        assert!(!geometry.is_rgba());
+        let color = geometry.color_geometry().expect("single-tile RGB geometry");
+        assert_eq!(color.component_plans.len(), 3);
+        assert_eq!(color.dimensions, (4, 4));
+    }
+}
+
+pub(super) fn native_prepared_plan(plan: &j2k::PreparedHtj2kPlan) -> &j2k::Htj2kPreparedGeometry {
+    plan.geometry()
 }
 
 pub(super) fn native_prepared_classic_plan(
     plan: &j2k::PreparedClassicPlan,
-) -> &j2k_native::J2kReferencedClassicPlan {
-    plan.adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedClassicPlan>()
-        .expect("j2k-native prepared classic-plan adapter")
+) -> &j2k::ClassicPreparedGeometry {
+    plan.geometry()
 }
 
 pub(super) fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(bytes: Vec<u8>) {
@@ -28,6 +107,8 @@ pub(super) fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(bytes: V
     .expect("prepare HTJ2K offset plan");
     let prepared_image = &prepared.groups()[0].images()[0];
     let referenced = prepared_image.htj2k_plan().expect("referenced HTJ2K plan");
+    let shared = referenced.clone();
+    assert!(core::ptr::eq(referenced.geometry(), shared.geometry()));
     let geometry = native_prepared_plan(referenced)
         .grayscale_geometry()
         .expect("grayscale referenced geometry");
@@ -109,6 +190,8 @@ pub(super) fn assert_prepared_classic_payload_ranges_reconstruct_owned_bytes(byt
     let referenced = prepared_image
         .classic_plan()
         .expect("referenced classic plan");
+    let shared = referenced.clone();
+    assert!(core::ptr::eq(referenced.geometry(), shared.geometry()));
     let geometry = native_prepared_classic_plan(referenced)
         .grayscale_geometry()
         .expect("grayscale referenced classic geometry");

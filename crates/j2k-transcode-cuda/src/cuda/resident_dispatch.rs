@@ -7,7 +7,7 @@ use super::{
     try_transcode_vec_for_product, validate_htj2k97_codeblock_options, CudaBufferPool, CudaContext,
     CudaDwt97BatchGeometry, CudaHtj2k97DeviceCodeblockBands,
     CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
-    CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaTranscodeError,
+    CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaTranscodeEngine, CudaTranscodeError,
     CudaTranscodeSession, DctGridI16ToHtj2k97CodeBlockJob, Dwt97BatchStageTimings,
     Htj2k97CodeBlockOptions, Htj2k97ComponentJob, J2kSubBandType, PreencodedHtj2k97CompactBatch,
     PreencodedHtj2k97Component,
@@ -31,6 +31,19 @@ fn validate_i16_block_grid(
         ));
     }
     Ok(())
+}
+
+pub(super) fn resident_dwt_handoff_count(bands: &CudaHtj2k97DeviceCodeblockBands) -> usize {
+    let bands_per_item = [
+        (bands.low_width, bands.low_height),
+        (bands.high_width, bands.low_height),
+        (bands.low_width, bands.high_height),
+        (bands.high_width, bands.high_height),
+    ]
+    .into_iter()
+    .filter(|&(width, height)| width > 0 && height > 0)
+    .count();
+    bands.item_count.saturating_mul(bands_per_item)
 }
 
 pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
@@ -82,7 +95,7 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
         append_i16_blocks(job.dequantized_blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
-    let (device_bands, cuda_timings) = context
+    let (device_bands, cuda_timings) = CudaTranscodeEngine::new(&context)
         .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
             CudaHtj2k97I16CodeblockBatchWithPoolRequest {
                 blocks: &blocks,
@@ -112,6 +125,8 @@ pub(super) fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
         jobs,
         options,
     )?;
+    timings.resident_dct_handoff_count = jobs.len();
+    timings.resident_dwt_handoff_count = resident_dwt_handoff_count(&device_bands);
     set_ht_encode_timings(&mut timings, ht_timings);
     timings.ht_codeblock_dispatches = ht_dispatches;
     Ok((output, required_magnitude_bounds, timings))

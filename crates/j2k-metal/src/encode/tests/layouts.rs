@@ -148,3 +148,64 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
         );
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_combined_input_mct_matches_separate_native_reference_exactly() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let _route = crate::profile_env::override_fused_input_mct_disabled(false);
+
+    for bit_depth in [1_u8, 7, 8, 9, 12, 15, 16] {
+        for signed in [false, true] {
+            let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+            let mut pixels = Vec::new();
+            for index in 0_u16..51 {
+                let raw = index.wrapping_mul(977).wrapping_add(0x5a);
+                if bytes_per_sample == 1 {
+                    pixels.push(raw.to_le_bytes()[0]);
+                } else {
+                    pixels.extend_from_slice(&raw.to_le_bytes());
+                }
+            }
+            for reversible in [true, false] {
+                let mut expected = try_deinterleave_reference(&pixels, 17, 3, bit_depth, signed)
+                    .expect("native input reference");
+                expected = if reversible {
+                    forward_rct_reference(expected)
+                } else {
+                    forward_ict_reference(expected)
+                };
+                let mut accelerator = MetalEncodeStageAccelerator::default();
+
+                let actual = accelerator
+                    .encode_deinterleave_mct(J2kDeinterleaveMctToF32Job {
+                        pixels: &pixels,
+                        num_pixels: 17,
+                        bit_depth,
+                        signed,
+                        reversible,
+                    })
+                    .expect("combined Metal input stage")
+                    .expect("combined Metal input stage dispatched");
+
+                for (component, (actual_plane, expected_plane)) in
+                    actual.iter().zip(&expected).enumerate()
+                {
+                    for (index, (&actual, &expected)) in
+                        actual_plane.iter().zip(expected_plane).enumerate()
+                    {
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "component {component} sample {index}, bit_depth={bit_depth}, signed={signed}, reversible={reversible}"
+                        );
+                    }
+                }
+                assert_eq!(accelerator.combined_input_mct_attempts(), 1);
+                assert_eq!(accelerator.combined_input_mct_dispatches(), 1);
+            }
+        }
+    }
+}

@@ -10,17 +10,21 @@ use crate::error::CudaError;
 /// or a fatal context error. The runtime therefore retains queued resources
 /// and poisons further context use for every error instead of guessing which
 /// allocations the driver may still reference.
-pub(crate) enum CudaSynchronizationOutcome {
+#[doc(hidden)]
+pub enum CudaSynchronizationOutcome {
     Completed,
     CompletionUncertain(CudaError),
 }
 
 impl CudaSynchronizationOutcome {
-    pub(crate) fn completion_established(&self) -> bool {
+    /// Return whether CUDA proved completion.
+    #[must_use]
+    pub fn completion_established(&self) -> bool {
         matches!(self, Self::Completed)
     }
 
-    pub(crate) fn into_result(self) -> Result<(), CudaError> {
+    /// Convert uncertain completion into its retained error.
+    pub fn into_result(self) -> Result<(), CudaError> {
         match self {
             Self::Completed => Ok(()),
             Self::CompletionUncertain(error) => Err(error),

@@ -14,17 +14,17 @@ const REVIEWED_WILDCARD_EXPORT_FILES: &[&str] = &[
 
 const REVIEWED_DEVICE_INCLUDE_FILES: &[&str] = &[
     "crates/j2k-cuda-runtime/src/cuda_oxide_copy_u8/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_decode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_decode_store/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_dequantize/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_encode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_ml/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
-    "crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_htj2k_decode/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_decode_store/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_dequantize/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_idwt/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
+    "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_ml/simt/src/main.rs",
+    "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
+    "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+    "crates/j2k-cuda-transcode-engine/src/cuda_oxide_transcode/simt/src/main.rs",
 ];
 
 #[test]

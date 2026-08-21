@@ -61,7 +61,7 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 23);
+    assert_eq!(log.lines().count(), 24);
 }
 
 #[cfg(unix)]
@@ -94,7 +94,7 @@ fn benchmark_build_lanes_never_compile_the_other_accelerator() {
         ),
         (
             "cuda",
-            6,
+            7,
             "j2k-ml --bench batch_decode_cuda --features cpu,cuda",
             "j2k-metal",
         ),

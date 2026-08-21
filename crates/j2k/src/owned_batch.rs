@@ -41,8 +41,8 @@ use self::prepared::{BatchExecutionShape, PreparedCodecPlan, PreparedImageInner}
 
 mod prepared_plan;
 pub use self::prepared_plan::{
-    ClassicCodeBlockPayload, Htj2kPayloadRanges, J2kCodestreamRange, PreparedClassicPlan,
-    PreparedHtj2kPlan,
+    ClassicCodeBlockPayload, ClassicPreparedGeometry, Htj2kPayloadRanges, Htj2kPreparedGeometry,
+    J2kCodestreamRange, PreparedClassicPlan, PreparedHtj2kPlan, PreparedImageGeometry,
 };
 mod cpu_prepared;
 use self::cpu_prepared::{

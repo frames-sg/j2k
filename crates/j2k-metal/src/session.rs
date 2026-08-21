@@ -46,7 +46,7 @@ impl MetalConsumerEventTimeline {
 #[derive(Clone)]
 /// Reusable Metal device session for J2K decode and encode submissions.
 pub struct MetalBackendSession {
-    runtime_session: MetalRuntimeSession<Arc<crate::compute::MetalRuntime>, MetalSupportError>,
+    runtime_session: MetalRuntimeSession<Arc<crate::engine::MetalRuntime>, MetalSupportError>,
     command_queue: Option<CommandQueue>,
     direct_plan_caches: direct_plan_cache::DirectPlanCaches,
     consumer_event_timeline: Arc<Mutex<MetalConsumerEventTimeline>>,
@@ -73,9 +73,11 @@ impl MetalBackendSession {
     ) -> Result<Self, Error> {
         let queue_device = command_queue.device();
         if objc2::rc::Retained::as_ptr(&queue_device) != objc2::rc::Retained::as_ptr(&device) {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: "command queue belongs to a different Metal device",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "command queue belongs to a different Metal device",
+                ),
+            ));
         }
         Ok(Self::with_runtime_session(
             MetalRuntimeSession::new(device),
@@ -84,7 +86,7 @@ impl MetalBackendSession {
     }
 
     fn with_runtime_session(
-        runtime_session: MetalRuntimeSession<Arc<crate::compute::MetalRuntime>, MetalSupportError>,
+        runtime_session: MetalRuntimeSession<Arc<crate::engine::MetalRuntime>, MetalSupportError>,
         command_queue: Option<CommandQueue>,
     ) -> Self {
         Self {
@@ -99,7 +101,7 @@ impl MetalBackendSession {
     pub fn system_default() -> Result<Self, Error> {
         MetalRuntimeSession::system_default()
             .map(|runtime_session| Self::with_runtime_session(runtime_session, None))
-            .map_err(|error| crate::compute::runtime_initialization_error(&error))
+            .map_err(|error| crate::engine::runtime_initialization_error(&error))
     }
 
     /// Metal device used by this session.
@@ -111,19 +113,19 @@ impl MetalBackendSession {
         self.runtime_session.device_handle()
     }
 
-    pub(crate) fn runtime(&self) -> Result<Arc<crate::compute::MetalRuntime>, Error> {
+    pub(crate) fn runtime(&self) -> Result<Arc<crate::engine::MetalRuntime>, Error> {
         let command_queue = self.command_queue.clone();
         match self.runtime_session.get_or_init_runtime(move |device| {
             match command_queue {
                 Some(queue) => {
-                    crate::compute::MetalRuntime::new_with_device_and_queue(device, queue)
+                    crate::engine::MetalRuntime::new_with_device_and_queue(device, queue)
                 }
-                None => crate::compute::MetalRuntime::new_with_device(device),
+                None => crate::engine::MetalRuntime::new_with_device(device),
             }
             .map(Arc::new)
         }) {
             Ok(runtime) => Ok(runtime.clone()),
-            Err(error) => Err(crate::compute::runtime_initialization_error(error)),
+            Err(error) => Err(crate::engine::runtime_initialization_error(error)),
         }
     }
 

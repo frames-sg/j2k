@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    jscpd_args, stage_production_sources, stage_test_sources, validate_clone_config,
-    validate_jscpd_report, validate_test_clone_config, JSCPD_PACKAGE,
+    jscpd_args, metal_jscpd_args, stage_metal_sources, stage_production_sources,
+    stage_test_sources, validate_clone_config, validate_jscpd_report, validate_metal_clone_config,
+    validate_test_clone_config, JSCPD_PACKAGE,
 };
 
 const INLINE_TEST_FIXTURE: &str = include_str!("../../tests/fixtures/clone_audit/inline_test_a.rs");
@@ -19,6 +20,32 @@ fn repository_clone_config_is_pinned_and_source_staging_owned() {
     validate_clone_config(&root.join(".jscpd.json")).expect("valid repository clone config");
     validate_test_clone_config(&root.join(".jscpd-tests.json"))
         .expect("valid repository test clone config");
+    validate_metal_clone_config(&root.join(".jscpd-metal.json"))
+        .expect("valid repository Metal clone config");
+}
+
+#[test]
+fn metal_clone_stage_preserves_shader_paths_and_excludes_rust() {
+    let temp = temp_dir("metal-stage");
+    let root = temp.join("repo");
+    let shader = root.join("crates/fixture/src/kernel.metal");
+    let rust = root.join("crates/fixture/src/lib.rs");
+    fs::create_dir_all(shader.parent().expect("shader parent")).expect("create source parent");
+    fs::write(&shader, "kernel void fixture() {}\n").expect("write shader fixture");
+    fs::write(&rust, "pub fn ignored() {}\n").expect("write Rust fixture");
+    let stage = temp.join("stage");
+
+    let summary = stage_metal_sources(&root, &stage).expect("stage Metal source");
+
+    assert_eq!(summary.files, 1);
+    assert_eq!(
+        fs::read_to_string(stage.join("crates/fixture/src/kernel.metal"))
+            .expect("read staged shader"),
+        "kernel void fixture() {}\n"
+    );
+    assert!(!stage.join("crates/fixture/src/lib.rs").exists());
+
+    fs::remove_dir_all(temp).expect("remove Metal clone-audit test directory");
 }
 
 #[test]
@@ -175,6 +202,20 @@ fn jscpd_invocation_pins_package_config_output_and_silent_mode() {
         ]
     }));
     assert_eq!(arguments.last().map(String::as_str), Some("--silent"));
+}
+
+#[test]
+fn metal_jscpd_invocation_maps_metal_to_the_opencl_parser() {
+    let arguments = metal_jscpd_args(
+        Path::new("/tmp/metal-stage"),
+        Path::new("/repo/.jscpd-metal.json"),
+        Path::new("/repo/target/clone-audit/metal-report"),
+    )
+    .expect("UTF-8 paths");
+
+    assert!(arguments
+        .windows(2)
+        .any(|pair| { pair == ["--formats-exts".to_string(), "opencl:metal".to_string(),] }));
 }
 
 #[test]

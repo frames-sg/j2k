@@ -335,6 +335,11 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
     assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
     assert!(batch.report.timings.dwt97_batch_idct_row_lift_us > 0);
     assert!(batch.report.timings.dwt97_batch_column_lift_us > 0);
+    // The retained staged P12 route materializes four resident subbands per job.
+    assert_eq!(
+        batch.report.timings.dwt97_batch_resident_dwt_handoff_count,
+        batch.report.timings.batch_jobs * 4
+    );
     assert!(batch.report.timings.dwt97_batch_quantize_codeblock_us > 0);
     assert!(batch.report.timings.dwt97_batch_readback_us > 0);
     assert_eq!(accelerator.dwt97_attempts(), 0);

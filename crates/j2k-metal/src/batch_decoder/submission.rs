@@ -19,7 +19,7 @@ use super::{
 /// so the decoder session remains reusable.
 #[cfg(target_os = "macos")]
 pub struct SubmittedMetalGroupDecodeInto {
-    pub(super) submission: crate::compute::SubmittedDirectDestination,
+    pub(super) submission: crate::engine::SubmittedDirectDestination,
     pub(super) destination: MetalImageDestination,
     pub(super) completion: MetalBatchGroupCompletion,
 }
@@ -160,7 +160,7 @@ impl DeviceSubmission for SubmittedMetalPreparedBatch {
 #[cfg(target_os = "macos")]
 pub(super) struct SubmittedMetalResidentGroup {
     pub(super) metadata: MetalResidentGroupMetadata,
-    pub(super) submission: crate::compute::SubmittedDirectDestination,
+    pub(super) submission: crate::engine::SubmittedDirectDestination,
     pub(super) destination: MetalImageDestination,
     pub(super) output: Buffer,
     pub(super) layout: MetalImageLayout,

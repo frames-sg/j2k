@@ -10,7 +10,7 @@ use crate::metal_types::Buffer;
 #[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
-use j2k_core::{BackendKind, DeviceMemoryRange};
+use j2k_core::{BackendKind, DeviceCodestream, DeviceMemoryRange};
 #[cfg(target_os = "macos")]
 use std::ops::Range;
 #[cfg(target_os = "macos")]
@@ -281,6 +281,25 @@ impl MetalEncodedJ2k {
             },
             host_readback_duration,
         ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl DeviceCodestream for MetalEncodedJ2k {
+    fn codestream_memory_range(&self) -> Option<DeviceMemoryRange> {
+        self.codestream_memory_range()
+    }
+
+    fn codestream_allocation_len(&self) -> Option<usize> {
+        self.codestream_allocation_len()
+    }
+
+    fn codestream_byte_len(&self) -> usize {
+        self.byte_len()
+    }
+
+    fn codestream_capacity(&self) -> usize {
+        self.capacity()
     }
 }
 

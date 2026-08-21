@@ -2,11 +2,13 @@
 
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
+use super::super::review::load_review_config;
 use super::super::{
     capture_command, current_api_snapshot, run_semver_checks, semver_check_args,
     validate_baseline_revision, verify_or_write_report, workspace_package_versions, Options,
     PackageApiDiff, ReleaseType, SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION,
-    HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT,
+    HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT, SEMVER_BASELINE_PACKAGES,
+    SEMVER_NEW_PACKAGES,
 };
 #[cfg(target_os = "macos")]
 use super::super::{require_macos, semver};
@@ -74,7 +76,7 @@ fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.9.1"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.10.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
 }
 
@@ -84,6 +86,30 @@ fn baseline_revision_validation_accepts_only_the_pinned_commit() {
     let error = validate_baseline_revision("0000000000000000000000000000000000000000")
         .expect_err("mismatched baseline revision");
     assert!(error.contains(SEMVER_BASELINE_COMMIT));
+}
+
+#[test]
+fn committed_review_config_covers_the_exact_transition_scope() {
+    let config = load_review_config().expect("load committed API review config");
+    assert_eq!(config.candidate_version, "0.10.0");
+    assert_eq!(config.break_ledger.len(), 3);
+    assert_eq!(
+        config
+            .break_ledger
+            .iter()
+            .map(|entry| entry.removed_items.len())
+            .sum::<usize>(),
+        20
+    );
+    let expected_packages = SEMVER_BASELINE_PACKAGES
+        .iter()
+        .chain(SEMVER_NEW_PACKAGES)
+        .map(|package| (*package).to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        config.reviews.keys().cloned().collect::<BTreeSet<_>>(),
+        expected_packages
+    );
 }
 
 #[test]
@@ -114,8 +140,8 @@ fn report_verification_is_workspace_anchored_and_empty_checks_are_a_noop() {
 fn semver_check_command_uses_the_computed_candidate_release_type() {
     let diff = PackageApiDiff {
         package: "j2k-core".to_string(),
-        candidate_version: "0.9.1".to_string(),
-        release_type: Some(ReleaseType::Minor),
+        candidate_version: "0.10.0".to_string(),
+        release_type: Some(ReleaseType::Major),
         baseline_count: 1,
         candidate_count: 0,
         added: BTreeSet::new(),
@@ -138,7 +164,7 @@ fn semver_check_command_uses_the_computed_candidate_release_type() {
             "--baseline-version",
             "0.9.0",
             "--release-type",
-            "minor",
+            "major",
             "--color",
             "never",
         ]

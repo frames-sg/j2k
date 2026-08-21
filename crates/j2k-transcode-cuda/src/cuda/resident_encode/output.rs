@@ -94,7 +94,7 @@ pub(super) fn assemble_preencoded_components_with_budget<J: Htj2k97ComponentJob>
     )?;
 
     let mut components =
-        budget.try_vec_with_capacity(jobs.len(), "CUDA resident preencoded components")?;
+        budget.try_vec_with_capacity_named(jobs.len(), "CUDA resident preencoded components")?;
     for ((((job, base), horizontal), vertical), diagonal) in jobs
         .iter()
         .zip(base_resolution_bands)
@@ -103,10 +103,11 @@ pub(super) fn assemble_preencoded_components_with_budget<J: Htj2k97ComponentJob>
         .zip(diagonal_detail_bands)
     {
         let low_resolution = PreencodedHtj2k97Resolution {
-            subbands: budget.try_vec_from_array([base], "CUDA resident LL resolution subbands")?,
+            subbands: budget
+                .try_vec_from_array_named([base], "CUDA resident LL resolution subbands")?,
         };
         let high_resolution = PreencodedHtj2k97Resolution {
-            subbands: budget.try_vec_from_array(
+            subbands: budget.try_vec_from_array_named(
                 [horizontal, vertical, diagonal],
                 "CUDA resident high-frequency resolution subbands",
             )?,
@@ -114,7 +115,7 @@ pub(super) fn assemble_preencoded_components_with_budget<J: Htj2k97ComponentJob>
         components.push(PreencodedHtj2k97Component {
             x_rsiz: job.x_rsiz(),
             y_rsiz: job.y_rsiz(),
-            resolutions: budget.try_vec_from_array(
+            resolutions: budget.try_vec_from_array_named(
                 [low_resolution, high_resolution],
                 "CUDA resident component resolutions",
             )?,
@@ -180,8 +181,8 @@ pub(super) fn assemble_compact_preencoded_components_with_budget<J: Htj2k97Compo
         "CUDA compact resident component assembly metadata",
     )?;
 
-    let mut components =
-        budget.try_vec_with_capacity(jobs.len(), "CUDA resident compact preencoded components")?;
+    let mut components = budget
+        .try_vec_with_capacity_named(jobs.len(), "CUDA resident compact preencoded components")?;
     for ((((job, base), horizontal), vertical), diagonal) in jobs
         .iter()
         .zip(base_resolution_bands)
@@ -191,10 +192,10 @@ pub(super) fn assemble_compact_preencoded_components_with_budget<J: Htj2k97Compo
     {
         let low_resolution = PreencodedHtj2k97CompactResolution {
             subbands: budget
-                .try_vec_from_array([base], "CUDA compact resident LL resolution subbands")?,
+                .try_vec_from_array_named([base], "CUDA compact resident LL resolution subbands")?,
         };
         let high_resolution = PreencodedHtj2k97CompactResolution {
-            subbands: budget.try_vec_from_array(
+            subbands: budget.try_vec_from_array_named(
                 [horizontal, vertical, diagonal],
                 "CUDA compact resident high-frequency resolution subbands",
             )?,
@@ -202,7 +203,7 @@ pub(super) fn assemble_compact_preencoded_components_with_budget<J: Htj2k97Compo
         components.push(PreencodedHtj2k97CompactComponent {
             x_rsiz: job.x_rsiz(),
             y_rsiz: job.y_rsiz(),
-            resolutions: budget.try_vec_from_array(
+            resolutions: budget.try_vec_from_array_named(
                 [low_resolution, high_resolution],
                 "CUDA compact resident component resolutions",
             )?,
@@ -231,10 +232,13 @@ pub(super) fn split_resident_subband_blocks(
         "CUDA resident HTJ2K code-block metadata",
     )?;
     let mut shape_index = 0usize;
-    let mut subbands = budget.try_vec_with_capacity(item_count, "CUDA resident HTJ2K subbands")?;
+    let mut subbands =
+        budget.try_vec_with_capacity_named(item_count, "CUDA resident HTJ2K subbands")?;
     for _ in 0..item_count {
-        let mut code_blocks = budget
-            .try_vec_with_capacity(blocks_per_item, "CUDA resident HTJ2K code-block metadata")?;
+        let mut code_blocks = budget.try_vec_with_capacity_named(
+            blocks_per_item,
+            "CUDA resident HTJ2K code-block metadata",
+        )?;
         for _ in 0..blocks_per_item {
             let (width, height) =
                 *plan
@@ -298,9 +302,9 @@ pub(super) fn split_resident_compact_subband_blocks(
     )?;
     let mut shape_index = 0usize;
     let mut subbands =
-        budget.try_vec_with_capacity(item_count, "CUDA compact resident HTJ2K subbands")?;
+        budget.try_vec_with_capacity_named(item_count, "CUDA compact resident HTJ2K subbands")?;
     for _ in 0..item_count {
-        let mut code_blocks = budget.try_vec_with_capacity(
+        let mut code_blocks = budget.try_vec_with_capacity_named(
             blocks_per_item,
             "CUDA compact resident HTJ2K code-block metadata",
         )?;
@@ -379,7 +383,7 @@ fn preflight_split_metadata<Subband, CodeBlock>(
         ],
         what,
     )?;
-    budget.preflight_bytes(additional)
+    Ok(budget.preflight_bytes(additional)?)
 }
 
 fn account_compact_subband_sources(

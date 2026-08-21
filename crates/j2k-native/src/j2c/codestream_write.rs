@@ -292,7 +292,7 @@ fn write_main_header_prefix(
     if params.block_coding_mode == BlockCodingMode::HighThroughput {
         write_cap_marker(out, params);
     }
-    write_cod_marker(out, params);
+    write_cod_marker(out, params)?;
     write_qcd_marker(out, params, quantization_step_sizes)?;
     write_qcc_markers(out, params)?;
     write_rgn_markers(out, params);
@@ -399,12 +399,14 @@ fn ht_capability_word(params: &EncodeParams) -> u16 {
 }
 
 /// Write COD marker segment (A.6.1).
-fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
+fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) -> Result<(), &'static str> {
     write_marker(out, markers::COD);
 
+    let precinct_bytes = u16::try_from(params.precinct_exponents.len())
+        .map_err(|_| "precinct exponent count exceeds COD marker length")?;
     let marker_len = 12u16
-        + u16::try_from(params.precinct_exponents.len())
-            .expect("precinct exponent count fits in COD marker length");
+        .checked_add(precinct_bytes)
+        .ok_or("precinct exponent count exceeds COD marker length")?;
     out.extend_from_slice(&marker_len.to_be_bytes());
 
     // Scod (coding style flags)
@@ -446,6 +448,7 @@ fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     for &(ppx, ppy) in &params.precinct_exponents {
         out.push((ppy << 4) | ppx);
     }
+    Ok(())
 }
 
 fn write_rgn_markers(out: &mut Vec<u8>, params: &EncodeParams) {
@@ -639,6 +642,18 @@ mod tests {
         codestream
             .windows(2)
             .position(|window| window == [0xFF, marker])
+    }
+
+    #[test]
+    fn cod_marker_rejects_precinct_count_that_overflows_marker_length() {
+        let params = EncodeParams {
+            precinct_exponents: vec![(0, 0); usize::from(u16::MAX) - 11],
+            ..Default::default()
+        };
+        let error = write_cod_marker(&mut Vec::new(), &params)
+            .expect_err("oversized COD marker must return an error");
+
+        assert_eq!(error, "precinct exponent count exceeds COD marker length");
     }
 
     #[test]

@@ -38,4 +38,6 @@ pub use owned_decode::CudaJpegChunkedEntropyReport;
 #[cfg(feature = "cuda-runtime")]
 pub use session::CudaJpegHostMemoryDiagnostics;
 pub use session::CudaSession;
+#[cfg(feature = "cuda-runtime")]
+pub use surface::CudaJpegDecodeProfile;
 pub use surface::{CudaJpegDecodePath, CudaSurface, CudaSurfaceStats, Surface};

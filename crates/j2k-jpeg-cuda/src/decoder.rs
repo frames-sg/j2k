@@ -110,9 +110,11 @@ impl<'a> Decoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support region output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support region output",
+                ),
+            ));
         }
         let (bytes, outcome) = self
             .inner
@@ -135,9 +137,11 @@ impl<'a> Decoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support scaled output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support scaled output",
+                ),
+            ));
         }
         let (bytes, outcome) = self
             .inner
@@ -161,9 +165,11 @@ impl<'a> Decoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG owned decode does not support scaled region output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "J2K CUDA JPEG owned decode does not support scaled region output",
+                ),
+            ));
         }
         let (bytes, outcome) =
             self.inner

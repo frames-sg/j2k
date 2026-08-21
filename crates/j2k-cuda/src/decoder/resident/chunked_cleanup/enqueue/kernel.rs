@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::HtGpuJobPassBucket;
-use j2k_cuda_runtime::{
+use j2k_cuda_j2k_engine::{
     CudaHtj2kCleanupTarget, CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup,
-    CudaQueuedHtj2kCleanupGroup,
+    CudaQueuedHtj2kCleanupGroup, J2kCudaEngine,
 };
 
 use super::super::super::super::{cuda_error, CudaBufferPool, CudaContext, Error};
@@ -26,7 +26,7 @@ pub(super) fn enqueue_chunk_kernel(
     // coefficient target through status-group completion.
     let cleanup = unsafe {
         match bucket {
-            HtGpuJobPassBucket::CleanupOnly => context
+            HtGpuJobPassBucket::CleanupOnly => J2kCudaEngine::new(context)
                 .decode_htj2k_codeblocks_cleanup_dequantize_multi_enqueue_into_status_group(
                     resources,
                     targets,
@@ -35,7 +35,7 @@ pub(super) fn enqueue_chunk_kernel(
                     status_group,
                     status_offset,
                 ),
-            HtGpuJobPassBucket::SigProp | HtGpuJobPassBucket::MagRef => context
+            HtGpuJobPassBucket::SigProp | HtGpuJobPassBucket::MagRef => J2kCudaEngine::new(context)
                 .decode_htj2k_codeblocks_cleanup_multi_enqueue_into_status_group(
                     resources,
                     targets,
@@ -50,8 +50,10 @@ pub(super) fn enqueue_chunk_kernel(
     if bucket != HtGpuJobPassBucket::CleanupOnly {
         // SAFETY: cleanup retains its descriptors, and the same default
         // stream orders dequantization before later IDWT.
-        unsafe { context.j2k_dequantize_queued_htj2k_cleanup_enqueue(&cleanup) }
-            .map_err(cuda_error)?;
+        unsafe {
+            J2kCudaEngine::new(context).j2k_dequantize_queued_htj2k_cleanup_enqueue(&cleanup)
+        }
+        .map_err(cuda_error)?;
     }
     Ok(cleanup)
 }

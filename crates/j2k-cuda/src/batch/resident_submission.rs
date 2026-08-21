@@ -302,9 +302,11 @@ impl CudaBatchDecoder {
                 )?,
             )
         } else {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "resident CUDA batch submission requires exact Gray, RGB, or RGBA output",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_format(
+                    "resident CUDA batch submission requires exact Gray, RGB, or RGBA output",
+                ),
+            ));
         };
         Ok(SubmittedResidentGroup {
             metadata: ResidentGroupMetadata::from_prepared(group)?,
@@ -321,14 +323,8 @@ fn resident_grayscale_inputs(
         .iter()
         .zip(group.source_indices().iter().copied())
         .map(|(image, source_index)| {
-            let referenced_plan = image
-                .htj2k_plan()
-                .map(native_referenced_htj2k_plan)
-                .transpose()?;
-            let referenced_classic_plan = image
-                .classic_plan()
-                .map(native_referenced_classic_plan)
-                .transpose()?;
+            let referenced_plan = image.htj2k_plan().map(native_referenced_htj2k_plan);
+            let referenced_classic_plan = image.classic_plan().map(native_referenced_classic_plan);
             Ok(crate::decoder::grayscale_batch::GrayscaleBatchInput {
                 source_index,
                 bytes: image.bytes().as_ref(),

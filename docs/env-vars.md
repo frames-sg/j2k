@@ -32,8 +32,15 @@ override it.
 | `J2K_PROFILE_STAGES` | Emits native/CUDA J2K profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
 | `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to an operator-supplied path. Existing files are not overwritten, and parent directories are not created. | No trace file | Experimental |
 | `J2K_CUDA_IDWT_TRACE` | Enables CUDA IDWT trace/profile output. | Disabled | Experimental |
+| `J2K_CUDA_IDWT_WIDE_TILED` | Historical P14 switch; it has no effect after the tiled cooperative candidate was rejected. | No effect | Historical |
+| `J2K_CUDA_DISABLE_SHARED_FDWT97` | Historical P15 split-process benchmark switch; it has no effect after the shared-staging candidate was rejected. | No effect | Historical |
+| `J2K_CUDA_FDWT97_TRACE` | Historical P15 launch-mode trace control; it has no effect after the shared-staging candidate was rejected. | No effect | Historical |
+| `J2K_CUDA_P17_PROFILE` | Restricts the CUDA HTJ2K decode benchmark to the P17 pre-prototype final-IDWT/store attribution matrix. It does not select a production route. | Disabled | Benchmark |
+| `J2K_CUDA_DISABLE_FUSED_INPUT_MCT` | Historical P16 split-process benchmark switch; it has no effect after the input-fusion candidate was rejected. | No effect | Historical |
+| `J2K_CUDA_JPEG_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 split-process A/B control; it has no effect after staged baseline encode promotion and serial fallback removal. | No effect | Historical |
+| `J2K_CUDA_JPEG_DISABLE_PACKED_CHECKPOINTS` | Historical P19 split-process A/B control; it has no effect after adaptive checkpoint launch promotion and removal of the all-serial fallback branch. | No effect | Historical |
+| `J2K_CUDA_JPEG_DISABLE_COEFFICIENT_IDCT_SPLIT` | Historical P19 split-process A/B control; it has no effect after the coefficient/IDCT split candidate was rejected and removed. | No effect | Historical |
 | `J2K_CUDA_DISABLE_STAGE_TIMINGS` | Disables CUDA stage timing collection for benchmark runs. | Timings enabled | Experimental |
-| `J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE` | Disables the fused CUDA DWT 9/7 column quantize path. | Fused path enabled when supported | Experimental |
 | `J2K_CUDA_DISABLE_COMPACT_PREENCODED` | Forces the CUDA transcode adapter to decline compact preencoded resident HT encode support. | Compact resident support enabled when supported | Experimental |
 | `J2K_JPEG_METAL_FAST420_BATCH_TIMING` | Emits JPEG Metal fast 4:2:0 batch timing profiles. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_STAGES` | Enables J2K Metal stage profile rows for truthy values such as `1`; `summary` / `aggregate` emits aggregate rows where the profile path supports summaries. | Disabled | Experimental |
@@ -49,6 +56,15 @@ override it.
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT` | Emits classic Tier-1 token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT` | Emits classic Tier-1 split-token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK` | Emits classic Tier-1 token-pack profiling and also enables token-emission profiling. | Disabled | Experimental |
+| `J2K_METAL_DISABLE_FUSED_IDWT97` | Historical P2 same-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_METAL_DISABLE_FUSED_IDWT53_INTERLEAVE_HORIZONTAL` | Historical P1 same-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_METAL_DISABLE_FUSED_FDWT97` | Historical P3 same-process benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_METAL_DISABLE_COOPERATIVE_PACKETIZATION` | Historical P11 same-process benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_TRANSCODE_METAL_DISABLE_FUSED_COLUMN_QUANTIZE` | Historical P12 same-host benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE` | Historical P13 split-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_JPEG_METAL_DISABLE_SPLIT_COEFF_IDCT` | Historical P19 same-host benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
+| `J2K_JPEG_METAL_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 same-host A/B switch recorded in validated promotion evidence; the promoted staged route has no runtime switch and production code no longer reads this variable. | No effect | Historical experiment control |
+| `J2K_METAL_DISABLE_FUSED_INPUT_MCT` | Historical P5 A/B switch retained in experiment records. The promoted route is now limited to the measured unsigned RGB8 512x512 geometry, and production code no longer reads this variable. | No effect | Historical experiment control |
 | `J2K_TRANSCODE_METAL_PROFILE_STAGES` | Enables transcode Metal profiling in the DCT 5/3 and 9/7 benchmark harness. Use `1` for rows or `summary` for aggregate rows. | Disabled | Benchmark |
 
 ## Experimental Backend Routing
@@ -91,6 +107,7 @@ override it.
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
 | `J2K_WSI_ROOT` | Path list root for external JPEG WSI integration tests. | Not set | Test/CI |
+| `J2K_WSI_SVS_PATH` | Path to an external Aperio SVS fixture used by J2K Metal IDWT and in-process parity tests. | Not set | Test/CI |
 | `J2K_TRANSCODE_WSI_ROOT` | Path list root for external JPEG-to-HTJ2K transcode corpus validation. | Not set | Test/CI |
 | `J2K_TRANSCODE_WSI_TILE_LIMIT` | Maximum number of external WSI tiles used by transcode corpus validation. | Built-in validation default | Test/CI |
 | `J2K_TRANSCODE_WSI_MAX_PAYLOAD_BYTES` | Maximum external WSI tile payload accepted by transcode corpus validation. | Built-in validation default | Test/CI |

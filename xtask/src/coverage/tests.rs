@@ -123,6 +123,22 @@ fn accelerator_critical_threshold_cannot_be_masked_by_raw_coverage() {
 
 #[test]
 fn coverage_lanes_partition_host_and_accelerator_production_rust() {
+    let split_cuda_engine_paths = [
+        "crates/j2k-cuda-build-support/src/lib.rs",
+        "crates/j2k-cuda-j2k-engine/src/lib.rs",
+        "crates/j2k-cuda-jpeg-engine/src/lib.rs",
+        "crates/j2k-cuda-transcode-engine/src/lib.rs",
+    ];
+    for path in split_cuda_engine_paths {
+        assert!(
+            !CoverageLane::Host.includes_source(path, SourceRole::Production),
+            "host lane must not own split CUDA source {path}"
+        );
+        assert!(
+            CoverageLane::Cuda.includes_source(path, SourceRole::Production),
+            "CUDA lane must own split CUDA source {path}"
+        );
+    }
     assert!(
         !CoverageLane::Host.includes_source("crates/j2k-cuda/src/error.rs", SourceRole::Production)
     );

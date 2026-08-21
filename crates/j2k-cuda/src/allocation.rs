@@ -1,182 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::Error;
-use j2k_core::{
-    try_host_vec_filled, try_host_vec_with_capacity, HostAllocationBudget, HostAllocationError,
-    HostAllocationLimitError, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-};
+use j2k_core::HostAllocationError;
+pub(crate) use j2k_core::HostPhaseBudget;
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaError;
-
-pub(crate) struct HostPhaseBudget {
-    inner: HostAllocationBudget,
-    what: &'static str,
-}
-
-impl HostPhaseBudget {
-    pub(crate) const fn new(what: &'static str) -> Self {
-        Self::with_cap(what, DEFAULT_MAX_HOST_ALLOCATION_BYTES)
-    }
-
-    pub(crate) const fn with_cap(what: &'static str, cap: usize) -> Self {
-        Self {
-            inner: HostAllocationBudget::new(cap),
-            what,
-        }
-    }
-
-    pub(crate) fn with_live_bytes(what: &'static str, live_bytes: usize) -> Result<Self, Error> {
-        let mut budget = Self::new(what);
-        budget.account_bytes(live_bytes)?;
-        Ok(budget)
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn with_cuda_live_bytes(
-        what: &'static str,
-        live_bytes: usize,
-    ) -> Result<Self, CudaError> {
-        let mut budget = Self::new(what);
-        budget
-            .inner
-            .account_bytes(live_bytes)
-            .map_err(|error| cuda_capacity_error(error, what))?;
-        Ok(budget)
-    }
-
-    pub(crate) const fn live_bytes(&self) -> usize {
-        self.inner.live_bytes()
-    }
-
-    pub(crate) fn account_capacity<T>(&mut self, capacity: usize) -> Result<usize, Error> {
-        self.inner
-            .account_capacity::<T>(capacity)
-            .map_err(|error| capacity_error(error, self.what))
-    }
-
-    pub(crate) fn account_bytes(&mut self, bytes: usize) -> Result<(), Error> {
-        self.inner
-            .account_bytes(bytes)
-            .map_err(|error| capacity_error(error, self.what))
-    }
-
-    pub(crate) fn account_vec<T>(&mut self, values: &Vec<T>) -> Result<usize, Error> {
-        self.inner
-            .account_vec(values)
-            .map_err(|error| capacity_error(error, self.what))
-    }
-
-    pub(crate) fn try_vec_with_capacity<T>(&mut self, capacity: usize) -> Result<Vec<T>, Error> {
-        self.inner
-            .check_capacity::<T>(capacity)
-            .map_err(|error| capacity_error(error, self.what))?;
-        let values = try_host_vec_with_capacity(capacity)
-            .map_err(|error| allocation_error(error, self.what))?;
-        self.account_vec(&values)?;
-        Ok(values)
-    }
-
-    pub(crate) fn try_vec_filled<T: Clone>(
-        &mut self,
-        len: usize,
-        value: T,
-    ) -> Result<Vec<T>, Error> {
-        self.inner
-            .check_capacity::<T>(len)
-            .map_err(|error| capacity_error(error, self.what))?;
-        let values =
-            try_host_vec_filled(len, value).map_err(|error| allocation_error(error, self.what))?;
-        self.account_vec(&values)?;
-        Ok(values)
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn try_clone_slice<T: Clone>(&mut self, source: &[T]) -> Result<Vec<T>, Error> {
-        let mut values = self.try_vec_with_capacity(source.len())?;
-        values.extend_from_slice(source);
-        Ok(values)
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn try_collect_exact<T, I>(&mut self, iter: I) -> Result<Vec<T>, Error>
-    where
-        I: ExactSizeIterator<Item = T>,
-    {
-        let mut values = self.try_vec_with_capacity(iter.len())?;
-        values.extend(iter);
-        Ok(values)
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn try_collect_results_exact<T, I>(&mut self, iter: I) -> Result<Vec<T>, Error>
-    where
-        I: ExactSizeIterator<Item = Result<T, Error>>,
-    {
-        let mut values = self.try_vec_with_capacity(iter.len())?;
-        for value in iter {
-            values.push(value?);
-        }
-        Ok(values)
-    }
-
-    pub(crate) fn try_vec_reserve<T>(
-        &mut self,
-        values: &mut Vec<T>,
-        additional: usize,
-    ) -> Result<(), Error> {
-        let required_capacity = values.len().saturating_add(additional);
-        let previous_capacity = values.capacity();
-        let minimum_growth = required_capacity.saturating_sub(previous_capacity);
-        self.inner
-            .check_capacity::<T>(minimum_growth)
-            .map_err(|error| capacity_error(error, self.what))?;
-        values
-            .try_reserve_exact(additional)
-            .map_err(|_| host_allocation_error::<T>(required_capacity, self.what))?;
-        let actual_growth = values.capacity().saturating_sub(previous_capacity);
-        self.inner
-            .account_capacity::<T>(actual_growth)
-            .map_err(|error| capacity_error(error, self.what))?;
-        Ok(())
-    }
-
-    pub(crate) fn try_vec_push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
-        self.try_vec_reserve(values, 1)?;
-        values.push(value);
-        Ok(())
-    }
-
-    pub(crate) fn try_vec_extend_from_slice<T: Copy>(
-        &mut self,
-        values: &mut Vec<T>,
-        source: &[T],
-    ) -> Result<(), Error> {
-        self.try_vec_reserve(values, source.len())?;
-        values.extend_from_slice(source);
-        Ok(())
-    }
-
-    #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn try_cuda_vec_with_capacity<T>(
-        &mut self,
-        capacity: usize,
-    ) -> Result<Vec<T>, CudaError> {
-        self.inner
-            .check_capacity::<T>(capacity)
-            .map_err(|error| cuda_capacity_error(error, self.what))?;
-        let values = try_host_vec_with_capacity(capacity).map_err(cuda_allocation_error)?;
-        self.inner
-            .account_vec(&values)
-            .map_err(|error| cuda_capacity_error(error, self.what))?;
-        Ok(values)
-    }
-}
 
 pub(crate) fn try_vec_with_capacity<T>(
     capacity: usize,
     what: &'static str,
 ) -> Result<Vec<T>, Error> {
-    HostPhaseBudget::new(what).try_vec_with_capacity(capacity)
+    Ok(HostPhaseBudget::new(what).try_vec_with_capacity(capacity)?)
 }
 
 pub(crate) fn try_vec_filled<T: Clone>(
@@ -184,7 +18,7 @@ pub(crate) fn try_vec_filled<T: Clone>(
     value: T,
     what: &'static str,
 ) -> Result<Vec<T>, Error> {
-    HostPhaseBudget::new(what).try_vec_filled(len, value)
+    Ok(HostPhaseBudget::new(what).try_vec_filled(len, value)?)
 }
 
 pub(crate) fn try_collect_results_exact<T, I>(iter: I, what: &'static str) -> Result<Vec<T>, Error>
@@ -259,7 +93,9 @@ pub(crate) fn try_collect_cuda_results_exact<T, I>(
 where
     I: ExactSizeIterator<Item = Result<T, CudaError>>,
 {
-    let mut values = budget.try_cuda_vec_with_capacity(iter.len())?;
+    let mut values = budget
+        .try_vec_with_capacity(iter.len())
+        .map_err(CudaError::from)?;
     for value in iter {
         values.push(value?);
     }
@@ -269,30 +105,6 @@ where
 fn allocation_error(error: HostAllocationError, what: &'static str) -> Error {
     Error::HostAllocationFailed {
         bytes: error.requested_bytes(),
-        what,
-    }
-}
-
-fn capacity_error(error: HostAllocationLimitError, what: &'static str) -> Error {
-    Error::HostAllocationTooLarge {
-        requested: error.requested_bytes(),
-        cap: error.cap_bytes(),
-        what,
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_allocation_error(error: HostAllocationError) -> CudaError {
-    CudaError::HostAllocationFailed {
-        bytes: error.requested_bytes(),
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_capacity_error(error: HostAllocationLimitError, what: &'static str) -> CudaError {
-    CudaError::HostAllocationTooLarge {
-        requested: error.requested_bytes(),
-        cap: error.cap_bytes(),
         what,
     }
 }
@@ -310,8 +122,6 @@ mod tests {
         try_vec_with_capacity, HostPhaseBudget,
     };
     use crate::Error;
-    #[cfg(feature = "cuda-runtime")]
-    use j2k_cuda_runtime::CudaError;
 
     #[cfg(feature = "cuda-runtime")]
     #[test]
@@ -337,10 +147,10 @@ mod tests {
         #[cfg(feature = "cuda-runtime")]
         assert!(matches!(
             HostPhaseBudget::new("CUDA adapter host vector capacity")
-                .try_cuda_vec_with_capacity::<u32>(usize::MAX),
-            Err(CudaError::HostAllocationTooLarge {
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                .try_vec_with_capacity::<u32>(usize::MAX),
+            Err(j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes: usize::MAX,
+                cap_bytes: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
                 what: "CUDA adapter host vector capacity",
             })
         ));
@@ -382,9 +192,9 @@ mod tests {
         one_under.account_vec(&first).unwrap();
         assert!(matches!(
             one_under.account_vec(&second),
-            Err(Error::HostAllocationTooLarge {
-                requested,
-                cap,
+            Err(j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes: requested,
+                cap_bytes: cap,
                 what: "test phase",
             }) if requested == actual && cap == actual.saturating_sub(1)
         ));

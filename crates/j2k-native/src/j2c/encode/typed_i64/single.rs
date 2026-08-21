@@ -8,7 +8,7 @@ use super::super::allocation::{checked_add_bytes, checked_element_bytes, host_al
 use super::super::multitile::{encode_options_retained_bytes, quantization_retained_bytes};
 use super::super::single_tile::ownership::encode_params_retained_bytes;
 use super::super::{
-    max_decomposition_levels, packetize_i64_component_resolution_packets,
+    maximum_decomposition_levels, packetize_i64_component_resolution_packets,
     write_single_tile_packetized_codestream_for_session, CpuOnlyJ2kEncodeStageAccelerator,
     EncodeOptions, EncodeTypedComponentPlane, I64PacketizeRequest, NativeEncodePipelineResult,
     NativeEncodeSession,
@@ -31,7 +31,7 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
         .map(|plane| {
             let component_width = width.div_ceil(u32::from(plane.x_rsiz));
             let component_height = height.div_ceil(u32::from(plane.y_rsiz));
-            max_decomposition_levels(component_width, component_height)
+            maximum_decomposition_levels(component_width, component_height)
         })
         .min()
         .unwrap_or(0)

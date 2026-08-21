@@ -117,6 +117,8 @@ pub(super) struct CudaDecodeStageTimings {
     pub(super) ht_refinement_dispatch_count: usize,
     pub(super) classic_dispatch_count: usize,
     pub(super) idwt: u128,
+    pub(super) idwt_final_interleave_horizontal: u128,
+    pub(super) idwt_final_vertical: u128,
     pub(super) dequant_dispatch_count: usize,
     pub(super) fused_dequant_dispatch_count: usize,
     pub(super) idwt_dispatch_count: usize,
@@ -141,6 +143,14 @@ impl CudaDecodeStageTimings {
         report.classic_tier1_us = report.classic_tier1_us.saturating_add(self.classic_tier1);
         report.dequant_us = report.dequant_us.saturating_add(self.dequant);
         report.idwt_us = report.idwt_us.saturating_add(self.idwt);
+        report.detail.idwt_final_interleave_horizontal_us = report
+            .detail
+            .idwt_final_interleave_horizontal_us
+            .saturating_add(self.idwt_final_interleave_horizontal);
+        report.detail.idwt_final_vertical_us = report
+            .detail
+            .idwt_final_vertical_us
+            .saturating_add(self.idwt_final_vertical);
         report.detail.ht_dispatch_count = report
             .detail
             .ht_dispatch_count
@@ -255,6 +265,14 @@ pub(super) fn add_decode_report(
         .detail
         .idwt_dispatch_count
         .saturating_add(report.detail.idwt_dispatch_count);
+    aggregate.detail.idwt_final_interleave_horizontal_us = aggregate
+        .detail
+        .idwt_final_interleave_horizontal_us
+        .saturating_add(report.detail.idwt_final_interleave_horizontal_us);
+    aggregate.detail.idwt_final_vertical_us = aggregate
+        .detail
+        .idwt_final_vertical_us
+        .saturating_add(report.detail.idwt_final_vertical_us);
     aggregate.detail.mct_dispatch_count = aggregate
         .detail
         .mct_dispatch_count

@@ -15,9 +15,11 @@ pub(super) fn validation_pixel_format(
         (3, 1..=8) => Ok(PixelFormat::Rgb8),
         (1, 9..=16) => Ok(PixelFormat::Gray16),
         (3, 9..=16) => Ok(PixelFormat::Rgb16),
-        _ => Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal validation supports only grayscale or RGB samples up to 16 bits",
-        }),
+        _ => Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "J2K Metal validation supports only grayscale or RGB samples up to 16 bits",
+            ),
+        )),
     }
 }
 
@@ -27,12 +29,16 @@ pub(super) fn lossless_sample_shape(format: PixelFormat) -> Result<(u8, u8), cra
         PixelFormat::Rgb8 => Ok((3, 8)),
         PixelFormat::Gray16 => Ok((1, 16)),
         PixelFormat::Rgb16 => Ok((3, 16)),
-        PixelFormat::Rgba8 | PixelFormat::Rgba16 => Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal encode from RGBA tiles requires explicit alpha handling",
-        }),
-        _ => Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal encode received an unknown pixel format",
-        }),
+        PixelFormat::Rgba8 | PixelFormat::Rgba16 => Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "J2K Metal encode from RGBA tiles requires explicit alpha handling",
+            ),
+        )),
+        _ => Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "J2K Metal encode received an unknown pixel format",
+            ),
+        )),
     }
 }
 

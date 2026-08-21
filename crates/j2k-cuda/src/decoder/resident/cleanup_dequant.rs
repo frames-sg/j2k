@@ -3,7 +3,7 @@
 use super::super::{
     combine_cuda_cleanup_errors, cuda_error, profile, CudaBufferPool, CudaComponentDecodeWork,
     CudaHtj2kCleanupTarget, CudaHtj2kDecodeResources, CudaHtj2kDequantizeTarget,
-    CudaQueuedHtj2kCleanup, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
+    CudaQueuedHtj2kCleanup, Error, J2kCudaEngine, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 use super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::HostPhaseBudget;
@@ -90,9 +90,9 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
     let accounting_index = component_work
         .iter()
         .position(|work| !work.pending_dequant_bands.is_empty())
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?;
 
     let has_refinement = component_work.iter().any(|work| {
         work.pending_dequant_bands.iter().any(|pending| {
@@ -122,7 +122,7 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
                 collect_stage_timings,
                 "j2k.htj2k.decode.cleanup_dequantize.batch",
                 || {
-                    context
+                    J2kCudaEngine::new(context)
                         .decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed_and_live_host_bytes(
                             decode_resources,
                             &cleanup_targets,
@@ -177,7 +177,7 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
     let (stats, cleanup_us, status_d2h_us) = if collect_stage_timings {
         let ((stats, runtime_timings), cleanup_us) = context
             .time_default_stream_named_us("j2k.htj2k.decode.cleanup.batch", || {
-                context
+                J2kCudaEngine::new(context)
                     .decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed_and_live_host_bytes(
                         decode_resources,
                         &cleanup_targets,
@@ -195,7 +195,7 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
         // receives the same ownership and default-stream guarantees.
         let queued = unsafe {
             context.submit_default_stream_named("j2k.htj2k.decode.cleanup.batch", || {
-                context
+                J2kCudaEngine::new(context)
                     .decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool_and_live_host_bytes(
                         decode_resources,
                         &cleanup_targets,
@@ -246,14 +246,18 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
             context.time_default_stream_named_us_if(
                 collect_stage_timings,
                 "j2k.htj2k.decode.dequantize.batch",
-                || context.j2k_dequantize_queued_htj2k_cleanup_with_pool(queued),
+                || {
+                    J2kCudaEngine::new(context)
+                        .j2k_dequantize_queued_htj2k_cleanup_with_pool(queued)
+                },
             )
         } else {
             if !collect_stage_timings {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason:
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::contract_violation(
                         "normal CUDA HTJ2K refinement requires retained queued cleanup metadata",
-                });
+                    ),
+                ));
             }
             let mut dequant_budget = HostPhaseBudget::with_live_bytes(
                 "j2k CUDA dequantization target phase",
@@ -274,7 +278,7 @@ pub(in crate::decoder) fn run_component_cleanup_dequant_batches(
                 collect_stage_timings,
                 "j2k.htj2k.decode.dequantize.batch",
                 || {
-                    context
+                    J2kCudaEngine::new(context)
                         .j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_and_live_host_bytes(
                             &dequant_targets,
                             pool,

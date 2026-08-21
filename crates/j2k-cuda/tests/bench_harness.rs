@@ -297,12 +297,24 @@ fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
 }
 
 #[test]
-fn cuda_runtime_exposes_steady_state_async_decode_helpers() {
+fn cuda_runtime_and_j2k_engine_expose_steady_state_async_decode_helpers() {
     let runtime = read_cuda_runtime_sources();
+    let j2k_engine = read_cuda_j2k_engine_sources();
 
     for expected in [
         "pub fn synchronize(&self) -> Result<(), CudaError>",
         "pub fn time_default_stream_named_us_if",
+        "pinned_upload_staging",
+        "take_pinned_upload_staging",
+        "recycle_pinned_upload_staging",
+    ] {
+        assert!(
+            runtime.contains(expected),
+            "low-level CUDA runtime is missing steady-state helper `{expected}`"
+        );
+    }
+
+    for expected in [
         "pub struct CudaClassicDecodeStageTimings",
         "decode_classic_codeblocks_multi_with_resources_and_pool_timed",
         concat!(
@@ -310,9 +322,6 @@ fn cuda_runtime_exposes_steady_state_async_decode_helpers() {
             "safe fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool"
         ),
         "pub fn j2k_inverse_dwt_single_device_untimed_with_pool",
-        "pinned_upload_staging",
-        "take_pinned_upload_staging",
-        "recycle_pinned_upload_staging",
         "enum CudaLaunchMode",
         "CudaLaunchMode::Async",
         "fn launch_htj2k_decode_codeblocks(",
@@ -320,8 +329,8 @@ fn cuda_runtime_exposes_steady_state_async_decode_helpers() {
         "fn launch_j2k_idwt_interleave(",
     ] {
         assert!(
-            runtime.contains(expected),
-            "CUDA runtime is missing steady-state decode helper `{expected}`"
+            j2k_engine.contains(expected),
+            "CUDA J2K engine is missing steady-state decode helper `{expected}`"
         );
     }
 }
@@ -336,30 +345,14 @@ fn read_cuda_runtime_sources() -> String {
         "execution.rs",
         "execution/completion.rs",
         "execution/events.rs",
-        "execution/queued.rs",
+        "execution/events/handles.rs",
         "memory.rs",
         "memory/pinned_staging.rs",
         "memory/pinned_staging/operations.rs",
+        "memory/pinned_staging/operations/api.rs",
+        "memory/pinned_staging/operations/checkout.rs",
+        "memory/pinned_staging/operations/growth.rs",
         "memory/pool.rs",
-        "classic_decode.rs",
-        "classic_decode/abi.rs",
-        "classic_decode/launch.rs",
-        "classic_decode/prepare.rs",
-        "htj2k_decode.rs",
-        "htj2k_decode/api.rs",
-        "htj2k_decode/completion.rs",
-        "htj2k_decode/completion/cleanup_enqueue.rs",
-        "htj2k_decode/context_validation.rs",
-        "htj2k_decode/launch.rs",
-        "htj2k_decode/output_regions.rs",
-        "htj2k_decode/output_regions/sweep.rs",
-        "htj2k_decode/planning.rs",
-        "htj2k_decode/queued.rs",
-        "htj2k_decode/status.rs",
-        "htj2k_decode/types.rs",
-        "j2k_decode.rs",
-        "j2k_decode/idwt.rs",
-        "j2k_decode/idwt_launch.rs",
     ] {
         let path = format!("{src_dir}/{module}");
         runtime.push_str(&std::fs::read_to_string(&path).expect("read CUDA runtime module"));
@@ -367,6 +360,28 @@ fn read_cuda_runtime_sources() -> String {
     }
 
     runtime
+}
+
+fn read_cuda_j2k_engine_sources() -> String {
+    let src_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../j2k-cuda-j2k-engine/src");
+    let mut engine = String::new();
+
+    for module in [
+        "classic_decode/abi.rs",
+        "classic_decode/launch.rs",
+        "execution.rs",
+        "htj2k_decode/completion/cleanup_enqueue.rs",
+        "htj2k_decode/launch.rs",
+        "j2k_decode.rs",
+        "j2k_decode/idwt.rs",
+        "j2k_decode/idwt_launch.rs",
+    ] {
+        let path = format!("{src_dir}/{module}");
+        engine.push_str(&std::fs::read_to_string(&path).expect("read CUDA J2K engine module"));
+        engine.push('\n');
+    }
+
+    engine
 }
 
 fn extract_function_body<'a>(source: &'a str, signature: &str) -> &'a str {

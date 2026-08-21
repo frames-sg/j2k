@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::HtGpuJobChunkRequest;
-use j2k_cuda_runtime::{htj2k_cleanup_multi_descriptor_bytes, CudaHtj2kCodeBlockJob};
+use j2k_cuda_j2k_engine::{htj2k_cleanup_multi_descriptor_bytes, CudaHtj2kCodeBlockJob};
 
 use super::super::super::{CudaComponentDecodeWork, Error, CUDA_HTJ2K_PLAN_INVARIANT_FAILED};
 use crate::allocation::HostPhaseBudget;
@@ -36,9 +36,9 @@ pub(super) fn flatten_job_locations(
     component_source_indices: &[usize],
 ) -> Result<Vec<Htj2kJobLocation>, Error> {
     if component_work.len() != component_source_indices.len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+        ));
     }
     let job_count = component_work
         .iter()
@@ -97,9 +97,9 @@ pub(super) fn pending_at(
     component_work
         .get(location.work)
         .and_then(|work| work.pending_dequant_bands.get(location.pending))
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+        ))
 }
 
 pub(super) fn job_at(
@@ -109,7 +109,7 @@ pub(super) fn job_at(
     pending_at(component_work, location)?
         .jobs
         .get(location.job)
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-        })
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
+        ))
 }

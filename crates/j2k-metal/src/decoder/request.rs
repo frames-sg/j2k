@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use j2k::DeviceDecodeRequest;
 use j2k_core::{BackendKind, BackendRequest, Downscale, PixelFormat, Rect};
 
 use crate::{batch, routing, Surface, SurfaceResidency};
@@ -37,6 +38,15 @@ pub enum MetalDecodeOp {
 }
 
 impl MetalDecodeOp {
+    pub(crate) const fn device_request(self) -> DeviceDecodeRequest {
+        match self {
+            Self::Full => DeviceDecodeRequest::Full,
+            Self::Region(roi) => DeviceDecodeRequest::Region { roi },
+            Self::Scaled(scale) => DeviceDecodeRequest::Scaled { scale },
+            Self::RegionScaled { roi, scale } => DeviceDecodeRequest::RegionScaled { roi, scale },
+        }
+    }
+
     pub(crate) const fn report_operation(self) -> DecodeOperation {
         match self {
             Self::Full => DecodeOperation::Full,

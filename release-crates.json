@@ -18,7 +18,23 @@
       "api_contract": "implementation"
     },
     {
+      "name": "j2k-cuda-build-support",
+      "api_contract": "implementation"
+    },
+    {
       "name": "j2k-cuda-runtime",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-cuda-j2k-engine",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-cuda-jpeg-engine",
+      "api_contract": "implementation"
+    },
+    {
+      "name": "j2k-cuda-transcode-engine",
       "api_contract": "implementation"
     },
     {

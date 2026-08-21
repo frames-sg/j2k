@@ -22,9 +22,7 @@ fn independent_openjph_multitile_rgb_retains_every_prepared_tile_without_cuda() 
     let native = group.images()[0]
         .htj2k_plan()
         .expect("prepared multi-tile HTJ2K plan")
-        .adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .expect("native referenced HTJ2K adapter");
+        .geometry();
     assert_eq!(native.tiles().len(), 4);
 }
 

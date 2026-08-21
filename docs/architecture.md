@@ -30,9 +30,13 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-jpeg`, `j2k-tilecodec` | codec | CPU/native codec implementations and stable codec APIs. |
 | `j2k-native` | engine | Native JPEG 2000 / HTJ2K engine used by J2K APIs and adapter validation. |
 | `j2k-profile`, `j2k-metal-support` | support | Runtime/profile helpers used by adapters and codec crates. |
-| `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, CUDA memory helpers, and guarded external-allocation validation shared by CUDA adapters. |
+| `j2k-cuda-runtime` | CUDA runtime | Codec-neutral CUDA Driver API integration, checked generic module/kernel launch, context/stream/event lifecycle, memory pools, pinned staging, diagnostics, completion, and guarded external-allocation validation shared by CUDA engines. |
+| `j2k-cuda-build-support` | build support | Internal shared CUDA-Oxide project staging, toolchain invocation, placeholder policy, and PTX packaging for codec engine build scripts. |
+| `j2k-cuda-j2k-engine` | CUDA engine | Internal borrowed J2K/HTJ2K/ML operation boundary over the low-level CUDA context; owns transform, Tier-1, dequantization, final-store, encode, packetization, ABI, validation, orchestration, tests, and CUDA-Oxide packaging. |
+| `j2k-cuda-jpeg-engine` | CUDA engine | Internal borrowed JPEG operation boundary over the low-level CUDA context; owns JPEG plans, validation, host allocation, ABI byte views, CUDA-Oxide projects, and launch orchestration. |
+| `j2k-cuda-transcode-engine` | CUDA engine | Internal borrowed coefficient-domain transcode boundary; owns reversible/irreversible transform and quantization models, validation, launch geometry, stage timings, tests, and CUDA-Oxide packaging. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
-| `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration, persistent batch sessions, resident output, and validated caller-owned destinations for supported paths. |
+| `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters over `j2k-metal-support`; J2K transform, Tier-1, packetization, store, and resident encode/decode live behind the private `j2k-metal::engine` boundary, while transcode owns its coefficient-domain kernels without depending on the public J2K adapter. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
@@ -61,24 +65,28 @@ still-image correctness. Keep row-level status synchronized with
 ## Crate dependency graph
 
 ```text
-j2k -> j2k-codec-math, j2k-core, j2k-native, j2k-types
+j2k-codec-math -> j2k-types
+j2k -> j2k-core, j2k-native, j2k-types
 j2k-native -> j2k-codec-math, j2k-types, j2k-profile
 j2k-test-support -> j2k-core, j2k-native
 j2k-transcode-test-support -> j2k-transcode, j2k-types
-j2k-cuda -> j2k-core, j2k-cuda-runtime, j2k, j2k-native, j2k-profile
-j2k-metal -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-metal-support, j2k-profile
+j2k-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k, j2k-native, j2k-profile
+j2k-metal -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-metal-support, j2k-profile, j2k-types
 j2k-jpeg -> j2k-codec-math, j2k-core, j2k-profile
-j2k-jpeg-cuda -> j2k-core, j2k-cuda-runtime, j2k-jpeg, j2k-profile
+j2k-jpeg-cuda -> j2k-core, j2k-cuda-jpeg-engine, j2k-cuda-runtime, j2k-jpeg, j2k-profile
 j2k-jpeg-metal -> j2k-core, j2k-jpeg, j2k-metal-support, j2k-profile
 j2k-tilecodec -> j2k-core
 j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
 j2k-t803 -> j2k, j2k-codec-math, j2k-compare, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-native
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
-j2k-cuda-runtime -> j2k-codec-math, j2k-core
+j2k-cuda-runtime -> j2k-core
+j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
+j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
+j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
-j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
-j2k-transcode-cuda -> j2k-core, j2k-cuda-runtime, j2k-native, j2k-transcode
+j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
+j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
 xtask -> j2k, j2k-codec-math, j2k-compare, j2k-native, j2k-profile, j2k-test-support
 ```
@@ -135,11 +143,18 @@ falling back to CPU staging. A direct external destination is the final output
 allocation: decoded pixels must not cross a GPU-to-CPU-to-GPU path or a second
 device output merely for framework integration.
 
-CUDA adapters use `j2k-cuda-runtime`, which owns the shared CUDA Driver API
-runtime, CUDA Oxide module loading, and host launch orchestration for supported
-CUDA codec stages. Product CUDA codec kernels are generated from CUDA Oxide
-projects while Rust host code retains Driver API orchestration. `cuda-runtime`
-support is an implementation dependency, not proof of NVIDIA performance.
+CUDA adapters use `j2k-cuda-runtime` for the shared CUDA Driver API runtime,
+generic module loading, checked launch geometry, memory, and completion.
+`j2k-jpeg-cuda` enters codec operations through the internal
+`j2k-cuda-jpeg-engine` boundary, which owns JPEG plans, validation, CUDA-Oxide
+packaging, and launch orchestration without changing adapter APIs. `j2k-cuda`
+likewise binds through `j2k-cuda-j2k-engine`; that engine already owns J2K-ML,
+classic Tier-1 decode, HTJ2K decode, and J2K dequantization, including queued
+completion and PTX packaging, while the remaining transform, store, encode,
+and packetization slices are migrated. Product CUDA codec kernels are
+generated from CUDA Oxide projects while Rust host code retains Driver API
+orchestration. `cuda-runtime` support is an implementation dependency, not
+proof of NVIDIA performance.
 The Burn CUDA upload adapter waits for codec-owned resident output, copies its
 dense decoded pixels to host staging, and constructs the Burn tensor through
 the framework's ordinary public upload API.

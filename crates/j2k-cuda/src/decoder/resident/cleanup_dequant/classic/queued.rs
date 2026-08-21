@@ -2,7 +2,7 @@
 
 use super::super::super::super::{
     cuda_error, CudaBufferPool, CudaClassicDecodeTarget, CudaComponentDecodeWork,
-    CudaHtj2kDecodeResources, Error,
+    CudaHtj2kDecodeResources, Error, J2kCudaEngine,
 };
 use super::super::super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::HostPhaseBudget;
@@ -14,7 +14,7 @@ struct ClassicJobIdentity {
 }
 
 pub(in crate::decoder) struct QueuedComponentClassicDecode {
-    queued: Option<j2k_cuda_runtime::CudaQueuedClassicDecode>,
+    queued: Option<j2k_cuda_j2k_engine::CudaQueuedClassicDecode>,
     identities: Vec<ClassicJobIdentity>,
 }
 
@@ -47,16 +47,18 @@ impl Drop for QueuedComponentClassicDecode {
 pub(in crate::decoder) fn enqueue_component_classic_batches(
     context: &j2k_cuda_runtime::CudaContext,
     decode_resources: &CudaHtj2kDecodeResources,
-    table_resources: &j2k_cuda_runtime::CudaClassicDecodeTableResources,
+    table_resources: &j2k_cuda_j2k_engine::CudaClassicDecodeTableResources,
     component_work: &mut [CudaComponentDecodeWork],
     component_source_indices: &[usize],
     pool: &CudaBufferPool,
     live_host_bytes: usize,
 ) -> Result<Option<QueuedComponentClassicDecode>, Error> {
     if component_work.len() != component_source_indices.len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "CUDA classic source identity count does not match component work",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "CUDA classic source identity count does not match component work",
+            ),
+        ));
     }
     let pending_count = component_work
         .iter()
@@ -101,7 +103,7 @@ pub(in crate::decoder) fn enqueue_component_classic_batches(
     // SAFETY: component work retains disjoint coefficient targets; the
     // high-level pending owner retains payload/tables through this guard.
     let queued = unsafe {
-        context.decode_classic_codeblocks_multi_enqueue_with_resources_and_pool(
+        J2kCudaEngine::new(context).decode_classic_codeblocks_multi_enqueue_with_resources_and_pool(
             decode_resources,
             table_resources,
             &targets,

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{J2kEncodeStageError, J2kHtj2kTileEncodeJob, J2kResidentHtj2kTileEncodeJob};
-use j2k_cuda_runtime::{
-    CudaContext, CudaDeviceBuffer, CudaDwt53LevelShape, CudaHtj2kEncodeResources,
-    CudaJ2kResidentComponents, CudaJ2kStridedInterleavedPixels,
+use j2k_cuda_j2k_engine::{
+    CudaDwt53LevelShape, CudaHtj2kEncodeResources, CudaJ2kResidentComponents,
+    CudaJ2kStridedInterleavedPixels,
 };
+use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer};
 
 use crate::allocation::HostPhaseBudget;
 use crate::encode::stage_error::{
@@ -47,7 +48,7 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
         context,
         collect_profile,
         || {
-            context.j2k_deinterleave_to_f32_resident(
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(context).j2k_deinterleave_to_f32_resident(
                 job.pixels,
                 num_pixels,
                 num_components,
@@ -107,7 +108,8 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
         context,
         collect_profile,
         || {
-            context.j2k_deinterleave_strided_to_f32_resident(CudaJ2kStridedInterleavedPixels {
+            let engine = j2k_cuda_j2k_engine::J2kCudaEngine::new(context);
+            let input = CudaJ2kStridedInterleavedPixels {
                 buffer: tile.buffer,
                 byte_offset: tile.byte_offset,
                 width: tile.width,
@@ -116,7 +118,8 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
                 num_components,
                 bit_depth: job.input.bit_depth(),
                 signed: job.input.signed(),
-            })
+            };
+            engine.j2k_deinterleave_strided_to_f32_resident(input)
         },
     )
     .map_err(|error| runtime_error("deinterleave CUDA HTJ2K device tile", error))?;
@@ -165,7 +168,10 @@ fn cuda_encode_htj2k_resident_components_body(
                 "j2k.htj2k.encode.tile.rct",
                 context,
                 collect_profile,
-                || context.j2k_forward_rct_resident(&mut components),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                        .j2k_forward_rct_resident(&mut components)
+                },
             )
             .map_err(|error| runtime_error("apply CUDA HTJ2K tile RCT", error))?
         } else {
@@ -173,7 +179,10 @@ fn cuda_encode_htj2k_resident_components_body(
                 "j2k.htj2k.encode.tile.ict",
                 context,
                 collect_profile,
-                || context.j2k_forward_ict_resident(&mut components),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                        .j2k_forward_ict_resident(&mut components)
+                },
             )
             .map_err(|error| runtime_error("apply CUDA HTJ2K tile ICT", error))?
         };
@@ -239,13 +248,14 @@ fn cuda_encode_htj2k_resident_components_body(
                     context,
                     collect_profile,
                     || {
-                        context.j2k_forward_dwt53_resident_component(
-                            &components,
-                            component_u8,
-                            job.input.width(),
-                            job.input.height(),
-                            job.num_decomposition_levels,
-                        )
+                        j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                            .j2k_forward_dwt53_resident_component(
+                                &components,
+                                component_u8,
+                                job.input.width(),
+                                job.input.height(),
+                                job.num_decomposition_levels,
+                            )
                     },
                 )
                 .map_err(|error| runtime_error("apply CUDA HTJ2K tile DWT 5/3", error))?;
@@ -267,13 +277,14 @@ fn cuda_encode_htj2k_resident_components_body(
                     context,
                     collect_profile,
                     || {
-                        context.j2k_forward_dwt97_resident_component(
-                            &components,
-                            component_u8,
-                            job.input.width(),
-                            job.input.height(),
-                            job.num_decomposition_levels,
-                        )
+                        j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                            .j2k_forward_dwt97_resident_component(
+                                &components,
+                                component_u8,
+                                job.input.width(),
+                                job.input.height(),
+                                job.num_decomposition_levels,
+                            )
                     },
                 )
                 .map_err(|error| runtime_error("apply CUDA HTJ2K tile DWT 9/7", error))?;

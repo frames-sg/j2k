@@ -69,7 +69,7 @@ macro_rules! define_ensure_prepared_direct_plan {
 
         #[cfg(target_os = "macos")]
         fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
-            let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+            let device_registry_id = crate::engine::current_runtime_device_registry_id()?;
             if self.$prepared_field.is_some()
                 && self.$prepared_device_field != Some(device_registry_id)
             {
@@ -102,7 +102,7 @@ macro_rules! define_ensure_prepared_direct_plan {
                     Err(error) => return Err(native_decode_error(error)),
                 };
                 let prepared = if let Some((session, _)) = &session_cache {
-                    Arc::new(crate::compute::with_runtime_for_session(session, |_| {
+                    Arc::new(crate::engine::with_runtime_for_session(session, |_| {
                         $prepare(plan.as_ref())
                     })?)
                 } else {
@@ -140,12 +140,12 @@ impl J2kDecoder<'_> {
         plan_field: native_direct_gray_plan,
         prepared_field: native_prepared_direct_gray_plan,
         prepared_device_field: native_prepared_direct_gray_device_registry_id,
-        prepared_ty: crate::compute::PreparedDirectGrayscalePlan,
+        prepared_ty: crate::engine::PreparedDirectGrayscalePlan,
         cache_key: direct_gray_plan_cache_key,
         cached: cached_session_direct_gray_plan,
         store: store_session_direct_gray_plan,
         build: build_direct_grayscale_plan_with_context,
-        prepare: crate::compute::prepare_direct_grayscale_plan
+        prepare: crate::engine::prepare_direct_grayscale_plan
     }
 
     define_ensure_prepared_direct_plan! {
@@ -155,12 +155,12 @@ impl J2kDecoder<'_> {
         plan_field: native_direct_color_plan,
         prepared_field: native_prepared_direct_color_plan,
         prepared_device_field: native_prepared_direct_color_device_registry_id,
-        prepared_ty: crate::compute::PreparedDirectColorPlan,
+        prepared_ty: crate::engine::PreparedDirectColorPlan,
         cache_key: direct_plan_cache_key,
         cached: cached_session_direct_color_plan,
         store: store_session_direct_color_plan,
         build: build_direct_color_plan_with_context,
-        prepare: crate::compute::prepare_direct_color_plan
+        prepare: crate::engine::prepare_direct_color_plan
     }
 
     #[cfg(target_os = "macos")]
@@ -172,9 +172,9 @@ impl J2kDecoder<'_> {
             let Some(plan) = self.ensure_prepared_direct_gray_plan()? else {
                 return Ok(None);
             };
-            return Ok(Some(
-                crate::compute::execute_prepared_direct_grayscale_plan(&plan, fmt)?,
-            ));
+            return Ok(Some(crate::engine::execute_prepared_direct_grayscale_plan(
+                &plan, fmt,
+            )?));
         }
 
         if matches!(
@@ -184,7 +184,7 @@ impl J2kDecoder<'_> {
             let Some(plan) = self.ensure_prepared_direct_color_plan()? else {
                 return Ok(None);
             };
-            return match crate::compute::execute_prepared_direct_color_plan(plan, fmt) {
+            return match crate::engine::execute_prepared_direct_color_plan(plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_runtime_fallback_error(&error) => Ok(None),
                 Err(error) => Err(error),
@@ -206,7 +206,7 @@ impl J2kDecoder<'_> {
                 return Ok(None);
             };
             return Ok(Some(
-                crate::compute::execute_prepared_direct_grayscale_plan_with_device(
+                crate::engine::execute_prepared_direct_grayscale_plan_with_device(
                     &plan,
                     fmt,
                     session.device_handle(),
@@ -222,7 +222,7 @@ impl J2kDecoder<'_> {
             else {
                 return Ok(None);
             };
-            return match crate::compute::execute_prepared_direct_color_plan_with_device(
+            return match crate::engine::execute_prepared_direct_color_plan_with_device(
                 plan,
                 fmt,
                 session.device_handle(),
@@ -248,7 +248,7 @@ impl J2kDecoder<'_> {
                 "native image cache missing".to_string(),
             )));
         };
-        crate::compute::decode_image_to_surface(image, native_context, fmt)
+        crate::engine::decode_image_to_surface(image, native_context, fmt)
     }
 
     #[cfg(target_os = "macos")]
@@ -264,7 +264,7 @@ impl J2kDecoder<'_> {
                 "native image cache missing".to_string(),
             )));
         };
-        crate::compute::decode_image_to_surface_with_device(image, native_context, fmt, device)
+        crate::engine::decode_image_to_surface_with_device(image, native_context, fmt, device)
     }
 
     #[cfg(target_os = "macos")]
@@ -327,11 +327,11 @@ impl J2kDecoder<'_> {
             });
         };
         match session {
-            Some(session) => crate::compute::with_runtime_for_session(session, |_| {
-                crate::compute::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
+            Some(session) => crate::engine::with_runtime_for_session(session, |_| {
+                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
             }),
             None => {
-                crate::compute::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
+                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
             }
         }
     }
@@ -372,7 +372,10 @@ impl J2kDecoder<'_> {
                 crate::MetalDecodeRequest::full(fmt, BackendRequest::Metal),
                 session,
             )?,
-            None => self.decode_to_surface_impl(fmt, BackendRequest::Metal)?,
+            None => self.decode_op_to_surface_impl(super::MetalDecodeRequest::full(
+                fmt,
+                BackendRequest::Metal,
+            ))?,
         };
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal repeated color surface collection",
@@ -403,7 +406,7 @@ impl J2kDecoder<'_> {
         ) {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }
-        let device_registry_id = crate::compute::current_runtime_device_registry_id()?;
+        let device_registry_id = crate::engine::current_runtime_device_registry_id()?;
         if self.native_prepared_direct_gray_plan.is_some()
             && self.native_prepared_direct_gray_device_registry_id != Some(device_registry_id)
         {
@@ -423,9 +426,7 @@ impl J2kDecoder<'_> {
                 return self.decode_repeated_cpu_to_surfaces(fmt, count);
             };
             let plan = Arc::new(plan);
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(
-                plan.as_ref(),
-            )?);
+            let prepared = Arc::new(crate::engine::prepare_direct_grayscale_plan(plan.as_ref())?);
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
             self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
@@ -433,7 +434,7 @@ impl J2kDecoder<'_> {
         let Some(prepared) = self.native_prepared_direct_gray_plan.as_ref() else {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         };
-        crate::compute::execute_repeated_prepared_direct_grayscale_plan(prepared, fmt, count)
+        crate::engine::execute_repeated_prepared_direct_grayscale_plan(prepared, fmt, count)
     }
 
     #[cfg(target_os = "macos")]
@@ -507,10 +508,10 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device_routed(
         plans.push(plan);
     }
     match session {
-        Some(session) => crate::compute::with_runtime_for_session(session, |_| {
-            crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
         }),
-        None => crate::compute::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
+        None => crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
     }
 }
 
@@ -554,18 +555,18 @@ pub(crate) fn decode_full_color_batch_direct_to_device_routed(
         plans.push(plan);
     }
     let result = match session {
-        Some(session) => crate::compute::with_runtime_for_session(session, |_| {
-            crate::compute::execute_prepared_direct_color_plan_batch(&plans, fmt)
+        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
         }),
-        None => crate::compute::execute_prepared_direct_color_plan_batch(&plans, fmt),
+        None => crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
     };
     match result {
         Ok(surfaces) => Ok(surfaces),
-        Err(error) if is_direct_runtime_fallback_error(&error) => {
-            Err(Error::UnsupportedMetalRequest {
-                reason: CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
-            })
-        }
+        Err(error) if is_direct_runtime_fallback_error(&error) => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
+            ),
+        )),
         Err(error) => Err(error),
     }
 }

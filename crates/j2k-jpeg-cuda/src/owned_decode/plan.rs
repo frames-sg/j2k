@@ -3,7 +3,7 @@
 //! Neutral fast-packet projection into the CUDA JPEG decode ABI.
 
 use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
-use j2k_cuda_runtime::{
+use j2k_cuda_jpeg_engine::{
     CudaJpegEntropyCheckpoint, CudaJpegHuffmanTable, CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
 };
 use j2k_jpeg::adapter::{
@@ -79,9 +79,11 @@ pub(super) fn build_cuda_rgb8_plan_data<'a>(
     session: &CudaSession,
 ) -> Result<CudaRgb8PlanData<'a>, Error> {
     if packet.dimensions != dimensions {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA JPEG packet dimensions do not match decoder metadata",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "J2K CUDA JPEG packet dimensions do not match decoder metadata",
+            ),
+        ));
     }
     let (entropy_checkpoints, checkpoint_lease) =
         cuda_entropy_checkpoints(packet.entropy_checkpoints, session)?;

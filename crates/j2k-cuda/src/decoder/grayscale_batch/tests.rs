@@ -119,12 +119,7 @@ fn prepared_htj2k_batch_uses_retained_offsets_without_reparsing() {
         panic!("expected one prepared image")
     };
     assert_eq!(image.preparation_depth(), PreparationDepth::Htj2kOffsetPlan);
-    let referenced_plan = image
-        .htj2k_plan()
-        .expect("retained HTJ2K plan")
-        .adapter_view()
-        .downcast_ref::<j2k_native::J2kReferencedHtj2kPlan>()
-        .expect("native referenced HTJ2K plan adapter");
+    let referenced_plan = image.htj2k_plan().expect("retained HTJ2K plan").geometry();
     let settings = DecodeSettings {
         resolve_palette_indices: true,
         strict: group.options().settings.is_strict(),

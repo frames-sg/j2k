@@ -124,7 +124,7 @@ fn preflight_dwt97_conversion_budget(
         ],
         "CUDA 9/7 widening workspace",
     )?;
-    budget.preflight_bytes(additional)
+    Ok(budget.preflight_bytes(additional)?)
 }
 
 fn dwt97_bands_to_f64_after_preflight(
@@ -132,7 +132,7 @@ fn dwt97_bands_to_f64_after_preflight(
     budget: &mut HostPhaseBudget,
 ) -> Result<Dwt97TwoDimensional<f64>, CudaTranscodeError> {
     let mut widen = |band: Vec<f32>, what| -> Result<Vec<f64>, CudaTranscodeError> {
-        let mut widened = budget.try_vec_with_capacity(band.len(), what)?;
+        let mut widened = budget.try_vec_with_capacity_named(band.len(), what)?;
         widened.extend(band.into_iter().map(f64::from));
         Ok(widened)
     };
@@ -169,7 +169,7 @@ pub(super) fn dwt97_batch_bands_to_f64(
     }
     preflight_dwt97_conversion_budget(&budget, &bands, bands.len())?;
     let mut outputs =
-        budget.try_vec_with_capacity(bands.len(), "CUDA 9/7 batch widened outputs")?;
+        budget.try_vec_with_capacity_named(bands.len(), "CUDA 9/7 batch widened outputs")?;
     for item_bands in bands {
         outputs.push(dwt97_bands_to_f64_after_preflight(item_bands, &mut budget)?);
     }

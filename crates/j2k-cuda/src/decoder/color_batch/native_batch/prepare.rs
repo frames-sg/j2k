@@ -52,9 +52,9 @@ fn validate_native_color_format(fmt: PixelFormat) -> Result<(), Error> {
     ) {
         return Ok(());
     }
-    Err(Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-    })
+    Err(Error::capability_rejected(
+        j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+    ))
 }
 
 fn append_native_color_input(

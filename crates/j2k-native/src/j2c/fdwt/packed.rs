@@ -2,6 +2,7 @@
 
 use super::{forward_lift_53, forward_lift_53_i64, forward_lift_97};
 use crate::{EncodeError, EncodeResult};
+use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
 
 fn usize_from_u32(value: u32, what: &'static str) -> EncodeResult<usize> {
     usize::try_from(value).map_err(|_| EncodeError::ArithmeticOverflow { what })
@@ -126,8 +127,9 @@ impl PackedDwtGeometry {
                     what: "packed forward DWT geometry has too many levels",
                 });
             }
-            current_width = current_width.div_ceil(2);
-            current_height = current_height.div_ceil(2);
+            let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+            current_width = level.low_width;
+            current_height = level.low_height;
         }
         if current_width != shape.ll_width || current_height != shape.ll_height {
             return Err(EncodeError::InternalInvariant {
@@ -158,14 +160,16 @@ impl PackedDwtGeometry {
         let mut current_width = self.plane_width;
         let mut current_height = self.plane_height;
         for _ in 0..forward_level {
-            current_width = current_width.div_ceil(2);
-            current_height = current_height.div_ceil(2);
+            let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+            current_width = level.low_width;
+            current_height = level.low_height;
         }
 
-        let low_width = current_width.div_ceil(2);
-        let low_height = current_height.div_ceil(2);
-        let high_width = current_width / 2;
-        let high_height = current_height / 2;
+        let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+        let low_width = level.low_width;
+        let low_height = level.low_height;
+        let high_width = level.high_width;
+        let high_height = level.high_height;
         Ok(PackedDwtLevelRects {
             hl: self.rect(low_width, 0, high_width, low_height)?,
             lh: self.rect(0, low_height, low_width, high_height)?,
@@ -252,6 +256,12 @@ fn forward_dwt_packed_core<T: Copy>(
         if current_width < 2 && current_height < 2 {
             break;
         }
+        let level = encode_dwt_level_dimensions_for_input(
+            u32_from_usize(current_width, "packed forward DWT level width")?,
+            u32_from_usize(current_height, "packed forward DWT level height")?,
+        );
+        let low_width = usize_from_u32(level.low_width, "packed forward DWT low width")?;
+        let low_height = usize_from_u32(level.low_height, "packed forward DWT low height")?;
 
         // Analysis is vertical first and horizontal second because synthesis
         // applies the inverse operations in the opposite order.
@@ -262,7 +272,6 @@ fn forward_dwt_packed_core<T: Copy>(
                 }
                 lift(&mut line_scratch[..current_height]);
 
-                let low_height = current_height.div_ceil(2);
                 for i in 0..low_height {
                     coefficients[i * width + x] = line_scratch[i * 2];
                 }
@@ -279,7 +288,6 @@ fn forward_dwt_packed_core<T: Copy>(
                     .copy_from_slice(&coefficients[row_start..row_start + current_width]);
                 lift(&mut line_scratch[..current_width]);
 
-                let low_width = current_width.div_ceil(2);
                 for i in 0..low_width {
                     coefficients[row_start + i] = line_scratch[i * 2];
                 }
@@ -289,8 +297,8 @@ fn forward_dwt_packed_core<T: Copy>(
             }
         }
 
-        current_width = current_width.div_ceil(2);
-        current_height = current_height.div_ceil(2);
+        current_width = low_width;
+        current_height = low_height;
         actual_levels += 1;
     }
 

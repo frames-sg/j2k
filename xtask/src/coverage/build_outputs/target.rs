@@ -37,7 +37,7 @@ impl CurrentBuildTarget {
             .ok_or_else(|| "current coverage build target was already consumed".to_string())
     }
 
-    pub(super) fn cleanup(&mut self) -> Result<(), String> {
+    pub(in crate::coverage) fn cleanup(&mut self) -> Result<(), String> {
         let path = self
             .path
             .take()

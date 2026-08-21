@@ -81,9 +81,9 @@ impl PartialEq for CudaHtj2kPacketizationPlanError {
 }
 
 pub(super) fn packetization_plan_allocation_error(
-    error: crate::Error,
+    error: impl Into<crate::Error>,
 ) -> CudaHtj2kPacketizationPlanError {
-    match error {
+    match error.into() {
         crate::Error::HostAllocationFailed { bytes, what } => {
             CudaHtj2kPacketizationPlanError::HostAllocation { what, bytes }
         }

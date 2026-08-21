@@ -11,6 +11,8 @@ use super::super::{
 };
 use super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::{try_collect_cuda_results_exact, HostPhaseBudget};
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_j2k_engine::{CudaJ2kIdwtBatchStageProfile, CudaJ2kIdwtNormalization};
 
 mod conversions;
 
@@ -38,23 +40,31 @@ pub(in crate::decoder) fn run_cuda_component_idwt_steps(
         let (output, idwt_us) = context
             .time_default_stream_named_us_if(collect_stage_timings, "j2k.htj2k.decode.idwt", || {
                 if collect_stage_timings {
-                    return context.j2k_inverse_dwt_single_device_with_pool(
-                        low_low_device,
-                        high_low_device,
-                        low_high_device,
-                        high_high_device,
-                        job,
-                        pool,
-                    );
+                    return j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                        .j2k_inverse_dwt_single_device_with_pool_normalized(
+                            [
+                                low_low_device,
+                                high_low_device,
+                                low_high_device,
+                                high_high_device,
+                            ],
+                            job,
+                            CudaJ2kIdwtNormalization::OpenJpegCodestream,
+                            pool,
+                        );
                 }
-                context.j2k_inverse_dwt_single_device_untimed_with_pool(
-                    low_low_device,
-                    high_low_device,
-                    low_high_device,
-                    high_high_device,
-                    job,
-                    pool,
-                )
+                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                    .j2k_inverse_dwt_single_device_untimed_with_pool_normalized(
+                        [
+                            low_low_device,
+                            high_low_device,
+                            low_high_device,
+                            high_high_device,
+                        ],
+                        job,
+                        CudaJ2kIdwtNormalization::OpenJpegCodestream,
+                        pool,
+                    )
             })
             .map_err(cuda_error)?;
         work.timings.idwt = work.timings.idwt.saturating_add(idwt_us);
@@ -103,6 +113,7 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
                     component_work,
                     pool,
                     live_host_bytes,
+                    true,
                 )
             })
             .map_err(cuda_error)?
@@ -118,6 +129,7 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
                     component_work,
                     pool,
                     live_host_bytes,
+                    false,
                 )
             })
         }
@@ -127,6 +139,14 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
 
     if let Some(accounting) = component_work.first_mut() {
         accounting.timings.idwt = accounting.timings.idwt.saturating_add(idwt_us);
+        accounting.timings.idwt_final_interleave_horizontal = accounting
+            .timings
+            .idwt_final_interleave_horizontal
+            .saturating_add(queued_batch.final_interleave_horizontal_us);
+        accounting.timings.idwt_final_vertical = accounting
+            .timings
+            .idwt_final_vertical
+            .saturating_add(queued_batch.final_vertical_us);
         accounting.dispatches = accounting
             .dispatches
             .saturating_add(queued_batch.kernel_dispatches);
@@ -157,6 +177,7 @@ fn enqueue_color_component_idwt_batches(
     component_work: &mut [CudaComponentDecodeWork],
     pool: &CudaBufferPool,
     live_host_bytes: usize,
+    collect_stage_profile: bool,
 ) -> Result<CudaQueuedIdwtBatch, CudaError> {
     if components.len() != component_work.len() {
         return Err(CudaError::InvalidArgument {
@@ -169,14 +190,20 @@ fn enqueue_color_component_idwt_batches(
             queued: Vec::new(),
             kernel_dispatches: 0,
             decode_dispatches: 0,
+            final_interleave_horizontal_us: 0,
+            final_vertical_us: 0,
         });
     };
 
     let mut host_budget =
-        HostPhaseBudget::with_cuda_live_bytes("CUDA color IDWT batch metadata", live_host_bytes)?;
-    let mut queued = host_budget.try_cuda_vec_with_capacity(1)?;
+        HostPhaseBudget::with_live_bytes("CUDA color IDWT batch metadata", live_host_bytes)
+            .map_err(CudaError::from)?;
+    let mut queued = host_budget
+        .try_vec_with_capacity(1)
+        .map_err(CudaError::from)?;
     let mut kernel_dispatches = 0usize;
     let mut decode_dispatches = 0usize;
+    let mut final_stage_profile = CudaJ2kIdwtBatchStageProfile::default();
     let step_count = first.idwt_steps().len();
     let trace_enabled = cuda_idwt_trace_enabled();
     let enqueue_result = (|| -> Result<(), CudaError> {
@@ -199,13 +226,14 @@ fn enqueue_color_component_idwt_batches(
                         .map_err(cuda_invalid_decode_plan)?;
                     let hh = find_cuda_band(&work.bands, step.hh_band_id)
                         .map_err(cuda_invalid_decode_plan)?;
-                    context.j2k_inverse_dwt_single_output_bytes(
-                        pooled_cuda_buffer(&ll.buffer).map_err(cuda_invalid_decode_plan)?,
-                        pooled_cuda_buffer(&hl.buffer).map_err(cuda_invalid_decode_plan)?,
-                        pooled_cuda_buffer(&lh.buffer).map_err(cuda_invalid_decode_plan)?,
-                        pooled_cuda_buffer(&hh.buffer).map_err(cuda_invalid_decode_plan)?,
-                        cuda_idwt_job_from_step(step),
-                    )?
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+                        .j2k_inverse_dwt_single_output_bytes(
+                            pooled_cuda_buffer(&ll.buffer).map_err(cuda_invalid_decode_plan)?,
+                            pooled_cuda_buffer(&hl.buffer).map_err(cuda_invalid_decode_plan)?,
+                            pooled_cuda_buffer(&lh.buffer).map_err(cuda_invalid_decode_plan)?,
+                            pooled_cuda_buffer(&hh.buffer).map_err(cuda_invalid_decode_plan)?,
+                            cuda_idwt_job_from_step(step),
+                        )?
                 };
                 let buffer = if trace_enabled {
                     let (buffer, trace) = pool.take_with_trace(output_bytes)?;
@@ -225,7 +253,9 @@ fn enqueue_color_component_idwt_batches(
         let output_alloc_us = elapsed_host_us(output_alloc_start);
 
         let target_build_start = trace_enabled.then(std::time::Instant::now);
-        let mut target_batches = host_budget.try_cuda_vec_with_capacity(step_count)?;
+        let mut target_batches = host_budget
+            .try_vec_with_capacity(step_count)
+            .map_err(CudaError::from)?;
         for step_index in 0..step_count {
             let targets = try_collect_cuda_results_exact(
                 &mut host_budget,
@@ -263,7 +293,9 @@ fn enqueue_color_component_idwt_batches(
             target_batches.push(targets);
         }
         let target_build_us = elapsed_host_us(target_build_start);
-        let mut target_slices = host_budget.try_cuda_vec_with_capacity(target_batches.len())?;
+        let mut target_slices = host_budget
+            .try_vec_with_capacity(target_batches.len())
+            .map_err(CudaError::from)?;
         for targets in &target_batches {
             target_slices.push(targets.as_slice());
         }
@@ -272,15 +304,32 @@ fn enqueue_color_component_idwt_batches(
         // session-private pool is confined to this default stream. The queued
         // handle remains owned until completion or dependent MCT/store work is
         // submitted and synchronously completed on that stream.
-        let queued_execution = unsafe {
-            context.j2k_inverse_dwt_batch_sequence_enqueue_with_pool_and_live_host_bytes(
-                &target_slices,
-                pool,
-                host_budget.live_bytes(),
-            )?
+        let (queued_execution, stage_profile) = unsafe {
+            let engine = j2k_cuda_j2k_engine::J2kCudaEngine::new(context);
+            if collect_stage_profile {
+                engine
+                    .j2k_inverse_dwt_batch_sequence_enqueue_profiled_with_pool_and_live_host_bytes_normalized(
+                        &target_slices,
+                        pool,
+                        host_budget.live_bytes(),
+                        CudaJ2kIdwtNormalization::OpenJpegCodestream,
+                    )?
+            } else {
+                (
+                    engine
+                        .j2k_inverse_dwt_batch_sequence_enqueue_with_pool_and_live_host_bytes_normalized(
+                            &target_slices,
+                            pool,
+                            host_budget.live_bytes(),
+                            CudaJ2kIdwtNormalization::OpenJpegCodestream,
+                        )?,
+                    CudaJ2kIdwtBatchStageProfile::default(),
+                )
+            }
         };
         let enqueue_us = elapsed_host_us(enqueue_start);
         let execution = queued_execution.execution();
+        final_stage_profile = stage_profile;
         kernel_dispatches = kernel_dispatches.saturating_add(execution.kernel_dispatches());
         decode_dispatches = decode_dispatches.saturating_add(execution.decode_kernel_dispatches());
         queued.push(queued_execution);
@@ -319,5 +368,7 @@ fn enqueue_color_component_idwt_batches(
         queued,
         kernel_dispatches,
         decode_dispatches,
+        final_interleave_horizontal_us: final_stage_profile.interleave_horizontal_us,
+        final_vertical_us: final_stage_profile.vertical_us,
     })
 }

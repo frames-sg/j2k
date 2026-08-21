@@ -13,14 +13,11 @@ pub use self::pinned_staging::{
 pub(crate) use self::pool::copy_pooled_bytes_to_vec_uninit;
 #[cfg(test)]
 pub(crate) use self::pool::pool_fit_buffer_index_by_len;
-pub(crate) use self::pool::{
-    copy_pooled_bytes_to_vec_uninit_with_budget, pooled_device_buffer, CudaBufferPoolReuseGuard,
-};
 pub use self::pool::{
-    CudaBufferPool, CudaBufferPoolDiagnostics, CudaBufferPoolLimits, CudaBufferPoolTakeTrace,
-    CudaPooledDeviceBuffer,
+    CudaBufferPool, CudaBufferPoolDiagnostics, CudaBufferPoolLimits, CudaBufferPoolReuseGuard,
+    CudaBufferPoolTakeTrace, CudaPooledDeviceBuffer,
 };
-pub(crate) use self::ranges::CheckedDeviceBufferRanges;
+pub use self::ranges::CheckedDeviceBufferRanges;
 
 #[cfg(test)]
 use crate::context::validate_non_null_pinned_host_allocation;
@@ -351,7 +348,10 @@ pub struct CudaDeviceBufferRange {
 }
 
 impl CudaDeviceBuffer {
-    pub(crate) fn is_owned_by(&self, context: &CudaContext) -> bool {
+    /// Return whether this allocation belongs to `context`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_owned_by(&self, context: &CudaContext) -> bool {
         self.context.is_same_context(context)
     }
 
@@ -510,11 +510,8 @@ impl Drop for CudaDeviceBuffer {
     }
 }
 
-pub(crate) fn checked_image_words(
-    width: u32,
-    height: u32,
-    channels: usize,
-) -> Result<usize, CudaError> {
+#[doc(hidden)]
+pub fn checked_image_words(width: u32, height: u32, channels: usize) -> Result<usize, CudaError> {
     width
         .try_into()
         .ok()

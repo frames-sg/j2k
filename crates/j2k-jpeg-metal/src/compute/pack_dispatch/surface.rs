@@ -77,13 +77,13 @@ pub(in crate::compute) fn encode_jpeg_pack_to_surface_in_command_buffer(
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.pack_pipeline);
+    encoder.setComputePipelineState(&runtime.pipelines.pack);
     encoder.bind_buffer(0, Some(plane0), 0);
     encoder.bind_buffer(1, plane1.map(std::convert::AsRef::as_ref), 0);
     encoder.bind_buffer(2, plane2.map(std::convert::AsRef::as_ref), 0);
     encoder.bind_buffer(3, Some(&out_buffer), 0);
     encoder.bind_bytes::<JpegPackParams>(4, &params);
-    dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, dims);
+    dispatch_2d_pipeline(&encoder, &runtime.pipelines.pack, dims);
     encoder.endEncoding();
 
     Surface::from_metal_buffer(out_buffer, dims, fmt)

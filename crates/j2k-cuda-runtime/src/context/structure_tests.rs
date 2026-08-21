@@ -2,12 +2,6 @@
 
 const CONTEXT: &str = include_str!("../context.rs");
 const MODULES: &[(&str, &str, usize)] = &[
-    (
-        "context/band_transfer.rs",
-        include_str!("band_transfer.rs"),
-        75,
-    ),
-    ("context/compact.rs", include_str!("compact.rs"), 150),
     ("context/creation.rs", include_str!("creation.rs"), 100),
     ("context/device.rs", include_str!("device.rs"), 80),
     ("context/inner.rs", include_str!("inner.rs"), 100),
@@ -46,8 +40,6 @@ fn cuda_context_uses_focused_real_modules() {
         "context.rs must remain a focused module shell"
     );
     for module in [
-        "mod band_transfer;",
-        "mod compact;",
         "mod creation;",
         "mod device;",
         "mod inner;",

@@ -52,6 +52,29 @@ fn capability_report_marks_owned_cuda_eligible_for_fast_422_and_444_rgb8() {
 }
 
 #[test]
+fn capability_report_marks_restart_coded_fast_420_owned_cuda_eligible() {
+    let input = j2k_test_support::baseline_420_restart_32x16_jpeg();
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("restart-coded capability report");
+
+    assert_eq!(report.device.restart_interval, Some(2));
+    assert!(
+        report.device.matches_fast_420,
+        "restart markers must not hide the validated fast 4:2:0 device shape"
+    );
+    assert!(
+        report.owned_cuda.eligible,
+        "the owned CUDA packet path supports restart-coded fast 4:2:0"
+    );
+}
+
+#[test]
 fn capability_report_rejects_owned_cuda_for_scaled_or_non_rgb8_requests() {
     let scaled = JpegCapabilityReport::inspect(
         BASELINE_420,

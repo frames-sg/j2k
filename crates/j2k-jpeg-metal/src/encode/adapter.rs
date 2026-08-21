@@ -51,7 +51,7 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
         tables: &JpegBaselineEncodeTables,
         plan: JpegBaselineGpuEncodeTilePlan,
     ) -> Result<Vec<u8>, Self::Error> {
-        compute::encode_jpeg_baseline_entropy_with_session(
+        compute::encode::encode_jpeg_baseline_entropy_with_session(
             self.session,
             &compute::JpegBaselineEntropyEncodeJob {
                 input: tile.buffer_trusted(),
@@ -104,7 +104,7 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
             tile_count,
             plan.total_entropy_capacity,
         )?;
-        compute::encode_jpeg_baseline_entropy_batch_with_session(
+        compute::encode::encode_jpeg_baseline_entropy_batch_with_session(
             self.session,
             &compute::JpegBaselineEntropyEncodeBatchJob {
                 input: tiles[0].buffer_trusted(),
@@ -172,17 +172,15 @@ fn metal_gpu_encode_error(error: JpegBaselineGpuEncodeError) -> crate::Error {
                     "JPEG Baseline Metal encode backend request is inconsistent"
                 }
             };
-            crate::Error::UnsupportedMetalRequest { reason }
+            crate::Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(reason),
+            )
         }
         JpegBaselineGpuEncodeError::InputExceedsOutputDimensions => {
-            crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode input cannot exceed output dimensions",
-            }
+            crate::Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit("JPEG Baseline Metal encode input cannot exceed output dimensions"))
         }
         JpegBaselineGpuEncodeError::UnsupportedPixelFormat { .. } => {
-            crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode supports only Gray8 and Rgb8 input buffers",
-            }
+            crate::Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_format("JPEG Baseline Metal encode supports only Gray8 and Rgb8 input buffers"))
         }
         JpegBaselineGpuEncodeError::IncompatibleSubsampling {
             subsampling,
@@ -224,9 +222,7 @@ fn metal_gpu_encode_error(error: JpegBaselineGpuEncodeError) -> crate::Error {
             message: "JPEG Baseline Metal batch entropy offset exceeds u32".to_string(),
         },
         JpegBaselineGpuEncodeError::EntropyCapacityTooLarge => {
-            crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode entropy capacity exceeds Metal kernel limits",
-            }
+            crate::Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit("JPEG Baseline Metal encode entropy capacity exceeds Metal kernel limits"))
         }
         JpegBaselineGpuEncodeError::BatchEntropyCapacityOverflow => {
             metal_kernel_error("JPEG Baseline Metal batch entropy capacity overflow")

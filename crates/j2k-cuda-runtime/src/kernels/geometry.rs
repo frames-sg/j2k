@@ -11,14 +11,18 @@ pub(crate) const CUDA_MAX_BLOCK_DIM_X_Y: c_uint = 1_024;
 pub(crate) const CUDA_MAX_BLOCK_DIM_Z: c_uint = 64;
 pub(crate) const CUDA_MAX_THREADS_PER_BLOCK: c_uint = 1_024;
 
+/// Validated CUDA grid and block dimensions for a kernel launch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CudaLaunchGeometry {
+pub struct CudaLaunchGeometry {
     grid: (c_uint, c_uint, c_uint),
     block: (c_uint, c_uint, c_uint),
 }
 
 impl CudaLaunchGeometry {
-    pub(crate) const fn new(
+    /// Construct geometry when every dimension is non-zero and within CUDA's
+    /// cross-device launch limits.
+    #[must_use]
+    pub const fn new(
         grid: (c_uint, c_uint, c_uint),
         block: (c_uint, c_uint, c_uint),
     ) -> Option<Self> {
@@ -30,7 +34,9 @@ impl CudaLaunchGeometry {
         }
     }
 
-    pub(crate) const fn is_valid(self) -> bool {
+    /// Return whether the geometry satisfies the static CUDA launch limits.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
         let (grid_x, grid_y, grid_z) = self.grid;
         let (block_x, block_y, block_z) = self.block;
         if grid_x == 0 || grid_y == 0 || grid_z == 0 || block_x == 0 || block_y == 0 || block_z == 0
@@ -52,11 +58,15 @@ impl CudaLaunchGeometry {
         block_x * block_y * block_z <= CUDA_MAX_THREADS_PER_BLOCK
     }
 
-    pub(crate) const fn grid(self) -> (c_uint, c_uint, c_uint) {
+    /// Grid dimensions in blocks.
+    #[must_use]
+    pub const fn grid(self) -> (c_uint, c_uint, c_uint) {
         self.grid
     }
 
-    pub(crate) const fn block(self) -> (c_uint, c_uint, c_uint) {
+    /// Block dimensions in threads.
+    #[must_use]
+    pub const fn block(self) -> (c_uint, c_uint, c_uint) {
         self.block
     }
 }

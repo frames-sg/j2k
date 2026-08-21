@@ -31,9 +31,11 @@ pub(in crate::compute) fn validate_rgba_texture_batch_output(
         || output.pixel_format() != PixelFormat::Rgba8
         || output.metal_pixel_format() != MTLPixelFormat::RGBA8Unorm
     {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal batch texture output shape does not match requested RGBA8 tiles",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "JPEG Metal batch texture output shape does not match requested RGBA8 tiles",
+            ),
+        ));
     }
     if output.tile_capacity() < tile_count {
         return Err(BufferError::OutputTooSmall {
@@ -61,10 +63,11 @@ pub(in crate::compute) fn validate_rgba_texture_batch_output(
             || texture.height() != dimensions.1 as usize
             || texture.pixelFormat() != MTLPixelFormat::RGBA8Unorm
         {
-            return Err(Error::UnsupportedMetalRequest {
-                reason:
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_format(
                     "JPEG Metal batch texture output texture does not match requested RGBA8 tiles",
-            });
+                ),
+            ));
         }
     }
 
@@ -218,7 +221,7 @@ pub(in crate::compute) fn copy_rgb8_surfaces_to_rgba_textures(
     if !copies.is_empty() {
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.rgb8_to_rgba_texture_pipeline);
+        encoder.setComputePipelineState(&runtime.pipelines.rgb8_to_rgba_texture);
         for (original_index, source, source_offset) in copies {
             let texture =
                 output
@@ -235,7 +238,11 @@ pub(in crate::compute) fn copy_rgb8_surfaces_to_rgba_textures(
             );
             encoder.bind_bytes::<JpegRgb8ToRgbaTextureParams>(1, &params);
             encoder.bind_texture(0, Some(texture));
-            dispatch_2d_pipeline(&encoder, &runtime.rgb8_to_rgba_texture_pipeline, dimensions);
+            dispatch_2d_pipeline(
+                &encoder,
+                &runtime.pipelines.rgb8_to_rgba_texture,
+                dimensions,
+            );
         }
         encoder.endEncoding();
         commit_and_wait_jpeg(&command_buffer)?;

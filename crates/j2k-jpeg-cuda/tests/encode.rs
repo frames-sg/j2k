@@ -5,6 +5,10 @@ use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples,
     JpegSubsampling,
 };
+
+#[cfg(feature = "cuda-runtime")]
+#[path = "encode/p18_baseline.rs"]
+mod p18_baseline;
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::{DecodeRequest, Decoder};
 

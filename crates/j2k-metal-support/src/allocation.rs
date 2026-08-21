@@ -55,8 +55,9 @@ fn allocate_shared_buffer_with_bytes(
     }
     let requested = bytes.len();
     let length = checked_buffer_allocation_length(requested, device.maxBufferLength())?;
-    let pointer = core::ptr::NonNull::new(bytes.as_ptr().cast_mut().cast::<core::ffi::c_void>())
-        .expect("a non-empty slice has a non-null data pointer");
+    let pointer = core::ptr::NonNull::from(bytes)
+        .cast::<u8>()
+        .cast::<core::ffi::c_void>();
     // SAFETY: `pointer` addresses exactly `length == bytes.len()` initialized
     // bytes, and Metal copies them synchronously before this call returns.
     unsafe {

@@ -53,28 +53,43 @@ fn missing_ambiguous_and_reversed_markers_fail_closed() {
 }
 
 #[test]
-fn path_patterns_honor_every_boundary() {
-    let exclusion = CoverageExclusion {
-        id: "pattern-test",
+fn cuda_oxide_matchers_honor_every_boundary() {
+    let device = CoverageExclusion {
+        id: "device-test",
         reason: "test fixture",
-        matcher: ExclusionMatcher::PathPattern {
-            prefix: "generated/",
-            contains: Some("/simt/"),
-            excludes: Some("/host/"),
-            suffix: ".rs",
-        },
+        matcher: ExclusionMatcher::CudaOxideDeviceRust,
+        evidence: &[],
+    };
+    let scaffold = CoverageExclusion {
+        id: "scaffold-test",
+        reason: "test fixture",
+        matcher: ExclusionMatcher::CudaOxideHostScaffold,
         evidence: &[],
     };
 
-    assert!(exclusion_matches(&exclusion, "generated/a/simt/lib.rs", 1, &[]).unwrap());
+    assert!(exclusion_matches(
+        &device,
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        1,
+        &[]
+    )
+    .unwrap());
+    assert!(exclusion_matches(
+        &scaffold,
+        "crates/j2k-cuda-transcode-engine/src/cuda_oxide_demo/src/main.rs",
+        1,
+        &[]
+    )
+    .unwrap());
     for path in [
-        "other/a/simt/lib.rs",
-        "generated/a/lib.rs",
-        "generated/a/simt/host/lib.rs",
-        "generated/a/simt/lib.c",
+        "crates/j2k-cuda-other-engine/src/cuda_oxide_demo/simt/src/lib.rs",
+        "crates/j2k-cuda-jpeg-engine/src/not_cuda_oxide/simt/src/lib.rs",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/simt/src/lib.c",
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_demo/host/src/main.rs",
     ] {
+        assert!(!exclusion_matches(&device, path, 1, &[]).unwrap(), "{path}");
         assert!(
-            !exclusion_matches(&exclusion, path, 1, &[]).unwrap(),
+            !exclusion_matches(&scaffold, path, 1, &[]).unwrap(),
             "{path}"
         );
     }

@@ -119,9 +119,11 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
     let output_rect = referenced.output_rect();
     let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA grayscale tile plan output geometry is inconsistent",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA grayscale tile plan output geometry is inconsistent",
+            ),
+        ));
     }
     let mut plans = host_budget.try_vec_with_capacity(referenced.tiles().len())?;
     let mut next_payload = 0usize;
@@ -130,26 +132,32 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
             tile.classic_payloads(),
             tile.classic_ranges(),
         )?;
-        let geometry = tile
-            .grayscale_geometry()
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA grayscale batch received a color HTJ2K tile",
-            })?;
+        let geometry = tile.grayscale_geometry().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA grayscale batch received a color HTJ2K tile",
+            ),
+        ))?;
         let span = tile.payload_records();
         if span.first_record != next_payload {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA grayscale tile payload spans are not contiguous",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA grayscale tile payload spans are not contiguous",
+                ),
+            ));
         }
-        let payload_end = span.end_record().ok_or(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA grayscale tile payload span overflows",
-        })?;
+        let payload_end = span.end_record().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(
+                "prepared CUDA grayscale tile payload span overflows",
+            ),
+        ))?;
         let payloads = referenced
             .payloads()
             .get(span.first_record..payload_end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA grayscale tile payload span is out of bounds",
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA grayscale tile payload span is out of bounds",
+                ),
+            ))?;
         let payload_start = shared_payload.len();
         let flatten_start = profile::profile_now(true);
         let cuda_plan = CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_into_shared(
@@ -183,9 +191,11 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
         next_payload = payload_end;
     }
     if next_payload != referenced.payloads().len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA grayscale tile payloads contain trailing records",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA grayscale tile payloads contain trailing records",
+            ),
+        ));
     }
     Ok(plans)
 }
@@ -207,33 +217,41 @@ pub(in crate::decoder) fn build_cuda_classic_grayscale_plans_from_referenced_wit
     let output_rect = referenced.output_rect();
     let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA classic grayscale tile output geometry is inconsistent",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA classic grayscale tile output geometry is inconsistent",
+            ),
+        ));
     }
     let mut plans = host_budget.try_vec_with_capacity(referenced.tiles().len())?;
     let mut next_payload = 0usize;
     for tile in referenced.tiles() {
-        let geometry = tile
-            .grayscale_geometry()
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA classic grayscale batch received a color tile",
-            })?;
+        let geometry = tile.grayscale_geometry().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA classic grayscale batch received a color tile",
+            ),
+        ))?;
         let span = tile.payload_records();
         if span.first_record != next_payload {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA classic grayscale tile payload spans are not contiguous",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA classic grayscale tile payload spans are not contiguous",
+                ),
+            ));
         }
-        let payload_end = span.end_record().ok_or(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA classic grayscale tile payload span overflows",
-        })?;
+        let payload_end = span.end_record().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(
+                "prepared CUDA classic grayscale tile payload span overflows",
+            ),
+        ))?;
         let payloads = referenced
             .payloads()
             .get(span.first_record..payload_end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA classic grayscale tile payload span is out of bounds",
-            })?;
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA classic grayscale tile payload span is out of bounds",
+                ),
+            ))?;
         let payload_start = shared_payload.len();
         let flatten_start = profile::profile_now(true);
         let cuda_plan =
@@ -267,9 +285,11 @@ pub(in crate::decoder) fn build_cuda_classic_grayscale_plans_from_referenced_wit
         next_payload = payload_end;
     }
     if next_payload != referenced.payloads().len() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA classic grayscale tile payloads contain trailing records",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "prepared CUDA classic grayscale tile payloads contain trailing records",
+            ),
+        ));
     }
     Ok(plans)
 }

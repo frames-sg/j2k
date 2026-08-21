@@ -6,12 +6,6 @@ use j2k_core::{BackendRequest, BatchInfrastructureError, PixelFormat};
 
 use super::{BatchOp, QueuedRequest};
 
-const AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM: u32 = 512;
-const AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_COUNT: usize = 64;
-pub(super) const AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM: u32 = 512;
-pub(super) const AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT: usize = 2;
-pub(super) const AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM: u32 = 1024;
-pub(super) const AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT: usize = 16;
 const REGION_SCALED_DIRECT_FORMATS: [PixelFormat; 5] = [
     PixelFormat::Gray8,
     PixelFormat::Gray16,
@@ -24,18 +18,12 @@ const REGION_SCALED_DIRECT_FORMATS: [PixelFormat; 5] = [
 pub(super) enum BatchRoute {
     Generic,
     AutoRegionScaledDirectCpu,
-    AutoRegionScaledDirectMetal,
-    AutoRepeatedRegionScaledDirectMetal,
 }
 
 pub(super) fn profile_route_label(route: BatchRoute) -> &'static str {
     match route {
         BatchRoute::Generic => "generic",
         BatchRoute::AutoRegionScaledDirectCpu => "auto_region_scaled_direct_cpu",
-        BatchRoute::AutoRegionScaledDirectMetal => "auto_region_scaled_direct_metal",
-        BatchRoute::AutoRepeatedRegionScaledDirectMetal => {
-            "auto_repeated_region_scaled_direct_metal"
-        }
     }
 }
 
@@ -116,18 +104,15 @@ fn coalesce_distinct_full_grayscale_metal_requests(
             && batch.requests.len() == 1
             && is_distinct_full_grayscale_metal_candidate(&batch.requests[0])
         {
-            let request = batch
-                .requests
-                .into_iter()
-                .next()
-                .expect("single-entry batch has request");
-            match request.fmt {
-                PixelFormat::Gray8 => push_request(&mut gray8, request)?,
-                PixelFormat::Gray16 => push_request(&mut gray16, request)?,
-                _ => push_group(
-                    &mut batches,
-                    GroupedRequests::generic(singleton_request(request)?),
-                )?,
+            for request in batch.requests {
+                match request.fmt {
+                    PixelFormat::Gray8 => push_request(&mut gray8, request)?,
+                    PixelFormat::Gray16 => push_request(&mut gray16, request)?,
+                    _ => push_group(
+                        &mut batches,
+                        GroupedRequests::generic(singleton_request(request)?),
+                    )?,
+                }
             }
         } else {
             push_group(&mut batches, batch)?;
@@ -153,29 +138,26 @@ fn coalesce_distinct_region_scaled_direct_metal_requests(
             && batch.requests.len() == 1
             && is_region_scaled_direct_batch_candidate(&batch.requests[0])
         {
-            let request = batch
-                .requests
-                .into_iter()
-                .next()
-                .expect("single-entry batch has request");
-            let Some(format_idx) = region_scaled_direct_format_index(request.fmt) else {
-                push_group(
-                    &mut batches,
-                    GroupedRequests::generic(singleton_request(request)?),
-                )?;
-                continue;
-            };
-            match request.backend {
-                BackendRequest::Metal => {
-                    push_request(&mut metal_by_format[format_idx], request)?;
+            for request in batch.requests {
+                let Some(format_idx) = region_scaled_direct_format_index(request.fmt) else {
+                    push_group(
+                        &mut batches,
+                        GroupedRequests::generic(singleton_request(request)?),
+                    )?;
+                    continue;
+                };
+                match request.backend {
+                    BackendRequest::Metal => {
+                        push_request(&mut metal_by_format[format_idx], request)?;
+                    }
+                    BackendRequest::Auto => {
+                        push_request(&mut auto_by_format[format_idx], request)?;
+                    }
+                    _ => push_group(
+                        &mut batches,
+                        GroupedRequests::generic(singleton_request(request)?),
+                    )?,
                 }
-                BackendRequest::Auto => {
-                    push_request(&mut auto_by_format[format_idx], request)?;
-                }
-                _ => push_group(
-                    &mut batches,
-                    GroupedRequests::generic(singleton_request(request)?),
-                )?,
             }
         } else {
             push_group(&mut batches, batch)?;
@@ -226,33 +208,7 @@ fn push_auto_region_scaled_direct_batches(
     batches: &mut Vec<GroupedRequests>,
     requests: Vec<QueuedRequest>,
 ) -> Result<(), BatchInfrastructureError> {
-    let Some(classification) = auto_region_scaled_direct_metal_classification(&requests) else {
-        push_coalesced_or_single_with_route(
-            batches,
-            requests,
-            BatchRoute::AutoRegionScaledDirectCpu,
-        )?;
-        return Ok(());
-    };
-
-    let mut metal_requests = Vec::new();
-    let mut cpu_requests = Vec::new();
-    for request in requests {
-        if request
-            .max_image_dim()
-            .is_some_and(|max_dim| max_dim >= classification.min_dim)
-        {
-            push_request(&mut metal_requests, request)?;
-        } else {
-            push_request(&mut cpu_requests, request)?;
-        }
-    }
-    push_coalesced_or_single_with_route(batches, metal_requests, classification.route)?;
-    push_coalesced_or_single_with_route(
-        batches,
-        cpu_requests,
-        BatchRoute::AutoRegionScaledDirectCpu,
-    )?;
+    push_coalesced_or_single_with_route(batches, requests, BatchRoute::AutoRegionScaledDirectCpu)?;
     Ok(())
 }
 
@@ -273,19 +229,16 @@ fn coalesce_distinct_full_color_metal_requests(
             && batch.requests.len() == 1
             && is_distinct_full_color_metal_candidate(&batch.requests[0])
         {
-            let request = batch
-                .requests
-                .into_iter()
-                .next()
-                .expect("single-entry batch has request");
-            match request.fmt {
-                PixelFormat::Rgb8 => push_request(&mut rgb8, request)?,
-                PixelFormat::Rgba8 => push_request(&mut rgba8, request)?,
-                PixelFormat::Rgb16 => push_request(&mut rgb16, request)?,
-                _ => push_group(
-                    &mut batches,
-                    GroupedRequests::generic(singleton_request(request)?),
-                )?,
+            for request in batch.requests {
+                match request.fmt {
+                    PixelFormat::Rgb8 => push_request(&mut rgb8, request)?,
+                    PixelFormat::Rgba8 => push_request(&mut rgba8, request)?,
+                    PixelFormat::Rgb16 => push_request(&mut rgb16, request)?,
+                    _ => push_group(
+                        &mut batches,
+                        GroupedRequests::generic(singleton_request(request)?),
+                    )?,
+                }
             }
         } else {
             push_group(&mut batches, batch)?;
@@ -308,22 +261,19 @@ fn coalesce_cpu_host_batches(
             && batch.requests.len() == 1
             && is_cpu_host_batch_candidate(&batch.requests[0])
         {
-            let request = batch
-                .requests
-                .into_iter()
-                .next()
-                .expect("single-entry batch has request");
-            if let Some(existing) = cpu_groups
-                .iter_mut()
-                .find(|existing| can_coalesce_cpu_host_batch(&existing[0], &request))
-            {
-                push_request(existing, request)?;
-            } else {
-                crate::batch_allocation::try_reserve_for_push(
-                    &mut cpu_groups,
-                    "J2K Metal CPU request groups",
-                )?;
-                cpu_groups.push(singleton_request(request)?);
+            for request in batch.requests {
+                if let Some(existing) = cpu_groups
+                    .iter_mut()
+                    .find(|existing| can_coalesce_cpu_host_batch(&existing[0], &request))
+                {
+                    push_request(existing, request)?;
+                } else {
+                    crate::batch_allocation::try_reserve_for_push(
+                        &mut cpu_groups,
+                        "J2K Metal CPU request groups",
+                    )?;
+                    cpu_groups.push(singleton_request(request)?);
+                }
             }
         } else {
             push_group(&mut coalesced, batch)?;
@@ -461,112 +411,6 @@ fn region_scaled_direct_format_index(fmt: PixelFormat) -> Option<usize> {
     REGION_SCALED_DIRECT_FORMATS
         .iter()
         .position(|candidate| *candidate == fmt)
-}
-
-pub(super) fn should_auto_use_metal_for_region_scaled_direct_batch(
-    requests: &[QueuedRequest],
-) -> bool {
-    auto_region_scaled_direct_metal_min_dim(requests).is_some()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoRegionScaledDirectMetalClassification {
-    min_dim: u32,
-    route: BatchRoute,
-}
-
-pub(super) fn auto_region_scaled_direct_metal_min_dim(requests: &[QueuedRequest]) -> Option<u32> {
-    auto_region_scaled_direct_metal_classification(requests)
-        .map(|classification| classification.min_dim)
-}
-
-fn auto_region_scaled_direct_metal_classification(
-    requests: &[QueuedRequest],
-) -> Option<AutoRegionScaledDirectMetalClassification> {
-    let first = requests.first()?;
-    let is_repeated_rgb = matches!(
-        first.fmt,
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
-    ) && can_decode_requests_as_repeated_region_scaled_batch(requests);
-    if matches!(
-        first.fmt,
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
-    ) {
-        if !is_repeated_rgb {
-            return None;
-        }
-        let repeated_rgb_eligible = requests
-            .iter()
-            .filter(|request| {
-                request.max_image_dim().is_some_and(|max_dim| {
-                    max_dim >= AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM
-                })
-            })
-            .count();
-        if repeated_rgb_eligible >= AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT {
-            return Some(AutoRegionScaledDirectMetalClassification {
-                min_dim: AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
-                route: BatchRoute::AutoRepeatedRegionScaledDirectMetal,
-            });
-        }
-    }
-
-    let mut count_512_class = 0usize;
-    let mut count_1024_class = 0usize;
-    for request in requests {
-        let Some(max_dim) = request.max_image_dim() else {
-            continue;
-        };
-        if max_dim >= AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM {
-            count_512_class += 1;
-        }
-        if max_dim >= AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM {
-            count_1024_class += 1;
-        }
-    }
-
-    if count_512_class >= AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_COUNT {
-        Some(AutoRegionScaledDirectMetalClassification {
-            min_dim: AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM,
-            route: BatchRoute::AutoRegionScaledDirectMetal,
-        })
-    } else if count_1024_class >= AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT {
-        Some(AutoRegionScaledDirectMetalClassification {
-            min_dim: AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
-            route: BatchRoute::AutoRegionScaledDirectMetal,
-        })
-    } else {
-        None
-    }
-}
-
-pub(super) fn can_decode_requests_as_repeated_region_scaled_batch(
-    requests: &[QueuedRequest],
-) -> bool {
-    let Some((first, rest)) = requests.split_first() else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest.iter().all(|request| {
-            is_region_scaled_direct_batch_candidate(first)
-                && is_region_scaled_direct_batch_candidate(request)
-                && first.fmt == request.fmt
-                && first.backend == request.backend
-                && same_input_bytes(first, request)
-                && matches!(
-                    (first.op, request.op),
-                    (
-                        BatchOp::RegionScaled {
-                            roi: first_roi,
-                            scale: first_scale
-                        },
-                        BatchOp::RegionScaled {
-                            roi: request_roi,
-                            scale: request_scale
-                        }
-                    ) if first_roi == request_roi && first_scale == request_scale
-                )
-        })
 }
 
 pub(super) fn can_decode_requests_as_repeated_full_grayscale_batch(

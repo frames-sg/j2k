@@ -3,10 +3,12 @@
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::PixelFormat;
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{
-    CudaDeviceBuffer, CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
-    CudaJpegBaselineEntropyEncodeBatchJob, CudaJpegBaselineEntropyEncodeJob,
+use j2k_cuda_jpeg_engine::{
+    CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
+    CudaJpegBaselineEntropyEncodeBatchJob, CudaJpegBaselineEntropyEncodeJob, JpegCudaEngine,
 };
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::CudaDeviceBuffer;
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::adapter::{
     encode_jpeg_baseline_gpu_batch_with_external_live,
@@ -108,9 +110,11 @@ pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
         .iter()
         .any(|tile| !tile.buffer.context().is_same_context(&input_context))
     {
-        return Err(crate::Error::UnsupportedCudaRequest {
-            reason: "CUDA JPEG batch encode requires every input buffer to share one CUDA context",
-        });
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "CUDA JPEG batch encode requires every input buffer to share one CUDA context",
+            ),
+        ));
     }
     for &tile in tiles {
         preflight_jpeg_baseline_gpu_encode_tile(cuda_gpu_tile(tile), options, JpegBackend::Cuda)
@@ -205,9 +209,8 @@ impl<'a> JpegBaselineGpuEncodeHostAdapter<JpegBaselineCudaEncodeTile<'a>>
         tables: &JpegBaselineEncodeTables,
         plan: JpegBaselineGpuEncodeTilePlan,
     ) -> Result<Vec<u8>, Self::Error> {
-        tile.buffer
-            .context()
-            .encode_jpeg_baseline_entropy_with_external_live(
+        JpegCudaEngine::new(&tile.buffer.context())
+            .encode_baseline_entropy_with_external_live(
                 &CudaJpegBaselineEntropyEncodeJob {
                     input: tile.buffer,
                     input_offset: tile.byte_offset,
@@ -245,10 +248,8 @@ impl<'a> JpegBaselineGpuEncodeHostAdapter<JpegBaselineCudaEncodeTile<'a>>
             JpegBaselineGpuEncodeParams,
             CudaJpegBaselineEncodeParams,
         >(neutral_param_capacity, params.capacity())?;
-        tiles[0]
-            .buffer
-            .context()
-            .encode_jpeg_baseline_entropy_batch_with_external_live(
+        JpegCudaEngine::new(&tiles[0].buffer.context())
+            .encode_baseline_entropy_batch_with_external_live(
                 &CudaJpegBaselineEntropyEncodeBatchJob {
                     input: tiles[0].buffer,
                     params,

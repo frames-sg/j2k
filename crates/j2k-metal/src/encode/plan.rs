@@ -2,8 +2,12 @@
 
 use j2k::{J2kBlockCodingMode, J2kLosslessEncodeOptions, J2kProgressionOrder};
 use j2k_native::{EncodeProgressionOrder, J2kSubBandType};
+use j2k_types::encode_geometry::{
+    code_block_exponent, encode_dwt_level_dimensions, lossless_decomposition_levels,
+    reversible_subband_total_bitplanes, CodeBlockGeometryError, EncodeDwtLevelDimensions,
+};
 
-use crate::compute;
+use crate::engine as compute;
 
 #[derive(Clone, Copy)]
 pub(super) struct LosslessSubbandPlan {
@@ -41,50 +45,6 @@ impl LosslessDeviceEncodePlan {
 
 pub(super) const RESIDENT_CLASSIC_CODE_BLOCK_EDGE: u32 = 32;
 
-fn lossless_device_encode_levels(width: u32, height: u32, options: J2kLosslessEncodeOptions) -> u8 {
-    const MIN_LOSSLESS_DWT_DIMENSION: u32 = 64;
-    let levels = if matches!(
-        options.progression,
-        J2kProgressionOrder::Rpcl | J2kProgressionOrder::Pcrl | J2kProgressionOrder::Cprl
-    ) {
-        let mut levels = 0u8;
-        let mut w = width;
-        let mut h = height;
-        let max_levels = if width.min(height) <= 1 {
-            0
-        } else {
-            u8::try_from(width.min(height).ilog2()).expect("u32 ilog2 result fits in u8")
-        };
-        while w.min(h) > MIN_LOSSLESS_DWT_DIMENSION && levels < max_levels {
-            w = w.div_ceil(2);
-            h = h.div_ceil(2);
-            levels = levels.saturating_add(1);
-        }
-        levels
-    } else {
-        u8::from(width.min(height) >= MIN_LOSSLESS_DWT_DIMENSION)
-    };
-
-    options
-        .max_decomposition_levels
-        .map_or(levels, |requested| {
-            let max_levels = if width.min(height) <= 1 {
-                0
-            } else {
-                u8::try_from(width.min(height).ilog2()).expect("u32 ilog2 result fits in u8")
-            };
-            requested.min(max_levels)
-        })
-}
-
-#[derive(Clone, Copy)]
-struct LosslessDwtLevelPlan {
-    low_width: u32,
-    low_height: u32,
-    high_width: u32,
-    high_height: u32,
-}
-
 #[derive(Clone, Copy)]
 struct LosslessSubbandInput {
     component: u32,
@@ -97,28 +57,17 @@ struct LosslessSubbandInput {
 }
 
 fn lossless_code_block_exp(edge: u32, axis: &str) -> Result<u8, crate::Error> {
-    if edge < 4 || !edge.is_power_of_two() {
-        return Err(crate::Error::MetalKernel {
-            message: format!(
+    code_block_exponent(edge).map_err(|error| crate::Error::MetalKernel {
+        message: match error {
+            CodeBlockGeometryError::DimensionTooSmall
+            | CodeBlockGeometryError::DimensionNotPowerOfTwo => format!(
                 "J2K Metal resident encode {axis} code-block edge must be a power of two >= 4"
             ),
-        });
-    }
-    let exp = edge
-        .trailing_zeros()
-        .checked_sub(2)
-        .ok_or_else(|| crate::Error::MetalKernel {
-            message: format!("J2K Metal resident encode {axis} code-block exponent underflow"),
-        })?;
-    if exp > 8 {
-        return Err(crate::Error::MetalKernel {
-            message: format!(
+            CodeBlockGeometryError::StoredExponentTooLarge
+            | CodeBlockGeometryError::AreaTooLarge => format!(
                 "J2K Metal resident encode {axis} code-block edge exceeds JPEG 2000 COD range"
             ),
-        });
-    }
-    u8::try_from(exp).map_err(|_| crate::Error::MetalKernel {
-        message: format!("J2K Metal resident encode {axis} code-block exponent exceeds u8"),
+        },
     })
 }
 
@@ -188,26 +137,13 @@ fn lossless_dwt_level_plans(
     width: u32,
     height: u32,
     num_decomposition_levels: u8,
-) -> Result<Vec<LosslessDwtLevelPlan>, crate::Error> {
+) -> Result<Vec<EncodeDwtLevelDimensions>, crate::Error> {
     let mut levels = crate::batch_allocation::try_vec(
         usize::from(num_decomposition_levels),
         "J2K Metal resident encode DWT level plans",
     )?;
-    let mut current_width = width;
-    let mut current_height = height;
-    for _ in 0..num_decomposition_levels {
-        let low_width = current_width.div_ceil(2);
-        let low_height = current_height.div_ceil(2);
-        let high_width = current_width / 2;
-        let high_height = current_height / 2;
-        levels.push(LosslessDwtLevelPlan {
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        });
-        current_width = low_width;
-        current_height = low_height;
+    for level in encode_dwt_level_dimensions(width, height, num_decomposition_levels) {
+        levels.push(level);
     }
     Ok(levels)
 }
@@ -238,7 +174,12 @@ pub(super) fn lossless_device_encode_plan(
     }
     let code_block_width_exp = lossless_code_block_exp(code_block_width, "width")?;
     let code_block_height_exp = lossless_code_block_exp(code_block_height, "height")?;
-    let num_decomposition_levels = lossless_device_encode_levels(width, height, options);
+    let num_decomposition_levels = lossless_decomposition_levels(
+        width,
+        height,
+        options.progression.packetization_order(),
+        options.max_decomposition_levels,
+    );
     let progression_order = match options.progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
         J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
@@ -271,14 +212,19 @@ pub(super) fn lossless_device_encode_plan(
                     width,
                     height,
                     sub_band_type: J2kSubBandType::LowLow,
-                    total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_sub(1),
+                    total_bitplanes: reversible_subband_total_bitplanes(
+                        bit_depth,
+                        guard_bits,
+                        J2kSubBandType::LowLow,
+                    ),
                 },
             )?;
             component_packets.push(base_packet);
         } else {
-            let final_ll = dwt_levels
-                .last()
-                .expect("nonzero DWT level count has a final LL level");
+            let final_ll = dwt_levels.last().ok_or_else(|| crate::Error::MetalKernel {
+                message: "J2K Metal resident encode DWT plan is missing its final LL level"
+                    .to_string(),
+            })?;
             push_lossless_subband_plan(
                 &mut base_packet,
                 &mut code_blocks,
@@ -292,7 +238,11 @@ pub(super) fn lossless_device_encode_plan(
                     width: final_ll.low_width,
                     height: final_ll.low_height,
                     sub_band_type: J2kSubBandType::LowLow,
-                    total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_sub(1),
+                    total_bitplanes: reversible_subband_total_bitplanes(
+                        bit_depth,
+                        guard_bits,
+                        J2kSubBandType::LowLow,
+                    ),
                 },
             )?;
             component_packets.push(base_packet);
@@ -314,7 +264,11 @@ pub(super) fn lossless_device_encode_plan(
                         width: level.high_width,
                         height: level.low_height,
                         sub_band_type: J2kSubBandType::HighLow,
-                        total_bitplanes: guard_bits.saturating_add(bit_depth),
+                        total_bitplanes: reversible_subband_total_bitplanes(
+                            bit_depth,
+                            guard_bits,
+                            J2kSubBandType::HighLow,
+                        ),
                     },
                 )?;
                 push_lossless_subband_plan(
@@ -330,7 +284,11 @@ pub(super) fn lossless_device_encode_plan(
                         width: level.low_width,
                         height: level.high_height,
                         sub_band_type: J2kSubBandType::LowHigh,
-                        total_bitplanes: guard_bits.saturating_add(bit_depth),
+                        total_bitplanes: reversible_subband_total_bitplanes(
+                            bit_depth,
+                            guard_bits,
+                            J2kSubBandType::LowHigh,
+                        ),
                     },
                 )?;
                 push_lossless_subband_plan(
@@ -346,7 +304,11 @@ pub(super) fn lossless_device_encode_plan(
                         width: level.high_width,
                         height: level.high_height,
                         sub_band_type: J2kSubBandType::HighHigh,
-                        total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_add(1),
+                        total_bitplanes: reversible_subband_total_bitplanes(
+                            bit_depth,
+                            guard_bits,
+                            J2kSubBandType::HighHigh,
+                        ),
                     },
                 )?;
                 component_packets.push(detail_packet);
@@ -390,6 +352,47 @@ pub(super) fn lossless_device_encode_plan(
 #[cfg(test)]
 mod tests {
     use super::lossless_device_encode_plan;
+    use j2k::{
+        j2k_lossless_decomposition_levels_for_options, J2kLosslessEncodeOptions,
+        J2kLosslessSamples, J2kProgressionOrder,
+    };
+
+    fn assert_plan_matches_facade(
+        width: u32,
+        height: u32,
+        progression: J2kProgressionOrder,
+        maximum: Option<u8>,
+    ) {
+        let sample_count =
+            usize::try_from(u64::from(width) * u64::from(height)).expect("fixture sample count");
+        let pixels = vec![0; sample_count];
+        let samples = J2kLosslessSamples::new(&pixels, width, height, 1, 8, false)
+            .expect("valid fixture samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_progression(progression)
+            .with_max_decomposition_levels(maximum);
+        let expected = j2k_lossless_decomposition_levels_for_options(samples, options);
+        let plan = lossless_device_encode_plan(width, height, 1, 8, options, 32, 32)
+            .expect("plan result")
+            .expect("supported plan");
+        assert_eq!(plan.num_decomposition_levels, expected);
+    }
+
+    #[test]
+    fn resident_geometry_matches_facade_at_policy_boundaries() {
+        for progression in [
+            J2kProgressionOrder::Lrcp,
+            J2kProgressionOrder::Rlcp,
+            J2kProgressionOrder::Rpcl,
+            J2kProgressionOrder::Pcrl,
+            J2kProgressionOrder::Cprl,
+        ] {
+            assert_plan_matches_facade(63, 128, progression, Some(u8::MAX));
+            assert_plan_matches_facade(64, 64, progression, None);
+            assert_plan_matches_facade(128, 128, progression, Some(5));
+            assert_plan_matches_facade(512, 512, progression, None);
+        }
+    }
 
     #[test]
     fn code_block_ownership_transfer_preserves_allocation_without_clone() {

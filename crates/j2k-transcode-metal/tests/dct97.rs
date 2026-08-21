@@ -305,6 +305,8 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
     assert!(timings.pack_upload_us > 0);
     assert!(timings.idct_row_lift_us > 0);
     assert!(timings.column_lift_us > 0);
+    // The retained staged P12 route materializes four resident subbands per job.
+    assert_eq!(timings.resident_dwt_handoff_count, jobs.len() * 4);
     assert!(timings.quantize_codeblock_us > 0);
     assert!(timings.readback_us > 0);
 }
@@ -371,6 +373,42 @@ fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scal
 
     assert_prequantized_component_layout_eq(&actual[0], &expected);
     assert_prequantized_component_coefficients_close(&actual[0], &expected, 1);
+}
+
+#[test]
+fn auto_metal_dct97_codeblock_batch_declines_above_staged_axis_for_cpu_fallback() {
+    let blocks = structured_blocks_with_offset(129, 1, 0.0);
+    let jobs = [DctGridToHtj2k97CodeBlockJob {
+        blocks: &blocks,
+        block_cols: 129,
+        block_rows: 1,
+        width: 1025,
+        height: 8,
+        x_rsiz: 1,
+        y_rsiz: 1,
+    }];
+    let options = Htj2k97CodeBlockOptions {
+        bit_depth: 8,
+        guard_bits: 2,
+        code_block_width_exp: 4,
+        code_block_height_exp: 4,
+        irreversible_quantization_scale: 1.0,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales::default(),
+    };
+    let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
+
+    let output = accelerator
+        .dct_grid_to_htj2k97_codeblock_batch(&jobs, options)
+        .expect("Auto oversized-axis decision is not a backend failure");
+
+    assert!(
+        output.is_none(),
+        "oversized staged axes must use CPU fallback"
+    );
+    assert_eq!(accelerator.dwt97_batch_attempts(), 1);
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 0);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 1);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 0);
 }
 
 #[test]

@@ -36,6 +36,18 @@ fn adapter_device_plan_keeps_fast_420_shape_information() {
 }
 
 #[test]
+fn adapter_device_plan_keeps_restart_coded_fast_420_shape_information() {
+    let bytes = j2k_test_support::baseline_420_restart_32x16_jpeg();
+    let decoder = Decoder::new(&bytes).expect("restart-coded decoder");
+    let plan = j2k_jpeg::adapter::build_device_plan(&decoder, 4).expect("device plan");
+
+    assert_eq!(plan.restart_interval, Some(2));
+    assert!(plan.matches_fast_420);
+    assert!(!plan.matches_fast_422);
+    assert!(!plan.matches_fast_444);
+}
+
+#[test]
 fn adapter_device_plan_keeps_fast_422_shape_information() {
     let decoder = Decoder::new(BASELINE_422).expect("decoder");
     let plan = j2k_jpeg::adapter::build_device_plan(&decoder, 4).expect("device plan");

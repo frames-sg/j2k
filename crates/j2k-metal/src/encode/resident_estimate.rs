@@ -5,7 +5,7 @@ use j2k::J2kBlockCodingMode;
 use super::{
     LosslessDeviceEncodePlan, MetalEncodeInputStaging, ResidentLosslessBufferEncodeMetadata,
 };
-use crate::compute;
+use crate::engine as compute;
 
 pub(super) fn checked_add_bytes(lhs: usize, rhs: usize) -> usize {
     lhs.saturating_add(rhs)

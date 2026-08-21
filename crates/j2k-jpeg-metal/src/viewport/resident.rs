@@ -49,7 +49,7 @@ fn compose_viewport_to_resizable_metal_buffer_with_external_live(
 ) -> Result<Surface, Error> {
     validate_resident_viewport_composition_request(decoder, workload, external_live_bytes)?;
     output.ensure_rgb8_tiles(session, workload.viewport_dims, 1)?;
-    crate::compute::compose_rgb_viewport_from_regions_into_output_with_session(
+    crate::compute::viewport_compose::compose_rgb_viewport_from_regions_into_output_with_session(
         decoder,
         pool,
         workload,
@@ -93,7 +93,7 @@ fn compose_viewport_to_resizable_metal_textures_with_external_live(
 ) -> Result<MetalTextureTile, Error> {
     validate_resident_viewport_composition_request(decoder, workload, external_live_bytes)?;
     output.ensure_rgba8_tiles(session, workload.viewport_dims, 1)?;
-    crate::compute::compose_rgb_viewport_from_regions_into_textures_with_session(
+    crate::compute::viewport_compose::compose_rgb_viewport_from_regions_into_textures_with_session(
         decoder,
         pool,
         workload,
@@ -238,9 +238,7 @@ fn decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
         decoder.retained_host_bytes()?,
     )?;
     if !is_contiguous_viewport_workload(workload) {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal reusable viewport output currently requires a contiguous viewport workload",
-        });
+        return Err(Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch("JPEG Metal reusable viewport output currently requires a contiguous viewport workload")));
     }
 
     let source = viewport_source_bounds(workload);
@@ -251,16 +249,16 @@ fn decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
         .with_output_slot(0);
     request.set_execution_owner_baseline(0, decoder.retained_host_bytes()?);
     let requests = [request];
-    let mut surfaces = crate::compute::decode_region_scaled_rgb8_batch_into_output_with_session(
+    let mut surfaces = crate::compute::batch_entry::decode_region_scaled_rgb8_batch_into_output_with_session(
         &requests, output, session,
     )?
-    .ok_or(Error::UnsupportedMetalRequest {
-        reason: "JPEG Metal reusable viewport output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
-    })?;
+    .ok_or(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_sampling("JPEG Metal reusable viewport output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs")))?;
     let Some(surface) = surfaces.pop() else {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal reusable viewport output did not produce a surface",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "JPEG Metal reusable viewport output did not produce a surface",
+            ),
+        ));
     };
     debug_assert!(surfaces.is_empty());
     surface
@@ -279,9 +277,7 @@ fn decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
         decoder.retained_host_bytes()?,
     )?;
     if !is_contiguous_viewport_workload(workload) {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal reusable viewport texture output currently requires a contiguous viewport workload",
-        });
+        return Err(Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch("JPEG Metal reusable viewport texture output currently requires a contiguous viewport workload")));
     }
 
     let source = viewport_source_bounds(workload);
@@ -292,16 +288,16 @@ fn decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
         .with_output_slot(0);
     request.set_execution_owner_baseline(0, decoder.retained_host_bytes()?);
     let requests = [request];
-    let mut tiles = crate::compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
+    let mut tiles = crate::compute::batch_entry::decode_region_scaled_rgb8_batch_into_textures_with_session(
         &requests, output, session,
     )?
-    .ok_or(Error::UnsupportedMetalRequest {
-        reason: "JPEG Metal reusable viewport texture output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
-    })?;
+    .ok_or(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_sampling("JPEG Metal reusable viewport texture output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs")))?;
     let Some(tile) = tiles.pop() else {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal reusable viewport texture output did not produce a tile",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "JPEG Metal reusable viewport texture output did not produce a tile",
+            ),
+        ));
     };
     debug_assert!(tiles.is_empty());
     tile

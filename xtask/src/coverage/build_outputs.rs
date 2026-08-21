@@ -36,10 +36,16 @@ pub(super) struct BuildOutputEvidence {
 }
 
 impl BuildOutputEvidence {
+    #[cfg(test)]
     pub(super) fn capture(mut target: CurrentBuildTarget) -> Result<Self, String> {
+        let evidence = Self::snapshot(&target)?;
+        target.cleanup()?;
+        Ok(evidence)
+    }
+
+    pub(super) fn snapshot(target: &CurrentBuildTarget) -> Result<Self, String> {
         let target_dir = target.path()?.to_path_buf();
         let outputs = scan_outputs(&target_dir)?;
-        target.cleanup()?;
         Ok(Self {
             target_dir,
             outputs,

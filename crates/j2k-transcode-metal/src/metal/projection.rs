@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_command_buffer, checked_compute_command_encoder, commit_and_wait, dispatch_band,
-    dispatch_projection_batch_bands, dwt97_batch_blocks_buffer, dwt97_blocks_buffer, mtl_size,
-    output_buffer, projection_batch_output_buffers, projection_batch_shape,
-    projection_batch_weight_buffers, read_f32_buffer, read_projected_batch_outputs, u32_param,
-    upload_sparse_rows, BandGeometry, Buffer, ComputeCommandEncoderRef, DctGridToDwt97Job, MTLSize,
-    MetalRuntime, MetalTranscodeError, SparseWeightRow, TranscodeComputeEncoderExt,
-    DWT97_STAGED_THREADS_PER_GROUP,
+    checked_command_buffer, checked_compute_command_encoder, checked_dwt_level_shape,
+    commit_and_wait, dispatch_band, dispatch_projection_batch_bands, dwt97_batch_blocks_buffer,
+    dwt97_blocks_buffer, mtl_size, output_buffer, projection_batch_output_buffers,
+    projection_batch_shape, projection_batch_weight_buffers, read_f32_buffer,
+    read_projected_batch_outputs, u32_param, upload_sparse_rows, BandGeometry, Buffer,
+    ComputeCommandEncoderRef, DctGridToDwt97Job, MTLSize, MetalRuntime, MetalTranscodeError,
+    SparseWeightRow, TranscodeComputeEncoderExt, DWT97_STAGED_THREADS_PER_GROUP,
 };
 use objc2_foundation::NSString;
 use objc2_metal::{MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _};
@@ -50,9 +50,9 @@ pub(super) fn bind_projection_input_buffers(
     encoder: &ComputeCommandEncoderRef,
     blocks: &Buffer,
     idct_basis: &Buffer,
-) {
-    encoder.set_buffer(0, Some(blocks), 0);
-    encoder.set_buffer(5, Some(idct_basis), 0);
+) -> Result<(), MetalTranscodeError> {
+    encoder.set_buffer(0, Some(blocks), 0)?;
+    encoder.set_buffer(5, Some(idct_basis), 0)
 }
 
 #[inline]
@@ -61,12 +61,12 @@ pub(super) fn bind_projection_band_buffers(
     x_weights: (&Buffer, &Buffer),
     y_weights: (&Buffer, &Buffer),
     output: &Buffer,
-) {
-    encoder.set_buffer(1, Some(x_weights.0), 0);
-    encoder.set_buffer(2, Some(x_weights.1), 0);
-    encoder.set_buffer(3, Some(y_weights.0), 0);
-    encoder.set_buffer(4, Some(y_weights.1), 0);
-    encoder.set_buffer(6, Some(output), 0);
+) -> Result<(), MetalTranscodeError> {
+    encoder.set_buffer(1, Some(x_weights.0), 0)?;
+    encoder.set_buffer(2, Some(x_weights.1), 0)?;
+    encoder.set_buffer(3, Some(y_weights.0), 0)?;
+    encoder.set_buffer(4, Some(y_weights.1), 0)?;
+    encoder.set_buffer(6, Some(output), 0)
 }
 
 #[derive(Clone, Copy)]
@@ -120,10 +120,11 @@ pub(super) fn dispatch_projected_bands_with_runtime(
     let width = u32_param(job.width, job.unsupported_grid)?;
     let height = u32_param(job.height, job.unsupported_grid)?;
     let block_cols = u32_param(job.block_cols, job.unsupported_grid)?;
-    let low_width = job.width.div_ceil(2);
-    let high_width = job.width / 2;
-    let low_height = job.height.div_ceil(2);
-    let high_height = job.height / 2;
+    let level = checked_dwt_level_shape(job.width, job.height, job.unsupported_grid)?;
+    let low_width = level.low_width;
+    let high_width = level.high_width;
+    let low_height = level.low_height;
+    let high_height = level.high_height;
     let ll_len = checked_band_len(low_width, low_height, job.unsupported_grid)?;
     let hl_len = checked_band_len(high_width, low_height, job.unsupported_grid)?;
     let lh_len = checked_band_len(low_width, high_height, job.unsupported_grid)?;
@@ -152,7 +153,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
         MetalTranscodeError::support("Metal projected-band compute encoder creation", error)
     })?;
     encoder.setComputePipelineState(&runtime.dct_project_band);
-    bind_projection_input_buffers(&encoder, &blocks, &runtime.idct_basis);
+    bind_projection_input_buffers(&encoder, &blocks, &runtime.idct_basis)?;
 
     dispatch_band(
         &encoder,
@@ -166,7 +167,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
             band_width: u32_param(low_width, job.unsupported_grid)?,
             band_height: u32_param(low_height, job.unsupported_grid)?,
         },
-    );
+    )?;
     dispatch_band(
         &encoder,
         (&x_high_rows, &x_high_taps),
@@ -179,7 +180,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
             band_width: u32_param(high_width, job.unsupported_grid)?,
             band_height: u32_param(low_height, job.unsupported_grid)?,
         },
-    );
+    )?;
     dispatch_band(
         &encoder,
         (&x_low_rows, &x_low_taps),
@@ -192,7 +193,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
             band_width: u32_param(low_width, job.unsupported_grid)?,
             band_height: u32_param(high_height, job.unsupported_grid)?,
         },
-    );
+    )?;
     dispatch_band(
         &encoder,
         (&x_high_rows, &x_high_taps),
@@ -205,7 +206,7 @@ pub(super) fn dispatch_projected_bands_with_runtime(
             band_width: u32_param(high_width, job.unsupported_grid)?,
             band_height: u32_param(high_height, job.unsupported_grid)?,
         },
-    );
+    )?;
 
     encoder.endEncoding();
     commit_and_wait(&command_buffer).map_err(|error| {

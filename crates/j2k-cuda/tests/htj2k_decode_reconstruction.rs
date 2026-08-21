@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables};
+use j2k_cuda_j2k_engine::{CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine};
+use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
     decode_ht_code_block_scalar, decode_ht_code_block_scalar_with_workspace_midpoint,
@@ -13,7 +14,7 @@ use j2k_native::{
 fn decode_cuda(payload: &[u8], job: CudaHtj2kCodeBlockJob) -> Vec<f32> {
     let output_words = job.width as usize * job.height as usize;
     let context = CudaContext::system_default().expect("CUDA context");
-    let output = context
+    let output = J2kCudaEngine::new(&context)
         .decode_htj2k_codeblocks(
             payload,
             &[job],

@@ -66,6 +66,18 @@ pub trait DeviceSurface {
     }
 }
 
+/// Completed codestream bytes resident in backend-visible memory.
+pub trait DeviceCodestream {
+    /// Backend-visible range covering the codestream capacity.
+    fn codestream_memory_range(&self) -> Option<DeviceMemoryRange>;
+    /// Total byte length of the backing allocation, when known.
+    fn codestream_allocation_len(&self) -> Option<usize>;
+    /// Number of valid codestream bytes.
+    fn codestream_byte_len(&self) -> usize;
+    /// Writable capacity beginning at the memory range offset.
+    fn codestream_capacity(&self) -> usize;
+}
+
 /// Submitted device decode operation that can be waited on for completion.
 pub trait DeviceSubmission {
     /// Completed output type.

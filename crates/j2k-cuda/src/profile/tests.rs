@@ -32,11 +32,16 @@ fn detailed_decode_profile_separates_wall_and_stage_sum() {
     report.detail.wall_total_us = 100;
     report.detail.table_upload_us = 13;
     report.detail.payload_upload_us = 17;
+    report.detail.idwt_final_interleave_horizontal_us = 3;
+    report.detail.idwt_final_vertical_us = 5;
     report.detail.ht_dispatch_count = 2;
     finalize_decode_total_us(&mut report);
 
     assert_eq!(report.detail.wall_total_us, 100);
     assert_eq!(report.detail.stage_sum_us, report.total_us);
+    assert_eq!(report.idwt_us, 8);
+    assert_eq!(report.detail.idwt_final_interleave_horizontal_us, 3);
+    assert_eq!(report.detail.idwt_final_vertical_us, 5);
     assert_eq!(report.detail.ht_dispatch_count, 2);
 }
 

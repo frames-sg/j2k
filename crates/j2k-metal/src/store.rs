@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use crate::compute;
+use crate::engine as compute;
 #[cfg(target_os = "macos")]
 use crate::metal_types::Buffer;
 use j2k_native::{HtCodeBlockDecoder, J2kStoreComponentJob, Result};
@@ -62,7 +62,7 @@ fn supports_metal_store(job: &J2kStoreComponentJob<'_>) -> bool {
 mod tests {
     use super::MetalStoreDecoder;
     #[cfg(target_os = "macos")]
-    use crate::compute;
+    use crate::engine as compute;
     use j2k_native::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };

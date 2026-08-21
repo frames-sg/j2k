@@ -110,7 +110,7 @@ exact release-SHA publication run.
 
 ### `fearless_simd` 0.7 upgrade validation - 2026-08-13
 
-The staged 0.9.1 dependency graph resolves `fearless_simd 0.7.0` in the
+The staged 0.10.0 dependency graph resolves `fearless_simd 0.7.0` in the
 workspace and every affected fuzz lockfile. `cargo xtask release-cpu` passed
 with that version on the Apple M4 Pro AArch64 host, the Linux x86-64 VM, and
 the native Windows x86-64 MSVC host described above.
@@ -138,8 +138,8 @@ upgrade.
 
 ## Fixed Auto-routing promotion evidence
 
-`BackendRequest::Auto` uses committed thresholds; it does not calibrate on a
-user's machine. A hybrid workload cell may be promoted only after CPU, hybrid,
+`BackendRequest::Auto` uses generated, checked-in promotion tables; it does not
+calibrate on a user's machine. A hybrid workload cell may be promoted only after CPU, hybrid,
 and any supported strict-device route produce identical bytes on the same
 manifest-pinned external input. Its end-to-end median must be at least 10%
 faster than every competitor and its Criterion 95% confidence interval must not
@@ -169,6 +169,14 @@ promotion. It rejects missing operations or external cases, route/output
 mismatches, unsafe Criterion paths, unsupported confidence levels, changed
 estimate files, and candidate/platform inconsistencies. The verified artifact
 hash covers the raw evidence, manifest, and every referenced estimate.
+
+Accepted development artifacts and their exact promoted workload identities
+are recorded in `docs/routing-promotion-evidence.json`. Regenerate the
+production Rust tables with `cargo xtask promotion-codegen`; CI and local
+validation use `cargo xtask promotion-codegen --check` to reject stale output.
+The generator validates the manifest schema, backend ownership, SHA-256 values,
+six-operation evidence coverage, workload identity, boundaries, and duplicate
+cells. Auto routes without a verifier-accepted artifact stay on CPU.
 
 A local two-input Metal smoke on August 4, 2026 exercised the pipeline but was
 not a representative external release corpus. It promoted zero cells: the

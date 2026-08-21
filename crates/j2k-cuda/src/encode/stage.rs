@@ -8,7 +8,9 @@ use j2k::{
     J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaError, CudaHtj2kEncodeResources, CudaJ2kQuantizeJob};
+use j2k_cuda_j2k_engine::{CudaHtj2kEncodeResources, CudaJ2kQuantizeJob};
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::{CudaContext, CudaError};
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
@@ -92,7 +94,7 @@ pub struct CudaEncodeStageAccelerator {
         not(feature = "cuda-runtime"),
         expect(dead_code, reason = "profiling state is used only by the CUDA runtime")
     )]
-    collect_profile: bool,
+    pub(super) collect_profile: bool,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
     forward_ict_attempts: usize,
@@ -104,15 +106,16 @@ pub struct CudaEncodeStageAccelerator {
     tier1_code_block_attempts: usize,
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
-    prefer_cpu_forward_rct: bool,
+    pub(super) prefer_cpu_forward_rct: bool,
     prefer_cpu_ht_subband: bool,
     prefer_cpu_quantize_subband: bool,
     prefer_cpu_packetization: bool,
     ht_subband_maximum_cleanup_magnitude: Option<u64>,
     ht_tile_required_magnitude_bound: Option<u8>,
-    deinterleave_dispatches: usize,
-    forward_rct_dispatches: usize,
-    forward_ict_dispatches: usize,
+    #[cfg(feature = "cuda-runtime")]
+    pub(super) deinterleave_dispatches: usize,
+    pub(super) forward_rct_dispatches: usize,
+    pub(super) forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
     #[cfg(feature = "cuda-runtime")]
@@ -123,7 +126,7 @@ pub struct CudaEncodeStageAccelerator {
     tier1_code_block_dispatches: usize,
     ht_code_block_dispatches: usize,
     packetization_dispatches: usize,
-    deinterleave_us: u128,
+    pub(super) deinterleave_us: u128,
     mct_us: u128,
     dwt_us: u128,
     quantize_us: u128,
@@ -241,7 +244,7 @@ impl CudaEncodeStageAccelerator {
     }
 
     #[cfg(feature = "cuda-runtime")]
-    fn cuda_context(&mut self) -> CudaStageResult<Option<CudaContext>> {
+    pub(super) fn cuda_context(&mut self) -> CudaStageResult<Option<CudaContext>> {
         if self.context.is_none() {
             match CudaContext::system_default() {
                 Ok(context) => self.context = Some(context),
@@ -263,7 +266,7 @@ impl CudaEncodeStageAccelerator {
         context: &CudaContext,
     ) -> CudaStageResult<Arc<CudaHtj2kEncodeResources>> {
         if self.encode_resources.is_none() {
-            let resources = context
+            let resources = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
                 .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
                 .map_err(|error| runtime_error("upload CUDA HTJ2K encode resources", error))?;
             self.encode_resources = Some(Arc::new(resources));
@@ -490,8 +493,13 @@ fn ht_subband_code_block_count(job: J2kHtSubbandEncodeJob<'_>) -> CudaStageResul
 #[doc(hidden)]
 impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        #[cfg(feature = "cuda-runtime")]
+        let deinterleave = self.deinterleave_dispatches;
+        #[cfg(not(feature = "cuda-runtime"))]
+        let deinterleave = 0;
+
         J2kEncodeDispatchReport {
-            deinterleave: self.deinterleave_dispatches,
+            deinterleave,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: self.forward_ict_dispatches,
             forward_dwt53: self.forward_dwt53_dispatches,
@@ -536,7 +544,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 &context,
                 self.collect_profile,
                 || {
-                    context.j2k_deinterleave_to_f32(
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_deinterleave_to_f32(
                         job.pixels,
                         job.num_pixels,
                         num_components,
@@ -585,7 +593,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 "j2k.j2k.cuda.encode.rct",
                 &context,
                 self.collect_profile,
-                || context.j2k_forward_rct(job.plane0, job.plane1, job.plane2),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
+                        .j2k_forward_rct(job.plane0, job.plane1, job.plane2)
+                },
             )
             .map_err(|error| runtime_error("apply forward RCT", error))?;
             self.forward_rct_dispatches = self
@@ -617,7 +628,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 "j2k.j2k.cuda.encode.ict",
                 &context,
                 self.collect_profile,
-                || context.j2k_forward_ict(job.plane0, job.plane1, job.plane2),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
+                        .j2k_forward_ict(job.plane0, job.plane1, job.plane2)
+                },
             )
             .map_err(|error| runtime_error("apply forward ICT", error))?;
             self.forward_ict_dispatches = self
@@ -660,7 +674,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 "j2k.j2k.cuda.encode.dwt53",
                 &context,
                 self.collect_profile,
-                || context.j2k_forward_dwt53(job.samples, job.width, job.height, job.num_levels),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt53(
+                        job.samples,
+                        job.width,
+                        job.height,
+                        job.num_levels,
+                    )
+                },
             )
             .map_err(|error| runtime_error("apply forward 5/3 DWT", error))?;
             let dispatches = output.execution().kernel_dispatches();
@@ -706,7 +727,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 "j2k.j2k.cuda.encode.dwt97",
                 &context,
                 self.collect_profile,
-                || context.j2k_forward_dwt97(job.samples, job.width, job.height, job.num_levels),
+                || {
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt97(
+                        job.samples,
+                        job.width,
+                        job.height,
+                        job.num_levels,
+                    )
+                },
             )
             .map_err(|error| runtime_error("apply forward 9/7 DWT", error))?;
             let dispatches = output.execution().kernel_dispatches();
@@ -754,7 +782,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 &context,
                 self.collect_profile,
                 || {
-                    context.j2k_quantize_subband(
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_quantize_subband(
                         job.coefficients,
                         CudaJ2kQuantizeJob {
                             step_exponent: job.step_exponent,
@@ -975,6 +1003,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             emit_cuda_encode_route!(
                 ("op", "encode_htj2k_tile"),
                 ("decision", "cuda_dispatch"),
+                ("input_route", "separate_stages"),
                 ("components", job.num_components),
                 ("blocks", encoded.ht_code_block_jobs),
             );
@@ -1106,7 +1135,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let blocks = cuda_packetization_blocks(&plan, &mut host_budget)?;
             let tag_states = cuda_packetization_tag_states(&plan, &mut host_budget)?;
             let tag_nodes = cuda_packetization_tag_nodes(&plan, &mut host_budget)?;
-            let packetized = context
+            let packetized = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
                 .packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(
                     &plan.payload,
                     &packets,

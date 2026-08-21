@@ -44,31 +44,32 @@ impl MetalBatchDecoder {
             match group.info().color {
                 BatchColor::Gray => {
                     let plans = self.prepared_gray_group_plans(group, fmt, true)?;
-                    crate::compute::submit_prepared_direct_grayscale_plan_batch_into_group(
+                    crate::engine::submit_prepared_direct_grayscale_plan_batch_into_group(
                         runtime,
                         &plans,
                         fmt,
                         &allocation.destination,
                         Some(group.source_indices()),
-                        crate::compute::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                        crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
                     )?
                 }
                 BatchColor::Rgb | BatchColor::Rgba => {
                     let plans = self.prepared_color_group_plans(group, fmt)?;
-                    crate::compute::submit_prepared_direct_color_plan_batch_into_group(
+                    crate::engine::submit_prepared_direct_color_plan_batch_into_group(
                         runtime,
                         &plans,
                         fmt,
                         group.info().layout,
                         &allocation.destination,
                         Some(group.source_indices()),
-                        crate::compute::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                        crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
                     )?
                 }
-                _ => return Err(Error::UnsupportedMetalRequest {
-                    reason:
+                _ => return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_format(
                         "J2K Metal codec-owned resident output received an unknown color contract",
-                }),
+                    ),
+                )),
             };
         self.record_submission();
         Ok(SubmittedMetalResidentGroup {

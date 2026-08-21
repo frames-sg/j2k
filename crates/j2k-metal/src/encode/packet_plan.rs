@@ -13,9 +13,7 @@ use j2k_native::{
 
 use super::plan::LosslessDeviceEncodePlan;
 use crate::batch_allocation::{checked_count_sum, BatchMetadataBudget, BatchMetadataRequest};
-use crate::compute;
-
-const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: usize = 512 * 512;
+use crate::engine as compute;
 
 fn lossless_progression_from_packetization_order(
     order: J2kPacketizationProgressionOrder,
@@ -73,18 +71,11 @@ pub(super) fn lossless_options_for_resident_htj2k_tile_job(
     ))
 }
 
-pub(super) fn should_use_resident_htj2k_host_shape_for_auto(width: u32, height: u32) -> bool {
-    (width as usize).saturating_mul(height as usize) >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS
-}
-
 pub(super) fn should_use_resident_htj2k_host_tile_for_auto(job: J2kHtj2kTileEncodeJob<'_>) -> bool {
-    // Fixed Apple M4 Pro cells from verified artifact
-    // c8defb820b55a99e94acdd5849b4597bce0a1718fd7e0d2bc0aa926bc0e130d4.
-    // Both the single-frame and batch-16 observations passed the 10% and
-    // non-overlapping 95% confidence-interval gates. Do not extrapolate.
-    matches!(
-        (job.num_components, job.width, job.height),
-        (3, 1024, 1024) | (1 | 3, 2048, 2048)
+    crate::generated::promotion::auto_host_output_encode_qualifies(
+        job.num_components,
+        job.width,
+        job.height,
     )
 }
 

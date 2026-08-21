@@ -88,8 +88,8 @@ impl QuantStepSize {
         }
 
         Self {
-            exponent: u16::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u16"),
-            mantissa: u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
+            exponent: u16::try_from(exponent.clamp(0, 31)).unwrap_or_default(),
+            mantissa: u16::try_from(mantissa.clamp(0, 2047)).unwrap_or_default(),
         }
     }
 }
@@ -129,7 +129,7 @@ pub fn irreversible_quantization_step_for_subband(
         base_step.delta(bit_depth) * scale * subband_scale_for_subband(subband_scales, subband),
     );
     IrreversibleQuantizationStep {
-        exponent: u8::try_from(step_size.exponent).expect("step exponent is clamped to u8 range"),
+        exponent: u8::try_from(step_size.exponent).unwrap_or(u8::MAX),
         mantissa: step_size.mantissa,
     }
 }

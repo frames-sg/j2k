@@ -91,9 +91,11 @@ fn prepare_grayscale_input<'a>(
 ) -> Result<(Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>, bool), Error> {
     match (input.referenced_plan, input.referenced_classic_plan) {
         (Some(referenced), None) => {
-            let device_plan = input.device_plan.ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA HTJ2K plan is missing normalized output geometry",
-            })?;
+            let device_plan = input.device_plan.ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA HTJ2K plan is missing normalized output geometry",
+                ),
+            ))?;
             let mut budget = grayscale_owner_budget(
                 &prepared.plans,
                 &prepared.reports,
@@ -112,9 +114,11 @@ fn prepare_grayscale_input<'a>(
             .map(|plans| (plans, true))
         }
         (None, Some(referenced)) => {
-            let device_plan = input.device_plan.ok_or(Error::UnsupportedCudaRequest {
-                reason: "prepared CUDA classic plan is missing normalized output geometry",
-            })?;
+            let device_plan = input.device_plan.ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "prepared CUDA classic plan is missing normalized output geometry",
+                ),
+            ))?;
             let mut budget = grayscale_owner_budget(
                 &prepared.plans,
                 &prepared.reports,
@@ -153,9 +157,11 @@ fn prepare_grayscale_input<'a>(
             plans.push((plan, report));
             Ok((plans, false))
         }
-        (Some(_), Some(_)) => Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA grayscale input contains conflicting codec plans",
-        }),
+        (Some(_), Some(_)) => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "prepared CUDA grayscale input contains conflicting codec plans",
+            ),
+        )),
     }
 }
 
@@ -167,9 +173,11 @@ fn append_grayscale_input(
     payload_is_shared: bool,
 ) -> Result<(), Error> {
     let Some(first) = input_plans.first() else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "prepared CUDA grayscale input produced no executable tile plans",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(
+                "prepared CUDA grayscale input produced no executable tile plans",
+            ),
+        ));
     };
     let dimensions = input
         .device_plan

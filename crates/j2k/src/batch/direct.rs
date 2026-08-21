@@ -264,7 +264,7 @@ impl DirectColorRegionCache {
     pub(super) fn retained_allocation_bytes(&self) -> Result<usize, J2kError> {
         self.plan
             .retained_allocation_bytes()
-            .map_err(J2kError::from_native_decode_error)
+            .map_err(|error| J2kError::from_native_decode_error(error.into()))
     }
 }
 

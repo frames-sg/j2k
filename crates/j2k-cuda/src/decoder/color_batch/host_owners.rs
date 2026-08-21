@@ -67,9 +67,9 @@ pub(super) fn take_component_work(
 ) -> Result<Vec<CudaComponentDecodeWork>, Error> {
     let mut component_work = host_budget.try_vec_with_capacity(component_count)?;
     for _ in 0..component_count {
-        component_work.push(work_iter.next().ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?);
+        component_work.push(work_iter.next().ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
+        ))?);
     }
     Ok(component_work)
 }
@@ -79,15 +79,17 @@ pub(super) fn append_color_payload_to_shared(
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<(), Error> {
-    let base = u64::try_from(shared_payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
+    let base = u64::try_from(shared_payload.len()).map_err(|_| {
+        Error::capability_rejected(j2k_core::CapabilityRejection::resource_limit(
+            CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
+        ))
     })?;
     shared_payload
         .len()
         .checked_add(color.payload.len())
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
-        })?;
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::resource_limit(CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE),
+        ))?;
     if !shared_payload.is_empty() {
         host_budget.try_vec_reserve(shared_payload, color.payload.len())?;
     }

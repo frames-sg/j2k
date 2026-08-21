@@ -598,6 +598,12 @@ impl From<ValidationError> for DecodeError {
     }
 }
 
+impl From<j2k_types::DecodePlanAllocationError> for DecodeError {
+    fn from(_: j2k_types::DecodePlanAllocationError) -> Self {
+        Self::Validation(ValidationError::ImageTooLarge)
+    }
+}
+
 impl From<DecodingError> for DecodeError {
     fn from(e: DecodingError) -> Self {
         Self::Decoding(e)

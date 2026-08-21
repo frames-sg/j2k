@@ -176,6 +176,22 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
 }
 
 #[test]
+fn ignored_engine_inventory_tracks_the_current_module_path() {
+    let engine_tests = J2K_METAL_REQUIRED_IGNORED_TESTS
+        .iter()
+        .filter(|name| {
+            name.starts_with("engine::tests::classic::")
+                || name.starts_with("engine::tests::grouping::")
+                || name.starts_with("engine::tests::roi::")
+        })
+        .count();
+    assert_eq!(engine_tests, 13);
+    assert!(J2K_METAL_REQUIRED_IGNORED_TESTS
+        .iter()
+        .all(|name| !name.starts_with("compute::tests::")));
+}
+
+#[test]
 fn runtime_gate_excludes_benchmark_targets() {
     let args = runtime_suite_args("j2k-metal", ValidationMode::Full);
     assert!(args.contains(&"--lib"));

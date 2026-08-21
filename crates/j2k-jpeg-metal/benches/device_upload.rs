@@ -5,8 +5,9 @@ use j2k_core::{
     BackendRequest, DeviceSubmission, ImageDecodeDevice, PixelFormat, TileBatchDecodeSubmit,
 };
 use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
-use j2k_jpeg_metal::{Codec, Decoder as MetalDecoder, MetalSession, ScratchPool};
+use j2k_jpeg_metal::{Codec, Decoder as MetalDecoder, MetalSession, ScratchPool, Surface};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
+use sha2::{Digest, Sha256};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const DEFAULT_GENERATED_DIM: u16 = 2048;
@@ -146,6 +147,10 @@ fn bench_batch_decode(c: &mut Criterion) {
     let input = generated_jpeg(dim, dim);
     let batch_size = batch_size();
 
+    if metal_decode_available() {
+        probe_batch_decode(&input, dim, batch_size);
+    }
+
     let mut group = c.benchmark_group("jpeg_metal_batch_decode");
     group.sample_size(10);
 
@@ -182,6 +187,16 @@ fn bench_batch_decode(c: &mut Criterion) {
 }
 
 fn device_decode_tile_batch(input: &[u8], batch_size: usize, backend: BackendRequest) {
+    std::hint::black_box(device_decode_tile_batch_surfaces(
+        input, batch_size, backend,
+    ));
+}
+
+fn device_decode_tile_batch_surfaces(
+    input: &[u8],
+    batch_size: usize,
+    backend: BackendRequest,
+) -> Vec<Surface> {
     let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
@@ -198,9 +213,30 @@ fn device_decode_tile_batch(input: &[u8], batch_size: usize, backend: BackendReq
             .expect("submit")
         })
         .collect::<Vec<_>>();
-    for submission in submissions {
-        std::hint::black_box(submission.wait().expect("surface"));
+    submissions
+        .into_iter()
+        .map(|submission| submission.wait().expect("surface"))
+        .collect()
+}
+
+fn probe_batch_decode(input: &[u8], dim: u16, batch_size: usize) {
+    let decoder = CpuDecoder::new(input).expect("CPU probe decoder");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("CPU probe decode");
+    let surfaces = device_decode_tile_batch_surfaces(input, batch_size, BackendRequest::Metal);
+    let input_sha256 = Sha256::digest(input);
+    let mut hasher = Sha256::new();
+    for surface in &surfaces {
+        let bytes = surface.as_bytes().expect("Metal probe surface readback");
+        assert_eq!(bytes.as_ref(), expected.as_slice());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes.as_ref());
     }
+    eprintln!(
+        "jpeg_metal_batch_probe dimensions={dim}x{dim} batch={batch_size} input_sha256={input_sha256:x} output_sha256={:x}",
+        hasher.finalize()
+    );
 }
 
 fn batch_size() -> usize {

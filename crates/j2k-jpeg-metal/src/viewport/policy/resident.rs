@@ -21,34 +21,40 @@ pub(in crate::viewport) fn validate_resident_viewport_composition_request(
 ) -> Result<(), Error> {
     validate_viewport_workload_budget(workload, external_live_bytes)?;
     if workload.tiles.is_empty() {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal resident viewport output requires at least one viewport tile",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "JPEG Metal resident viewport output requires at least one viewport tile",
+            ),
+        ));
     }
     if matches!(
         decoder.info().color_space,
         JpegColorSpace::Cmyk | JpegColorSpace::Ycck
     ) {
-        return Err(Error::UnsupportedMetalRequest {
-            reason:
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
                 "JPEG Metal resident viewport composition does not support CMYK/YCCK JPEG output",
-        });
+            ),
+        ));
     }
 
     for tile in &workload.tiles {
         let dims = tile.source_roi.scaled_covering(workload.scale);
         if (dims.w, dims.h) != (tile.dest.w, tile.dest.h) {
-            return Err(Error::UnsupportedMetalRequest {
-                reason:
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::geometry_mismatch(
                     "JPEG Metal resident viewport tile dimensions do not match destination rect",
-            });
+                ),
+            ));
         }
         if tile.dest.x.saturating_add(tile.dest.w) > workload.viewport_dims.0
             || tile.dest.y.saturating_add(tile.dest.h) > workload.viewport_dims.1
         {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: "JPEG Metal resident viewport destination exceeds viewport dimensions",
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(
+                    "JPEG Metal resident viewport destination exceeds viewport dimensions",
+                ),
+            ));
         }
     }
 

@@ -22,7 +22,7 @@ pub(super) fn validate_jscpd_report(path: &Path, threshold: f64) -> Result<(), S
     let percentage = require_percentage(total, "percentage")?;
     let _percentage_tokens = require_percentage(total, "percentageTokens")?;
     if lines == 0 || tokens == 0 || sources == 0 {
-        return Err("jscpd JSON report must describe non-empty staged Rust sources".to_string());
+        return Err("jscpd JSON report must describe non-empty staged sources".to_string());
     }
     if duplicated_lines > lines || duplicated_tokens > tokens {
         return Err("jscpd JSON report duplicated totals exceed analyzed totals".to_string());

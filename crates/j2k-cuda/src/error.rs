@@ -102,7 +102,36 @@ pub enum Error {
     },
 }
 
+impl From<j2k_core::HostPhaseError> for Error {
+    fn from(error: j2k_core::HostPhaseError) -> Self {
+        match error {
+            j2k_core::HostPhaseError::AllocationFailed {
+                requested_bytes,
+                what,
+            } => Self::HostAllocationFailed {
+                bytes: requested_bytes,
+                what,
+            },
+            j2k_core::HostPhaseError::LimitExceeded {
+                requested_bytes,
+                cap_bytes,
+                what,
+            } => Self::HostAllocationTooLarge {
+                requested: requested_bytes,
+                cap: cap_bytes,
+                what,
+            },
+        }
+    }
+}
+
 impl Error {
+    pub(crate) const fn capability_rejected(rejection: j2k_core::CapabilityRejection) -> Self {
+        Self::UnsupportedCudaRequest {
+            reason: rejection.reason(),
+        }
+    }
+
     /// Whether this error can leave submitted CUDA work referencing an
     /// external allocation whose completion was not established.
     #[cfg(feature = "cuda-runtime")]

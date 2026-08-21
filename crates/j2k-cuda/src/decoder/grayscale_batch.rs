@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use j2k_core::DeviceSubmitSession;
-use j2k_cuda_runtime::{
-    CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut, CudaJ2kStoreGray16Job,
-    CudaJ2kStoreGray16Target, CudaJ2kStoreGray8Job, CudaJ2kStoreGray8Target,
+use j2k_cuda_j2k_engine::{
+    CudaJ2kStoreGray16Job, CudaJ2kStoreGray16Target, CudaJ2kStoreGray8Job, CudaJ2kStoreGray8Target,
     CudaJ2kStoreGrayI16Target, CudaQueuedJ2kStoreBatch,
 };
+use j2k_cuda_runtime::{CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut};
 
 use super::color_batch::finalize_color_batch_decode_report;
 use super::pending_completion::{PendingCleanup, PendingDecodeCompletion};
@@ -84,14 +84,16 @@ pub(crate) fn decode_grayscale_cuda_resident_prepared_batch_surfaces_with_profil
         false,
     )?;
     if pending.is_some() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "synchronous CUDA grayscale decode unexpectedly retained pending work",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "synchronous CUDA grayscale decode unexpectedly retained pending work",
+            ),
+        ));
     }
     let GrayscaleBatchOutput::Owned(output) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
     Ok((output.surfaces, report))
 }
@@ -135,14 +137,16 @@ pub(crate) fn decode_grayscale_cuda_resident_prepared_batch_into_with_profile(
         false,
     )?;
     if pending.is_some() {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "synchronous external CUDA grayscale decode unexpectedly retained pending work",
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "synchronous external CUDA grayscale decode unexpectedly retained pending work",
+            ),
+        ));
     }
     let GrayscaleBatchOutput::External(ranges) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
     Ok((ranges, report))
 }
@@ -164,13 +168,15 @@ pub(crate) fn submit_grayscale_cuda_resident_prepared_batch_into(
         true,
     )?;
     let GrayscaleBatchOutput::External(ranges) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
-    let completion = completion.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA external batch submission did not retain a completion owner",
-    })?;
+    let completion = completion.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA external batch submission did not retain a completion owner",
+        ),
+    ))?;
     Ok(SubmittedGrayscaleExternalBatch {
         ranges,
         report,
@@ -188,13 +194,15 @@ pub(crate) fn submit_grayscale_cuda_resident_prepared_batch(
         inputs, settings, session, fmt, false, None, true,
     )?;
     let GrayscaleBatchOutput::Owned(output) = output else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        });
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        ));
     };
-    let completion = completion.ok_or(Error::UnsupportedCudaRequest {
-        reason: "CUDA resident grayscale submission did not retain a completion owner",
-    })?;
+    let completion = completion.ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::contract_violation(
+            "CUDA resident grayscale submission did not retain a completion owner",
+        ),
+    ))?;
     Ok(SubmittedGrayscaleResidentBatch {
         output: Some(output),
         report,

@@ -255,7 +255,7 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
+fn auto_restart_wsi_tile_batch_stays_on_cpu_without_promotion_evidence() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -284,7 +284,7 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
 
     for submission in submissions {
         let surface = submission.wait().expect("surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
         assert_eq!(
             surface.as_bytes().expect("surface byte access"),
             expected.as_slice()

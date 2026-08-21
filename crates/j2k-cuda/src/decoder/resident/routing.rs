@@ -65,9 +65,9 @@ fn decode_to_cuda_resident_surface_with_profile_control(
                 collect_stage_timings,
             )
         }
-        _ => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        _ => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }
 
@@ -108,9 +108,9 @@ pub(in crate::decoder) fn decode_batch_to_cuda_resident_surface_with_profile_con
                 collect_stage_timings,
             )
         }
-        _ => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        _ => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }
 
@@ -136,9 +136,9 @@ pub(in crate::decoder) fn decode_region_to_cuda_resident_surface_impl(
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
             decode_color_cuda_resident_region_surface(decoder, session, fmt, plan.source_rect())
         }
-        _ => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        _ => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }
 
@@ -165,9 +165,9 @@ pub(in crate::decoder) fn decode_scaled_to_cuda_resident_surface_impl(
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
             decode_color_cuda_resident_scaled_surface(decoder, session, fmt, output_dimensions)
         }
-        _ => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        _ => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }
 
@@ -211,9 +211,9 @@ pub(in crate::decoder) fn decode_region_scaled_to_cuda_resident_surface_impl(
                 scaled_dimensions,
             )
         }
-        _ => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        _ => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }
 

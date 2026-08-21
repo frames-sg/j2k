@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
+
 use super::super::code_block_metadata::{validate_ht_code_block, validate_ht_code_block_metadata};
 use super::{
     validate_band_len, EncodedHtJ2kCodeBlock, J2kForwardDwt53Output, J2kForwardDwt97Output,
@@ -58,10 +60,11 @@ pub(in crate::j2c::encode) fn validate_precomputed_component_dwt_geometry(
     let mut expected_height = component_height;
     for level_index in (0..dwt.level_count()).rev() {
         let level = dwt.level_geometry(level_index);
-        let low_width = expected_width.div_ceil(2);
-        let low_height = expected_height.div_ceil(2);
-        let high_width = expected_width / 2;
-        let high_height = expected_height / 2;
+        let dimensions = encode_dwt_level_dimensions_for_input(expected_width, expected_height);
+        let low_width = dimensions.low_width;
+        let low_height = dimensions.low_height;
+        let high_width = dimensions.high_width;
+        let high_height = dimensions.high_height;
 
         if level.width != expected_width
             || level.height != expected_height

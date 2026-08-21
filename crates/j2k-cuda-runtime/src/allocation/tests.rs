@@ -51,9 +51,9 @@ fn actual_capacity_phase_budget_counts_every_live_owner() {
     one_under.account_vec(&first).unwrap();
     assert!(matches!(
         one_under.account_vec(&second),
-        Err(CudaError::HostAllocationTooLarge {
-            requested,
-            cap,
+        Err(j2k_core::HostPhaseError::LimitExceeded {
+            requested_bytes: requested,
+            cap_bytes: cap,
             what: "test phase",
         }) if requested == actual && cap == actual.saturating_sub(1)
     ));
@@ -66,9 +66,9 @@ fn allocator_overcapacity_is_rejected_with_phase_context() {
 
     assert!(matches!(
         budget.account_vec(&values),
-        Err(CudaError::HostAllocationTooLarge {
-            requested,
-            cap: 16,
+        Err(j2k_core::HostPhaseError::LimitExceeded {
+            requested_bytes: requested,
+            cap_bytes: 16,
             what: "overcapacity test",
         }) if requested == values.capacity()
     ));

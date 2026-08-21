@@ -21,8 +21,8 @@ pub(super) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
 
 pub(super) enum PreparedRegionScaledDirectPlan {
-    Gray(crate::compute::PreparedDirectGrayscalePlan),
-    Color(Arc<crate::compute::PreparedDirectColorPlan>),
+    Gray(crate::engine::PreparedDirectGrayscalePlan),
+    Color(Arc<crate::engine::PreparedDirectColorPlan>),
 }
 
 pub(super) fn build_region_scaled_direct_plan(
@@ -98,9 +98,7 @@ pub(crate) fn benchmark_region_scaled_direct_plan_prepare(
     if build_region_scaled_direct_plan(input, fmt, roi, scale)?.is_some() {
         Ok(())
     } else {
-        Err(Error::UnsupportedMetalRequest {
-            reason: "J2K MetalDirect ROI+scaled plan preparation is unsupported for this benchmark input",
-        })
+        Err(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_operation("J2K MetalDirect ROI+scaled plan preparation is unsupported for this benchmark input")))
     }
 }
 
@@ -108,7 +106,7 @@ pub(super) fn build_region_scaled_direct_gray_plan(
     input: &[u8],
     roi: Rect,
     scale: Downscale,
-) -> Result<crate::compute::PreparedDirectGrayscalePlan, Error> {
+) -> Result<crate::engine::PreparedDirectGrayscalePlan, Error> {
     let image = build_region_scaled_native_image(input, scale)?;
     let mut context = NativeDecoderContext::default();
     let output_region = roi.scaled_covering(scale);
@@ -132,8 +130,8 @@ pub(super) fn build_region_scaled_direct_gray_plan(
         }
         Err(error) => return Err(native_decode_error(error)),
     };
-    let mut prepared = crate::compute::prepare_direct_grayscale_plan(&plan)?;
-    crate::compute::crop_prepared_direct_grayscale_plan_to_output_region(
+    let mut prepared = crate::engine::prepare_direct_grayscale_plan(&plan)?;
+    crate::engine::crop_prepared_direct_grayscale_plan_to_output_region(
         &mut prepared,
         output_region,
     )?;
@@ -144,11 +142,11 @@ fn build_region_scaled_direct_color_plan(
     input: &[u8],
     roi: Rect,
     scale: Downscale,
-) -> Result<crate::compute::PreparedDirectColorPlan, Error> {
+) -> Result<crate::engine::PreparedDirectColorPlan, Error> {
     #[cfg(test)]
     super::cache::record_region_scaled_color_plan_build_for_test();
 
-    let profile_stages = crate::compute::metal_profile_stages_enabled();
+    let profile_stages = crate::engine::metal_profile_stages_enabled();
     let total_started = profile_stages.then(Instant::now);
     let native_image_started = profile_stages.then(Instant::now);
     let image = build_region_scaled_native_image(input, scale)?;
@@ -169,9 +167,11 @@ fn build_region_scaled_direct_color_plan(
     ) {
         Ok(plan) => plan,
         Err(error) if direct::is_unsupported_direct_plan_error(&error) => {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
-            });
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
+                ),
+            ));
         }
         Err(error) => return Err(native_decode_error(error)),
     };
@@ -179,10 +179,10 @@ fn build_region_scaled_direct_color_plan(
         .map(elapsed_since_us)
         .unwrap_or_default();
     let prepare_started = profile_stages.then(Instant::now);
-    let mut prepared = crate::compute::prepare_direct_color_plan_for_cpu_upload(&plan)?;
+    let mut prepared = crate::engine::prepare_direct_color_plan_for_cpu_upload(&plan)?;
     let prepare_us = prepare_started.map(elapsed_since_us).unwrap_or_default();
     let crop_started = profile_stages.then(Instant::now);
-    crate::compute::crop_prepared_direct_color_plan_to_output_region(&mut prepared, output_region)?;
+    crate::engine::crop_prepared_direct_color_plan_to_output_region(&mut prepared, output_region)?;
     let crop_us = crop_started.map(elapsed_since_us).unwrap_or_default();
     if let Some(started) = total_started {
         emit_region_scaled_color_plan_build_timings(
@@ -202,7 +202,7 @@ pub(super) fn build_region_scaled_direct_color_plan_cached_with_cache(
     roi: Rect,
     scale: Downscale,
     cache: RegionScaledColorPlanCache<'_>,
-) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
+) -> Result<Arc<crate::engine::PreparedDirectColorPlan>, Error> {
     let cache_key = PreparedPlanCacheKey::region_scaled_color(input, fmt, roi, scale);
     if let Some(plan) = cache.get(cache_key)? {
         return Ok(plan);

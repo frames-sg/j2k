@@ -78,9 +78,7 @@ fn prepared_classic_multitile_gray_and_rgb_are_resident_and_external_bit_exact()
         let native = prepared.groups()[0].images()[0]
             .classic_plan()
             .expect("prepared classic plan")
-            .adapter_view()
-            .downcast_ref::<j2k_native::J2kReferencedClassicPlan>()
-            .expect("native referenced classic adapter");
+            .geometry();
         assert!(native.tiles().len() > 1);
 
         for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {

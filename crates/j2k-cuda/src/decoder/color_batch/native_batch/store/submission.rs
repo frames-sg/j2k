@@ -23,8 +23,8 @@ pub(super) fn store_targets(
         (Some(destination), true) => enqueue_external_store(context, fmt, destination, targets),
         (None, true) => enqueue_owned_store(context, fmt, targets),
         (None, false) => finish_owned_store(context, fmt, targets),
-        (Some(_), false) => Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
-        }),
+        (Some(_), false) => Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
+        )),
     }
 }

@@ -32,6 +32,15 @@ struct J2kForwardIctParams {
     uint reserved2;
 };
 
+struct J2kFusedInputMctParams {
+    uint len;
+    uint bytes_per_sample;
+    uint bit_depth;
+    uint sample_offset;
+    uint signed_samples;
+    uint reversible;
+};
+
 constant uint J2K_MCT_TRANSFORM_REVERSIBLE53 = 0;
 constant uint J2K_MCT_TRANSFORM_IRREVERSIBLE97 = 1;
 constant uint J2K_MCT_STATUS_OK = 0;
@@ -121,6 +130,47 @@ kernel void j2k_forward_ict(
         status->code = J2K_MCT_STATUS_OK;
         status->detail = 0;
     }
+}
+
+kernel void j2k_encode_deinterleave_mct(
+    device const uchar *src [[buffer(0)]],
+    device float *plane0 [[buffer(1)]],
+    device float *plane1 [[buffer(2)]],
+    device float *plane2 [[buffer(3)]],
+    constant J2kFusedInputMctParams &params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]]
+) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+    if (gid >= params.len) {
+        return;
+    }
+
+    const uint src_base = gid * 3u * params.bytes_per_sample;
+    const float r = j2k_lossless_load_sample(
+        src, src_base, 0u, 3u, params.bytes_per_sample, params.bit_depth,
+        params.sample_offset, params.signed_samples, true
+    );
+    const float g = j2k_lossless_load_sample(
+        src, src_base, 1u, 3u, params.bytes_per_sample, params.bit_depth,
+        params.sample_offset, params.signed_samples, true
+    );
+    const float b = j2k_lossless_load_sample(
+        src, src_base, 2u, 3u, params.bytes_per_sample, params.bit_depth,
+        params.sample_offset, params.signed_samples, true
+    );
+
+    if (params.reversible != 0u) {
+        plane0[gid] = floor((r + 2.0f * g + b) * 0.25f);
+        plane1[gid] = b - g;
+        plane2[gid] = r - g;
+        return;
+    }
+
+    // Match the CPU ICT's target-independent nested fused rounding.
+    plane0[gid] = fma(0.114f, b, fma(0.299f, r, 0.587f * g));
+    plane1[gid] = fma(0.5f, b, fma(-0.16875f, r, -0.33126f * g));
+    plane2[gid] = fma(-0.08131f, b, fma(0.5f, r, -0.41869f * g));
 }
 
 kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(

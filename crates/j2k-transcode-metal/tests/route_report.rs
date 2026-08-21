@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BackendKind, BackendRequest};
+#[cfg(target_os = "macos")]
+use j2k_core::{DeviceCodestream, DeviceMemoryRange};
 use j2k_test_support::{metal_device_unavailable_is_skip, JPEG_GRAYSCALE_8X8};
 use j2k_transcode::accelerator::TranscodeStageError;
 use j2k_transcode::{JpegTileBatchInput, JpegToHtj2kError, JpegToHtj2kOptions};
@@ -16,38 +18,28 @@ fn should_run_metal_runtime() -> bool {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[expect(
-    unsafe_code,
-    reason = "the test constructs one audited resident descriptor from a fresh checked shared Metal allocation"
-)]
 fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
-    if !should_run_metal_runtime() {
-        return;
-    }
+    struct TestCodestream;
+    impl DeviceCodestream for TestCodestream {
+        fn codestream_memory_range(&self) -> Option<DeviceMemoryRange> {
+            Some(DeviceMemoryRange::new(BackendKind::Metal, 7, 16, 256))
+        }
 
-    let Ok(device) = j2k_metal_support::system_default_device() else {
-        metal_device_unavailable_is_skip(module_path!());
-        return;
-    };
-    let codestream_buffer = j2k_metal_support::checked_shared_buffer(&device, 512)
-        .expect("checked Metal fixture allocation");
-    // SAFETY: This fresh shared allocation has no pending writers and remains
-    // immutable for the lifetime of the encoded descriptor.
-    let encoded = unsafe {
-        j2k_metal::MetalEncodedJ2k::from_raw_parts(
-            codestream_buffer,
-            16..144,
-            256,
-            (64, 64),
-            1,
-            8,
-            false,
-        )
+        fn codestream_allocation_len(&self) -> Option<usize> {
+            Some(512)
+        }
+
+        fn codestream_byte_len(&self) -> usize {
+            128
+        }
+
+        fn codestream_capacity(&self) -> usize {
+            256
+        }
     }
-    .expect("valid encoded Metal buffer metadata");
 
     let descriptor =
-        j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&encoded)
+        j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&TestCodestream)
             .expect("valid resident codestream descriptor");
 
     assert_eq!(descriptor.buffer.backend(), BackendKind::Metal);

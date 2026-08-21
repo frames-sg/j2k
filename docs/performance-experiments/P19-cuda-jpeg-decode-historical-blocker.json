@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "experiment_id": "P19-CUDA-JPEG-DECODE-HISTORICAL-BLOCKER",
+  "status": "blocked",
+  "environment": {
+    "commit": "f1fdfb4b0edeb6cd060766a5cb8fd96f157a88c5",
+    "branch": "main",
+    "dirty": true,
+    "cpu": "Apple M4 Pro, 12 cores",
+    "gpu": "Apple M4 Pro, 16 cores; NVIDIA unavailable",
+    "ram_bytes": 51539607552,
+    "os": "macOS 26.5.2 build 25F84, Darwin 25.5.0",
+    "driver_runtime": "Metal 4; CUDA unavailable",
+    "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "llvm_version": "LLVM 22.1.2",
+    "gpu_toolchain": "CUDA-Oxide Linux lane and NVIDIA CUDA toolkit unavailable",
+    "build_profile": "release-bench",
+    "feature_flags": [],
+    "environment_variables": {},
+    "input_corpus_sha256": "404c706d2913bfe2814b4238d8d5d81791b6e8ed73d1fe1420a3eef8962e204a",
+    "sample_count": 10,
+    "warm_up_seconds": 3.0,
+    "measurement_seconds": 5.0
+  },
+  "workloads": [
+    {"id":"p19-cuda-jpeg-decode","transform":"jpeg_idct","entropy":"huffman","code_block":"8x8","image":"jpeg_matrix","batch":16,"components":3,"output":"rgb8","operation":"cuda_jpeg_decode_defusion","axis_class":"matrix","jpeg_sampling":"444/422/420","jpeg_restart":"matrix"}
+  ],
+  "measurements": [],
+  "decision": {
+    "priority_workload_id": "p19-cuda-jpeg-decode",
+    "confidence_interval_supports_improvement": false,
+    "representative_regression_percent": 0.0,
+    "complexity_is_proportional": false,
+    "rationale": "Historical P19-only blocker. The original Apple host had no NVIDIA device, CUDA driver/toolkit, nvcc, or CUDA-Oxide Linux execution lane, so CUDA JPEG decode profiling and A/B measurements could not run there. The later user-provided RTX lane supersedes this environmental blocker; the durable workplan now tracks active P19 CUDA profiling, which requires its own measured decision record. Metal P19 was completed separately in P19-metal-jpeg-decode-defusion.json. P18 CUDA encode is no longer part of this blocker and is documented by P18-cuda-jpeg-staged-encode.json."
+  }
+}
