@@ -396,7 +396,10 @@ fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
     #[cfg(target_os = "macos")]
     assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
-    assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert_eq!(
+        accelerator.deinterleave_dispatches(),
+        usize::from(cfg!(target_os = "macos"))
+    );
     assert_eq!(accelerator.forward_rct_attempts(), 1);
     assert_eq!(accelerator.forward_dwt53_attempts(), 3);
     assert!(accelerator.tier1_code_block_attempts() > 0);
