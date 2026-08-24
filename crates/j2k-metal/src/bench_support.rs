@@ -4,7 +4,9 @@
 
 #[cfg(target_os = "macos")]
 use crate::metal_types::prelude::*;
-use crate::{error, hybrid, Error, MetalBackendSession};
+use crate::Error;
+#[cfg(target_os = "macos")]
+use crate::{error, hybrid, MetalBackendSession};
 use j2k_core::{Downscale, PixelFormat, Rect};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{

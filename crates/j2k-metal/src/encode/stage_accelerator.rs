@@ -48,6 +48,7 @@ pub struct MetalEncodeStageAccelerator {
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
     deinterleave_dispatches: usize,
+    #[cfg(target_os = "macos")]
     combined_input_mct_dispatches: usize,
     forward_rct_dispatches: usize,
     forward_ict_dispatches: usize,
@@ -80,6 +81,7 @@ impl Default for MetalEncodeStageAccelerator {
             ht_code_block_attempts: 0,
             packetization_attempts: 0,
             deinterleave_dispatches: 0,
+            #[cfg(target_os = "macos")]
             combined_input_mct_dispatches: 0,
             forward_rct_dispatches: 0,
             forward_ict_dispatches: 0,
@@ -472,6 +474,10 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             self.dispatch_stages
                 .contains(MetalEncodeDispatchStages::FORWARD_ICT)
         };
+        #[cfg(target_os = "macos")]
+        let fused_input_mct_disabled = crate::profile_env::fused_input_mct_disabled();
+        #[cfg(not(target_os = "macos"))]
+        let fused_input_mct_disabled = false;
         if !self
             .dispatch_stages
             .contains(MetalEncodeDispatchStages::DEINTERLEAVE)
@@ -479,7 +485,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             || self.auto_host_output_force_cpu_fallback
             || !self.host_output_stage_supported()
             || self.combined_input_mct_evidence != CombinedInputMctEvidence::Eligible
-            || crate::profile_env::fused_input_mct_disabled()
+            || fused_input_mct_disabled
         {
             let _ = job;
             return Ok(None);

@@ -246,13 +246,13 @@ fn render_cuda(manifest: &Manifest) -> Result<String, String> {
 
 fn render_metal(manifest: &Manifest) -> Result<String, String> {
     let mut out = String::from(generated_header());
-    out.push_str("use j2k_core::{CompressedPayloadKind as Payload, CompressedTransferSyntax as Syntax, PixelFormat};\n\nuse crate::routing::promotion::{PromotionCell, PromotionOperation as Operation};\n\n");
+    out.push_str("#[cfg(any(test, target_os = \"macos\"))]\nuse j2k_core::{CompressedPayloadKind as Payload, CompressedTransferSyntax as Syntax, PixelFormat};\n\n#[cfg(any(test, target_os = \"macos\"))]\nuse crate::routing::promotion::{PromotionCell, PromotionOperation as Operation};\n\n");
     render_sources(&mut out, manifest, "metal");
-    out.push_str("\nconst fn decode_cell(\n    format: PixelFormat,\n    transfer_syntax: Syntax,\n    payload_kind: Payload,\n    operation: Operation,\n    boundary: (u32, u32, u64, usize),\n    source_evidence: &'static str,\n) -> PromotionCell {\n    PromotionCell {\n        format,\n        transfer_syntax,\n        payload_kind,\n        operation,\n        minimum_width: boundary.0,\n        minimum_height: boundary.1,\n        minimum_pixels: boundary.2,\n        minimum_count: boundary.3,\n        source_evidence,\n    }\n}\n\npub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[\n");
+    out.push_str("\n#[cfg(any(test, target_os = \"macos\"))]\nconst fn decode_cell(\n    format: PixelFormat,\n    transfer_syntax: Syntax,\n    payload_kind: Payload,\n    operation: Operation,\n    boundary: (u32, u32, u64, usize),\n    source_evidence: &'static str,\n) -> PromotionCell {\n    PromotionCell {\n        format,\n        transfer_syntax,\n        payload_kind,\n        operation,\n        minimum_width: boundary.0,\n        minimum_height: boundary.1,\n        minimum_pixels: boundary.2,\n        minimum_count: boundary.3,\n        source_evidence,\n    }\n}\n\n#[cfg(any(test, target_os = \"macos\"))]\npub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[\n");
     for cell in &manifest.metal_decode {
         render_metal_cell(&mut out, cell)?;
     }
-    out.push_str("];\n\nconst HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[\n");
+    out.push_str("];\n\n#[cfg(target_os = \"macos\")]\nconst HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[\n");
     for cell in &manifest.metal_host_output {
         writeln!(
             out,
@@ -264,7 +264,7 @@ fn render_metal(manifest: &Manifest) -> Result<String, String> {
         )
         .expect("writing to a String cannot fail");
     }
-    out.push_str("];\n\npub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {\n    HOST_OUTPUT_CELLS.iter().any(|cell| {\n        cell.0 == components\n            && cell.1 == width\n            && cell.2 == height\n            && SOURCE_EVIDENCE.contains(&cell.3)\n    })\n}\n\npub(crate) fn auto_lossy_rgb8_encode_qualifies(pixels: usize) -> bool {\n");
+    out.push_str("];\n\n#[cfg(target_os = \"macos\")]\npub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {\n    HOST_OUTPUT_CELLS.iter().any(|cell| {\n        cell.0 == components\n            && cell.1 == width\n            && cell.2 == height\n            && SOURCE_EVIDENCE.contains(&cell.3)\n    })\n}\n\npub(crate) fn auto_lossy_rgb8_encode_qualifies(pixels: usize) -> bool {\n");
     write!(
         out,
         "    pixels >= {} && SOURCE_EVIDENCE.contains(&{})\n}}\n",
