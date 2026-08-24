@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_transcode::accelerator::TranscodeStageError;
-use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 #[cfg(target_os = "macos")]
+use j2k_transcode::accelerator::PrequantizedHtj2k97Component;
+use j2k_transcode::accelerator::TranscodeStageError;
 use j2k_transcode::accelerator::{
-    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, IrreversibleQuantizationSubbandScales,
-    PrequantizedHtj2k97Component,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator,
+    Htj2k97CodeBlockOptions, IrreversibleQuantizationSubbandScales,
 };
 #[cfg(target_os = "macos")]
 use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
@@ -581,7 +581,6 @@ fn assert_prequantized_component_coefficients_close(
     }
 }
 
-#[cfg(target_os = "macos")]
 #[expect(
     clippy::cast_precision_loss,
     reason = "test grid indices are bounded by allocated fixture dimensions"
@@ -603,7 +602,6 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
     blocks
 }
 
-#[cfg(target_os = "macos")]
 fn structured_blocks_with_offset(
     block_cols: usize,
     block_rows: usize,

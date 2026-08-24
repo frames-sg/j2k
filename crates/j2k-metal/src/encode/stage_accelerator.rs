@@ -221,7 +221,7 @@ impl MetalEncodeStageAccelerator {
     }
 
     /// Number of combined input/MCT attempts observed by crate-local diagnostics.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     pub(crate) fn combined_input_mct_attempts(&self) -> usize {
         self.combined_input_mct_attempts
     }

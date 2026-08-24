@@ -18,6 +18,14 @@ impl MetalIdwtDecoder {
         self.kernel_dispatches
     }
 
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            clippy::unnecessary_wraps,
+            clippy::unused_self,
+            reason = "the non-Metal stub preserves the shared fallible decoder contract"
+        )
+    )]
     fn decode_with_normalization(
         &mut self,
         job: J2kSingleDecompositionIdwtJob<'_>,
