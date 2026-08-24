@@ -2,7 +2,9 @@
 
 use core::fmt;
 
-use j2k_core::{BackendKind, BackendRequest, DeviceCodestream};
+#[cfg(target_os = "macos")]
+use j2k_core::DeviceCodestream;
+use j2k_core::{BackendKind, BackendRequest};
 use j2k_transcode::{
     BatchTranscodeReport, EncodedTranscode, EncodedTranscodeBatch, JpegTileBatchInput,
     JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodePipelineMap,
