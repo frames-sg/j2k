@@ -3,13 +3,14 @@
 //! Unified JPEG surface routing, CPU fallback, and Metal upload operations.
 
 use crate::{
-    batch, batch_allocation, plan_owner_ledger, routing, session, Error, JpegFastPackets,
-    MetalBackendSession, SharedJpegFastPacket, SharedJpegInput, Storage, Surface,
+    batch, routing, session, Error, JpegFastPackets, SharedJpegFastPacket, SharedJpegInput,
+    Storage, Surface,
 };
 #[cfg(target_os = "macos")]
 use crate::{
-    buffers,
+    batch_allocation, buffers,
     compute::{batch_entry, single_decode},
+    plan_owner_ledger, MetalBackendSession,
 };
 use j2k_core::{BackendKind, BackendRequest, Downscale, PixelFormat, Rect, SurfaceResidency};
 use j2k_jpeg::{
