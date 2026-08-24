@@ -52,7 +52,9 @@ mod tests {
     use j2k_core::{BackendRequest, PixelFormat};
 
     use super::{fields, labels};
-    use crate::routing::{rejection::unsupported_metal_format, RouteDecision};
+    #[cfg(target_os = "macos")]
+    use crate::routing::rejection::unsupported_metal_format;
+    use crate::routing::RouteDecision;
 
     #[test]
     fn route_fields_preserve_the_stable_profile_schema() {

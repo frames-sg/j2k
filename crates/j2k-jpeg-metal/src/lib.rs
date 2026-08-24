@@ -53,14 +53,18 @@ pub use encode::{
 };
 pub use error::Error;
 pub(crate) use fast_packets::JpegFastPackets;
+#[cfg(all(test, target_os = "macos"))]
+use j2k_core::BackendKind;
 use j2k_core::ImageCodec;
 pub use j2k_core::SurfaceResidency;
 #[cfg(test)]
-use j2k_core::{BackendKind, BackendRequest, Downscale, PixelFormat, Rect};
+use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 pub(crate) use j2k_jpeg::adapter::{SharedJpegFastPacket, SharedJpegInput};
-use j2k_jpeg::Warning as CpuWarning;
 #[cfg(test)]
-use j2k_jpeg::{Decoder as CpuDecoder, ScratchPool as CpuScratchPool};
+use j2k_jpeg::Decoder as CpuDecoder;
+#[cfg(all(test, target_os = "macos"))]
+use j2k_jpeg::ScratchPool as CpuScratchPool;
+use j2k_jpeg::Warning as CpuWarning;
 #[cfg(target_os = "macos")]
 pub(crate) use resident_batch::report_required_output_dimensions;
 #[cfg(target_os = "macos")]

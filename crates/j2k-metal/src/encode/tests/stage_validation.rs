@@ -393,6 +393,7 @@ fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
     assert_eq!(decoded.num_components, 3);
     assert_eq!(decoded.bit_depth, 8);
     assert_eq!(accelerator.combined_input_mct_attempts(), 1);
+    #[cfg(target_os = "macos")]
     assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
