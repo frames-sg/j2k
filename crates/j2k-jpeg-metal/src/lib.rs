@@ -90,14 +90,14 @@ impl ImageCodec for Codec {
     type Pool = ScratchPool;
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) use decode_surface::decode_compatible_batch;
 #[cfg(target_os = "macos")]
 pub use decode_surface::decode_rgb8_batch_to_device_with_session;
 pub(crate) use decode_surface::{
     choose_route, decode_compatible_batch_with_session, decode_surface_from_decoder,
-    decode_surface_from_shared_input, reject_cpu_staged_metal_upload, scaled_dims, upload_surface,
+    decode_surface_from_shared_input, upload_surface,
 };
+#[cfg(target_os = "macos")]
+pub(crate) use decode_surface::{reject_cpu_staged_metal_upload, scaled_dims};
 
 pub use j2k_jpeg::{
     DecoderContext, Downscale as JpegDownscale, Info, PixelFormat as JpegPixelFormat,
