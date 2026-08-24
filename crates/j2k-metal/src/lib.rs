@@ -101,9 +101,11 @@ pub use encode::{
 };
 
 #[doc(hidden)]
+pub use bench_support::benchmark_region_scaled_direct_plan_prepare;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
 pub use bench_support::{
     benchmark_overwrite_private_buffer_with_bytes, benchmark_private_buffer_with_bytes,
-    benchmark_region_scaled_direct_plan_prepare,
 };
 
 pub use j2k::{J2kContext, J2kScratchPool};

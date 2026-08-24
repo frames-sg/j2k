@@ -9,6 +9,7 @@ extend-exclude = [
 extend-ignore-re = [
     "fnv1a64:[0-9a-f]+",
     "`[0-9a-f]{8}(?:[0-9a-f]{32})?`",
+    "`[0-9a-f]{7,40}\\.\\.\\.[0-9a-f]{7,40}`",
 ]
 
 [default.extend-words]

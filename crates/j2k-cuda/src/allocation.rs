@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::Error;
+#[cfg(any(feature = "cuda-runtime", test))]
 use j2k_core::HostAllocationError;
 pub(crate) use j2k_core::HostPhaseBudget;
 #[cfg(feature = "cuda-runtime")]
@@ -102,6 +103,7 @@ where
     Ok(values)
 }
 
+#[cfg(any(feature = "cuda-runtime", test))]
 fn allocation_error(error: HostAllocationError, what: &'static str) -> Error {
     Error::HostAllocationFailed {
         bytes: error.requested_bytes(),
@@ -109,6 +111,7 @@ fn allocation_error(error: HostAllocationError, what: &'static str) -> Error {
     }
 }
 
+#[cfg(any(feature = "cuda-runtime", test))]
 pub(crate) fn host_allocation_error<T>(element_count: usize, what: &'static str) -> Error {
     allocation_error(HostAllocationError::for_elements::<T>(element_count), what)
 }
