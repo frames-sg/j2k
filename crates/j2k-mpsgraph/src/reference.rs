@@ -6,7 +6,7 @@ use crate::{allocation::try_vec, Error};
 pub const RGB8_REFERENCE_CHANNEL_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// CPU oracle for the RGB8/NHWC reference graph.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "the validated image pixel count is intentionally converted to the F32 graph arithmetic domain"
 )]
@@ -65,5 +65,15 @@ mod tests {
             rgb8_nhwc_reference_cpu(&[0; 5], 1, 1, 2),
             Err(Error::InvalidTensorContract { .. })
         ));
+    }
+
+    #[test]
+    fn oracle_rejects_zero_batch_and_spatial_dimensions() {
+        for (batch, height, width) in [(0, 1, 1), (1, 0, 1), (1, 1, 0)] {
+            assert!(matches!(
+                rgb8_nhwc_reference_cpu(&[], batch, height, width),
+                Err(Error::InvalidTensorContract { .. })
+            ));
+        }
     }
 }

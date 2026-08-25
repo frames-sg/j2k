@@ -407,7 +407,7 @@ struct RunMetadata {
     completed: Option<(Vec<Rect>, Vec<Vec<J2kDecodeWarning>>)>,
 }
 
-#[allow(
+#[expect(
     dead_code,
     reason = "variant fields are ownership guards released together after graph completion"
 )]

@@ -4,15 +4,15 @@ use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch, PreparedBatchGroup, P
 
 use crate::{Error, MpsGraphTensorSpec};
 
-/// Unavailable MPSGraph decoder on non-Apple-Silicon targets.
+/// Unavailable `MPSGraph` decoder on non-Apple-Silicon targets.
 #[derive(Debug)]
 pub struct MpsGraphBatchDecoder;
 
-/// Unavailable MPSGraph input group on non-Apple-Silicon targets.
+/// Unavailable `MPSGraph` input group on non-Apple-Silicon targets.
 #[derive(Debug)]
 pub struct MpsGraphInputGroup;
 
-/// Unavailable MPSGraph batch result on non-Apple-Silicon targets.
+/// Unavailable `MPSGraph` batch result on non-Apple-Silicon targets.
 #[derive(Debug)]
 pub struct MpsGraphBatchDecode;
 

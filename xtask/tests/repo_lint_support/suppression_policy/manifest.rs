@@ -33,6 +33,7 @@ const REVIEWED_SAFETY_ALLOWS: &[(&str, &str, &str)] = &[
     ("crates/j2k-metal-support/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-metal/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-ml/Cargo.toml", "rust", "unsafe_code"),
+    ("crates/j2k-mpsgraph/Cargo.toml", "rust", "unsafe_code"),
 ];
 
 // Non-safety API/documentation suppressions remain a ceiling: deleting one is
@@ -151,6 +152,21 @@ const REVIEWED_ALLOW_CEILING: &[(&str, &str, &str)] = &[
         "module_name_repetitions",
     ),
     ("crates/j2k-ml/Cargo.toml", "clippy", "must_use_candidate"),
+    (
+        "crates/j2k-mpsgraph/Cargo.toml",
+        "clippy",
+        "missing_errors_doc",
+    ),
+    (
+        "crates/j2k-mpsgraph/Cargo.toml",
+        "clippy",
+        "module_name_repetitions",
+    ),
+    (
+        "crates/j2k-mpsgraph/Cargo.toml",
+        "clippy",
+        "must_use_candidate",
+    ),
     (
         "crates/j2k-test-support/Cargo.toml",
         "clippy",

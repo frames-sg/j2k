@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     clippy::similar_names,
     clippy::too_many_lines,
