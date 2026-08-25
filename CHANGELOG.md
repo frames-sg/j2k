@@ -3,9 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.10.0`.
+## [0.10.0] - 2026-08-25
 
 - Adds the experimental `j2k-mpsgraph` crate for Apple Silicon macOS 11+.
   Completed resident batches and pipelined direct decode feed static rank-four
