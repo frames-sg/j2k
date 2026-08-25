@@ -213,3 +213,9 @@ reviews:
     hidden_count: 0
     hidden_fingerprint: "none"
     rationale: "Reviewed the complete ordinary and hidden j2k-ml inventories against v0.9.0; no public API item was added, removed, or changed."
+  j2k-mpsgraph:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:40cc7c000d014f84"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the complete first-release j2k-mpsgraph surface: it exposes static native tensor contracts, completed resident handoff, same-queue blocking and nonblocking execution, owned completion guards, typed failures, and the RGB8 reference workflow without adding codec behavior."

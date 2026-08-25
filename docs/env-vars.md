@@ -85,6 +85,7 @@ override it.
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
 | `J2K_ML_BATCH_INPUT_MODE` | Selects content-distinct generated inputs (`distinct`) or one repeated `Arc` owner (`repeated`) for the `j2k-ml` batch benchmarks. One process uses one mode. | `distinct` | Benchmark |
+| `J2K_MPSGRAPH_BENCH_ITERATIONS` | Number of repeated samples per size/batch/path cell in the direct MPSGraph benchmark. | `5` | Benchmark |
 | `J2K_ML_BATCH_PROCESS_MODE` | Selects uninstrumented Criterion measurement (`criterion`) or the separate low-batch telemetry/profile process (`profile`) for CUDA and Metal batch benchmarks. | `criterion` | Benchmark |
 | `J2K_REQUIRE_OPENJPEG` | Makes OpenJPEG parity tests and benchmark comparator runs fail instead of skip when OpenJPEG tools are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_GROK` | Makes Grok parity tests and benchmark comparator runs fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Benchmark |

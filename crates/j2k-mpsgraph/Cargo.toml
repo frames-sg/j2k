@@ -1,0 +1,67 @@
+[package]
+name = "j2k-mpsgraph"
+description = "Direct MPSGraph tensor adapter for Metal-resident JPEG 2000 and HTJ2K batches"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+autobenches = false
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[dependencies]
+j2k = { path = "../j2k", version = "=0.10.0" }
+j2k-core = { path = "../j2k-core", version = "=0.10.0" }
+j2k-metal = { path = "../j2k-metal", version = "=0.10.0" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.10.0" }
+thiserror = { workspace = true }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
+block2 = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = [
+    "NSArray",
+    "NSDictionary",
+    "NSObject",
+    "NSValue",
+] }
+objc2-metal = { workspace = true }
+objc2-metal-performance-shaders = { workspace = true }
+objc2-metal-performance-shaders-graph = { workspace = true }
+
+[dev-dependencies]
+j2k-native = { path = "../j2k-native", version = "=0.10.0" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+undocumented_unsafe_blocks = "warn"
+
+[[test]]
+name = "contracts"
+
+[[test]]
+name = "metal"
+
+[[example]]
+name = "resident_reference_graph"
+
+[[bench]]
+name = "direct_handoff"
+harness = false
+test = false

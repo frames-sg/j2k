@@ -7,6 +7,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.10.0`.
 
+- Adds the experimental `j2k-mpsgraph` crate for Apple Silicon macOS 11+.
+  Completed resident batches and pipelined direct decode feed static rank-four
+  MPSGraph programs without decoded-pixel readback/re-upload; blocking,
+  nonblocking, reference-oracle, benchmark, package, and release validation
+  paths are included. No zero-copy or speed claim is made.
+
 - Breaking: narrows `j2k-cuda-runtime` to codec-neutral CUDA allocation,
   launch, completion, and diagnostics. CUDA JPEG 2000, JPEG, and transcode
   ownership now lives in the published implementation crates

@@ -233,7 +233,8 @@ Publish in this order:
 20. `j2k-jpeg-cuda`
 21. `j2k-cuda`
 22. `j2k-ml`
-23. `j2k-cli`
+23. `j2k-mpsgraph`
+24. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
 Use the repo-owned package gate from a clean worktree:
@@ -251,9 +252,9 @@ cargo package --no-verify
 cargo publish --dry-run
 ```
 
-The gate lists all 23 package contents. It derives dependency closure and
+The gate lists all 24 package contents. It derives dependency closure and
 registry independence from locked Cargo metadata, then constructs `.crate`
-archives with `cargo package --no-verify` for the 19 staged packages whose
+archives with `cargo package --no-verify` for the 20 staged packages whose
 workspace dependencies are not yet available from crates.io. The four derived
 registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `j2k-codec-math`) run
@@ -271,6 +272,13 @@ crates; third-party overrides are forbidden. Run the focused form with:
 
 ```bash
 cargo xtask j2k-ml-package-smoke
+```
+
+The Metal package-consumer lane also builds `j2k-mpsgraph` from its staged
+crate archive and staged workspace dependencies:
+
+```bash
+cargo xtask package-consumer-smoke --target metal
 ```
 
 An accelerator failure in this consumer is a distribution blocker even when

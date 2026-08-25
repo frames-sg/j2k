@@ -28,6 +28,10 @@ fn recording_metal_cargo() -> RecordingProgram {
 *" --list "*)
 {listed}
 ;;
+*"one_thousand_direct_submissions_reuse_one_session"*)
+printf '%s\n' 'test one_thousand_direct_submissions_reuse_one_session ... ok'
+printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out'
+;;
 *" --ignored "*)
 {passed}
 printf '%s\n' 'test result: ok. {passed_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
@@ -50,6 +54,10 @@ printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 f
 ;;
 *" -p j2k-ml "*)
 printf '%s\n' 'test sessions::persistent_metal_burn_decoder_uploads_independent_ht_through_staging ... ok'
+printf '%s\n' 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+;;
+*" -p j2k-mpsgraph "*)
+printf '%s\n' 'test prepared_group_submits_decode_and_identity_graph_without_a_cpu_wait ... ok'
 printf '%s\n' 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k "*)
@@ -77,7 +85,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     }
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 12);
+    assert_eq!(log.lines().count(), 14);
     assert!(log.contains("clippy --lib --all-features"));
     assert!(log.contains("clippy --bins --examples --tests --benches --all-features"));
     assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros"));
@@ -90,6 +98,8 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     assert!(log.contains("-p j2k-jpeg-metal"));
     assert!(log.contains("-p j2k-transcode-metal"));
     assert!(log.contains("-p j2k-ml"));
+    assert!(log.contains("-p j2k-mpsgraph"));
+    assert!(log.contains("one_thousand_direct_submissions_reuse_one_session"));
 }
 
 #[test]
@@ -100,7 +110,7 @@ fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
     run_release_metal(ValidationMode::Quick).expect("quick Metal command plan");
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 10);
+    assert_eq!(log.lines().count(), 11);
     assert!(log.lines().all(|line| line.contains("--profile gpu-quick")));
     assert_eq!(log.matches("clippy --profile gpu-quick").count(), 2);
     assert!(log.contains("clippy --profile gpu-quick --lib"));
@@ -110,6 +120,7 @@ fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
     assert!(!log.contains("cuda"));
     assert!(log.contains("--features j2k-ml/metal"));
     assert!(log.contains("-p j2k-ml --features metal"));
+    assert!(log.contains("-p j2k-mpsgraph"));
     assert!(log.contains("--ignored --list"));
     assert!(log.contains("--ignored --show-output"));
     assert!(!log.contains("--release"));

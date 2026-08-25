@@ -603,8 +603,8 @@ pub(super) fn package_consumer_smoke(mut args: impl Iterator<Item = String>) -> 
     let consumers = match target.as_str() {
         "core" => &["j2k"][..],
         "cuda" => &["j2k", "j2k-cuda"][..],
-        "metal" => &["j2k", "j2k-metal"][..],
-        "all" => &["j2k", "j2k-cuda", "j2k-metal"][..],
+        "metal" => &["j2k", "j2k-metal", "j2k-mpsgraph"][..],
+        "all" => &["j2k", "j2k-cuda", "j2k-metal", "j2k-mpsgraph"][..],
         _ => return Err(package_consumer_usage()),
     };
     if cuda_runtime && !consumers.contains(&"j2k-cuda") {

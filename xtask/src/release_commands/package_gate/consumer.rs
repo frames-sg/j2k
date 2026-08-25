@@ -13,7 +13,8 @@ use crate::process::{cargo, run_command_owned, CommandContext};
 
 use super::{append_patch_config_args, PackageGateStep};
 
-pub(super) const CORE_PACKAGE_CONSUMERS: [&str; 3] = ["j2k", "j2k-cuda", "j2k-metal"];
+pub(super) const CORE_PACKAGE_CONSUMERS: [&str; 4] =
+    ["j2k", "j2k-cuda", "j2k-metal", "j2k-mpsgraph"];
 
 pub(super) fn j2k_ml_consumer_checks(target_os: &str) -> &'static [&'static str] {
     match target_os {
@@ -97,6 +98,9 @@ pub(super) fn package_consumer_source(package: &str) -> Result<&'static str, Str
         "j2k" => Ok("fn main() { let _ = j2k::J2kDecoder::new(&[]); }\n"),
         "j2k-cuda" => Ok("fn main() { let _ = j2k_cuda::J2kDecoder::new(&[]); }\n"),
         "j2k-metal" => Ok("fn main() { let _ = j2k_metal::J2kDecoder::new(&[]); }\n"),
+        "j2k-mpsgraph" => Ok(
+            "fn main() { let _ = j2k_mpsgraph::MpsGraphBatchDecoder::system_default(Default::default()); }\n",
+        ),
         _ => Err(format!(
             "no clean package consumer source is defined for `{package}`"
         )),

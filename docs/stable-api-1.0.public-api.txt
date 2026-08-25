@@ -4927,6 +4927,104 @@ pub mod j2k_cuda_transcode_engine
 pub struct j2k_cuda_transcode_engine::CudaTranscodeEngine<'context>
 ```
 
+## `j2k-mpsgraph`
+
+```text
+#[non_exhaustive] pub enum j2k_mpsgraph::Error
+#[non_exhaustive] pub enum j2k_mpsgraph::MpsGraphElementType
+impl core::fmt::Debug for j2k_mpsgraph::MpsGraphBatchDecoder
+impl core::fmt::Debug for j2k_mpsgraph::MpsGraphInputGroup
+impl core::fmt::Debug for j2k_mpsgraph::MpsGraphProgram
+impl core::fmt::Debug for j2k_mpsgraph::MpsGraphRunOutput
+impl core::fmt::Debug for j2k_mpsgraph::SubmittedMpsGraphRun
+impl core::ops::drop::Drop for j2k_mpsgraph::SubmittedMpsGraphRun
+impl j2k_mpsgraph::MpsGraphBatchDecode
+impl j2k_mpsgraph::MpsGraphBatchDecoder
+impl j2k_mpsgraph::MpsGraphInputGroup
+impl j2k_mpsgraph::MpsGraphProgram
+impl j2k_mpsgraph::MpsGraphRunOutput
+impl j2k_mpsgraph::MpsGraphTensorSpec
+impl j2k_mpsgraph::SubmittedMpsGraphRun
+pub const fn j2k_mpsgraph::MpsGraphInputGroup::info(&self) -> &j2k::owned_batch::contracts::BatchGroupInfo
+pub const fn j2k_mpsgraph::MpsGraphInputGroup::resident_batch(&self) -> &j2k_metal::batch_decoder::contracts::MetalResidentBatch
+pub const fn j2k_mpsgraph::MpsGraphInputGroup::spec(&self) -> j2k_mpsgraph::MpsGraphTensorSpec
+pub const fn j2k_mpsgraph::MpsGraphProgram::input_spec(&self) -> j2k_mpsgraph::MpsGraphTensorSpec
+pub const fn j2k_mpsgraph::MpsGraphRunOutput::info(&self) -> &j2k::owned_batch::contracts::BatchGroupInfo
+pub const fn j2k_mpsgraph::MpsGraphTensorSpec::element_type(self) -> j2k_mpsgraph::MpsGraphElementType
+pub const fn j2k_mpsgraph::MpsGraphTensorSpec::shape(self) -> [usize; 4]
+pub const j2k_mpsgraph::RGB8_REFERENCE_CHANNEL_WEIGHTS: [f32; 3]
+pub fn j2k_mpsgraph::MpsGraphBatchDecode::errors(&self) -> &[j2k::owned_batch::errors::IndexedBatchError]
+pub fn j2k_mpsgraph::MpsGraphBatchDecode::group_errors(&self) -> &[j2k_metal::batch_decoder::contracts::MetalBatchGroupError]
+pub fn j2k_mpsgraph::MpsGraphBatchDecode::groups(&self) -> &[j2k_mpsgraph::MpsGraphInputGroup]
+pub fn j2k_mpsgraph::MpsGraphBatchDecode::into_parts(self) -> (alloc::vec::Vec<j2k_mpsgraph::MpsGraphInputGroup>, alloc::vec::Vec<j2k::owned_batch::errors::IndexedBatchError>, alloc::vec::Vec<j2k_metal::batch_decoder::contracts::MetalBatchGroupError>)
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::command_queue(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::decode(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_mpsgraph::MpsGraphBatchDecode, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_mpsgraph::MpsGraphBatchDecode, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k_mpsgraph::MpsGraphBatchDecode, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::device(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::prepare(&self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::run_prepared_group(&mut self, &j2k_mpsgraph::MpsGraphProgram, &j2k::owned_batch::prepared::PreparedBatchGroup) -> core::result::Result<j2k_mpsgraph::MpsGraphRunOutput, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::submissions(&self) -> core::result::Result<u64, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::submit_prepared_group(&mut self, &j2k_mpsgraph::MpsGraphProgram, &j2k::owned_batch::prepared::PreparedBatchGroup) -> core::result::Result<j2k_mpsgraph::SubmittedMpsGraphRun, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::system_default(j2k::owned_batch::contracts::BatchDecodeOptions) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphBatchDecoder::with_device_and_queue(objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLDevice::MTLDevice>>, objc2::rc::retained::Retained<objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>>, j2k::owned_batch::contracts::BatchDecodeOptions) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphInputGroup::decoded_rects(&self) -> &[j2k_core::types::Rect]
+pub fn j2k_mpsgraph::MpsGraphInputGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph::MpsGraphInputGroup::source_indices(&self) -> &[usize]
+pub fn j2k_mpsgraph::MpsGraphInputGroup::tensor_data(&self) -> &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensorData::MPSGraphTensorData
+pub fn j2k_mpsgraph::MpsGraphInputGroup::warnings(&self) -> &[alloc::vec::Vec<j2k::decode::J2kDecodeWarning>]
+pub fn j2k_mpsgraph::MpsGraphProgram::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph::MpsGraphProgram::graph(&self) -> &objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph
+pub fn j2k_mpsgraph::MpsGraphProgram::identity(j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphProgram::image_placeholder(&self) -> &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor
+pub fn j2k_mpsgraph::MpsGraphProgram::new(objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph>, objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>, alloc::vec::Vec<objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>>, j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphProgram::rgb8_nhwc_reference(usize, usize, usize) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphProgram::submit_completed(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>, j2k_mpsgraph::MpsGraphInputGroup) -> core::result::Result<j2k_mpsgraph::SubmittedMpsGraphRun, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphProgram::targets(&self) -> &[objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>]
+pub fn j2k_mpsgraph::MpsGraphProgram::validate_input_spec(&self, j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<(), j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphRunOutput::decoded_rects(&self) -> &[j2k_core::types::Rect]
+pub fn j2k_mpsgraph::MpsGraphRunOutput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph::MpsGraphRunOutput::results(&self) -> &[objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensorData::MPSGraphTensorData>]
+pub fn j2k_mpsgraph::MpsGraphRunOutput::source_indices(&self) -> &[usize]
+pub fn j2k_mpsgraph::MpsGraphRunOutput::warnings(&self) -> &[alloc::vec::Vec<j2k::decode::J2kDecodeWarning>]
+pub fn j2k_mpsgraph::MpsGraphTensorSpec::from_group_info(&j2k::owned_batch::contracts::BatchGroupInfo, usize) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::MpsGraphTensorSpec::new([usize; 4], j2k_mpsgraph::MpsGraphElementType) -> core::result::Result<Self, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::SubmittedMpsGraphRun::drop(&mut self)
+pub fn j2k_mpsgraph::SubmittedMpsGraphRun::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph::SubmittedMpsGraphRun::is_complete(&self) -> bool
+pub fn j2k_mpsgraph::SubmittedMpsGraphRun::wait(self) -> core::result::Result<j2k_mpsgraph::MpsGraphRunOutput, j2k_mpsgraph::Error>
+pub fn j2k_mpsgraph::rgb8_nhwc_reference_cpu(&[u8], usize, usize, usize) -> core::result::Result<alloc::vec::Vec<f32>, j2k_mpsgraph::Error>
+pub j2k_mpsgraph::Error::Allocation
+pub j2k_mpsgraph::Error::Allocation::requested: usize
+pub j2k_mpsgraph::Error::Allocation::source: alloc::collections::TryReserveError
+pub j2k_mpsgraph::Error::Allocation::what: &'static str
+pub j2k_mpsgraph::Error::GraphExecution
+pub j2k_mpsgraph::Error::GraphExecution::code: isize
+pub j2k_mpsgraph::Error::GraphExecution::description: alloc::string::String
+pub j2k_mpsgraph::Error::GraphExecution::domain: alloc::string::String
+pub j2k_mpsgraph::Error::InvalidTensorContract
+pub j2k_mpsgraph::Error::InvalidTensorContract::reason: &'static str
+pub j2k_mpsgraph::Error::Metal(j2k_metal::error::Error)
+pub j2k_mpsgraph::Error::MetalRuntime(j2k_metal_support::error::MetalSupportError)
+pub j2k_mpsgraph::Error::MissingGraphOutput
+pub j2k_mpsgraph::Error::MissingGraphOutput::index: usize
+pub j2k_mpsgraph::Error::TensorShapeOverflow
+pub j2k_mpsgraph::Error::UnsupportedPlatform
+pub j2k_mpsgraph::MpsGraphElementType::I16
+pub j2k_mpsgraph::MpsGraphElementType::U16
+pub j2k_mpsgraph::MpsGraphElementType::U8
+pub mod j2k_mpsgraph
+pub struct j2k_mpsgraph::MpsGraphBatchDecode
+pub struct j2k_mpsgraph::MpsGraphBatchDecoder
+pub struct j2k_mpsgraph::MpsGraphInputGroup
+pub struct j2k_mpsgraph::MpsGraphProgram
+pub struct j2k_mpsgraph::MpsGraphRunOutput
+pub struct j2k_mpsgraph::MpsGraphTensorSpec
+pub struct j2k_mpsgraph::SubmittedMpsGraphRun
+```
+
 ## `j2k-cli`
 
 `j2k-cli` is a binary package. Its stable command, stdout/stderr, and exit-code contract is documented in `docs/stable-api-1.0.md`.
