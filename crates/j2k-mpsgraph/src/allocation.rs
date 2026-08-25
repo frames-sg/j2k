@@ -27,3 +27,24 @@ pub(crate) fn try_single<T>(value: T, what: &'static str) -> Result<Vec<T>, Erro
     values.push(value);
     Ok(values)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_vec;
+    use crate::Error;
+
+    #[test]
+    fn impossible_capacity_preserves_allocation_context() {
+        let error = try_vec::<u8>(usize::MAX, "MPSGraph allocation test")
+            .expect_err("impossible capacity must fail before allocation");
+
+        assert!(matches!(
+            error,
+            Error::Allocation {
+                what: "MPSGraph allocation test",
+                requested: usize::MAX,
+                ..
+            }
+        ));
+    }
+}

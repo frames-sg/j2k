@@ -4,6 +4,8 @@ use j2k::{BatchAlpha, BatchCodecRoute, BatchGroupInfo, BatchLayout, BatchWavelet
 use j2k_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, PixelLayout, SampleType,
 };
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+use j2k_mpsgraph::Error;
 use j2k_mpsgraph::{MpsGraphElementType, MpsGraphTensorSpec};
 
 fn group_info(color: PixelLayout, sample_type: SampleType, layout: BatchLayout) -> BatchGroupInfo {
@@ -100,4 +102,75 @@ fn production_adapter_has_no_decoded_pixel_readback_or_upload_calls() {
             );
         }
     }
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+#[test]
+fn non_apple_api_consistently_reports_unsupported_platform() {
+    use std::sync::Arc;
+
+    use j2k::{prepare_batch, BatchDecodeOptions, EncodedImage};
+    use j2k_mpsgraph::{MpsGraphBatchDecoder, MpsGraphProgram, SubmittedMpsGraphRun};
+    use j2k_test_support::htj2k_rgb8_fixture;
+
+    let options = BatchDecodeOptions::default();
+    assert!(matches!(
+        MpsGraphBatchDecoder::system_default(options),
+        Err(Error::UnsupportedPlatform)
+    ));
+
+    let mut decoder = MpsGraphBatchDecoder;
+    let encoded = Arc::<[u8]>::from(htj2k_rgb8_fixture(8, 8));
+    let prepared = prepare_batch(vec![EncodedImage::full(encoded)], options)
+        .expect("valid fallback batch preparation");
+    assert!(prepared.errors().is_empty());
+    let group = prepared
+        .groups()
+        .first()
+        .expect("one homogeneous fallback group");
+    assert!(matches!(
+        decoder.prepare(Vec::new()),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        decoder.prepare_prepared_images(Vec::new()),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        decoder.decode(Vec::new()),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        decoder.decode_prepared(&prepared),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        decoder.decode_prepared_images(Vec::new()),
+        Err(Error::UnsupportedPlatform)
+    ));
+
+    let program = MpsGraphProgram;
+    assert!(matches!(
+        decoder.submit_prepared_group(&program, group),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        decoder.run_prepared_group(&program, group),
+        Err(Error::UnsupportedPlatform)
+    ));
+
+    let spec = MpsGraphTensorSpec::new([1, 1, 1, 3], MpsGraphElementType::U8)
+        .expect("valid fallback graph input spec");
+    assert!(matches!(
+        MpsGraphProgram::identity(spec),
+        Err(Error::UnsupportedPlatform)
+    ));
+    assert!(matches!(
+        MpsGraphProgram::rgb8_nhwc_reference(1, 1, 1),
+        Err(Error::UnsupportedPlatform)
+    ));
+
+    let submitted = SubmittedMpsGraphRun;
+    assert!(!submitted.is_complete());
+    assert!(matches!(submitted.wait(), Err(Error::UnsupportedPlatform)));
 }
