@@ -21,6 +21,7 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-metal",
     "j2k-transcode-metal",
     "j2k-ml",
+    "j2k-mpsgraph",
     "j2k",
 ];
 
@@ -93,6 +94,13 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         minimum_passed: 4,
         required_test:
             "sessions::persistent_metal_burn_decoder_uploads_independent_ht_through_staging",
+    },
+    MetalTestSuite {
+        label: "direct J2K MPSGraph integration",
+        package: "j2k-mpsgraph",
+        minimum_passed: 4,
+        required_test:
+            "prepared_group_submits_decode_and_identity_graph_without_a_cpu_wait",
     },
     MetalTestSuite {
         label: "J2K public facade",
@@ -185,6 +193,32 @@ fn run_release_metal(mode: ValidationMode) -> Result<(), String> {
             suite.label,
             suite.minimum_passed,
             &[suite.required_test],
+        )?;
+    }
+
+    if mode == ValidationMode::Full {
+        let output = run_cargo_captured(
+            &[
+                "test",
+                "--release",
+                "-p",
+                "j2k-mpsgraph",
+                "--test",
+                "metal",
+                "one_thousand_direct_submissions_reuse_one_session",
+                "--",
+                "--ignored",
+                "--exact",
+                "--show-output",
+            ],
+            METAL_RUNTIME_ENV,
+            "direct MPSGraph 1,000-submission soak",
+        )?;
+        validate_test_run(
+            &output,
+            "direct MPSGraph 1,000-submission soak",
+            1,
+            &["one_thousand_direct_submissions_reuse_one_session"],
         )?;
     }
 

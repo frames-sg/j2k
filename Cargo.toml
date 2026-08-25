@@ -17,6 +17,7 @@ members = [
     "crates/j2k-jpeg-metal",
     "crates/j2k-metal",
     "crates/j2k-metal-support",
+    "crates/j2k-mpsgraph",
     "crates/j2k-ml",
     "crates/j2k-native",
     "crates/j2k-profile",
@@ -78,6 +79,26 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "MTLTexture",
     "MTLTypes",
 ] }
+objc2-metal-performance-shaders = { version = "=0.3.2", default-features = false, features = [
+    "MPSCore",
+    "MPSCoreTypes",
+    "MPSNDArray",
+] }
+objc2-metal-performance-shaders-graph = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-metal-performance-shaders",
+    "MPSGraph",
+    "MPSGraphArithmeticOps",
+    "MPSGraphCore",
+    "MPSGraphMemoryOps",
+    "MPSGraphOperation",
+    "MPSGraphReductionOps",
+    "MPSGraphTensor",
+    "MPSGraphTensorData",
+    "MPSGraphTensorShapeOps",
+] }
+block2 = { version = "=0.6.2", default-features = false, features = ["std"] }
 rayon  = "1"
 cc     = "1.2"
 libc   = "0.2"

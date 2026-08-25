@@ -90,6 +90,10 @@
       "api_contract": "experimental"
     },
     {
+      "name": "j2k-mpsgraph",
+      "api_contract": "experimental"
+    },
+    {
       "name": "j2k-cli",
       "api_contract": "binary"
     }

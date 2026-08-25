@@ -158,6 +158,8 @@ Runnable repository examples:
   ([crates/j2k-ml/examples/cuda_upload.rs](crates/j2k-ml/examples/cuda_upload.rs))
 - `cargo run -p j2k-ml --example metal_upload --features metal`
   ([crates/j2k-ml/examples/metal_upload.rs](crates/j2k-ml/examples/metal_upload.rs))
+- `cargo run -p j2k-mpsgraph --example resident_reference_graph`
+  ([crates/j2k-mpsgraph/examples/resident_reference_graph.rs](crates/j2k-mpsgraph/examples/resident_reference_graph.rs))
 - `cargo run -p j2k-tilecodec --example decompress`
   ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
 
@@ -223,6 +225,12 @@ they do not claim a direct Burn destination or zero-copy handoff. Readers such
 as `wsi-rs` remain responsible for finding and supplying encoded image bytes.
 Codec support and correctness do not by themselves constitute a speedup claim.
 
+`j2k-mpsgraph` is the Apple Silicon direct path. It aliases completed resident
+batches or queues decode and MPSGraph on one Metal command queue without an
+application-level decoded-pixel GPU→CPU→GPU round trip. It does not claim
+framework-internal zero-copy or a speedup; see
+[docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
+
 ## Which crate should I use?
 
 Use `cargo add j2k` for JPEG 2000 / HTJ2K application code. Lower-level
@@ -242,6 +250,7 @@ Use lower-level crates only when you need a specific integration point:
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
 | Burn 0.21 native integer batch adapter | `j2k-ml` |
+| Direct Apple Silicon MPSGraph batch adapter | `j2k-mpsgraph` |
 | Tile compression codecs | `j2k-tilecodec` |
 | Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
@@ -325,6 +334,8 @@ Reference files:
   decoder claims, encoder procedure, blockers, and release evidence rules
 - [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
   prepared reuse, and explicit accelerator decode/upload adapters
+- [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md) - direct Apple Silicon
+  completed-buffer, pipelined, and nonblocking MPSGraph integration
 - [docs/release.md](docs/release.md) - release and package validation policy
 - [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
 - [CHANGELOG.md](CHANGELOG.md) - current release notes

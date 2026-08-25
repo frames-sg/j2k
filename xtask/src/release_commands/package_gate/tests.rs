@@ -357,6 +357,7 @@ fn core_gpu_consumer_manifests_patch_only_extracted_archives() {
         ("j2k", &["j2k-core"]),
         ("j2k-cuda", &["j2k", "j2k-cuda-runtime"]),
         ("j2k-metal", &["j2k", "j2k-metal-support"]),
+        ("j2k-mpsgraph", &["j2k", "j2k-metal", "j2k-metal-support"]),
     ]);
     let plan = test_package_gate_plan(&metadata).expect("package plan");
     let packaged = plan
@@ -369,7 +370,7 @@ fn core_gpu_consumer_manifests_patch_only_extracted_archives() {
         })
         .collect::<BTreeMap<_, _>>();
 
-    for package in ["j2k", "j2k-cuda", "j2k-metal"] {
+    for package in ["j2k", "j2k-cuda", "j2k-metal", "j2k-mpsgraph"] {
         let step = plan
             .iter()
             .find(|step| step.package == package)
@@ -474,6 +475,7 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
         "j2k-cuda",
         "j2k-metal",
         "j2k-ml",
+        "j2k-mpsgraph",
     ] {
         write_packaged_fixture(&package_dir.join(format!("{package}-0.7.5.crate")));
     }
@@ -492,7 +494,7 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
     let registry_independent = ["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
     assert_eq!(
         lines.len(),
-        manifest.ordered_crates().len() + registry_independent.len() + consumer_checks.len() + 5
+        manifest.ordered_crates().len() + registry_independent.len() + consumer_checks.len() + 6
     );
     assert!(lines[0].starts_with("publish -p j2k-core --dry-run|"));
     for package in registry_independent {
@@ -534,6 +536,6 @@ fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
             .iter()
             .filter(|line| line.starts_with("check|"))
             .count(),
-        3
+        4
     );
 }

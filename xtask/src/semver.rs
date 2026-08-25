@@ -71,6 +71,7 @@ const SEMVER_NEW_PACKAGES: &[&str] = &[
     "j2k-cuda-j2k-engine",
     "j2k-cuda-jpeg-engine",
     "j2k-cuda-transcode-engine",
+    "j2k-mpsgraph",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

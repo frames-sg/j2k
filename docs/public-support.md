@@ -50,6 +50,10 @@ maintained in [`docs/j2k-ml.md`](j2k-ml.md). Dated hardware and throughput
 evidence is maintained separately in
 [`docs/benchmark-evidence.md`](benchmark-evidence.md).
 
+The experimental Apple Silicon direct MPSGraph boundary is maintained in
+[`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md). It supports static rank-four native
+integer groups and does not broaden the codec support matrix.
+
 ## Required Local Gates
 
 Run the narrow gates while moving individual rows:
