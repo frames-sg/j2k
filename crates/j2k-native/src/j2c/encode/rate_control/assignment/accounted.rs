@@ -8,6 +8,10 @@ use super::super::super::{NativeEncodePipelineError, NativeEncodePipelineResult,
 use super::super::{
     classic_rate_target_tolerance, ClassicLayerBudgetAllocator, HtSegmentAssignmentCandidate,
 };
+use super::{
+    compare_ht_segment_candidates, enforce_ht_assignment_monotonicity,
+    ordered_candidate_block_count,
+};
 
 mod classic;
 pub(in crate::j2c::encode) use classic::assign_classic_segment_layers_by_slope_accounted;
@@ -15,7 +19,7 @@ pub(in crate::j2c::encode) use classic::assign_classic_segment_layers_by_slope_a
 struct HtAssignmentWorkspace {
     allocator: ClassicLayerBudgetAllocator,
     assignments: Vec<usize>,
-    candidate_order: Vec<usize>,
+    block_frontiers: Vec<Option<usize>>,
     block_min_layers: Vec<usize>,
 }
 
@@ -27,7 +31,7 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget_accounted(
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     retained_live_bytes: usize,
 ) -> NativeEncodePipelineResult<Vec<usize>> {
-    validate_ht_assignment_inputs(
+    let block_count = validate_ht_assignment_inputs(
         candidates,
         candidate_capacity,
         layer_count,
@@ -38,13 +42,22 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget_accounted(
         candidate_capacity,
         layer_count,
         cumulative_targets,
+        block_count,
         tracker,
         retained_live_bytes,
     )?;
-    for candidate_idx in workspace.candidate_order {
-        let candidate = candidates.get(candidate_idx).ok_or_else(|| {
-            NativeEncodePipelineError::internal_invariant("HTJ2K segment candidate index mismatch")
-        })?;
+    for _ in 0..candidates.len() {
+        let candidate_idx = workspace
+            .block_frontiers
+            .iter()
+            .filter_map(|candidate| *candidate)
+            .min_by(|&left, &right| compare_ht_segment_candidates(candidates, left, right))
+            .ok_or_else(|| {
+                NativeEncodePipelineError::internal_invariant(
+                    "HTJ2K PCRD candidate queue underflow",
+                )
+            })?;
+        let candidate = candidates[candidate_idx];
         let min_layer = *workspace
             .block_min_layers
             .get(candidate.block_index)
@@ -58,18 +71,15 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget_accounted(
             .assign_segment(min_layer, candidate.rate)
             .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
         workspace.assignments[candidate_idx] = layer;
-        workspace.block_min_layers[candidate.block_index] = layer;
+        let block_index = candidate.block_index;
+        workspace.block_min_layers[block_index] = layer;
+        workspace.block_frontiers[block_index] = candidate_idx.checked_add(1).filter(|&next| {
+            candidates
+                .get(next)
+                .is_some_and(|candidate| candidate.block_index == block_index)
+        });
     }
-    for (candidate, assignment) in candidates.iter().zip(&mut workspace.assignments) {
-        *assignment = *workspace
-            .block_min_layers
-            .get(candidate.block_index)
-            .ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant(
-                    "HTJ2K segment candidate block index mismatch",
-                )
-            })?;
-    }
+    enforce_ht_assignment_monotonicity(candidates, &mut workspace.assignments);
     Ok(workspace.assignments)
 }
 
@@ -78,7 +88,7 @@ fn validate_ht_assignment_inputs(
     candidate_capacity: usize,
     layer_count: usize,
     cumulative_targets: &[u64],
-) -> NativeEncodePipelineResult<()> {
+) -> NativeEncodePipelineResult<usize> {
     if !cumulative_targets.is_empty() && cumulative_targets.len() != layer_count {
         return Err(NativeEncodePipelineError::invalid_input(
             "quality layer byte target count must match quality layer count",
@@ -94,7 +104,12 @@ fn validate_ht_assignment_inputs(
             "HT PCRD candidate capacity is smaller than its length",
         ));
     }
-    Ok(())
+    ordered_candidate_block_count(
+        candidates
+            .iter()
+            .map(|candidate| (candidate.block_index, candidate.segment_index)),
+        "HTJ2K PCRD candidates are not grouped in segment order",
+    )
 }
 
 fn try_ht_assignment_workspace(
@@ -102,6 +117,7 @@ fn try_ht_assignment_workspace(
     candidate_capacity: usize,
     layer_count: usize,
     cumulative_targets: &[u64],
+    block_count: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     retained_live_bytes: usize,
 ) -> NativeEncodePipelineResult<HtAssignmentWorkspace> {
@@ -132,62 +148,41 @@ fn try_ht_assignment_workspace(
         cumulative_targets: targets,
         cumulative_used: used,
     };
-    let block_count = ht_assignment_block_count(candidates)?;
-    let (mut assignments, assignment_bytes) = tracker.try_vec::<usize>(
-        candidates.len(),
-        [fixed, target_bytes, used_bytes],
-        "HT PCRD segment assignments",
-    )?;
-    assignments.resize(candidates.len(), layer_count.saturating_sub(1));
-    let (mut candidate_order, order_bytes) = tracker.try_vec::<usize>(
-        candidates.len(),
-        [fixed, target_bytes, used_bytes, assignment_bytes],
-        "HT PCRD candidate order",
-    )?;
-    candidate_order.extend(0..candidates.len());
-    candidate_order
-        .sort_by_key(|&idx| (candidates[idx].block_index, candidates[idx].segment_index));
     let (mut block_min_layers, block_min_bytes) = tracker.try_vec::<usize>(
         block_count,
-        [
-            fixed,
-            target_bytes,
-            used_bytes,
-            assignment_bytes,
-            order_bytes,
-        ],
+        [fixed, target_bytes, used_bytes],
         "HT PCRD block minimum layers",
     )?;
     block_min_layers.resize(block_count, 0);
+    let (mut block_frontiers, frontier_bytes) = tracker.try_vec::<Option<usize>>(
+        block_count,
+        [fixed, target_bytes, used_bytes, block_min_bytes],
+        "HT PCRD block frontiers",
+    )?;
+    block_frontiers.resize(block_count, None);
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        if candidate.segment_index == 0 {
+            block_frontiers[candidate.block_index] = Some(candidate_index);
+        }
+    }
+    let live = [
+        fixed,
+        target_bytes,
+        used_bytes,
+        block_min_bytes,
+        frontier_bytes,
+    ];
+    let (mut assignments, assignment_bytes) =
+        tracker.try_vec::<usize>(candidates.len(), live, "HT PCRD segment assignments")?;
+    assignments.resize(candidates.len(), layer_count.saturating_sub(1));
     tracker.check(
-        [
-            fixed,
-            target_bytes,
-            used_bytes,
-            assignment_bytes,
-            order_bytes,
-            block_min_bytes,
-        ],
+        live.into_iter().chain([assignment_bytes]),
         "HT PCRD workspace",
     )?;
     Ok(HtAssignmentWorkspace {
         allocator,
         assignments,
-        candidate_order,
+        block_frontiers,
         block_min_layers,
     })
-}
-
-fn ht_assignment_block_count(
-    candidates: &[HtSegmentAssignmentCandidate],
-) -> NativeEncodePipelineResult<usize> {
-    candidates
-        .iter()
-        .map(|candidate| candidate.block_index)
-        .max()
-        .map_or(Ok(0usize), |index| {
-            index.checked_add(1).ok_or_else(|| {
-                NativeEncodePipelineError::arithmetic_overflow("HT PCRD block count")
-            })
-        })
 }

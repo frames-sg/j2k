@@ -270,6 +270,147 @@ pub(crate) fn append_step_sizes_with_irreversible_profile(
     }
 }
 
+const OPENHTJ2K_D97_ENERGY_NORMS: [(f64, f64); 16] = [
+    (1.965_907_314_575_295_7, 2.080_871_927_589_849),
+    (4.122_409_873_969_023, 3.868_863_224_131_922),
+    (8.416_744_177_952_724, 8.317_022_299_806_517),
+    (16.935_572_073_021_724, 17.201_929_112_787_134),
+    (33.924_926_802_207_46, 34.746_895_711_342_454),
+    (67.877_165_259_517_36, 69.675_395_886_752_16),
+    (135.768_047_117_209_76, 139.443_143_900_563_17),
+    (271.542_960_998_980_6, 278.932_688_221_656_86),
+    (543.089_356_530_109_5, 557.888_607_932_094_2),
+    (1_086.180_430_479_691_7, 1_115.788_835_859_533_3),
+    (2_172.361_719_689_337, 2_231.583_482_284_095_7),
+    (4_344.723_868_746_226, 4_463.169_869_925_348),
+    (8_689.447_952_176_557, 8_926.341_192_539_1),
+    (17_378.896_011_694_746, 17_852.683_111_423_37),
+    (34_757.792_077_060_57, 35_705.366_586_020_52),
+    (69_515.584_180_957_42, 71_410.733_353_619_97),
+];
+
+const OPENHTJ2K_VISUAL_WEIGHTS_444: [[f64; 15]; 3] = [
+    [
+        0.0901, 0.2758, 0.2758, 0.7018, 0.8378, 0.8378, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    ],
+    [
+        0.0263, 0.0863, 0.0863, 0.1362, 0.2564, 0.2564, 0.3346, 0.4691, 0.4691, 0.5444, 0.6523,
+        0.6523, 0.7078, 0.7797, 0.7797,
+    ],
+    [
+        0.0773, 0.1835, 0.1835, 0.2598, 0.4130, 0.4130, 0.5040, 0.6464, 0.6464, 0.7220, 0.8254,
+        0.8254, 0.8769, 0.9424, 0.9424,
+    ],
+];
+
+const OPENHTJ2K_COLOR_GAINS: [f64; 3] = [1.7321, 1.8051, 1.5734];
+
+/// Append the expounded 9/7 QCD or QCC tuples used by `OpenHTJ2K`'s Qfactor
+/// profile for grayscale or 4:4:4 YCbCr content.
+pub(crate) fn append_openhtj2k_qfactor_step_sizes(
+    step_sizes: &mut Vec<QuantStepSize>,
+    bit_depth: u8,
+    num_decompositions: u8,
+    qfactor: u8,
+    component: usize,
+) -> EncodeResult<()> {
+    if !(1..=100).contains(&qfactor) {
+        return Err(EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor must be in 1..=100",
+        });
+    }
+    let Some(visual_weights) = OPENHTJ2K_VISUAL_WEIGHTS_444.get(component) else {
+        return Err(EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor supports grayscale or three-component 4:4:4 input",
+        });
+    };
+    let level_count = usize::from(num_decompositions);
+    if level_count > OPENHTJ2K_D97_ENERGY_NORMS.len() {
+        return Err(EncodeError::Unsupported {
+            what: "OpenHTJ2K Qfactor supports at most 16 decomposition levels",
+        });
+    }
+
+    let qfactor = f64::from(qfactor);
+    let magnitude = if qfactor < 50.0 {
+        50.0 / qfactor
+    } else {
+        2.0 * (1.0 - qfactor / 100.0)
+    };
+    let mut power = 1.0;
+    let mut alpha = 0.04;
+    if qfactor >= 97.0 {
+        power = 0.0;
+        alpha = 0.10;
+    } else if qfactor > 65.0 {
+        let magnitude_t0 = 2.0 * (1.0 - 65.0 / 100.0);
+        let magnitude_t1 = 2.0 * (1.0 - 97.0 / 100.0);
+        power = (libm::log(magnitude_t1) - libm::log(magnitude))
+            / (libm::log(magnitude_t1) - libm::log(magnitude_t0));
+        alpha = 0.10 * libm::pow(0.04 / 0.10, power);
+    }
+
+    let epsilon = libm::sqrt(0.5) / libm::scalbn(1.0, i32::from(bit_depth));
+    let delta_reference = alpha * magnitude * OPENHTJ2K_COLOR_GAINS[0] + epsilon;
+    let component_gain = OPENHTJ2K_COLOR_GAINS[component];
+    let start = step_sizes.len();
+    for (level, &(low, high)) in OPENHTJ2K_D97_ENERGY_NORMS[..level_count].iter().enumerate() {
+        let base = level * 3;
+        for (offset, wmse) in [high * high, low * high, high * low]
+            .into_iter()
+            .enumerate()
+        {
+            let weight = visual_weights.get(base + offset).copied().unwrap_or(1.0);
+            let delta =
+                delta_reference / (libm::sqrt(wmse) * libm::pow(weight, power) * component_gain);
+            step_sizes.push(openhtj2k_step_from_normalized_delta(delta));
+        }
+    }
+    let low_energy = if level_count == 0 {
+        1.0
+    } else {
+        let low = OPENHTJ2K_D97_ENERGY_NORMS[level_count - 1].0;
+        low * low
+    };
+    let low_delta = delta_reference / (libm::sqrt(low_energy) * component_gain);
+    step_sizes.push(openhtj2k_step_from_normalized_delta(low_delta));
+    step_sizes[start..].reverse();
+    Ok(())
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the OpenHTJ2K Qfactor conversion clamps exponent and mantissa to their marker widths"
+)]
+fn openhtj2k_step_from_normalized_delta(mut delta: f64) -> QuantStepSize {
+    let mut exponent = 0_i32;
+    // The marker exponent saturates at 31, so any additional normalization
+    // iterations cannot affect the encoded result.
+    for _ in 0..=31 {
+        if delta >= 1.0 {
+            break;
+        }
+        delta *= 2.0;
+        exponent += 1;
+    }
+    let mut mantissa = libm::floor((delta - 1.0) * 2048.0 + 0.5) as i32;
+    if mantissa >= 2048 {
+        mantissa = 0;
+        exponent -= 1;
+    }
+    if exponent > 31 {
+        exponent = 31;
+        mantissa = 0;
+    } else if exponent < 0 {
+        exponent = 0;
+        mantissa = 2047;
+    }
+    QuantStepSize {
+        exponent: u16::try_from(exponent).expect("Qfactor exponent was clamped to 0..=31"),
+        mantissa: u16::try_from(mantissa).expect("Qfactor mantissa was clamped to 0..=2047"),
+    }
+}
+
 /// Quantize wavelet coefficients for a single subband.
 ///
 /// For lossless: converts f32 to i32 (round to nearest integer).
@@ -365,6 +506,53 @@ pub(crate) fn try_quantize_subband(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openhtj2k_qfactor_90_matches_reference_qcd_and_qcc() {
+        let expected = [
+            [
+                0x65df, 0x65b4, 0x65b4, 0x658b, 0x5dc9, 0x5dc9, 0x5dad, 0x560f, 0x560f, 0x5625,
+                0x4008, 0x4008, 0x410b, 0x3dab, 0x3dab, 0x337e,
+            ],
+            [
+                0x654f, 0x66db, 0x66db, 0x6764, 0x5027, 0x5027, 0x50d7, 0x49c6, 0x49c6, 0x4b9b,
+                0x45c4, 0x45c4, 0x39b0, 0x3396, 0x3396, 0x2a15,
+            ],
+            [
+                0x6745, 0x6788, 0x6788, 0x67e6, 0x5056, 0x5056, 0x50d5, 0x4995, 0x4995, 0x4ae4,
+                0x4481, 0x4481, 0x3819, 0x3130, 0x3130, 0x35a3,
+            ],
+        ];
+
+        for (component, expected) in expected.iter().enumerate() {
+            let mut actual = Vec::new();
+            append_openhtj2k_qfactor_step_sizes(&mut actual, 8, 5, 90, component)
+                .expect("valid OpenHTJ2K Qfactor profile");
+            let actual = actual
+                .iter()
+                .map(|step| (step.exponent << 11) | step.mantissa)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn openhtj2k_normalized_step_conversion_saturates_at_marker_exponent() {
+        assert_eq!(
+            openhtj2k_step_from_normalized_delta(0.75),
+            QuantStepSize {
+                exponent: 1,
+                mantissa: 1024,
+            }
+        );
+        assert_eq!(
+            openhtj2k_step_from_normalized_delta(f64::MIN_POSITIVE),
+            QuantStepSize {
+                exponent: 31,
+                mantissa: 0,
+            }
+        );
+    }
 
     #[test]
     fn test_lossless_quantize() {

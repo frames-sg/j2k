@@ -285,6 +285,7 @@ pub fn j2k::J2kLossyEncodeOptions::with_cpu_only_backend(self) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_marker_segments(self, alloc::vec::Vec<j2k::J2kMarkerSegment>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_max_decomposition_levels(self, core::option::Option<u8>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_progression(self, j2k::J2kProgressionOrder) -> Self
+pub fn j2k::J2kLossyEncodeOptions::with_qfactor(self, core::option::Option<u8>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_quality_layers(self, alloc::vec::Vec<j2k::J2kQualityLayer>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_rate_target(self, core::option::Option<j2k::J2kRateTarget>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_strict_device_backend(self) -> Self
@@ -622,6 +623,7 @@ pub j2k::J2kLossyEncodeOptions::precinct_exponents: alloc::vec::Vec<(u8, u8)>
 pub j2k::J2kLossyEncodeOptions::progression: j2k::J2kProgressionOrder
 pub j2k::J2kLossyEncodeOptions::psnr_iteration_budget: u8
 pub j2k::J2kLossyEncodeOptions::psnr_tolerance_db: f64
+pub j2k::J2kLossyEncodeOptions::qfactor: core::option::Option<u8>
 pub j2k::J2kLossyEncodeOptions::quality_layers: alloc::vec::Vec<j2k::J2kQualityLayer>
 pub j2k::J2kLossyEncodeOptions::rate_target: core::option::Option<j2k::J2kRateTarget>
 pub j2k::J2kLossyEncodeOptions::tile_part_packet_limit: core::option::Option<u16>
@@ -3780,6 +3782,7 @@ pub fn j2k_native::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) ->
 pub fn j2k_native::encode(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_component_planes_53(&[j2k_native::EncodeComponentPlane<'_>], u32, u32, u8, bool, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_htj2k(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
+pub fn j2k_native::encode_htj2k_with_qfactor(&[u8], u32, u32, u16, u8, bool, u8, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_typed_component_planes_53(&[j2k_native::EncodeTypedComponentPlane<'_>], u32, u32, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::encode_with_roi_regions(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &[j2k_native::EncodeRoiRegion]) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::inspect_htj2k_capabilities(&[u8]) -> core::result::Result<core::option::Option<j2k_native::Htj2kCapabilities>, j2k_native::J2kCodestreamHeaderError>

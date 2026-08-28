@@ -170,7 +170,7 @@ pub struct CudaHtj2kEncodeStatus {
     pub missing_bit_planes: u32,
     /// Reserved for ABI stability.
     pub reserved0: u32,
-    /// Reserved for ABI stability.
+    /// Exact `SigProp` prefix length for multi-pass output.
     pub reserved1: u32,
     /// Reserved for ABI stability.
     pub reserved2: u32,
@@ -248,6 +248,18 @@ impl CudaHtj2kEncodedCodeBlock {
             htj2k_encoded_num_zero_bitplanes(self.status),
         )
     }
+
+    /// Consume this block and preserve exact cleanup/SigProp/MagRef boundaries.
+    pub fn into_exact_parts(self) -> (Vec<u8>, u32, u32, u32, u8, u8) {
+        (
+            self.data,
+            htj2k_encoded_cleanup_length(self.status),
+            htj2k_encoded_sigprop_length(self.status),
+            htj2k_encoded_magref_length(self.status),
+            htj2k_encoded_num_coding_passes(self.status),
+            htj2k_encoded_num_zero_bitplanes(self.status),
+        )
+    }
 }
 
 pub(crate) fn htj2k_encoded_cleanup_length(status: CudaHtj2kEncodeStatus) -> u32 {
@@ -262,8 +274,20 @@ pub(crate) fn htj2k_encoded_refinement_length(status: CudaHtj2kEncodeStatus) -> 
     if status.number_of_coding_passes <= 1 {
         0
     } else {
+        status.data_len.saturating_sub(status.reserved0)
+    }
+}
+
+pub(crate) fn htj2k_encoded_sigprop_length(status: CudaHtj2kEncodeStatus) -> u32 {
+    if status.number_of_coding_passes <= 1 {
+        0
+    } else {
         status.reserved1
     }
+}
+
+pub(crate) fn htj2k_encoded_magref_length(status: CudaHtj2kEncodeStatus) -> u32 {
+    htj2k_encoded_refinement_length(status).saturating_sub(htj2k_encoded_sigprop_length(status))
 }
 
 pub(crate) fn htj2k_encoded_num_coding_passes(status: CudaHtj2kEncodeStatus) -> u8 {

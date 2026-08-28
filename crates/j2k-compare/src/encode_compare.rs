@@ -36,8 +36,9 @@ use self::types::{
 mod cli;
 use self::cli::{
     batch_size_config_from_env, encode_one, encode_work_dir, include_generated_images,
-    include_kakadu_encoder, print_usage, validate_tool_gates,
+    include_kakadu_encoder, openjph_matrix_requested, print_usage, validate_tool_gates,
 };
+mod htj2k_matrix;
 mod images;
 use self::images::{all_image_cases, mixed_external_batches, read_pnm, select_cases};
 mod tools;
@@ -71,6 +72,9 @@ fn run() -> Result<(), String> {
     }
     if args.get(1).is_some_and(|arg| arg == "--encode-one") {
         return encode_one(&args[2..]);
+    }
+    if openjph_matrix_requested(&args) {
+        return htj2k_matrix::run();
     }
 
     validate_tool_gates()?;

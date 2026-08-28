@@ -12,11 +12,12 @@ use j2k_native::{
     idwt_required_input_windows, idwt_required_output_margin,
     pack_j2k_code_block_scalar_from_tier1_tokens, ColorSpace as NativeColorSpace,
     DecodedComponents as NativeDecodedComponents, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
-    EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kDirectBandId,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
+    EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtSubBandDecodeJob,
+    J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kDeinterleaveMctToF32Job,
+    J2kDeinterleaveToF32Job, J2kDirectBandId, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level, J2kForwardDwt53Output,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kHtCodeBlockEncodeJob,
+    J2kHtCodeBlockSetEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
     J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kQuantizeSubbandJob,
     J2kRequiredBandRegion, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
     J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
@@ -384,7 +385,8 @@ mod tier1_encode;
 pub(crate) use self::tier1_encode::{
     encode_classic_tier1_code_block, encode_classic_tier1_code_blocks,
     encode_classic_tier1_prepared_device_code_blocks_resident, encode_ht_cleanup_code_block,
-    encode_ht_cleanup_code_blocks, encode_ht_prepared_device_code_blocks_resident,
+    encode_ht_cleanup_code_blocks, encode_ht_code_block_sets,
+    encode_ht_prepared_device_code_blocks_resident,
     read_resident_ht_tier1_code_blocks_for_cpu_packetization,
 };
 #[cfg(all(target_os = "macos", test))]

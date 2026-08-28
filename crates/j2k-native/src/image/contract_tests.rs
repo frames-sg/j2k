@@ -4,7 +4,7 @@ use super::*;
 use crate::jp2::cdef::ChannelDefinitionBox;
 use crate::jp2::colr::{CieLab, ColorSpace as NativeColorSpace};
 use crate::jp2::pclr::{PaletteBox, PaletteColumn};
-use crate::{encode, EncodeOptions};
+use crate::{encode, encode_htj2k, EncodeOptions};
 use alloc::vec;
 
 fn gray_fixture() -> (Vec<u8>, Vec<u8>) {
@@ -187,6 +187,68 @@ fn image_output_entrypoints_preserve_pixels_regions_and_metadata() {
         .decode_region_components_with_ht_decoder(&mut ht_context, roi, &mut ht_decoder)
         .expect("declined HT hook uses scalar region decode");
     assert_eq!(ht_components.planes()[0].samples(), expected_samples);
+}
+
+#[test]
+fn prepared_region_decoder_parses_tile_graph_once_across_regions() {
+    let (samples, encoded) = gray_fixture();
+    let image = Image::new(&encoded, &DecodeSettings::strict()).expect("fixture parses");
+    let mut context = DecoderContext::default();
+    crate::j2c::reset_tile_parse_calls();
+
+    let mut decoder = image
+        .prepare_region_decoder_with_context(&mut context)
+        .expect("prepare region decoder");
+    for roi in [(0, 0, 8, 2), (0, 2, 8, 3), (0, 5, 8, 3)] {
+        let components = decoder
+            .decode_region_components(roi)
+            .expect("decode prepared region");
+        let expected = expected_crop(&samples, roi)
+            .into_iter()
+            .map(f32::from)
+            .collect::<Vec<_>>();
+        assert_eq!(components.planes()[0].samples(), expected);
+    }
+
+    assert_eq!(crate::j2c::tile_parse_calls(), 1);
+}
+
+#[test]
+fn prepared_region_decoder_reuses_one_htj2k_tile_graph() {
+    let samples = (0_u8..64).map(|value| value * 3).collect::<Vec<_>>();
+    let encoded = encode_htj2k(
+        &samples,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("HTJ2K fixture encodes");
+    let image = Image::new(&encoded, &DecodeSettings::strict()).expect("fixture parses");
+    let mut context = DecoderContext::default();
+    crate::j2c::reset_tile_parse_calls();
+
+    let mut decoder = image
+        .prepare_region_decoder_with_context(&mut context)
+        .expect("prepare HTJ2K region decoder");
+    for roi in [(0, 0, 8, 1), (0, 1, 8, 4), (0, 5, 8, 3)] {
+        let components = decoder
+            .decode_region_components(roi)
+            .expect("decode prepared HTJ2K region");
+        let expected = expected_crop(&samples, roi)
+            .into_iter()
+            .map(f32::from)
+            .collect::<Vec<_>>();
+        assert_eq!(components.planes()[0].samples(), expected);
+    }
+
+    assert_eq!(crate::j2c::tile_parse_calls(), 1);
 }
 
 #[test]

@@ -6,11 +6,11 @@ use alloc::vec::Vec;
 
 use super::{J2kEncodeDispatchReport, J2kEncodeStageResult};
 use crate::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kForwardDwt53Job, J2kForwardDwt53Output,
-    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kPacketizationEncodeJob,
-    J2kPacketizationProgressionOrder, J2kQuantizeSubbandJob, J2kResidentHtj2kTileEncodeJob,
-    J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock, J2kForwardDwt53Job,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
+    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtCodeBlockSetEncodeJob, J2kHtSubbandEncodeJob,
+    J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder, J2kQuantizeSubbandJob,
+    J2kResidentHtj2kTileEncodeJob, J2kTier1CodeBlockEncodeJob,
 };
 
 /// Pixel deinterleave and level-shift job supplied to an accelerator.
@@ -203,6 +203,15 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
+    /// Optionally encode exact HT cleanup/refinement-set candidates in one dispatch.
+    #[doc(hidden)]
+    fn encode_ht_code_block_sets(
+        &mut self,
+        _jobs: &[J2kHtCodeBlockSetEncodeJob<'_>],
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlockSet>>> {
+        Ok(None)
+    }
+
     /// Optionally quantize and encode one HTJ2K cleanup/refinement subband.
     fn encode_ht_subband(
         &mut self,
@@ -254,5 +263,30 @@ impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
 
     fn prefer_parallel_cpu_tile_encode(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CpuOnlyJ2kEncodeStageAccelerator, J2kEncodeStageAccelerator};
+    use crate::J2kHtCodeBlockSetEncodeJob;
+
+    #[test]
+    fn legacy_accelerators_decline_explicit_ht_sets_by_default() {
+        let coefficients = [7_i32];
+        let jobs = [J2kHtCodeBlockSetEncodeJob {
+            coefficients: &coefficients,
+            width: 1,
+            height: 1,
+            total_bitplanes: 3,
+            cleanup_bitplane: 1,
+            target_coding_passes: 3,
+        }];
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+
+        assert!(accelerator
+            .encode_ht_code_block_sets(&jobs)
+            .expect("default set hook")
+            .is_none());
     }
 }

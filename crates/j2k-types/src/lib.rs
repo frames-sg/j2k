@@ -73,8 +73,9 @@ pub use resident::{
 };
 mod tier1;
 pub use tier1::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kHtCodeBlockEncodeJob, J2kHtCodeBlockSetEncodeJob, J2kHtSubbandEncodeJob,
+    J2kSubBandType, J2kTier1CodeBlockEncodeJob,
 };
 
 mod transform;

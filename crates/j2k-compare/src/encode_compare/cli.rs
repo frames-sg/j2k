@@ -10,7 +10,12 @@ use super::{
 pub(super) fn print_usage(program: &str) {
     eprintln!("usage: {program} [case-name-filter ...]");
     eprintln!("       {program} --encode-one --input FILE.pnm --output FILE.jp2");
+    eprintln!("       {program} --openjph-matrix");
     eprintln!("Runs CLI-style lossless classic JPEG 2000 encoder benchmarks.");
+}
+
+pub(super) fn openjph_matrix_requested(args: &[String]) -> bool {
+    args.len() == 2 && args[1] == "--openjph-matrix"
 }
 
 pub(super) fn encode_one(args: &[String]) -> Result<(), String> {
@@ -145,4 +150,19 @@ pub(super) fn encode_work_dir() -> Result<PathBuf, String> {
         .join(std::process::id().to_string());
     fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openjph_matrix_requested;
+
+    #[test]
+    fn openjph_matrix_flag_selects_the_focused_htj2k_mode() {
+        let args = [
+            "jp2k_encode_compare".to_string(),
+            "--openjph-matrix".to_string(),
+        ];
+        assert!(openjph_matrix_requested(&args));
+        assert!(!openjph_matrix_requested(&args[..1]));
+    }
 }

@@ -29,6 +29,9 @@ mod tag_tree;
 pub(crate) mod tag_tree_encode;
 mod tile;
 
+#[cfg(test)]
+pub(crate) use tile::{reset_tile_parse_calls, tile_parse_calls};
+
 use alloc::vec::Vec;
 
 use super::jp2::colr::{ColorSpace, ColorSpecificationBox, EnumeratedColorspace};
@@ -47,11 +50,13 @@ pub(crate) use decode::{
     build_direct_color_plan, build_direct_grayscale_plan, build_referenced_classic_color_plan,
     build_referenced_classic_grayscale_plan, build_referenced_classic_rgba_plan,
     build_referenced_htj2k_color_plan, build_referenced_htj2k_grayscale_plan,
-    build_referenced_htj2k_rgba_plan, decode_with_capacity_retry as decode,
+    build_referenced_htj2k_rgba_plan, decode_preparsed_with_capacity_retry as decode_preparsed,
+    decode_with_capacity_retry as decode, prepare_region_tiles,
 };
 pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;
 pub(crate) use segment::MAX_BITPLANE_COUNT;
+pub(crate) use tile::ParsedTiles;
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,

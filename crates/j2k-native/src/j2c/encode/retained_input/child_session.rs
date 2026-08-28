@@ -27,6 +27,7 @@ impl NativeEncodeSession<'_> {
                 retained_bytes,
             ),
             cap: self.cap,
+            openhtj2k_qfactor: self.openhtj2k_qfactor,
         })
     }
 }

@@ -67,7 +67,7 @@ pub(in crate::decode) fn write_components_u8_output(
     }
 }
 
-fn component_sample_count(dims: (u32, u32)) -> Result<usize, J2kError> {
+pub(super) fn component_sample_count(dims: (u32, u32)) -> Result<usize, J2kError> {
     (dims.0 as usize)
         .checked_mul(dims.1 as usize)
         .ok_or(J2kError::DimensionOverflow {
@@ -76,7 +76,7 @@ fn component_sample_count(dims: (u32, u32)) -> Result<usize, J2kError> {
         })
 }
 
-fn validate_component_planes(
+pub(super) fn validate_component_planes(
     planes: &[j2k_native::ComponentPlane<'_>],
     expected_samples: usize,
 ) -> Result<(), J2kError> {

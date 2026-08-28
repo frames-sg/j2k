@@ -4,7 +4,8 @@ use alloc::vec::Vec;
 
 use super::emit::{encode_first_quad_pair, encode_non_initial_quad_pair};
 use super::quad::{FirstQuadPairRequest, NonInitialQuadPairRequest, QuadMarkerRows, QuadPairState};
-use super::writers::{terminate_mel_vlc, MagSgnEncoder, MelEncoder, VlcEncoder};
+use super::workspace::HtEncodeWorkspace;
+use super::writers::terminate_mel_vlc;
 #[cfg(test)]
 use crate::j2c::coefficient_view::legacy_coefficient_view_error;
 use crate::j2c::coefficient_view::CoefficientBlockView;
@@ -34,10 +35,26 @@ pub(super) fn encode_cleanup_segment_from_coefficients(
         .map_err(legacy_coefficient_view_error)
 }
 
+#[cfg(test)]
 pub(super) fn try_encode_cleanup_segment_from_view(
     coefficients: CoefficientBlockView<'_, i32>,
     missing_msbs: u8,
     total_bitplanes: u8,
+) -> EncodeResult<Vec<u8>> {
+    let mut workspace = HtEncodeWorkspace::try_new()?;
+    try_encode_cleanup_segment_from_view_in_workspace(
+        coefficients,
+        missing_msbs,
+        total_bitplanes,
+        &mut workspace,
+    )
+}
+
+pub(super) fn try_encode_cleanup_segment_from_view_in_workspace(
+    coefficients: CoefficientBlockView<'_, i32>,
+    missing_msbs: u8,
+    total_bitplanes: u8,
+    workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<Vec<u8>> {
     let source = I32CleanupBlockView::new(
         coefficients,
@@ -48,6 +65,7 @@ pub(super) fn try_encode_cleanup_segment_from_view(
         missing_msbs,
         coefficients.width(),
         coefficients.height(),
+        workspace,
     )
 }
 
@@ -58,8 +76,15 @@ pub(super) fn encode_cleanup_segment(
     width: usize,
     height: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    try_encode_cleanup_segment_from_source(coefficients, missing_msbs, width, height)
-        .map_err(legacy_coefficient_view_error)
+    let mut workspace = HtEncodeWorkspace::try_new().map_err(|_| "HTJ2K workspace allocation")?;
+    try_encode_cleanup_segment_from_source(
+        coefficients,
+        missing_msbs,
+        width,
+        height,
+        &mut workspace,
+    )
+    .map_err(legacy_coefficient_view_error)
 }
 
 #[expect(
@@ -72,10 +97,14 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     missing_msbs: u8,
     width: usize,
     height: usize,
+    workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<Vec<u8>> {
-    let mut mel = MelEncoder::try_new()?;
-    let mut vlc = VlcEncoder::try_new()?;
-    let mut ms = MagSgnEncoder::try_new()?;
+    workspace.reset_cleanup();
+    let HtEncodeWorkspace {
+        mel,
+        vlc,
+        mag_sgn: ms,
+    } = workspace;
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let stride = width;
@@ -112,9 +141,9 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
                     s: &mut s,
                 },
             },
-            &mut mel,
-            &mut vlc,
-            &mut ms,
+            mel,
+            vlc,
+            ms,
         )
         .map_err(ht_cleanup_invariant)?;
         x += 4;
@@ -161,9 +190,9 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
                         s: &mut s,
                     },
                 },
-                &mut mel,
-                &mut vlc,
-                &mut ms,
+                mel,
+                vlc,
+                ms,
             )
             .map_err(ht_cleanup_invariant)?;
             x += 4;
@@ -172,7 +201,7 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
         y += 2;
     }
 
-    terminate_mel_vlc(&mut mel, &mut vlc).map_err(ht_cleanup_invariant)?;
+    terminate_mel_vlc(mel, vlc).map_err(ht_cleanup_invariant)?;
     ms.terminate().map_err(ht_cleanup_invariant)?;
 
     let total_len = ms.pos + mel.pos + vlc.pos;

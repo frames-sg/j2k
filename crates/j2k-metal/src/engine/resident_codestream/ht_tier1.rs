@@ -191,6 +191,8 @@ pub(super) fn prepare_ht_tier1(
                 width: block.width,
                 height: block.height,
                 total_bitplanes: u32::from(block.total_bitplanes),
+                cleanup_bitplane: 0,
+                target_coding_passes: 1,
                 output_capacity: output_capacity_per_job_u32,
             });
             tier1_output_capacity_total = tier1_output_capacity_total

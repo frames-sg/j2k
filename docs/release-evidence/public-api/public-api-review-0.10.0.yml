@@ -79,10 +79,10 @@ reviews:
   j2k-types:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:f7bf662d894cec3c"
-    hidden_count: 87
-    hidden_fingerprint: "fnv1a64:6924f5f92bd20fd3"
+    hidden_count: 103
+    hidden_fingerprint: "fnv1a64:71b5df4e9aaebdcb"
     rationale: "Reviewed the complete ordinary j2k-types diff: it adds the shared typed prepared-plan geometry, owned accelerator jobs, allocation errors, and focused ownership-module surface required by A1, A2, and A6."
-    hidden_rationale: "Reviewed all 87 hidden j2k-types items after extracting transform, tier1, packetization, dispatch, and prepared-plan owners; the exact implementation-facing inventory is recorded here."
+    hidden_rationale: "Reviewed all 103 hidden j2k-types items after extracting transform, tier1, packetization, dispatch, and prepared-plan owners and adding the exact HT candidate-set accelerator job/result contract; the exact implementation-facing inventory is recorded here."
   j2k-codec-math:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:f2313be308412362"
@@ -105,10 +105,10 @@ reviews:
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:8df2711346a99013"
-    hidden_count: 695
-    hidden_fingerprint: "fnv1a64:809f589a3836ab70"
+    hidden_count: 700
+    hidden_fingerprint: "fnv1a64:6e386ed2a046fefb"
     rationale: "Reviewed the complete first-release ordinary j2k-cuda-j2k-engine surface: its five entry points expose only the borrowed-context engine boundary and J2K kernel availability checks."
-    hidden_rationale: "Reviewed all 695 hidden J2K engine items after classic, HTJ2K, transform, store, encode, and ML kernel ownership moved out of the low-level runtime; the exact inventory is recorded here."
+    hidden_rationale: "Reviewed all 700 hidden J2K engine items after classic, HTJ2K, transform, store, encode, and ML kernel ownership moved out of the low-level runtime; the added HT encode accessors expose exact cleanup, SigProp, and MagRef boundaries without changing the compact status ABI."
   j2k-cuda-jpeg-engine:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:a77ba816ebfa6aad"
@@ -132,11 +132,11 @@ reviews:
     hidden_rationale: "Reviewed the complete hidden Metal support inventory; retained ownership, checked allocation, command submission, and audited unsafe boundaries are unchanged from v0.9.0."
   j2k-native:
     removed_fingerprint: "fnv1a64:c43cf8aa5bb2b495"
-    added_fingerprint: "fnv1a64:09475401b85d7ab4"
-    hidden_count: 544
-    hidden_fingerprint: "fnv1a64:30485095f90fe9fb"
-    rationale: "Reviewed the complete ordinary j2k-native diff: three signature paths now expose their focused j2k-types owners, matching added signatures with the same semantics, and DecodePlanAllocationError gains a typed conversion."
-    hidden_rationale: "Reviewed all 544 hidden native-codec items after prepared-plan, packing, allocation, and error ownership consolidation; the exact decode, transform, color, and SIMD inventory is recorded here."
+    added_fingerprint: "fnv1a64:94b2d8d0f672d116"
+    hidden_count: 555
+    hidden_fingerprint: "fnv1a64:8bafdf926d55a460"
+    rationale: "Reviewed the complete ordinary j2k-native diff: three signature paths now expose their focused j2k-types owners, matching added signatures retain their semantics, DecodePlanAllocationError gains a typed conversion, and the additive HTJ2K Qfactor entry point validates the explicit visual-quality profile."
+    hidden_rationale: "Reviewed all 555 hidden native-codec items after prepared-plan, packing, allocation, and error ownership consolidation plus bounded HT candidate encoding, reusable scalar workspace, and scoped parse-once region decode; the exact implementation-facing inventory is recorded here."
   j2k-jpeg:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -153,11 +153,11 @@ reviews:
     hidden_rationale: "Reviewed the complete hidden tile-codec inventory; codec, scratch, and source-preserving error boundaries are unchanged from v0.9.0."
   j2k:
     removed_fingerprint: "fnv1a64:2fe0a6167211371d"
-    added_fingerprint: "fnv1a64:1dd75ca4382819dc"
-    hidden_count: 106
-    hidden_fingerprint: "fnv1a64:ae08920eeb566bb7"
-    rationale: "Reviewed the complete ordinary facade diff: accelerator and dispatch-report signature paths now expose focused j2k-types modules, while typed Classic and HT prepared-plan geometry accessors replace downcast-oriented use."
-    hidden_rationale: "Reviewed all 106 hidden j2k facade items after typed prepared plans and shared geometry were adopted; retained-plan, validation, accelerator-context, and typed-error implementation contracts are covered."
+    added_fingerprint: "fnv1a64:02fef903d0c01b87"
+    hidden_count: 108
+    hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
+    rationale: "Reviewed the complete ordinary facade diff: accelerator and dispatch-report signature paths now expose focused j2k-types modules, typed Classic and HT prepared-plan geometry accessors replace downcast-oriented use, and lossy HTJ2K gains an opt-in Qfactor field and builder."
+    hidden_rationale: "Reviewed all 108 hidden j2k facade items after typed prepared plans, shared geometry, and exact HT candidate-set re-exports were adopted; retained-plan, validation, accelerator-context, and typed-error implementation contracts are covered."
   j2k-transcode:
     removed_fingerprint: "fnv1a64:7d3992c196a64906"
     added_fingerprint: "fnv1a64:8392552cc2b1fe45"
@@ -203,10 +203,10 @@ reviews:
   j2k-cuda:
     removed_fingerprint: "fnv1a64:8c14b4c94b6777f3"
     added_fingerprint: "fnv1a64:711c42364b8efc73"
-    hidden_count: 190
-    hidden_fingerprint: "fnv1a64:4da267f54ebaba53"
+    hidden_count: 191
+    hidden_fingerprint: "fnv1a64:82214b7c64fc5d9c"
     rationale: "Reviewed the complete ordinary J2K CUDA adapter diff: two dispatch-report signatures now expose the focused j2k-types defining module while retaining the same returned and stored report contract."
-    hidden_rationale: "Reviewed all 190 hidden J2K CUDA adapter items after codec execution moved behind the J2K engine; completion state, session usability, device identity, ordering, pooling, and guarded interop are covered."
+    hidden_rationale: "Reviewed all 191 hidden J2K CUDA adapter items after codec execution moved behind the J2K engine and exact HT candidate-set batching was added; completion state, pass boundaries, session usability, device identity, ordering, pooling, and guarded interop are covered."
   j2k-ml:
     removed_fingerprint: "none"
     added_fingerprint: "none"

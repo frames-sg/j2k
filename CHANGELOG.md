@@ -32,6 +32,17 @@ and stale roadmap entries have been removed from the public documentation set.
   orchestration roots by pipeline ownership, with repository policies enforcing
   dependency direction, source boundaries, unsafe inventory, clone ceilings,
   benchmark registration, and generated routing evidence.
+- Adds bounded HTJ2K lossy candidate generation with two consecutive HT sets,
+  exact cleanup/SigProp/MagRef byte boundaries, per-pass distortion scoring,
+  and dependency-aware slope allocation. CUDA and Metal can produce the exact
+  candidate sets on device; CUDA entropy writing remains serial within each
+  code block. Each selected HT set is emitted atomically in the layer of its
+  final selected pass so external decoders retain an unambiguous cleanup
+  boundary.
+- Makes bounded classic JPEG 2000 and HTJ2K row decode through 24-bit component
+  precision parse the tile graph once per row operation and reuse it across
+  stripes while retaining the parsed metadata in the aggregate allocation
+  baseline. Higher-precision exact-integer rows keep their compatibility path.
 - Promotes measured staged CUDA JPEG encoding and adaptive CUDA JPEG checkpoint
   launch geometry. The staged encoder improves the representative 512 x 512
   batch-8 cells by about 95%, while the checkpoint policy uses one-thread

@@ -18,6 +18,16 @@ macro_rules! impl_cuda_htj2k_encoded_status_accessors {
             htj2k_encoded_refinement_length(self.status)
         }
 
+        /// HTJ2K `SigProp` prefix length in bytes.
+        pub fn sigprop_length(&self) -> u32 {
+            htj2k_encoded_sigprop_length(self.status)
+        }
+
+        /// HTJ2K `MagRef` suffix length in bytes.
+        pub fn magref_length(&self) -> u32 {
+            htj2k_encoded_magref_length(self.status)
+        }
+
         /// Number of coding passes in the encoded payload.
         pub fn num_coding_passes(&self) -> u8 {
             htj2k_encoded_num_coding_passes(self.status)

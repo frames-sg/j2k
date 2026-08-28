@@ -19,6 +19,7 @@ class OpenHtj2kReferenceTests(unittest.TestCase):
         self.assertIn('version="0.19.0"', source)
         self.assertIn("J2K_OPENHTJ2K_DEC_BIN", source)
         self.assertIn("J2K_OPENHTJ2K_SOURCE_DIR", source)
+        self.assertIn("J2K_OPENHTJ2K_LIB_DIR", source)
         subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
 
     def test_cpu_evidence_lanes_prepare_the_reference_before_running_t803(self):

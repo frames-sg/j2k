@@ -15,6 +15,7 @@ fn encode_compare_help_prints_the_cli_contract() {
         &format!(
             "usage: {program} [case-name-filter ...]\n\
              {spaces}{program} --encode-one --input FILE.pnm --output FILE.jp2\n\
+             {spaces}{program} --openjph-matrix\n\
              Runs CLI-style lossless classic JPEG 2000 encoder benchmarks.\n",
             spaces = "       "
         ),

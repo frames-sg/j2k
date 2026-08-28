@@ -15,7 +15,8 @@ mod output;
 mod settings;
 mod srgb8;
 use output::{
-    can_decode_u8_directly, write_components_u8_output, write_u16_output, write_u8_output,
+    can_decode_u8_directly, write_components_u16_output, write_components_u8_output,
+    write_u16_output, write_u8_output,
 };
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
@@ -137,6 +138,30 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
                 stride,
                 fmt,
             )
+        }
+        _ => Err(Unsupported {
+            what: "pixel format is not yet supported by j2k",
+        }
+        .into()),
+    }
+}
+
+pub(crate) fn decode_prepared_image_region_into(
+    decoder: &mut j2k_native::PreparedRegionDecoder<'_, '_, '_>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+) -> Result<(), J2kError> {
+    let components = decoder
+        .decode_region_components((roi.x, roi.y, roi.w, roi.h))
+        .map_err(J2kError::from_native_decode_error)?;
+    match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
+            write_components_u8_output(&components, out, stride, fmt)
+        }
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
+            write_components_u16_output(&components, out, stride, fmt)
         }
         _ => Err(Unsupported {
             what: "pixel format is not yet supported by j2k",

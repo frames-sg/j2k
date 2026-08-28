@@ -40,7 +40,7 @@ use j2k::{
 #[cfg(feature = "cuda-runtime")]
 use j2k::{
     J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kHtCodeBlockEncodeJob,
-    J2kResidentEncodeInputError,
+    J2kHtCodeBlockSetEncodeJob, J2kResidentEncodeInputError,
 };
 use j2k::{
     J2kEncodeStageAccelerator, J2kEncodeStageError, J2kHtSubbandEncodeJob,

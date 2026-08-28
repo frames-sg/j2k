@@ -10,10 +10,11 @@ use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePar
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
     max_total_bitplanes_for_components, maximum_decomposition_levels, quantize,
-    reversible_guard_bits_for_marker_limit, validate_precinct_exponents_for_options,
-    validate_roi_encode_options_nonallocating, BlockCodingMode, EncodeComponentSampleInfo,
-    EncodeOptions, EncodeParams, EncodeRoiRegion, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    requested_guard_bits, reversible_guard_bits_for_marker_limit,
+    validate_precinct_exponents_for_options, validate_roi_encode_options_nonallocating,
+    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams, EncodeRoiRegion,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize,
+    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
 use super::ownership::encode_options_retained_bytes;
 
@@ -101,7 +102,11 @@ pub(super) fn build_loop_plan(
     validate_precinct_exponents_for_options(request.options, num_levels)
         .map_err(NativeEncodePipelineError::invalid_input)?;
     let use_mct = request.options.use_mct && matches!(request.num_components, 3 | 4);
-    let requested_guard_bits = requested_guard_bits(request.options, use_mct);
+    let requested_guard_bits = requested_guard_bits(
+        request.options,
+        use_mct,
+        request.session.openhtj2k_qfactor().is_some(),
+    );
     let high_bit_exact = request.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
     let guard_bits = if high_bit_exact && request.options.reversible {
         reversible_guard_bits_for_marker_limit(request.bit_depth, num_levels, requested_guard_bits)
@@ -121,6 +126,7 @@ pub(super) fn build_loop_plan(
         guard_bits,
         request.options,
         request.component_sample_info,
+        request.session,
     )?;
     if request.options.reversible && guard_delta != 0 {
         adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, guard_delta)
@@ -256,13 +262,18 @@ fn build_final_plan_owners(
     use_mct: bool,
     guard_bits: u8,
 ) -> NativeEncodePipelineResult<FinalPlanOwners> {
-    let guard_delta = guard_bits.saturating_sub(requested_guard_bits(request.options, use_mct));
+    let guard_delta = guard_bits.saturating_sub(requested_guard_bits(
+        request.options,
+        use_mct,
+        request.session.openhtj2k_qfactor().is_some(),
+    ));
     let (mut step_sizes, mut component_step_sizes) = build_step_graph(
         request.bit_depth,
         num_levels,
         guard_bits,
         request.options,
         request.component_sample_info,
+        request.session,
     )?;
     if request.options.reversible && guard_delta != 0 {
         adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, guard_delta)
@@ -326,22 +337,15 @@ fn build_final_plan_owners(
     })
 }
 
-fn requested_guard_bits(options: &EncodeOptions, use_mct: bool) -> u8 {
-    if options.reversible && !use_mct {
-        options.guard_bits
-    } else {
-        options.guard_bits.max(2)
-    }
-}
-
 fn build_step_graph(
     bit_depth: u8,
     num_levels: u8,
     guard_bits: u8,
     options: &EncodeOptions,
     component_sample_info: &[EncodeComponentSampleInfo],
+    session: &NativeEncodeSession<'_>,
 ) -> NativeEncodePipelineResult<(Vec<QuantStepSize>, Vec<Vec<QuantStepSize>>)> {
-    let step_sizes = try_step_sizes(bit_depth, num_levels, guard_bits, options)?;
+    let step_sizes = try_step_sizes(bit_depth, num_levels, guard_bits, options, 0, session)?;
     let outer_bytes = checked_element_bytes::<Vec<QuantStepSize>>(
         component_sample_info.len(),
         "multi-tile component step owners",
@@ -350,12 +354,14 @@ fn build_step_graph(
     component_steps
         .try_reserve_exact(component_sample_info.len())
         .map_err(|_| host_allocation_failed("multi-tile component step owners", outer_bytes))?;
-    for info in component_sample_info {
+    for (component, info) in component_sample_info.iter().enumerate() {
         component_steps.push(try_step_sizes(
             info.bit_depth,
             num_levels,
             guard_bits,
             options,
+            component,
+            session,
         )?);
     }
     Ok((step_sizes, component_steps))
@@ -366,6 +372,8 @@ fn try_step_sizes(
     num_levels: u8,
     guard_bits: u8,
     options: &EncodeOptions,
+    component: usize,
+    session: &NativeEncodeSession<'_>,
 ) -> NativeEncodePipelineResult<Vec<QuantStepSize>> {
     let count = usize::from(num_levels) * 3 + 1;
     let bytes = checked_element_bytes::<QuantStepSize>(count, "multi-tile step sizes")?;
@@ -373,15 +381,21 @@ fn try_step_sizes(
     steps
         .try_reserve_exact(count)
         .map_err(|_| host_allocation_failed("multi-tile step sizes", bytes))?;
-    quantize::append_step_sizes_with_irreversible_profile(
-        &mut steps,
-        bit_depth,
-        num_levels,
-        options.reversible,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
+    if let Some(qfactor) = session.openhtj2k_qfactor() {
+        quantize::append_openhtj2k_qfactor_step_sizes(
+            &mut steps, bit_depth, num_levels, qfactor, component,
+        )?;
+    } else {
+        quantize::append_step_sizes_with_irreversible_profile(
+            &mut steps,
+            bit_depth,
+            num_levels,
+            options.reversible,
+            guard_bits,
+            options.irreversible_quantization_scale,
+            options.irreversible_quantization_subband_scales,
+        );
+    }
     Ok(steps)
 }
 

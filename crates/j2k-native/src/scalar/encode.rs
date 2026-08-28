@@ -9,6 +9,26 @@ use super::{
 };
 use crate::{DecodingError, EncodeError, EncodeResult};
 
+/// Reusable scalar HTJ2K encode reservoirs for backend experimentation.
+#[doc(hidden)]
+pub struct HtCodeBlockEncodeWorkspace {
+    inner: j2c::ht_block_encode::HtEncodeWorkspace,
+}
+
+impl HtCodeBlockEncodeWorkspace {
+    /// Allocate the fixed MEL, VLC, and magnitude/sign reservoirs once.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed allocation error if any fixed reservoir cannot be
+    /// allocated within the codec's host-memory constraints.
+    pub fn try_new() -> EncodeResult<Self> {
+        Ok(Self {
+            inner: j2c::ht_block_encode::HtEncodeWorkspace::try_new()?,
+        })
+    }
+}
+
 /// Adapter scalar classic J2K encoder helper for backend experimentation.
 #[doc(hidden)]
 pub fn encode_j2k_code_block_scalar_with_style(
@@ -111,13 +131,40 @@ pub fn encode_ht_code_block_scalar_with_passes(
         total_bitplanes,
         target_coding_passes,
     )?;
-    Ok(EncodedHtJ2kCodeBlock {
+    Ok(encoded_ht_code_block_from_internal(encoded))
+}
+
+/// Adapter scalar HTJ2K encoder helper that reuses caller-owned reservoirs.
+#[doc(hidden)]
+pub fn encode_ht_code_block_scalar_with_passes_and_workspace(
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    total_bitplanes: u8,
+    target_coding_passes: u8,
+    workspace: &mut HtCodeBlockEncodeWorkspace,
+) -> EncodeResult<EncodedHtJ2kCodeBlock> {
+    let encoded = j2c::ht_block_encode::try_encode_code_block_with_passes_in_workspace(
+        coefficients,
+        width,
+        height,
+        total_bitplanes,
+        target_coding_passes,
+        &mut workspace.inner,
+    )?;
+    Ok(encoded_ht_code_block_from_internal(encoded))
+}
+
+fn encoded_ht_code_block_from_internal(
+    encoded: j2c::bitplane_encode::EncodedCodeBlock,
+) -> EncodedHtJ2kCodeBlock {
+    EncodedHtJ2kCodeBlock {
         data: encoded.data,
         cleanup_length: encoded.ht_cleanup_length,
         refinement_length: encoded.ht_refinement_length,
         num_coding_passes: encoded.num_coding_passes,
         num_zero_bitplanes: encoded.num_zero_bitplanes,
-    })
+    }
 }
 
 /// Adapter HTJ2K cleanup-encode distribution helper for benchmark tuning.

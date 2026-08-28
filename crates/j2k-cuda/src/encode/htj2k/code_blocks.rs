@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    EncodedHtJ2kCodeBlock, J2kEncodeStageError, J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob,
-    J2kResidentHtj2kTileEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, J2kEncodeStageError, J2kHtCodeBlockEncodeJob,
+    J2kHtCodeBlockSetEncodeJob, J2kHtSubbandEncodeJob, J2kResidentHtj2kTileEncodeJob,
 };
 use j2k_cuda_j2k_engine::{
     CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResources,
@@ -99,6 +99,85 @@ pub(in crate::encode) fn cuda_encode_ht_code_blocks(
             host_budget.live_bytes(),
         )
         .map_err(|error| runtime_error("encode CUDA HTJ2K code-block batch", error))
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::encode) fn cuda_encode_ht_code_block_sets(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    jobs: &[J2kHtCodeBlockSetEncodeJob<'_>],
+) -> CudaStageResult<Option<j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks>> {
+    let total_coefficients = jobs.iter().try_fold(0usize, |acc, job| {
+        let coefficient_len = (job.width as usize)
+            .checked_mul(job.height as usize)
+            .ok_or_else(|| arithmetic_overflow("CUDA HT candidate coefficient count"))?;
+        if coefficient_len != job.coefficients.len() {
+            return Err(J2kEncodeStageError::invalid_request(
+                "CUDA HT candidate job has invalid coefficient length",
+            ));
+        }
+        acc.checked_add(coefficient_len)
+            .ok_or_else(|| arithmetic_overflow("CUDA HT candidate coefficient count"))
+    })?;
+    if jobs.iter().any(|job| {
+        !matches!(
+            (job.cleanup_bitplane, job.target_coding_passes),
+            (0, 1) | (1 | 2, 3)
+        )
+    }) {
+        return Ok(None);
+    }
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA HT candidate staging");
+    let mut coefficients = host_budget
+        .try_vec_with_capacity(total_coefficients)
+        .map_err(htj2k_allocation_error)?;
+    let mut cuda_jobs = host_budget
+        .try_vec_with_capacity(jobs.len())
+        .map_err(htj2k_allocation_error)?;
+    for job in jobs {
+        let coefficient_offset = u32::try_from(coefficients.len())
+            .map_err(|_| arithmetic_overflow("CUDA HT candidate coefficient offset"))?;
+        let shift = job
+            .target_coding_passes
+            .saturating_sub(1)
+            .saturating_sub(job.cleanup_bitplane);
+        let kernel_total_bitplanes = job
+            .total_bitplanes
+            .checked_add(shift)
+            .filter(|total| *total <= 31);
+        let Some(kernel_total_bitplanes) = kernel_total_bitplanes else {
+            return Ok(None);
+        };
+        for &coefficient in job.coefficients {
+            let Some(coefficient) = coefficient.checked_shl(u32::from(shift)) else {
+                return Ok(None);
+            };
+            host_budget
+                .try_vec_push(&mut coefficients, coefficient)
+                .map_err(htj2k_allocation_error)?;
+        }
+        host_budget
+            .try_vec_push(
+                &mut cuda_jobs,
+                CudaHtj2kEncodeCodeBlockJob {
+                    coefficient_offset,
+                    width: job.width,
+                    height: job.height,
+                    total_bitplanes: kernel_total_bitplanes,
+                    target_coding_passes: job.target_coding_passes,
+                },
+            )
+            .map_err(htj2k_allocation_error)?;
+    }
+    j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+        .encode_htj2k_codeblocks_with_resources_and_live_host_bytes(
+            &coefficients,
+            &cuda_jobs,
+            resources,
+            host_budget.live_bytes(),
+        )
+        .map(Some)
+        .map_err(|error| runtime_error("encode CUDA HT candidate sets", error))
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -383,6 +462,28 @@ fn encoded_ht_code_block_from_cuda(
 }
 
 #[cfg(feature = "cuda-runtime")]
+fn encoded_ht_code_block_set_from_cuda(
+    encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlock,
+) -> EncodedHtJ2kCodeBlockSet {
+    let (
+        data,
+        cleanup_length,
+        sigprop_length,
+        magref_length,
+        num_coding_passes,
+        num_zero_bitplanes,
+    ) = encoded.into_exact_parts();
+    EncodedHtJ2kCodeBlockSet {
+        data,
+        cleanup_length,
+        sigprop_length,
+        magref_length,
+        num_coding_passes,
+        num_zero_bitplanes,
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) fn encoded_ht_code_blocks_from_cuda(
     encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks,
 ) -> CudaStageResult<Vec<EncodedHtJ2kCodeBlock>> {
@@ -396,6 +497,24 @@ pub(in crate::encode) fn encoded_ht_code_blocks_from_cuda(
         .map_err(htj2k_allocation_error)?;
     for code_block in code_blocks {
         outputs.push(encoded_ht_code_block_from_cuda(code_block));
+    }
+    Ok(outputs)
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::encode) fn encoded_ht_code_block_sets_from_cuda(
+    encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks,
+) -> CudaStageResult<Vec<EncodedHtJ2kCodeBlockSet>> {
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA encoded HT candidate conversion");
+    host_budget
+        .account_bytes(encoded.host_capacity_bytes())
+        .map_err(htj2k_allocation_error)?;
+    let code_blocks = encoded.into_code_blocks();
+    let mut outputs = host_budget
+        .try_vec_with_capacity(code_blocks.len())
+        .map_err(htj2k_allocation_error)?;
+    for code_block in code_blocks {
+        outputs.push(encoded_ht_code_block_set_from_cuda(code_block));
     }
     Ok(outputs)
 }

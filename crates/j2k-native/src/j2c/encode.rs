@@ -240,6 +240,112 @@ pub fn encode(
     )
 }
 
+/// Encode an irreversible HTJ2K codestream using OpenHTJ2K-compatible
+/// Qfactor quantization.
+///
+/// Qfactor is an opt-in visual quantization profile for grayscale or
+/// three-component RGB input. It changes the expounded QCD/QCC step tuples;
+/// it is not a byte-rate target and is not signaled separately in the
+/// codestream.
+///
+/// # Errors
+///
+/// Returns an error unless `qfactor` is in `1..=100`, irreversible HT block
+/// coding is selected, and the input is grayscale or three-component RGB
+/// with the multi-component transform enabled.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, sample representation, and quantization policy explicit"
+)]
+pub fn encode_htj2k_with_qfactor(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    qfactor: u8,
+    options: &EncodeOptions,
+) -> crate::EncodeResult<Vec<u8>> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_htj2k_with_qfactor_and_accelerator(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        qfactor,
+        options,
+        &mut accelerator,
+    )
+}
+
+/// Accelerator-aware counterpart to [`encode_htj2k_with_qfactor`].
+#[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, sample representation, quantization policy, and accelerator explicit"
+)]
+pub fn encode_htj2k_with_qfactor_and_accelerator(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    qfactor: u8,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> crate::EncodeResult<Vec<u8>> {
+    validate_openhtj2k_qfactor_request(qfactor, num_components, options)?;
+    let session = NativeEncodeSession::try_new_with_openhtj2k_qfactor(
+        NativeEncodeRetainedInput::none(),
+        qfactor,
+    )?;
+    let component_sample_info = [EncodeComponentSampleInfo { bit_depth, signed }; 3];
+    encode_with_accelerator_and_component_sample_info_for_session(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        options,
+        &component_sample_info[..usize::from(num_components)],
+        &session,
+        accelerator,
+    )
+}
+
+fn validate_openhtj2k_qfactor_request(
+    qfactor: u8,
+    num_components: u16,
+    options: &EncodeOptions,
+) -> crate::EncodeResult<()> {
+    if !(1..=100).contains(&qfactor) {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor must be in 1..=100",
+        });
+    }
+    if options.reversible || !options.use_ht_block_coding {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor requires irreversible HT block coding",
+        });
+    }
+    if options.guard_bits != 1 {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor requires one quantization guard bit",
+        });
+    }
+    if !matches!(num_components, 1 | 3) || (num_components == 3 && !options.use_mct) {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "OpenHTJ2K Qfactor requires grayscale or three-component RGB with MCT",
+        });
+    }
+    Ok(())
+}
+
 /// Encode pixel data into a JPEG 2000 codestream using optional encode-stage hooks.
 ///
 /// Stage hooks may accelerate forward RCT, forward 5/3 DWT, Tier-1 code-block
@@ -597,6 +703,16 @@ fn ht_target_coding_passes_for_options(
         options.num_layers.min(3)
     } else {
         1
+    }
+}
+
+fn requested_guard_bits(options: &EncodeOptions, use_mct: bool, openhtj2k_qfactor: bool) -> u8 {
+    if openhtj2k_qfactor {
+        1
+    } else if options.reversible && !use_mct {
+        options.guard_bits
+    } else {
+        options.guard_bits.max(2)
     }
 }
 

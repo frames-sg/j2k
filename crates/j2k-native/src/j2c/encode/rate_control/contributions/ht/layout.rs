@@ -11,8 +11,11 @@ use super::super::ht_segment_count;
 pub(super) struct HtContributionLayout {
     pub(super) layer_count: usize,
     pub(super) cleanup_len: usize,
-    pub(super) refinement_len: usize,
+    pub(super) sigprop_len: usize,
+    pub(super) magref_len: usize,
+    pub(super) sigprop_end: usize,
     pub(super) refinement_end: usize,
+    pub(super) split_refinement: bool,
 }
 
 pub(super) fn ht_contribution_layout(
@@ -46,6 +49,21 @@ pub(super) fn ht_contribution_layout(
     let refinement_len = usize::try_from(encoded.ht_refinement_length).map_err(|_| {
         NativeEncodePipelineError::arithmetic_overflow("HTJ2K refinement segment length overflow")
     })?;
+    let sigprop_len = usize::try_from(encoded.ht_sigprop_length).map_err(|_| {
+        NativeEncodePipelineError::arithmetic_overflow("HTJ2K SigProp pass length overflow")
+    })?;
+    let magref_len = usize::try_from(encoded.ht_magref_length).map_err(|_| {
+        NativeEncodePipelineError::arithmetic_overflow("HTJ2K MagRef pass length overflow")
+    })?;
+    if sigprop_len.checked_add(magref_len) != Some(refinement_len) {
+        return Err(NativeEncodePipelineError::internal_invariant(
+            "HTJ2K refinement pass lengths do not match the segment length",
+        ));
+    }
+    let split_refinement = ht_segment_count(encoded) == 3;
+    let sigprop_end = cleanup_len.checked_add(sigprop_len).ok_or_else(|| {
+        NativeEncodePipelineError::arithmetic_overflow("HTJ2K SigProp pass range overflow")
+    })?;
     let refinement_end = cleanup_len.checked_add(refinement_len).ok_or_else(|| {
         NativeEncodePipelineError::arithmetic_overflow("HTJ2K refinement segment range overflow")
     })?;
@@ -67,7 +85,10 @@ pub(super) fn ht_contribution_layout(
     Ok(HtContributionLayout {
         layer_count,
         cleanup_len,
-        refinement_len,
+        sigprop_len,
+        magref_len,
+        sigprop_end,
         refinement_end,
+        split_refinement,
     })
 }

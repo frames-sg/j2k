@@ -4,8 +4,6 @@
 use std::{ffi::c_void, ptr, sync::Once};
 
 use crate::ExternalDecodeRequest;
-#[cfg(any(have_grok, test))]
-use crate::MAX_EXTERNAL_OUTPUT_BYTES;
 
 pub fn is_available() -> bool {
     cfg!(have_grok)
@@ -102,7 +100,7 @@ fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, Strin
         if ok == 0 || output.0.is_null() {
             return Err("grok: decode failed".to_string());
         }
-        let expected = checked_output_len(out_width, out_height, channels)?;
+        let expected = crate::checked_external_output_len("grok", out_width, out_height, channels)?;
         if out_len != expected {
             return Err(format!(
                 "grok: unexpected output length {out_len} != {expected}"
@@ -140,36 +138,6 @@ fn checked_region_bounds(roi: j2k_core::Rect) -> Result<[u32; 4], String> {
     Ok([roi.x, roi.y, x1, y1])
 }
 
-#[cfg(any(have_grok, test))]
-fn checked_output_len(width: u32, height: u32, channels: u32) -> Result<usize, String> {
-    if !matches!(channels, 1 | 3) {
-        return Err(format!(
-            "grok: unsupported channel count {channels}, expected 1 or 3"
-        ));
-    }
-    if width == 0 || height == 0 {
-        return Err("grok: image has zero-sized output".to_string());
-    }
-    let width =
-        usize::try_from(width).map_err(|_| "grok: width exceeds platform usize".to_string())?;
-    let height =
-        usize::try_from(height).map_err(|_| "grok: height exceeds platform usize".to_string())?;
-    let channels = usize::try_from(channels)
-        .map_err(|_| "grok: channel count exceeds platform usize".to_string())?;
-    let pixels = width
-        .checked_mul(height)
-        .ok_or_else(|| "grok: output pixel count overflow".to_string())?;
-    let len = pixels
-        .checked_mul(channels)
-        .ok_or_else(|| "grok: output byte count overflow".to_string())?;
-    if len > MAX_EXTERNAL_OUTPUT_BYTES {
-        return Err(format!(
-            "grok: output exceeds {MAX_EXTERNAL_OUTPUT_BYTES} byte cap"
-        ));
-    }
-    Ok(len)
-}
-
 #[cfg(have_grok)]
 #[expect(
     unsafe_code,
@@ -199,8 +167,7 @@ unsafe extern "C" {
 mod tests {
     use j2k_core::Rect;
 
-    use super::{checked_output_len, checked_reduce, checked_region_bounds};
-    use crate::MAX_EXTERNAL_OUTPUT_BYTES;
+    use super::{checked_reduce, checked_region_bounds};
 
     #[test]
     fn region_bounds_reject_coordinate_overflow() {
@@ -221,17 +188,6 @@ mod tests {
             .expect("bounded Grok decode area"),
             [1, 2, 4, 6]
         );
-    }
-
-    #[test]
-    fn output_len_is_bounded_before_slice_construction() {
-        assert!(checked_output_len(0, 1, 1).is_err());
-        assert!(checked_output_len(1, 1, 2).is_err());
-        assert!(checked_output_len(u32::MAX, u32::MAX, 3).is_err());
-        let over_cap =
-            u32::try_from(MAX_EXTERNAL_OUTPUT_BYTES + 1).expect("the shared output cap fits u32");
-        assert!(checked_output_len(over_cap, 1, 1).is_err());
-        assert_eq!(checked_output_len(2, 3, 3), Ok(18));
     }
 
     #[test]

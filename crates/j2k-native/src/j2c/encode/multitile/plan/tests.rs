@@ -49,8 +49,8 @@ fn loop_plan_accepts_exact_observed_peak_and_rejects_cap_minus_one() {
     let discovery = session_with_cap(crate::DEFAULT_MAX_CODEC_BYTES);
     let discovered = build_loop_plan(&loop_request(&options, &component_info, &discovery))
         .expect("discover loop plan");
-    let (steps, component_steps) =
-        build_step_graph(8, 1, 1, &options, &component_info).expect("discover step graph");
+    let (steps, component_steps) = build_step_graph(8, 1, 1, &options, &component_info, &discovery)
+        .expect("discover step graph");
     let step_peak = step_graph_retained_bytes(&steps, &component_steps).expect("step bytes");
     let exact_cap = step_peak.max(discovered.retained_bytes());
 
@@ -96,7 +96,7 @@ fn final_plan_accepts_exact_observed_peak_and_rejects_cap_minus_one() {
         })
         .expect("discover final plan");
     let (steps, component_steps) =
-        build_step_graph(8, 1, 1, &options, &[]).expect("discover step graph");
+        build_step_graph(8, 1, 1, &options, &[], &discovery).expect("discover step graph");
     let exact_cap = step_graph_retained_bytes(&steps, &component_steps).expect("step bytes")
         + encode_params_retained_bytes(&discovered.params).expect("parameter bytes")
         + discovered.quant_params.capacity() * core::mem::size_of::<(u16, u16)>();

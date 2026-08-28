@@ -152,9 +152,16 @@ pub(super) fn ht_encode_output_capacity(width: u32, height: u32) -> Result<usize
     let ms_size = scaled_ms_size.max(ms_floor).min(J2K_HT_ENCODE_MS_SIZE);
     let mel_size = J2K_HT_ENCODE_MEL_SIZE;
     let vlc_size = J2K_HT_ENCODE_VLC_SIZE;
+    let refinement_size = sample_count
+        .div_ceil(8)
+        .checked_add(sample_count.div_ceil(7))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal refinement capacity overflow".to_string(),
+        })?;
     ms_size
         .checked_add(mel_size)
         .and_then(|bytes| bytes.checked_add(vlc_size))
+        .and_then(|bytes| bytes.checked_add(refinement_size))
         .ok_or_else(|| Error::MetalKernel {
             message: "HTJ2K Metal encode output capacity overflow".to_string(),
         })
