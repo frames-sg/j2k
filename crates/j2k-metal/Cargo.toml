@@ -81,3 +81,8 @@ test = false
 name = "resident_packetization"
 harness = false
 test = false
+
+[[bench]]
+name = "htj2k_candidates"
+harness = false
+test = false

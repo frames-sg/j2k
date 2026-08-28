@@ -44,7 +44,7 @@ fn j2k_metal_declares_the_audited_routing_and_decode_stage_benches() {
 
     assert_eq!(
         cargo.matches("[[bench]]").count(),
-        4,
+        5,
         "j2k-metal must keep all audited benchmark targets"
     );
     assert!(
@@ -64,6 +64,10 @@ fn j2k_metal_declares_the_audited_routing_and_decode_stage_benches() {
             "[[bench]]\nname = \"resident_packetization\"\nharness = false\ntest = false"
         ),
         "j2k-metal must keep the resident packetization benchmark explicit"
+    );
+    assert!(
+        cargo.contains("[[bench]]\nname = \"htj2k_candidates\"\nharness = false\ntest = false"),
+        "j2k-metal must keep the end-to-end HTJ2K candidate benchmark explicit"
     );
 
     for target in ["device_upload", "compare", "encode_stages"] {
@@ -97,6 +101,12 @@ fn j2k_metal_benches_directory_matches_the_audited_targets() {
             manifest_dir().join("benches/auto_routing/runner.rs"),
             manifest_dir().join("benches/auto_routing.rs"),
             manifest_dir().join("benches/decode_stages.rs"),
+            manifest_dir().join("benches/htj2k_candidates/case.rs"),
+            manifest_dir().join("benches/htj2k_candidates/runner.rs"),
+            manifest_dir().join("benches/htj2k_candidates.rs"),
+            manifest_dir().join("benches/resident_packetization/batch_compare.rs"),
+            manifest_dir().join("benches/resident_packetization/packetization.rs"),
+            manifest_dir().join("benches/resident_packetization/support.rs"),
             manifest_dir().join("benches/resident_packetization.rs"),
             manifest_dir().join("benches/transform_stages.rs"),
         ],
@@ -105,16 +115,64 @@ fn j2k_metal_benches_directory_matches_the_audited_targets() {
 }
 
 #[test]
-fn resident_packetization_bench_has_exact_output_probes() {
-    let path = manifest_dir().join("benches/resident_packetization.rs");
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()));
+fn htj2k_candidate_bench_covers_geometry_modes_budgets_and_correctness() {
+    let bench = [
+        manifest_dir().join("benches/htj2k_candidates.rs"),
+        manifest_dir().join("benches/htj2k_candidates/case.rs"),
+        manifest_dir().join("benches/htj2k_candidates/runner.rs"),
+    ]
+    .into_iter()
+    .map(|path| {
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()))
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
 
     for expected in [
-        "const BATCH_SIZE: usize = 16",
+        "const SMALL_TILE_SIDE: u32 = 256",
+        "const MEDIUM_TILE_SIDE: u32 = 512",
+        "const LARGE_TILE_SIDE: u32 = 1024",
+        "LosslessTwoLayers",
+        "LosslessThreeLayers",
+        "LossyTwoBudgets",
+        "LossyThreeBudgets",
+        "J2kRateTarget::BitsPerPixel",
+        "candidate_set_dispatches",
+        "verify_lossless_roundtrip",
+        "verify_lossy_parity",
+        "assert_output_parity",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "HTJ2K candidate benchmark is missing `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn resident_packetization_bench_has_exact_output_probes() {
+    let root = manifest_dir().join("benches/resident_packetization.rs");
+    let mut paths = bench_sources_under(&manifest_dir().join("benches/resident_packetization"));
+    paths.push(root);
+    let source = paths
+        .into_iter()
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for expected in [
+        "const BATCH_SIZES: [usize; 3] = [1, 4, 16]",
         "J2kBlockCodingMode::Classic",
         "J2kBlockCodingMode::HighThroughput",
         "submit_lossless_batch_to_metal",
+        "encode_lossless_batch_with_report",
+        "encode_cpu_parallel",
+        "gpu_encode_inflight_tiles: Some(batch_size)",
+        "verify_cpu_metal_batch",
         "codestream_bytes()",
         "auto_routing_sha256",
     ] {

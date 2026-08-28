@@ -563,6 +563,7 @@ kernel void j2k_pack_u16_repeated_gray(
         include_str!("../encode_bitstream_classic_tokens.metal"),
         include_str!("../encode_bitstream_classic_symbol_plan.metal"),
         include_str!("../encode_bitstream_classic_kernels.metal"),
+        include_str!("../encode_bitstream_ht_refinement.metal"),
         include_str!("../encode_bitstream_ht.metal"),
         include_str!("../encode_bitstream_packetize.metal"),
         "\n",

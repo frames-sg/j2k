@@ -49,6 +49,7 @@ impl<'a> NativeEncodeRetainedInput<'a> {
 pub(crate) struct NativeEncodeSession<'a> {
     retained_input: NativeEncodeRetainedInput<'a>,
     cap: usize,
+    openhtj2k_qfactor: Option<u8>,
 }
 
 /// Checked bytes retained by one encode phase before accepting backend output.
@@ -129,7 +130,21 @@ impl<'a> NativeEncodeSession<'a> {
         Ok(Self {
             retained_input,
             cap,
+            openhtj2k_qfactor: None,
         })
+    }
+
+    pub(crate) fn try_new_with_openhtj2k_qfactor(
+        retained_input: NativeEncodeRetainedInput<'a>,
+        qfactor: u8,
+    ) -> EncodeResult<Self> {
+        let mut session = Self::try_new(retained_input)?;
+        session.openhtj2k_qfactor = Some(qfactor);
+        Ok(session)
+    }
+
+    pub(crate) const fn openhtj2k_qfactor(&self) -> Option<u8> {
+        self.openhtj2k_qfactor
     }
 
     pub(crate) fn checked_phase(

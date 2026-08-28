@@ -11,7 +11,7 @@ fn htj2k_encoded_codeblock_reports_segment_lengths_from_status() {
             number_of_coding_passes: 3,
             missing_bit_planes: 4,
             reserved0: 7,
-            reserved1: 3,
+            reserved1: 2,
             reserved2: 0,
         },
         execution: super::CudaExecutionStats::default(),
@@ -20,6 +20,8 @@ fn htj2k_encoded_codeblock_reports_segment_lengths_from_status() {
 
     assert_eq!(encoded.cleanup_length(), 7);
     assert_eq!(encoded.refinement_length(), 3);
+    assert_eq!(encoded.sigprop_length(), 2);
+    assert_eq!(encoded.magref_length(), 1);
 }
 
 fn htj2k_multi_input_compact_job(
@@ -554,7 +556,7 @@ fn htj2k_encode_rejects_unsupported_refinement_pass_count_when_required() {
 }
 
 #[test]
-fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
+fn htj2k_encode_accepts_general_sigprop_coefficients_when_required() {
     if !cuda_runtime_gate() {
         return;
     }
@@ -569,7 +571,7 @@ fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
         target_coding_passes: 2,
     }];
 
-    let error = crate::J2kCudaEngine::new(&context)
+    let encoded = crate::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblocks(
             &coefficients,
             &jobs,
@@ -579,24 +581,14 @@ fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
                 uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
             },
         )
-        .expect_err("target-2 zero SigProp cannot silently drop low coefficient bits");
+        .expect("general target-2 SigProp coefficients encode");
 
-    match error {
-        CudaError::KernelStatus {
-            kernel,
-            code,
-            detail,
-        } => {
-            assert_eq!(kernel, "j2k_htj2k_encode_codeblocks");
-            assert_eq!(code, super::HTJ2K_STATUS_UNSUPPORTED);
-            assert_eq!(detail, 6);
-        }
-        other => panic!("unexpected CUDA encode error: {other:?}"),
-    }
+    assert_eq!(encoded.code_blocks()[0].num_coding_passes(), 2);
+    assert!(encoded.code_blocks()[0].sigprop_length() > 0);
 }
 
 #[test]
-fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_required() {
+fn htj2k_encode_accepts_isolated_target_three_coefficients_when_required() {
     if !cuda_runtime_gate() {
         return;
     }
@@ -611,7 +603,7 @@ fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_requi
         target_coding_passes: 3,
     }];
 
-    let error = crate::J2kCudaEngine::new(&context)
+    let encoded = crate::J2kCudaEngine::new(&context)
         .encode_htj2k_codeblocks(
             &coefficients,
             &jobs,
@@ -621,20 +613,10 @@ fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_requi
                 uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
             },
         )
-        .expect_err("isolated target-3 SigProp coefficient is explicitly unsupported");
+        .expect("isolated target-3 coefficient encode");
 
-    match error {
-        CudaError::KernelStatus {
-            kernel,
-            code,
-            detail,
-        } => {
-            assert_eq!(kernel, "j2k_htj2k_encode_codeblocks");
-            assert_eq!(code, super::HTJ2K_STATUS_UNSUPPORTED);
-            assert_eq!(detail, 6);
-        }
-        other => panic!("unexpected CUDA encode error: {other:?}"),
-    }
+    assert_eq!(encoded.code_blocks()[0].num_coding_passes(), 3);
+    assert!(encoded.code_blocks()[0].sigprop_length() > 0);
 }
 
 #[test]

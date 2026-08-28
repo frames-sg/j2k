@@ -15,7 +15,7 @@ use super::idwt::IDWTOutput;
 use super::progression::{progression_iterator, ProgressionData};
 use super::roi::{tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
-use super::tile::{ComponentTile, ResolutionTile, Tile};
+use super::tile::{ComponentTile, ParsedTiles, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
 use crate::error::{
     bail, ColorError, DecodeError, DecodingError, DirectPlanUnsupportedReason, Result, TileError,
@@ -83,6 +83,15 @@ pub(crate) fn decode_with_capacity_retry<'a>(
     ctx: &mut DecoderContext<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
+    run_decode_with_capacity_retry(ctx, |ctx| {
+        decode(data, header, retained_image_bytes, ctx, ht_decoder)
+    })
+}
+
+fn run_decode_with_capacity_retry<'a>(
+    ctx: &mut DecoderContext<'a>,
+    mut decode: impl FnMut(&mut DecoderContext<'a>) -> Result<()>,
+) -> Result<()> {
     ctx.storage.release_all_allocations();
     let retained_component_bytes = ctx.tile_decode_context.retained_channel_bytes()?;
     let retained_tier1_bytes = ctx.tile_decode_context.tier1_capacity_bytes()?;
@@ -96,11 +105,11 @@ pub(crate) fn decode_with_capacity_retry<'a>(
         retained_idwt_bytes,
     );
 
-    let first_result = decode(data, header, retained_image_bytes, ctx, ht_decoder);
+    let first_result = decode(ctx);
     let result = ctx.retry_without_retained_scratch_on_capacity(
         retained_scratch_bytes,
         first_result,
-        |ctx| decode(data, header, retained_image_bytes, ctx, ht_decoder),
+        &mut decode,
     );
 
     ctx.storage.release_all_allocations();
@@ -113,6 +122,63 @@ pub(crate) fn decode_with_capacity_retry<'a>(
         retained_idwt_bytes,
     );
     result
+}
+
+pub(crate) fn prepare_region_tiles<'a>(
+    data: &'a [u8],
+    header: &Header<'a>,
+    retained_image_bytes: usize,
+    ctx: &mut DecoderContext<'a>,
+) -> Result<ParsedTiles<'a>> {
+    // The parsed graph remains live for the complete region session. Start it
+    // from a fresh lifetime-free workspace so its baseline is exact and later
+    // stripe allocations can account the retained graph explicitly.
+    ctx.release_reusable_allocations();
+    let mut reader = BitReader::new(data);
+    let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
+    if tiles.is_empty() {
+        bail!(TileError::Invalid);
+    }
+    Ok(tiles)
+}
+
+pub(crate) fn decode_preparsed_with_capacity_retry<'a>(
+    header: &Header<'a>,
+    retained_image_bytes: usize,
+    tiles: &ParsedTiles<'a>,
+    ctx: &mut DecoderContext<'a>,
+) -> Result<()> {
+    run_decode_with_capacity_retry(ctx, |ctx| {
+        decode_preparsed(header, retained_image_bytes, tiles, ctx)
+    })
+}
+
+fn decode_preparsed<'a>(
+    header: &Header<'a>,
+    retained_image_bytes: usize,
+    tiles: &ParsedTiles<'a>,
+    ctx: &mut DecoderContext<'a>,
+) -> Result<()> {
+    let reused_baseline = ctx.prepare_reused_decode_baseline(retained_image_bytes)?;
+    let structural_workspace_bytes = reused_baseline
+        .parser_live
+        .checked_add(tiles.metadata_owner_bytes())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if structural_workspace_bytes > crate::DEFAULT_MAX_DECODE_BYTES {
+        bail!(ValidationError::ImageTooLarge);
+    }
+    let profile_enabled = profile::profile_stages_enabled();
+    decode_parsed_tiles(
+        header,
+        tiles,
+        structural_workspace_bytes,
+        reused_baseline,
+        ctx,
+        &mut None,
+        profile_enabled,
+        DecodeProfileTimings::default(),
+        profile::profile_now(profile_enabled),
+    )
 }
 
 fn decode<'a>(
@@ -150,14 +216,41 @@ fn decode<'a>(
     let tiles = parsed_tiles?;
     profile_timings.parse_tiles_us += profile::elapsed_us(stage_start);
 
+    decode_parsed_tiles(
+        header,
+        &tiles,
+        tiles.structural_workspace_bytes(),
+        reused_baseline,
+        ctx,
+        ht_decoder,
+        profile_enabled,
+        profile_timings,
+        total_start,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parsed decode boundary keeps graph ownership, allocation baseline, adapter, and profiling state explicit"
+)]
+fn decode_parsed_tiles<'a>(
+    header: &Header<'a>,
+    tiles: &ParsedTiles<'a>,
+    structural_workspace_bytes: usize,
+    reused_baseline: reuse::ReusedDecodeBaseline,
+    ctx: &mut DecoderContext<'a>,
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    profile_enabled: bool,
+    mut profile_timings: DecodeProfileTimings,
+    total_start: Option<profile::ProfileInstant>,
+) -> Result<()> {
     if tiles.is_empty() {
         bail!(TileError::Invalid);
     }
-
     let retained_decode_baseline = ctx.reset(
         header,
         &tiles[0],
-        tiles.structural_workspace_bytes(),
+        structural_workspace_bytes,
         reused_baseline.channel_capacity,
     )?;
     let retained_decode_base_without_scratch = retained_decode_baseline

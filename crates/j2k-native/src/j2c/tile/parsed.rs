@@ -10,18 +10,28 @@ use super::Tile;
 pub(crate) struct ParsedTiles<'a> {
     tiles: Vec<Tile<'a>>,
     structural_workspace_bytes: usize,
+    metadata_owner_bytes: usize,
 }
 
 impl<'a> ParsedTiles<'a> {
-    pub(super) fn new(tiles: Vec<Tile<'a>>, structural_workspace_bytes: usize) -> Self {
+    pub(super) fn new(
+        tiles: Vec<Tile<'a>>,
+        structural_workspace_bytes: usize,
+        metadata_owner_bytes: usize,
+    ) -> Self {
         Self {
             tiles,
             structural_workspace_bytes,
+            metadata_owner_bytes,
         }
     }
 
     pub(crate) fn structural_workspace_bytes(&self) -> usize {
         self.structural_workspace_bytes
+    }
+
+    pub(crate) fn metadata_owner_bytes(&self) -> usize {
+        self.metadata_owner_bytes
     }
 }
 

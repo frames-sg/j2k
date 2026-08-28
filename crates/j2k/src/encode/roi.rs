@@ -3,6 +3,7 @@
 //! Lossless and lossy ROI encode orchestration.
 
 use alloc::{string::ToString, vec::Vec};
+use j2k_core::Unsupported;
 use j2k_native::EncodeRoiRegion as NativeEncodeRoiRegion;
 
 use super::accelerator::resolve_encode_backend;
@@ -114,6 +115,11 @@ pub(super) fn encode_lossy(
     roi_regions: &[J2kRoiRegion],
 ) -> Result<EncodedLossyJ2k, J2kError> {
     validate_lossy_options(options)?;
+    if options.qfactor.is_some() {
+        return Err(J2kError::Unsupported(Unsupported {
+            what: "OpenHTJ2K Qfactor ROI encode is not supported",
+        }));
+    }
     high_bit::validate_lossy_options(samples, options)?;
     let native_roi_regions = native_roi_regions_for_samples(
         samples.width,

@@ -8,20 +8,14 @@ use super::super::super::super::{NativeEncodePipelineError, NativeEncodePipeline
 use super::super::super::{
     classic_rate_target_tolerance, ClassicLayerBudgetAllocator, ClassicSegmentAssignmentCandidate,
 };
+use super::super::ordered_candidate_block_count;
 use super::super::{compare_classic_segment_candidates, enforce_classic_assignment_monotonicity};
 
 struct ClassicAssignmentWorkspace {
     allocator: ClassicLayerBudgetAllocator,
-    block_candidates: Vec<Vec<usize>>,
+    block_frontiers: Vec<Option<usize>>,
     block_min_layers: Vec<usize>,
     assignments: Vec<usize>,
-    next_block_segment: Vec<usize>,
-}
-
-struct ClassicCandidateGraph {
-    blocks: Vec<Vec<usize>>,
-    outer_bytes: usize,
-    nested_bytes: usize,
 }
 
 pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
@@ -32,7 +26,7 @@ pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     retained_live_bytes: usize,
 ) -> NativeEncodePipelineResult<Vec<usize>> {
-    validate_classic_assignment_inputs(
+    let block_count = validate_classic_assignment_inputs(
         candidates,
         candidate_capacity,
         layer_count,
@@ -46,18 +40,16 @@ pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
         candidate_capacity,
         layer_count,
         cumulative_targets,
+        block_count,
         tracker,
         retained_live_bytes,
     )?;
 
     for _ in 0..candidates.len() {
         let candidate_idx = workspace
-            .block_candidates
+            .block_frontiers
             .iter()
-            .enumerate()
-            .filter_map(|(block_idx, block)| {
-                block.get(workspace.next_block_segment[block_idx]).copied()
-            })
+            .filter_map(|candidate| *candidate)
             .min_by(|&left, &right| compare_classic_segment_candidates(candidates, left, right))
             .ok_or_else(|| {
                 NativeEncodePipelineError::internal_invariant(
@@ -76,15 +68,13 @@ pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
             .assign_segment(min_layer, candidate.rate)
             .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
         workspace.assignments[candidate_idx] = layer;
-        workspace.block_min_layers[candidate.block_index] = layer;
-        workspace.next_block_segment[candidate.block_index] = workspace.next_block_segment
-            [candidate.block_index]
-            .checked_add(1)
-            .ok_or_else(|| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "classic PCRD segment index overflow",
-                )
-            })?;
+        let block_index = candidate.block_index;
+        workspace.block_min_layers[block_index] = layer;
+        workspace.block_frontiers[block_index] = candidate_idx.checked_add(1).filter(|&next| {
+            candidates
+                .get(next)
+                .is_some_and(|candidate| candidate.block_index == block_index)
+        });
     }
     enforce_classic_assignment_monotonicity(candidates, &mut workspace.assignments);
     Ok(workspace.assignments)
@@ -95,7 +85,7 @@ fn validate_classic_assignment_inputs(
     candidate_capacity: usize,
     layer_count: usize,
     cumulative_targets: &[u64],
-) -> NativeEncodePipelineResult<()> {
+) -> NativeEncodePipelineResult<usize> {
     if !cumulative_targets.is_empty() && cumulative_targets.len() != layer_count {
         return Err(NativeEncodePipelineError::invalid_input(
             "quality layer byte target count must match quality layer count",
@@ -111,7 +101,12 @@ fn validate_classic_assignment_inputs(
             "classic PCRD candidate capacity is smaller than its length",
         ));
     }
-    Ok(())
+    ordered_candidate_block_count(
+        candidates
+            .iter()
+            .map(|candidate| (candidate.block_index, candidate.segment_index)),
+        "classic PCRD candidates are not grouped in segment order",
+    )
 }
 
 fn try_classic_assignment_workspace(
@@ -119,6 +114,7 @@ fn try_classic_assignment_workspace(
     candidate_capacity: usize,
     layer_count: usize,
     cumulative_targets: &[u64],
+    block_count: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     retained_live_bytes: usize,
 ) -> NativeEncodePipelineResult<ClassicAssignmentWorkspace> {
@@ -126,14 +122,6 @@ fn try_classic_assignment_workspace(
         candidate_capacity,
         "classic PCRD candidates",
     )?;
-    let block_count = candidates
-        .iter()
-        .map(|candidate| candidate.block_index)
-        .max()
-        .and_then(|max| max.checked_add(1))
-        .ok_or_else(|| {
-            NativeEncodePipelineError::arithmetic_overflow("classic PCRD block count")
-        })?;
     let fixed = checked_add_bytes(
         retained_live_bytes,
         candidate_bytes,
@@ -141,21 +129,18 @@ fn try_classic_assignment_workspace(
     )?;
     let (allocator, target_bytes, used_bytes) =
         try_classic_budget_allocator(cumulative_targets, fixed, tracker)?;
-    let graph = try_classic_candidate_graph(
-        candidates,
+    let (mut block_frontiers, frontier_bytes) = tracker.try_vec::<Option<usize>>(
         block_count,
-        fixed,
-        target_bytes,
-        used_bytes,
-        tracker,
+        [fixed, target_bytes, used_bytes],
+        "classic PCRD block frontiers",
     )?;
-    let live = [
-        fixed,
-        target_bytes,
-        used_bytes,
-        graph.outer_bytes,
-        graph.nested_bytes,
-    ];
+    block_frontiers.resize(block_count, None);
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        if candidate.segment_index == 0 {
+            block_frontiers[candidate.block_index] = Some(candidate_index);
+        }
+    }
+    let live = [fixed, target_bytes, used_bytes, frontier_bytes];
     let (mut block_min_layers, block_min_bytes) =
         tracker.try_vec::<usize>(block_count, live, "classic PCRD block minimum layers")?;
     block_min_layers.resize(block_count, 0);
@@ -165,23 +150,15 @@ fn try_classic_assignment_workspace(
         "classic PCRD segment assignments",
     )?;
     assignments.resize(candidates.len(), layer_count.saturating_sub(1));
-    let (mut next_block_segment, next_bytes) = tracker.try_vec::<usize>(
-        block_count,
-        live.into_iter().chain([block_min_bytes, assignment_bytes]),
-        "classic PCRD next block segments",
-    )?;
-    next_block_segment.resize(block_count, 0);
     tracker.check(
-        live.into_iter()
-            .chain([block_min_bytes, assignment_bytes, next_bytes]),
+        live.into_iter().chain([block_min_bytes, assignment_bytes]),
         "classic PCRD workspace",
     )?;
     Ok(ClassicAssignmentWorkspace {
         allocator,
-        block_candidates: graph.blocks,
+        block_frontiers,
         block_min_layers,
         assignments,
-        next_block_segment,
     })
 }
 
@@ -212,69 +189,4 @@ fn try_classic_budget_allocator(
         target_bytes,
         used_bytes,
     ))
-}
-
-fn try_classic_candidate_graph(
-    candidates: &[ClassicSegmentAssignmentCandidate],
-    block_count: usize,
-    fixed: usize,
-    target_bytes: usize,
-    used_bytes: usize,
-    tracker: &mut Tier1PhaseTracker<'_, '_>,
-) -> NativeEncodePipelineResult<ClassicCandidateGraph> {
-    let (mut counts, count_bytes) = tracker.try_vec::<usize>(
-        block_count,
-        [fixed, target_bytes, used_bytes],
-        "classic PCRD block segment counts",
-    )?;
-    counts.resize(block_count, 0);
-    for candidate in candidates {
-        let count = counts.get_mut(candidate.block_index).ok_or_else(|| {
-            NativeEncodePipelineError::internal_invariant("classic PCRD block index mismatch")
-        })?;
-        *count = count
-            .checked_add(1)
-            .ok_or(crate::EncodeError::ArithmeticOverflow {
-                what: "classic PCRD block segment count",
-            })?;
-    }
-    let (mut blocks, outer_bytes) = tracker.try_vec::<Vec<usize>>(
-        block_count,
-        [fixed, target_bytes, used_bytes, count_bytes],
-        "classic PCRD block candidate owners",
-    )?;
-    let mut nested_bytes = 0usize;
-    for &count in &counts {
-        let (indices, bytes) = tracker.try_vec::<usize>(
-            count,
-            [
-                fixed,
-                target_bytes,
-                used_bytes,
-                count_bytes,
-                outer_bytes,
-                nested_bytes,
-            ],
-            "classic PCRD block candidates",
-        )?;
-        nested_bytes =
-            checked_add_bytes(nested_bytes, bytes, "classic PCRD block candidate graph")?;
-        blocks.push(indices);
-    }
-    for (candidate_idx, candidate) in candidates.iter().enumerate() {
-        blocks
-            .get_mut(candidate.block_index)
-            .ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant("classic PCRD block index mismatch")
-            })?
-            .push(candidate_idx);
-    }
-    for block in &mut blocks {
-        block.sort_by_key(|&idx| candidates[idx].segment_index);
-    }
-    Ok(ClassicCandidateGraph {
-        blocks,
-        outer_bytes,
-        nested_bytes,
-    })
 }

@@ -73,11 +73,12 @@ pub(super) struct ClassicSegmentLocation {
     pub(super) segment_idx: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct HtSegmentAssignmentCandidate {
     pub(super) block_index: usize,
     pub(super) segment_index: usize,
     pub(super) rate: u64,
+    pub(super) distortion_delta: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,6 +183,6 @@ impl ClassicLayerBudgetAllocator {
     }
 }
 
-fn classic_rate_target_tolerance(target: u64) -> u64 {
+pub(super) fn classic_rate_target_tolerance(target: u64) -> u64 {
     (target / 100).max(512)
 }

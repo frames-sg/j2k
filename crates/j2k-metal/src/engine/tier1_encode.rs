@@ -24,7 +24,6 @@ use super::{
     with_runtime_for_session, zeroed_shared_buffer, Buffer, EncodedHtJ2kCodeBlock,
     EncodedJ2kCodeBlock, Error, J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob,
     J2kLosslessDeviceCodeBlock, J2kPreparedLosslessDeviceCodeBlocks, J2kTier1CodeBlockEncodeJob,
-    MetalRuntime,
 };
 
 fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<usize, Error> {
@@ -34,6 +33,10 @@ fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<u
             message: format!("{context} byte size overflow"),
         })
 }
+#[cfg(target_os = "macos")]
+mod ht_batch;
+#[cfg(target_os = "macos")]
+pub(crate) use self::ht_batch::{encode_ht_cleanup_code_blocks, encode_ht_code_block_sets};
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -646,6 +649,8 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
                 width: block.width,
                 height: block.height,
                 total_bitplanes: u32::from(block.total_bitplanes),
+                cleanup_bitplane: 0,
+                target_coding_passes: 1,
                 output_capacity: output_capacity_u32,
             });
             output_capacity_total = output_capacity_total
@@ -882,10 +887,28 @@ pub(super) fn read_ht_encoded_code_block(
     } else {
         checked_buffer_slice_at::<u8>(output, output_offset, data_len, "HTJ2K encode payload")?
     };
+    let cleanup_length = status.cleanup_length;
+    let refinement_length = status
+        .sigprop_length
+        .checked_add(status.magref_length)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal refinement length overflow".to_string(),
+        })?;
+    let expected_length = cleanup_length
+        .checked_add(refinement_length)
+        .and_then(|length| usize::try_from(length).ok())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal segment length overflow".to_string(),
+        })?;
+    if data_len != expected_length {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal segment lengths do not match output length".to_string(),
+        });
+    }
     Ok(EncodedHtJ2kCodeBlock {
         data,
-        cleanup_length: status.data_len,
-        refinement_length: 0,
+        cleanup_length,
+        refinement_length,
         num_coding_passes: u8::try_from(status.num_coding_passes).map_err(|_| {
             Error::MetalKernel {
                 message: "HTJ2K Metal encode pass count exceeds u8".to_string(),
@@ -983,178 +1006,6 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn encode_ht_cleanup_code_blocks(
-    jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    with_runtime(|runtime| encode_ht_cleanup_code_blocks_with_runtime(runtime, jobs))
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn encode_ht_cleanup_code_blocks_with_runtime(
-    runtime: &MetalRuntime,
-    jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    let blocks = encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs)?;
-    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
-        "HTJ2K Metal encoded block projection metadata",
-    );
-    budget.account_capacity::<(EncodedHtJ2kCodeBlock, J2kHtEncodeStatus)>(blocks.capacity())?;
-    budget.preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<
-        EncodedHtJ2kCodeBlock,
-    >(blocks.len())])?;
-    let mut encoded = budget.try_vec(blocks.len(), "HTJ2K Metal encoded block results")?;
-    for (block, _status) in blocks {
-        encoded.push(block);
-    }
-    Ok(encoded)
-}
-
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "HT batch dispatch keeps output/status slice ownership aligned"
-)]
-pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
-    runtime: &MetalRuntime,
-    jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-) -> Result<Vec<(EncodedHtJ2kCodeBlock, J2kHtEncodeStatus)>, Error> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-    if jobs.iter().any(|job| job.target_coding_passes != 1) {
-        return Err(Error::MetalKernel {
-            message: "HTJ2K Metal cleanup encode supports one coding pass".to_string(),
-        });
-    }
-
-    let coefficient_count = jobs.iter().try_fold(0usize, |total, job| {
-        let width = usize::try_from(job.width).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K Metal encode width exceeds usize".to_string(),
-        })?;
-        let height = usize::try_from(job.height).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K Metal encode height exceeds usize".to_string(),
-        })?;
-        let count = width
-            .checked_mul(height)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Metal encode coefficient count overflow".to_string(),
-            })?;
-        total.checked_add(count).ok_or_else(|| {
-            Error::from(j2k_core::BatchInfrastructureError::AllocationTooLarge {
-                what: "HTJ2K Metal encode coefficients",
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            })
-        })
-    })?;
-    let mut budget =
-        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K Metal Tier-1 encode batch");
-    let mut coefficients = budget.try_vec(coefficient_count, "HTJ2K Metal encode coefficients")?;
-    let mut batch_jobs = budget.try_vec(jobs.len(), "HTJ2K Metal encode batch jobs")?;
-    let mut output_capacity_total = 0usize;
-
-    for job in jobs {
-        let output_capacity = ht_encode_output_capacity(job.width, job.height)?;
-        let output_capacity_u32 =
-            u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
-            })?;
-        let expected_coefficients = usize::try_from(job.width)
-            .ok()
-            .and_then(|w| {
-                usize::try_from(job.height)
-                    .ok()
-                    .and_then(|h| w.checked_mul(h))
-            })
-            .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Metal encode coefficient count overflow".to_string(),
-            })?;
-        if job.coefficients.len() < expected_coefficients {
-            return Err(Error::MetalKernel {
-                message: "HTJ2K Metal encode coefficient slice is too small".to_string(),
-            });
-        }
-        let coefficient_offset =
-            u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode coefficient table exceeds u32".to_string(),
-            })?;
-        coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
-        let output_offset =
-            u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode output table exceeds u32".to_string(),
-            })?;
-        batch_jobs.push(J2kHtEncodeBatchJob {
-            coefficient_offset,
-            output_offset,
-            width: job.width,
-            height: job.height,
-            total_bitplanes: u32::from(job.total_bitplanes),
-            output_capacity: output_capacity_u32,
-        });
-        output_capacity_total = output_capacity_total
-            .checked_add(output_capacity)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Metal encode output buffer overflow".to_string(),
-            })?;
-    }
-
-    let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
-    let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
-    let output = new_shared_buffer(&runtime.device, output_capacity_total.max(1))?;
-    let status_buffer = zeroed_shared_buffer(
-        &runtime.device,
-        checked_type_buffer_bytes::<J2kHtEncodeStatus>(
-            jobs.len(),
-            "HTJ2K Metal encode status buffer",
-        )?,
-    )?;
-    let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
-        message: "HTJ2K Metal encode job count exceeds u32".to_string(),
-    })?;
-
-    let command_buffer = new_command_buffer(&runtime.queue)?;
-    label_command_buffer(&command_buffer, "j2k htj2k tier1 batch");
-    let encoder = new_compute_command_encoder(&command_buffer)?;
-    label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
-    let pipeline = &runtime.ht_encode_code_blocks;
-    encoder.setComputePipelineState(pipeline);
-    encoder.set_buffer(0, Some(&coefficient_buffer), 0);
-    encoder.set_buffer(1, Some(&output), 0);
-    encoder.set_buffer(2, Some(&job_buffer), 0);
-    encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
-    encoder.set_buffer(6, Some(&status_buffer), 0);
-    encoder.set_bytes::<u32>(7, &job_count);
-    dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
-    encoder.endEncoding();
-    commit_and_wait_metal(&command_buffer)?;
-
-    let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
-        &status_buffer,
-        jobs.len(),
-        "HT encode statuses",
-    )?;
-    let mut results = budget.try_vec(jobs.len(), "J2K Metal HT Tier-1 encoded blocks")?;
-    for (idx, status) in statuses.iter().copied().enumerate() {
-        let batch_job = batch_jobs[idx];
-        let encoded_block = read_ht_encoded_code_block(
-            status,
-            &output,
-            usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode output offset exceeds usize".to_string(),
-            })?,
-            usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode output capacity exceeds usize".to_string(),
-            })?,
-        )?;
-        results.push((encoded_block, status));
-    }
-
-    Ok(results)
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn encode_ht_cleanup_code_block(
     job: J2kHtCodeBlockEncodeJob<'_>,
 ) -> Result<EncodedHtJ2kCodeBlock, Error> {
@@ -1188,6 +1039,8 @@ pub(crate) fn encode_ht_cleanup_code_block(
             width: job.width,
             height: job.height,
             total_bitplanes: u32::from(job.total_bitplanes),
+            cleanup_bitplane: 0,
+            target_coding_passes: 1,
             output_capacity: output_capacity_u32,
         };
         let coefficients =
@@ -1210,40 +1063,6 @@ pub(crate) fn encode_ht_cleanup_code_block(
         commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kHtEncodeStatus>(&status_buffer, "HT encode status")?;
-        if status.code != J2K_ENCODE_STATUS_OK {
-            return Err(encode_status_error(
-                "HTJ2K cleanup",
-                status.code,
-                status.detail,
-            ));
-        }
-        let data_len = usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K Metal encode length exceeds usize".to_string(),
-        })?;
-        if data_len > output_capacity {
-            return Err(Error::MetalKernel {
-                message: "HTJ2K Metal encode length exceeds output buffer".to_string(),
-            });
-        }
-        let data = if data_len == 0 {
-            Vec::new()
-        } else {
-            checked_buffer_slice::<u8>(&output, data_len, "HT encode payload")?
-        };
-        Ok(EncodedHtJ2kCodeBlock {
-            data,
-            cleanup_length: status.data_len,
-            refinement_length: 0,
-            num_coding_passes: u8::try_from(status.num_coding_passes).map_err(|_| {
-                Error::MetalKernel {
-                    message: "HTJ2K Metal encode pass count exceeds u8".to_string(),
-                }
-            })?,
-            num_zero_bitplanes: u8::try_from(status.num_zero_bitplanes).map_err(|_| {
-                Error::MetalKernel {
-                    message: "HTJ2K Metal encode zero bitplanes exceeds u8".to_string(),
-                }
-            })?,
-        })
+        read_ht_encoded_code_block(status, &output, 0, output_capacity)
     })
 }

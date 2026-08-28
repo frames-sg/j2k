@@ -2,15 +2,39 @@
 
 use j2k::{
     encode_j2k_lossy, encode_j2k_lossy_with_accelerator, encode_j2k_lossy_with_roi_regions,
-    EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLossyEncodeOptions,
-    J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer, J2kRateTarget,
-    J2kRoiRegion,
+    EncodeBackendPreference, EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, J2kBlockCodingMode,
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kEncodeStageError, J2kEncodeStageResult, J2kEncodeValidation, J2kHtCodeBlockEncodeJob,
+    J2kHtCodeBlockSetEncodeJob, J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment,
+    J2kPacketizationEncodeJob, J2kProgressionOrder, J2kQualityLayer, J2kQuantizeSubbandJob,
+    J2kRateTarget, J2kRoiRegion,
 };
-use j2k::{
-    EncodedHtJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageResult, J2kHtCodeBlockEncodeJob,
-    J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-};
+
+#[test]
+fn htj2k_qfactor_is_opt_in_and_round_trips() {
+    let pixels = (0_usize..64 * 64 * 3)
+        .map(|index| masked_u8(index.wrapping_mul(29)))
+        .collect::<Vec<_>>();
+    let samples =
+        j2k::J2kLossySamples::new(&pixels, 64, 64, 3, 8, false).expect("valid RGB samples");
+    let encoded = j2k::encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_qfactor(Some(90)),
+    )
+    .expect("Qfactor HTJ2K encode");
+
+    assert!(encoded
+        .codestream
+        .windows(2)
+        .any(|bytes| bytes == [0xff, 0x5d]));
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(
+        (decoded.width, decoded.height, decoded.num_components),
+        (64, 64, 3)
+    );
+}
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};
 
@@ -40,6 +64,153 @@ fn strict_decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
 
 fn public_encoded_ht(block: j2k_native::EncodedHtJ2kCodeBlock) -> EncodedHtJ2kCodeBlock {
     block
+}
+
+#[derive(Default)]
+struct FullHtj2kLossyAccelerator {
+    deinterleave: usize,
+    quantize_subband: usize,
+    ht_code_block: usize,
+    packetization: usize,
+}
+
+impl J2kEncodeStageAccelerator for FullHtj2kLossyAccelerator {
+    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        J2kEncodeDispatchReport {
+            deinterleave: self.deinterleave,
+            quantize_subband: self.quantize_subband,
+            ht_code_block: self.ht_code_block,
+            packetization: self.packetization,
+            ..J2kEncodeDispatchReport::default()
+        }
+    }
+
+    fn encode_deinterleave(
+        &mut self,
+        job: J2kDeinterleaveToF32Job<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        self.deinterleave = self.deinterleave.saturating_add(1);
+        assert_eq!(job.bit_depth, 8);
+        assert!(!job.signed);
+        Ok(Some(vec![job
+            .pixels
+            .iter()
+            .map(|sample| f32::from(*sample) - 128.0)
+            .collect()]))
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
+    )]
+    fn encode_quantize_subband(
+        &mut self,
+        job: J2kQuantizeSubbandJob<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
+        self.quantize_subband = self.quantize_subband.saturating_add(1);
+        Ok(Some(
+            job.coefficients
+                .iter()
+                .map(|sample| sample.round() as i32)
+                .collect(),
+        ))
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: J2kHtCodeBlockEncodeJob<'_>,
+    ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
+        self.ht_code_block = self.ht_code_block.saturating_add(1);
+        assert_eq!(job.target_coding_passes, 3);
+        j2k_native::encode_ht_code_block_scalar_with_passes(
+            job.coefficients,
+            job.width,
+            job.height,
+            job.total_bitplanes,
+            job.target_coding_passes,
+        )
+        .map(public_encoded_ht)
+        .map(Some)
+        .map_err(|source| {
+            J2kEncodeStageError::backend("native scalar", "HT Tier-1 refinement encode", source)
+        })
+    }
+
+    fn encode_ht_code_block_sets(
+        &mut self,
+        jobs: &[J2kHtCodeBlockSetEncodeJob<'_>],
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlockSet>>> {
+        self.ht_code_block = self.ht_code_block.saturating_add(1);
+        jobs.iter()
+            .copied()
+            .map(scalar_ht_candidate_set)
+            .collect::<J2kEncodeStageResult<Vec<_>>>()
+            .map(Some)
+    }
+
+    fn encode_packetization(
+        &mut self,
+        _job: J2kPacketizationEncodeJob<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
+        self.packetization = self.packetization.saturating_add(1);
+        Ok(None)
+    }
+}
+
+fn scalar_ht_candidate_set(
+    job: J2kHtCodeBlockSetEncodeJob<'_>,
+) -> J2kEncodeStageResult<EncodedHtJ2kCodeBlockSet> {
+    let shift = job.cleanup_bitplane.saturating_sub(1);
+    let shifted = job
+        .coefficients
+        .iter()
+        .map(|coefficient| {
+            let magnitude = coefficient.unsigned_abs() >> shift;
+            let magnitude = i32::try_from(magnitude).expect("bounded HT magnitude");
+            if coefficient.is_negative() {
+                -magnitude
+            } else {
+                magnitude
+            }
+        })
+        .collect::<Vec<_>>();
+    let shifted_bitplanes = job
+        .total_bitplanes
+        .checked_sub(shift)
+        .expect("candidate cleanup bitplane is in range");
+    let full =
+        scalar_ht_candidate_passes(&shifted, shifted_bitplanes, job, job.target_coding_passes)?;
+    let sigprop_length = if job.target_coding_passes > 1 {
+        scalar_ht_candidate_passes(&shifted, shifted_bitplanes, job, 2)?.refinement_length
+    } else {
+        0
+    };
+    Ok(EncodedHtJ2kCodeBlockSet {
+        data: full.data,
+        cleanup_length: full.cleanup_length,
+        sigprop_length,
+        magref_length: full.refinement_length - sigprop_length,
+        num_coding_passes: full.num_coding_passes,
+        num_zero_bitplanes: full.num_zero_bitplanes,
+    })
+}
+
+fn scalar_ht_candidate_passes(
+    coefficients: &[i32],
+    total_bitplanes: u8,
+    job: J2kHtCodeBlockSetEncodeJob<'_>,
+    passes: u8,
+) -> J2kEncodeStageResult<EncodedHtJ2kCodeBlock> {
+    j2k_native::encode_ht_code_block_scalar_with_passes(
+        coefficients,
+        job.width,
+        job.height,
+        total_bitplanes,
+        passes,
+    )
+    .map_err(|source| {
+        J2kEncodeStageError::backend("native scalar", "HT Tier-1 candidate encode", source)
+    })
 }
 
 fn plt_packet_length_count(codestream: &[u8]) -> usize {
@@ -950,85 +1121,6 @@ fn cpu_htj2k_lossy_three_quality_layers_use_three_pass_segment_granularity() {
 
 #[test]
 fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_stages() {
-    #[derive(Default)]
-    struct FullHtj2kLossyAccelerator {
-        deinterleave: usize,
-        quantize_subband: usize,
-        ht_code_block: usize,
-        packetization: usize,
-    }
-
-    impl J2kEncodeStageAccelerator for FullHtj2kLossyAccelerator {
-        fn dispatch_report(&self) -> J2kEncodeDispatchReport {
-            J2kEncodeDispatchReport {
-                deinterleave: self.deinterleave,
-                quantize_subband: self.quantize_subband,
-                ht_code_block: self.ht_code_block,
-                packetization: self.packetization,
-                ..J2kEncodeDispatchReport::default()
-            }
-        }
-
-        fn encode_deinterleave(
-            &mut self,
-            job: J2kDeinterleaveToF32Job<'_>,
-        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
-            self.deinterleave = self.deinterleave.saturating_add(1);
-            assert_eq!(job.bit_depth, 8);
-            assert!(!job.signed);
-            let mut component = Vec::with_capacity(job.num_pixels);
-            for &sample in job.pixels {
-                component.push(f32::from(sample) - 128.0);
-            }
-            Ok(Some(vec![component]))
-        }
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
-        )]
-        fn encode_quantize_subband(
-            &mut self,
-            job: J2kQuantizeSubbandJob<'_>,
-        ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
-            self.quantize_subband = self.quantize_subband.saturating_add(1);
-            Ok(Some(
-                job.coefficients
-                    .iter()
-                    .map(|sample| sample.round() as i32)
-                    .collect(),
-            ))
-        }
-
-        fn encode_ht_code_block(
-            &mut self,
-            job: J2kHtCodeBlockEncodeJob<'_>,
-        ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
-            self.ht_code_block = self.ht_code_block.saturating_add(1);
-            assert_eq!(job.target_coding_passes, 3);
-            j2k_native::encode_ht_code_block_scalar_with_passes(
-                job.coefficients,
-                job.width,
-                job.height,
-                job.total_bitplanes,
-                job.target_coding_passes,
-            )
-            .map(public_encoded_ht)
-            .map(Some)
-            .map_err(|source| {
-                J2kEncodeStageError::backend("native scalar", "HT Tier-1 refinement encode", source)
-            })
-        }
-
-        fn encode_packetization(
-            &mut self,
-            _job: J2kPacketizationEncodeJob<'_>,
-        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
-            self.packetization = self.packetization.saturating_add(1);
-            Ok(None)
-        }
-    }
-
     let pixels: Vec<u8> = (0..32 * 32)
         .map(|index| masked_u8(index * 47 + index / 31))
         .collect();

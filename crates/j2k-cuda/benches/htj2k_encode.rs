@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{
+    criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
+};
 use j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
@@ -20,7 +22,8 @@ use j2k_cuda_j2k_engine::{
 };
 use j2k_cuda_runtime::CudaContext;
 use j2k_native::{
-    encode_ht_code_block_scalar, ht_uvlc_encode_table, ht_vlc_encode_table0, ht_vlc_encode_table1,
+    encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes, ht_uvlc_encode_table,
+    ht_vlc_encode_table0, ht_vlc_encode_table1,
 };
 use j2k_test_support::{
     canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
@@ -210,87 +213,134 @@ fn bench_codeblock_microkernels(
     jobs: &[CudaHtj2kEncodeCodeBlockJob],
     cuda_available: bool,
 ) {
+    let refinement_jobs = jobs
+        .iter()
+        .map(|job| CudaHtj2kEncodeCodeBlockJob {
+            target_coding_passes: 3,
+            ..*job
+        })
+        .collect::<Vec<_>>();
     let mut group = c.benchmark_group("j2k_cuda_htj2k_codeblock_microkernel");
+    for (cpu_id, host_id, resident_id, workload_jobs) in [
+        (
+            "cpu_scalar_cleanup",
+            "cuda_host_staged_cleanup",
+            "cuda_resident_cleanup",
+            jobs,
+        ),
+        (
+            "cpu_scalar_refinement",
+            "cuda_host_staged_refinement",
+            "cuda_resident_refinement",
+            refinement_jobs.as_slice(),
+        ),
+    ] {
+        bench_cpu_codeblock_workload(&mut group, cpu_id, coefficients, workload_jobs);
+        if cuda_available {
+            bench_cuda_codeblock_workload(
+                &mut group,
+                host_id,
+                resident_id,
+                coefficients,
+                workload_jobs,
+            );
+        }
+    }
+    group.finish();
+}
+
+fn bench_cpu_codeblock_workload(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    id: &str,
+    coefficients: &[i32],
+    jobs: &[CudaHtj2kEncodeCodeBlockJob],
+) {
     group.bench_with_input(
-        BenchmarkId::new("cpu_scalar_cleanup", CODE_BLOCK_BATCH),
+        BenchmarkId::new(id, CODE_BLOCK_BATCH),
         &(coefficients, jobs),
         |b, (coefficients, jobs)| {
             b.iter(|| {
                 let encoded_bytes = jobs
                     .iter()
                     .map(|job| {
-                        let coefficients = contiguous_block(coefficients, *job);
-                        encode_ht_code_block_scalar(
-                            std::hint::black_box(coefficients),
+                        let block = contiguous_block(coefficients, *job);
+                        let encoded = encode_ht_code_block_scalar_with_passes(
+                            std::hint::black_box(block),
                             job.width,
                             job.height,
                             job.total_bitplanes,
+                            job.target_coding_passes,
                         )
-                        .expect("native scalar HT code-block encode")
-                        .data
-                        .len()
+                        .expect("native scalar HT code-block encode");
+                        assert_eq!(encoded.num_coding_passes, job.target_coding_passes);
+                        encoded.data.len()
                     })
                     .sum::<usize>();
                 std::hint::black_box(encoded_bytes)
             });
         },
     );
+}
 
-    if cuda_available {
-        group.bench_with_input(
-            BenchmarkId::new("cuda_host_staged_cleanup", CODE_BLOCK_BATCH),
-            &(coefficients, jobs),
-            |b, (coefficients, jobs)| {
-                let runtime = CudaContext::system_default().expect("CUDA context");
-                let engine = J2kCudaEngine::new(&runtime);
-                let uvlc_table = uvlc_encode_table_bytes();
-                let resources = engine
-                    .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
-                    .expect("CUDA HTJ2K encode resources");
-                b.iter(|| {
-                    let encoded = engine
-                        .encode_htj2k_codeblocks_with_resources(
-                            std::hint::black_box(coefficients),
-                            std::hint::black_box(jobs),
-                            &resources,
-                        )
-                        .expect("CUDA host-staged HTJ2K code-block encode");
-                    std::hint::black_box(assert_cuda_batch(&encoded))
-                });
-            },
-        );
+fn bench_cuda_codeblock_workload(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    host_id: &str,
+    resident_id: &str,
+    coefficients: &[i32],
+    jobs: &[CudaHtj2kEncodeCodeBlockJob],
+) {
+    group.bench_with_input(
+        BenchmarkId::new(host_id, CODE_BLOCK_BATCH),
+        &(coefficients, jobs),
+        |b, (coefficients, jobs)| {
+            let runtime = CudaContext::system_default().expect("CUDA context");
+            let engine = J2kCudaEngine::new(&runtime);
+            let uvlc_table = uvlc_encode_table_bytes();
+            let resources = engine
+                .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
+                .expect("CUDA HTJ2K encode resources");
+            b.iter(|| {
+                let encoded = engine
+                    .encode_htj2k_codeblocks_with_resources(
+                        std::hint::black_box(coefficients),
+                        std::hint::black_box(jobs),
+                        &resources,
+                    )
+                    .expect("CUDA host-staged HTJ2K code-block encode");
+                std::hint::black_box(assert_cuda_batch(&encoded, jobs[0].target_coding_passes))
+            });
+        },
+    );
 
-        group.bench_with_input(
-            BenchmarkId::new("cuda_resident_cleanup", CODE_BLOCK_BATCH),
-            &(coefficients, jobs),
-            |b, (coefficients, jobs)| {
-                let runtime = CudaContext::system_default().expect("CUDA context");
-                let engine = J2kCudaEngine::new(&runtime);
-                let coefficient_bytes = coefficients_as_bytes(coefficients);
-                let resident_coefficients = runtime
-                    .upload(&coefficient_bytes)
-                    .expect("resident quantized coefficients");
-                let uvlc_table = uvlc_encode_table_bytes();
-                let resources = engine
-                    .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
-                    .expect("CUDA HTJ2K encode resources");
-                let pool = runtime.buffer_pool();
-                b.iter(|| {
-                    let encoded = engine
-                        .encode_htj2k_codeblocks_resident_with_resources_and_pool(
-                            &resident_coefficients,
-                            coefficients.len(),
-                            std::hint::black_box(jobs),
-                            &resources,
-                            &pool,
-                        )
-                        .expect("CUDA resident HTJ2K code-block encode");
-                    std::hint::black_box(assert_cuda_batch(&encoded))
-                });
-            },
-        );
-    }
-    group.finish();
+    group.bench_with_input(
+        BenchmarkId::new(resident_id, CODE_BLOCK_BATCH),
+        &(coefficients, jobs),
+        |b, (coefficients, jobs)| {
+            let runtime = CudaContext::system_default().expect("CUDA context");
+            let engine = J2kCudaEngine::new(&runtime);
+            let coefficient_bytes = coefficients_as_bytes(coefficients);
+            let resident_coefficients = runtime
+                .upload(&coefficient_bytes)
+                .expect("resident quantized coefficients");
+            let uvlc_table = uvlc_encode_table_bytes();
+            let resources = engine
+                .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
+                .expect("CUDA HTJ2K encode resources");
+            let pool = runtime.buffer_pool();
+            b.iter(|| {
+                let encoded = engine
+                    .encode_htj2k_codeblocks_resident_with_resources_and_pool(
+                        &resident_coefficients,
+                        coefficients.len(),
+                        std::hint::black_box(jobs),
+                        &resources,
+                        &pool,
+                    )
+                    .expect("CUDA resident HTJ2K code-block encode");
+                std::hint::black_box(assert_cuda_batch(&encoded, jobs[0].target_coding_passes))
+            });
+        },
+    );
 }
 
 fn bench_device_input_regions(
@@ -351,7 +401,7 @@ fn bench_device_input_regions(
                             &pool,
                         )
                         .expect("CUDA resident strided HTJ2K encode");
-                    std::hint::black_box(assert_cuda_batch(&encoded))
+                    std::hint::black_box(assert_cuda_batch(&encoded, 1))
                 });
             },
         );
@@ -732,12 +782,12 @@ fn uvlc_encode_table_bytes() -> Vec<u8> {
         .collect()
 }
 
-fn assert_cuda_batch(encoded: &CudaHtj2kEncodedCodeBlocks) -> usize {
+fn assert_cuda_batch(encoded: &CudaHtj2kEncodedCodeBlocks, expected_passes: u8) -> usize {
     assert_eq!(encoded.execution().kernel_dispatches(), 1);
     assert!(encoded
         .code_blocks()
         .iter()
-        .all(|block| block.status().is_ok()));
+        .all(|block| block.status().is_ok() && block.num_coding_passes() == expected_passes));
     encoded
         .code_blocks()
         .iter()
@@ -756,7 +806,10 @@ fn gather_region(coefficients: &[i32], job: CudaHtj2kEncodeCodeBlockRegionJob) -
     let stride = usize::try_from(job.coefficient_stride).expect("job stride fits usize");
     let width = usize::try_from(job.width).expect("job width fits usize");
     let height = usize::try_from(job.height).expect("job height fits usize");
-    let mut block = Vec::with_capacity(width * height);
+    let mut block = Vec::new();
+    block
+        .try_reserve_exact(width * height)
+        .expect("bench region block allocation");
     for y in 0..height {
         let row_start = start + y * stride;
         block.extend_from_slice(&coefficients[row_start..row_start + width]);
@@ -765,7 +818,10 @@ fn gather_region(coefficients: &[i32], job: CudaHtj2kEncodeCodeBlockRegionJob) -
 }
 
 fn generate_gray_tile(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(area_len(width, height));
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(area_len(width, height))
+        .expect("bench gray tile allocation");
     for y in 0..height {
         for x in 0..width {
             let value = (x * 17 + y * 31 + x.wrapping_mul(y) / 11) & 0xff;
@@ -776,7 +832,10 @@ fn generate_gray_tile(width: u32, height: u32) -> Vec<u8> {
 }
 
 fn generate_codeblock_coefficients(width: u32, height: u32, batch: usize) -> Vec<i32> {
-    let mut coefficients = Vec::with_capacity(area_len(width, height) * batch);
+    let mut coefficients = Vec::new();
+    coefficients
+        .try_reserve_exact(area_len(width, height) * batch)
+        .expect("bench contiguous coefficient allocation");
     for block in 0..batch {
         let block = u32::try_from(block).expect("bench block index fits u32");
         for y in 0..height {
@@ -789,7 +848,10 @@ fn generate_codeblock_coefficients(width: u32, height: u32, batch: usize) -> Vec
 }
 
 fn generate_region_coefficients(width: u32, height: u32) -> Vec<i32> {
-    let mut coefficients = Vec::with_capacity(area_len(width, height));
+    let mut coefficients = Vec::new();
+    coefficients
+        .try_reserve_exact(area_len(width, height))
+        .expect("bench region coefficient allocation");
     for y in 0..height {
         for x in 0..width {
             coefficients.push(patterned_coefficient(
@@ -812,7 +874,9 @@ fn patterned_coefficient(x: u32, y: u32, block: u32) -> i32 {
 
 fn contiguous_jobs(width: u32, height: u32, batch: usize) -> Vec<CudaHtj2kEncodeCodeBlockJob> {
     let block_len = area_len(width, height);
-    let mut jobs = Vec::with_capacity(batch);
+    let mut jobs = Vec::new();
+    jobs.try_reserve_exact(batch)
+        .expect("bench contiguous job allocation");
     for block in 0..batch {
         let offset = block
             .checked_mul(block_len)
@@ -836,7 +900,9 @@ fn strided_region_jobs(
     let stride = block_dim
         .checked_mul(blocks_x)
         .expect("bench stride fits u32");
-    let mut jobs = Vec::with_capacity(area_len(blocks_x, blocks_y));
+    let mut jobs = Vec::new();
+    jobs.try_reserve_exact(area_len(blocks_x, blocks_y))
+        .expect("bench strided job allocation");
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let row_offset = by
@@ -860,7 +926,10 @@ fn strided_region_jobs(
 }
 
 fn coefficients_as_bytes(coefficients: &[i32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(coefficients));
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(std::mem::size_of_val(coefficients))
+        .expect("bench coefficient byte allocation");
     for coefficient in coefficients {
         bytes.extend_from_slice(&coefficient.to_ne_bytes());
     }

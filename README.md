@@ -8,7 +8,7 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.9.0` is published and security-supported. See the
+**Release status:** `0.10.0` is published and security-supported. See the
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
@@ -293,6 +293,11 @@ surfaces are available for supported paths; unsupported explicit CUDA requests
 fail clearly. J2K-owned CUDA kernels are used for CUDA codec stages. NVIDIA
 performance claims require recorded self-hosted benchmark output.
 
+Lossy HTJ2K encoding can opt into the OpenHTJ2K-compatible visual Qfactor
+profile with `J2kLossyEncodeOptions::with_qfactor(Some(quality))`, where
+`quality` is `1..=100`. This profile is intentionally separate from byte,
+bits-per-pixel, PSNR, quality-layer-target, and ROI controls.
+
 ## Public API and support policy
 
 Stable APIs are `j2k`, `j2k-core` traits and value types, `j2k-jpeg`,
@@ -302,6 +307,10 @@ transcode crates, and backend encode-stage adapter SPI.
 Codec contracts include `ImageDecode`, `decode_region_scaled_into`,
 `decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and
 the concrete `J2kContext` and `j2k_jpeg::DecoderContext` types.
+Bounded JPEG 2000/HTJ2K row decode through 24-bit component precision retains
+one parsed tile graph for the operation and reuses it across stripes; stripe
+output scratch remains bounded by `J2kRowDecodeOptions`. Higher-precision exact
+integer output keeps the existing full-decode/crop compatibility path.
 `BackendRequest::Auto` may return CPU output.
 `BackendRequest::Metal` and `BackendRequest::Cuda` are strict and fail for
 unsupported shapes.

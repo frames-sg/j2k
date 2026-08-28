@@ -10,11 +10,16 @@
     clippy::too_many_lines,
     reason = "HT device kernels keep bitstream state local to preserve control flow and register layout"
 )]
-
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
+
+mod analysis;
+
+use analysis::{
+    max_magnitude_serial, params_from_job, params_from_multi_job, serial_analysis_for_passes,
+};
 
 const ENCODE_STATUS_OK: u32 = 0;
 const ENCODE_STATUS_FAIL: u32 = 1;
@@ -129,22 +134,38 @@ struct SigPropWriter {
 
 #[inline(always)]
 fn min_u32(a: u32, b: u32) -> u32 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline(always)]
 fn max_u32(a: u32, b: u32) -> u32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline(always)]
 fn max_i32(a: i32, b: i32) -> i32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline(always)]
 fn max_u8(a: u8, b: u8) -> u8 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline(always)]
@@ -234,7 +255,7 @@ fn set_status_with_segments(
     passes: u32,
     zbp: u32,
     cleanup_len: u32,
-    refinement_len: u32,
+    sigprop_len: u32,
     reserved: u32,
 ) {
     unsafe {
@@ -244,7 +265,7 @@ fn set_status_with_segments(
         (*status).num_coding_passes = passes;
         (*status).num_zero_bitplanes = zbp;
         (*status).reserved0 = cleanup_len;
-        (*status).reserved1 = refinement_len;
+        (*status).reserved1 = sigprop_len;
         (*status).reserved2 = reserved;
     }
 }
@@ -347,6 +368,7 @@ fn sigprop_cleanup_sig16(
     height: u32,
     x_base: u32,
     y_base: u32,
+    cleanup_threshold: u32,
 ) -> u32 {
     let mut mask = 0;
     let mut col = 0;
@@ -359,7 +381,7 @@ fn sigprop_cleanup_sig16(
                 if y < height {
                     let magnitude =
                         unsigned_magnitude(load_i32(coefficients, y * coefficient_stride + x));
-                    if magnitude >= 5 && (magnitude & 1) != 0 {
+                    if magnitude >= cleanup_threshold {
                         mask |= 1 << (col * 4 + row);
                     }
                 }
@@ -378,6 +400,8 @@ fn sigprop_target_sig16(
     height: u32,
     x_base: u32,
     y_base: u32,
+    cleanup_threshold: u32,
+    refinement_mask: u32,
 ) -> u32 {
     let mut mask = 0;
     let mut col = 0;
@@ -390,7 +414,7 @@ fn sigprop_target_sig16(
                 if y < height {
                     let magnitude =
                         unsigned_magnitude(load_i32(coefficients, y * coefficient_stride + x));
-                    if magnitude == 3 {
+                    if magnitude < cleanup_threshold && (magnitude & refinement_mask) != 0 {
                         mask |= 1 << (col * 4 + row);
                     }
                 }
@@ -428,6 +452,8 @@ fn write_sigprop_segment(
     coefficient_stride: u32,
     width: u32,
     height: u32,
+    cleanup_threshold: u32,
+    refinement_mask: u32,
     out: *mut u8,
     capacity: u32,
     bytes_written: &mut u32,
@@ -471,28 +497,43 @@ fn write_sigprop_segment(
             let idx = x >> 2;
             let ps = (prev_row_sig[idx as usize] as u32)
                 | ((prev_row_sig[(idx + 1) as usize] as u32) << 16);
-            let ns =
-                sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x, y + 4)
-                    | (sigprop_cleanup_sig16(
-                        coefficients,
-                        coefficient_stride,
-                        width,
-                        height,
-                        x + 4,
-                        y + 4,
-                    ) << 16);
+            let ns = sigprop_cleanup_sig16(
+                coefficients,
+                coefficient_stride,
+                width,
+                height,
+                x,
+                y + 4,
+                cleanup_threshold,
+            ) | (sigprop_cleanup_sig16(
+                coefficients,
+                coefficient_stride,
+                width,
+                height,
+                x + 4,
+                y + 4,
+                cleanup_threshold,
+            ) << 16);
             let mut u = (ps & 0x8888_8888) >> 3;
             u |= (ns & 0x1111_1111) << 3;
 
-            let cs = sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x, y)
-                | (sigprop_cleanup_sig16(
-                    coefficients,
-                    coefficient_stride,
-                    width,
-                    height,
-                    x + 4,
-                    y,
-                ) << 16);
+            let cs = sigprop_cleanup_sig16(
+                coefficients,
+                coefficient_stride,
+                width,
+                height,
+                x,
+                y,
+                cleanup_threshold,
+            ) | (sigprop_cleanup_sig16(
+                coefficients,
+                coefficient_stride,
+                width,
+                height,
+                x + 4,
+                y,
+                cleanup_threshold,
+            ) << 16);
             let mut mbr = cs;
             mbr |= (cs & 0x7777_7777) << 1;
             mbr |= (cs & 0xeeee_eeee) >> 1;
@@ -505,9 +546,16 @@ fn write_sigprop_segment(
             mbr &= !cs;
 
             let mut new_sig = 0;
-            let target_sig =
-                sigprop_target_sig16(coefficients, coefficient_stride, width, height, x, y)
-                    & col_pattern;
+            let target_sig = sigprop_target_sig16(
+                coefficients,
+                coefficient_stride,
+                width,
+                height,
+                x,
+                y,
+                cleanup_threshold,
+                refinement_mask,
+            ) & col_pattern;
             if mbr != 0 {
                 let mut candidates = mbr;
                 let mut processed = 0;
@@ -550,10 +598,6 @@ fn write_sigprop_segment(
                 }
             }
 
-            if (target_sig & !new_sig) != 0 {
-                return 0;
-            }
-
             let combined_sig = new_sig | cs;
             prev_row_sig[idx as usize] = (combined_sig & 0xffff) as u16;
             prev_row_sig[(idx + 1) as usize] = ((combined_sig >> 16) & 0xffff) as u16;
@@ -581,6 +625,8 @@ fn write_magref_segment(
     coefficient_stride: u32,
     width: u32,
     height: u32,
+    cleanup_threshold: u32,
+    refinement_mask: u32,
     out: *mut u8,
     magref_len: u32,
     expected_bits: u32,
@@ -615,8 +661,9 @@ fn write_magref_segment(
                                 coefficients,
                                 yy * coefficient_stride + x,
                             ));
-                            if magnitude >= 5 && (magnitude & 1) != 0 {
-                                current |= (((magnitude >> 1) & 1) << used_bits) as u8;
+                            if magnitude >= cleanup_threshold {
+                                current |= (u32::from((magnitude & refinement_mask) != 0)
+                                    << used_bits) as u8;
                                 used_bits += 1;
                                 bit_idx += 1;
                                 let stuffed =
@@ -1408,6 +1455,7 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
     uvlc_table: *const u8,
     status: *mut J2kHtEncodeStatus,
     max_magnitude: u32,
+    significant_count: u32,
     cleanup_only: bool,
     assemble_final: bool,
     fixed_64: bool,
@@ -1449,47 +1497,12 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
         return;
     }
 
-    let mut significant_count = 0;
     if !cleanup_only
         && params.target_coding_passes > 1
         && params.total_bitplanes < params.target_coding_passes
     {
         set_status(status, ENCODE_STATUS_UNSUPPORTED, 5, 0, 0, 0);
         return;
-    }
-    if !cleanup_only && params.target_coding_passes == 2 {
-        let mut y = 0;
-        while y < params.height {
-            let mut x = 0;
-            while x < params.width {
-                let magnitude =
-                    unsigned_magnitude(load_i32(coefficients, y * params.coefficient_stride + x));
-                if magnitude != 0 && (magnitude < 3 || (magnitude & 1) == 0) {
-                    set_status(status, ENCODE_STATUS_UNSUPPORTED, 6, 0, 0, 0);
-                    return;
-                }
-                x += 1;
-            }
-            y += 1;
-        }
-    } else if !cleanup_only && params.target_coding_passes == 3 {
-        let mut y = 0;
-        while y < params.height {
-            let mut x = 0;
-            while x < params.width {
-                let magnitude =
-                    unsigned_magnitude(load_i32(coefficients, y * params.coefficient_stride + x));
-                if magnitude != 0 && magnitude != 3 {
-                    significant_count += 1;
-                    if magnitude < 5 || (magnitude & 1) == 0 {
-                        set_status(status, ENCODE_STATUS_UNSUPPORTED, 6, 0, 0, 0);
-                        return;
-                    }
-                }
-                x += 1;
-            }
-            y += 1;
-        }
     }
 
     let width = if fixed_64 { 64 } else { params.width };
@@ -1506,7 +1519,13 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
     };
     let missing_msbs = params.total_bitplanes - pass_span;
     let p = 30 - missing_msbs;
-
+    let cleanup_bitplane = pass_span - 1;
+    let cleanup_threshold = 1 << cleanup_bitplane;
+    let refinement_mask = if cleanup_bitplane == 0 {
+        0
+    } else {
+        1 << (cleanup_bitplane - 1)
+    };
     let mut mel = MelEncoder {
         pos: 0,
         remaining_bits: 8,
@@ -1649,6 +1668,7 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
     let mut magref_len = 0;
     let mut refinement_len = 0;
     if !cleanup_only && params.target_coding_passes == 2 {
+        sigprop_len = 1;
         refinement_len = 1;
     } else if !cleanup_only && params.target_coding_passes == 3 {
         let sample_count = width * height;
@@ -1658,6 +1678,8 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
             coefficient_stride,
             width,
             height,
+            cleanup_threshold,
+            refinement_mask,
             core::ptr::null_mut(),
             u32::MAX,
             &mut actual_sigprop_len,
@@ -1715,6 +1737,8 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
                 coefficient_stride,
                 width,
                 height,
+                cleanup_threshold,
+                refinement_mask,
                 unsafe { out.add(cleanup_len as usize) },
                 sigprop_len,
                 &mut actual_sigprop_len,
@@ -1731,6 +1755,8 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
                 coefficient_stride,
                 width,
                 height,
+                cleanup_threshold,
+                refinement_mask,
                 unsafe { out.add((cleanup_len + sigprop_len) as usize) },
                 magref_len,
                 significant_count,
@@ -1749,59 +1775,13 @@ fn encode_ht_code_block_impl_with_max_and_assembly(
         pass_span,
         missing_msbs,
         cleanup_len,
-        refinement_len,
+        sigprop_len,
         if assemble_final {
             0
         } else {
             pack_compact_assembly_lengths(mel_len, vlc_len)
         },
     );
-}
-
-fn max_magnitude_serial(
-    coefficients: *const i32,
-    width: u32,
-    height: u32,
-    coefficient_stride: u32,
-) -> u32 {
-    let mut max_magnitude = 0;
-    let mut y = 0;
-    while y < height {
-        let mut x = 0;
-        while x < width {
-            max_magnitude = max_u32(
-                max_magnitude,
-                unsigned_magnitude(load_i32(coefficients, y * coefficient_stride + x)),
-            );
-            x += 1;
-        }
-        y += 1;
-    }
-    max_magnitude
-}
-
-#[inline(always)]
-fn params_from_job(job: J2kHtEncodeJob) -> J2kHtEncodeParams {
-    J2kHtEncodeParams {
-        width: job.width,
-        height: job.height,
-        coefficient_stride: job.coefficient_stride,
-        total_bitplanes: job.total_bitplanes,
-        output_capacity: job.output_capacity,
-        target_coding_passes: job.target_coding_passes,
-    }
-}
-
-#[inline(always)]
-fn params_from_multi_job(job: J2kHtEncodeMultiInputJob) -> J2kHtEncodeParams {
-    J2kHtEncodeParams {
-        width: job.width,
-        height: job.height,
-        coefficient_stride: job.coefficient_stride,
-        total_bitplanes: job.total_bitplanes,
-        output_capacity: job.output_capacity,
-        target_coding_passes: job.target_coding_passes,
-    }
 }
 
 #[cuda_module]
@@ -1826,11 +1806,12 @@ mod kernels {
         let job = load_job(jobs, job_idx);
         let params = params_from_job(job);
         let coeffs = simt_const_ptr_at(coefficients, job.coefficient_offset as usize);
-        let max_magnitude = max_magnitude_serial(
+        let (max_magnitude, significant_count) = serial_analysis_for_passes(
             coeffs,
             params.width,
             params.height,
             params.coefficient_stride,
+            params.target_coding_passes,
         );
         encode_ht_code_block_impl_with_max_and_assembly(
             coeffs,
@@ -1841,6 +1822,7 @@ mod kernels {
             uvlc_table,
             simt_mut_ptr_at(statuses, job_idx as usize),
             max_magnitude,
+            significant_count,
             false,
             params.target_coding_passes != 1,
             false,
@@ -1865,11 +1847,12 @@ mod kernels {
         let params = params_from_multi_job(job);
         let coefficients = job.coefficient_ptr as usize as *const i32;
         let coeffs = simt_const_ptr_at(coefficients, job.coefficient_offset as usize);
-        let max_magnitude = max_magnitude_serial(
+        let (max_magnitude, significant_count) = serial_analysis_for_passes(
             coeffs,
             params.width,
             params.height,
             params.coefficient_stride,
+            params.target_coding_passes,
         );
         encode_ht_code_block_impl_with_max_and_assembly(
             coeffs,
@@ -1880,6 +1863,7 @@ mod kernels {
             uvlc_table,
             simt_mut_ptr_at(statuses, job_idx as usize),
             max_magnitude,
+            significant_count,
             false,
             params.target_coding_passes != 1,
             false,
@@ -1924,6 +1908,7 @@ mod kernels {
             uvlc_table,
             simt_mut_ptr_at(statuses, job_idx as usize),
             max_magnitude,
+            0,
             true,
             false,
             fixed_64,
@@ -1958,6 +1943,7 @@ mod kernels {
             uvlc_table,
             simt_mut_ptr_at(statuses, job_idx as usize),
             max_magnitude,
+            0,
             true,
             false,
             true,

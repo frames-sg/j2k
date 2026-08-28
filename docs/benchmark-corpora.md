@@ -274,6 +274,44 @@ The workflow fails closed when either is absent.
 
 ## Running All Available Corpora
 
+For low-overhead HTJ2K decode comparisons, prepare both pinned reference
+libraries and run the in-process batch harness. It decodes the same selected
+bytes through J2K, OpenHTJ2K 0.19.0, and OpenJPH 0.31.0, checks output parity
+before timing, and records the linked versions and library paths:
+
+```bash
+scripts/prepare-openhtj2k-reference.sh
+scripts/prepare-openjph-reference.sh
+
+J2K_OPENHTJ2K_SOURCE_DIR="$PWD/target/t803/openhtj2k-v0.19.0" \
+J2K_OPENHTJ2K_LIB_DIR="$PWD/target/t803/openhtj2k-v0.19.0/build-reference" \
+J2K_OPENJPH_SOURCE_DIR="$PWD/target/reference/openjph-0.31.0" \
+J2K_OPENJPH_LIB_DIR="$PWD/target/reference/openjph-0.31.0/build-reference/src/core" \
+J2K_BATCH_COMPARE_THREADS=1 \
+cargo run -p j2k-compare --release --bin jp2k_batch_compare -- \
+  corpus/vendor/openjph 1 16
+```
+
+The default parity tolerance is one byte value. Set
+`J2K_BATCH_COMPARE_MAX_ABS_DIFF=0` for bit-exact corpora.
+
+For focused HTJ2K encoder interoperability, the pinned preparation script now
+builds both CLI tools. The matrix encodes Gray8, RGB8, and unsigned Gray16 with
+reversible 5/3 and Qfactor 90 through both producers, validates raw codestream
+and JPH inputs with both decoders, and reports median encode time, size, PSNR,
+and cross-decoder sample delta:
+
+```bash
+scripts/prepare-openjph-reference.sh
+J2K_OPENJPH_MATRIX_REPEATS=5 \
+cargo run -p j2k-compare --release --bin jp2k_encode_compare -- --openjph-matrix
+```
+
+Lossless rows fail unless both decoders reproduce the source exactly;
+irreversible rows fail when the decoders differ by more than one sample value.
+The timing rows compare an in-process encoder with a CLI process and are
+supporting context, not a standalone throughput claim.
+
 Place or symlink each decoded corpus of J2K/JP2/JPH files into separate
 directories, then pass a platform path-list. The harness walks configured
 directories recursively and fails if a configured directory contains no
@@ -363,6 +401,13 @@ The adoption bundle currently contains these classes of evidence:
 - `cpu-public-api-encode` and `cpu-public-api-decode`: Criterion component
   microbenchmarks for J2K's public CPU encode/decode surfaces. These are not
   external encoder comparisons.
+- `j2k-native`'s `tier1_bitplane` bench includes deterministic 64x64 HTJ2K
+  cleanup-only and cleanup/SigProp/MagRef encode rows. Run the focused local
+  diagnostic with
+  `cargo bench -p j2k-native --bench tier1_bitplane -- 'htj2k_cleanup_encode/encode_64x64_'`.
+  The result is a component microbenchmark, not an end-to-end or external-codec
+  claim; record CPU, OS, revision, Criterion sample policy, and both generated
+  seeds when using it as optimization evidence.
 - `cuda-htj2k-decode`: Criterion CPU-vs-CUDA HTJ2K decode rows. When
   `--fixtures` and `--manifest` are supplied, the adoption runner passes the
   same pinned external fixture manifest through `J2K_CUDA_DECODE_INPUT_DIRS`
@@ -538,6 +583,19 @@ CUDA encode host-input rows accept staged binary PGM/PPM sources via
 runs, so CUDA encode can use the same canonical PNM pixels as the CPU encoder
 matrix. Non-PNM source formats should be staged by `jp2k_encode_compare` or
 recorded in the encode manifest before CUDA encode benchmarking.
+
+The CUDA HT code-block microbenchmark includes cleanup-only and three-pass
+cleanup/SigProp/MagRef rows for the CPU scalar oracle plus host-staged and
+resident CUDA inputs. Every timed row verifies successful status and the
+requested coding-pass count before accepting its byte-count result.
+
+A 128-lane coefficient-analysis prototype was rejected and removed after an
+RTX 4070 SUPER A/B run (20 Criterion samples, 500 ms warmup, one-second target)
+found no statistically detectable gain. The three-pass point estimates changed
+by +0.16% for host-staged input and +0.62% for resident input (`p=0.99` and
+`p=0.95`); both confidence intervals crossed zero broadly. CUDA entropy writing
+therefore remains serial within each code block, and no CUDA HT encode
+throughput improvement is claimed.
 
 Metal auto-routing encode rows use the same staged source convention through
 `J2K_METAL_ENCODE_INPUT_DIRS` and `J2K_METAL_ENCODE_MANIFEST` when `--metal` is

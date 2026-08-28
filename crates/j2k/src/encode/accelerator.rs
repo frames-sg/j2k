@@ -165,18 +165,32 @@ pub(super) fn encode_lossy_with_native_accelerator(
     quantization_scale: f32,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
-    let options = native_lossy_options(samples, options, quantization_scale)?;
-    j2k_native::encode_with_accelerator(
-        samples.data,
-        samples.width,
-        samples.height,
-        samples.components,
-        samples.bit_depth,
-        samples.signed,
-        &options,
-        accelerator,
-    )
-    .map_err(|source| {
+    let native_options = native_lossy_options(samples, options, quantization_scale)?;
+    let encode_result = if let Some(qfactor) = options.qfactor {
+        j2k_native::encode_htj2k_with_qfactor_and_accelerator(
+            samples.data,
+            samples.width,
+            samples.height,
+            samples.components,
+            samples.bit_depth,
+            samples.signed,
+            qfactor,
+            &native_options,
+            accelerator,
+        )
+    } else {
+        j2k_native::encode_with_accelerator(
+            samples.data,
+            samples.width,
+            samples.height,
+            samples.components,
+            samples.bit_depth,
+            samples.signed,
+            &native_options,
+            accelerator,
+        )
+    };
+    encode_result.map_err(|source| {
         J2kError::from_native_encode_error_with_context(
             source,
             "accelerated native JPEG 2000 lossy encode failed",

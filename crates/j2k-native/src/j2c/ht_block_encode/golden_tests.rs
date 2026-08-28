@@ -287,7 +287,7 @@ fn validation_error_text_and_empty_block_result_remain_exact() {
 #[test]
 fn encoder_modules_remain_focused_without_broad_suppressions() {
     const ROOT: &str = include_str!("../ht_block_encode.rs");
-    const MODULES: [(&str, &str, usize); 12] = [
+    const MODULES: [(&str, &str, usize); 15] = [
         ("allocation", include_str!("allocation.rs"), 220),
         (
             "allocation/refinement",
@@ -299,6 +299,17 @@ fn encoder_modules_remain_focused_without_broad_suppressions() {
         ("distribution", include_str!("distribution.rs"), 390),
         ("emit", include_str!("emit.rs"), 270),
         ("facade", include_str!("facade.rs"), 150),
+        (
+            "facade/candidates",
+            include_str!("facade/candidates.rs"),
+            180,
+        ),
+        (
+            "facade/tile_candidates",
+            include_str!("facade/tile_candidates.rs"),
+            360,
+        ),
+        ("facade/core", include_str!("facade/core.rs"), 130),
         ("facade/legacy", include_str!("facade/legacy.rs"), 60),
         ("quad", include_str!("quad.rs"), 500),
         ("refinement", include_str!("refinement.rs"), 420),

@@ -5,10 +5,10 @@ use crate::{
     error::CudaError,
     execution::CudaExecutionStats,
     htj2k_encode::{
-        htj2k_encoded_cleanup_length, htj2k_encoded_num_coding_passes,
+        htj2k_encoded_cleanup_length, htj2k_encoded_magref_length, htj2k_encoded_num_coding_passes,
         htj2k_encoded_num_zero_bitplanes, htj2k_encoded_refinement_length,
-        CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeStatus, CudaHtj2kEncodedCodeBlock,
-        CudaHtj2kEncodedCodeBlocks,
+        htj2k_encoded_sigprop_length, CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeStatus,
+        CudaHtj2kEncodedCodeBlock, CudaHtj2kEncodedCodeBlocks,
     },
 };
 

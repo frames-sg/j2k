@@ -12,6 +12,7 @@ const J2K_DECODE_STORE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/sample.rs",
     "simt/src/transform.rs",
 ];
+const HTJ2K_ENCODE_EXTRA_SOURCES: &[&str] = &["simt/src/analysis.rs"];
 const J2K_ENCODE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/abi.rs",
     "simt/src/constants.rs",
@@ -32,7 +33,7 @@ const PROJECTS: &[CudaOxideProject] = &[
         output_name: "cuda_oxide_htj2k_encode.ptx",
         artifact_name: "j2k_cuda_oxide_htj2k_encode.ptx",
         display_name: "cuda-oxide HTJ2K encode",
-        extra_sources: &[],
+        extra_sources: HTJ2K_ENCODE_EXTRA_SOURCES,
         built_cfg: "j2k_cuda_oxide_htj2k_encode_built",
     },
     CudaOxideProject {

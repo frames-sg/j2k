@@ -7,12 +7,12 @@ use j2k::J2kEncodeStageError;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 use j2k::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveMctToF32Job,
-    J2kDeinterleaveToF32Job, J2kEncodeContext, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock,
+    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kEncodeContext, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Output,
+    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtCodeBlockSetEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
@@ -57,6 +57,7 @@ pub struct MetalEncodeStageAccelerator {
     quantize_subband_dispatches: usize,
     tier1_code_block_dispatches: usize,
     ht_code_block_dispatches: usize,
+    ht_candidate_set_dispatches: usize,
     packetization_dispatches: usize,
 }
 
@@ -90,6 +91,7 @@ impl Default for MetalEncodeStageAccelerator {
             quantize_subband_dispatches: 0,
             tier1_code_block_dispatches: 0,
             ht_code_block_dispatches: 0,
+            ht_candidate_set_dispatches: 0,
             packetization_dispatches: 0,
         }
     }
@@ -195,6 +197,16 @@ impl MetalEncodeStageAccelerator {
             parallel_cpu_code_block_fallback: true,
             ..Self::default()
         }
+    }
+
+    /// Number of successful HT candidate-set batch dispatches.
+    ///
+    /// This diagnostic distinguishes the budgeted multi-layer candidate path
+    /// from ordinary HT code-block dispatches in correctness-checked benches.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn ht_candidate_set_dispatches(&self) -> usize {
+        self.ht_candidate_set_dispatches
     }
 
     #[cfg(all(test, target_os = "macos"))]
@@ -823,6 +835,39 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             )?;
             if encoded.is_some() && !jobs.is_empty() {
                 self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
+            }
+            Ok(encoded)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = jobs;
+            Ok(None)
+        }
+    }
+
+    fn encode_ht_code_block_sets(
+        &mut self,
+        jobs: &[J2kHtCodeBlockSetEncodeJob<'_>],
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlockSet>>> {
+        self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::HT_CODE_BLOCK)
+            || self.auto_host_output_force_cpu_fallback
+        {
+            let _ = jobs;
+            return Ok(None);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let encoded = metal_dispatch_option(
+                compute::encode_ht_code_block_sets(jobs),
+                "HTJ2K candidate-set batch encode",
+            )?;
+            if encoded.is_some() && !jobs.is_empty() {
+                self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
+                self.ht_candidate_set_dispatches =
+                    self.ht_candidate_set_dispatches.saturating_add(1);
             }
             Ok(encoded)
         }

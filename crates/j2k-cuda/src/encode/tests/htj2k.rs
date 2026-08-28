@@ -4,6 +4,7 @@
 use super::{
     cuda_htj2k_encode_tables, CudaContext, CudaHtj2kEncodeCodeBlockJob,
     CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob, J2kHtCodeBlockEncodeJob,
+    J2kHtCodeBlockSetEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::{
@@ -86,6 +87,51 @@ fn cuda_htj2k_codeblock_preserves_requested_refinement_passes_when_runtime_requi
         u32::try_from(encoded.data.len()).expect("test payload length fits u32")
     );
     assert_eq!(accelerator.ht_code_block_dispatches(), 1);
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_htj2k_codeblock_candidates_preserve_exact_pass_boundaries_when_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let coefficients = [0, 7, -6, 3, 5, 2, -1, 4, 6, -3, 0, 1, 2, 0, 5, -7];
+    let jobs = [
+        J2kHtCodeBlockSetEncodeJob {
+            coefficients: &coefficients,
+            width: 4,
+            height: 4,
+            total_bitplanes: 6,
+            cleanup_bitplane: 2,
+            target_coding_passes: 3,
+        },
+        J2kHtCodeBlockSetEncodeJob {
+            coefficients: &coefficients,
+            width: 4,
+            height: 4,
+            total_bitplanes: 6,
+            cleanup_bitplane: 1,
+            target_coding_passes: 3,
+        },
+    ];
+    let mut accelerator = CudaEncodeStageAccelerator::default();
+
+    let encoded = accelerator
+        .encode_ht_code_block_sets(&jobs)
+        .expect("CUDA HT candidate hook")
+        .expect("CUDA HT candidate output");
+
+    assert_eq!(encoded.len(), 2);
+    for (candidate, missing) in encoded.iter().zip([3, 4]) {
+        assert_eq!(candidate.num_coding_passes, 3);
+        assert_eq!(candidate.num_zero_bitplanes, missing);
+        assert_eq!(
+            candidate.cleanup_length + candidate.sigprop_length + candidate.magref_length,
+            u32::try_from(candidate.data.len()).expect("candidate payload fits u32")
+        );
+        assert!(candidate.sigprop_length > 0);
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]

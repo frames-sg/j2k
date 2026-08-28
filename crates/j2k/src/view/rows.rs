@@ -3,7 +3,11 @@
 //! Bounded row-decode planning, scratch ownership, and sink emission.
 
 use super::{J2kDecoder, J2kRowDecodeOptions};
-use crate::{decode::J2kDecodeOutcome, scratch::J2kScratchPool, J2kError};
+use crate::{
+    decode::{decode_prepared_image_region_into, J2kDecodeOutcome},
+    scratch::J2kScratchPool,
+    J2kError,
+};
 use alloc::vec::Vec;
 use j2k_core::{
     BufferError, DecodeRowsError, PixelFormat, Rect, RowSink, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
@@ -82,6 +86,15 @@ impl J2kDecoder<'_> {
         );
         let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
             .map_err(DecodeRowsError::Decode)?;
+        self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(DecodeRowsError::Decode(J2kError::internal_backend(
+                "internal image cache missing",
+            )));
+        };
+        let mut decoder = image
+            .prepare_region_decoder_with_context(native_context)
+            .map_err(|error| DecodeRowsError::Decode(J2kError::from_native_decode_error(error)))?;
         let mut pool = J2kScratchPool::new();
         let mut y = 0_u32;
         while y < height {
@@ -94,7 +107,8 @@ impl J2kDecoder<'_> {
             let stripe = pool
                 .packed_bytes(max_stripe_len)
                 .map_err(|error| DecodeRowsError::Decode(J2kError::Buffer(error)))?;
-            self.decode_region_into_cached(
+            decode_prepared_image_region_into(
+                &mut decoder,
                 &mut stripe[..stripe_len],
                 row_bytes,
                 fmt,
@@ -154,46 +168,99 @@ impl J2kDecoder<'_> {
         let options = options.with_max_stripe_bytes(options.max_stripe_bytes().min(packed_cap));
         let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
             .map_err(DecodeRowsError::Decode)?;
-        let mut pool = J2kScratchPool::new();
-        let mut y = 0_u32;
-        while y < height {
-            let rows = stripe_rows.min(height - y);
-            let stripe_len = row_bytes.checked_mul(rows as usize).ok_or_else(|| {
-                DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
-                    what: "J2K bounded row decode stripe buffer",
-                }))
-            })?;
-            let (packed, row) = pool
-                .packed_bytes_and_row_u16(max_stripe_len, samples_per_row)
-                .map_err(|error| DecodeRowsError::Decode(J2kError::Buffer(error)))?;
-            self.decode_region_into_cached(
-                &mut packed[..stripe_len],
-                row_bytes,
-                fmt,
-                Rect {
-                    x: 0,
-                    y,
-                    w: width,
-                    h: rows,
-                },
-            )
-            .map_err(DecodeRowsError::Decode)?;
-            for row_index in 0..rows {
-                let start = row_index as usize * row_bytes;
-                let packed_row = &packed[start..start + row_bytes];
-                for (dst, src) in row.iter_mut().zip(packed_row.chunks_exact(2)) {
-                    *dst = u16::from_le_bytes([src[0], src[1]]);
-                }
-                sink.write_row(y + row_index, row)
-                    .map_err(DecodeRowsError::Sink)?;
-            }
-            y += rows;
+        let layout = U16StripeLayout {
+            width,
+            height,
+            row_bytes,
+            samples_per_row,
+            stripe_rows,
+            max_stripe_len,
+        };
+        if self.info.bit_depth > 24 {
+            return self.decode_rows_u16_exact_reparsed(sink, fmt, layout);
         }
-        Ok(j2k_core::DecodeOutcome::new(
-            Rect::full(self.info.dimensions),
-            Vec::new(),
-        ))
+        self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(DecodeRowsError::Decode(J2kError::internal_backend(
+                "internal image cache missing",
+            )));
+        };
+        let mut decoder = image
+            .prepare_region_decoder_with_context(native_context)
+            .map_err(|error| DecodeRowsError::Decode(J2kError::from_native_decode_error(error)))?;
+        pump_u16_rows(sink, layout, |packed, region| {
+            decode_prepared_image_region_into(&mut decoder, packed, row_bytes, fmt, region)
+        })
     }
+
+    fn decode_rows_u16_exact_reparsed<R: RowSink<u16>>(
+        &mut self,
+        sink: &mut R,
+        fmt: PixelFormat,
+        layout: U16StripeLayout,
+    ) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
+        // Exact >24-bit decode uses the integer sidecar and its established
+        // full-decode crop path. Keep that compatibility path until the
+        // prepared region session can borrow exact integer component planes.
+        pump_u16_rows(sink, layout, |packed, region| {
+            self.decode_region_into_cached(packed, layout.row_bytes, fmt, region)
+                .map(|_| ())
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct U16StripeLayout {
+    width: u32,
+    height: u32,
+    row_bytes: usize,
+    samples_per_row: usize,
+    stripe_rows: u32,
+    max_stripe_len: usize,
+}
+
+fn pump_u16_rows<R: RowSink<u16>>(
+    sink: &mut R,
+    layout: U16StripeLayout,
+    mut decode_stripe: impl FnMut(&mut [u8], Rect) -> Result<(), J2kError>,
+) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
+    let mut pool = J2kScratchPool::new();
+    let mut y = 0_u32;
+    while y < layout.height {
+        let rows = layout.stripe_rows.min(layout.height - y);
+        let stripe_len = layout.row_bytes.checked_mul(rows as usize).ok_or_else(|| {
+            DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
+                what: "J2K bounded row decode stripe buffer",
+            }))
+        })?;
+        let (packed, row) = pool
+            .packed_bytes_and_row_u16(layout.max_stripe_len, layout.samples_per_row)
+            .map_err(|error| DecodeRowsError::Decode(J2kError::Buffer(error)))?;
+        decode_stripe(
+            &mut packed[..stripe_len],
+            Rect {
+                x: 0,
+                y,
+                w: layout.width,
+                h: rows,
+            },
+        )
+        .map_err(DecodeRowsError::Decode)?;
+        for row_index in 0..rows {
+            let start = row_index as usize * layout.row_bytes;
+            let packed_row = &packed[start..start + layout.row_bytes];
+            for (dst, src) in row.iter_mut().zip(packed_row.chunks_exact(2)) {
+                *dst = u16::from_le_bytes([src[0], src[1]]);
+            }
+            sink.write_row(y + row_index, row)
+                .map_err(DecodeRowsError::Sink)?;
+        }
+        y += rows;
+    }
+    Ok(j2k_core::DecodeOutcome::new(
+        Rect::full((layout.width, layout.height)),
+        Vec::new(),
+    ))
 }
 
 fn row_format_u8(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {

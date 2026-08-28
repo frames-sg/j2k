@@ -4,7 +4,7 @@
 
 use crate::j2c::encode::allocation::checked_element_bytes;
 use crate::j2c::encode::{
-    ht_target_coding_passes_for_options, maximum_decomposition_levels,
+    ht_target_coding_passes_for_options, maximum_decomposition_levels, requested_guard_bits,
     reversible_guard_bits_for_marker_limit, BlockCodingMode, CodeBlockGeometry,
     EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, NativeEncodePipelineError,
     NativeEncodePipelineResult, NativeEncodeSession,
@@ -81,7 +81,7 @@ pub(in crate::j2c::encode::single_tile) fn build_single_tile_plan(
         "single-tile component sampling",
     )?;
     let mut construction = PlanConstruction::new(session, component_sampling_bytes);
-    let geometry = resolve_geometry(&request, high_bit_exact, code_block_geometry)?;
+    let geometry = resolve_geometry(&request, high_bit_exact, code_block_geometry, session)?;
     let owners = try_build_plan_owners(&request, geometry, component_sampling, &mut construction)?;
     let PlanOwners {
         step_sizes,
@@ -117,13 +117,18 @@ fn resolve_geometry(
     request: &BuildRequest<'_>,
     high_bit_exact: bool,
     code_block_geometry: CodeBlockGeometry,
+    session: &NativeEncodeSession<'_>,
 ) -> NativeEncodePipelineResult<PlanGeometry> {
     let use_mct = request.options.use_mct && matches!(request.num_components, 3 | 4);
     let num_levels = request
         .options
         .num_decomposition_levels
         .min(maximum_decomposition_levels(request.width, request.height));
-    let requested_guard_bits = requested_guard_bits(request.options, use_mct);
+    let requested_guard_bits = requested_guard_bits(
+        request.options,
+        use_mct,
+        session.openhtj2k_qfactor().is_some(),
+    );
     let guard_bits = if high_bit_exact && request.options.reversible {
         reversible_guard_bits_for_marker_limit(request.bit_depth, num_levels, requested_guard_bits)
             .map_err(NativeEncodePipelineError::unsupported)?
@@ -142,16 +147,4 @@ fn resolve_geometry(
             request.block_coding_mode,
         ),
     })
-}
-
-fn requested_guard_bits(options: &EncodeOptions, use_mct: bool) -> u8 {
-    if options.reversible {
-        if use_mct {
-            options.guard_bits.max(2)
-        } else {
-            options.guard_bits
-        }
-    } else {
-        options.guard_bits.max(2)
-    }
 }

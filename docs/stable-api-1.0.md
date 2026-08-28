@@ -96,7 +96,7 @@ release gates complete.
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
-The currently published stable contract is the `0.9.x` line. Version `0.8.0`
+The currently published stable contract is the `0.10.x` line. Version `0.8.0`
 intentionally changed the strict-decoding behavior and one warning variant
 under Cargo's pre-1.0 compatibility rules. It does not claim source or behavior
 compatibility with `0.7.x`; its exact breaks and migrations are in the review

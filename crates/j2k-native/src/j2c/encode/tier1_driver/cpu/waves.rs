@@ -11,6 +11,7 @@ use super::validate_ht_cpu_jobs;
 #[cfg(feature = "parallel")]
 use rayon::prelude::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+    ParallelSlice, ParallelSliceMut,
 };
 
 pub(in crate::j2c::encode::tier1_driver) type Tier1CpuSlot =
@@ -29,37 +30,48 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_ht_cpu_results_accounted(
     )?;
     encoded.resize_with(jobs.len(), || None);
 
+    if jobs.is_empty() {
+        return Ok(encoded);
+    }
+
     let parallel = cfg!(feature = "parallel") && jobs.len() >= HT_CPU_PARALLEL_FALLBACK_MIN_JOBS;
     let wave_size = cpu_worker_limit(jobs.len(), parallel).max(1);
+    let (mut workspaces, workspace_owner_bytes) = tracker
+        .try_vec::<ht_block_encode::HtEncodeWorkspace>(
+            wave_size,
+            fixed.into_iter().chain([outer_bytes]),
+            "bounded CPU HT Tier-1 workspace owners",
+        )?;
+    let workspace_bytes = checked_ht_workspace_bytes(wave_size)?;
     let mut retained_payload_bytes = 0usize;
     #[cfg(feature = "parallel")]
     if parallel {
-        let full_fixed = [fixed[0], fixed[1], fixed[2], fixed[3], outer_bytes];
+        let full_fixed = [
+            fixed[0],
+            fixed[1],
+            fixed[2],
+            fixed[3],
+            outer_bytes,
+            workspace_owner_bytes,
+        ];
         // Charging every job's output and scratch makes this deliberately
         // independent of Rayon scheduling. If that conservative frontier is
         // too large, the bounded worker-sized waves below remain available.
         if try_check_full_ht_wave(jobs, tracker, &full_fixed)? {
-            encoded
-                .par_iter_mut()
-                .zip(jobs.par_iter())
-                .for_each(|(slot, job)| {
-                    *slot = Some(ht_block_encode::try_encode_code_block_with_passes(
-                        job.coefficients,
-                        job.width,
-                        job.height,
-                        job.total_bitplanes,
-                        job.target_coding_passes,
-                    ));
-                });
+            try_fill_ht_workspaces(&mut workspaces, wave_size)?;
+            encode_ht_parallel_with_workspaces(jobs, &mut encoded, &mut workspaces);
             retained_payload_bytes = checked_wave_payload_bytes(
                 retained_payload_bytes,
                 &mut encoded,
                 "bounded CPU HT Tier-1 payload",
             )?;
             tracker.check(
-                fixed
-                    .into_iter()
-                    .chain([outer_bytes, retained_payload_bytes]),
+                fixed.into_iter().chain([
+                    outer_bytes,
+                    workspace_owner_bytes,
+                    workspace_bytes,
+                    retained_payload_bytes,
+                ]),
                 "bounded CPU HT Tier-1 output",
             )?;
             return Ok(encoded);
@@ -73,28 +85,23 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_ht_cpu_results_accounted(
             fixed[3],
             outer_bytes,
             retained_payload_bytes,
+            workspace_owner_bytes,
+            checked_ht_workspace_bytes(wave_size - job_wave.len())?,
         ];
         check_ht_wave(job_wave, tracker, &wave_fixed, wave_size)?;
 
+        if workspaces.is_empty() {
+            try_fill_ht_workspaces(&mut workspaces, wave_size)?;
+        }
+
         #[cfg(feature = "parallel")]
         if parallel {
-            slot_wave
-                .par_iter_mut()
-                .zip(job_wave.par_iter())
-                .for_each(|(slot, job)| {
-                    *slot = Some(ht_block_encode::try_encode_code_block_with_passes(
-                        job.coefficients,
-                        job.width,
-                        job.height,
-                        job.total_bitplanes,
-                        job.target_coding_passes,
-                    ));
-                });
+            encode_ht_parallel_with_workspaces(job_wave, slot_wave, &mut workspaces);
         } else {
-            encode_ht_wave_serial(job_wave, slot_wave);
+            encode_ht_wave_serial(job_wave, slot_wave, &mut workspaces[0]);
         }
         #[cfg(not(feature = "parallel"))]
-        encode_ht_wave_serial(job_wave, slot_wave);
+        encode_ht_wave_serial(job_wave, slot_wave, &mut workspaces[0]);
 
         retained_payload_bytes = checked_wave_payload_bytes(
             retained_payload_bytes,
@@ -102,9 +109,12 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_ht_cpu_results_accounted(
             "bounded CPU HT Tier-1 payload",
         )?;
         tracker.check(
-            fixed
-                .into_iter()
-                .chain([outer_bytes, retained_payload_bytes]),
+            fixed.into_iter().chain([
+                outer_bytes,
+                workspace_owner_bytes,
+                workspace_bytes,
+                retained_payload_bytes,
+            ]),
             "bounded CPU HT Tier-1 output",
         )?;
     }
@@ -187,15 +197,57 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_classic_cpu_results_accounted
     Ok(encoded)
 }
 
-fn encode_ht_wave_serial(jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>], slots: &mut [Tier1CpuSlot]) {
+fn try_fill_ht_workspaces(
+    workspaces: &mut Vec<ht_block_encode::HtEncodeWorkspace>,
+    count: usize,
+) -> NativeEncodePipelineResult<()> {
+    for _ in 0..count {
+        workspaces.push(ht_block_encode::HtEncodeWorkspace::try_new()?);
+    }
+    Ok(())
+}
+
+fn checked_ht_workspace_bytes(count: usize) -> NativeEncodePipelineResult<usize> {
+    count
+        .checked_mul(ht_block_encode::HtEncodeWorkspace::ALLOCATION_BYTES)
+        .ok_or(crate::EncodeError::ArithmeticOverflow {
+            what: "HTJ2K CPU workspace bytes",
+        })
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "parallel")]
+fn encode_ht_parallel_with_workspaces(
+    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    slots: &mut [Tier1CpuSlot],
+    workspaces: &mut [ht_block_encode::HtEncodeWorkspace],
+) {
+    let chunk_len = jobs.len().div_ceil(workspaces.len());
+    slots
+        .par_chunks_mut(chunk_len)
+        .zip(jobs.par_chunks(chunk_len))
+        .zip(workspaces.par_iter_mut())
+        .for_each(|((slot_chunk, job_chunk), workspace)| {
+            encode_ht_wave_serial(job_chunk, slot_chunk, workspace);
+        });
+}
+
+fn encode_ht_wave_serial(
+    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    slots: &mut [Tier1CpuSlot],
+    workspace: &mut ht_block_encode::HtEncodeWorkspace,
+) {
     for (slot, job) in slots.iter_mut().zip(jobs) {
-        *slot = Some(ht_block_encode::try_encode_code_block_with_passes(
-            job.coefficients,
-            job.width,
-            job.height,
-            job.total_bitplanes,
-            job.target_coding_passes,
-        ));
+        *slot = Some(
+            ht_block_encode::try_encode_code_block_with_passes_in_workspace(
+                job.coefficients,
+                job.width,
+                job.height,
+                job.total_bitplanes,
+                job.target_coding_passes,
+                workspace,
+            ),
+        );
     }
 }
 
@@ -251,6 +303,68 @@ fn checked_wave_payload_bytes(
 mod tests {
     use super::*;
     use crate::j2c::encode::{NativeEncodeRetainedInput, NativeEncodeSession};
+
+    #[test]
+    fn accounted_ht_cpu_results_match_fresh_workspaces_across_many_blocks() {
+        let coefficient_blocks: Vec<Vec<i32>> = (0..64usize)
+            .map(|seed| {
+                let side = if seed.is_multiple_of(3) { 8 } else { 64 };
+                (0..side * side)
+                    .map(|index| {
+                        if (index + seed).is_multiple_of(13) {
+                            0
+                        } else {
+                            i32::try_from(((index * 29) ^ (seed * 11)) & 0x01ff)
+                                .expect("masked coefficient fits i32")
+                                - 255
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let jobs: Vec<_> = coefficient_blocks
+            .iter()
+            .enumerate()
+            .map(|(index, coefficients)| {
+                let side = if index.is_multiple_of(3) { 8 } else { 64 };
+                crate::J2kHtCodeBlockEncodeJob {
+                    coefficients,
+                    width: side,
+                    height: side,
+                    total_bitplanes: 9,
+                    target_coding_passes: 1,
+                }
+            })
+            .collect();
+        let expected: Vec<_> = jobs
+            .iter()
+            .map(|job| {
+                ht_block_encode::try_encode_code_block_with_passes(
+                    job.coefficients,
+                    job.width,
+                    job.height,
+                    job.total_bitplanes,
+                    job.target_coding_passes,
+                )
+                .expect("fresh-workspace encode")
+            })
+            .collect();
+        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
+            .expect("HT CPU session");
+        let mut tracker = Tier1PhaseTracker::new(&session, 0);
+
+        let actual = encode_ht_cpu_results_accounted(&jobs, &mut tracker, [0; 4])
+            .expect("accounted HT CPU encode");
+
+        for (slot, expected) in actual.into_iter().zip(expected) {
+            let actual = slot.expect("worker slot").expect("reused-workspace encode");
+            assert_eq!(actual.data, expected.data);
+            assert_eq!(actual.num_coding_passes, expected.num_coding_passes);
+            assert_eq!(actual.num_zero_bitplanes, expected.num_zero_bitplanes);
+            assert_eq!(actual.ht_cleanup_length, expected.ht_cleanup_length);
+            assert_eq!(actual.ht_refinement_length, expected.ht_refinement_length);
+        }
+    }
 
     #[test]
     fn full_ht_wave_falls_back_when_only_one_worker_frontier_fits() {

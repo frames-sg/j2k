@@ -7,10 +7,11 @@ use std::sync::{mpsc, OnceLock};
 use j2k_alloc_probe::{assert_allocations, measure, Budget};
 use j2k_native::{
     decode_ht_code_block_scalar_with_workspace, encode,
+    encode_ht_code_block_scalar_with_passes_and_workspace,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
     CpuOnlyJ2kEncodeStageAccelerator, DecodeSettings, DecoderContext, EncodeError, EncodeOptions,
-    HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, Image, J2kForwardDwt97Output,
-    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
+    HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtCodeBlockEncodeWorkspace, Image,
+    J2kForwardDwt97Output, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
 };
 use proptest::{
     collection::vec,
@@ -50,6 +51,10 @@ fn main() {
         (
             "warmed_scalar_decode_workspace_reuses_without_allocating",
             warmed_scalar_decode_workspace_reuses_without_allocating,
+        ),
+        (
+            "warmed_ht_encode_workspace_avoids_fixed_reservoir_allocations",
+            warmed_ht_encode_workspace_avoids_fixed_reservoir_allocations,
         ),
         (
             "warmed_decoder_context_has_bounded_transients",
@@ -254,6 +259,34 @@ fn warmed_scalar_decode_workspace_reuses_without_allocating() {
     assert!(
         output.iter().any(|coefficient| *coefficient != 0.0),
         "fixture must exercise nonzero decode work"
+    );
+}
+
+fn warmed_ht_encode_workspace_avoids_fixed_reservoir_allocations() {
+    let coefficients = (0_i32..64 * 64)
+        .map(|index| if index % 13 == 0 { 0 } else { index & 255 })
+        .collect::<Vec<_>>();
+    let mut workspace = HtCodeBlockEncodeWorkspace::try_new().expect("HT encode workspace");
+
+    let (encoded, reused) = measure(|| {
+        encode_ht_code_block_scalar_with_passes_and_workspace(
+            &coefficients,
+            64,
+            64,
+            9,
+            1,
+            &mut workspace,
+        )
+    });
+    let encoded = encoded.expect("reused-workspace HT encode");
+    let (_, fresh) = measure(|| {
+        j2k_native::encode_ht_code_block_scalar_with_passes(&coefficients, 64, 64, 9, 1)
+    });
+
+    assert!(!encoded.data.is_empty());
+    assert!(
+        reused.allocation_calls() + 3 <= fresh.allocation_calls(),
+        "the reusable workspace must remove the MEL, VLC, and magnitude/sign reservoir allocations: reused={reused:?}, fresh={fresh:?}"
     );
 }
 

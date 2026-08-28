@@ -58,11 +58,6 @@ const REVIEWED_LARGE_RUST_MODULES: &[(&str, usize, &str)] = &[
         1_645,
         "cohesive architecture-specific JPEG backend",
     ),
-    (
-        "crates/j2k-metal/src/engine/tier1_encode.rs",
-        1_249,
-        "review trigger for the active Metal Tier-1 engine",
-    ),
 ];
 
 const REVIEWED_LARGE_SHADER_MODULES: &[(&str, usize, &str)] = &[

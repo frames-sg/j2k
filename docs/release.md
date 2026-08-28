@@ -1,6 +1,6 @@
 # Release Policy
 
-The `j2k` 0.9.0 public crate release is published and security-supported. It is
+The `j2k` 0.10.0 public crate release is published and security-supported. It is
 the latest published line and carries the release-scoped Part 1 and selected
 Part 15 T.803 decoder evidence described in
 [`T.803 conformance`](t803-conformance.md).
@@ -12,7 +12,8 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.9.0` | Published on crates.io from annotated tag `v0.9.0`, with reviewed `objc2-metal` API-break evidence. | Latest supported release. |
+| `0.10.0` | Published on crates.io from annotated tag `v0.10.0`, with reviewed architecture-transition API evidence. | Latest supported release. |
+| `0.9.0` | Published on crates.io from annotated tag `v0.9.0`, with reviewed `objc2-metal` API-break evidence. | Supported. |
 | `0.8.1` | Previous crates.io release from annotated tag `v0.8.1`. | Supported. |
 | `0.8.0` | Previous crates.io release from annotated tag `v0.8.0`. | Supported. |
 | `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
@@ -87,9 +88,9 @@ directly; the obsolete helper and unreachable raw-message-send errors are
 removed. The break ledger enumerates every removed item in the four affected
 Metal crates. The one-time transition was consumed by `0.9.0`.
 
-The staged `0.10.0` pre-1.0 minor candidate compares directly with published
+The published `0.10.0` pre-1.0 minor release compares directly with published
 `v0.9.0` at peeled commit
-`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its provisional
+`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its
 [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md)
 and [review configuration](release-evidence/public-api/public-api-review-0.10.0.yml)
 record the intentional architecture transition. Most generated removals are
@@ -97,7 +98,7 @@ canonical defining-path changes whose supported root re-exports remain. The
 break ledger also records moving `transcode_kernels_built` from the low-level
 CUDA runtime to the CUDA transcode engine and generalizing the Metal resident
 codestream handoff to `DeviceCodestream`. This one-time transition applies only
-to the `0.10.0` candidate and must be disabled after publication.
+to the `0.10.0` release and must be disabled after publication.
 
 Version `0.7.3` retained the API contract introduced by `0.7.1`, which
 intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does

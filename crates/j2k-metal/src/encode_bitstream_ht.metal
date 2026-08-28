@@ -6,11 +6,12 @@ constant uint J2K_HT_VLC_SIZE = 3072u - J2K_HT_MEL_SIZE;
 constant uint J2K_HT_MS_SIZE = ((16384u * 16u) + 14u) / 15u;
 constant uint J2K_HT_MEL_OFFSET = J2K_HT_MS_SIZE;
 constant uint J2K_HT_VLC_OFFSET = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
-
 struct J2kHtEncodeParams {
     uint width;
     uint height;
     uint total_bitplanes;
+    uint cleanup_bitplane;
+    uint target_coding_passes;
     uint output_capacity;
 };
 
@@ -20,9 +21,9 @@ struct J2kHtEncodeStatus {
     uint data_len;
     uint num_coding_passes;
     uint num_zero_bitplanes;
-    uint reserved0;
-    uint reserved1;
-    uint reserved2;
+    uint cleanup_length;
+    uint sigprop_length;
+    uint magref_length;
 };
 
 struct J2kHtMelEncoder {
@@ -111,9 +112,9 @@ inline void j2k_set_ht_encode_status(
     status->data_len = data_len;
     status->num_coding_passes = passes;
     status->num_zero_bitplanes = zbp;
-    status->reserved0 = 0u;
-    status->reserved1 = 0u;
-    status->reserved2 = 0u;
+    status->cleanup_length = 0u;
+    status->sigprop_length = 0u;
+    status->magref_length = 0u;
 }
 
 inline void j2k_set_ht_encode_status_with_segments(
@@ -123,18 +124,18 @@ inline void j2k_set_ht_encode_status_with_segments(
     uint data_len,
     uint passes,
     uint zbp,
-    uint ms_len,
-    uint mel_len,
-    uint vlc_len
+    uint cleanup_len,
+    uint sigprop_len,
+    uint magref_len
 ) {
     status->code = code;
     status->detail = detail;
     status->data_len = data_len;
     status->num_coding_passes = passes;
     status->num_zero_bitplanes = zbp;
-    status->reserved0 = ms_len;
-    status->reserved1 = mel_len;
-    status->reserved2 = vlc_len;
+    status->cleanup_length = cleanup_len;
+    status->sigprop_length = sigprop_len;
+    status->magref_length = magref_len;
 }
 
 inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total_bitplanes) {
@@ -781,6 +782,9 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
 
     if (params.width == 0u || params.height == 0u ||
         params.total_bitplanes == 0u || params.total_bitplanes > J2K_HT_MAX_BITPLANES ||
+        params.cleanup_bitplane >= params.total_bitplanes ||
+        params.target_coding_passes == 0u || params.target_coding_passes > 3u ||
+        (params.cleanup_bitplane == 0u && params.target_coding_passes > 1u) ||
         params.width * params.height > J2K_HT_MAX_SAMPLES ||
         params.output_capacity < j2k_ht_output_size(params)) {
        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 1u, 0u, 0u, 0u);
@@ -798,8 +802,19 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         return;
     }
 
-    const uint missing_msbs = params.total_bitplanes - 1u;
+    const uint missing_msbs = params.total_bitplanes - params.cleanup_bitplane - 1u;
     const uint p = 30u - missing_msbs;
+    const uint cleanup_threshold = 1u << params.cleanup_bitplane;
+    const uint refinement_mask = params.cleanup_bitplane == 0u
+        ? 0u
+        : 1u << (params.cleanup_bitplane - 1u);
+    uint significant_count = 0u;
+    if (params.target_coding_passes == 3u) {
+        for (uint sample = 0u; sample < params.width * params.height; ++sample) {
+            significant_count += uint(
+                j2k_classic_magnitude(coefficients[sample]) >= cleanup_threshold);
+        }
+    }
 
     thread J2kHtMelEncoder mel;
     thread J2kHtVlcEncoder vlc;
@@ -913,8 +928,33 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     const uint ms_len = ms.pos;
     const uint mel_len = mel.pos;
     const uint vlc_len = vlc.pos;
-    const uint total_len = ms_len + mel_len + vlc_len;
-    if (total_len < 2u || total_len > params.output_capacity) {
+    const uint cleanup_len = ms_len + mel_len + vlc_len;
+    uint sigprop_len = 0u;
+    uint magref_len = 0u;
+    if (params.target_coding_passes == 2u) {
+        sigprop_len = 1u;
+    } else if (params.target_coding_passes == 3u) {
+        uint actual_sigprop_len = 0u;
+        if (j2k_ht_write_sigprop_segment(
+                coefficients, params.width, params.width, params.height,
+                cleanup_threshold, refinement_mask, out + cleanup_len,
+                0xFFFFFFFFu, actual_sigprop_len, false) == 0u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+            return;
+        }
+        sigprop_len = max(1u, actual_sigprop_len);
+        uint actual_magref_len = 0u;
+        if (j2k_ht_write_magref_segment(
+                coefficients, params.width, params.width, params.height,
+                cleanup_threshold, refinement_mask, out + cleanup_len + sigprop_len,
+                0xFFFFFFFFu, significant_count, actual_magref_len, false) == 0u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 7u, 0u, 0u, 0u);
+            return;
+        }
+        magref_len = max(1u, actual_magref_len);
+    }
+    const uint total_len = cleanup_len + sigprop_len + magref_len;
+    if (cleanup_len < 2u || total_len > params.output_capacity) {
        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u, 0u, 0u);
         return;
     }
@@ -928,11 +968,37 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
             out[ms_len + mel_len + idx] = out[vlc.offset + vlc_start + idx];
         }
 
-        const uint last = total_len - 1u;
-        const uint prev = total_len - 2u;
+        const uint last = cleanup_len - 1u;
+        const uint prev = cleanup_len - 2u;
         const uint locator_bytes = mel_len + vlc_len;
         out[last] = uchar(locator_bytes >> 4u);
         out[prev] = uchar((out[prev] & uchar(0xF0u)) | uchar(locator_bytes & 0x0Fu));
+
+        for (uint idx = 0u; idx < sigprop_len + magref_len; ++idx) {
+            out[cleanup_len + idx] = uchar(0u);
+        }
+        if (params.target_coding_passes == 3u) {
+            uint actual_sigprop_len = 0u;
+            if (j2k_ht_write_sigprop_segment(
+                    coefficients, params.width, params.width, params.height,
+                    cleanup_threshold, refinement_mask, out + cleanup_len,
+                    sigprop_len, actual_sigprop_len, true) == 0u) {
+                j2k_set_ht_encode_status(
+                    status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+                return;
+            }
+            uint actual_magref_len = 0u;
+            if (j2k_ht_write_magref_segment(
+                    coefficients, params.width, params.width, params.height,
+                    cleanup_threshold, refinement_mask,
+                    out + cleanup_len + sigprop_len, magref_len,
+                    significant_count, actual_magref_len, true) == 0u ||
+                actual_magref_len > magref_len) {
+                j2k_set_ht_encode_status(
+                    status, J2K_ENCODE_STATUS_UNSUPPORTED, 7u, 0u, 0u, 0u);
+                return;
+            }
+        }
     }
 
    j2k_set_ht_encode_status_with_segments(
@@ -940,11 +1006,11 @@ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         J2K_ENCODE_STATUS_OK,
         max_magnitude,
         total_len,
-        1u,
+        params.target_coding_passes,
         missing_msbs,
-        ms_len,
-        mel_len,
-        vlc_len
+        cleanup_len,
+        sigprop_len,
+        magref_len
     );
 }
 
@@ -1004,6 +1070,8 @@ struct J2kHtEncodeBatchJob {
     uint width;
     uint height;
     uint total_bitplanes;
+    uint cleanup_bitplane;
+    uint target_coding_passes;
     uint output_capacity;
 };
 
@@ -1050,6 +1118,8 @@ kernel void j2k_encode_ht_code_blocks(
     params.width = job.width;
     params.height = job.height;
     params.total_bitplanes = job.total_bitplanes;
+    params.cleanup_bitplane = job.cleanup_bitplane;
+    params.target_coding_passes = job.target_coding_passes;
     params.output_capacity = job.output_capacity;
    j2k_encode_ht_code_block_impl(
         coefficients + job.coefficient_offset,

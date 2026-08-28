@@ -2,8 +2,9 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_native::{
     collect_ht_cleanup_encode_distribution, decode_ht_code_block_scalar,
     decode_ht_code_block_scalar_with_workspace_midpoint, decode_j2k_code_block_scalar,
-    encode_ht_code_block_scalar, encode_j2k_code_block_scalar_with_style, DecodeSettings,
-    DecoderContext, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtCodeBlockDecoder, Image,
+    encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes_and_workspace,
+    encode_j2k_code_block_scalar_with_style, DecodeSettings, DecoderContext, HtCodeBlockDecodeJob,
+    HtCodeBlockDecodeWorkspace, HtCodeBlockDecoder, HtCodeBlockEncodeWorkspace, Image,
     J2kCodeBlockDecodeJob, J2kCodeBlockStyle, J2kSubBandType, Result,
 };
 use rayon::prelude::*;
@@ -500,7 +501,7 @@ fn bench_htj2k_cleanup_encode(c: &mut Criterion) {
         let coefficients = generated_coefficients(width, height, seed);
 
         group.bench_with_input(
-            BenchmarkId::new("encode_64x64", seed),
+            BenchmarkId::new("encode_64x64_fresh", seed),
             &coefficients,
             |b, coefficients| {
                 b.iter(|| {
@@ -511,6 +512,43 @@ fn bench_htj2k_cleanup_encode(c: &mut Criterion) {
                         total_bitplanes,
                     )
                     .expect("encode HTJ2K code block");
+                    std::hint::black_box(encoded);
+                });
+            },
+        );
+        let mut workspace = HtCodeBlockEncodeWorkspace::try_new().expect("HT encode workspace");
+        group.bench_with_input(
+            BenchmarkId::new("encode_64x64_reused", seed),
+            &coefficients,
+            |b, coefficients| {
+                b.iter(|| {
+                    let encoded = encode_ht_code_block_scalar_with_passes_and_workspace(
+                        std::hint::black_box(coefficients),
+                        width,
+                        height,
+                        total_bitplanes,
+                        1,
+                        &mut workspace,
+                    )
+                    .expect("encode HTJ2K code block with reused workspace");
+                    std::hint::black_box(encoded);
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("encode_64x64_three_pass_reused", seed),
+            &coefficients,
+            |b, coefficients| {
+                b.iter(|| {
+                    let encoded = encode_ht_code_block_scalar_with_passes_and_workspace(
+                        std::hint::black_box(coefficients),
+                        width,
+                        height,
+                        total_bitplanes,
+                        3,
+                        &mut workspace,
+                    )
+                    .expect("encode three-pass HTJ2K code block with reused workspace");
                     std::hint::black_box(encoded);
                 });
             },

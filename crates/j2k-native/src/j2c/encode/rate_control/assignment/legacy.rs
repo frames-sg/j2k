@@ -8,7 +8,10 @@ use super::super::super::Vec;
 use super::super::{
     ClassicLayerBudgetAllocator, ClassicSegmentAssignmentCandidate, HtSegmentAssignmentCandidate,
 };
-use super::{compare_classic_segment_candidates, enforce_classic_assignment_monotonicity};
+use super::{
+    compare_classic_segment_candidates, compare_ht_segment_candidates,
+    enforce_classic_assignment_monotonicity, enforce_ht_assignment_monotonicity,
+};
 
 pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope(
     candidates: &[ClassicSegmentAssignmentCandidate],
@@ -76,26 +79,31 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget(
 ) -> Result<Vec<usize>, &'static str> {
     let mut allocator = ClassicLayerBudgetAllocator::new(cumulative_targets, layer_count)?;
     let mut assignments = vec![layer_count.saturating_sub(1); candidates.len()];
-    let mut candidate_order = Vec::new();
-    candidate_order
-        .try_reserve_exact(candidates.len())
-        .map_err(|_| "HTJ2K candidate-order allocation failed")?;
-    candidate_order.extend(0..candidates.len());
-    candidate_order
-        .sort_by_key(|&idx| (candidates[idx].block_index, candidates[idx].segment_index));
-    let mut block_min_layers = vec![
-        0usize;
-        candidates
+    let block_count = candidates
+        .iter()
+        .map(|candidate| candidate.block_index)
+        .max()
+        .map_or(0, |idx| idx + 1);
+    let mut block_candidates = vec![Vec::new(); block_count];
+    for (candidate_idx, candidate) in candidates.iter().enumerate() {
+        block_candidates
+            .get_mut(candidate.block_index)
+            .ok_or("HTJ2K segment candidate block index mismatch")?
+            .push(candidate_idx);
+    }
+    for block in &mut block_candidates {
+        block.sort_by_key(|&idx| candidates[idx].segment_index);
+    }
+    let mut block_min_layers = vec![0usize; block_count];
+    let mut next_block_segment = vec![0usize; block_count];
+    for _ in 0..candidates.len() {
+        let candidate_idx = block_candidates
             .iter()
-            .map(|candidate| candidate.block_index)
-            .max()
-            .map_or(0, |idx| idx + 1)
-    ];
-
-    for candidate_idx in candidate_order {
-        let candidate = candidates
-            .get(candidate_idx)
-            .ok_or("HTJ2K segment candidate index mismatch")?;
+            .enumerate()
+            .filter_map(|(block_idx, block)| block.get(next_block_segment[block_idx]).copied())
+            .min_by(|&left, &right| compare_ht_segment_candidates(candidates, left, right))
+            .ok_or("HTJ2K PCRD candidate queue underflow")?;
+        let candidate = candidates[candidate_idx];
         let min_layer = *block_min_layers
             .get(candidate.block_index)
             .ok_or("HTJ2K segment candidate block index mismatch")?;
@@ -104,13 +112,10 @@ pub(in crate::j2c::encode) fn assign_ht_segment_layers_by_budget(
         if let Some(block_layer) = block_min_layers.get_mut(candidate.block_index) {
             *block_layer = layer;
         }
+        if let Some(next) = next_block_segment.get_mut(candidate.block_index) {
+            *next = next.checked_add(1).ok_or("HTJ2K segment index overflow")?;
+        }
     }
-
-    for (candidate, assignment) in candidates.iter().zip(&mut assignments) {
-        *assignment = *block_min_layers
-            .get(candidate.block_index)
-            .ok_or("HTJ2K segment candidate block index mismatch")?;
-    }
-
+    enforce_ht_assignment_monotonicity(candidates, &mut assignments);
     Ok(assignments)
 }

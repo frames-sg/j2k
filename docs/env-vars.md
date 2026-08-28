@@ -6,7 +6,7 @@ or test-only implementation details and must not be treated as user controls.
 
 Stability values:
 
-- Stable: supported for the published v0.9.x contract.
+- Stable: supported for the published v0.10.x contract.
 - Experimental: accepted for diagnostics or adapter tuning, but may change
   before 1.0.
 - Test/CI: supported only for repository tests, CI, and release validation.
@@ -125,7 +125,13 @@ override it.
 | `J2K_OPENJPEG_COMPRESS_BIN` | Override for OpenJPEG `opj_compress` in J2K parity tests and encoder benchmark reports. | `opj_compress` on `PATH` | Benchmark |
 | `J2K_OPENHTJ2K_DEC_BIN` | Absolute path to the pinned `open_htj2k_dec` executable used by the T.803 CPU encoder matrix's HT+RGN interoperability case. `scripts/prepare-openhtj2k-reference.sh` sets it in CI. | Required when the selected matrix contains the OpenHTJ2K case | Test/CI |
 | `J2K_OPENHTJ2K_SOURCE_DIR` | Absolute path to the clean official OpenHTJ2K 0.19.0 source checkout at the pinned commit. The runner verifies its origin, tag, commit, and tracked-file status before executing the decoder. | Required with `J2K_OPENHTJ2K_DEC_BIN` | Test/CI |
+| `J2K_OPENHTJ2K_LIB_DIR` | Directory containing the pinned OpenHTJ2K 0.19.0 static library used by the in-process comparator. `scripts/prepare-openhtj2k-reference.sh` emits it with the source and CLI paths. | Not linked unless both source and library artifacts are available | Test/benchmark |
+| `J2K_OPENHTJ2K_VERSION` | Build-script metadata for the exact linked OpenHTJ2K tag; consumers should not set it directly. | Exact source tag, or `unknown` | Build metadata |
 | `J2K_OPENJPH_EXPAND_BIN` | Override for OpenJPH `ojph_expand` in optional fixture comparator rows. | `ojph_expand` on `PATH`, `/opt/homebrew/bin/ojph_expand`, or `/usr/local/bin/ojph_expand` | Benchmark |
+| `J2K_OPENJPH_COMPRESS_BIN` | Override for the pinned OpenJPH `ojph_compress` used by `jp2k_encode_compare --openjph-matrix`. `scripts/prepare-openjph-reference.sh` builds and emits both OpenJPH CLI paths. | Pinned `target/reference/openjph-0.31.0` build, then `ojph_compress` on `PATH` | Benchmark |
+| `J2K_OPENJPH_SOURCE_DIR` | Absolute path to the clean official OpenJPH 0.31.0 source checkout at the pinned commit used by the in-process comparator. `scripts/prepare-openjph-reference.sh` creates and validates it. | Not linked unless set | Test/benchmark |
+| `J2K_OPENJPH_LIB_DIR` | Directory containing the pinned OpenJPH 0.31.0 static library. `scripts/prepare-openjph-reference.sh` emits it with the source and CLI paths. | Not linked unless both source and library artifacts are available | Test/benchmark |
+| `J2K_OPENJPH_VERSION` | Build-script metadata for the exact linked OpenJPH tag; consumers should not set it directly. | Exact source tag, or `unknown` | Build metadata |
 | `J2K_KDU_EXPAND_BIN` | Override for Kakadu `kdu_expand` in optional fixture comparator rows. | `kdu_expand` on `PATH`, `/opt/homebrew/bin/kdu_expand`, or `/usr/local/bin/kdu_expand` | Benchmark |
 | `J2K_KDU_COMPRESS_BIN` | Override for Kakadu `kdu_compress` in optional encoder comparator rows. | `kdu_compress` on `PATH`, `/opt/homebrew/bin/kdu_compress`, or `/usr/local/bin/kdu_compress` | Benchmark |
 | `J2K_GROK_BIN` | Override for Grok `grk_decompress` in J2K parity tests. | `grk_decompress` on `PATH` | Test/CI |
@@ -177,8 +183,10 @@ override it.
 | `J2K_ENCODE_COMPARE_MANIFEST` | Optional TSV manifest for external encode source images. Requires `path` and `corpus_category`; supports `corpus_name`, `license_status`, `source_command`, and `input_fnv1a64`. Publication runs require the decoded-pixel hash pin. | Not set | Benchmark |
 | `J2K_ENCODE_COMPARE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated smoke source images from `jp2k_encode_compare` external-corpus publication runs. | Generated source images included | Benchmark |
 | `J2K_ENCODE_COMPARE_ENCODERS` | Comma-separated encoder filter for local smoke checks, with values `j2k`, `openjpeg`, `grok`, and optional `kakadu`/`kdu`. Any filter blocks publication eligibility. | All default encoders | Benchmark |
+| `J2K_OPENJPH_MATRIX_REPEATS` | Positive encode repeat count per producer/profile/format cell in `jp2k_encode_compare --openjph-matrix`; the median is reported. Parity is checked outside the timed encode operation. | `3` | Benchmark |
 | `J2K_BATCH_COMPARE_REPEATS` | Repeat count for `jp2k_batch_compare`. | Tool default | Benchmark |
-| `J2K_BATCH_COMPARE_THREADS` | Worker count for `jp2k_batch_compare`. | Tool default | Benchmark |
+| `J2K_BATCH_COMPARE_THREADS` | Outer worker count shared by J2K and the in-process reference rows in `jp2k_batch_compare`. Reference decoders remain single-threaded per tile to avoid nested oversubscription. | Tool default | Benchmark |
+| `J2K_BATCH_COMPARE_MAX_ABS_DIFF` | Maximum allowed per-byte difference between J2K and each linked OpenHTJ2K/OpenJPH in-process preflight. The benchmark exits before timing when the gate fails. | `1` | Benchmark |
 | `J2K_ROI_COMPARE_REPEATS` | Repeat count for `jp2k_roi_batch_compare`. | Tool default | Benchmark |
 | `J2K_ROI_COMPARE_THREADS` | Worker count for `jp2k_roi_batch_compare`. | Tool default | Benchmark |
 | `J2K_CUDA_DECODE_FORMATS` | Comma-separated CUDA J2K decode benchmark output formats such as `gray8,rgb8,rgba8`. | Harness default | Benchmark |

@@ -13,6 +13,133 @@ use super::{ht_segment_count, ht_target_layer};
 mod layout;
 use layout::{ht_contribution_layout, HtContributionLayout};
 
+#[derive(Clone, Copy)]
+struct HtLayerSelection {
+    has_cleanup: bool,
+    has_sigprop: bool,
+    has_magref: bool,
+    payload_len: usize,
+    refinement_len: usize,
+}
+
+fn ht_layer_selection(
+    encoded: &bitplane_encode::EncodedCodeBlock,
+    layout: HtContributionLayout,
+    segment_layers: &[usize],
+    layer_idx: usize,
+) -> NativeEncodePipelineResult<HtLayerSelection> {
+    // Emit one selected HT set atomically in the layer containing its final
+    // selected pass. This keeps the cleanup boundary unambiguous for external
+    // decoders while different code-blocks can still enter different layers.
+    let set_layer = segment_layers.last().copied();
+    let has_cleanup = set_layer == Some(layer_idx);
+    let has_sigprop = encoded.num_coding_passes > 1 && set_layer == Some(layer_idx);
+    let has_magref = layout.split_refinement && set_layer == Some(layer_idx);
+    let refinement_len = usize::from(has_sigprop)
+        .checked_mul(layout.sigprop_len)
+        .and_then(|bytes| bytes.checked_add(usize::from(has_magref) * layout.magref_len))
+        .ok_or_else(|| {
+            NativeEncodePipelineError::arithmetic_overflow("HTJ2K layer refinement length overflow")
+        })?;
+    let payload_len = usize::from(has_cleanup)
+        .checked_mul(layout.cleanup_len)
+        .and_then(|bytes| bytes.checked_add(refinement_len))
+        .ok_or_else(|| {
+            NativeEncodePipelineError::arithmetic_overflow(
+                "HTJ2K layer contribution payload overflow",
+            )
+        })?;
+    Ok(HtLayerSelection {
+        has_cleanup,
+        has_sigprop,
+        has_magref,
+        payload_len,
+        refinement_len,
+    })
+}
+
+fn append_ht_layer_payload(
+    encoded: &bitplane_encode::EncodedCodeBlock,
+    layout: HtContributionLayout,
+    selection: HtLayerSelection,
+    data: &mut Vec<u8>,
+) -> NativeEncodePipelineResult<u8> {
+    let mut passes = 0u8;
+    if selection.has_cleanup {
+        data.extend_from_slice(encoded.data.get(..layout.cleanup_len).ok_or_else(|| {
+            NativeEncodePipelineError::internal_invariant("HTJ2K cleanup segment range invalid")
+        })?);
+        passes = 1;
+    }
+    if selection.has_sigprop {
+        data.extend_from_slice(
+            encoded
+                .data
+                .get(layout.cleanup_len..layout.sigprop_end)
+                .ok_or_else(|| {
+                    NativeEncodePipelineError::internal_invariant(
+                        "HTJ2K SigProp pass range invalid",
+                    )
+                })?,
+        );
+        passes = passes
+            .checked_add(if layout.split_refinement {
+                1
+            } else {
+                encoded.num_coding_passes - 1
+            })
+            .ok_or_else(|| {
+                NativeEncodePipelineError::arithmetic_overflow(
+                    "HTJ2K packet contribution pass count overflow",
+                )
+            })?;
+    }
+    if selection.has_magref {
+        data.extend_from_slice(
+            encoded
+                .data
+                .get(layout.sigprop_end..layout.refinement_end)
+                .ok_or_else(|| {
+                    NativeEncodePipelineError::internal_invariant("HTJ2K MagRef pass range invalid")
+                })?,
+        );
+        passes = passes.checked_add(1).ok_or_else(|| {
+            NativeEncodePipelineError::arithmetic_overflow(
+                "HTJ2K packet contribution pass count overflow",
+            )
+        })?;
+    }
+    Ok(passes)
+}
+
+fn ht_packet_contribution(
+    encoded: &bitplane_encode::EncodedCodeBlock,
+    selection: HtLayerSelection,
+    data: Vec<u8>,
+    num_coding_passes: u8,
+) -> NativeEncodePipelineResult<CodeBlockPacketData> {
+    Ok(CodeBlockPacketData {
+        data,
+        ht_cleanup_length: if selection.has_cleanup {
+            encoded.ht_cleanup_length
+        } else {
+            0
+        },
+        ht_refinement_length: u32::try_from(selection.refinement_len).map_err(|_| {
+            NativeEncodePipelineError::arithmetic_overflow("HTJ2K layer refinement length overflow")
+        })?,
+        ht_sigprop_length: 0,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [0.0; 3],
+        num_coding_passes,
+        classic_segment_lengths: Vec::new(),
+        num_zero_bitplanes: encoded.num_zero_bitplanes,
+        previously_included: false,
+        l_block: 3,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+    })
+}
+
 #[cfg(test)]
 pub(in crate::j2c::encode) fn ht_layer_contributions(
     encoded: &bitplane_encode::EncodedCodeBlock,
@@ -20,81 +147,26 @@ pub(in crate::j2c::encode) fn ht_layer_contributions(
     segment_layers: &[usize],
 ) -> NativeEncodePipelineResult<Vec<CodeBlockPacketData>> {
     let layout = ht_contribution_layout(encoded, num_layers, segment_layers)?;
-    let HtContributionLayout {
-        layer_count,
-        cleanup_len,
-        refinement_len,
-        refinement_end,
-    } = layout;
-
     let mut contributions = Vec::new();
-    contributions.try_reserve_exact(layer_count).map_err(|_| {
-        crate::EncodeError::HostAllocationFailed {
+    contributions
+        .try_reserve_exact(layout.layer_count)
+        .map_err(|_| crate::EncodeError::HostAllocationFailed {
             what: "HTJ2K layer contribution owners",
-            bytes: layer_count.saturating_mul(core::mem::size_of::<CodeBlockPacketData>()),
-        }
-    })?;
-    for layer_idx in 0..layer_count {
-        let has_cleanup = segment_layers.first() == Some(&layer_idx);
-        let has_refinement =
-            encoded.num_coding_passes > 1 && segment_layers.get(1) == Some(&layer_idx);
-        let payload_len = usize::from(has_cleanup)
-            .checked_mul(cleanup_len)
-            .and_then(|bytes| bytes.checked_add(usize::from(has_refinement) * refinement_len))
-            .ok_or_else(|| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "HTJ2K layer contribution payload overflow",
-                )
-            })?;
+            bytes: layout
+                .layer_count
+                .saturating_mul(core::mem::size_of::<CodeBlockPacketData>()),
+        })?;
+    for layer_idx in 0..layout.layer_count {
+        let selection = ht_layer_selection(encoded, layout, segment_layers, layer_idx)?;
         let mut data = Vec::new();
-        data.try_reserve_exact(payload_len).map_err(|_| {
+        data.try_reserve_exact(selection.payload_len).map_err(|_| {
             crate::EncodeError::HostAllocationFailed {
                 what: "HTJ2K layer contribution payload",
-                bytes: payload_len,
+                bytes: selection.payload_len,
             }
         })?;
-        let mut num_coding_passes = 0u8;
-        if has_cleanup {
-            data.extend_from_slice(encoded.data.get(..cleanup_len).ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant("HTJ2K cleanup segment range invalid")
-            })?);
-            num_coding_passes = 1;
-        }
-        if has_refinement {
-            data.extend_from_slice(encoded.data.get(cleanup_len..refinement_end).ok_or_else(
-                || {
-                    NativeEncodePipelineError::internal_invariant(
-                        "HTJ2K refinement segment range invalid",
-                    )
-                },
-            )?);
-            num_coding_passes = num_coding_passes
-                .checked_add(encoded.num_coding_passes - 1)
-                .ok_or_else(|| {
-                    NativeEncodePipelineError::arithmetic_overflow(
-                        "HTJ2K packet contribution pass count overflow",
-                    )
-                })?;
-        }
-        contributions.push(CodeBlockPacketData {
-            data,
-            ht_cleanup_length: if has_cleanup {
-                encoded.ht_cleanup_length
-            } else {
-                0
-            },
-            ht_refinement_length: if has_refinement {
-                encoded.ht_refinement_length
-            } else {
-                0
-            },
-            num_coding_passes,
-            classic_segment_lengths: Vec::new(),
-            num_zero_bitplanes: encoded.num_zero_bitplanes,
-            previously_included: false,
-            l_block: 3,
-            block_coding_mode: BlockCodingMode::HighThroughput,
-        });
+        let passes = append_ht_layer_payload(encoded, layout, selection, &mut data)?;
+        contributions.push(ht_packet_contribution(encoded, selection, data, passes)?);
     }
     Ok(contributions)
 }
@@ -145,34 +217,19 @@ pub(in crate::j2c::encode) fn ht_layer_contributions_accounted(
         .into());
     }
     let layout = ht_contribution_layout(encoded, num_layers, segment_layers)?;
-    let HtContributionLayout {
-        layer_count,
-        cleanup_len,
-        refinement_len,
-        refinement_end,
-    } = layout;
-
     let encoded_bytes = encoded.data.capacity();
     let layer_metadata_bytes =
         checked_element_bytes::<usize>(segment_layer_capacity, "HT segment-layer metadata")?;
     let (mut contributions, contribution_owner_bytes) = tracker.try_vec::<CodeBlockPacketData>(
-        layer_count,
+        layout.layer_count,
         [retained_live_bytes, encoded_bytes, layer_metadata_bytes],
         "HT layer contribution owners",
     )?;
     let mut contribution_payload_bytes = 0usize;
-    for layer_idx in 0..layer_count {
-        let has_cleanup = segment_layers.first() == Some(&layer_idx);
-        let has_refinement =
-            encoded.num_coding_passes > 1 && segment_layers.get(1) == Some(&layer_idx);
-        let payload_len = usize::from(has_cleanup)
-            .checked_mul(cleanup_len)
-            .and_then(|bytes| bytes.checked_add(usize::from(has_refinement) * refinement_len))
-            .ok_or(crate::EncodeError::ArithmeticOverflow {
-                what: "HT layer contribution payload",
-            })?;
+    for layer_idx in 0..layout.layer_count {
+        let selection = ht_layer_selection(encoded, layout, segment_layers, layer_idx)?;
         let (mut data, data_bytes) = tracker.try_vec::<u8>(
-            payload_len,
+            selection.payload_len,
             [
                 retained_live_bytes,
                 encoded_bytes,
@@ -182,53 +239,13 @@ pub(in crate::j2c::encode) fn ht_layer_contributions_accounted(
             ],
             "HT layer contribution payload",
         )?;
-        let mut num_coding_passes = 0u8;
-        if has_cleanup {
-            data.extend_from_slice(encoded.data.get(..cleanup_len).ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant("HTJ2K cleanup segment range invalid")
-            })?);
-            num_coding_passes = 1;
-        }
-        if has_refinement {
-            data.extend_from_slice(encoded.data.get(cleanup_len..refinement_end).ok_or_else(
-                || {
-                    NativeEncodePipelineError::internal_invariant(
-                        "HTJ2K refinement segment range invalid",
-                    )
-                },
-            )?);
-            num_coding_passes = num_coding_passes
-                .checked_add(encoded.num_coding_passes - 1)
-                .ok_or_else(|| {
-                    NativeEncodePipelineError::arithmetic_overflow(
-                        "HTJ2K packet contribution pass count overflow",
-                    )
-                })?;
-        }
+        let passes = append_ht_layer_payload(encoded, layout, selection, &mut data)?;
         contribution_payload_bytes = checked_add_bytes(
             contribution_payload_bytes,
             data_bytes,
             "HT layer contribution payload graph",
         )?;
-        contributions.push(CodeBlockPacketData {
-            data,
-            ht_cleanup_length: if has_cleanup {
-                encoded.ht_cleanup_length
-            } else {
-                0
-            },
-            ht_refinement_length: if has_refinement {
-                encoded.ht_refinement_length
-            } else {
-                0
-            },
-            num_coding_passes,
-            classic_segment_lengths: Vec::new(),
-            num_zero_bitplanes: encoded.num_zero_bitplanes,
-            previously_included: false,
-            l_block: 3,
-            block_coding_mode: BlockCodingMode::HighThroughput,
-        });
+        contributions.push(ht_packet_contribution(encoded, selection, data, passes)?);
     }
     Ok(contributions)
 }

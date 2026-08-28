@@ -14,6 +14,7 @@ pub(crate) use j2k_cuda_runtime::CudaLaunchGeometry;
 
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
 const HTJ2K_DECODE_CODEBLOCK_THREADS: u32 = 32;
+const HTJ2K_ENCODE_CODEBLOCK_THREADS: u32 = 128;
 const SAMPLE_THREADS: u32 = 256;
 const J2K_THREADS_X: u32 = 16;
 const J2K_THREADS_Y: u32 = 16;
@@ -337,7 +338,7 @@ pub(crate) fn htj2k_encode_codeblock_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
     let jobs = u32::try_from(job_count).ok()?;
-    CudaLaunchGeometry::new((jobs, 1, 1), (128, 1, 1))
+    CudaLaunchGeometry::new((jobs, 1, 1), (HTJ2K_ENCODE_CODEBLOCK_THREADS, 1, 1))
 }
 
 pub(crate) fn htj2k_packetize_launch_geometry(packet_count: usize) -> Option<CudaLaunchGeometry> {
@@ -409,10 +410,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejected_parallel_ht_encode_candidate_is_absent() {
+        let sources = [
+            include_str!("kernels.rs"),
+            include_str!("htj2k_encode/launch.rs"),
+            include_str!("cuda_oxide_htj2k_encode/simt/src/main.rs"),
+        ];
+        for rejected in [
+            ["J2", "K_CUDA_HT_ENCODE_", "COOPERATIVE"].concat(),
+            ["j2k_htj2k_encode_codeblocks_", "cooperative"].concat(),
+            ["j2k_htj2k_encode_codeblocks_multi_input_", "cooperative"].concat(),
+        ] {
+            assert!(
+                sources.iter().all(|source| !source.contains(&rejected)),
+                "rejected CUDA HT encode candidate marker remains: {rejected}"
+            );
+        }
+    }
+
+    #[test]
     fn htj2k_launch_geometry_matches_codeblock_work() {
         let samples = htj2k_codeblock_sample_launch_geometry(3).expect("sample geometry");
         assert_eq!(samples.grid(), (3, 1, 1));
         assert_eq!(samples.block(), (SAMPLE_THREADS, 1, 1));
+
+        let encode = htj2k_encode_codeblock_launch_geometry(3).expect("encode geometry");
+        assert_eq!(encode.grid(), (3, 1, 1));
+        assert_eq!(encode.block(), (HTJ2K_ENCODE_CODEBLOCK_THREADS, 1, 1));
 
         let small = htj2k_codeblock_launch_geometry(1_200).expect("small geometry");
         assert_eq!(small.grid(), (1_200, 1, 1));

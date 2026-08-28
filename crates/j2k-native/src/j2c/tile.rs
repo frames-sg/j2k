@@ -18,6 +18,21 @@ use metadata::{inherit_tile_metadata, TileMetadataBudget};
 pub(crate) use parsed::ParsedTiles;
 use tile_part::parse_tile_part;
 
+#[cfg(test)]
+std::thread_local! {
+    static TILE_PARSE_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_tile_parse_calls() {
+    TILE_PARSE_CALLS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn tile_parse_calls() -> u64 {
+    TILE_PARSE_CALLS.get()
+}
+
 fn ceil_div_by_power_of_two(value: u32, exponent: u8) -> u32 {
     if exponent == 0 {
         value
@@ -178,6 +193,9 @@ pub(crate) fn parse<'a>(
     main_header: &Header<'a>,
     retained_image_bytes: usize,
 ) -> Result<ParsedTiles<'a>> {
+    #[cfg(test)]
+    TILE_PARSE_CALLS.set(TILE_PARSE_CALLS.get().saturating_add(1));
+
     let mut metadata_budget = TileMetadataBudget::for_image(main_header, retained_image_bytes)?;
     let num_tiles = usize::try_from(main_header.size_data.num_tiles())
         .map_err(|_| ValidationError::ImageTooLarge)?;
@@ -219,7 +237,11 @@ pub(crate) fn parse<'a>(
     }
 
     metadata_budget.validate_owner_graph(&tiles)?;
-    Ok(ParsedTiles::new(tiles, metadata_budget.retained_bytes()))
+    Ok(ParsedTiles::new(
+        tiles,
+        metadata_budget.retained_bytes(),
+        metadata_budget.retained_owner_bytes(),
+    ))
 }
 
 /// A tile, instantiated to a specific component.

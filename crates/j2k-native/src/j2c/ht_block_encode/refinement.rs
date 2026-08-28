@@ -13,15 +13,34 @@ const SIGPROP_SPREAD_MASKS: [u32; 16] = [
     0x76000, 0xEC000, 0xC8000,
 ];
 
+#[derive(Default)]
+pub(super) struct EncodedRefinementSegment {
+    pub(super) data: Vec<u8>,
+    pub(super) sigprop_length: u32,
+    pub(super) magref_length: u32,
+}
+
 mod writers;
 use writers::{ForwardRefinementBitWriter, ReverseRefinementBitWriter};
 
 pub(super) fn try_encode_refinement_segment_view(
     coefficients: CoefficientBlockView<'_, i32>,
-    cleanup_significance_threshold: i32,
+    cleanup_bitplane: u8,
     num_coding_passes: u8,
     allocation: HtWorkerAllocation,
-) -> EncodeResult<Vec<u8>> {
+) -> EncodeResult<EncodedRefinementSegment> {
+    let cleanup_significance_threshold =
+        1_i32
+            .checked_shl(u32::from(cleanup_bitplane))
+            .ok_or(EncodeError::InvalidInput {
+                what: "HTJ2K cleanup bitplane exceeds the refinement coefficient range",
+            })?;
+    let refinement_mask =
+        1_u32
+            .checked_shl(u32::from(cleanup_bitplane - 1))
+            .ok_or(EncodeError::InvalidInput {
+                what: "HTJ2K refinement bitplane exceeds the coefficient range",
+            })?;
     let width = coefficients.width();
     let height = coefficients.height();
     let width_u32 = u32::try_from(width).map_err(|_| EncodeError::InvalidInput {
@@ -63,6 +82,7 @@ pub(super) fn try_encode_refinement_segment_view(
         width_u32,
         height_u32,
         mstr,
+        refinement_mask,
         allocation,
     )?;
     let magref = if num_coding_passes > 2 {
@@ -72,6 +92,7 @@ pub(super) fn try_encode_refinement_segment_view(
             width_u32,
             height_u32,
             mstr,
+            refinement_mask,
             allocation,
         )?
     } else {
@@ -92,7 +113,17 @@ pub(super) fn try_encode_refinement_segment_view(
     let mut refinement = try_untracked_vec(combined_len, "HTJ2K refinement segment")?;
     refinement.extend_from_slice(&sigprop);
     refinement.extend_from_slice(&magref);
-    Ok(refinement)
+    Ok(EncodedRefinementSegment {
+        data: refinement,
+        sigprop_length: u32::try_from(sigprop.len()).map_err(|_| {
+            EncodeError::InternalInvariant {
+                what: "HTJ2K SigProp segment exceeds u32 length",
+            }
+        })?,
+        magref_length: u32::try_from(magref.len()).map_err(|_| EncodeError::InternalInvariant {
+            what: "HTJ2K MagRef segment exceeds u32 length",
+        })?,
+    })
 }
 
 #[expect(
@@ -153,6 +184,7 @@ fn write_sigprop_refinement_bits(
     width: u32,
     height: u32,
     mstr: usize,
+    refinement_mask: u32,
     allocation: HtWorkerAllocation,
 ) -> EncodeResult<Vec<u8>> {
     let mut prev_row_sig = try_untracked_vec_filled(
@@ -213,7 +245,7 @@ fn write_sigprop_refinement_bits(
                     processed |= sample_mask;
 
                     let coeff = coefficient_for_sigprop_bit(coefficients, x, y, bit)?;
-                    let significant = coeff != 0;
+                    let significant = coeff.unsigned_abs() & refinement_mask != 0;
                     writer.push_bit(significant)?;
                     if significant {
                         new_sig |= sample_mask;
@@ -253,6 +285,7 @@ fn write_magref_refinement_bits(
     width: u32,
     height: u32,
     mstr: usize,
+    refinement_mask: u32,
     allocation: HtWorkerAllocation,
 ) -> EncodeResult<Vec<u8>> {
     let mut writer =
@@ -274,7 +307,7 @@ fn write_magref_refinement_bits(
                             if (sig & sample_mask) != 0 {
                                 let bit = sample_mask.trailing_zeros();
                                 let coeff = coefficient_for_sigprop_bit(coefficients, x, y, bit)?;
-                                writer.push_bit((coeff.unsigned_abs() & 1) != 0)?;
+                                writer.push_bit((coeff.unsigned_abs() & refinement_mask) != 0)?;
                             }
                             sample_mask <<= 1;
                         }

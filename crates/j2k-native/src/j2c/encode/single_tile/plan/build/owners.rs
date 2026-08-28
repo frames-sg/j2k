@@ -42,6 +42,7 @@ pub(super) fn try_build_plan_owners(
         request.options.reversible,
         geometry.guard_bits,
         request.options,
+        0,
     )?;
     if request.options.reversible && geometry.guard_delta != 0 {
         adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, geometry.guard_delta)

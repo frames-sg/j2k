@@ -130,6 +130,17 @@ pub(super) fn push_packet_block(
         } else {
             0
         },
+        ht_sigprop_length: if block_coding_mode == BlockCodingMode::HighThroughput {
+            encoded.ht_sigprop_length
+        } else {
+            0
+        },
+        ht_magref_length: if block_coding_mode == BlockCodingMode::HighThroughput {
+            encoded.ht_magref_length
+        } else {
+            0
+        },
+        ht_distortion_deltas: encoded.ht_distortion_deltas,
         num_coding_passes: encoded.num_coding_passes,
         classic_segment_lengths: Vec::new(),
         num_zero_bitplanes: encoded.num_zero_bitplanes,
@@ -149,6 +160,9 @@ pub(super) fn ht_encoded_code_block_from_accelerator(
         num_zero_bitplanes: encoded.num_zero_bitplanes,
         ht_cleanup_length: encoded.cleanup_length,
         ht_refinement_length: encoded.refinement_length,
+        ht_sigprop_length: encoded.refinement_length,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [f64::EPSILON; 3],
     }
 }
 
@@ -161,5 +175,8 @@ pub(super) fn encoded_code_block_from_accelerator(
         num_zero_bitplanes: encoded.missing_bit_planes,
         ht_cleanup_length: 0,
         ht_refinement_length: 0,
+        ht_sigprop_length: 0,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [0.0; 3],
     }
 }

@@ -19,6 +19,24 @@ pub struct EncodedHtJ2kCodeBlock {
     pub num_zero_bitplanes: u8,
 }
 
+/// Encoded payload and exact pass boundaries for one expert HT set candidate.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct EncodedHtJ2kCodeBlockSet {
+    /// Combined cleanup, `SigProp`, and `MagRef` bytes.
+    pub data: Vec<u8>,
+    /// Cleanup segment length in bytes.
+    pub cleanup_length: u32,
+    /// `SigProp` prefix length within the refinement segment.
+    pub sigprop_length: u32,
+    /// `MagRef` suffix length within the refinement segment.
+    pub magref_length: u32,
+    /// Number of passes present from this set.
+    pub num_coding_passes: u8,
+    /// Missing most-significant planes for this cleanup pass.
+    pub num_zero_bitplanes: u8,
+}
+
 /// HTJ2K code-block encode job.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kHtCodeBlockEncodeJob<'a> {
@@ -36,6 +54,27 @@ pub struct J2kHtCodeBlockEncodeJob<'a> {
     /// refinement on the native CPU path. `3` additionally requests one
     /// magnitude-refinement pass. Higher values require an accelerator and
     /// must not be silently reduced by CPU fallback.
+    pub target_coding_passes: u8,
+}
+
+/// Expert HTJ2K job that selects one exact cleanup/refinement set.
+///
+/// This is used by bounded FBCOT candidate generation. Ordinary callers
+/// should use [`J2kHtCodeBlockEncodeJob`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct J2kHtCodeBlockSetEncodeJob<'a> {
+    /// Quantized coefficients in row-major order.
+    pub coefficients: &'a [i32],
+    /// Code-block width in samples.
+    pub width: u32,
+    /// Code-block height in samples.
+    pub height: u32,
+    /// Total bitplanes for this subband/code block.
+    pub total_bitplanes: u8,
+    /// Least-significant magnitude bitplane represented by the cleanup pass.
+    pub cleanup_bitplane: u8,
+    /// Number of passes from this set to encode, in the range 1 through 3.
     pub target_coding_passes: u8,
 }
 
@@ -65,3 +104,4 @@ pub struct J2kHtSubbandEncodeJob<'a> {
 }
 
 crate::move_only::assert_move_only!(EncodedHtJ2kCodeBlock);
+crate::move_only::assert_move_only!(EncodedHtJ2kCodeBlockSet);

@@ -18,7 +18,7 @@ mod validation;
 
 pub(crate) use self::code_blocks::cuda_htj2k_encode_tables;
 pub(super) use self::code_blocks::{
-    cuda_encode_ht_code_block, cuda_encode_ht_code_blocks, cuda_encode_ht_subband,
-    encoded_ht_code_blocks_from_cuda,
+    cuda_encode_ht_code_block, cuda_encode_ht_code_block_sets, cuda_encode_ht_code_blocks,
+    cuda_encode_ht_subband, encoded_ht_code_block_sets_from_cuda, encoded_ht_code_blocks_from_cuda,
 };
 pub(super) use self::resident::{cuda_encode_htj2k_device_tile_body, cuda_encode_htj2k_tile_body};

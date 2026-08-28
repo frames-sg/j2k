@@ -233,7 +233,8 @@ pub use error::{
 #[cfg(test)]
 pub(crate) use j2c::encode::NativeEncodeRetainedInput;
 pub use j2c::encode::{
-    encode, encode_component_planes_53, encode_htj2k, encode_precomputed_htj2k_53,
+    encode, encode_component_planes_53, encode_htj2k, encode_htj2k_with_qfactor,
+    encode_htj2k_with_qfactor_and_accelerator, encode_precomputed_htj2k_53,
     encode_precomputed_htj2k_53_with_accelerator,
     encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_53_with_mct, encode_precomputed_htj2k_53_with_mct_and_accelerator,
@@ -265,25 +266,25 @@ pub use j2c::{
 #[doc(hidden)]
 pub use j2k_types::{
     sort_packet_descriptors_for_progression, CpuOnlyJ2kEncodeStageAccelerator,
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, IrreversibleQuantizationStep,
-    IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment, J2kCodeBlockStyle,
-    J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kEncodeContext, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageErrorKind, J2kEncodeStageResult,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kResidentEncodeInput,
-    J2kResidentEncodeInputError, J2kResidentHtj2kTileEncodeJob, J2kSubBandType,
-    J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
-    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
-    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
-    PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock,
-    PrequantizedHtj2k97Component, PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock,
+    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kEncodeContext,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeStageError,
+    J2kEncodeStageErrorKind, J2kEncodeStageResult, J2kForwardDwt53Job, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtCodeBlockSetEncodeJob,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kQuantizeSubbandJob, J2kResidentEncodeInput, J2kResidentEncodeInputError,
+    J2kResidentHtj2kTileEncodeJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 
 mod j2c;
@@ -409,11 +410,12 @@ pub use scalar::{
     decode_j2k_code_block_scalar_with_workspace_midpoint_profiled,
     decode_j2k_code_block_scalar_with_workspace_profiled, decode_j2k_sub_band_scalar,
     encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes,
-    encode_j2k_code_block_scalar_with_style, encode_j2k_packetization_scalar,
-    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference, forward_rct_reference,
-    pack_j2k_code_block_scalar_from_tier1_tokens, quantize_reversible_reference,
-    quantize_subband_reference, try_deinterleave_reference, HtCodeBlockDecodeProfile,
-    HtCodeBlockDecodeWorkspace, J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace,
+    encode_ht_code_block_scalar_with_passes_and_workspace, encode_j2k_code_block_scalar_with_style,
+    encode_j2k_packetization_scalar, forward_dwt53_reference, forward_dwt97_reference,
+    forward_ict_reference, forward_rct_reference, pack_j2k_code_block_scalar_from_tier1_tokens,
+    quantize_reversible_reference, quantize_subband_reference, try_deinterleave_reference,
+    HtCodeBlockDecodeProfile, HtCodeBlockDecodeWorkspace, HtCodeBlockEncodeWorkspace,
+    J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace,
 };
 
 /// JP2 signature box: 00 00 00 0C 6A 50 20 20
@@ -422,7 +424,7 @@ pub(crate) const JP2_MAGIC: &[u8] = b"\x00\x00\x00\x0C\x6A\x50\x20\x20";
 pub(crate) const CODESTREAM_MAGIC: &[u8] = b"\xFF\x4F\xFF\x51";
 
 mod image;
-pub use image::{DecodeSettings, Image};
+pub use image::{DecodeSettings, Image, PreparedRegionDecoder};
 
 #[cfg(test)]
 mod tests;

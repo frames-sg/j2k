@@ -55,6 +55,10 @@ impl TileMetadataBudget {
         self.retained_bytes
     }
 
+    pub(super) fn retained_owner_bytes(&self) -> usize {
+        self.retained_bytes - self.retained_image_bytes
+    }
+
     pub(super) fn transaction(&mut self) -> TileMetadataTransaction<'_> {
         TileMetadataTransaction {
             budget: self,

@@ -16,8 +16,8 @@ use j2k::{
 #[cfg(target_os = "macos")]
 use j2k::{
     encode_j2k_lossy_with_accelerator, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder,
-    ReversibleTransform,
+    J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer,
+    J2kRateTarget, ReversibleTransform,
 };
 #[cfg(target_os = "macos")]
 use j2k::{
