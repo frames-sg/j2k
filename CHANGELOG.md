@@ -34,9 +34,9 @@ and stale roadmap entries have been removed from the public documentation set.
   benchmark registration, and generated routing evidence.
 - Adds bounded HTJ2K lossy candidate generation with two consecutive HT sets,
   exact cleanup/SigProp/MagRef byte boundaries, per-pass distortion scoring,
-  and dependency-aware slope allocation. CUDA can produce the exact candidate
-  sets on device; Metal explicitly uses the scalar Tier-1 fallback for this
-  richer path while retaining its transform and quantization dispatches.
+  and dependency-aware slope allocation. CUDA and Metal can produce the exact
+  candidate sets on device; CUDA entropy writing remains serial within each
+  code block.
 - Makes bounded classic JPEG 2000 and HTJ2K row decode through 24-bit component
   precision parse the tile graph once per row operation and reuse it across
   stripes while retaining the parsed metadata in the aggregate allocation
