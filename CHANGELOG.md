@@ -36,7 +36,9 @@ and stale roadmap entries have been removed from the public documentation set.
   exact cleanup/SigProp/MagRef byte boundaries, per-pass distortion scoring,
   and dependency-aware slope allocation. CUDA and Metal can produce the exact
   candidate sets on device; CUDA entropy writing remains serial within each
-  code block.
+  code block. Each selected HT set is emitted atomically in the layer of its
+  final selected pass so external decoders retain an unambiguous cleanup
+  boundary.
 - Makes bounded classic JPEG 2000 and HTJ2K row decode through 24-bit component
   precision parse the tile graph once per row operation and reuse it across
   stripes while retaining the parsed metadata in the aggregate allocation

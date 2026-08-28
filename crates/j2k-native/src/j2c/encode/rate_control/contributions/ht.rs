@@ -28,9 +28,13 @@ fn ht_layer_selection(
     segment_layers: &[usize],
     layer_idx: usize,
 ) -> NativeEncodePipelineResult<HtLayerSelection> {
-    let has_cleanup = segment_layers.first() == Some(&layer_idx);
-    let has_sigprop = encoded.num_coding_passes > 1 && segment_layers.get(1) == Some(&layer_idx);
-    let has_magref = layout.split_refinement && segment_layers.get(2) == Some(&layer_idx);
+    // Emit one selected HT set atomically in the layer containing its final
+    // selected pass. This keeps the cleanup boundary unambiguous for external
+    // decoders while different code-blocks can still enter different layers.
+    let set_layer = segment_layers.last().copied();
+    let has_cleanup = set_layer == Some(layer_idx);
+    let has_sigprop = encoded.num_coding_passes > 1 && set_layer == Some(layer_idx);
+    let has_magref = layout.split_refinement && set_layer == Some(layer_idx);
     let refinement_len = usize::from(has_sigprop)
         .checked_mul(layout.sigprop_len)
         .and_then(|bytes| bytes.checked_add(usize::from(has_magref) * layout.magref_len))

@@ -2500,7 +2500,7 @@ fn ht_layer_assignment_uses_pass_slopes_without_breaking_dependencies() {
     assert_eq!(
         assignments,
         vec![0, 1],
-        "HT passes may cross layer boundaries but refinement must follow cleanup"
+        "HT pass budgeting may cross layer boundaries before atomic set emission"
     );
 }
 
@@ -2528,7 +2528,7 @@ fn ht_layer_assignment_prefers_the_highest_legal_slope() {
 }
 
 #[test]
-fn ht_layer_contributions_split_cleanup_and_refinement_across_layers() {
+fn ht_layer_contributions_emit_the_selected_ht_set_atomically() {
     let encoded = bitplane_encode::EncodedCodeBlock {
         data: vec![0x11, 0x22, 0x33, 0x44, 0x55],
         num_coding_passes: 3,
@@ -2540,21 +2540,21 @@ fn ht_layer_contributions_split_cleanup_and_refinement_across_layers() {
         ht_distortion_deltas: [1.0; 3],
     };
 
-    let contributions = ht_layer_contributions(&encoded, 2, &[0, 1]).expect("split HT layers");
+    let contributions = ht_layer_contributions(&encoded, 2, &[0, 1]).expect("layered HT set");
 
     assert_eq!(contributions.len(), 2);
-    assert_eq!(contributions[0].data, vec![0x11, 0x22, 0x33]);
-    assert_eq!(contributions[0].ht_cleanup_length, 3);
+    assert!(contributions[0].data.is_empty());
+    assert_eq!(contributions[0].ht_cleanup_length, 0);
     assert_eq!(contributions[0].ht_refinement_length, 0);
-    assert_eq!(contributions[0].num_coding_passes, 1);
-    assert_eq!(contributions[1].data, vec![0x44, 0x55]);
-    assert_eq!(contributions[1].ht_cleanup_length, 0);
+    assert_eq!(contributions[0].num_coding_passes, 0);
+    assert_eq!(contributions[1].data, encoded.data);
+    assert_eq!(contributions[1].ht_cleanup_length, 3);
     assert_eq!(contributions[1].ht_refinement_length, 2);
-    assert_eq!(contributions[1].num_coding_passes, 2);
+    assert_eq!(contributions[1].num_coding_passes, 3);
 }
 
 #[test]
-fn ht_layer_contributions_preserve_each_refinement_pass_boundary() {
+fn ht_layer_contributions_preserve_refinement_metadata_when_co_located() {
     let encoded = bitplane_encode::EncodedCodeBlock {
         data: vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
         num_coding_passes: 3,
@@ -2567,25 +2567,25 @@ fn ht_layer_contributions_preserve_each_refinement_pass_boundary() {
     };
 
     let contributions =
-        ht_layer_contributions(&encoded, 3, &[0, 1, 2]).expect("split HT pass layers");
+        ht_layer_contributions(&encoded, 3, &[0, 1, 2]).expect("layered HT pass assignment");
 
     assert_eq!(contributions.len(), 3);
-    assert_eq!(contributions[0].data, vec![0x11, 0x22, 0x33]);
-    assert_eq!(contributions[0].ht_cleanup_length, 3);
+    assert!(contributions[0].data.is_empty());
+    assert_eq!(contributions[0].ht_cleanup_length, 0);
     assert_eq!(contributions[0].ht_refinement_length, 0);
-    assert_eq!(contributions[0].num_coding_passes, 1);
-    assert_eq!(contributions[1].data, vec![0x44]);
+    assert_eq!(contributions[0].num_coding_passes, 0);
+    assert!(contributions[1].data.is_empty());
     assert_eq!(contributions[1].ht_cleanup_length, 0);
-    assert_eq!(contributions[1].ht_refinement_length, 1);
-    assert_eq!(contributions[1].num_coding_passes, 1);
-    assert_eq!(contributions[2].data, vec![0x55, 0x66]);
-    assert_eq!(contributions[2].ht_cleanup_length, 0);
-    assert_eq!(contributions[2].ht_refinement_length, 2);
-    assert_eq!(contributions[2].num_coding_passes, 1);
+    assert_eq!(contributions[1].ht_refinement_length, 0);
+    assert_eq!(contributions[1].num_coding_passes, 0);
+    assert_eq!(contributions[2].data, encoded.data);
+    assert_eq!(contributions[2].ht_cleanup_length, 3);
+    assert_eq!(contributions[2].ht_refinement_length, 3);
+    assert_eq!(contributions[2].num_coding_passes, 3);
 }
 
 #[test]
-fn htj2k_lossy_quality_layers_decode_split_refinement_layer() {
+fn htj2k_lossy_quality_layers_decode_atomic_ht_sets() {
     let width = 32;
     let height = 32;
     let pixels = gradient_u8(width, height);
