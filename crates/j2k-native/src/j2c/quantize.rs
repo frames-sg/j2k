@@ -384,7 +384,12 @@ pub(crate) fn append_openhtj2k_qfactor_step_sizes(
 )]
 fn openhtj2k_step_from_normalized_delta(mut delta: f64) -> QuantStepSize {
     let mut exponent = 0_i32;
-    while delta < 1.0 {
+    // The marker exponent saturates at 31, so any additional normalization
+    // iterations cannot affect the encoded result.
+    for _ in 0..=31 {
+        if delta >= 1.0 {
+            break;
+        }
         delta *= 2.0;
         exponent += 1;
     }
@@ -529,6 +534,24 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn openhtj2k_normalized_step_conversion_saturates_at_marker_exponent() {
+        assert_eq!(
+            openhtj2k_step_from_normalized_delta(0.75),
+            QuantStepSize {
+                exponent: 1,
+                mantissa: 1024,
+            }
+        );
+        assert_eq!(
+            openhtj2k_step_from_normalized_delta(f64::MIN_POSITIVE),
+            QuantStepSize {
+                exponent: 31,
+                mantissa: 0,
+            }
+        );
     }
 
     #[test]

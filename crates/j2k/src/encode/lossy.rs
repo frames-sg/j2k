@@ -50,28 +50,31 @@ pub(super) fn encode_cpu_lossy(
     quantization_scale: f32,
 ) -> Result<Vec<u8>, J2kError> {
     let native_options = native_lossy_options(samples, options, quantization_scale)?;
-    let encode_result = if let Some(qfactor) = options.qfactor {
-        j2k_native::encode_htj2k_with_qfactor(
-            samples.data,
-            samples.width,
-            samples.height,
-            samples.components,
-            samples.bit_depth,
-            samples.signed,
-            qfactor,
-            &native_options,
-        )
-    } else {
-        j2k_native::encode(
-            samples.data,
-            samples.width,
-            samples.height,
-            samples.components,
-            samples.bit_depth,
-            samples.signed,
-            &native_options,
-        )
-    };
+    let encode_result = options.qfactor.map_or_else(
+        || {
+            j2k_native::encode(
+                samples.data,
+                samples.width,
+                samples.height,
+                samples.components,
+                samples.bit_depth,
+                samples.signed,
+                &native_options,
+            )
+        },
+        |qfactor| {
+            j2k_native::encode_htj2k_with_qfactor(
+                samples.data,
+                samples.width,
+                samples.height,
+                samples.components,
+                samples.bit_depth,
+                samples.signed,
+                qfactor,
+                &native_options,
+            )
+        },
+    );
     encode_result.map_err(|source| {
         J2kError::from_native_encode_error_with_context(
             source,
