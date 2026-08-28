@@ -49,6 +49,12 @@ pub(crate) struct EncodedCodeBlock {
     pub(crate) ht_cleanup_length: u32,
     /// HTJ2K refinement segment length in bytes when this block uses HT coding.
     pub(crate) ht_refinement_length: u32,
+    /// Significance-propagation prefix length within the HT refinement segment.
+    pub(crate) ht_sigprop_length: u32,
+    /// Magnitude-refinement suffix length within the HT refinement segment.
+    pub(crate) ht_magref_length: u32,
+    /// Per-pass squared-error reductions used by HT post-compression rate control.
+    pub(crate) ht_distortion_deltas: [f64; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,6 +151,9 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
             num_zero_bitplanes: total_bitplanes,
             ht_cleanup_length: 0,
             ht_refinement_length: 0,
+            ht_sigprop_length: 0,
+            ht_magref_length: 0,
+            ht_distortion_deltas: [0.0; 3],
         });
     }
 
@@ -277,6 +286,9 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
         num_zero_bitplanes,
         ht_cleanup_length: 0,
         ht_refinement_length: 0,
+        ht_sigprop_length: 0,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [0.0; 3],
     })
 }
 

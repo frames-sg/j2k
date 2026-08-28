@@ -534,8 +534,11 @@ pub(crate) const J2K_HT_ENCODE_VLC_SIZE: usize = 3072 - J2K_HT_ENCODE_MEL_SIZE;
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_HT_ENCODE_MS_SIZE: usize = (16_384usize * 16).div_ceil(15);
 #[cfg(target_os = "macos")]
-pub(crate) const J2K_HT_ENCODE_BASE_OUTPUT_SIZE: usize =
-    J2K_HT_ENCODE_MS_SIZE + J2K_HT_ENCODE_MEL_SIZE + J2K_HT_ENCODE_VLC_SIZE;
+pub(crate) const J2K_HT_ENCODE_BASE_OUTPUT_SIZE: usize = J2K_HT_ENCODE_MS_SIZE
+    + J2K_HT_ENCODE_MEL_SIZE
+    + J2K_HT_ENCODE_VLC_SIZE
+    + J2K_HT_ENCODE_MAX_SAMPLES.div_ceil(8)
+    + J2K_HT_ENCODE_MAX_SAMPLES.div_ceil(7);
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_HT_ENCODE_MAX_SAMPLES: usize = 16_384;
 #[cfg(target_os = "macos")]
@@ -757,6 +760,8 @@ pub(crate) struct J2kHtEncodeParams {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) total_bitplanes: u32,
+    pub(crate) cleanup_bitplane: u32,
+    pub(crate) target_coding_passes: u32,
     pub(crate) output_capacity: u32,
 }
 
@@ -769,6 +774,8 @@ pub(crate) struct J2kHtEncodeBatchJob {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) total_bitplanes: u32,
+    pub(crate) cleanup_bitplane: u32,
+    pub(crate) target_coding_passes: u32,
     pub(crate) output_capacity: u32,
 }
 
@@ -781,9 +788,9 @@ pub(crate) struct J2kHtEncodeStatus {
     pub(crate) data_len: u32,
     pub(crate) num_coding_passes: u32,
     pub(crate) num_zero_bitplanes: u32,
-    pub(crate) reserved0: u32,
-    pub(crate) reserved1: u32,
-    pub(crate) reserved2: u32,
+    pub(crate) cleanup_length: u32,
+    pub(crate) sigprop_length: u32,
+    pub(crate) magref_length: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1117,7 +1124,7 @@ mod gpu_readback_abi_tests {
             offset_of!(J2kClassicTier1PassPlanCounters, raw_bits_by_pass),
             256
         );
-        assert_eq!(offset_of!(J2kHtEncodeStatus, reserved2), 28);
+        assert_eq!(offset_of!(J2kHtEncodeStatus, magref_length), 28);
         assert_eq!(
             offset_of!(J2kPacketEncodeStatus, payload_copy_large_jobs),
             28

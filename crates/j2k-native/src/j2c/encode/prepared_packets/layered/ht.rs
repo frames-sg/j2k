@@ -15,6 +15,7 @@ use super::state::LayeredRateControlState;
 
 mod prepare;
 use prepare::try_encode_layered_ht_output;
+pub(super) use prepare::try_select_tile_ht_candidates;
 
 #[derive(Clone, Copy)]
 pub(super) struct LayeredHtContext<'a, 'session> {
@@ -55,7 +56,7 @@ pub(super) fn encode_layered_ht_subband(
     let mut output = try_encode_layered_ht_output(
         subband,
         layered_subband,
-        rate_control.owner_bytes()?,
+        rate_control,
         context,
         tracker,
         accelerator,
@@ -68,6 +69,9 @@ pub(super) fn encode_layered_ht_subband(
             num_zero_bitplanes: block.num_zero_bitplanes,
             ht_cleanup_length: block.ht_cleanup_length,
             ht_refinement_length: block.ht_refinement_length,
+            ht_sigprop_length: block.ht_sigprop_length,
+            ht_magref_length: block.ht_magref_length,
+            ht_distortion_deltas: block.ht_distortion_deltas,
         };
         let current_payload_bytes = encoded.data.capacity();
         let other_ht_payload_bytes = output
@@ -194,6 +198,7 @@ fn ht_segment_layers(
                 block_index: rate_control.ht_block_index,
                 segment_index: segment_idx,
                 rate: ht_segment_rate(encoded, segment_idx)?,
+                distortion_delta: encoded.ht_distortion_deltas[segment_idx],
             });
         rate_control.ht_locations.push(HtSegmentLocation {
             packet_idx: context.packet_idx,

@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::error::err;
+use crate::error::{err, ValidationError};
 use crate::j2c::{self, Header};
 use crate::jp2::colr::EnumeratedColorspace;
 use crate::jp2::{self, DecodedImage, ImageBoxes};
@@ -123,6 +123,19 @@ pub struct Image<'a> {
     pub(crate) color_space: ColorSpace,
 }
 
+/// Scoped region decoder that retains one parsed tile graph across calls.
+///
+/// This implementation-facing session is used by bounded row decode so each
+/// stripe repeats only the ROI decode work, not codestream tile parsing.
+#[doc(hidden)]
+pub struct PreparedRegionDecoder<'image, 'context, 'a> {
+    image: &'image Image<'a>,
+    decoder_context: &'context mut DecoderContext<'a>,
+    tiles: j2c::ParsedTiles<'a>,
+    retained_image_bytes: usize,
+    retained_session_bytes: usize,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ImageSource<'a> {
     encoded_input: &'a [u8],
@@ -165,6 +178,35 @@ impl ImageProperties {
 }
 
 impl<'a> Image<'a> {
+    /// Parse and retain the tile graph for repeated region decode calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tile parsing or aggregate allocation validation fails.
+    #[doc(hidden)]
+    pub fn prepare_region_decoder_with_context<'image, 'context>(
+        &'image self,
+        decoder_context: &'context mut DecoderContext<'a>,
+    ) -> Result<PreparedRegionDecoder<'image, 'context, 'a>> {
+        let retained_image_bytes = self.retained_metadata_bytes()?;
+        let tiles = j2c::prepare_region_tiles(
+            self.codestream,
+            &self.header,
+            retained_image_bytes,
+            decoder_context,
+        )?;
+        let retained_session_bytes = retained_image_bytes
+            .checked_add(tiles.metadata_owner_bytes())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Ok(PreparedRegionDecoder {
+            image: self,
+            decoder_context,
+            tiles,
+            retained_image_bytes,
+            retained_session_bytes,
+        })
+    }
+
     pub(crate) fn from_parsed_parts(
         source: ImageSource<'a>,
         header: Header<'a>,
@@ -753,7 +795,6 @@ impl<'a> Image<'a> {
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedImage<'ctx, '_>> {
-        let settings = &self.settings;
         let mut ht_decoder = ht_decoder;
         decoder_context.set_output_region(output_region);
         decoder_context.set_round_irreversible_output(round_irreversible_output);
@@ -767,6 +808,15 @@ impl<'a> Image<'a> {
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);
         decode_result?;
+        self.finish_decoded_image(decoder_context, retained_baseline_bytes)
+    }
+
+    fn finish_decoded_image<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+        retained_baseline_bytes: usize,
+    ) -> Result<DecodedImage<'ctx, '_>> {
+        let settings = &self.settings;
         let mut decoded_image = DecodedImage {
             decoded_components: &mut decoder_context.tile_decode_context.channel_data,
             boxes: &self.boxes,
@@ -797,5 +847,45 @@ impl<'a> Image<'a> {
             .bit_depth;
         convert_color_space(&mut decoded_image, bit_depth)?;
         Ok(decoded_image)
+    }
+}
+
+impl PreparedRegionDecoder<'_, '_, '_> {
+    /// Decode one source-coordinate region using the retained tile graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region, component precision, or codestream is invalid.
+    pub fn decode_region_components(
+        &mut self,
+        roi: (u32, u32, u32, u32),
+    ) -> Result<DecodedComponents<'_>> {
+        validate_roi((self.image.width(), self.image.height()), roi)?;
+        self.image.validate_component_plane_precision()?;
+        self.decoder_context.set_output_region(Some(roi));
+        self.decoder_context.set_round_irreversible_output(false);
+        let decode_result = j2c::decode_preparsed(
+            &self.image.header,
+            self.retained_image_bytes,
+            &self.tiles,
+            self.decoder_context,
+        );
+        self.decoder_context.set_output_region(None);
+        decode_result?;
+        let (_x, _y, width, height) = roi;
+        let decoded_image = self
+            .image
+            .finish_decoded_image(self.decoder_context, self.retained_session_bytes)?;
+        let DecodedImage {
+            decoded_components,
+            boxes: _,
+        } = decoded_image;
+        self.image
+            .try_borrow_component_planes_with_retained_baseline(
+                decoded_components.as_slice(),
+                decoded_components.capacity(),
+                (width, height),
+                self.retained_session_bytes,
+            )
     }
 }

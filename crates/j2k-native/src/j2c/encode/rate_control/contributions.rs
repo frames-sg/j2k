@@ -21,6 +21,7 @@ pub(in crate::j2c::encode) fn ht_segment_count(
     match encoded.num_coding_passes {
         0 => 0,
         1 => 1,
+        3 if encoded.ht_sigprop_length > 0 && encoded.ht_magref_length > 0 => 3,
         _ => 2,
     }
 }
@@ -31,6 +32,8 @@ pub(in crate::j2c::encode) fn ht_segment_rate(
 ) -> NativeEncodePipelineResult<u64> {
     match segment_idx {
         0 if encoded.num_coding_passes > 0 => Ok(u64::from(encoded.ht_cleanup_length)),
+        1 if ht_segment_count(encoded) == 3 => Ok(u64::from(encoded.ht_sigprop_length)),
+        2 if ht_segment_count(encoded) == 3 => Ok(u64::from(encoded.ht_magref_length)),
         1 if encoded.num_coding_passes > 1 => Ok(u64::from(encoded.ht_refinement_length)),
         _ => Err(NativeEncodePipelineError::internal_invariant(
             "HTJ2K segment index out of range",

@@ -244,6 +244,7 @@ fn encode_ht_serial(
 ) -> NativeEncodePipelineResult<()> {
     let mut packet_payload_bytes = 0usize;
     let mut job_index = 0usize;
+    let mut workspace = None;
     for (subband, precinct) in prepared_subbands.iter().zip(precincts) {
         for _block in &subband.code_blocks {
             let job = jobs.get(job_index).ok_or_else(|| {
@@ -251,7 +252,7 @@ fn encode_ht_serial(
             })?;
             let wave_fixed = [fixed[0], fixed[1], fixed[2], fixed[3], packet_payload_bytes];
             check_ht_wave(core::slice::from_ref(job), tracker, &wave_fixed, 1)?;
-            let encoded = encode_ht_code_block_typed(job, accelerator)?;
+            let encoded = encode_ht_code_block_typed(job, accelerator, &mut workspace)?;
             packet_payload_bytes = checked_add_bytes(
                 packet_payload_bytes,
                 encoded.data.capacity(),
@@ -575,6 +576,7 @@ fn total_block_count(
 fn encode_ht_code_block_typed(
     job: &crate::J2kHtCodeBlockEncodeJob<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
+    workspace: &mut Option<ht_block_encode::HtEncodeWorkspace>,
 ) -> NativeEncodePipelineResult<bitplane_encode::EncodedCodeBlock> {
     if let Some(encoded) = accelerator.encode_ht_code_block(*job).map_err(|source| {
         crate::EncodeError::Accelerator {
@@ -584,13 +586,22 @@ fn encode_ht_code_block_typed(
     })? {
         return validated_ht_output(encoded, job);
     }
-    Ok(ht_block_encode::try_encode_code_block_with_passes(
-        job.coefficients,
-        job.width,
-        job.height,
-        job.total_bitplanes,
-        job.target_coding_passes,
-    )?)
+    if workspace.is_none() {
+        *workspace = Some(ht_block_encode::HtEncodeWorkspace::try_new()?);
+    }
+    let workspace = workspace
+        .as_mut()
+        .ok_or_else(|| NativeEncodePipelineError::internal_invariant("HT workspace is missing"))?;
+    Ok(
+        ht_block_encode::try_encode_code_block_with_passes_in_workspace(
+            job.coefficients,
+            job.width,
+            job.height,
+            job.total_bitplanes,
+            job.target_coding_passes,
+            workspace,
+        )?,
+    )
 }
 
 fn encode_tier1_code_block_accounted(

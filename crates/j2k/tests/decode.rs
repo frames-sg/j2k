@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless_components, DecodeSettings as FacadeDecodeSettings,
+    encode_j2k_lossless, encode_j2k_lossless_components, DecodeSettings as FacadeDecodeSettings,
     EncodeBackendPreference, J2kBlockCodingMode, J2kCodec, J2kComponentPlane, J2kContext,
     J2kDecodeWarning, J2kDecoder, J2kError, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
-    J2kLosslessEncodeOptions, J2kRowDecodeOptions, J2kView, ReversibleTransform,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kRowDecodeOptions, J2kView,
+    ReversibleTransform,
 };
 use j2k_core::{
     BufferError, CodecContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
@@ -1406,6 +1407,77 @@ fn decode_rows_u16_matches_full_gray16_decode() {
         .expect("row decode");
     let collected: Vec<u8> = sink.rows.into_iter().flat_map(u16::to_le_bytes).collect();
     assert_eq!(collected, full);
+}
+
+#[test]
+fn decode_rows_u16_matches_full_decode_for_signed_samples() {
+    for (pixels, bit_depth) in [
+        (
+            [-10_i8, -1, 0, 12]
+                .into_iter()
+                .map(|sample| sample.to_le_bytes()[0])
+                .collect::<Vec<_>>(),
+            8,
+        ),
+        (
+            [-300_i16, -1, 0, 300]
+                .into_iter()
+                .flat_map(i16::to_le_bytes)
+                .collect::<Vec<_>>(),
+            16,
+        ),
+    ] {
+        let codestream = encode_signed_codestream(&pixels, 2, 2, bit_depth);
+        let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+        let mut full = [0_u8; 8];
+        decoder
+            .decode_into(&mut full, 4, PixelFormat::Gray16)
+            .expect("full signed decode");
+
+        let mut sink = CollectRowsU16::default();
+        decoder
+            .decode_rows_u16_bounded(&mut sink, J2kRowDecodeOptions::new(1))
+            .expect("signed row decode");
+        let rows = sink
+            .rows
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(rows, full);
+    }
+}
+
+#[test]
+fn decode_rows_u16_preserves_exact_high_bit_fallback() {
+    let pixels = [0_u32, 1, 0x00ff_ffff, 0x1fff_ffff]
+        .into_iter()
+        .flat_map(unsigned_29_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 2, 2, 1, 29, false).expect("29-bit samples");
+    let codestream = encode_j2k_lossless(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_cpu_only_backend()
+            .with_max_decomposition_levels(Some(0)),
+    )
+    .expect("29-bit encode")
+    .codestream;
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut full = [0_u8; 8];
+    decoder
+        .decode_into(&mut full, 4, PixelFormat::Gray16)
+        .expect("full high-bit decode");
+
+    let mut sink = CollectRowsU16::default();
+    decoder
+        .decode_rows_u16_bounded(&mut sink, J2kRowDecodeOptions::new(1))
+        .expect("high-bit row decode");
+    let rows = sink
+        .rows
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(rows, full);
 }
 
 #[test]

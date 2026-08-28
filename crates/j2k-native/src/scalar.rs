@@ -26,10 +26,11 @@ pub use self::classic_decode::{
 mod encode;
 pub use self::encode::{
     collect_ht_cleanup_encode_distribution, encode_ht_code_block_scalar,
-    encode_ht_code_block_scalar_with_passes, encode_j2k_code_block_scalar_with_style,
-    encode_j2k_packetization_scalar, forward_dwt53_reference, forward_dwt97_reference,
-    forward_ict_reference, forward_rct_reference, pack_j2k_code_block_scalar_from_tier1_tokens,
-    quantize_reversible_reference, quantize_subband_reference, try_deinterleave_reference,
+    encode_ht_code_block_scalar_with_passes, encode_ht_code_block_scalar_with_passes_and_workspace,
+    encode_j2k_code_block_scalar_with_style, encode_j2k_packetization_scalar,
+    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference, forward_rct_reference,
+    pack_j2k_code_block_scalar_from_tier1_tokens, quantize_reversible_reference,
+    quantize_subband_reference, try_deinterleave_reference, HtCodeBlockEncodeWorkspace,
 };
 mod ht_decode;
 pub use self::ht_decode::{

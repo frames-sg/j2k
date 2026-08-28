@@ -95,6 +95,7 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
         reversible: bool,
         guard_bits: u8,
         options: &EncodeOptions,
+        component: usize,
     ) -> NativeEncodePipelineResult<Vec<QuantStepSize>> {
         let count = usize::from(num_levels)
             .checked_mul(3)
@@ -103,15 +104,21 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
                 what: "single-tile quantization step count",
             })?;
         let mut steps = self.try_vec(count, "single-tile quantization steps")?;
-        quantize::append_step_sizes_with_irreversible_profile(
-            &mut steps,
-            bit_depth,
-            num_levels,
-            reversible,
-            guard_bits,
-            options.irreversible_quantization_scale,
-            options.irreversible_quantization_subband_scales,
-        );
+        if let Some(qfactor) = self.session.openhtj2k_qfactor() {
+            quantize::append_openhtj2k_qfactor_step_sizes(
+                &mut steps, bit_depth, num_levels, qfactor, component,
+            )?;
+        } else {
+            quantize::append_step_sizes_with_irreversible_profile(
+                &mut steps,
+                bit_depth,
+                num_levels,
+                reversible,
+                guard_bits,
+                options.irreversible_quantization_scale,
+                options.irreversible_quantization_subband_scales,
+            );
+        }
         Ok(steps)
     }
 
@@ -127,13 +134,14 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
             component_info.len(),
             "single-tile component step owners",
         )?;
-        for info in component_info {
+        for (component, info) in component_info.iter().enumerate() {
             components.push(self.try_step_sizes(
                 info.bit_depth,
                 num_levels,
                 reversible,
                 guard_bits,
                 options,
+                component,
             )?);
         }
         Ok(components)

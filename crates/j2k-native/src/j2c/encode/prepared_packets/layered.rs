@@ -2,6 +2,7 @@
 
 //! Fallible multi-layer Tier-1 and rate-control state machine.
 
+use super::super::rate_control::classic_rate_target_tolerance;
 use super::super::tier1_allocation::{prepared_packets_ownership, Tier1PhaseTracker};
 use super::super::{
     EncodeProgressionOrder, J2kEncodeStageAccelerator, J2kPacketizationPacketDescriptor,
@@ -70,12 +71,24 @@ fn encode_prepared_resolution_packets_layered_accounted(
     let source_bytes = source.total()?;
     let packet_count = prepared_packets.len();
     let mut tracker = Tier1PhaseTracker::new(session, retained_base_bytes);
+    let selected_ht_candidates = if let Some(&target) = quality_layer_byte_targets.last() {
+        ht::try_select_tile_ht_candidates(
+            &prepared_packets,
+            target.saturating_add(classic_rate_target_tolerance(target)),
+            source_bytes,
+            &mut tracker,
+            accelerator,
+        )?
+    } else {
+        Vec::new()
+    };
+    let mut rate_control =
+        LayeredRateControlState::try_with_selected_ht_candidates(selected_ht_candidates)?;
     let (mut layered_packets, _) = tracker.try_vec::<LayeredPreparedPacket>(
         packet_count,
-        [source_bytes],
+        [source_bytes, rate_control.owner_bytes()?],
         "layered packet owners",
     )?;
-    let mut rate_control = LayeredRateControlState::default();
 
     for prepared_packet in prepared_packets {
         append_layered_prepared_packet(
@@ -93,6 +106,7 @@ fn encode_prepared_resolution_packets_layered_accounted(
             accelerator,
         )?;
     }
+    rate_control.ensure_selected_ht_candidates_consumed()?;
 
     let layered_packet_capacity = layered_packets.capacity();
     apply_budget_assignments(

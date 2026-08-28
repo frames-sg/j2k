@@ -443,6 +443,47 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn metal_htj2k_quality_layers_use_native_candidates_and_match_scalar_output() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let pixels: Vec<u8> = (0..128 * 128)
+        .map(|idx| u8::try_from((idx * 29 + idx / 7 + 11) & 0xFF).expect("masked pixel"))
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 128, 128, 1, 8, false).expect("valid samples");
+    let options = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::Auto)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(0))
+        .with_quality_layers(vec![
+            J2kQualityLayer::new(J2kRateTarget::Bytes(512)),
+            J2kQualityLayer::new(J2kRateTarget::Bytes(20_000)),
+        ])
+        .with_validation(J2kEncodeValidation::CpuRoundTrip);
+    let scalar = j2k::encode_j2k_lossy(
+        samples,
+        &options
+            .clone()
+            .with_backend(EncodeBackendPreference::CpuOnly),
+    )
+    .expect("scalar bounded HTJ2K encode");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let encoded =
+        encode_j2k_lossy_with_accelerator(samples, &options, BackendKind::Metal, &mut accelerator)
+            .expect("hybrid Metal bounded HTJ2K encode");
+
+    assert_eq!(encoded.codestream, scalar.codestream);
+    Image::new(&encoded.codestream, &DecodeSettings::strict())
+        .expect("bounded HTJ2K codestream parses strictly")
+        .decode_native()
+        .expect("bounded HTJ2K codestream decodes strictly");
+    assert!(accelerator.quantize_subband_dispatches() > 0);
+    assert!(accelerator.ht_code_block_dispatches() > 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
     if !should_run_metal_runtime() {
         return;
@@ -940,6 +981,73 @@ fn metal_htj2k_cleanup_kernel_matches_scalar_oracle() {
     assert_eq!(gpu.data, cpu.data);
     assert_eq!(gpu.num_coding_passes, cpu.num_coding_passes);
     assert_eq!(gpu.num_zero_bitplanes, cpu.num_zero_bitplanes);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_htj2k_candidate_sets_preserve_exact_refinement_boundaries() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let coeffs: Vec<i32> = (0..64)
+        .map(|idx| {
+            let value = ((idx * 23 + 9) & 0xff) - 127;
+            if idx % 11 == 0 {
+                0
+            } else {
+                value
+            }
+        })
+        .collect();
+    let jobs = [
+        j2k::J2kHtCodeBlockSetEncodeJob {
+            coefficients: &coeffs,
+            width: 8,
+            height: 8,
+            total_bitplanes: 8,
+            cleanup_bitplane: 2,
+            target_coding_passes: 3,
+        },
+        j2k::J2kHtCodeBlockSetEncodeJob {
+            coefficients: &coeffs,
+            width: 8,
+            height: 8,
+            total_bitplanes: 8,
+            cleanup_bitplane: 1,
+            target_coding_passes: 3,
+        },
+    ];
+    let mut accelerator = MetalEncodeStageAccelerator::for_ht_code_block_encode();
+    let encoded = accelerator
+        .encode_ht_code_block_sets(&jobs)
+        .expect("Metal candidate-set dispatch")
+        .expect("Metal candidate-set output");
+
+    assert_eq!(encoded.len(), 2);
+    for (output, expected_zero_bitplanes) in encoded.iter().zip([5, 6]) {
+        assert_eq!(output.num_coding_passes, 3);
+        assert_eq!(output.num_zero_bitplanes, expected_zero_bitplanes);
+        assert!(output.cleanup_length > 0);
+        assert!(output.sigprop_length > 0);
+        assert!(output.magref_length > 0);
+        assert_eq!(
+            output.data.len(),
+            (output.cleanup_length + output.sigprop_length + output.magref_length) as usize
+        );
+    }
+    let scalar = j2k_native::encode_ht_code_block_scalar_with_passes(&coeffs, 8, 8, 8, 3)
+        .expect("scalar refinement encode");
+    assert_eq!(encoded[1].cleanup_length, scalar.cleanup_length);
+    assert_eq!(encoded[1].data, scalar.data);
+    assert_eq!(
+        encoded[1].sigprop_length + encoded[1].magref_length,
+        scalar.refinement_length
+    );
+    assert_eq!(encoded[1].num_coding_passes, scalar.num_coding_passes);
+    assert_eq!(encoded[1].num_zero_bitplanes, scalar.num_zero_bitplanes);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 1);
+    assert_eq!(accelerator.ht_candidate_set_dispatches(), 1);
 }
 
 #[cfg(target_os = "macos")]

@@ -315,6 +315,21 @@ impl<'a> Image<'a> {
         dimensions: (u32, u32),
     ) -> Result<DecodedComponents<'ctx>> {
         let retained_image_bytes = self.retained_metadata_bytes()?;
+        self.try_borrow_component_planes_with_retained_baseline(
+            components,
+            component_owner_capacity,
+            dimensions,
+            retained_image_bytes,
+        )
+    }
+
+    pub(super) fn try_borrow_component_planes_with_retained_baseline<'ctx>(
+        &self,
+        components: &'ctx [ComponentData],
+        component_owner_capacity: usize,
+        dimensions: (u32, u32),
+        retained_image_bytes: usize,
+    ) -> Result<DecodedComponents<'ctx>> {
         let mut budget = NativeOutputBudget::for_decoded_channels(
             retained_image_bytes,
             components,

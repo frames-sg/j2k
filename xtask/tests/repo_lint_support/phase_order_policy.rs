@@ -55,9 +55,18 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
 fn native_context_and_tile_owner_handoffs_remain_transactional() {
     let decode = read("crates/j2k-native/src/j2c/decode.rs");
     FunctionCalls::parse("native decode", &decode, "decode").assert_ordered(
-        "retained component accounting before parse and reset",
-        &["prepare_reused_decode_baseline", "tile::parse", "reset"],
+        "retained component accounting before parse and parsed-owner handoff",
+        &[
+            "prepare_reused_decode_baseline",
+            "tile::parse",
+            "decode_parsed_tiles",
+        ],
     );
+    FunctionCalls::parse("native parsed tile decode", &decode, "decode_parsed_tiles")
+        .assert_ordered(
+            "parsed tile owners reset the context before tile execution",
+            &["reset", "decode_tile"],
+        );
 
     let tile = read("crates/j2k-native/src/j2c/tile.rs");
     FunctionCalls::parse("native tile parser", &tile, "parse").assert_ordered(

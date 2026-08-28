@@ -403,6 +403,12 @@ pub struct J2kLossyEncodeOptions {
     pub rate_target: Option<J2kRateTarget>,
     /// Cumulative quality layer targets.
     pub quality_layers: Vec<J2kQualityLayer>,
+    /// Optional OpenHTJ2K-compatible visual quality factor (`1..=100`).
+    ///
+    /// This is available only with high-throughput block coding and cannot be
+    /// combined with byte, bits-per-pixel, or PSNR targets. `None` preserves
+    /// the established quantization and rate-control behavior.
+    pub qfactor: Option<u8>,
     /// Optional tile width and height.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
@@ -428,6 +434,7 @@ impl Default for J2kLossyEncodeOptions {
             max_decomposition_levels: None,
             rate_target: None,
             quality_layers: Vec::new(),
+            qfactor: None,
             tile_size: None,
             tile_part_packet_limit: None,
             precinct_exponents: Vec::new(),
@@ -497,6 +504,13 @@ impl J2kLossyEncodeOptions {
     #[must_use]
     pub fn with_quality_layers(mut self, quality_layers: Vec<J2kQualityLayer>) -> Self {
         self.quality_layers = quality_layers;
+        self
+    }
+
+    /// Return options with an OpenHTJ2K-compatible visual quality factor.
+    #[must_use]
+    pub fn with_qfactor(mut self, qfactor: Option<u8>) -> Self {
+        self.qfactor = qfactor;
         self
     }
 

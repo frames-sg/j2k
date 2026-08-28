@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kForwardDwt53Job, J2kForwardDwt53Output,
-    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedHtJ2kCodeBlockSet, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeStageError, J2kForwardDwt53Job,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
+    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtCodeBlockSetEncodeJob, J2kHtSubbandEncodeJob,
+    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
+    J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_j2k_engine::{CudaHtj2kEncodeResources, CudaJ2kQuantizeJob};
@@ -22,8 +23,9 @@ use crate::profile;
 use super::cuda_component_count_u8;
 #[cfg(feature = "cuda-runtime")]
 use super::htj2k::{
-    cuda_encode_ht_code_block, cuda_encode_ht_code_blocks, cuda_encode_ht_subband,
-    cuda_encode_htj2k_tile_body, cuda_htj2k_encode_tables, encoded_ht_code_blocks_from_cuda,
+    cuda_encode_ht_code_block, cuda_encode_ht_code_block_sets, cuda_encode_ht_code_blocks,
+    cuda_encode_ht_subband, cuda_encode_htj2k_tile_body, cuda_htj2k_encode_tables,
+    encoded_ht_code_block_sets_from_cuda, encoded_ht_code_blocks_from_cuda,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::packetization::{
@@ -43,6 +45,8 @@ use super::stage_error::{adapter_error, arithmetic_overflow, CudaStageResult};
 mod dwt_output;
 #[cfg(feature = "cuda-runtime")]
 pub(super) use self::dwt_output::{cuda_dwt53_output_to_j2k, cuda_dwt97_output_to_j2k};
+#[cfg(test)]
+mod diagnostics;
 
 macro_rules! emit_cuda_encode_route {
     ($(($key:expr, $value:expr)),+ $(,)?) => {{
@@ -296,126 +300,6 @@ impl CudaEncodeStageAccelerator {
             dispatch_count: self.dispatch_report().total(),
             backend: encoded.backend,
         }
-    }
-
-    /// Number of forward RCT attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn forward_rct_attempts(&self) -> usize {
-        self.forward_rct_attempts
-    }
-
-    /// Number of forward ICT attempts observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_ict_attempts(&self) -> usize {
-        self.forward_ict_attempts
-    }
-
-    /// Number of forward 5/3 DWT attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn forward_dwt53_attempts(&self) -> usize {
-        self.forward_dwt53_attempts
-    }
-
-    /// Number of forward 9/7 DWT attempts observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_dwt97_attempts(&self) -> usize {
-        self.forward_dwt97_attempts
-    }
-
-    /// Number of resident HTJ2K tile-body attempts observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn htj2k_tile_attempts(&self) -> usize {
-        self.htj2k_tile_attempts
-    }
-
-    /// Number of sub-band quantization attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn quantize_subband_attempts(&self) -> usize {
-        self.quantize_subband_attempts
-    }
-
-    /// Number of classic Tier-1 code-block attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn tier1_code_block_attempts(&self) -> usize {
-        self.tier1_code_block_attempts
-    }
-
-    /// Number of HT code-block attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn ht_code_block_attempts(&self) -> usize {
-        self.ht_code_block_attempts
-    }
-
-    /// Number of HT sub-band attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn ht_subband_attempts(&self) -> usize {
-        self.ht_subband_attempts
-    }
-
-    /// Number of packetization attempts observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn packetization_attempts(&self) -> usize {
-        self.packetization_attempts
-    }
-
-    /// Number of deinterleave CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn deinterleave_dispatches(&self) -> usize {
-        self.deinterleave_dispatches
-    }
-
-    /// Number of forward RCT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_rct_dispatches(&self) -> usize {
-        self.forward_rct_dispatches
-    }
-
-    /// Number of forward ICT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_ict_dispatches(&self) -> usize {
-        self.forward_ict_dispatches
-    }
-
-    /// Number of forward 5/3 DWT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_dwt53_dispatches(&self) -> usize {
-        self.forward_dwt53_dispatches
-    }
-
-    /// Number of forward 9/7 DWT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn forward_dwt97_dispatches(&self) -> usize {
-        self.forward_dwt97_dispatches
-    }
-
-    /// Number of resident HTJ2K tile-body CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn htj2k_tile_dispatches(&self) -> usize {
-        self.htj2k_tile_dispatches
-    }
-
-    /// Number of sub-band quantization CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn quantize_subband_dispatches(&self) -> usize {
-        self.quantize_subband_dispatches
-    }
-
-    /// Number of HT code-block CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn ht_code_block_dispatches(&self) -> usize {
-        self.ht_code_block_dispatches
-    }
-
-    /// Number of HT sub-band CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(all(test, feature = "cuda-runtime"))]
-    pub(crate) fn ht_subband_dispatches(&self) -> usize {
-        self.ht_subband_dispatches
-    }
-
-    /// Number of packetization CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
-    pub(crate) fn packetization_dispatches(&self) -> usize {
-        self.packetization_dispatches
     }
 }
 
@@ -900,6 +784,39 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             ("decision", "cpu_fallback"),
             ("reason", "cuda_unavailable"),
         );
+        Ok(None)
+    }
+
+    fn encode_ht_code_block_sets(
+        &mut self,
+        jobs: &[J2kHtCodeBlockSetEncodeJob<'_>],
+    ) -> CudaStageResult<Option<Vec<EncodedHtJ2kCodeBlockSet>>> {
+        self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
+        #[cfg(feature = "cuda-runtime")]
+        if let Some(context) = self.cuda_context()? {
+            let resources = self.cuda_encode_resources(&context)?;
+            let Some(encoded) = cuda_encode_ht_code_block_sets(&context, resources.as_ref(), jobs)?
+            else {
+                return Ok(None);
+            };
+            let dispatches = encoded.execution().kernel_dispatches();
+            let ht_encode_us = encoded.stage_timings().ht_encode_us;
+            let outputs = encoded_ht_code_block_sets_from_cuda(encoded)?;
+            self.ht_code_block_dispatches =
+                self.ht_code_block_dispatches.saturating_add(dispatches);
+            if self.collect_profile {
+                self.ht_encode_us = self.ht_encode_us.saturating_add(ht_encode_us);
+            }
+            emit_cuda_encode_route!(
+                ("op", "encode_ht_code_block_sets"),
+                ("decision", "cuda_dispatch"),
+                ("jobs", jobs.len()),
+                ("dispatches", dispatches),
+            );
+            return Ok(Some(outputs));
+        }
+        #[cfg(not(feature = "cuda-runtime"))]
+        let _ = jobs;
         Ok(None)
     }
 

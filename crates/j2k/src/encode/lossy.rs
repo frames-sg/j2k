@@ -49,17 +49,30 @@ pub(super) fn encode_cpu_lossy(
     options: &J2kLossyEncodeOptions,
     quantization_scale: f32,
 ) -> Result<Vec<u8>, J2kError> {
-    let options = native_lossy_options(samples, options, quantization_scale)?;
-    j2k_native::encode(
-        samples.data,
-        samples.width,
-        samples.height,
-        samples.components,
-        samples.bit_depth,
-        samples.signed,
-        &options,
-    )
-    .map_err(|source| {
+    let native_options = native_lossy_options(samples, options, quantization_scale)?;
+    let encode_result = if let Some(qfactor) = options.qfactor {
+        j2k_native::encode_htj2k_with_qfactor(
+            samples.data,
+            samples.width,
+            samples.height,
+            samples.components,
+            samples.bit_depth,
+            samples.signed,
+            qfactor,
+            &native_options,
+        )
+    } else {
+        j2k_native::encode(
+            samples.data,
+            samples.width,
+            samples.height,
+            samples.components,
+            samples.bit_depth,
+            samples.signed,
+            &native_options,
+        )
+    };
+    encode_result.map_err(|source| {
         J2kError::from_native_encode_error_with_context(
             source,
             "native JPEG 2000 lossy encode failed",
@@ -283,6 +296,24 @@ pub(super) fn lossy_quality_layer_byte_targets(
 }
 
 pub(super) fn validate_lossy_options(options: &J2kLossyEncodeOptions) -> Result<(), J2kError> {
+    if let Some(qfactor) = options.qfactor {
+        if !(1..=100).contains(&qfactor) {
+            return Err(J2kError::Unsupported(Unsupported {
+                what: "OpenHTJ2K Qfactor must be in 1..=100",
+            }));
+        }
+        if options.block_coding_mode != J2kBlockCodingMode::HighThroughput {
+            return Err(J2kError::Unsupported(Unsupported {
+                what: "OpenHTJ2K Qfactor requires high-throughput block coding",
+            }));
+        }
+        if options.rate_target.is_some() || !options.quality_layers.is_empty() {
+            return Err(J2kError::Unsupported(Unsupported {
+                what:
+                    "OpenHTJ2K Qfactor cannot be combined with lossy rate or quality-layer targets",
+            }));
+        }
+    }
     if options.quality_layers.len() > 32 {
         return Err(J2kError::Unsupported(Unsupported {
             what: "JPEG 2000 lossy encode supports 1-32 quality layers",

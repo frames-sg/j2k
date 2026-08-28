@@ -9,7 +9,51 @@ use super::cleanup::{
     encode_cleanup_segment_from_coefficients,
 };
 use super::distribution::collect_encode_distribution;
-use super::facade::{encode_code_block, encode_code_block_view, encode_code_block_with_passes};
+use super::facade::{
+    encode_code_block, encode_code_block_view, encode_code_block_with_passes,
+    select_tile_code_block_candidates, try_encode_code_block_candidate_sets_with_workspace,
+    try_encode_code_block_set_with_workspace, try_encode_code_block_with_passes_in_workspace,
+    HtCandidateRange,
+};
+use super::workspace::HtEncodeWorkspace;
+
+#[test]
+fn reusable_workspace_is_byte_exact_across_shrinking_and_growing_blocks() {
+    let large = (0_i32..64 * 64)
+        .map(|index| match index % 5 {
+            0 => 0,
+            1 => index & 255,
+            2 => -(index & 127),
+            3 => 31 - (index & 63),
+            _ => index & 7,
+        })
+        .collect::<Vec<_>>();
+    let small = [0, 3, -2, 1];
+    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+
+    for (coefficients, width, height) in [
+        (large.as_slice(), 64, 64),
+        (small.as_slice(), 2, 2),
+        (large.as_slice(), 64, 64),
+    ] {
+        let expected = encode_code_block_with_passes(coefficients, width, height, 10, 1)
+            .expect("fresh-workspace encode");
+        let actual = try_encode_code_block_with_passes_in_workspace(
+            coefficients,
+            width,
+            height,
+            10,
+            1,
+            &mut workspace,
+        )
+        .expect("reused-workspace encode");
+        assert_eq!(actual.data, expected.data);
+        assert_eq!(actual.num_coding_passes, expected.num_coding_passes);
+        assert_eq!(actual.num_zero_bitplanes, expected.num_zero_bitplanes);
+        assert_eq!(actual.ht_cleanup_length, expected.ht_cleanup_length);
+        assert_eq!(actual.ht_refinement_length, expected.ht_refinement_length);
+    }
+}
 
 #[test]
 fn ht_strided_block_is_byte_exact_for_cleanup_and_refinement_passes() {
@@ -230,4 +274,129 @@ fn test_encode_cleanup_only_nonzero_block() {
     assert_eq!(encoded.num_coding_passes, 1);
     assert_eq!(encoded.num_zero_bitplanes, 4);
     assert!(encoded.data.len() >= 2);
+}
+
+#[test]
+fn explicit_cleanup_bitplane_selects_the_requested_ht_set() {
+    let coefficients = [0, 7, -6, 3];
+    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+
+    let coarse =
+        try_encode_code_block_set_with_workspace(&coefficients, 2, 2, 8, 2, 3, &mut workspace)
+            .expect("encode p=2 HT set");
+    let fine =
+        try_encode_code_block_set_with_workspace(&coefficients, 2, 2, 8, 1, 3, &mut workspace)
+            .expect("encode p=1 HT set");
+
+    assert_eq!(coarse.num_zero_bitplanes, 5);
+    assert_eq!(fine.num_zero_bitplanes, 6);
+    assert_eq!(coarse.num_coding_passes, 3);
+    assert_eq!(fine.num_coding_passes, 3);
+    assert_eq!(
+        coarse.ht_sigprop_length + coarse.ht_magref_length,
+        coarse.ht_refinement_length
+    );
+    assert_eq!(
+        fine.ht_sigprop_length + fine.ht_magref_length,
+        fine.ht_refinement_length
+    );
+    assert!(coarse.ht_distortion_deltas.iter().all(|delta| *delta > 0.0));
+    assert!(fine.ht_distortion_deltas.iter().all(|delta| *delta > 0.0));
+    assert_ne!(coarse.data, fine.data);
+}
+
+#[test]
+fn explicit_cleanup_bitplane_rejects_impossible_refinement() {
+    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+    let error = try_encode_code_block_set_with_workspace(&[1], 1, 1, 1, 0, 2, &mut workspace)
+        .expect_err("p=0 has no lower refinement bitplane");
+
+    assert!(matches!(error, crate::EncodeError::InvalidInput { .. }));
+}
+
+#[test]
+fn bounded_candidate_generation_produces_two_consecutive_ht_sets() {
+    let coefficients = [0, 7, -6, 3];
+    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+
+    let candidates =
+        try_encode_code_block_candidate_sets_with_workspace(&coefficients, 2, 2, 8, &mut workspace)
+            .expect("encode bounded HT candidates");
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].num_zero_bitplanes, 5);
+    assert_eq!(candidates[1].num_zero_bitplanes, 6);
+    assert!(candidates
+        .iter()
+        .all(|candidate| candidate.num_coding_passes == 3));
+}
+
+#[test]
+fn tile_candidate_selection_spends_the_shared_budget_on_the_best_block() {
+    let candidates = [
+        synthetic_candidate(2, 4, [10.0, 10.0, 0.0]),
+        synthetic_candidate(2, 1, [10.0, 100.0, 0.0]),
+    ];
+    let ranges = [
+        HtCandidateRange { start: 0, len: 1 },
+        HtCandidateRange { start: 1, len: 1 },
+    ];
+
+    let selected = select_tile_code_block_candidates(&candidates, &ranges, 5)
+        .expect("tile candidate selection");
+
+    assert_eq!(selected[0].candidate_index, 0);
+    assert_eq!(selected[0].num_coding_passes, 1);
+    assert_eq!(selected[1].candidate_index, 1);
+    assert_eq!(selected[1].num_coding_passes, 2);
+}
+
+#[test]
+fn tile_candidate_hull_can_switch_to_a_better_alternate_set() {
+    let candidates = [
+        synthetic_candidate(3, 2, [30.0, 5.0, 0.0]),
+        synthetic_candidate(6, 0, [90.0, 0.0, 0.0]),
+    ];
+    let ranges = [HtCandidateRange { start: 0, len: 2 }];
+
+    let selected = select_tile_code_block_candidates(&candidates, &ranges, 6)
+        .expect("tile candidate selection");
+
+    assert_eq!(selected[0].candidate_index, 1);
+    assert_eq!(selected[0].num_coding_passes, 1);
+}
+
+#[test]
+fn tile_candidate_selection_keeps_the_cheapest_cleanup_when_under_budget() {
+    let candidates = [
+        synthetic_candidate(5, 0, [20.0, 0.0, 0.0]),
+        synthetic_candidate(7, 0, [100.0, 0.0, 0.0]),
+    ];
+    let ranges = [HtCandidateRange { start: 0, len: 2 }];
+
+    let selected = select_tile_code_block_candidates(&candidates, &ranges, 1)
+        .expect("tile candidate selection");
+
+    assert_eq!(selected[0].candidate_index, 0);
+    assert_eq!(selected[0].num_coding_passes, 1);
+}
+
+fn synthetic_candidate(
+    cleanup_length: u32,
+    refinement_length: u32,
+    distortion: [f64; 3],
+) -> crate::j2c::bitplane_encode::EncodedCodeBlock {
+    let sigprop_length = refinement_length.min(1);
+    let magref_length = refinement_length - sigprop_length;
+    let num_coding_passes = 1 + u8::from(sigprop_length != 0) + u8::from(magref_length != 0);
+    crate::j2c::bitplane_encode::EncodedCodeBlock {
+        data: vec![0; (cleanup_length + refinement_length) as usize],
+        num_coding_passes,
+        num_zero_bitplanes: 0,
+        ht_cleanup_length: cleanup_length,
+        ht_refinement_length: refinement_length,
+        ht_sigprop_length: sigprop_length,
+        ht_magref_length: magref_length,
+        ht_distortion_deltas: distortion,
+    }
 }

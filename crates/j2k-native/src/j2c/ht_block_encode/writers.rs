@@ -38,6 +38,15 @@ impl MelEncoder {
         })
     }
 
+    pub(super) fn reset(&mut self) {
+        self.pos = 0;
+        self.remaining_bits = 8;
+        self.tmp = 0;
+        self.run = 0;
+        self.k = 0;
+        self.threshold = 1;
+    }
+
     pub(super) fn emit_bit(&mut self, bit: bool) -> Result<(), &'static str> {
         self.tmp = (self.tmp << 1) | u8::from(bit);
         self.remaining_bits -= 1;
@@ -109,6 +118,15 @@ impl VlcEncoder {
         })
     }
 
+    pub(super) fn reset(&mut self) {
+        self.pos = 1;
+        self.used_bits = 4;
+        self.tmp = 0x0F;
+        self.last_greater_than_8f = true;
+        let last = self.buffer.len() - 1;
+        self.buffer[last] = 0xFF;
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the mask is bounded by the available byte bits before packing into the VLC reservoir"
@@ -177,6 +195,13 @@ impl MagSgnEncoder {
             used_bits: 0,
             tmp: 0,
         })
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.pos = 0;
+        self.max_bits = 8;
+        self.used_bits = 0;
+        self.tmp = 0;
     }
 
     #[expect(

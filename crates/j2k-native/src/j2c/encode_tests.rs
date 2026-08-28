@@ -4,9 +4,9 @@ use super::{
     assign_classic_segment_layers_by_slope, assign_ht_segment_layers_by_budget, bitplane_encode,
     copy_code_block_coefficients, deinterleave_rgb8_unsigned_to_f32, deinterleave_to_f32,
     downcast_i64_coefficients_to_i32, encode, encode_all_ht_code_blocks_parallel,
-    encode_all_ht_code_blocks_serial_cpu, encode_htj2k, encode_precomputed_htj2k_53,
-    encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_97,
-    encode_precomputed_htj2k_97_batch_with_accelerator,
+    encode_all_ht_code_blocks_serial_cpu, encode_htj2k, encode_htj2k_with_qfactor,
+    encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_accelerator,
+    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator, encode_prepared_subbands,
     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
@@ -29,6 +29,71 @@ use super::{
 };
 use crate::{DecodeSettings, EncodeError, Image, PrequantizedHtj2k97CodeBlock};
 use alloc::{vec, vec::Vec};
+
+#[test]
+fn qfactor_encode_writes_openhtj2k_compatible_qcd_and_qcc() {
+    let mut pixels = Vec::with_capacity(64 * 64 * 3);
+    for index in 0_usize..64 * 64 {
+        let sample = u8::try_from(index & 0xff).expect("masked fixture sample fits u8");
+        pixels.extend_from_slice(&[sample, sample.wrapping_mul(3), sample.wrapping_mul(7)]);
+    }
+    let options = EncodeOptions {
+        reversible: false,
+        use_ht_block_coding: true,
+        num_decomposition_levels: 5,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode_htj2k_with_qfactor(&pixels, 64, 64, 3, 8, false, 90, &options)
+        .expect("Qfactor encode");
+
+    let qcd = marker_payload(&codestream, 0x5c).expect("QCD marker");
+    assert_eq!(qcd[0], 0x22);
+    assert_eq!(
+        &qcd[1..],
+        &[
+            0x65, 0xdf, 0x65, 0xb4, 0x65, 0xb4, 0x65, 0x8b, 0x5d, 0xc9, 0x5d, 0xc9, 0x5d, 0xad,
+            0x56, 0x0f, 0x56, 0x0f, 0x56, 0x25, 0x40, 0x08, 0x40, 0x08, 0x41, 0x0b, 0x3d, 0xab,
+            0x3d, 0xab, 0x33, 0x7e,
+        ]
+    );
+    let qcc = qcc_payload(&codestream, 1).expect("component-one QCC marker");
+    assert_eq!(qcc[0], 1);
+    assert_eq!(qcc[1], 0x22);
+    assert_eq!(&qcc[2..6], &[0x65, 0x4f, 0x66, 0xdb]);
+}
+
+fn marker_payload(codestream: &[u8], marker: u8) -> Option<&[u8]> {
+    let offset = codestream
+        .windows(2)
+        .position(|bytes| bytes == [0xff, marker])?;
+    let length = usize::from(u16::from_be_bytes([
+        *codestream.get(offset + 2)?,
+        *codestream.get(offset + 3)?,
+    ]));
+    codestream.get(offset + 4..offset + 2 + length)
+}
+
+fn qcc_payload(codestream: &[u8], component: u8) -> Option<&[u8]> {
+    let mut offset = 0;
+    while let Some(relative) = codestream
+        .get(offset..)?
+        .windows(2)
+        .position(|bytes| bytes == [0xff, 0x5d])
+    {
+        let marker_offset = offset + relative;
+        let length = usize::from(u16::from_be_bytes([
+            *codestream.get(marker_offset + 2)?,
+            *codestream.get(marker_offset + 3)?,
+        ]));
+        let payload = codestream.get(marker_offset + 4..marker_offset + 2 + length)?;
+        if payload.first() == Some(&component) {
+            return Some(payload);
+        }
+        offset = marker_offset + 2 + length;
+    }
+    None
+}
 
 fn test_preencoded_subband_payload(marker: u8) -> PreencodedHtj2k97Subband {
     PreencodedHtj2k97Subband {
@@ -2359,16 +2424,19 @@ fn ht_layer_assignment_uses_segment_budget_before_block_index() {
             block_index: 0,
             segment_index: 0,
             rate: 900,
+            distortion_delta: 900.0,
         },
         HtSegmentAssignmentCandidate {
             block_index: 1,
             segment_index: 0,
             rate: 200,
+            distortion_delta: 2_000.0,
         },
         HtSegmentAssignmentCandidate {
             block_index: 2,
             segment_index: 0,
             rate: 200,
+            distortion_delta: 1_000.0,
         },
     ];
 
@@ -2389,11 +2457,13 @@ fn ht_layer_assignment_keeps_refinement_after_cleanup() {
             block_index: 0,
             segment_index: 0,
             rate: 200,
+            distortion_delta: 2_000.0,
         },
         HtSegmentAssignmentCandidate {
             block_index: 0,
             segment_index: 1,
             rate: 50,
+            distortion_delta: 50.0,
         },
     ];
 
@@ -2408,17 +2478,19 @@ fn ht_layer_assignment_keeps_refinement_after_cleanup() {
 }
 
 #[test]
-fn ht_layer_assignment_keeps_complete_ht_set_together() {
+fn ht_layer_assignment_uses_pass_slopes_without_breaking_dependencies() {
     let candidates = vec![
         HtSegmentAssignmentCandidate {
             block_index: 0,
             segment_index: 0,
             rate: 700,
+            distortion_delta: 2_000.0,
         },
         HtSegmentAssignmentCandidate {
             block_index: 0,
             segment_index: 1,
             rate: 100,
+            distortion_delta: 100.0,
         },
     ];
 
@@ -2427,9 +2499,32 @@ fn ht_layer_assignment_keeps_complete_ht_set_together() {
 
     assert_eq!(
         assignments,
-        vec![1, 1],
-        "cleanup and refinement from one HT set must remain in the same quality layer"
+        vec![0, 1],
+        "HT passes may cross layer boundaries but refinement must follow cleanup"
     );
+}
+
+#[test]
+fn ht_layer_assignment_prefers_the_highest_legal_slope() {
+    let candidates = vec![
+        HtSegmentAssignmentCandidate {
+            block_index: 0,
+            segment_index: 0,
+            rate: 700,
+            distortion_delta: 20.0,
+        },
+        HtSegmentAssignmentCandidate {
+            block_index: 1,
+            segment_index: 0,
+            rate: 700,
+            distortion_delta: 2_000.0,
+        },
+    ];
+
+    let assignments = assign_ht_segment_layers_by_budget(&candidates, 2, &[256, 2_000])
+        .expect("HTJ2K segment assignment");
+
+    assert_eq!(assignments, vec![1, 0]);
 }
 
 #[test]
@@ -2440,6 +2535,9 @@ fn ht_layer_contributions_split_cleanup_and_refinement_across_layers() {
         num_zero_bitplanes: 2,
         ht_cleanup_length: 3,
         ht_refinement_length: 2,
+        ht_sigprop_length: 2,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [1.0; 3],
     };
 
     let contributions = ht_layer_contributions(&encoded, 2, &[0, 1]).expect("split HT layers");
@@ -2453,6 +2551,37 @@ fn ht_layer_contributions_split_cleanup_and_refinement_across_layers() {
     assert_eq!(contributions[1].ht_cleanup_length, 0);
     assert_eq!(contributions[1].ht_refinement_length, 2);
     assert_eq!(contributions[1].num_coding_passes, 2);
+}
+
+#[test]
+fn ht_layer_contributions_preserve_each_refinement_pass_boundary() {
+    let encoded = bitplane_encode::EncodedCodeBlock {
+        data: vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        num_coding_passes: 3,
+        num_zero_bitplanes: 2,
+        ht_cleanup_length: 3,
+        ht_refinement_length: 3,
+        ht_sigprop_length: 1,
+        ht_magref_length: 2,
+        ht_distortion_deltas: [1.0; 3],
+    };
+
+    let contributions =
+        ht_layer_contributions(&encoded, 3, &[0, 1, 2]).expect("split HT pass layers");
+
+    assert_eq!(contributions.len(), 3);
+    assert_eq!(contributions[0].data, vec![0x11, 0x22, 0x33]);
+    assert_eq!(contributions[0].ht_cleanup_length, 3);
+    assert_eq!(contributions[0].ht_refinement_length, 0);
+    assert_eq!(contributions[0].num_coding_passes, 1);
+    assert_eq!(contributions[1].data, vec![0x44]);
+    assert_eq!(contributions[1].ht_cleanup_length, 0);
+    assert_eq!(contributions[1].ht_refinement_length, 1);
+    assert_eq!(contributions[1].num_coding_passes, 1);
+    assert_eq!(contributions[2].data, vec![0x55, 0x66]);
+    assert_eq!(contributions[2].ht_cleanup_length, 0);
+    assert_eq!(contributions[2].ht_refinement_length, 2);
+    assert_eq!(contributions[2].num_coding_passes, 1);
 }
 
 #[test]
@@ -2498,4 +2627,140 @@ fn htj2k_lossy_quality_layers_decode_split_refinement_layer() {
         psnr_db(&pixels, &decoded.data),
         max_abs_error(&pixels, &decoded.data)
     );
+}
+
+#[test]
+fn htj2k_bounded_candidate_rate_control_emits_one_decodable_set() {
+    let width = 32;
+    let height = 32;
+    let pixels = gradient_u8(width, height);
+    let codestream = encode_htj2k(
+        &pixels,
+        width,
+        height,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible: false,
+            guard_bits: 2,
+            num_layers: 3,
+            quality_layer_byte_targets: vec![128, 512, 2_048],
+            ..Default::default()
+        },
+    )
+    .expect("bounded HT candidate encode");
+
+    let image = Image::new(
+        &codestream,
+        &DecodeSettings {
+            resolve_palette_indices: true,
+            strict: true,
+            target_resolution: None,
+        },
+    )
+    .expect("parse bounded HT candidate codestream");
+    let decoded = image
+        .decode_native()
+        .expect("decode bounded HT candidate codestream");
+    assert_eq!(decoded.width, width);
+    assert_eq!(decoded.height, height);
+    assert_not_flat_128(&decoded.data);
+}
+
+#[test]
+fn htj2k_bounded_rate_control_offers_two_set_jobs_to_accelerators() {
+    #[derive(Default)]
+    struct CandidateCountingAccelerator {
+        set_jobs: usize,
+    }
+
+    impl crate::J2kEncodeStageAccelerator for CandidateCountingAccelerator {
+        fn encode_ht_code_block_sets(
+            &mut self,
+            jobs: &[crate::J2kHtCodeBlockSetEncodeJob<'_>],
+        ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlockSet>>> {
+            self.set_jobs += jobs.len();
+            Ok(None)
+        }
+    }
+
+    let pixels = gradient_u8(32, 32);
+    let options = EncodeOptions {
+        use_ht_block_coding: true,
+        num_decomposition_levels: 0,
+        reversible: false,
+        guard_bits: 2,
+        num_layers: 3,
+        quality_layer_byte_targets: vec![128, 512, 2_048],
+        ..Default::default()
+    };
+    let mut accelerator = CandidateCountingAccelerator::default();
+
+    encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
+        .expect("bounded HT accelerated candidate encode");
+
+    assert!(accelerator.set_jobs >= 2);
+    assert_eq!(accelerator.set_jobs % 2, 0);
+}
+
+#[test]
+fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
+    #[derive(Default)]
+    struct ExactSetAccelerator;
+
+    impl crate::J2kEncodeStageAccelerator for ExactSetAccelerator {
+        fn encode_ht_code_block_sets(
+            &mut self,
+            jobs: &[crate::J2kHtCodeBlockSetEncodeJob<'_>],
+        ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlockSet>>> {
+            let mut workspace = crate::j2c::ht_block_encode::HtEncodeWorkspace::try_new()
+                .map_err(|error| crate::J2kEncodeStageError::backend("test", "workspace", error))?;
+            jobs.iter()
+                .map(|job| {
+                    crate::j2c::ht_block_encode::try_encode_code_block_set_with_workspace(
+                        job.coefficients,
+                        job.width,
+                        job.height,
+                        job.total_bitplanes,
+                        job.cleanup_bitplane,
+                        job.target_coding_passes,
+                        &mut workspace,
+                    )
+                    .map(|encoded| crate::EncodedHtJ2kCodeBlockSet {
+                        data: encoded.data,
+                        cleanup_length: encoded.ht_cleanup_length,
+                        sigprop_length: encoded.ht_sigprop_length,
+                        magref_length: encoded.ht_magref_length,
+                        num_coding_passes: encoded.num_coding_passes,
+                        num_zero_bitplanes: encoded.num_zero_bitplanes,
+                    })
+                    .map_err(|error| {
+                        crate::J2kEncodeStageError::backend("test", "candidate encode", error)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some)
+        }
+    }
+
+    let pixels = gradient_u8(32, 32);
+    let options = EncodeOptions {
+        use_ht_block_coding: true,
+        num_decomposition_levels: 0,
+        reversible: false,
+        guard_bits: 2,
+        num_layers: 3,
+        quality_layer_byte_targets: vec![128, 512, 2_048],
+        ..Default::default()
+    };
+    let mut accelerator = ExactSetAccelerator;
+    let codestream =
+        encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
+            .expect("accelerated exact-set encode");
+
+    Image::new(&codestream, &DecodeSettings::default())
+        .and_then(|image| image.decode_native())
+        .expect("decode accelerated exact-set codestream");
 }

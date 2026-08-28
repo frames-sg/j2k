@@ -231,6 +231,29 @@ fn cuda_htj2k_encode_bench_accepts_external_staged_pnm_sources() {
 }
 
 #[test]
+fn cuda_htj2k_encode_bench_measures_cleanup_and_refinement_paths() {
+    let bench = include_str!("../benches/htj2k_encode.rs");
+
+    assert!(!bench.contains("j2k_cuda_htj2k_encode_cooperative_requested"));
+
+    for expected in [
+        "cpu_scalar_cleanup",
+        "cpu_scalar_refinement",
+        "cuda_host_staged_cleanup",
+        "cuda_host_staged_refinement",
+        "cuda_resident_cleanup",
+        "cuda_resident_refinement",
+        "encode_ht_code_block_scalar_with_passes",
+        "target_coding_passes: 3",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "CUDA HTJ2K encode benchmark is missing refinement workload marker `{expected}`"
+        );
+    }
+}
+
+#[test]
 fn cuda_htj2k_decode_profile_example_uses_batch_entrypoint() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
