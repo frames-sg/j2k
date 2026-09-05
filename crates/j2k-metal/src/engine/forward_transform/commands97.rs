@@ -8,11 +8,11 @@ use super::{
 use crate::engine::runtime::MetalRuntime;
 use crate::metal_types::prelude::*;
 
-pub(super) struct ForwardDwt97Layout {
-    pub(super) active_is_a: bool,
-    pub(super) ll_width: u32,
-    pub(super) ll_height: u32,
-    pub(super) levels: Vec<J2kForwardDwt97Level>,
+pub(in crate::engine) struct ForwardDwt97Layout {
+    pub(in crate::engine) active_is_a: bool,
+    pub(in crate::engine) ll_width: u32,
+    pub(in crate::engine) ll_height: u32,
+    pub(in crate::engine) levels: Vec<J2kForwardDwt97Level>,
 }
 
 pub(in crate::engine) fn encode_forward_dwt97_commands(

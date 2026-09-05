@@ -260,10 +260,6 @@ unsafe impl j2k_core::accelerator::GpuAbi for J2kForwardDwt97Params {
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "forward transform dispatch preserves scratch-buffer and command ordering"
-)]
 pub(crate) fn encode_forward_dwt97(
     samples: &[f32],
     width: u32,

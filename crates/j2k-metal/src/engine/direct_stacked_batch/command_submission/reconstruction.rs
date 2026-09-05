@@ -95,9 +95,7 @@ impl SubmissionContext<'_, '_, '_> {
                 )?;
             }
             (J2kWaveletTransform::Irreversible97, Some(encoder)) => {
-                dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(
-                    encoder, dispatch,
-                )?;
+                dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(encoder, dispatch);
             }
             (J2kWaveletTransform::Irreversible97, None) => {
                 dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets(
@@ -177,10 +175,7 @@ impl SubmissionContext<'_, '_, '_> {
         let encode_started = self.profile_stages.then(Instant::now);
         // Bound the simultaneously reconstructed planes: the measured 16-image
         // 640x480 stage wins, while a 64 MiB 1024x1024 stage regresses (P20).
-        static DISABLE_CHUNKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let disable_chunks = *DISABLE_CHUNKS
-            .get_or_init(|| std::env::var_os("J2K_METAL_DISABLE_IDWT97_CHUNKS").is_some());
-        let use_single = self.count == 1 || (disable_chunks && span.total_bytes > 20 * 1024 * 1024);
+        let use_single = self.count == 1 || span.total_bytes > 20 * 1024 * 1024;
         if idwt.step.transform == J2kWaveletTransform::Irreversible97 && use_single {
             self.encode_distinct_irreversible97_idwt(step_idx, &output.buffer, &span)?;
         } else {

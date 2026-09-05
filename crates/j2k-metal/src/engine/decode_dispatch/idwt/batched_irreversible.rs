@@ -15,7 +15,7 @@ pub(in crate::engine) fn dispatch_irreversible97_repeated_buffers_in_command_buf
 ) -> Result<(), Error> {
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode batched irreversible97 IDWT");
-    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(&encoder, dispatch)?;
+    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(&encoder, dispatch);
     encoder.endEncoding();
     Ok(())
 }
@@ -23,57 +23,6 @@ pub(in crate::engine) fn dispatch_irreversible97_repeated_buffers_in_command_buf
 pub(in crate::engine) fn dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(
     encoder: &ComputeCommandEncoderRef,
     dispatch: RepeatedIdwtDispatch<'_>,
-) -> Result<(), Error> {
-    let params = dispatch.params;
-    let plane_bytes = usize::try_from(params.width)
-        .ok()
-        .and_then(|width| width.checked_mul(params.height as usize))
-        .and_then(|samples| samples.checked_mul(size_of::<f32>()))
-        .filter(|bytes| *bytes != 0)
-        .ok_or_else(|| chunk_offset_error())?;
-    let total_bytes = plane_bytes
-        .checked_mul(params.batch_count as usize)
-        .ok_or_else(|| chunk_offset_error())?;
-    let chunk_count = if total_bytes > 20 * 1024 * 1024 {
-        (16 * 1024 * 1024 / plane_bytes).max(1)
-    } else {
-        (params.batch_count as usize).max(1)
-    };
-    for start in (0..params.batch_count as usize).step_by(chunk_count) {
-        let mut chunk = dispatch;
-        chunk.params.batch_count =
-            u32::try_from(chunk_count.min(params.batch_count as usize - start))
-                .map_err(|_| chunk_offset_error())?;
-        for (offset, stride) in [
-            (&mut chunk.sub_bands.ll_offset, params.ll_instance_stride),
-            (&mut chunk.sub_bands.hl_offset, params.hl_instance_stride),
-            (&mut chunk.sub_bands.lh_offset, params.lh_instance_stride),
-            (&mut chunk.sub_bands.hh_offset, params.hh_instance_stride),
-        ] {
-            *offset = start
-                .checked_mul(stride as usize)
-                .and_then(|samples| samples.checked_mul(size_of::<f32>()))
-                .and_then(|bytes| bytes.checked_add(*offset))
-                .ok_or_else(|| chunk_offset_error())?;
-        }
-        let decoded_offset = start
-            .checked_mul(plane_bytes)
-            .ok_or_else(|| chunk_offset_error())?;
-        dispatch_chunk(encoder, chunk, decoded_offset);
-    }
-    Ok(())
-}
-
-fn chunk_offset_error() -> Error {
-    Error::MetalKernel {
-        message: "J2K Metal batched IDWT chunk dimensions or offsets overflow".to_owned(),
-    }
-}
-
-fn dispatch_chunk(
-    encoder: &ComputeCommandEncoderRef,
-    dispatch: RepeatedIdwtDispatch<'_>,
-    decoded_offset: usize,
 ) {
     let RepeatedIdwtDispatch {
         kernels,
@@ -90,7 +39,7 @@ fn dispatch_chunk(
     ] {
         encoder.set_buffer(index, Some(buffer), offset as u64);
     }
-    encoder.set_buffer(4, Some(decoded), decoded_offset as u64);
+    encoder.set_buffer(4, Some(decoded), 0);
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
     dispatch_3d_pipeline(
         encoder,
@@ -105,7 +54,7 @@ fn dispatch_chunk(
         encoder,
         kernels,
         decoded,
-        decoded_offset,
+        0,
         single_params(params),
         j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5,
         params.batch_count,

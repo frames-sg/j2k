@@ -277,8 +277,13 @@ fn irreversible_groups_batch_transform_stages_without_changing_pixels() {
 }
 
 #[test]
-fn large_irreversible_groups_use_bounded_chunks_without_changing_pixels() {
-    for (dimensions, count, expected_sequences) in [((1024, 1024), 6, 3), ((1025, 513), 11, 3)] {
+fn large_irreversible_groups_bound_the_working_set_without_changing_pixels() {
+    // P27 retained per-image reconstruction above 20 MiB after chunking regressed.
+    for (dimensions, count, expected_sequences) in [
+        ((1024, 1024), 6, 7),
+        ((1024, 1024), 9, 10),
+        ((1025, 513), 11, 12),
+    ] {
         if assert_external_group_uses_one_command_buffer_and_encoder(
             FixtureRoute::Ht97,
             FixtureColor::Gray,

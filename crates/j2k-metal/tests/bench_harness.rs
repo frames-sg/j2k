@@ -106,9 +106,11 @@ fn j2k_metal_benches_directory_matches_the_audited_targets() {
             manifest_dir().join("benches/htj2k_candidates/runner.rs"),
             manifest_dir().join("benches/htj2k_candidates.rs"),
             manifest_dir().join("benches/resident_packetization/batch_compare.rs"),
+            manifest_dir().join("benches/resident_packetization/classic_chunks.rs"),
             manifest_dir().join("benches/resident_packetization/packetization.rs"),
             manifest_dir().join("benches/resident_packetization/support.rs"),
             manifest_dir().join("benches/resident_packetization.rs"),
+            manifest_dir().join("benches/transform_stages/resident_lossy.rs"),
             manifest_dir().join("benches/transform_stages.rs"),
         ],
         "j2k-metal benchmark sources must stay limited to audited evidence targets"

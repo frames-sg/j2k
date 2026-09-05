@@ -9,7 +9,7 @@ fn jpeg() -> Vec<u8> {
 #[test]
 fn multi_chunk_profile_round_trips() {
     let profile = (0..MAX_ICC_CHUNK_DATA_LEN + 17)
-        .map(|index| (index % 251) as u8)
+        .map(|index| u8::try_from(index % 251).expect("ICC fixture samples are below 251"))
         .collect::<Vec<_>>();
     let encoded = insert_icc_profile(&jpeg(), &profile).expect("insert ICC profile");
 

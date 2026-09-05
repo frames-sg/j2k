@@ -95,11 +95,6 @@ fn bench_dimension(criterion: &mut Criterion, dimension: u32) {
         ("classic", J2kBlockCodingMode::Classic),
         ("ht", J2kBlockCodingMode::HighThroughput),
     ] {
-        // The Classic 1024x1024 batch-16 scratch allocation exceeds the
-        // resident pool's 512 MiB per-allocation limit; HT fits this cell.
-        if dimension > DIMENSION && block_coding_mode == J2kBlockCodingMode::Classic {
-            continue;
-        }
         let options = options(block_coding_mode);
         let (hash, encoded_bytes) = probe_exact_output(&session, &tiles, &options, &pixels);
         eprintln!(

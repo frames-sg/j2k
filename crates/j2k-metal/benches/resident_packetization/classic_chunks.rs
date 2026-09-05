@@ -31,11 +31,8 @@ pub(crate) fn bench(criterion: &mut Criterion) {
         let tiles = vec![tile; 16];
         let mut reference = None;
         for inflight in [8, 4, 16] {
-            // The unmodified 1024 B16 route exceeds the per-buffer allocation
-            // cap. Eight-at-a-time is the supported reference for that cell.
-            if width == 1024 && inflight == 16 {
-                continue;
-            }
+            // The scheduler may reduce the requested width to respect the
+            // allocation cap. Record the actual width with the parity probe.
             let probe = run_device_batch(&session, &tiles, &options, Some(inflight));
             let codestreams = probe
                 .outcomes
@@ -83,7 +80,7 @@ pub(crate) fn bench(criterion: &mut Criterion) {
                             .map(|item| item.encoded.byte_len())
                             .sum::<usize>(),
                     )
-                })
+                });
             });
             group.finish();
         }

@@ -18,6 +18,8 @@ mod resident_estimate;
 #[cfg(target_os = "macos")]
 mod resident_hybrid;
 #[cfg(target_os = "macos")]
+mod resident_lossy;
+#[cfg(target_os = "macos")]
 mod resident_plan;
 #[cfg(target_os = "macos")]
 mod resident_prepare;
