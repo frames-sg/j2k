@@ -22,6 +22,7 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-transcode-metal",
     "j2k-ml",
     "j2k-mpsgraph",
+    "j2k-mpsgraph-support",
     "j2k",
 ];
 

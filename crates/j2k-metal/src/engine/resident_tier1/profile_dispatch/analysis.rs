@@ -50,7 +50,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_density_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 density profile");
-    encoder.setComputePipelineState(&runtime.classic_tier1_density_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.density);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -58,10 +58,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_density_profile(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_density_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.density.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),
@@ -100,7 +97,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_raw_pack_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 raw-pack profile");
-    encoder.setComputePipelineState(&runtime.classic_tier1_raw_pack_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.raw_pack);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&raw_output_buffer), 0);
@@ -108,10 +105,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_raw_pack_profile(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_raw_pack_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.raw_pack.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),
@@ -147,7 +141,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_arithmetic_pack_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 arithmetic-pack profile");
-    encoder.setComputePipelineState(&runtime.classic_tier1_arithmetic_pack_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.arithmetic_pack);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&arithmetic_output_buffer), 0);
@@ -156,7 +150,8 @@ pub(in crate::engine) fn dispatch_classic_tier1_arithmetic_pack_profile(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
             runtime
-                .classic_tier1_arithmetic_pack_bypass_u16_32
+                .profile()?
+                .arithmetic_pack
                 .threadExecutionWidth()
                 .max(1) as u64,
             1,
@@ -199,7 +194,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_symbol_plan_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 symbol plan");
-    encoder.setComputePipelineState(&runtime.classic_tier1_symbol_plan_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.symbol_plan);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -207,10 +202,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_symbol_plan_profile(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_symbol_plan_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.symbol_plan.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),
@@ -254,7 +246,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_pass_plan_profile(
     })?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 pass plan");
-    encoder.setComputePipelineState(&runtime.classic_tier1_pass_plan_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.pass_plan);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -262,10 +254,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_pass_plan_profile(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_pass_plan_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.pass_plan.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),
@@ -335,7 +324,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_token_emit_profile(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
-    encoder.setComputePipelineState(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.token_emit);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -347,10 +336,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_token_emit_profile(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_token_emit_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.token_emit.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),

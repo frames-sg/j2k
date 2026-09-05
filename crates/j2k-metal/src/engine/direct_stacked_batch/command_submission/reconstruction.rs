@@ -6,6 +6,8 @@ use crate::metal_types::prelude::*;
 use std::time::Instant;
 
 use crate::engine::decode_dispatch::{
+    dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
+    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,
     dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets,
@@ -30,7 +32,7 @@ use super::super::validation::{
 use super::SubmissionContext;
 
 impl SubmissionContext<'_, '_, '_> {
-    fn encode_repeated_reversible53_idwt(
+    fn encode_stacked_idwt(
         &mut self,
         idwt: &PreparedDirectIdwt,
         output: &crate::metal_types::Buffer,
@@ -68,7 +70,7 @@ impl SubmissionContext<'_, '_, '_> {
             "color",
         )?;
         let dispatch = RepeatedIdwtDispatch {
-            runtime: self.runtime,
+            kernels: self.runtime.decode()?,
             sub_bands: IdwtSubBandBuffers {
                 ll: &ll.buffer,
                 ll_offset: ll.offset_bytes,
@@ -82,13 +84,25 @@ impl SubmissionContext<'_, '_, '_> {
             params,
             decoded: output,
         };
-        if let Some(encoder) = self.compute_encoder {
-            dispatch_reversible53_repeated_buffers_in_encoder_with_offsets(encoder, dispatch);
-        } else {
-            dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
-                self.command_buffers.idwt,
-                dispatch,
-            )?;
+        match (idwt.step.transform, self.compute_encoder) {
+            (J2kWaveletTransform::Reversible53, Some(encoder)) => {
+                dispatch_reversible53_repeated_buffers_in_encoder_with_offsets(encoder, dispatch);
+            }
+            (J2kWaveletTransform::Reversible53, None) => {
+                dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
+                    self.command_buffers.idwt,
+                    dispatch,
+                )?;
+            }
+            (J2kWaveletTransform::Irreversible97, Some(encoder)) => {
+                dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(encoder, dispatch);
+            }
+            (J2kWaveletTransform::Irreversible97, None) => {
+                dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets(
+                    self.command_buffers.idwt.interleave,
+                    dispatch,
+                )?;
+            }
         }
         Ok(())
     }
@@ -113,7 +127,7 @@ impl SubmissionContext<'_, '_, '_> {
             let params =
                 prepared_idwt_params(step, idwt_input_windows_from_slices(&ll, &hl, &lh, &hh));
             let dispatch = SingleIdwtDispatch {
-                runtime: self.runtime,
+                kernels: self.runtime.decode()?,
                 sub_bands: IdwtSubBandBuffers {
                     ll: &ll.buffer,
                     ll_offset: ll.offset_bytes,
@@ -159,13 +173,13 @@ impl SubmissionContext<'_, '_, '_> {
         )?;
         let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
         let encode_started = self.profile_stages.then(Instant::now);
-        match idwt.step.transform {
-            J2kWaveletTransform::Reversible53 => {
-                self.encode_repeated_reversible53_idwt(idwt, &output.buffer)?;
-            }
-            J2kWaveletTransform::Irreversible97 => {
-                self.encode_distinct_irreversible97_idwt(step_idx, &output.buffer, &span)?;
-            }
+        // Bound the simultaneously reconstructed planes: the measured 16-image
+        // 640x480 stage wins, while a 64 MiB 1024x1024 stage regresses (P20).
+        let use_single = self.count == 1 || span.total_bytes > 20 * 1024 * 1024;
+        if idwt.step.transform == J2kWaveletTransform::Irreversible97 && use_single {
+            self.encode_distinct_irreversible97_idwt(step_idx, &output.buffer, &span)?;
+        } else {
+            self.encode_stacked_idwt(idwt, &output.buffer)?;
         }
         if let Some(encoder) = self.compute_encoder {
             encoder.memory_barrier_with_resources(&[&output.buffer]);

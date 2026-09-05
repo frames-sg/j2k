@@ -90,15 +90,11 @@ impl<'a> JpegView<'a> {
         &self.header
     }
 
-    /// Return a byte-preserving passthrough candidate for active DICOM/WSI
-    /// transfer syntaxes.
-    ///
-    /// Progressive JPEG is intentionally not exposed here because the active
-    /// conversion path should transcode it rather than introduce a retired or
-    /// unsupported destination syntax.
+    /// Return a byte-preserving passthrough candidate for the parsed JPEG
+    /// process, including progressive and lossless SV1 streams.
     #[must_use]
     pub fn passthrough_candidate(&self) -> Option<PassthroughCandidate<'a>> {
-        jpeg_passthrough_syntax(&self.info).map(|transfer_syntax| {
+        jpeg_passthrough_syntax(self).map(|transfer_syntax| {
             PassthroughCandidate::new(
                 self.bytes,
                 transfer_syntax,
@@ -106,6 +102,17 @@ impl<'a> JpegView<'a> {
                 self.info.to_core_info(),
             )
         })
+    }
+
+    /// Return the lossless JPEG predictor selection value from SOS.
+    ///
+    /// Returns `None` for DCT-based JPEG processes.
+    #[must_use]
+    pub fn lossless_predictor(&self) -> Option<u8> {
+        if self.info.sof_kind != SofKind::Lossless {
+            return None;
+        }
+        self.header.scan.as_ref().map(|scan| scan.ss)
     }
 
     /// Build a restart-marker byte-offset index for the first scan.

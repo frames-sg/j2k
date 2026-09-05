@@ -19,6 +19,9 @@ pub use info::{
     ColorSpace, ColorTransform, DecodeOptions, Info, McuGeometry, Rect, RestartIndex,
     RestartSegment, SamplingFactors, SamplingFactorsError, SofKind,
 };
+
+mod icc;
+pub use icc::{extract_icc_profile, insert_icc_profile, set_icc_profile, IccProfileError};
 pub use j2k_core::{
     BatchDecodeError, BatchInfrastructureError, CacheStats, CodecContext, CompressedPayloadKind,
     CompressedTransferSyntax, DecodeRowsError, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,

@@ -153,6 +153,8 @@ pub(super) fn encode_complete_resident_ht_tile(
 fn complete_ht_tile_supported(options: &EncodeOptions, plan: &SingleTilePlan) -> bool {
     plan.params.block_coding_mode == BlockCodingMode::HighThroughput
         && plan.params.num_layers == 1
+        // Whole-tile jobs do not carry byte targets or a pass-allocation contract.
+        && options.quality_layer_byte_targets.is_empty()
         && !(plan.params.write_plt
             || plan.params.write_plm
             || plan.params.write_ppm

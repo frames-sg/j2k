@@ -93,13 +93,14 @@ pub(in crate::engine) fn dispatch_classic_cleanup_batched(
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, jobs.len())?;
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(jobs, segments)
         && runtime
+            .decode()?
             .classic_cleanup_plain_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
     let pipeline = if use_plain_fast_path {
-        &runtime.classic_cleanup_plain_batched
+        &runtime.decode()?.classic_cleanup_plain_batched
     } else {
-        &runtime.classic_cleanup_batched
+        &runtime.decode()?.classic_cleanup_batched
     };
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
@@ -147,6 +148,7 @@ pub(in crate::engine) fn dispatch_classic_cleanup_batched(
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(in crate::engine) struct ClassicCleanupBatchDispatch<'a> {
+    pub(in crate::engine) kernels: &'a crate::engine::runtime::DecodeKernels,
     pub(in crate::engine) runtime: &'a MetalRuntime,
     pub(in crate::engine) coded_data: &'a Buffer,
     pub(in crate::engine) jobs: &'a Buffer,
@@ -232,7 +234,8 @@ pub(in crate::engine) fn dispatch_classic_cleanup_batched_in_encoder_with_status
     status_buffer: &Buffer,
 ) {
     let ClassicCleanupBatchDispatch {
-        runtime,
+        runtime: _,
+        kernels,
         coded_data,
         jobs,
         job_count,
@@ -242,9 +245,9 @@ pub(in crate::engine) fn dispatch_classic_cleanup_batched_in_encoder_with_status
         coefficients_scratch,
     } = dispatch;
     let pipeline = if use_plain_fast_path {
-        &runtime.classic_cleanup_plain_batched
+        &kernels.classic_cleanup_plain_batched
     } else {
-        &runtime.classic_cleanup_batched
+        &kernels.classic_cleanup_batched
     };
     encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
@@ -304,9 +307,9 @@ pub(in crate::engine) fn dispatch_classic_cleanup_repeated_batched_in_command_bu
         coefficients_scratch,
     } = dispatch;
     let pipeline = if use_plain_fast_path {
-        &runtime.classic_cleanup_plain_repeated_batched
+        &runtime.decode()?.classic_cleanup_plain_repeated_batched
     } else {
-        &runtime.classic_cleanup_repeated_batched
+        &runtime.decode()?.classic_cleanup_repeated_batched
     };
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
@@ -370,7 +373,7 @@ pub(in crate::engine) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_
     let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.classic_cleanup_plain_dev_repeated_batched);
+    encoder.setComputePipelineState(&runtime.decode()?.classic_cleanup_plain_dev_repeated_batched);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
@@ -380,6 +383,7 @@ pub(in crate::engine) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_
     encoder.set_buffer(6, Some(states_scratch), 0);
     encoder.set_bytes::<J2kClassicRepeatedBatchParams>(7, &repeated);
     let width = runtime
+        .decode()?
         .classic_cleanup_plain_dev_repeated_batched
         .threadExecutionWidth()
         .max(1);
@@ -413,7 +417,7 @@ pub(in crate::engine) fn dispatch_classic_store_repeated_batched_in_command_buff
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.classic_store_repeated_batched);
+    encoder.setComputePipelineState(&runtime.decode()?.classic_store_repeated_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_buffer(1, Some(jobs), 0);
     encoder.set_buffer(2, Some(coefficients_scratch), 0);

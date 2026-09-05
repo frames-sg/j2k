@@ -80,7 +80,7 @@ impl SubmissionContext<'_, '_, '_> {
         };
         if let Some(encoder) = self.compute_encoder {
             dispatch_store_component_repeated_in_encoder(
-                self.runtime,
+                self.runtime.decode()?,
                 encoder,
                 &input.buffer,
                 input.offset_bytes,

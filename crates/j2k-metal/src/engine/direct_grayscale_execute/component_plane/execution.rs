@@ -265,7 +265,7 @@ impl ComponentPlaneExecution<'_> {
         let output = take_f32_scratch_buffer(self.runtime, prepared_idwt_output_len(idwt)?)?;
         let encode_started = self.profile_stages.then(Instant::now);
         let dispatch = SingleIdwtDispatch {
-            runtime: self.runtime,
+            kernels: self.runtime.decode()?,
             sub_bands: IdwtSubBandBuffers {
                 ll: &ll.buffer,
                 ll_offset: ll.offset_bytes,
@@ -327,7 +327,7 @@ impl ComponentPlaneExecution<'_> {
         )?;
         let encode_started = self.profile_stages.then(Instant::now);
         dispatch_store_component_buffer_in_encoder_with_offsets(
-            self.runtime,
+            self.runtime.decode()?,
             self.encoder,
             &input,
             input_offset,

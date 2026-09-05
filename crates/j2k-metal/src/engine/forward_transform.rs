@@ -14,11 +14,17 @@ use super::abi::{
     J2kLosslessDeinterleaveParams,
 };
 use super::{
-    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer, CommandBufferRef,
-    ComputePipelineState, Error, J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job,
-    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, new_blit_command_encoder,
+    new_command_buffer, new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer,
+    CommandBufferRef, ComputePipelineState, Error, J2kDeinterleaveMctToF32Job,
+    J2kDeinterleaveToF32Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
+    J2kForwardDwt97Output,
 };
+
+#[cfg(target_os = "macos")]
+mod commands97;
+#[cfg(target_os = "macos")]
+pub(super) use commands97::encode_forward_dwt97_commands;
 
 #[cfg(target_os = "macos")]
 pub(crate) fn encode_deinterleave_mct_to_f32(
@@ -81,13 +87,17 @@ pub(crate) fn encode_deinterleave_mct_to_f32(
         label_command_buffer(&command_buffer, "j2k combined encode input MCT");
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "J2K combined encode input MCT");
-        encoder.setComputePipelineState(&runtime.encode_deinterleave_mct);
+        encoder.setComputePipelineState(&runtime.encode()?.encode_deinterleave_mct);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
         encoder.set_buffer(2, Some(&plane_buffers[1]), 0);
         encoder.set_buffer(3, Some(&plane_buffers[2]), 0);
         encoder.set_bytes::<J2kFusedInputMctParams>(4, &params);
-        dispatch_2d_pipeline(&encoder, &runtime.encode_deinterleave_mct, (len, 1));
+        dispatch_2d_pipeline(
+            &encoder,
+            &runtime.encode()?.encode_deinterleave_mct,
+            (len, 1),
+        );
         encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
@@ -150,7 +160,7 @@ pub(crate) fn encode_forward_dwt53(
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
-                    &runtime.fdwt53_vertical,
+                    &runtime.encode()?.fdwt53_vertical,
                     &command_buffer,
                     input,
                     output,
@@ -163,7 +173,7 @@ pub(crate) fn encode_forward_dwt53(
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
-                    &runtime.fdwt53_horizontal,
+                    &runtime.encode()?.fdwt53_horizontal,
                     &command_buffer,
                     input,
                     output,
@@ -250,10 +260,6 @@ unsafe impl j2k_core::accelerator::GpuAbi for J2kForwardDwt97Params {
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "forward transform dispatch preserves scratch-buffer and command ordering"
-)]
 pub(crate) fn encode_forward_dwt97(
     samples: &[f32],
     width: u32,
@@ -287,92 +293,28 @@ pub(crate) fn encode_forward_dwt97(
         let buffer_b = new_shared_buffer(&runtime.device, bytes)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
 
-        let mut current_width = width;
-        let mut current_height = height;
-        let mut shapes = Vec::new();
-        let mut levels_run = 0u8;
-        let mut active_is_a = true;
-
-        while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
-            let low_width = current_width.div_ceil(2);
-            let low_height = current_height.div_ceil(2);
-            let base_params = J2kForwardDwt97Params {
-                full_width: width,
-                current_width,
-                current_height,
-                low_width,
-                low_height,
-                parity: FDWT97_HIGH_PASS,
-                coefficient: 0.0,
-                _reserved: 0,
-            };
-
-            if current_height >= 2 {
-                dispatch_forward_dwt97_lift_steps(
-                    &runtime.fdwt97_lift_vertical,
-                    &command_buffer,
-                    &buffer_a,
-                    &buffer_b,
-                    active_is_a,
-                    base_params,
-                    "J2K forward DWT 9/7 vertical",
-                )?;
-                let (input, output) =
-                    active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
-                dispatch_forward_dwt97_pass(
-                    &runtime.fdwt97_deinterleave_vertical,
-                    &command_buffer,
-                    input,
-                    output,
-                    base_params,
-                    "J2K forward DWT 9/7 vertical deinterleave",
-                )?;
-                active_is_a = !active_is_a;
-            }
-            if current_width >= 2 {
-                dispatch_forward_dwt97_lift_steps(
-                    &runtime.fdwt97_lift_horizontal,
-                    &command_buffer,
-                    &buffer_a,
-                    &buffer_b,
-                    active_is_a,
-                    base_params,
-                    "J2K forward DWT 9/7 horizontal",
-                )?;
-                let (input, output) =
-                    active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
-                dispatch_forward_dwt97_pass(
-                    &runtime.fdwt97_deinterleave_horizontal,
-                    &command_buffer,
-                    input,
-                    output,
-                    base_params,
-                    "J2K forward DWT 9/7 horizontal deinterleave",
-                )?;
-                active_is_a = !active_is_a;
-            }
-
-            shapes.push(J2kForwardDwt97Level {
-                hl: Vec::new(),
-                lh: Vec::new(),
-                hh: Vec::new(),
-                width: current_width,
-                height: current_height,
-                low_width,
-                low_height,
-                high_width: current_width / 2,
-                high_height: current_height / 2,
-            });
-            current_width = low_width;
-            current_height = low_height;
-            levels_run = levels_run.saturating_add(1);
-        }
-
+        let layout = encode_forward_dwt97_commands(
+            runtime,
+            &command_buffer,
+            (&buffer_a, &buffer_b),
+            (width, height),
+            num_levels,
+        )?;
         commit_and_wait_metal(&command_buffer)?;
 
-        let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
+        let active_buffer = if layout.active_is_a {
+            &buffer_a
+        } else {
+            &buffer_b
+        };
         let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 9/7")?;
-        extract_forward_dwt97_output(&transformed, width, current_width, current_height, shapes)
+        extract_forward_dwt97_output(
+            &transformed,
+            width,
+            layout.ll_width,
+            layout.ll_height,
+            layout.levels,
+        )
     })
 }
 
@@ -445,7 +387,7 @@ pub(crate) fn encode_deinterleave_to_f32(
         label_command_buffer(&command_buffer, "j2k encode-stage deinterleave");
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "J2K encode-stage deinterleave");
-        encoder.setComputePipelineState(&runtime.lossless_deinterleave_to_planes);
+        encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_to_planes);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
         encoder.set_buffer(2, Some(&plane_buffers[1]), 0);
@@ -454,7 +396,7 @@ pub(crate) fn encode_deinterleave_to_f32(
         encoder.set_buffer(5, Some(&plane_buffers[3]), 0);
         dispatch_2d_pipeline(
             &encoder,
-            &runtime.lossless_deinterleave_to_planes,
+            &runtime.encode()?.lossless_deinterleave_to_planes,
             (pixel_count, 1),
         );
         encoder.endEncoding();

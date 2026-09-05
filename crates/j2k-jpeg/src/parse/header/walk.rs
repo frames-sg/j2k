@@ -115,9 +115,17 @@ impl<'a> HeaderParser<'a> {
             }
             0xe0 | 0xfe => Ok(false),
             0xe2 => {
-                self.push_warning(Warning::IccProfileIgnored {
-                    size: marker.payload.len(),
-                })?;
+                let warning = if crate::icc::is_icc_app2_payload(marker.payload) {
+                    Warning::IccProfileIgnored {
+                        size: marker.payload.len(),
+                    }
+                } else {
+                    Warning::UnknownAppMarker {
+                        marker: marker.code,
+                        size: marker.payload.len(),
+                    }
+                };
+                self.push_warning(warning)?;
                 Ok(false)
             }
             0xe1..=0xef => {

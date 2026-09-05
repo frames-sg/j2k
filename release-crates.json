@@ -42,6 +42,10 @@
       "api_contract": "implementation"
     },
     {
+      "name": "j2k-mpsgraph-support",
+      "api_contract": "implementation"
+    },
+    {
       "name": "j2k-native",
       "api_contract": "experimental"
     },

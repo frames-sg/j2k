@@ -26,17 +26,26 @@ pub struct MetalLosslessEncodeStageStats {
     pub prepare_submit_duration: Duration,
     /// Host-side wall time spent preparing resident encode coefficients.
     pub coefficient_prep_duration: Duration,
-    /// Reserved for future finer-grained deinterleave plus RCT profiling.
+    /// Deprecated compatibility field; always zero in codec-produced reports.
     ///
     /// Current resident prep timing is reported in `coefficient_prep_duration`.
+    #[deprecated(
+        note = "Always zero; use coefficient_prep_duration for combined preparation timing"
+    )]
     pub deinterleave_rct_duration: Duration,
-    /// Reserved for future finer-grained forward 5/3 DWT profiling.
+    /// Deprecated compatibility field; always zero in codec-produced reports.
     ///
     /// Current resident prep timing is reported in `coefficient_prep_duration`.
+    #[deprecated(
+        note = "Always zero; use coefficient_prep_duration for combined preparation timing"
+    )]
     pub dwt53_duration: Duration,
-    /// Reserved for future finer-grained coefficient extraction profiling.
+    /// Deprecated compatibility field; always zero in codec-produced reports.
     ///
     /// Current resident prep timing is reported in `coefficient_prep_duration`.
+    #[deprecated(
+        note = "Always zero; use coefficient_prep_duration for combined preparation timing"
+    )]
     pub coefficient_extract_duration: Duration,
     /// Time spent building HT lookup tables.
     pub ht_table_build_duration: Duration,
@@ -480,6 +489,7 @@ macro_rules! stage_stat_from_resident {
 /// exhaustive: adding a struct field without a table entry fails to compile.
 macro_rules! j2k_metal_stage_stats_impls {
     ($(($field:ident, $class:ident, $source:ident)),* $(,)?) => {
+        #[allow(deprecated, reason = "Preserve accumulation of caller-owned compatibility fields")]
         impl MetalLosslessEncodeStageStats {
             /// Create an empty stage timing report.
             #[must_use]
@@ -509,6 +519,7 @@ macro_rules! j2k_metal_stage_stats_impls {
             }
         }
 
+        #[allow(deprecated, reason = "The exhaustive field check includes compatibility fields")]
         const _: fn(MetalLosslessEncodeStageStats) = |stats| {
             let MetalLosslessEncodeStageStats { $($field: _),* } = stats;
         };
@@ -519,9 +530,9 @@ j2k_metal_stage_stats_impls! {
     (plan_duration, dur, local),
     (prepare_submit_duration, dur, local),
     (coefficient_prep_duration, dur, resident),
-    (deinterleave_rct_duration, dur, resident),
-    (dwt53_duration, dur, resident),
-    (coefficient_extract_duration, dur, resident),
+    (deinterleave_rct_duration, dur, local),
+    (dwt53_duration, dur, local),
+    (coefficient_extract_duration, dur, local),
     (ht_table_build_duration, dur, resident),
     (ht_buffer_allocation_duration, dur, resident),
     (ht_command_encode_duration, dur, resident),

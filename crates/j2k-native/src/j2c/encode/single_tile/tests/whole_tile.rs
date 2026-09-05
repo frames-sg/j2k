@@ -108,6 +108,54 @@ fn whole_tile_plan_carries_a_conservative_transform_bound() {
 }
 
 #[test]
+fn whole_tile_hooks_decline_single_layer_byte_targets() {
+    let (pixels, mut options, mut plan) = whole_tile_fixture();
+    options.quality_layer_byte_targets = vec![32];
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
+        .expect("budgeted whole-tile session");
+    let mut accelerator = FakeWholeTileAccelerator {
+        output: Some(vec![1, 4, 9]),
+        error: None,
+        required_bound: None,
+        calls: 0,
+    };
+    let output = try_encode_complete_ht_tile(
+        &pixels,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &options,
+        &[],
+        &[],
+        &mut plan,
+        false,
+        &session,
+        &mut accelerator,
+    )
+    .expect("budgeted tile falls back");
+    assert!(
+        output.is_none(),
+        "the whole-tile ABI does not carry byte targets"
+    );
+    assert_eq!(accelerator.calls, 0);
+    let input = J2kResidentEncodeInput::new(8, 8, 1, 8, false).expect("resident input");
+    assert!(matches!(
+        encode_complete_resident_ht_tile(
+            input,
+            &options,
+            &mut plan,
+            false,
+            &session,
+            &mut accelerator
+        ),
+        Err(ResidentHtj2kEncodeError::Unsupported(_))
+    ));
+    assert_eq!(accelerator.calls, 0);
+}
+
+#[test]
 fn whole_tile_accelerator_output_accepts_exact_cap_without_copying() {
     let (pixels, options, mut plan) = whole_tile_fixture();
     let mut output = vector_with_capacity::<u8>(17);

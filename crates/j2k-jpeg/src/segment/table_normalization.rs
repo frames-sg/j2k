@@ -2,8 +2,13 @@
 
 //! Allocation-free DQT/DHT definition parsing and TIFF table normalization.
 
-use super::{iter_segments, DuplicateTablePolicy};
+use super::{
+    is_sof_marker, iter_segments, parse_sof_info_allowing_zero_dimensions, DuplicateTablePolicy,
+    JpegSofInfo,
+};
 use crate::error::{JpegError, TableKind};
+use crate::info::SofKind;
+use crate::parse::scan::{parse_scan_header, ParsedScan};
 use alloc::vec::Vec;
 
 const JPEG_TABLE_SLOTS: usize = 4;
@@ -90,7 +95,6 @@ struct NormalizationState<'a> {
     quant: [Option<&'a [u8]>; JPEG_TABLE_SLOTS],
     huffman_dc: [Option<&'a [u8]>; JPEG_TABLE_SLOTS],
     huffman_ac: [Option<&'a [u8]>; JPEG_TABLE_SLOTS],
-    dri: Option<&'a [u8]>,
 }
 
 impl<'a> NormalizationState<'a> {
@@ -109,8 +113,27 @@ pub(super) fn for_each_normalized_segment<'a>(
     mut visit: impl FnMut(NormalizedSegment<'a>) -> Result<(), JpegError>,
 ) -> Result<(), JpegError> {
     let mut state = NormalizationState::default();
+    let mut saw_soi = false;
+    let mut parsed_through = 0usize;
     for segment in iter_segments(input) {
-        let segment = segment?;
+        let segment = match segment {
+            Ok(segment) => segment,
+            // TIFF already supplies an exact byte boundary for JPEGTables.
+            // Accept a missing terminal EOI only after a valid SOI and wholly
+            // parsed marker segments; partial marker bytes remain errors.
+            Err(JpegError::Truncated {
+                offset,
+                expected: 2,
+            }) if saw_soi && offset == input.len() && parsed_through == input.len() => break,
+            Err(error) => return Err(error),
+        };
+        saw_soi |= segment.marker == 0xd8;
+        parsed_through = segment
+            .payload_offset
+            .checked_add(segment.payload.len())
+            .ok_or(JpegError::InternalInvariant {
+                reason: "parsed JPEGTables segment boundary overflowed",
+            })?;
         if matches!(segment.marker, 0xd8 | 0xd9) {
             continue;
         }
@@ -136,14 +159,10 @@ pub(super) fn for_each_normalized_segment<'a>(
                 policy,
                 &mut visit,
             )?,
-            0xdd => {
-                normalize_dri_segment(
-                    &mut state,
-                    segment.marker_offset,
-                    segment_bytes,
-                    &mut visit,
-                )?;
-            }
+            // TIFF JPEGTables supplies shared coding tables, not per-tile
+            // restart or arithmetic-conditioning state. Importing DRI or DAC
+            // here would silently change the tile's entropy interpretation.
+            0xcc | 0xdd => {}
             _ => visit(NormalizedSegment::Borrowed(segment_bytes))?,
         }
     }
@@ -205,26 +224,6 @@ fn normalize_table_segment<'a>(
     })
 }
 
-fn normalize_dri_segment<'a>(
-    state: &mut NormalizationState<'a>,
-    marker_offset: usize,
-    segment_bytes: &'a [u8],
-    visit: &mut impl FnMut(NormalizedSegment<'a>) -> Result<(), JpegError>,
-) -> Result<(), JpegError> {
-    if let Some(existing) = state.dri {
-        if existing == segment_bytes {
-            return Ok(());
-        }
-        return Err(JpegError::ConflictingDri {
-            offset: marker_offset,
-            existing: parse_dri_payload_from_segment(existing).unwrap_or(0),
-            new: parse_dri_payload_from_segment(segment_bytes).unwrap_or(0),
-        });
-    }
-    state.dri = Some(segment_bytes);
-    visit(NormalizedSegment::Borrowed(segment_bytes))
-}
-
 fn for_each_table_definition<'a>(
     marker: u8,
     payload: &'a [u8],
@@ -241,6 +240,104 @@ fn for_each_table_definition<'a>(
             reason: "non-table marker reached JPEG table definition parser",
         }),
     }
+}
+
+#[derive(Default)]
+struct CodingTablePresence {
+    quant: [bool; JPEG_TABLE_SLOTS],
+    huffman_dc: [bool; JPEG_TABLE_SLOTS],
+    huffman_ac: [bool; JPEG_TABLE_SLOTS],
+}
+
+impl CodingTablePresence {
+    fn observe(&mut self, definition: TableDefinition<'_>) {
+        let slot = usize::from(definition.key.id());
+        match definition.key {
+            TableKey::Quant(_) => self.quant[slot] = true,
+            TableKey::HuffmanDc(_) => self.huffman_dc[slot] = true,
+            TableKey::HuffmanAc(_) => self.huffman_ac[slot] = true,
+        }
+    }
+
+    fn satisfies_scan(&self, sof: &JpegSofInfo, scan: &ParsedScan) -> bool {
+        scan.components.iter().all(|component| {
+            let Some(component_index) = sof.component_ids.iter().position(|&id| id == component.id)
+            else {
+                // External coding tables cannot repair an unknown component;
+                // leave that structural error to normal tile validation.
+                return true;
+            };
+            let quant_present = sof.sof_kind == SofKind::Lossless
+                || sof
+                    .quant_table_ids
+                    .get(component_index)
+                    .and_then(|&id| self.quant.get(usize::from(id)))
+                    .copied()
+                    .unwrap_or(false);
+            let dc_present = self
+                .huffman_dc
+                .get(usize::from(component.dc_table))
+                .copied()
+                .unwrap_or(false);
+            let ac_present = self
+                .huffman_ac
+                .get(usize::from(component.ac_table))
+                .copied()
+                .unwrap_or(false);
+            match sof.sof_kind {
+                SofKind::Lossless => dc_present,
+                SofKind::Progressive8 | SofKind::Progressive12 if scan.ss == 0 => {
+                    quant_present && dc_present
+                }
+                SofKind::Progressive8 | SofKind::Progressive12 => quant_present && ac_present,
+                SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12 => {
+                    quant_present && dc_present && ac_present
+                }
+            }
+        })
+    }
+}
+
+/// Report whether the initial scan can resolve its referenced coding tables
+/// from the tile itself. A false result identifies a TIFF abbreviated stream
+/// that needs shared `JPEGTables` even when it retains SOI and EOI markers.
+pub(super) fn stream_has_complete_coding_tables(input: &[u8]) -> Result<bool, JpegError> {
+    let mut tables = CodingTablePresence::default();
+    let mut sof = None;
+    for segment in iter_segments(input) {
+        let segment = segment?;
+        match segment.marker {
+            0xdb | 0xc4 => for_each_table_definition(
+                segment.marker,
+                segment.payload,
+                segment.payload_offset,
+                |definition| {
+                    tables.observe(definition);
+                    Ok(())
+                },
+            )?,
+            marker if is_sof_marker(marker) => {
+                sof = Some(parse_sof_info_allowing_zero_dimensions(
+                    marker,
+                    segment.payload,
+                    segment.payload_offset,
+                )?);
+            }
+            0xda => {
+                let Some(sof) = sof.as_ref() else {
+                    // Supplying coding tables cannot repair a missing SOF.
+                    return Ok(true);
+                };
+                let scan = parse_scan_header(segment.payload, segment.payload_offset)?;
+                // The initial scan is the table-state boundary supplied by
+                // TIFF JPEGTables. Later progressive scans may legitimately
+                // redefine their own tables inside the tile.
+                return Ok(tables.satisfies_scan(sof, &scan));
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
 }
 
 fn for_each_dqt_definition<'a>(
@@ -354,13 +451,6 @@ fn conflicting_duplicate_error(definition: TableDefinition<'_>) -> JpegError {
         table: definition.key.table_kind(),
         id: definition.key.id(),
     }
-}
-
-fn parse_dri_payload_from_segment(segment: &[u8]) -> Option<u16> {
-    if segment.len() < 6 || segment[0] != 0xff || segment[1] != 0xdd {
-        return None;
-    }
-    Some(u16::from_be_bytes([segment[4], segment[5]]))
 }
 
 #[cfg(test)]

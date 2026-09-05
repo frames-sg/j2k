@@ -5,17 +5,13 @@ use crate::metal_types::prelude::*;
 
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
-use crate::metal_types::{Buffer, CommandBufferRef, CommandQueue, ComputePipelineState, Device};
+use crate::metal_types::{Buffer, CommandBufferRef, CommandQueue, Device};
 use j2k_metal_support::{
-    checked_command_queue, checked_shared_buffer, checked_shared_buffer_with_slice,
-    commit_and_wait, wait_for_completion, MetalPipelineLoader, MetalSupportError,
-};
-use j2k_native::{
-    ht_uvlc_encode_table, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0,
-    ht_vlc_encode_table1, ht_vlc_table0, ht_vlc_table1,
+    checked_command_queue, checked_shared_buffer, commit_and_wait, wait_for_completion,
+    MetalSupportError,
 };
 
 use crate::{
@@ -24,7 +20,14 @@ use crate::{
     Error,
 };
 
-use super::{abi::J2kHtUvlcEncodeTableEntry, shader_source::shader_source};
+mod decode;
+pub(in crate::engine) use decode::DecodeKernels;
+mod encode;
+pub(in crate::engine) use encode::EncodeKernels;
+mod profile;
+use profile::ClassicTier1ProfileKernels;
+mod buffers;
+use buffers::BufferKernels;
 
 #[cfg(test)]
 use j2k_metal_support::system_default_device;
@@ -35,111 +38,13 @@ thread_local! {
 }
 
 pub(crate) struct MetalRuntime {
+    decode: OnceLock<Result<DecodeKernels, MetalSupportError>>,
+    encode: OnceLock<Result<EncodeKernels, MetalSupportError>>,
+    profile: OnceLock<Result<ClassicTier1ProfileKernels, MetalSupportError>>,
+    buffers: OnceLock<Result<BufferKernels, MetalSupportError>>,
+
     pub(super) device: Device,
     pub(crate) queue: CommandQueue,
-    pub(super) zero_u32_buffer: ComputePipelineState,
-    pub(super) validate_bytes_equal: ComputePipelineState,
-    pub(super) copy_interleaved_padded: ComputePipelineState,
-    pub(super) lossless_deinterleave_to_planes: ComputePipelineState,
-    pub(super) lossless_deinterleave_rct_rgb8_to_planes: ComputePipelineState,
-    pub(super) lossless_extract_coefficients: ComputePipelineState,
-    pub(super) pack_gray8: ComputePipelineState,
-    pub(super) pack_rgb8: ComputePipelineState,
-    pub(super) pack_mct_rgb8: ComputePipelineState,
-    pub(super) pack_mct_rgb8_batched: ComputePipelineState,
-    pub(super) pack_rgb_opaque_rgba8: ComputePipelineState,
-    pub(super) pack_rgba8: ComputePipelineState,
-    pub(super) pack_gray16: ComputePipelineState,
-    pub(super) pack_rgb16: ComputePipelineState,
-    pub(super) pack_u8_repeated_gray: ComputePipelineState,
-    pub(super) pack_u16_repeated_gray: ComputePipelineState,
-    pub(super) classic_cleanup_plain_batched: ComputePipelineState,
-    pub(super) classic_cleanup_batched: ComputePipelineState,
-    pub(super) classic_cleanup_plain_repeated_batched: ComputePipelineState,
-    pub(super) classic_cleanup_plain_dev_repeated_batched: ComputePipelineState,
-    pub(super) classic_cleanup_repeated_batched: ComputePipelineState,
-    pub(super) classic_store_repeated_batched: ComputePipelineState,
-    pub(super) idwt_interleave: ComputePipelineState,
-    pub(super) idwt_reversible53_horizontal: ComputePipelineState,
-    pub(super) idwt_reversible53_vertical: ComputePipelineState,
-    pub(super) idwt_interleave_batched: ComputePipelineState,
-    pub(super) idwt_reversible53_horizontal_batched: ComputePipelineState,
-    pub(super) idwt_reversible53_vertical_batched: ComputePipelineState,
-    pub(super) idwt_irreversible97_horizontal_scale: ComputePipelineState,
-    pub(super) idwt_irreversible97_vertical_scale: ComputePipelineState,
-    pub(super) idwt_irreversible97_horizontal_step: ComputePipelineState,
-    pub(super) idwt_irreversible97_vertical_step: ComputePipelineState,
-    pub(super) fdwt53_horizontal: ComputePipelineState,
-    pub(super) fdwt53_vertical: ComputePipelineState,
-    pub(super) fdwt53_horizontal_batched: ComputePipelineState,
-    pub(super) fdwt53_vertical_batched: ComputePipelineState,
-    pub(super) fdwt97_lift_horizontal: ComputePipelineState,
-    pub(super) fdwt97_lift_vertical: ComputePipelineState,
-    pub(super) fdwt97_deinterleave_horizontal: ComputePipelineState,
-    pub(super) fdwt97_deinterleave_vertical: ComputePipelineState,
-    pub(super) inverse_mct: ComputePipelineState,
-    pub(super) forward_rct: ComputePipelineState,
-    pub(super) forward_ict: ComputePipelineState,
-    pub(super) encode_deinterleave_mct: ComputePipelineState,
-    pub(super) quantize_subband: ComputePipelineState,
-    pub(super) store_component: ComputePipelineState,
-    pub(super) store_component_repeated: ComputePipelineState,
-    pub(super) store_component_repeated_gray_u8: ComputePipelineState,
-    pub(super) store_component_repeated_gray_u16: ComputePipelineState,
-    pub(super) store_component_repeated_gray_i16: ComputePipelineState,
-    pub(super) store_component_repeated_gray_u8_contiguous: ComputePipelineState,
-    pub(super) store_component_repeated_gray_u16_contiguous: ComputePipelineState,
-    pub(super) store_component_gray_u8: ComputePipelineState,
-    pub(super) store_component_gray_u16: ComputePipelineState,
-    pub(super) store_component_gray_i16: ComputePipelineState,
-    pub(super) store_native_rgb_batch_u8: ComputePipelineState,
-    pub(super) store_native_rgb_batch_u16: ComputePipelineState,
-    pub(super) store_native_rgb_batch_i16: ComputePipelineState,
-    pub(super) store_native_rgba_batch_u8: ComputePipelineState,
-    pub(super) store_native_rgba_batch_u16: ComputePipelineState,
-    pub(super) store_native_rgba_batch_i16: ComputePipelineState,
-    pub(super) ht_cleanup: ComputePipelineState,
-    pub(super) ht_cleanup_batched: ComputePipelineState,
-    pub(super) ht_cleanup_batched_cleanup_only: ComputePipelineState,
-    pub(super) ht_cleanup_batched_sigprop: ComputePipelineState,
-    pub(super) ht_cleanup_batched_magref: ComputePipelineState,
-    pub(super) ht_cleanup_repeated_batched_cleanup_only: ComputePipelineState,
-    pub(super) ht_cleanup_repeated_batched_sigprop: ComputePipelineState,
-    pub(super) ht_cleanup_repeated_batched_magref: ComputePipelineState,
-    pub(super) classic_encode_code_block: ComputePipelineState,
-    pub(super) classic_encode_code_blocks: ComputePipelineState,
-    pub(super) classic_encode_code_blocks_32: ComputePipelineState,
-    pub(super) classic_encode_code_blocks_bypass_32: ComputePipelineState,
-    pub(super) classic_encode_code_blocks_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_density_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_raw_pack_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_arithmetic_pack_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_symbol_plan_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_pass_plan_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_token_emit_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_split_token_emit_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_split_mq_byte_token_emit_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_token_pack_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_tier1_split_token_pack_bypass_u16_32: ComputePipelineState,
-    pub(super) classic_encode_code_blocks_style0: ComputePipelineState,
-    pub(super) classic_encode_code_blocks_style0_32: ComputePipelineState,
-    pub(super) ht_encode_code_block: ComputePipelineState,
-    pub(super) ht_encode_code_blocks: ComputePipelineState,
-    pub(super) packet_block_prepare_resident_classic: ComputePipelineState,
-    pub(super) packet_block_prepare_resident_ht: ComputePipelineState,
-    pub(super) packet_encode: ComputePipelineState,
-    pub(super) packet_encode_batched: ComputePipelineState,
-    pub(super) packet_encode_resident_classic_batched: ComputePipelineState,
-    pub(super) packet_payload_copy_batched: ComputePipelineState,
-    pub(super) lossless_codestream_assemble: ComputePipelineState,
-    pub(super) lossless_codestream_assemble_batched: ComputePipelineState,
-    pub(super) ht_vlc_table0: Buffer,
-    pub(super) ht_vlc_table1: Buffer,
-    pub(super) ht_uvlc_table0: Buffer,
-    pub(super) ht_uvlc_table1: Buffer,
-    pub(super) ht_vlc_encode_table0: Buffer,
-    pub(super) ht_vlc_encode_table1: Buffer,
-    pub(super) ht_uvlc_encode_table: Buffer,
     pub(super) tier1_dummy_buffer: Buffer,
     pub(super) buffer_pools: MetalBufferPools,
     pub(in crate::engine) prepared_ht_execution_cache:
@@ -148,7 +53,8 @@ pub(crate) struct MetalRuntime {
 
 // SAFETY: Every retained Metal object in the runtime is documented by Metal
 // as usable across threads. CPU-side mutable pool/cache state is protected by
-// its own mutex, pipelines and lookup buffers are immutable after creation,
+// its own mutex. OnceLock serializes each kernel group's initialization;
+// pipelines and lookup buffers are immutable after successful initialization,
 // and command submission remains serialized by each Metal queue.
 unsafe impl Send for MetalRuntime {}
 // SAFETY: Shared references expose only immutable Metal handles or
@@ -168,190 +74,51 @@ impl MetalRuntime {
         Self::new_with_device_and_queue(device, queue)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pipeline inventory construction mirrors the fixed Metal runtime ABI"
-    )]
     pub(crate) fn new_with_device_and_queue(
         device: &Device,
         queue: CommandQueue,
     ) -> Result<Self, MetalSupportError> {
-        let shader_source = shader_source();
-        let loader = MetalPipelineLoader::new(device, &shader_source)?;
-        let pipeline = |name: &str| loader.pipeline(name);
-        let ht_uvlc_encode_rows = (*ht_uvlc_encode_table()).map(J2kHtUvlcEncodeTableEntry::from);
         Ok(Self {
             device: device.clone(),
             queue,
-            zero_u32_buffer: pipeline("j2k_zero_u32_buffer")?,
-            validate_bytes_equal: pipeline("j2k_validate_bytes_equal")?,
-            copy_interleaved_padded: pipeline("j2k_copy_interleaved_padded")?,
-            lossless_deinterleave_to_planes: pipeline("j2k_lossless_deinterleave_to_planes")?,
-            lossless_deinterleave_rct_rgb8_to_planes: pipeline(
-                "j2k_lossless_deinterleave_rct_rgb8_to_planes",
-            )?,
-            lossless_extract_coefficients: pipeline("j2k_lossless_extract_coefficients")?,
-            pack_gray8: pipeline("j2k_pack_gray8")?,
-            pack_rgb8: pipeline("j2k_pack_rgb8")?,
-            pack_mct_rgb8: pipeline("j2k_pack_mct_rgb8")?,
-            pack_mct_rgb8_batched: pipeline("j2k_pack_mct_rgb8_batched")?,
-            pack_rgb_opaque_rgba8: pipeline("j2k_pack_rgb_opaque_rgba8")?,
-            pack_rgba8: pipeline("j2k_pack_rgba8")?,
-            pack_gray16: pipeline("j2k_pack_gray16")?,
-            pack_rgb16: pipeline("j2k_pack_rgb16")?,
-            pack_u8_repeated_gray: pipeline("j2k_pack_u8_repeated_gray")?,
-            pack_u16_repeated_gray: pipeline("j2k_pack_u16_repeated_gray")?,
-            classic_cleanup_plain_batched: pipeline("j2k_decode_classic_cleanup_plain_batched")?,
-            classic_cleanup_batched: pipeline("j2k_decode_classic_cleanup_batched")?,
-            classic_cleanup_plain_repeated_batched: pipeline(
-                "j2k_decode_classic_cleanup_plain_repeated_batched",
-            )?,
-            classic_cleanup_plain_dev_repeated_batched: pipeline(
-                "j2k_decode_classic_cleanup_plain_dev_repeated_batched",
-            )?,
-            classic_cleanup_repeated_batched: pipeline(
-                "j2k_decode_classic_cleanup_repeated_batched",
-            )?,
-            classic_store_repeated_batched: pipeline("j2k_store_classic_repeated_batched")?,
-            idwt_interleave: pipeline("j2k_idwt_interleave")?,
-            idwt_reversible53_horizontal: pipeline("j2k_idwt_reversible53_horizontal_pass")?,
-            idwt_reversible53_vertical: pipeline("j2k_idwt_reversible53_vertical_pass")?,
-            idwt_interleave_batched: pipeline("j2k_idwt_interleave_batched")?,
-            idwt_reversible53_horizontal_batched: pipeline(
-                "j2k_idwt_reversible53_horizontal_pass_batched",
-            )?,
-            idwt_reversible53_vertical_batched: pipeline(
-                "j2k_idwt_reversible53_vertical_pass_batched",
-            )?,
-            idwt_irreversible97_horizontal_scale: pipeline(
-                "j2k_idwt_irreversible97_horizontal_scale",
-            )?,
-            idwt_irreversible97_vertical_scale: pipeline("j2k_idwt_irreversible97_vertical_scale")?,
-            idwt_irreversible97_horizontal_step: pipeline(
-                "j2k_idwt_irreversible97_horizontal_step",
-            )?,
-            idwt_irreversible97_vertical_step: pipeline("j2k_idwt_irreversible97_vertical_step")?,
-            fdwt53_horizontal: pipeline("j2k_forward_dwt53_horizontal")?,
-            fdwt53_vertical: pipeline("j2k_forward_dwt53_vertical")?,
-            fdwt53_horizontal_batched: pipeline("j2k_forward_dwt53_horizontal_batched")?,
-            fdwt53_vertical_batched: pipeline("j2k_forward_dwt53_vertical_batched")?,
-            fdwt97_lift_horizontal: pipeline("j2k_forward_dwt97_lift_horizontal")?,
-            fdwt97_lift_vertical: pipeline("j2k_forward_dwt97_lift_vertical")?,
-            fdwt97_deinterleave_horizontal: pipeline("j2k_forward_dwt97_deinterleave_horizontal")?,
-            fdwt97_deinterleave_vertical: pipeline("j2k_forward_dwt97_deinterleave_vertical")?,
-            inverse_mct: pipeline("j2k_inverse_mct")?,
-            forward_rct: pipeline("j2k_forward_rct")?,
-            forward_ict: pipeline("j2k_forward_ict")?,
-            encode_deinterleave_mct: pipeline("j2k_encode_deinterleave_mct")?,
-            quantize_subband: pipeline("j2k_quantize_subband")?,
-            store_component: pipeline("j2k_store_component")?,
-            store_component_repeated: pipeline("j2k_store_component_repeated")?,
-            store_component_repeated_gray_u8: pipeline("j2k_store_component_repeated_gray_u8")?,
-            store_component_repeated_gray_u16: pipeline("j2k_store_component_repeated_gray_u16")?,
-            store_component_repeated_gray_i16: pipeline("j2k_store_component_repeated_gray_i16")?,
-            store_component_repeated_gray_u8_contiguous: pipeline(
-                "j2k_store_component_repeated_gray_u8_contiguous",
-            )?,
-            store_component_repeated_gray_u16_contiguous: pipeline(
-                "j2k_store_component_repeated_gray_u16_contiguous",
-            )?,
-            store_component_gray_u8: pipeline("j2k_store_component_gray_u8")?,
-            store_component_gray_u16: pipeline("j2k_store_component_gray_u16")?,
-            store_component_gray_i16: pipeline("j2k_store_component_gray_i16")?,
-            store_native_rgb_batch_u8: pipeline("j2k_store_native_rgb_batch_u8")?,
-            store_native_rgb_batch_u16: pipeline("j2k_store_native_rgb_batch_u16")?,
-            store_native_rgb_batch_i16: pipeline("j2k_store_native_rgb_batch_i16")?,
-            store_native_rgba_batch_u8: pipeline("j2k_store_native_rgba_batch_u8")?,
-            store_native_rgba_batch_u16: pipeline("j2k_store_native_rgba_batch_u16")?,
-            store_native_rgba_batch_i16: pipeline("j2k_store_native_rgba_batch_i16")?,
-            ht_cleanup: pipeline("j2k_decode_ht_cleanup")?,
-            ht_cleanup_batched: pipeline("j2k_decode_ht_cleanup_batched")?,
-            ht_cleanup_batched_cleanup_only: pipeline(
-                "j2k_decode_ht_cleanup_batched_cleanup_only",
-            )?,
-            ht_cleanup_batched_sigprop: pipeline("j2k_decode_ht_cleanup_batched_sigprop")?,
-            ht_cleanup_batched_magref: pipeline("j2k_decode_ht_cleanup_batched_magref")?,
-            ht_cleanup_repeated_batched_cleanup_only: pipeline(
-                "j2k_decode_ht_cleanup_repeated_batched_cleanup_only",
-            )?,
-            ht_cleanup_repeated_batched_sigprop: pipeline(
-                "j2k_decode_ht_cleanup_repeated_batched_sigprop",
-            )?,
-            ht_cleanup_repeated_batched_magref: pipeline(
-                "j2k_decode_ht_cleanup_repeated_batched_magref",
-            )?,
-            classic_encode_code_block: pipeline("j2k_encode_classic_code_block")?,
-            classic_encode_code_blocks: pipeline("j2k_encode_classic_code_blocks")?,
-            classic_encode_code_blocks_32: pipeline("j2k_encode_classic_code_blocks_32")?,
-            classic_encode_code_blocks_bypass_32: pipeline(
-                "j2k_encode_classic_code_blocks_bypass_32",
-            )?,
-            classic_encode_code_blocks_bypass_u16_32: pipeline(
-                "j2k_encode_classic_code_blocks_bypass_u16_32",
-            )?,
-            classic_tier1_density_bypass_u16_32: pipeline(
-                "j2k_profile_classic_tier1_density_bypass_u16_32",
-            )?,
-            classic_tier1_raw_pack_bypass_u16_32: pipeline(
-                "j2k_profile_classic_tier1_raw_pack_bypass_u16_32",
-            )?,
-            classic_tier1_arithmetic_pack_bypass_u16_32: pipeline(
-                "j2k_profile_classic_tier1_arithmetic_pack_bypass_u16_32",
-            )?,
-            classic_tier1_symbol_plan_bypass_u16_32: pipeline(
-                "j2k_plan_classic_tier1_symbols_bypass_u16_32",
-            )?,
-            classic_tier1_pass_plan_bypass_u16_32: pipeline(
-                "j2k_plan_classic_tier1_passes_bypass_u16_32",
-            )?,
-            classic_tier1_token_emit_bypass_u16_32: pipeline(
-                "j2k_emit_classic_tier1_tokens_bypass_u16_32",
-            )?,
-            classic_tier1_split_token_emit_bypass_u16_32: pipeline(
-                "j2k_emit_classic_tier1_split_tokens_bypass_u16_32",
-            )?,
-            classic_tier1_split_mq_byte_token_emit_bypass_u16_32: pipeline(
-                "j2k_emit_classic_tier1_split_mq_byte_raw_tokens_bypass_u16_32",
-            )?,
-            classic_tier1_token_pack_bypass_u16_32: pipeline(
-                "j2k_pack_classic_tier1_tokens_bypass_u16_32",
-            )?,
-            classic_tier1_split_token_pack_bypass_u16_32: pipeline(
-                "j2k_pack_classic_tier1_split_tokens_bypass_u16_32",
-            )?,
-            classic_encode_code_blocks_style0: pipeline("j2k_encode_classic_code_blocks_style0")?,
-            classic_encode_code_blocks_style0_32: pipeline(
-                "j2k_encode_classic_code_blocks_style0_32",
-            )?,
-            ht_encode_code_block: pipeline("j2k_encode_ht_code_block")?,
-            ht_encode_code_blocks: pipeline("j2k_encode_ht_code_blocks")?,
-            packet_block_prepare_resident_classic: pipeline(
-                "j2k_prepare_packet_blocks_from_classic_status",
-            )?,
-            packet_block_prepare_resident_ht: pipeline("j2k_prepare_packet_blocks_from_ht_status")?,
-            packet_encode: pipeline("j2k_encode_packetization")?,
-            packet_encode_batched: pipeline("j2k_encode_packetization_batched")?,
-            packet_encode_resident_classic_batched: pipeline(
-                "j2k_encode_packetization_resident_classic_batched",
-            )?,
-            packet_payload_copy_batched: pipeline("j2k_copy_packet_payload_batched")?,
-            lossless_codestream_assemble: pipeline("j2k_assemble_lossless_classic_codestream")?,
-            lossless_codestream_assemble_batched: pipeline(
-                "j2k_assemble_lossless_codestream_batched",
-            )?,
-            ht_vlc_table0: checked_shared_buffer_with_slice(device, ht_vlc_table0())?,
-            ht_vlc_table1: checked_shared_buffer_with_slice(device, ht_vlc_table1())?,
-            ht_uvlc_table0: checked_shared_buffer_with_slice(device, ht_uvlc_table0())?,
-            ht_uvlc_table1: checked_shared_buffer_with_slice(device, ht_uvlc_table1())?,
-            ht_vlc_encode_table0: checked_shared_buffer_with_slice(device, ht_vlc_encode_table0())?,
-            ht_vlc_encode_table1: checked_shared_buffer_with_slice(device, ht_vlc_encode_table1())?,
-            ht_uvlc_encode_table: checked_shared_buffer_with_slice(device, &ht_uvlc_encode_rows)?,
+            decode: OnceLock::new(),
+            encode: OnceLock::new(),
+            profile: OnceLock::new(),
+            buffers: OnceLock::new(),
             tier1_dummy_buffer: checked_shared_buffer(device, 1)?,
             buffer_pools: MetalBufferPools::new(device),
             prepared_ht_execution_cache: Mutex::new(
                 super::decode_dispatch::PreparedMetalHtExecutionCache::new(),
             ),
         })
+    }
+
+    pub(in crate::engine) fn decode(&self) -> Result<&DecodeKernels, Error> {
+        self.decode
+            .get_or_init(|| DecodeKernels::new(&self.device))
+            .as_ref()
+            .map_err(runtime_initialization_error)
+    }
+
+    pub(in crate::engine) fn encode(&self) -> Result<&EncodeKernels, Error> {
+        self.encode
+            .get_or_init(|| EncodeKernels::new(&self.device))
+            .as_ref()
+            .map_err(runtime_initialization_error)
+    }
+
+    pub(in crate::engine) fn profile(&self) -> Result<&ClassicTier1ProfileKernels, Error> {
+        self.profile
+            .get_or_init(|| ClassicTier1ProfileKernels::new(&self.device))
+            .as_ref()
+            .map_err(runtime_initialization_error)
+    }
+
+    pub(in crate::engine) fn buffers(&self) -> Result<&BufferKernels, Error> {
+        self.buffers
+            .get_or_init(|| BufferKernels::new(&self.device))
+            .as_ref()
+            .map_err(runtime_initialization_error)
     }
 
     pub(crate) fn command_queue(&self) -> &crate::metal_types::CommandQueueRef {
@@ -484,22 +251,85 @@ mod resource_profile_tests {
     use crate::metal_types::prelude::*;
 
     #[test]
+    fn decode_initializes_only_its_own_group_and_reuses_it() {
+        let runtime = MetalRuntime::new().expect("Metal runtime");
+        assert!(runtime.decode.get().is_none());
+        assert!(runtime.encode.get().is_none());
+        assert!(runtime.profile.get().is_none());
+        assert!(runtime.buffers.get().is_none());
+        let first = runtime.decode().expect("decode kernels");
+        let second = runtime.decode().expect("cached decode kernels");
+        assert!(std::ptr::eq(first, second));
+        assert!(runtime.encode.get().is_none());
+        assert!(runtime.profile.get().is_none());
+        assert!(runtime.buffers.get().is_none());
+    }
+
+    #[test]
+    fn failed_optional_groups_do_not_block_decode_or_buffer_operations() {
+        let runtime = MetalRuntime::new().expect("Metal runtime");
+        let failure = j2k_metal_support::MetalSupportError::ShaderLibrary {
+            message: "test optional compiler failure".into(),
+        };
+        assert!(runtime.encode.set(Err(failure.clone())).is_ok());
+        assert!(runtime.profile.set(Err(failure)).is_ok());
+        runtime
+            .decode()
+            .expect("decode independent of optional groups");
+        runtime
+            .buffers()
+            .expect("buffer operations independent of profiling");
+        for error in [runtime.encode().err(), runtime.profile().err()] {
+            assert!(matches!(
+                error,
+                Some(crate::Error::MetalSupport {
+                    source: j2k_metal_support::MetalSupportError::ShaderLibrary { .. },
+                    ..
+                })
+            ));
+        }
+        // Failures remain cached; a later decode does not retry optional initialization.
+        runtime.decode().expect("decode remains usable");
+        assert!(runtime.encode.get().is_some_and(Result::is_err));
+        assert!(runtime.profile.get().is_some_and(Result::is_err));
+    }
+
+    #[test]
     fn key_tier1_pipeline_static_resources_are_queryable() {
         let device = system_default_device().expect("P6 resource test requires Metal");
         let runtime = MetalRuntime::new_with_device(&device).expect("create Metal runtime");
         let pipelines = [
             (
                 "metal-ht-cleanup-decode",
-                &runtime.ht_cleanup_batched_cleanup_only,
+                &runtime
+                    .decode()
+                    .expect("decode kernels")
+                    .ht_cleanup_batched_cleanup_only,
             ),
-            ("metal-ht-encode", &runtime.ht_encode_code_blocks),
+            (
+                "metal-ht-encode",
+                &runtime
+                    .encode()
+                    .expect("encode kernels")
+                    .ht_encode_code_blocks,
+            ),
             (
                 "metal-classic-decode",
-                &runtime.classic_cleanup_plain_batched,
+                &runtime
+                    .decode()
+                    .expect("decode kernels")
+                    .classic_cleanup_plain_batched,
             ),
             (
                 "metal-classic-encode",
-                &runtime.classic_encode_code_blocks_32,
+                &runtime
+                    .encode()
+                    .expect("encode kernels")
+                    .classic_encode_code_blocks_32,
+            ),
+            (
+                "metal-classic-profile",
+                &runtime.profile().expect("profiling kernels").density,
             ),
         ];
 

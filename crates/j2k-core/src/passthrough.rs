@@ -14,6 +14,15 @@ pub enum CompressedTransferSyntax {
     JpegBaseline8,
     /// Sequential JPEG beyond the baseline profile.
     JpegExtendedSequential,
+    /// Progressive Huffman-coded JPEG.
+    JpegProgressive,
+    /// Lossless Huffman-coded JPEG using predictive coding.
+    JpegLossless,
+    /// Lossless Huffman-coded JPEG restricted to selection value 1.
+    ///
+    /// This is the bitstream subset used by the DICOM JPEG Lossless SV1
+    /// transfer syntax.
+    JpegLosslessSv1,
     /// Classic JPEG 2000 codestream using reversible coding.
     Jpeg2000Lossless,
     /// Classic JPEG 2000 codestream using irreversible coding.
@@ -28,7 +37,26 @@ impl CompressedTransferSyntax {
     /// True when the syntax profile is lossless.
     #[must_use]
     pub const fn is_lossless(self) -> bool {
-        matches!(self, Self::Jpeg2000Lossless | Self::HtJpeg2000Lossless)
+        matches!(
+            self,
+            Self::JpegLossless
+                | Self::JpegLosslessSv1
+                | Self::Jpeg2000Lossless
+                | Self::HtJpeg2000Lossless
+        )
+    }
+
+    /// True when the syntax belongs to the classic JPEG family.
+    #[must_use]
+    pub const fn is_jpeg_family(self) -> bool {
+        matches!(
+            self,
+            Self::JpegBaseline8
+                | Self::JpegExtendedSequential
+                | Self::JpegProgressive
+                | Self::JpegLossless
+                | Self::JpegLosslessSv1
+        )
     }
 
     /// True when the syntax belongs to the JPEG 2000 family.

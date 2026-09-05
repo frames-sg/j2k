@@ -364,7 +364,8 @@ pub(crate) fn encode_classic_tier1_code_blocks(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
+        let classic_encode_pipeline =
+            classic_encode_code_blocks_pipeline(runtime.encode()?, &batch_jobs);
         encoder.setComputePipelineState(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -542,7 +543,8 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
+        let classic_encode_pipeline =
+            classic_encode_code_blocks_pipeline(runtime.encode()?, &batch_jobs);
         encoder.setComputePipelineState(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -677,14 +679,14 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         label_command_buffer(&command_buffer, "j2k htj2k resident tier1");
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
-        let pipeline = &runtime.ht_encode_code_blocks;
+        let pipeline = &runtime.encode()?.ht_encode_code_blocks;
         encoder.setComputePipelineState(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
-        encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
-        encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
-        encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
+        encoder.set_buffer(3, Some(&runtime.encode()?.ht_vlc_encode_table0), 0);
+        encoder.set_buffer(4, Some(&runtime.encode()?.ht_vlc_encode_table1), 0);
+        encoder.set_buffer(5, Some(&runtime.encode()?.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         encoder.set_bytes::<u32>(7, &job_count);
         dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
@@ -772,7 +774,7 @@ pub(crate) fn encode_classic_tier1_code_block(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.classic_encode_code_block);
+        encoder.setComputePipelineState(&runtime.encode()?.classic_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_bytes::<J2kClassicEncodeParams>(2, &params);
@@ -1050,13 +1052,13 @@ pub(crate) fn encode_ht_cleanup_code_block(
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.ht_encode_code_block);
+        encoder.setComputePipelineState(&runtime.encode()?.ht_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_bytes::<J2kHtEncodeParams>(2, &params);
-        encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
-        encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
-        encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
+        encoder.set_buffer(3, Some(&runtime.encode()?.ht_vlc_encode_table0), 0);
+        encoder.set_buffer(4, Some(&runtime.encode()?.ht_vlc_encode_table1), 0);
+        encoder.set_buffer(5, Some(&runtime.encode()?.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         dispatch_single_thread(&encoder);
         encoder.endEncoding();

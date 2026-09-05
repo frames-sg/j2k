@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::metal_types::prelude::MTLDevice;
 use std::ops::Range;
 
 use super::{
@@ -75,17 +76,11 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<Option<SubmittedResidentLosslessChunkPipeline>, crate::Error> {
-    let batch_limit = inflight_tiles.max(1);
-    let chunk_count = planned.len().div_ceil(batch_limit);
-    let mut budget =
-        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident classic chunk plan");
-    let mut chunk_ranges =
-        budget.try_vec(chunk_count, "J2K Metal resident classic chunk ranges")?;
-    chunk_ranges.extend(
-        (0..planned.len())
-            .step_by(batch_limit)
-            .map(|start| start..(start + batch_limit).min(planned.len())),
-    );
+    let allocation_cap = session
+        .device()
+        .maxBufferLength()
+        .min(j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES);
+    let chunk_ranges = classic_chunk_ranges(&planned, inflight_tiles, allocation_cap)?;
     SubmittedResidentLosslessChunkPipeline::new(
         planned,
         chunk_ranges,
@@ -94,6 +89,39 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
         stats,
     )
     .map(Some)
+}
+
+fn classic_chunk_ranges(
+    planned: &[PlannedResidentLosslessBufferEncode],
+    inflight_tiles: usize,
+    allocation_cap: usize,
+) -> Result<Vec<Range<usize>>, crate::Error> {
+    let batch_limit = inflight_tiles.max(1);
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident classic chunk plan");
+    let mut chunk_ranges =
+        budget.try_vec(planned.len(), "J2K Metal resident classic chunk ranges")?;
+    let mut start = 0;
+    let mut bytes = 0usize;
+    for (index, tile) in planned.iter().enumerate() {
+        // This matches the tight Tier-1 capacity used by the resident submitter.
+        // Splitting here retains tile order and the existing completion/retry
+        // ownership; a single oversized tile still reaches its typed error.
+        let tile_bytes =
+            super::resident_estimate::estimated_tier1_output_bytes(&tile.metadata.plan);
+        if index > start
+            && (index - start >= batch_limit || bytes.saturating_add(tile_bytes) > allocation_cap)
+        {
+            chunk_ranges.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(tile_bytes);
+    }
+    if start < planned.len() {
+        chunk_ranges.push(start..planned.len());
+    }
+    Ok(chunk_ranges)
 }
 
 pub(super) struct SubmittedResidentLosslessChunkPipeline {

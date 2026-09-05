@@ -21,13 +21,6 @@ pub(crate) fn try_clone_slice<T: Clone>(values: &[T], what: &'static str) -> Res
     Ok(cloned)
 }
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-pub(crate) fn try_single<T>(value: T, what: &'static str) -> Result<Vec<T>, Error> {
-    let mut values = try_vec(1, what)?;
-    values.push(value);
-    Ok(values)
-}
-
 #[cfg(test)]
 mod tests {
     use super::try_vec;

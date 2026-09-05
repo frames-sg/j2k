@@ -1,7 +1,7 @@
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_j2k_engine::{
-    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
-    CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
+    CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeTables, CudaHtj2kEncodedCodeBlock,
+    CudaHtj2kPacketizationBlock, CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState,
     CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
     J2kCudaEngine,
@@ -95,6 +95,130 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
     assert_eq!(encoded.refinement_length(), expected.refinement_length);
     assert_eq!(encoded.num_coding_passes(), expected.num_coding_passes);
     assert_eq!(encoded.num_zero_bitplanes(), expected.num_zero_bitplanes);
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn independently_decode_block(
+    block: &CudaHtj2kEncodedCodeBlock,
+    job: &CudaHtj2kEncodeCodeBlockJob,
+) -> Vec<f32> {
+    let mut decoded = vec![0.0; usize::try_from(job.width * job.height).expect("bounded area")];
+    decode_ht_code_block_scalar(
+        HtCodeBlockDecodeJob {
+            data: block.data(),
+            cleanup_length: block.cleanup_length(),
+            refinement_length: block.refinement_length(),
+            width: job.width,
+            height: job.height,
+            output_stride: usize::try_from(job.width).expect("bounded width"),
+            missing_bit_planes: block.num_zero_bitplanes(),
+            number_of_coding_passes: block.num_coding_passes(),
+            num_bitplanes: job.total_bitplanes,
+            roi_shift: 0,
+            stripe_causal: false,
+            strict: true,
+            dequantization_step: 1.0,
+        },
+        &mut decoded,
+    )
+    .expect("shaped CUDA block independently decodes");
+    decoded
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_htj2k_encode_batch_shapes_match_scalar_oracle_when_required() {
+    if !cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&context);
+    let resources = engine
+        .upload_htj2k_encode_resources(CudaHtj2kEncodeTables {
+            vlc_table0: ht_vlc_encode_table0(),
+            vlc_table1: ht_vlc_encode_table1(),
+            uvlc_table: ht_uvlc_encode_table_bytes(),
+        })
+        .expect("CUDA encode tables");
+    for (width, height) in [(1_u32, 1_u32), (32, 32), (64, 64), (65, 17)] {
+        let area = width * height;
+        for count in [1_u32, 17] {
+            let coefficients = (0..area * count)
+                .map(|index| {
+                    if index % 7 == 0 {
+                        0
+                    } else {
+                        // Odd magnitudes >= 5 are exactly representable by CUDA's
+                        // cleanup-bitplane-2 plus MagRef contract as well as cleanup-only.
+                        let magnitude = i32::try_from((index * 19 + index / area * 37 + 7) & 63)
+                            .expect("masked coefficient")
+                            * 2
+                            + 5;
+                        if index % 2 == 0 {
+                            magnitude
+                        } else {
+                            -magnitude
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            for passes in [1, 3] {
+                let jobs = (0..count)
+                    .map(|index| CudaHtj2kEncodeCodeBlockJob {
+                        coefficient_offset: index * area,
+                        width,
+                        height,
+                        total_bitplanes: 8,
+                        target_coding_passes: passes,
+                    })
+                    .collect::<Vec<_>>();
+                let encoded = engine
+                    .encode_htj2k_codeblocks_with_resources(&coefficients, &jobs, &resources)
+                    .expect("CUDA shaped batch encode");
+                assert_eq!(encoded.code_blocks().len(), jobs.len());
+                for (block, job) in encoded.code_blocks().iter().zip(&jobs) {
+                    let start = usize::try_from(job.coefficient_offset).expect("bounded offset");
+                    let end = start + usize::try_from(area).expect("bounded area");
+                    if passes == 1 {
+                        let expected = encode_ht_code_block_scalar(
+                            &coefficients[start..end],
+                            width,
+                            height,
+                            8,
+                        )
+                        .expect("scalar shaped cleanup encode");
+                        assert_eq!(
+                            block.data(),
+                            expected.data,
+                            "{width}x{height} batch {count}"
+                        );
+                        assert_eq!(block.cleanup_length(), expected.cleanup_length);
+                        assert_eq!(block.refinement_length(), expected.refinement_length);
+                        assert_eq!(block.num_coding_passes(), expected.num_coding_passes);
+                        assert_eq!(block.num_zero_bitplanes(), expected.num_zero_bitplanes);
+                    }
+                    // Scalar encode selects cleanup bitplane 1 for refinement, while
+                    // CUDA selects bitplane 2. Compare decoded coefficients for both
+                    // pass modes instead of treating these distinct bitstreams as equal.
+                    if block.num_coding_passes() == 0 {
+                        assert!(coefficients[start..end].iter().all(|value| *value == 0));
+                        assert!(block.data().is_empty());
+                        continue;
+                    }
+                    assert_eq!(block.num_coding_passes(), passes);
+                    let decoded = independently_decode_block(block, job);
+                    let expected = coefficients[start..end]
+                        .iter()
+                        .map(|value| f32::from(i16::try_from(*value).expect("bounded coefficient")))
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        decoded, expected,
+                        "{width}x{height} batch {count} passes {passes}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]

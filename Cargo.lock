@@ -2734,11 +2734,11 @@ dependencies = [
 name = "j2k-mpsgraph"
 version = "0.10.0"
 dependencies = [
- "block2",
  "j2k",
  "j2k-core",
  "j2k-metal",
  "j2k-metal-support",
+ "j2k-mpsgraph-support",
  "j2k-native",
  "j2k-test-support",
  "objc2",
@@ -2747,6 +2747,17 @@ dependencies = [
  "objc2-metal-performance-shaders",
  "objc2-metal-performance-shaders-graph",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "j2k-mpsgraph-support"
+version = "0.10.0"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
+ "objc2-metal-performance-shaders-graph",
 ]
 
 [[package]]
