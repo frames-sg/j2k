@@ -60,6 +60,8 @@ J2K_REQUIRE_METAL_BENCH=1 cargo bench --profile release-bench -p j2k-metal --ben
 
 The JSON records describe the removed candidate routes and historical A/B variables. HT scratch comparisons hold coalesced submission fixed; the command-coalescing comparison holds generic HT scratch fixed. Encode timing starts with private input already uploaded and excludes final codestream readback. Classic 1024×1024 batch-16 benchmarking hit the existing 512 MiB per-allocation cap (720,420,864 bytes requested); the expanded benchmark explicitly omits that unsupported cell and retains HT at that size.
 
+P29 subsequently added allocation-aware Classic scheduling and restored that benchmark cell; see [the follow-up measurements](P27-P29-metal-optimization-notes.md). The P20 measurements above describe the earlier implementation.
+
 ## Correctness and verification
 
 The new batched regression failed before implementation (16 inverse sequences versus two for an eight-image, two-level grayscale batch) and passes afterward. It covers Classic/HT, grayscale/RGB, batches one/eight, and even/odd dimensions.

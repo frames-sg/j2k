@@ -61,6 +61,7 @@ mod layouts;
 mod resident_batches;
 #[cfg(target_os = "macos")]
 mod resident_buffers;
+#[cfg(target_os = "macos")]
 mod resident_lossy;
 #[cfg(target_os = "macos")]
 mod resident_schedule;

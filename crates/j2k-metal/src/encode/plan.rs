@@ -148,10 +148,6 @@ fn lossless_dwt_level_plans(
     Ok(levels)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "encode planning validates and derives one internally consistent layout"
-)]
 pub(super) fn lossless_device_encode_plan(
     width: u32,
     height: u32,
@@ -161,6 +157,36 @@ pub(super) fn lossless_device_encode_plan(
     code_block_width: u32,
     code_block_height: u32,
 ) -> Result<Option<LosslessDeviceEncodePlan>, crate::Error> {
+    let num_decomposition_levels = lossless_decomposition_levels(
+        width,
+        height,
+        options.progression.packetization_order(),
+        options.max_decomposition_levels,
+    );
+    device_encode_plan_with_levels(
+        (width, height),
+        components,
+        bit_depth,
+        options,
+        (code_block_width, code_block_height),
+        num_decomposition_levels,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared band geometry keeps code-block offsets and packet ranges synchronized"
+)]
+pub(super) fn device_encode_plan_with_levels(
+    dimensions: (u32, u32),
+    components: u8,
+    bit_depth: u8,
+    options: J2kLosslessEncodeOptions,
+    code_block_dimensions: (u32, u32),
+    num_decomposition_levels: u8,
+) -> Result<Option<LosslessDeviceEncodePlan>, crate::Error> {
+    let (width, height) = dimensions;
+    let (code_block_width, code_block_height) = code_block_dimensions;
     if !matches!(
         options.block_coding_mode,
         J2kBlockCodingMode::Classic | J2kBlockCodingMode::HighThroughput
@@ -174,12 +200,6 @@ pub(super) fn lossless_device_encode_plan(
     }
     let code_block_width_exp = lossless_code_block_exp(code_block_width, "width")?;
     let code_block_height_exp = lossless_code_block_exp(code_block_height, "height")?;
-    let num_decomposition_levels = lossless_decomposition_levels(
-        width,
-        height,
-        options.progression.packetization_order(),
-        options.max_decomposition_levels,
-    );
     let progression_order = match options.progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
         J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,

@@ -67,6 +67,8 @@ override it.
 | `J2K_JPEG_METAL_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 same-host A/B switch recorded in validated promotion evidence; the promoted staged route has no runtime switch and production code no longer reads this variable. | No effect | Historical experiment control |
 | `J2K_METAL_DISABLE_FUSED_INPUT_MCT` | Historical P5 A/B switch retained in experiment records. The promoted route is now limited to the measured unsigned RGB8 512x512 geometry, and production code no longer reads this variable. | No effect | Historical experiment control |
 | `J2K_METAL_DISABLE_BATCHED_IDWT97` | Historical P20 A/B control for per-image versus bounded batched 9/7 reconstruction. Removed after promotion; production code no longer reads it. | No effect | Historical experiment control |
+| `J2K_METAL_DISABLE_IDWT97_CHUNKS` | Historical P27 A/B control for 16 MiB chunks above the existing batched reconstruction limit. Removed with the rejected candidate. | No effect | Historical experiment control |
+| `J2K_METAL_DISABLE_RESIDENT_LOSSY` | Historical P28 A/B control for staged versus resident transform-through-HT lossy encoding. Removed after promotion. | No effect | Historical experiment control |
 | `J2K_METAL_FORCE_SPLIT_ENCODE` | Historical P21 A/B control for HT command-buffer coalescing. Removed with the rejected candidate. | No effect | Historical experiment control |
 | `J2K_METAL_DISABLE_SMALL_HT_STATE` | Historical P21/P22 A/B control for width-specialized HT context arrays. Removed with the rejected candidate. | No effect | Historical experiment control |
 | `J2K_METAL_IDWT97_SMALL_GROUPS` | Historical P25 A/B control for 128-thread inverse-transform groups. Removed with the rejected candidate. | No effect | Historical experiment control |

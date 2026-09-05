@@ -64,10 +64,10 @@ break_ledger:
 reviews:
   j2k-core:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:0f9439b457b6d9f8"
+    added_fingerprint: "fnv1a64:4c5b5911f8006d02"
     hidden_count: 223
     hidden_fingerprint: "fnv1a64:5eeeb03b82ab7efe"
-    rationale: "Reviewed the complete ordinary j2k-core diff: it adds the typed CapabilityRejection taxonomy and backend-neutral DeviceCodestream contract required by A8 and the Metal engine boundary, without removing an existing item."
+    rationale: "Reviewed the additive CapabilityRejection and DeviceCodestream contracts plus progressive/lossless JPEG classifications and is_jpeg_family. CompressedTransferSyntax was already non-exhaustive; existing variants and signatures remain. Family/lossless classification and downstream JPEG inspection tests cover the additions."
     hidden_rationale: "Reviewed all 223 hidden j2k-core items after the host-allocation, capability, and resident-codestream ownership changes; the inventory is implementation-facing and its exact fingerprint is recorded here."
   j2k-profile:
     removed_fingerprint: "none"
@@ -139,10 +139,10 @@ reviews:
     hidden_rationale: "Reviewed all 555 hidden native-codec items after prepared-plan, packing, allocation, and error ownership consolidation plus bounded HT candidate encoding, reusable scalar workspace, and scoped parse-once region decode; the exact implementation-facing inventory is recorded here."
   j2k-jpeg:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:60e966955569e89e"
     hidden_count: 574
     hidden_fingerprint: "fnv1a64:b3e5271cb5d45bac"
-    rationale: "Reviewed the complete ordinary j2k-jpeg surface against v0.9.0; the safe SIMD refactor adds, removes, and changes no public API item."
+    rationale: "Reviewed the 27 additive JPEG items: lossless predictor inspection and bounded APP2 ICC extraction, insertion and replacement with a non-exhaustive typed error. Chunk sequencing, missing/duplicate chunks, allocation errors and preservation of unrelated markers are covered by the ICC tests; no baseline item is removed."
     hidden_rationale: "Reviewed the complete hidden JPEG inventory. The added benchmark-only gray, RGB, cropped 4:2:0, unaligned-row, and NEON IDCT surfaces validate the private safe SIMD kernels; codec entry points and downstream implementation contracts remain compatible with v0.9.0."
   j2k-tilecodec:
     removed_fingerprint: "none"
@@ -182,10 +182,10 @@ reviews:
   j2k-metal:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:07ac16c3eaae6cb8"
-    hidden_count: 316
-    hidden_fingerprint: "fnv1a64:62663f75c0f926b3"
+    hidden_count: 318
+    hidden_fingerprint: "fnv1a64:2e8c9d558edc1839"
     rationale: "Reviewed the complete ordinary j2k-metal diff: MetalEncodedJ2k now implements DeviceCodestream and exposes byte length and capacity so resident handoff no longer requires an adapter-to-adapter dependency."
-    hidden_rationale: "Reviewed all 316 hidden j2k-metal items after the private J2K engine boundary and resident-codestream contract were introduced; encode routing, retained resources, and adapter behavior are covered."
+    hidden_rationale: "Reviewed 318 implementation-facing items. The added HT candidate-set dispatch and dispatch counter follow the existing typed accelerator trait and preserve indexed all-or-nothing results. Resident Classic scheduling and lossy HT regressions pass with the current implementation; public statistics remain source-compatible and deprecated fields stay present."
   j2k-transcode-metal:
     removed_fingerprint: "fnv1a64:2f6cfda5651faaa3"
     added_fingerprint: "fnv1a64:3983c4b78178182b"
@@ -215,10 +215,10 @@ reviews:
     rationale: "Reviewed the complete ordinary and hidden j2k-ml inventories against v0.9.0; no public API item was added, removed, or changed."
   j2k-mpsgraph:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:40cc7c000d014f84"
+    added_fingerprint: "fnv1a64:17c22a129bf2cfb0"
     hidden_count: 0
     hidden_fingerprint: "none"
-    rationale: "Reviewed the complete first-release j2k-mpsgraph surface: it exposes static native tensor contracts, completed resident handoff, same-queue blocking and nonblocking execution, owned completion guards, typed failures, and the RGB8 reference workflow without adding codec behavior."
+    rationale: "Reviewed the 89-item first-release graph API. Reference-graph conveniences moved to development support before publication; the public API retains validated program binding, submission, completion and result extraction. Shared callback/input lifetime is delegated to j2k-mpsgraph-support, with early-drop and repeated-submission coverage. This package has no 0.9.0 registry baseline."
   j2k-mpsgraph-support:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:d39e3033a9bb543c"

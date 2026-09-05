@@ -517,7 +517,8 @@ fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
     assert_eq!(encoded.dispatch_report.forward_dwt97, 0);
     assert!(encoded.dispatch_report.quantize_subband > 0);
     assert_eq!(accelerator.combined_input_mct_attempts(), 1);
-    assert_eq!(accelerator.combined_input_mct_dispatches(), 0);
+    // The resident lossy route fuses input deinterleave and ICT on the GPU.
+    assert_eq!(accelerator.combined_input_mct_dispatches(), 1);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert_eq!(accelerator.forward_ict_attempts(), 1);

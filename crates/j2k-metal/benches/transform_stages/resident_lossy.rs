@@ -94,7 +94,7 @@ pub(super) fn bench(criterion: &mut Criterion) {
             pixels.iter().map(|p| p.len() as u64).sum(),
         ));
         group.bench_function("encode", |b| {
-            b.iter(|| std::hint::black_box(run(&mut accelerator)))
+            b.iter(|| std::hint::black_box(run(&mut accelerator)));
         });
         group.finish();
     }
