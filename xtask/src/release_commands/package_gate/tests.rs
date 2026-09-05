@@ -357,7 +357,16 @@ fn core_gpu_consumer_manifests_patch_only_extracted_archives() {
         ("j2k", &["j2k-core"]),
         ("j2k-cuda", &["j2k", "j2k-cuda-runtime"]),
         ("j2k-metal", &["j2k", "j2k-metal-support"]),
-        ("j2k-mpsgraph", &["j2k", "j2k-metal", "j2k-metal-support"]),
+        ("j2k-mpsgraph-support", &[]),
+        (
+            "j2k-mpsgraph",
+            &[
+                "j2k",
+                "j2k-metal",
+                "j2k-metal-support",
+                "j2k-mpsgraph-support",
+            ],
+        ),
     ]);
     let plan = test_package_gate_plan(&metadata).expect("package plan");
     let packaged = plan

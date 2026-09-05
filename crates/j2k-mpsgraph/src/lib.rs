@@ -5,6 +5,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "macos")))]
 mod allocation;
 mod contract;
 mod error;
@@ -12,7 +13,6 @@ mod error;
 mod platform;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 mod program;
-mod reference;
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 mod unsupported;
 
@@ -22,7 +22,6 @@ pub use self::error::Error;
 pub use self::platform::{MpsGraphBatchDecode, MpsGraphBatchDecoder, MpsGraphInputGroup};
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub use self::program::{MpsGraphProgram, MpsGraphRunOutput, SubmittedMpsGraphRun};
-pub use self::reference::{rgb8_nhwc_reference_cpu, RGB8_REFERENCE_CHANNEL_WEIGHTS};
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 pub use self::unsupported::{
     MpsGraphBatchDecode, MpsGraphBatchDecoder, MpsGraphInputGroup, MpsGraphProgram,

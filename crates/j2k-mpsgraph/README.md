@@ -13,7 +13,8 @@ groups in NCHW and NHWC layout.
 cargo run -p j2k-mpsgraph --example resident_reference_graph
 ```
 
-The example exercises completed-buffer handoff, pipelined blocking execution,
-and nonblocking submission against a CPU oracle. See
+The example constructs a caller-owned graph and exercises completed-buffer
+handoff, pipelined blocking execution, and nonblocking submission against a
+CPU oracle. See
 [`../../docs/j2k-mpsgraph.md`](../../docs/j2k-mpsgraph.md) for API, safety,
 validation, and benchmark details.

@@ -67,7 +67,7 @@ impl RepeatedGrayscaleExecution<'_> {
         dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
             DirectIdwtCommandBuffers::single(self.command_buffer),
             RepeatedIdwtDispatch {
-                runtime: self.runtime,
+                kernels: self.runtime.decode()?,
                 sub_bands: IdwtSubBandBuffers {
                     ll: &ll.buffer,
                     ll_offset: ll.offset_bytes,
@@ -117,7 +117,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 prepared_idwt_params(idwt, idwt_input_windows_from_slices(&ll, &hl, &lh, &hh));
             let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
             let dispatch = SingleIdwtDispatch {
-                runtime: self.runtime,
+                kernels: self.runtime.decode()?,
                 sub_bands: IdwtSubBandBuffers {
                     ll: &ll.buffer,
                     ll_offset: ll.offset_bytes,

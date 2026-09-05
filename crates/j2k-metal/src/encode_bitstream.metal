@@ -6,6 +6,7 @@
 // - encode_bitstream_classic_tokens.metal
 // - encode_bitstream_classic_symbol_plan.metal
 // - encode_bitstream_classic_kernels.metal
+// - encode_bitstream_classic_profile_kernels.metal
 // - encode_bitstream_ht.metal
 // - encode_bitstream_packetize.metal
-// Keep compute/shader_source.rs concatenation order byte-compatible with the original monolith.
+// engine/shader_source.rs composes separate production encode and profiling libraries.

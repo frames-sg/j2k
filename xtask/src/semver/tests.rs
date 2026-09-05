@@ -113,6 +113,7 @@ fn package_partition_tracks_baselines_and_exact_first_release_packages() {
             "j2k-cuda-jpeg-engine",
             "j2k-cuda-transcode-engine",
             "j2k-mpsgraph",
+            "j2k-mpsgraph-support",
         ]
     );
     assert!(SEMVER_BASELINE_PACKAGES.contains(&"j2k-ml"));

@@ -50,12 +50,17 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.inverse_mct);
+        encoder.setComputePipelineState(&runtime.decode()?.inverse_mct);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
         encoder.set_buffer(2, Some(&plane2_buffer), 0);
         encoder.set_bytes::<J2kInverseMctParams>(3, &params);
-        let width = runtime.inverse_mct.threadExecutionWidth().max(1).min(len);
+        let width = runtime
+            .decode()?
+            .inverse_mct
+            .threadExecutionWidth()
+            .max(1)
+            .min(len);
         encoder.dispatchThreads_threadsPerThreadgroup(
             j2k_metal_support::mtl_size(len as u64, 1, 1),
             j2k_metal_support::mtl_size(width as u64, 1, 1),
@@ -106,12 +111,17 @@ pub(in crate::engine) fn dispatch_inverse_mct_buffers_in_command_buffer(
     };
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.inverse_mct);
+    encoder.setComputePipelineState(&runtime.decode()?.inverse_mct);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_bytes::<J2kInverseMctParams>(3, &params);
-    let width = runtime.inverse_mct.threadExecutionWidth().max(1).min(len);
+    let width = runtime
+        .decode()?
+        .inverse_mct
+        .threadExecutionWidth()
+        .max(1)
+        .min(len);
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(len as u64, 1, 1),
         j2k_metal_support::mtl_size(width as u64, 1, 1),

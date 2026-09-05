@@ -751,7 +751,7 @@ pub enum Warning {
     },
     /// ICC profile was present but ignored by this decoder.
     IccProfileIgnored {
-        /// ICC payload size in bytes.
+        /// Size of this ICC APP2 marker payload in bytes.
         size: usize,
     },
     /// Unknown APP marker was skipped.
@@ -795,7 +795,9 @@ impl core::fmt::Display for Warning {
             Self::AdobeApp14Ambiguous { raw_transform } => {
                 write!(f, "ambiguous Adobe APP14 transform {raw_transform}")
             }
-            Self::IccProfileIgnored { size } => write!(f, "ignored ICC profile of {size} bytes"),
+            Self::IccProfileIgnored { size } => {
+                write!(f, "ignored ICC APP2 payload of {size} bytes")
+            }
             Self::UnknownAppMarker { marker, size } => {
                 write!(f, "unknown APP marker FF{marker:02X} ({size} bytes)")
             }

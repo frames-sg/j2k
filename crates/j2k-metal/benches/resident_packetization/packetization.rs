@@ -55,9 +55,15 @@ fn probe_exact_output(
 }
 
 pub(crate) fn bench(criterion: &mut Criterion) {
+    for dimension in [128, DIMENSION, 1024] {
+        bench_dimension(criterion, dimension);
+    }
+}
+
+fn bench_dimension(criterion: &mut Criterion, dimension: u32) {
     let session = MetalBackendSession::system_default()
         .expect("resident packetization benchmark requires a Metal device");
-    let pixels = j2k_test_support::patterned_rgb8(DIMENSION, DIMENSION);
+    let pixels = j2k_test_support::patterned_rgb8(dimension, dimension);
     let input = benchmark_private_buffer_with_bytes(&session, &pixels)
         .expect("upload resident packetization benchmark input");
     // SAFETY: `input` belongs to `session`, was fully initialized above, and
@@ -66,18 +72,22 @@ pub(crate) fn bench(criterion: &mut Criterion) {
         MetalLosslessEncodeTile::from_buffer(
             &input,
             0,
-            (DIMENSION, DIMENSION),
-            usize::try_from(DIMENSION).expect("dimension fits usize") * 3,
-            (DIMENSION, DIMENSION),
+            (dimension, dimension),
+            usize::try_from(dimension).expect("dimension fits usize") * 3,
+            (dimension, dimension),
             PixelFormat::Rgb8,
         )
     };
     let tiles = std::iter::repeat_n(tile, PACKETIZATION_BATCH_SIZE).collect::<Vec<_>>();
 
-    let mut group = criterion.benchmark_group("metal_resident_packetization");
+    let mut group = criterion.benchmark_group(if dimension == DIMENSION {
+        "metal_resident_packetization".to_owned()
+    } else {
+        format!("metal_resident_packetization_{dimension}")
+    });
     group.throughput(Throughput::Bytes(
-        u64::from(DIMENSION)
-            * u64::from(DIMENSION)
+        u64::from(dimension)
+            * u64::from(dimension)
             * 3
             * u64::try_from(PACKETIZATION_BATCH_SIZE).expect("batch size fits u64"),
     ));
@@ -85,10 +95,15 @@ pub(crate) fn bench(criterion: &mut Criterion) {
         ("classic", J2kBlockCodingMode::Classic),
         ("ht", J2kBlockCodingMode::HighThroughput),
     ] {
+        // The Classic 1024x1024 batch-16 scratch allocation exceeds the
+        // resident pool's 512 MiB per-allocation limit; HT fits this cell.
+        if dimension > DIMENSION && block_coding_mode == J2kBlockCodingMode::Classic {
+            continue;
+        }
         let options = options(block_coding_mode);
         let (hash, encoded_bytes) = probe_exact_output(&session, &tiles, &options, &pixels);
         eprintln!(
-            "j2k_metal_packetization_probe coding={label} batch_size={PACKETIZATION_BATCH_SIZE} size={DIMENSION}x{DIMENSION} output_sha256={hash} encoded_bytes={encoded_bytes}"
+            "j2k_metal_packetization_probe coding={label} batch_size={PACKETIZATION_BATCH_SIZE} size={dimension}x{dimension} output_sha256={hash} encoded_bytes={encoded_bytes}"
         );
         group.bench_function(label, |bencher| {
             bencher.iter(|| {

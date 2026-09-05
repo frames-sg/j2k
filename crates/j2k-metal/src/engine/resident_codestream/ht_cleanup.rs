@@ -62,14 +62,14 @@ pub(in crate::engine) fn dispatch_ht_cleanup(
         )?,
     )?;
     encoder.memory_barrier_with_resources(&[decoded]);
-    encoder.setComputePipelineState(&runtime.ht_cleanup);
+    encoder.setComputePipelineState(&runtime.decode()?.ht_cleanup);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_bytes::<J2kHtCleanupParams>(2, &params);
-    encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
-    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(3, Some(&runtime.decode()?.ht_vlc_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.decode()?.ht_vlc_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.decode()?.ht_uvlc_table0), 0);
+    encoder.set_buffer(6, Some(&runtime.decode()?.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
     dispatch_single_thread(&encoder);
     encoder.endEncoding();
@@ -106,16 +106,17 @@ pub(in crate::engine) fn dispatch_ht_cleanup_batched(
         ht_batch_output_word_count(jobs)?,
     )?;
     encoder.memory_barrier_with_resources(&[decoded]);
-    encoder.setComputePipelineState(&runtime.ht_cleanup_batched);
+    encoder.setComputePipelineState(&runtime.decode()?.ht_cleanup_batched);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(&jobs_buffer), 0);
-    encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
-    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(3, Some(&runtime.decode()?.ht_vlc_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.decode()?.ht_vlc_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.decode()?.ht_uvlc_table0), 0);
+    encoder.set_buffer(6, Some(&runtime.decode()?.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
     let width = runtime
+        .decode()?
         .ht_cleanup_batched
         .threadExecutionWidth()
         .max(1)
@@ -145,24 +146,24 @@ mod tests;
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn dispatch_ht_cleanup_batched_in_encoder_with_status_offset(
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     encoder: &ComputeCommandEncoderRef,
     pipeline_kind: MetalHtPipelineKind,
     dispatch: HtCleanupBatchDispatch<'_>,
 ) {
     let pipeline = match pipeline_kind {
-        MetalHtPipelineKind::CleanupOnly => &runtime.ht_cleanup_batched_cleanup_only,
-        MetalHtPipelineKind::SigProp => &runtime.ht_cleanup_batched_sigprop,
-        MetalHtPipelineKind::MagRef => &runtime.ht_cleanup_batched_magref,
+        MetalHtPipelineKind::CleanupOnly => &kernels.ht_cleanup_batched_cleanup_only,
+        MetalHtPipelineKind::SigProp => &kernels.ht_cleanup_batched_sigprop,
+        MetalHtPipelineKind::MagRef => &kernels.ht_cleanup_batched_magref,
     };
     encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(dispatch.coded_data), 0);
     encoder.set_buffer(1, Some(dispatch.decoded), 0);
     encoder.set_buffer(2, Some(dispatch.jobs), 0);
-    encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
-    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(3, Some(&kernels.ht_vlc_table0), 0);
+    encoder.set_buffer(4, Some(&kernels.ht_vlc_table1), 0);
+    encoder.set_buffer(5, Some(&kernels.ht_uvlc_table0), 0);
+    encoder.set_buffer(6, Some(&kernels.ht_uvlc_table1), 0);
     encoder.set_buffer(
         7,
         Some(dispatch.status_buffer),
@@ -180,25 +181,25 @@ pub(in crate::engine) fn dispatch_ht_cleanup_batched_in_encoder_with_status_offs
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn dispatch_ht_cleanup_repeated_batched_in_encoder_with_status_offset(
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     encoder: &ComputeCommandEncoderRef,
     pipeline_kind: MetalHtPipelineKind,
     dispatch: HtCleanupRepeatedBatchDispatch<'_>,
 ) {
     let pipeline = match pipeline_kind {
-        MetalHtPipelineKind::CleanupOnly => &runtime.ht_cleanup_repeated_batched_cleanup_only,
-        MetalHtPipelineKind::SigProp => &runtime.ht_cleanup_repeated_batched_sigprop,
-        MetalHtPipelineKind::MagRef => &runtime.ht_cleanup_repeated_batched_magref,
+        MetalHtPipelineKind::CleanupOnly => &kernels.ht_cleanup_repeated_batched_cleanup_only,
+        MetalHtPipelineKind::SigProp => &kernels.ht_cleanup_repeated_batched_sigprop,
+        MetalHtPipelineKind::MagRef => &kernels.ht_cleanup_repeated_batched_magref,
     };
     encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(dispatch.coded_data), 0);
     encoder.set_buffer(1, Some(dispatch.decoded), 0);
     encoder.set_buffer(2, Some(dispatch.jobs), 0);
     encoder.set_bytes::<J2kHtRepeatedBatchParams>(3, &dispatch.repeated);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_table0), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_vlc_table1), 0);
-    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table0), 0);
-    encoder.set_buffer(7, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(4, Some(&kernels.ht_vlc_table0), 0);
+    encoder.set_buffer(5, Some(&kernels.ht_vlc_table1), 0);
+    encoder.set_buffer(6, Some(&kernels.ht_uvlc_table0), 0);
+    encoder.set_buffer(7, Some(&kernels.ht_uvlc_table1), 0);
     encoder.set_buffer(
         8,
         Some(dispatch.status_buffer),

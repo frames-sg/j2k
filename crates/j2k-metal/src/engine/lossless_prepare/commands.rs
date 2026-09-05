@@ -35,7 +35,7 @@ pub(in crate::engine) fn dispatch_batched_packet_payload_copy(
     let signpost = hybrid_stage_signpost(dispatch.signpost_name);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, dispatch.label);
-    encoder.setComputePipelineState(&runtime.packet_payload_copy_batched);
+    encoder.setComputePipelineState(&runtime.encode()?.packet_payload_copy_batched);
     encoder.set_buffer(0, Some(dispatch.payload_buffer), 0);
     encoder.set_buffer(1, Some(dispatch.packet_output_buffer), 0);
     encoder.set_buffer(2, Some(dispatch.packet_job_buffer), 0);
@@ -54,6 +54,7 @@ pub(in crate::engine) fn dispatch_batched_packet_payload_copy(
         ),
         j2k_metal_support::mtl_size(
             runtime
+                .encode()?
                 .packet_payload_copy_batched
                 .threadExecutionWidth()
                 .max(1) as u64,
@@ -103,7 +104,7 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave(
     };
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep deinterleave");
-    encoder.setComputePipelineState(&runtime.lossless_deinterleave_to_planes);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
     encoder.set_buffer(2, Some(plane1), 0);
@@ -112,7 +113,7 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave(
     encoder.set_buffer(5, Some(plane2), 0);
     dispatch_2d_pipeline(
         &encoder,
-        &runtime.lossless_deinterleave_to_planes,
+        &runtime.encode()?.lossless_deinterleave_to_planes,
         (job.output_width, job.output_height),
     );
     encoder.endEncoding();
@@ -157,7 +158,7 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave_rct_rgb8(
     };
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep deinterleave + RCT");
-    encoder.setComputePipelineState(&runtime.lossless_deinterleave_rct_rgb8_to_planes);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_rct_rgb8_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
     encoder.set_buffer(2, Some(plane1), 0);
@@ -166,7 +167,7 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave_rct_rgb8(
     encoder.set_buffer(5, Some(status_buffer), 0);
     dispatch_2d_pipeline(
         &encoder,
-        &runtime.lossless_deinterleave_rct_rgb8_to_planes,
+        &runtime.encode()?.lossless_deinterleave_rct_rgb8_to_planes,
         (job.output_width, job.output_height),
     );
     encoder.endEncoding();
@@ -205,13 +206,18 @@ pub(in crate::engine) fn dispatch_forward_rct_on_buffers(
     };
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep RCT");
-    encoder.setComputePipelineState(&runtime.forward_rct);
+    encoder.setComputePipelineState(&runtime.encode()?.forward_rct);
     encoder.set_buffer(0, Some(plane0), 0);
     encoder.set_buffer(1, Some(plane1), 0);
     encoder.set_buffer(2, Some(plane2), 0);
     encoder.set_bytes::<J2kForwardRctParams>(3, &params);
     encoder.set_buffer(4, Some(status_buffer), 0);
-    let width = runtime.forward_rct.threadExecutionWidth().max(1).min(len);
+    let width = runtime
+        .encode()?
+        .forward_rct
+        .threadExecutionWidth()
+        .max(1)
+        .min(len);
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(len as u64, 1, 1),
         j2k_metal_support::mtl_size(width as u64, 1, 1),
@@ -249,7 +255,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers(
         if current_height >= 2 {
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
-                &runtime.fdwt53_vertical,
+                &runtime.encode()?.fdwt53_vertical,
                 command_buffer,
                 src,
                 dst,
@@ -261,7 +267,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers(
         if current_width >= 2 {
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
-                &runtime.fdwt53_horizontal,
+                &runtime.encode()?.fdwt53_horizontal,
                 command_buffer,
                 src,
                 dst,
@@ -337,7 +343,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_on_buffers(
                 (scratch_buffers, plane_buffers)
             };
             dispatch_forward_dwt53_batched_pass(
-                &runtime.fdwt53_vertical_batched,
+                &runtime.encode()?.fdwt53_vertical_batched,
                 command_buffer,
                 inputs,
                 outputs,
@@ -353,7 +359,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_on_buffers(
                 (scratch_buffers, plane_buffers)
             };
             dispatch_forward_dwt53_batched_pass(
-                &runtime.fdwt53_horizontal_batched,
+                &runtime.encode()?.fdwt53_horizontal_batched,
                 command_buffer,
                 inputs,
                 outputs,
@@ -413,7 +419,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers_split_profile(
             )?;
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
-                &runtime.fdwt53_vertical,
+                &runtime.encode()?.fdwt53_vertical,
                 &command_buffer,
                 src,
                 dst,
@@ -431,7 +437,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers_split_profile(
             )?;
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
-                &runtime.fdwt53_horizontal,
+                &runtime.encode()?.fdwt53_horizontal,
                 &command_buffer,
                 src,
                 dst,
@@ -503,7 +509,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_split_profile(
                 (scratch_buffers, plane_buffers)
             };
             dispatch_forward_dwt53_batched_pass(
-                &runtime.fdwt53_vertical_batched,
+                &runtime.encode()?.fdwt53_vertical_batched,
                 &command_buffer,
                 inputs,
                 outputs,
@@ -525,7 +531,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_split_profile(
                 (scratch_buffers, plane_buffers)
             };
             dispatch_forward_dwt53_batched_pass(
-                &runtime.fdwt53_horizontal_batched,
+                &runtime.encode()?.fdwt53_horizontal_batched,
                 &command_buffer,
                 inputs,
                 outputs,
@@ -582,7 +588,7 @@ pub(in crate::engine) fn dispatch_lossless_extract_coefficients(
         .unwrap_or(1);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep extract");
-    encoder.setComputePipelineState(&runtime.lossless_extract_coefficients);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_extract_coefficients);
     encoder.set_buffer(0, planes.first().map(|buffer| &**buffer), 0);
     encoder.set_buffer(
         1,
@@ -605,7 +611,7 @@ pub(in crate::engine) fn dispatch_lossless_extract_coefficients(
     encoder.set_bytes::<u32>(5, &job_count);
     dispatch_3d_pipeline(
         &encoder,
-        &runtime.lossless_extract_coefficients,
+        &runtime.encode()?.lossless_extract_coefficients,
         (max_block_width, max_block_height, job_count),
     );
     encoder.endEncoding();

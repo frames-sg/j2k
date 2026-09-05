@@ -16,3 +16,51 @@ corpus/wsi-samples/gdc-downloads/
 
 # Machine-local analysis permissions.
 reasonix.toml
+
+# Local tools, credentials, and editor state
+.DS_Store
+.codex/
+.claude/
+.local-docs/
+.local-tools/
+.codex-security-*/
+.env
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local dependencies, build outputs, and caches
+node_modules/
+.venv*/
+.pytest_cache/
+.ruff_cache/
+/dist/
+/coverage/
+lcov*.info
+*.profraw
+*.profdata
+*.log
+
+# Private writing and execution plans; maintained outside the software repos
+/manuscript/
+/grant/
+/paper/
+/papers/
+/uscap/
+/docs/manuscript/
+/docs/USCAP*
+/docs/papers/
+/docs/benchmarks/paper/
+/docs/plans/
+/docs/workplans/
+/docs/refactor/
+/docs/superpowers/
+/MIGRATION.md
+/migration.md
+*.docx
+*.pptx
+*.pdf

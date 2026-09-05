@@ -45,12 +45,6 @@ pub(crate) struct J2kResidentBatchEncodeItem {
 pub(crate) struct J2kResidentEncodeStageStats {
     /// Host-side wall time spent preparing resident encode coefficients.
     pub(crate) coefficient_prep_duration: Duration,
-    /// Reserved for future finer-grained profiling within coefficient prep.
-    pub(crate) deinterleave_rct_duration: Duration,
-    /// Reserved for future finer-grained profiling within coefficient prep.
-    pub(crate) dwt53_duration: Duration,
-    /// Reserved for future finer-grained profiling within coefficient prep.
-    pub(crate) coefficient_extract_duration: Duration,
     pub(crate) ht_table_build_duration: Duration,
     pub(crate) ht_buffer_allocation_duration: Duration,
     pub(crate) ht_command_encode_duration: Duration,

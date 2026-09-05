@@ -14,7 +14,7 @@ use memchr::memchr;
 
 mod table_normalization;
 
-use table_normalization::for_each_normalized_segment;
+use table_normalization::{for_each_normalized_segment, stream_has_complete_coding_tables};
 
 /// One marker segment in a JPEG byte stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,19 +289,11 @@ pub fn prepare_tiff_jpeg_tile<'a>(
     tables: Option<&'a [u8]>,
     opts: JpegTilePrepareOptions,
 ) -> Result<PreparedJpeg<'a>, JpegError> {
-    if is_complete_jpeg(tile) {
+    if tile.starts_with(&[0xff, 0xd8]) && stream_has_complete_coding_tables(tile)? {
         validate_complete_tile(tile, opts)
     } else {
         assemble_abbreviated_tile(tile, tables, opts)
     }
-}
-
-fn is_complete_jpeg(input: &[u8]) -> bool {
-    input.len() >= 4
-        && input[0] == 0xff
-        && input[1] == 0xd8
-        && input[input.len() - 2] == 0xff
-        && input[input.len() - 1] == 0xd9
 }
 
 fn validate_complete_tile(
@@ -528,6 +520,12 @@ fn assemble_abbreviated_tile<'a>(
     if out.len() != output_len {
         return Err(JpegError::InternalInvariant {
             reason: "normalized TIFF JPEG output length diverged from its preflight plan",
+        });
+    }
+    if !stream_has_complete_coding_tables(&out)? {
+        return Err(JpegError::InvalidJpegAssembly {
+            offset: 0,
+            reason: "supplied JPEGTables does not define every coding table required by the tile",
         });
     }
     finalize_owned_prepared_bytes(&mut out, opts)?;

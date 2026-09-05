@@ -19,6 +19,10 @@ const STAGE_HEIGHT: u32 = 768;
 #[cfg(target_os = "macos")]
 const ENCODE_DIMENSION: u32 = 512;
 
+#[cfg(target_os = "macos")]
+#[path = "transform_stages/resident_lossy.rs"]
+mod resident_lossy;
+
 #[cfg(not(target_os = "macos"))]
 fn main() {
     assert!(
@@ -245,6 +249,7 @@ fn bench_transform_stages(criterion: &mut Criterion) {
         });
     });
     group.finish();
+    resident_lossy::bench(criterion);
 }
 
 #[cfg(target_os = "macos")]

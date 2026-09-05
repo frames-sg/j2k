@@ -31,6 +31,7 @@ struct AcceleratorPackageSpec {
 const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
     packages: &[
         accelerator_package("j2k-metal-support", "crates/j2k-metal-support/"),
+        accelerator_package("j2k-mpsgraph-support", "crates/j2k-mpsgraph-support/"),
         accelerator_package("j2k-jpeg-metal", "crates/j2k-jpeg-metal/"),
         accelerator_package("j2k-metal", "crates/j2k-metal/"),
         accelerator_package("j2k-transcode-metal", "crates/j2k-transcode-metal/"),

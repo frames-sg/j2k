@@ -190,7 +190,7 @@ fn malformed_or_truncated_dht_definitions_fail_closed() {
 }
 
 #[test]
-fn table_stream_without_duplicates_preserves_marker_bytes() {
+fn table_stream_without_duplicates_preserves_metadata_and_coding_tables_only() {
     let mut quant = dqt_definition(0, 1);
     quant.extend_from_slice(&dqt_definition(1, 2));
     let mut huffman = dht_definition(0, 0, 0x11);
@@ -200,9 +200,10 @@ fn table_stream_without_duplicates_preserves_marker_bytes() {
         marker_segment(0xdb, &quant),
         marker_segment(0xc4, &huffman),
         marker_segment(0xdd, &[0, 8]),
+        marker_segment(0xcc, &[0, 0]),
     ];
     let stream = table_stream(&segments);
-    let expected = segments.concat();
+    let expected = segments[..3].concat();
 
     for policy in [
         DuplicateTablePolicy::AllowIdentical,
@@ -210,4 +211,16 @@ fn table_stream_without_duplicates_preserves_marker_bytes() {
     ] {
         assert_eq!(normalized(&stream, policy).unwrap(), expected);
     }
+}
+
+#[test]
+fn length_delimited_table_stream_may_omit_terminal_eoi() {
+    let segment = marker_segment(0xdb, &dqt_definition(0, 9));
+    let mut stream = table_stream(core::slice::from_ref(&segment));
+    stream.truncate(stream.len() - 2);
+
+    assert_eq!(
+        normalized(&stream, DuplicateTablePolicy::RejectConflicting).unwrap(),
+        segment
+    );
 }

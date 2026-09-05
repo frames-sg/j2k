@@ -2,19 +2,19 @@
 
 //! Retained-owner orchestration for compact preencoded 9/7 HTJ2K images.
 
+use super::allocation::{add_capacity, encode_params_retained_bytes};
 use super::options::validate_single_layer_packet_input;
 use super::{
     codestream_write, compact_payload_slice, count_compact_code_blocks, packet_encode,
     preencoded_compact_97_level_count, quantize, validate_irreversible_quantization_profile,
     validate_precinct_exponents_for_options, validate_preencoded_compact_htj2k97_image,
-    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams,
-    EncodeProgressionOrder, J2kEncodeStageAccelerator, J2kPacketizationEncodeJob,
-    NativeEncodePhase, NativeEncodePipelineError, NativeEncodePipelineResult,
-    NativeEncodeRetainedInput, NativeEncodeSession, PreencodedHtj2k97CompactCodeBlock,
-    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
-    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband, PreparedCompactCodeBlock,
-    PreparedCompactResolutionPacket, PreparedCompactSubband, QuantStepSize, Vec,
-    MAX_J2K_SPEC_COMPONENTS,
+    BlockCodingMode, EncodeOptions, EncodeParams, EncodeProgressionOrder,
+    J2kEncodeStageAccelerator, J2kPacketizationEncodeJob, NativeEncodePhase,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeRetainedInput,
+    NativeEncodeSession, PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
+    PreencodedHtj2k97CompactSubband, PreparedCompactCodeBlock, PreparedCompactResolutionPacket,
+    PreparedCompactSubband, QuantStepSize, Vec, MAX_J2K_SPEC_COMPONENTS,
 };
 use crate::j2c::encode::allocation::{checked_add_bytes, checked_element_bytes};
 use crate::{
@@ -448,45 +448,6 @@ fn prepared_compact_retained_bytes(
         }
     }
     Ok(bytes)
-}
-
-fn encode_params_retained_bytes(params: &EncodeParams) -> EncodeResult<usize> {
-    let mut bytes = add_capacity::<EncodeComponentSampleInfo>(
-        0,
-        params.component_sample_info.capacity(),
-        "compact 9/7 component sample metadata",
-    )?;
-    bytes = add_capacity::<Vec<(u16, u16)>>(
-        bytes,
-        params.component_quantization_step_sizes.capacity(),
-        "compact 9/7 component quantization owners",
-    )?;
-    for steps in &params.component_quantization_step_sizes {
-        bytes = add_capacity::<(u16, u16)>(
-            bytes,
-            steps.capacity(),
-            "compact 9/7 component quantization values",
-        )?;
-    }
-    bytes = add_capacity::<(u8, u8)>(
-        bytes,
-        params.component_sampling.capacity(),
-        "compact 9/7 component sampling",
-    )?;
-    bytes = add_capacity::<u8>(
-        bytes,
-        params.roi_component_shifts.capacity(),
-        "compact 9/7 ROI shifts",
-    )?;
-    add_capacity::<(u8, u8)>(
-        bytes,
-        params.precinct_exponents.capacity(),
-        "compact 9/7 precinct exponents",
-    )
-}
-
-fn add_capacity<T>(bytes: usize, capacity: usize, what: &'static str) -> EncodeResult<usize> {
-    checked_add_bytes(bytes, checked_element_bytes::<T>(capacity, what)?, what)
 }
 
 #[cfg(test)]

@@ -196,8 +196,8 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         u16_scale: scale.u16_scale,
     };
     let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.pack_u8_repeated_gray,
-        PixelFormat::Gray16 => &runtime.pack_u16_repeated_gray,
+        PixelFormat::Gray8 => &runtime.decode()?.pack_u8_repeated_gray,
+        PixelFormat::Gray16 => &runtime.decode()?.pack_u16_repeated_gray,
         _ => {
             return Err(Error::MetalKernel {
                 message: format!("J2K Metal repeated grayscale pack does not support {fmt:?}"),
@@ -253,12 +253,12 @@ pub(super) fn j2k_pack_pipeline_for<'a>(
     kernel_name: &str,
 ) -> Result<&'a ComputePipelineState, Error> {
     let pipeline = match kernel_name {
-        "j2k_pack_gray8" => &runtime.pack_gray8,
-        "j2k_pack_rgb8" => &runtime.pack_rgb8,
-        "j2k_pack_rgb_opaque_rgba8" => &runtime.pack_rgb_opaque_rgba8,
-        "j2k_pack_rgba8" => &runtime.pack_rgba8,
-        "j2k_pack_gray16" => &runtime.pack_gray16,
-        "j2k_pack_rgb16" => &runtime.pack_rgb16,
+        "j2k_pack_gray8" => &runtime.decode()?.pack_gray8,
+        "j2k_pack_rgb8" => &runtime.decode()?.pack_rgb8,
+        "j2k_pack_rgb_opaque_rgba8" => &runtime.decode()?.pack_rgb_opaque_rgba8,
+        "j2k_pack_rgba8" => &runtime.decode()?.pack_rgba8,
+        "j2k_pack_gray16" => &runtime.decode()?.pack_gray16,
+        "j2k_pack_rgb16" => &runtime.decode()?.pack_rgb16,
         _ => {
             return Err(Error::MetalKernel {
                 message: format!("unsupported validated J2K Metal pack kernel `{kernel_name}`"),

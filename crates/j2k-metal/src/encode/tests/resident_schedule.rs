@@ -4,6 +4,63 @@ use super::*;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn classic_large_batch_is_split_before_tier1_allocation_exceeds_cap() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let pixels = j2k_test_support::patterned_rgb8(1024, 1024);
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let input =
+        crate::benchmark_private_buffer_with_bytes(&session, &pixels).expect("Classic input");
+    let tile = super::super::MetalLosslessEncodeTile {
+        buffer: &input,
+        byte_offset: 0,
+        width: 1024,
+        height: 1024,
+        pitch_bytes: 3072,
+        output_width: 1024,
+        output_height: 1024,
+        format: PixelFormat::Rgb8,
+    };
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::RequireDevice,
+        block_coding_mode: J2kBlockCodingMode::Classic,
+        max_decomposition_levels: Some(3),
+        validation: J2kEncodeValidation::External,
+    };
+    let outcome = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
+        &[tile; 16],
+        &options,
+        &session,
+        super::super::MetalLosslessEncodeConfig {
+            gpu_encode_inflight_tiles: Some(16),
+            gpu_encode_memory_budget_bytes: Some(4 * 1024 * 1024 * 1024),
+        },
+    )
+    .expect("large Classic batch must fit by scheduling smaller chunks");
+    assert_eq!(outcome.outcomes.len(), 16);
+    assert!(outcome.stats.max_observed_inflight_tiles < 16);
+    let mut first = None;
+    for item in outcome.outcomes {
+        let bytes = item
+            .encoded
+            .codestream_bytes()
+            .expect("Classic output readback");
+        if let Some(expected) = &first {
+            assert_eq!(&bytes, expected);
+        } else {
+            let decoded = j2k_native::Image::new(&bytes, &j2k_native::DecodeSettings::default())
+                .expect("Classic output parse")
+                .decode_native()
+                .expect("Classic output decode");
+            assert_eq!(decoded.data, pixels);
+            first = Some(bytes);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 #[expect(
     clippy::cast_sign_loss,
     reason = "bounded synthetic pixels are nonnegative"

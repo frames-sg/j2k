@@ -4,6 +4,9 @@
 #[path = "resident_packetization/batch_compare.rs"]
 mod batch_compare;
 #[cfg(target_os = "macos")]
+#[path = "resident_packetization/classic_chunks.rs"]
+mod classic_chunks;
+#[cfg(target_os = "macos")]
 #[path = "resident_packetization/packetization.rs"]
 mod packetization;
 #[cfg(target_os = "macos")]
@@ -30,5 +33,6 @@ fn main() {
         .configure_from_args();
     packetization::bench(&mut criterion);
     batch_compare::bench(&mut criterion);
+    classic_chunks::bench(&mut criterion);
     criterion.final_summary();
 }

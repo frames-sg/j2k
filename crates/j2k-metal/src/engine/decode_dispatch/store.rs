@@ -96,13 +96,13 @@ pub(crate) fn decode_store_component_and_capture(
         let output_buffer = copied_slice_buffer(&runtime.device, output)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.store_component);
+        encoder.setComputePipelineState(&runtime.decode()?.store_component);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&output_buffer), 0);
         encoder.set_bytes::<J2kStoreParams>(2, &params);
         dispatch_2d_pipeline(
             &encoder,
-            &runtime.store_component,
+            &runtime.decode()?.store_component,
             (copy_width, copy_height),
         );
         encoder.endEncoding();
@@ -131,7 +131,7 @@ pub(in crate::engine) fn dispatch_store_component_buffer_in_command_buffer_with_
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid component store");
     dispatch_store_component_buffer_in_encoder_with_offsets(
-        runtime,
+        runtime.decode()?,
         &encoder,
         input,
         input_offset_bytes,
@@ -145,7 +145,7 @@ pub(in crate::engine) fn dispatch_store_component_buffer_in_command_buffer_with_
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn dispatch_store_component_buffer_in_encoder_with_offsets(
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     encoder: &ComputeCommandEncoderRef,
     input: &Buffer,
     input_offset_bytes: usize,
@@ -153,13 +153,13 @@ pub(in crate::engine) fn dispatch_store_component_buffer_in_encoder_with_offsets
     output_offset_bytes: usize,
     params: J2kStoreParams,
 ) {
-    encoder.setComputePipelineState(&runtime.store_component);
+    encoder.setComputePipelineState(&kernels.store_component);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), output_offset_bytes as u64);
     encoder.set_bytes::<J2kStoreParams>(2, &params);
     dispatch_2d_pipeline(
         encoder,
-        &runtime.store_component,
+        &kernels.store_component,
         (params.copy_width, params.copy_height),
     );
 }
@@ -176,7 +176,7 @@ pub(in crate::engine) fn dispatch_store_component_repeated_in_command_buffer(
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated component store");
     dispatch_store_component_repeated_in_encoder(
-        runtime,
+        runtime.decode()?,
         &encoder,
         input,
         input_offset_bytes,
@@ -188,20 +188,20 @@ pub(in crate::engine) fn dispatch_store_component_repeated_in_command_buffer(
 }
 
 pub(in crate::engine) fn dispatch_store_component_repeated_in_encoder(
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     encoder: &ComputeCommandEncoderRef,
     input: &Buffer,
     input_offset_bytes: usize,
     output: &Buffer,
     params: J2kRepeatedStoreParams,
 ) {
-    encoder.setComputePipelineState(&runtime.store_component_repeated);
+    encoder.setComputePipelineState(&kernels.store_component_repeated);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), 0);
     encoder.set_bytes::<J2kRepeatedStoreParams>(2, &params);
     dispatch_3d_pipeline(
         encoder,
-        &runtime.store_component_repeated,
+        &kernels.store_component_repeated,
         (params.copy_width, params.copy_height, params.batch_count),
     );
 }
@@ -243,10 +243,18 @@ pub(in crate::engine) fn encode_repeated_gray_store_to_surfaces_in_command_buffe
     let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
     let contiguous_full_surface = repeated_gray_store_is_contiguous_full_surface(params);
     let pipeline = match (fmt, contiguous_full_surface) {
-        (PixelFormat::Gray8, true) => &runtime.store_component_repeated_gray_u8_contiguous,
-        (PixelFormat::Gray8, false) => &runtime.store_component_repeated_gray_u8,
-        (PixelFormat::Gray16, true) => &runtime.store_component_repeated_gray_u16_contiguous,
-        (PixelFormat::Gray16, false) => &runtime.store_component_repeated_gray_u16,
+        (PixelFormat::Gray8, true) => {
+            &runtime
+                .decode()?
+                .store_component_repeated_gray_u8_contiguous
+        }
+        (PixelFormat::Gray8, false) => &runtime.decode()?.store_component_repeated_gray_u8,
+        (PixelFormat::Gray16, true) => {
+            &runtime
+                .decode()?
+                .store_component_repeated_gray_u16_contiguous
+        }
+        (PixelFormat::Gray16, false) => &runtime.decode()?.store_component_repeated_gray_u16,
         _ => {
             return Err(Error::MetalKernel {
                 message: format!(
@@ -312,9 +320,9 @@ pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
     )?;
     let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
     let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.store_component_gray_u8,
-        PixelFormat::Gray16 => &runtime.store_component_gray_u16,
-        PixelFormat::GrayI16 => &runtime.store_component_gray_i16,
+        PixelFormat::Gray8 => &runtime.decode()?.store_component_gray_u8,
+        PixelFormat::Gray16 => &runtime.decode()?.store_component_gray_u16,
+        PixelFormat::GrayI16 => &runtime.decode()?.store_component_gray_i16,
         _ => {
             return Err(Error::MetalKernel {
                 message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),

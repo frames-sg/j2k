@@ -8,11 +8,18 @@ use super::{
     dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
     new_compute_command_encoder, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
     DirectIdwtCommandBuffers, Error, J2kIdwtSingleDecompositionParams,
-    J2kRepeatedIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob, MetalRuntime,
+    J2kRepeatedIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob,
     SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 #[cfg(target_os = "macos")]
+mod batched_irreversible;
+#[cfg(target_os = "macos")]
 mod irreversible;
+#[cfg(target_os = "macos")]
+pub(in crate::engine) use batched_irreversible::{
+    dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
+    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
+};
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use irreversible::decode_irreversible97_staged_single_decomposition_idwt;
 #[cfg(target_os = "macos")]
@@ -73,7 +80,7 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         let command_buffer = new_command_buffer(&runtime.queue)?;
 
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.idwt_interleave);
+        encoder.setComputePipelineState(&runtime.decode()?.idwt_interleave);
         encoder.set_buffer(0, Some(&ll), 0);
         encoder.set_buffer(1, Some(&hl), 0);
         encoder.set_buffer(2, Some(&lh), 0);
@@ -82,16 +89,17 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
         dispatch_2d_pipeline(
             &encoder,
-            &runtime.idwt_interleave,
+            &runtime.decode()?.idwt_interleave,
             (params.width, params.height),
         );
         encoder.endEncoding();
 
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.idwt_reversible53_horizontal);
+        encoder.setComputePipelineState(&runtime.decode()?.idwt_reversible53_horizontal);
         encoder.set_buffer(0, Some(&decoded), 0);
         encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
         let horizontal_width = runtime
+            .decode()?
             .idwt_reversible53_horizontal
             .threadExecutionWidth()
             .max(1);
@@ -102,10 +110,11 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         encoder.endEncoding();
 
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.idwt_reversible53_vertical);
+        encoder.setComputePipelineState(&runtime.decode()?.idwt_reversible53_vertical);
         encoder.set_buffer(0, Some(&decoded), 0);
         encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
         let vertical_width = runtime
+            .decode()?
             .idwt_reversible53_vertical
             .threadExecutionWidth()
             .max(1);
@@ -137,7 +146,7 @@ pub(in crate::engine) struct IdwtSubBandBuffers<'a> {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(in crate::engine) struct SingleIdwtDispatch<'a> {
-    pub(in crate::engine) runtime: &'a MetalRuntime,
+    pub(in crate::engine) kernels: &'a crate::engine::runtime::DecodeKernels,
     pub(in crate::engine) sub_bands: IdwtSubBandBuffers<'a>,
     pub(in crate::engine) params: J2kIdwtSingleDecompositionParams,
     pub(in crate::engine) decoded: &'a Buffer,
@@ -147,7 +156,7 @@ pub(in crate::engine) struct SingleIdwtDispatch<'a> {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(in crate::engine) struct RepeatedIdwtDispatch<'a> {
-    pub(in crate::engine) runtime: &'a MetalRuntime,
+    pub(in crate::engine) kernels: &'a crate::engine::runtime::DecodeKernels,
     pub(in crate::engine) sub_bands: IdwtSubBandBuffers<'a>,
     pub(in crate::engine) params: J2kRepeatedIdwtSingleDecompositionParams,
     pub(in crate::engine) decoded: &'a Buffer,
@@ -172,7 +181,7 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
     dispatch: SingleIdwtDispatch<'_>,
 ) {
     let SingleIdwtDispatch {
-        runtime,
+        kernels,
         sub_bands,
         params,
         decoded,
@@ -188,7 +197,7 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.setComputePipelineState(&runtime.idwt_interleave);
+    encoder.setComputePipelineState(&kernels.idwt_interleave);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
     encoder.set_buffer(2, Some(lh), lh_offset as u64);
@@ -197,15 +206,15 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
     dispatch_2d_pipeline(
         encoder,
-        &runtime.idwt_interleave,
+        &kernels.idwt_interleave,
         (params.width, params.height),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_horizontal);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = runtime
+    let horizontal_width = kernels
         .idwt_reversible53_horizontal
         .threadExecutionWidth()
         .max(1);
@@ -215,10 +224,10 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_vertical);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = runtime
+    let vertical_width = kernels
         .idwt_reversible53_vertical
         .threadExecutionWidth()
         .max(1);
@@ -234,7 +243,7 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
     dispatch: RepeatedIdwtDispatch<'_>,
 ) -> Result<(), Error> {
     let RepeatedIdwtDispatch {
-        runtime,
+        kernels,
         sub_bands,
         params,
         decoded,
@@ -252,7 +261,7 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffers.interleave)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT interleave");
-    encoder.setComputePipelineState(&runtime.idwt_interleave_batched);
+    encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
     encoder.set_buffer(2, Some(lh), lh_offset as u64);
@@ -261,17 +270,17 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
     dispatch_3d_pipeline(
         &encoder,
-        &runtime.idwt_interleave_batched,
+        &kernels.idwt_interleave_batched,
         (params.width, params.height, params.batch_count),
     );
     encoder.endEncoding();
 
     let encoder = new_compute_command_encoder(command_buffers.horizontal)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT horizontal");
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_horizontal_batched);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = runtime
+    let horizontal_width = kernels
         .idwt_reversible53_horizontal_batched
         .threadExecutionWidth()
         .max(1);
@@ -283,10 +292,10 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
 
     let encoder = new_compute_command_encoder(command_buffers.vertical)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT vertical");
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_vertical_batched);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = runtime
+    let vertical_width = kernels
         .idwt_reversible53_vertical_batched
         .threadExecutionWidth()
         .max(1);
@@ -304,7 +313,7 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
     dispatch: RepeatedIdwtDispatch<'_>,
 ) {
     let RepeatedIdwtDispatch {
-        runtime,
+        kernels,
         sub_bands,
         params,
         decoded,
@@ -319,7 +328,7 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.setComputePipelineState(&runtime.idwt_interleave_batched);
+    encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
     encoder.set_buffer(2, Some(lh), lh_offset as u64);
@@ -328,15 +337,15 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
     dispatch_3d_pipeline(
         encoder,
-        &runtime.idwt_interleave_batched,
+        &kernels.idwt_interleave_batched,
         (params.width, params.height, params.batch_count),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_horizontal_batched);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = runtime
+    let horizontal_width = kernels
         .idwt_reversible53_horizontal_batched
         .threadExecutionWidth()
         .max(1);
@@ -346,10 +355,10 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&runtime.idwt_reversible53_vertical_batched);
+    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = runtime
+    let vertical_width = kernels
         .idwt_reversible53_vertical_batched
         .threadExecutionWidth()
         .max(1);

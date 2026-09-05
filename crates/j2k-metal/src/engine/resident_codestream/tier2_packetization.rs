@@ -438,7 +438,7 @@ fn execute_tier2_packetization(
 
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.setComputePipelineState(&runtime.packet_encode);
+    encoder.setComputePipelineState(&runtime.encode()?.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
     encoder.set_buffer(2, Some(&block_buffer), 0);

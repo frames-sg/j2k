@@ -222,20 +222,21 @@ Publish in this order:
 8. `j2k-cuda-jpeg-engine`
 9. `j2k-cuda-transcode-engine`
 10. `j2k-metal-support`
-11. `j2k-native`
-12. `j2k-jpeg`
-13. `j2k-tilecodec`
-14. `j2k`
-15. `j2k-transcode`
-16. `j2k-transcode-cuda`
-17. `j2k-jpeg-metal`
-18. `j2k-metal`
-19. `j2k-transcode-metal`
-20. `j2k-jpeg-cuda`
-21. `j2k-cuda`
-22. `j2k-ml`
-23. `j2k-mpsgraph`
-24. `j2k-cli`
+11. `j2k-mpsgraph-support`
+12. `j2k-native`
+13. `j2k-jpeg`
+14. `j2k-tilecodec`
+15. `j2k`
+16. `j2k-transcode`
+17. `j2k-transcode-cuda`
+18. `j2k-jpeg-metal`
+19. `j2k-metal`
+20. `j2k-transcode-metal`
+21. `j2k-jpeg-cuda`
+22. `j2k-cuda`
+23. `j2k-ml`
+24. `j2k-mpsgraph`
+25. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
 Use the repo-owned package gate from a clean worktree:
