@@ -1,16 +1,3 @@
-struct J2kClassicEncodeBatchJob {
-    uint coefficient_offset;
-    uint output_offset;
-    uint segment_offset;
-    uint width;
-    uint height;
-    uint sub_band_type;
-    uint total_bitplanes;
-    uint style_flags;
-    uint output_capacity;
-    uint segment_capacity;
-};
-
 struct J2kClassicTier1DensityCounters {
     uint sigprop_active_candidates;
     uint sigprop_new_significant;

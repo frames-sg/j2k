@@ -51,3 +51,32 @@ kernel void j2k_quantize_subband(
 
     coefficients[gid] = j2k_quantize_sample(samples[gid], params);
 }
+
+struct J2kLossyCoefficientJob {
+    uint coefficient_offset;
+    uint component;
+    uint source_x;
+    uint source_y;
+    uint width;
+    uint height;
+    uint full_width;
+    J2kQuantizeSubbandParams quantize;
+};
+
+kernel void j2k_lossy_extract_quantized_coefficients(
+    device const float *plane0 [[buffer(0)]],
+    device const float *plane1 [[buffer(1)]],
+    device const float *plane2 [[buffer(2)]],
+    device int *coefficients [[buffer(3)]],
+    constant J2kLossyCoefficientJob *jobs [[buffer(4)]],
+    constant uint &job_count [[buffer(5)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    if (gid.z >= job_count) return;
+    constant J2kLossyCoefficientJob &job = jobs[gid.z];
+    if (gid.x >= job.width || gid.y >= job.height) return;
+    device const float *plane = job.component == 0u ? plane0 : (job.component == 1u ? plane1 : plane2);
+    const uint source = (job.source_y + gid.y) * job.full_width + job.source_x + gid.x;
+    const uint destination = job.coefficient_offset + gid.y * job.width + gid.x;
+    coefficients[destination] = j2k_quantize_sample(plane[source], job.quantize);
+}

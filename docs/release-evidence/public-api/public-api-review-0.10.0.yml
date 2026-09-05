@@ -219,3 +219,9 @@ reviews:
     hidden_count: 0
     hidden_fingerprint: "none"
     rationale: "Reviewed the complete first-release j2k-mpsgraph surface: it exposes static native tensor contracts, completed resident handoff, same-queue blocking and nonblocking execution, owned completion guards, typed failures, and the RGB8 reference workflow without adding codec behavior."
+  j2k-mpsgraph-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:d39e3033a9bb543c"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed all 19 generated first-release items: one owned Foundation error and one thread-affine graph submission guard. The unsafe constructor requires graph/tensor/device agreement and retained input storage; wait, target lookup, and Drop retain the completion lifetime. Codec preparation, metadata, and output allocation remain in the consuming adapters. Existing codec APIs are unchanged."

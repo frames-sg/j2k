@@ -957,30 +957,46 @@ fn metal_htj2k_cleanup_kernel_matches_scalar_oracle() {
         return;
     }
 
-    let coeffs: Vec<i32> = (0..64)
-        .map(|idx| {
-            let value = ((idx * 19 + 7) & 0xff) - 127;
-            if idx % 7 == 0 {
-                0
-            } else {
-                value
-            }
-        })
-        .collect();
-    let job = j2k_native::J2kHtCodeBlockEncodeJob {
-        coefficients: &coeffs,
-        width: 8,
-        height: 8,
-        total_bitplanes: 8,
-        target_coding_passes: 1,
-    };
+    for (width, height) in [
+        (8, 8),
+        (1, 1),
+        (31, 17),
+        (32, 32),
+        (33, 19),
+        (63, 31),
+        (64, 64),
+        (65, 17),
+        (128, 16),
+    ] {
+        let coeffs: Vec<i32> = (0..i32::try_from(width * height).expect("bounded fixture"))
+            .map(|idx| {
+                let value = ((idx * 19 + 7) & 0xff) - 127;
+                if idx % 7 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let job = j2k_native::J2kHtCodeBlockEncodeJob {
+            coefficients: &coeffs,
+            width,
+            height,
+            total_bitplanes: 8,
+            target_coding_passes: 1,
+        };
 
-    let gpu = compute::encode_ht_cleanup_code_block(job).expect("Metal HT encode");
-    let cpu = j2k_native::encode_ht_code_block_scalar(&coeffs, 8, 8, 8).expect("scalar HT encode");
+        let gpu = compute::encode_ht_cleanup_code_block(job).expect("Metal HT encode");
+        let batch =
+            compute::encode_ht_cleanup_code_blocks(&[job, job]).expect("batched Metal HT encode");
+        assert!(batch.iter().all(|block| block.data == gpu.data));
+        let cpu = j2k_native::encode_ht_code_block_scalar(&coeffs, width, height, 8)
+            .expect("scalar HT encode");
 
-    assert_eq!(gpu.data, cpu.data);
-    assert_eq!(gpu.num_coding_passes, cpu.num_coding_passes);
-    assert_eq!(gpu.num_zero_bitplanes, cpu.num_zero_bitplanes);
+        assert_eq!(gpu.data, cpu.data);
+        assert_eq!(gpu.num_coding_passes, cpu.num_coding_passes);
+        assert_eq!(gpu.num_zero_bitplanes, cpu.num_zero_bitplanes);
+    }
 }
 
 #[cfg(target_os = "macos")]

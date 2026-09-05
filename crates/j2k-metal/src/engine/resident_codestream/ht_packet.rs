@@ -241,7 +241,7 @@ fn submit_ht_packet_stages(
             hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE);
         let encoder = new_compute_command_encoder(&command_buffer)?;
         label_compute_encoder(&encoder, "HTJ2K packet block prep");
-        encoder.setComputePipelineState(&runtime.packet_block_prepare_resident_ht);
+        encoder.setComputePipelineState(&runtime.encode()?.packet_block_prepare_resident_ht);
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
         encoder.set_buffer(2, Some(&tier1_status_buffer), 0);
@@ -251,6 +251,7 @@ fn submit_ht_packet_stages(
             j2k_metal_support::mtl_size(resident_blocks.len() as u64, 1, 1),
             j2k_metal_support::mtl_size(
                 runtime
+                    .encode()?
                     .packet_block_prepare_resident_ht
                     .threadExecutionWidth()
                     .max(1) as u64,
@@ -280,7 +281,7 @@ fn submit_ht_packet_stages(
     let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K packetization");
-    encoder.setComputePipelineState(&runtime.packet_encode_batched);
+    encoder.setComputePipelineState(&runtime.encode()?.packet_encode_batched);
     encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
     encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
     encoder.set_buffer(2, Some(&packet_block_buffer), 0);
@@ -296,7 +297,11 @@ fn submit_ht_packet_stages(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(
-            runtime.packet_encode_batched.threadExecutionWidth().max(1) as u64,
+            runtime
+                .encode()?
+                .packet_encode_batched
+                .threadExecutionWidth()
+                .max(1) as u64,
             1,
             1,
         ),
@@ -349,7 +354,7 @@ fn submit_ht_packet_stages(
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K codestream assembly");
-    encoder.setComputePipelineState(&runtime.lossless_codestream_assemble_batched);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_codestream_assemble_batched);
     encoder.set_buffer(0, Some(&codestream_buffer), 0);
     encoder.set_buffer(1, Some(&packet_status_buffer), 0);
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
@@ -359,6 +364,7 @@ fn submit_ht_packet_stages(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(
             runtime
+                .encode()?
                 .lossless_codestream_assemble_batched
                 .threadExecutionWidth()
                 .max(1) as u64,

@@ -67,12 +67,12 @@ enum RepeatedClassicKernel {
 
 #[cfg(target_os = "macos")]
 fn select_repeated_classic_kernel(
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     count: usize,
     batch: ClassicBatchView<'_>,
 ) -> RepeatedClassicKernel {
     let plain_fast = classic_repeated_uses_plain_fast_path(count, batch.jobs, batch.segments)
-        && runtime
+        && kernels
             .classic_cleanup_plain_repeated_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
@@ -190,7 +190,7 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: batch.repeated_overflow_message.to_string(),
         })?;
-    let kernel = select_repeated_classic_kernel(runtime, count, batch);
+    let kernel = select_repeated_classic_kernel(runtime.decode()?, count, batch);
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, total_jobs)?;
     let states_scratch = if kernel == RepeatedClassicKernel::PlainDeviceState {
         Some(take_classic_states_scratch_buffer(runtime, total_jobs)?)
@@ -312,6 +312,7 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
     let segments_buffer = job.segments_buffer.clone();
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&job.jobs, &job.segments)
         && runtime
+            .decode()?
             .classic_cleanup_plain_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
@@ -329,6 +330,7 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
         encoder,
         ClassicCleanupBatchDispatch {
             runtime,
+            kernels: runtime.decode()?,
             coded_data: &coded_buffer,
             jobs: &jobs_buffer,
             job_count: job.jobs.len(),
@@ -378,6 +380,7 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_group_to_buffer_in_enc
     let segments_buffer = group.segments_buffer.clone();
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&group.jobs, &group.segments)
         && runtime
+            .decode()?
             .classic_cleanup_plain_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
@@ -390,6 +393,7 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_group_to_buffer_in_enc
         encoder,
         ClassicCleanupBatchDispatch {
             runtime,
+            kernels: runtime.decode()?,
             coded_data: &coded_buffer,
             jobs: &jobs_buffer,
             job_count: group.jobs.len(),

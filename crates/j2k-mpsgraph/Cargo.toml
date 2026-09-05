@@ -24,7 +24,7 @@ j2k-metal-support = { path = "../j2k-metal-support", version = "=0.10.0" }
 thiserror = { workspace = true }
 
 [target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
-block2 = { workspace = true }
+j2k-mpsgraph-support = { path = "../j2k-mpsgraph-support", version = "=0.10.0" }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = [
     "NSArray",

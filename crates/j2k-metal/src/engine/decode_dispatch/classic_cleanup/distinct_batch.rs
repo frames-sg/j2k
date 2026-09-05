@@ -278,6 +278,7 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
     let segments_buffer = copied_slice_buffer(&runtime.device, &segments)?;
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&jobs, &segments)
         && runtime
+            .decode()?
             .classic_cleanup_plain_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
@@ -286,6 +287,7 @@ fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
         encoder,
         ClassicCleanupBatchDispatch {
             runtime,
+            kernels: runtime.decode()?,
             coded_data: &coded_buffer,
             jobs: &jobs_buffer,
             job_count: jobs.len(),

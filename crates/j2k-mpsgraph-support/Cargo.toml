@@ -1,0 +1,30 @@
+[package]
+name = "j2k-mpsgraph-support"
+description = "Owned asynchronous MPSGraph submission for Metal codec adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSArray", "NSDictionary"] }
+objc2-metal.workspace = true
+objc2-metal-performance-shaders-graph.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+undocumented_unsafe_blocks = "warn"

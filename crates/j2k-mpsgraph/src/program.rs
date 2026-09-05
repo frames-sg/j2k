@@ -1,41 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use core::{marker::PhantomData, ptr::NonNull};
-use std::{
-    rc::Rc,
-    sync::{Arc, OnceLock},
-};
-
-use block2::RcBlock;
 use j2k::{BatchGroupInfo, J2kDecodeWarning, PreparedBatchGroup};
 use j2k_core::Rect;
 use j2k_metal::SubmittedMetalGroupDecodeInto;
 use j2k_metal_support::{MetalImageDestination, MetalImageLayout};
+use j2k_mpsgraph_support::{GraphExecutionError, MpsGraphSubmission};
 use objc2::{rc::Retained, runtime::ProtocolObject, AnyThread};
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber};
-use objc2_metal::{MTLBuffer, MTLCommandQueue};
-use objc2_metal_performance_shaders::MPSDataType;
-use objc2_metal_performance_shaders_graph::{
-    MPSGraph, MPSGraphExecutionDescriptor, MPSGraphTensor, MPSGraphTensorData,
-    MPSGraphTensorDataDictionary,
-};
+use objc2_foundation::{NSArray, NSNumber};
+use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLDevice};
+use objc2_metal_performance_shaders_graph::{MPSGraph, MPSGraphTensor, MPSGraphTensorData};
 
 use crate::{
-    allocation::{try_clone_slice, try_single, try_vec},
+    allocation::{try_clone_slice, try_vec},
     platform::MpsGraphBatchDecoder,
     Error, MpsGraphInputGroup, MpsGraphTensorSpec,
 };
-
-type CompletionBlock = RcBlock<dyn Fn(NonNull<MPSGraphTensorDataDictionary>, *mut NSError)>;
-
-#[derive(Clone, Debug)]
-struct OwnedGraphError {
-    domain: String,
-    code: isize,
-    description: String,
-}
-
-type CompletionState = OnceLock<Result<(), OwnedGraphError>>;
 
 /// A static rank-four `MPSGraph` program with one image placeholder.
 pub struct MpsGraphProgram {
@@ -79,81 +58,6 @@ impl MpsGraphProgram {
         })
     }
 
-    /// Build an identity graph for interoperability tests and direct handoff.
-    pub fn identity(input_spec: MpsGraphTensorSpec) -> Result<Self, Error> {
-        // SAFETY: `new` is a standard owning Objective-C constructor.
-        let graph = unsafe { MPSGraph::new() };
-        let shape = mps_shape(input_spec.shape());
-        // SAFETY: shape and dtype are static validated values retained by the graph.
-        let placeholder = unsafe {
-            graph.placeholderWithShape_dataType_name(Some(&shape), input_spec.mps_data_type(), None)
-        };
-        let targets = try_single(placeholder.clone(), "MPSGraph identity target")?;
-        Self::new(graph, placeholder, targets, input_spec)
-    }
-
-    /// Build the RGB8/NHWC reference graph used by examples and benchmarks.
-    ///
-    /// The graph casts to F32, normalizes to `[0, 1]`, applies the fixed
-    /// reference channel weights, and returns one spatially reduced score per
-    /// image.
-    pub fn rgb8_nhwc_reference(batch: usize, height: usize, width: usize) -> Result<Self, Error> {
-        let input_spec =
-            MpsGraphTensorSpec::new([batch, height, width, 3], crate::MpsGraphElementType::U8)?;
-        let spatial_pixels = height
-            .checked_mul(width)
-            .and_then(|pixels| u32::try_from(pixels).ok())
-            .ok_or(Error::TensorShapeOverflow)?;
-        // SAFETY: `new` is a standard owning Objective-C constructor.
-        let graph = unsafe { MPSGraph::new() };
-        let shape = mps_shape(input_spec.shape());
-        // SAFETY: all operations use static shapes, valid axes, and constants;
-        // every returned tensor remains owned by `graph` and the program.
-        let (placeholder, score) = unsafe {
-            let placeholder =
-                graph.placeholderWithShape_dataType_name(Some(&shape), MPSDataType::UInt8, None);
-            let float = graph.castTensor_toType_name(&placeholder, MPSDataType::Float32, None);
-            let scale = graph.constantWithScalar_dataType(255.0, MPSDataType::Float32);
-            let normalized =
-                graph.divisionWithPrimaryTensor_secondaryTensor_name(&float, &scale, None);
-
-            let weighted_channel = |channel: isize, weight: f64| {
-                let values =
-                    graph.sliceTensor_dimension_start_length_name(&normalized, 3, channel, 1, None);
-                let coefficient = graph.constantWithScalar_dataType(weight, MPSDataType::Float32);
-                graph.multiplicationWithPrimaryTensor_secondaryTensor_name(
-                    &values,
-                    &coefficient,
-                    None,
-                )
-            };
-            let red = weighted_channel(0, f64::from(crate::RGB8_REFERENCE_CHANNEL_WEIGHTS[0]));
-            let green = weighted_channel(1, f64::from(crate::RGB8_REFERENCE_CHANNEL_WEIGHTS[1]));
-            let blue = weighted_channel(2, f64::from(crate::RGB8_REFERENCE_CHANNEL_WEIGHTS[2]));
-            let red_green =
-                graph.additionWithPrimaryTensor_secondaryTensor_name(&red, &green, None);
-            let weighted =
-                graph.additionWithPrimaryTensor_secondaryTensor_name(&red_green, &blue, None);
-            let axes = NSArray::from_retained_slice(&[
-                NSNumber::new_isize(1),
-                NSNumber::new_isize(2),
-                NSNumber::new_isize(3),
-            ]);
-            let summed = graph.reductionSumWithTensor_axes_name(&weighted, Some(&axes), None);
-            let pixel_count =
-                graph.constantWithScalar_dataType(f64::from(spatial_pixels), MPSDataType::Float32);
-            let score =
-                graph.divisionWithPrimaryTensor_secondaryTensor_name(&summed, &pixel_count, None);
-            (placeholder, score)
-        };
-        Self::new(
-            graph,
-            placeholder,
-            try_single(score, "MPSGraph reference target")?,
-            input_spec,
-        )
-    }
-
     /// Static image input contract captured by this graph.
     #[must_use]
     pub const fn input_spec(&self) -> MpsGraphTensorSpec {
@@ -195,6 +99,10 @@ impl MpsGraphProgram {
         input: MpsGraphInputGroup,
     ) -> Result<SubmittedMpsGraphRun, Error> {
         self.validate_input_spec(input.spec())?;
+        validate_device_registry_ids(
+            input.resident_batch().device_registry_id(),
+            command_queue.device().registryID(),
+        )?;
         let MpsGraphInputGroup {
             tensor_data,
             resident_batch,
@@ -292,61 +200,42 @@ impl MpsGraphProgram {
         codec: Option<SubmittedMetalGroupDecodeInto>,
         metadata: RunMetadata,
     ) -> SubmittedMpsGraphRun {
-        let feeds = NSDictionary::from_slices(&[&*self.image_placeholder], &[tensor_data]);
-        let targets = NSArray::from_retained_slice(&self.targets);
-        // SAFETY: `new` is a standard owning Objective-C constructor.
-        let execution_descriptor = unsafe { MPSGraphExecutionDescriptor::new() };
-        let completion_state = Arc::new(CompletionState::default());
-        let callback_state = Arc::clone(&completion_state);
-        let completion_block: CompletionBlock = RcBlock::new(
-            move |_results: NonNull<MPSGraphTensorDataDictionary>, error: *mut NSError| {
-                let error = NonNull::new(error).map(|error| {
-                    // SAFETY: MPSGraph guarantees that the callback NSError is
-                    // valid for the duration of this invocation.
-                    let error = unsafe { error.as_ref() };
-                    OwnedGraphError {
-                        domain: error.domain().to_string(),
-                        code: error.code(),
-                        description: error.localizedDescription().to_string(),
-                    }
-                });
-                let _ = callback_state.set(error.map_or(Ok(()), Err));
-            },
-        );
-        // SAFETY: the block pointer has the exact generated completion
-        // signature. Both the descriptor and this guard retain the block until
-        // completion, and Drop waits before releasing either owner.
-        unsafe {
-            execution_descriptor.setCompletionHandler(RcBlock::as_ptr(&completion_block));
-        }
-        // SAFETY: the placeholder, feed, targets, queue, descriptor, graph,
-        // tensor data, and unretained underlying input buffer are all retained
-        // by the returned guard until its completion callback has fired.
-        let results = unsafe {
-            self.graph
-                .runAsyncWithMTLCommandQueue_feeds_targetTensors_targetOperations_executionDescriptor(
-                    command_queue,
-                    &feeds,
-                    &targets,
-                    None,
-                    Some(&execution_descriptor),
-                )
+        // SAFETY: the program's image shape/dtype and queue device were checked
+        // before submission. The codec writes on this same queue. RunInputOwner
+        // retains tensor data and its buffer or resident batch (including pool
+        // leases), and the shared guard holds them through graph completion.
+        let graph = unsafe {
+            MpsGraphSubmission::submit(
+                &self.graph,
+                &self.image_placeholder,
+                &self.targets,
+                command_queue,
+                tensor_data,
+                input_owner,
+            )
         };
         SubmittedMpsGraphRun {
-            graph: self.graph.clone(),
-            image_placeholder: self.image_placeholder.clone(),
-            targets,
-            feeds,
-            results: Some(results),
-            execution_descriptor,
-            completion_block,
-            completion_state,
-            input_owner: Some(input_owner),
+            graph,
             codec,
             metadata: Some(metadata),
-            not_send_or_sync: PhantomData,
         }
     }
+}
+
+fn validate_device_registry_ids(
+    image_registry_id: u64,
+    requested_registry_id: u64,
+) -> Result<(), Error> {
+    if image_registry_id == requested_registry_id {
+        return Ok(());
+    }
+    Err(
+        j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+            image_registry_id,
+            requested_registry_id,
+        }
+        .into(),
+    )
 }
 
 fn validate_placeholder(
@@ -483,18 +372,9 @@ impl MpsGraphRunOutput {
 /// This guard is deliberately neither `Send` nor `Sync`. Dropping it waits for
 /// graph completion before releasing the unretained input allocation.
 pub struct SubmittedMpsGraphRun {
-    graph: Retained<MPSGraph>,
-    image_placeholder: Retained<MPSGraphTensor>,
-    targets: Retained<NSArray<MPSGraphTensor>>,
-    feeds: Retained<MPSGraphTensorDataDictionary>,
-    results: Option<Retained<MPSGraphTensorDataDictionary>>,
-    execution_descriptor: Retained<MPSGraphExecutionDescriptor>,
-    completion_block: CompletionBlock,
-    completion_state: Arc<CompletionState>,
-    input_owner: Option<RunInputOwner>,
+    graph: MpsGraphSubmission<RunInputOwner>,
     codec: Option<SubmittedMetalGroupDecodeInto>,
     metadata: Option<RunMetadata>,
-    not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl core::fmt::Debug for SubmittedMpsGraphRun {
@@ -510,7 +390,7 @@ impl SubmittedMpsGraphRun {
     /// Whether `MPSGraph` has invoked its completion callback.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.completion_state.get().is_some()
+        self.graph.is_complete()
     }
 
     /// Wait for codec and graph completion and return graph target data.
@@ -519,7 +399,7 @@ impl SubmittedMpsGraphRun {
     }
 
     fn finish(&mut self) -> Result<MpsGraphRunOutput, Error> {
-        let graph_error = self.completion_state.wait().clone().err();
+        let graph_error = self.graph.wait().err();
         let mut metadata = self
             .metadata
             .take()
@@ -529,29 +409,18 @@ impl SubmittedMpsGraphRun {
             .take()
             .map(SubmittedMetalGroupDecodeInto::wait)
             .transpose()?;
-        let input_owner = self
-            .input_owner
-            .take()
-            .expect("MPSGraph run input is consumed exactly once");
-        drop(input_owner);
         if let Some(error) = graph_error {
-            return Err(Error::GraphExecution {
-                domain: error.domain,
-                code: error.code,
-                description: error.description,
-            });
+            return Err(graph_execution_error(error));
         }
         if let Some(completion) = completion {
             metadata.completed = Some(completion.into_parts());
         }
-        let results_dictionary = self
-            .results
-            .take()
-            .expect("MPSGraph results are consumed exactly once");
-        let mut results = try_vec(self.targets.len(), "MPSGraph run outputs")?;
-        for (index, target) in self.targets.iter().enumerate() {
-            let result = results_dictionary
-                .objectForKey(&target)
+        let mut results = try_vec(self.graph.target_count(), "MPSGraph run outputs")?;
+        for index in 0..self.graph.target_count() {
+            let result = self
+                .graph
+                .output(index)
+                .map_err(graph_execution_error)?
                 .ok_or(Error::MissingGraphOutput { index })?;
             results.push(result);
         }
@@ -571,42 +440,41 @@ impl SubmittedMpsGraphRun {
 
 impl Drop for SubmittedMpsGraphRun {
     fn drop(&mut self) {
-        if self.input_owner.is_some() {
-            let _ = self.finish();
+        // Cleanup only waits: metadata/result extraction belongs to explicit wait.
+        // This is also safe after codec failure consumed part of the run state.
+        let _ = self.graph.wait();
+        if let Some(codec) = self.codec.take() {
+            let _ = codec.wait();
         }
-        // Make the lifetime contract visible and prevent accidental removal of
-        // these owners as apparently unused fields.
-        let _ = (
-            &self.graph,
-            &self.image_placeholder,
-            &self.feeds,
-            &self.execution_descriptor,
-            &self.completion_block,
-        );
+    }
+}
+
+fn graph_execution_error(error: GraphExecutionError) -> Error {
+    Error::GraphExecution {
+        domain: error.domain,
+        code: error.code,
+        description: error.description,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletionState, OwnedGraphError};
+    use super::validate_device_registry_ids;
+    use crate::Error;
 
     #[test]
-    fn completion_state_preserves_graph_errors() {
-        let state = CompletionState::new();
-        assert!(state.get().is_none());
+    fn completed_handoff_rejects_a_command_queue_from_another_device() {
+        let error = validate_device_registry_ids(17, 29)
+            .expect_err("a completed buffer cannot run on another Metal device");
 
-        state
-            .set(Err(OwnedGraphError {
-                domain: "test.domain".to_string(),
-                code: 17,
-                description: "test failure".to_string(),
-            }))
-            .expect("first completion");
-
-        assert!(state.get().is_some());
-        let error = state.wait().clone().expect_err("owned graph error");
-        assert_eq!(error.domain, "test.domain");
-        assert_eq!(error.code, 17);
-        assert_eq!(error.description, "test failure");
+        assert!(matches!(
+            error,
+            Error::MetalRuntime(
+                j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+                    image_registry_id: 17,
+                    requested_registry_id: 29,
+                }
+            )
+        ));
     }
 }

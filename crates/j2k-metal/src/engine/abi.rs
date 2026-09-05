@@ -324,6 +324,20 @@ pub(crate) struct J2kQuantizeSubbandParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct J2kLossyCoefficientJob {
+    pub(crate) coefficient_offset: u32,
+    pub(crate) component: u32,
+    pub(crate) source_x: u32,
+    pub(crate) source_y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) full_width: u32,
+    pub(crate) quantize: J2kQuantizeSubbandParams,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct J2kForwardDwt53Params {
     pub(crate) full_width: u32,
     pub(crate) current_width: u32,
@@ -1039,6 +1053,7 @@ impl_gpu_readback_abi!(
     J2kForwardRctParams,
     J2kForwardIctParams,
     J2kQuantizeSubbandParams,
+    J2kLossyCoefficientJob,
     J2kForwardDwt53Params,
     J2kForwardDwt53BatchedParams,
     J2kMctStatus,

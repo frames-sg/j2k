@@ -11,7 +11,6 @@ use super::abi::{
     J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
     J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS, J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT,
 };
-use super::MetalRuntime;
 
 pub(super) fn classic_resident_style_flags_from_env() -> u32 {
     if classic_selective_bypass_disabled() {
@@ -80,17 +79,17 @@ pub(super) fn classic_encode_code_blocks_pipeline_kind(
 }
 
 pub(super) fn classic_encode_code_blocks_pipeline<'a>(
-    runtime: &'a MetalRuntime,
+    kernels: &'a crate::engine::runtime::EncodeKernels,
     jobs: &[J2kClassicEncodeBatchJob],
 ) -> &'a ComputePipelineState {
     match classic_encode_code_blocks_pipeline_kind(jobs) {
-        J2kClassicEncodePipelineKind::Generic => &runtime.classic_encode_code_blocks,
-        J2kClassicEncodePipelineKind::Generic32 => &runtime.classic_encode_code_blocks_32,
-        J2kClassicEncodePipelineKind::Bypass32 => &runtime.classic_encode_code_blocks_bypass_32,
+        J2kClassicEncodePipelineKind::Generic => &kernels.classic_encode_code_blocks,
+        J2kClassicEncodePipelineKind::Generic32 => &kernels.classic_encode_code_blocks_32,
+        J2kClassicEncodePipelineKind::Bypass32 => &kernels.classic_encode_code_blocks_bypass_32,
         J2kClassicEncodePipelineKind::BypassU16_32 => {
-            &runtime.classic_encode_code_blocks_bypass_u16_32
+            &kernels.classic_encode_code_blocks_bypass_u16_32
         }
-        J2kClassicEncodePipelineKind::Style0 => &runtime.classic_encode_code_blocks_style0,
-        J2kClassicEncodePipelineKind::Style0_32 => &runtime.classic_encode_code_blocks_style0_32,
+        J2kClassicEncodePipelineKind::Style0 => &kernels.classic_encode_code_blocks_style0,
+        J2kClassicEncodePipelineKind::Style0_32 => &kernels.classic_encode_code_blocks_style0_32,
     }
 }

@@ -745,7 +745,8 @@ fn dispatch_classic_tier1(
         } else {
             let encoder = new_compute_command_encoder(&command_buffer)?;
             label_compute_encoder(&encoder, "J2K Tier-1 encode");
-            let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, tier1_jobs);
+            let classic_encode_pipeline =
+                classic_encode_code_blocks_pipeline(runtime.encode()?, tier1_jobs);
             encoder.setComputePipelineState(classic_encode_pipeline);
             encoder.set_buffer(0, Some(coefficient_buffer), 0);
             encoder.set_buffer(1, Some(tier1_output_buffer), 0);

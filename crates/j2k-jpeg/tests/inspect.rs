@@ -84,6 +84,34 @@ fn split_tables_and_scan(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (tables, tile)
 }
 
+fn jpeg_tables_only(bytes: &[u8]) -> Vec<u8> {
+    let mut tables = vec![0xff, 0xd8];
+    for segment in iter_segments(bytes) {
+        let segment = segment.expect("fixture segment parses");
+        if matches!(segment.marker, 0xdb | 0xc4) {
+            let end = segment.payload_offset + segment.payload.len();
+            tables.extend_from_slice(&bytes[segment.marker_offset..end]);
+        }
+    }
+    tables.extend_from_slice(&[0xff, 0xd9]);
+    tables
+}
+
+fn without_coding_tables(bytes: &[u8]) -> Vec<u8> {
+    let mut ranges = iter_segments(bytes)
+        .filter_map(|segment| {
+            let segment = segment.expect("fixture segment parses");
+            matches!(segment.marker, 0xdb | 0xc4)
+                .then_some(segment.marker_offset..segment.payload_offset + segment.payload.len())
+        })
+        .collect::<Vec<_>>();
+    let mut tile = bytes.to_vec();
+    for range in ranges.drain(..).rev() {
+        tile.drain(range);
+    }
+    tile
+}
+
 fn mutate_first_dqt_value(tables: &[u8]) -> Vec<u8> {
     let mut out = tables.to_vec();
     let dqt = out
@@ -274,6 +302,93 @@ fn abbreviated_tiff_jpeg_tile_with_jpeg_tables_assembles_decode_ready_stream() {
     assert!(prepared.as_bytes().starts_with(&[0xff, 0xd8]));
     assert!(prepared.as_bytes().ends_with(&[0xff, 0xd9]));
     assert_eq!(prepared.as_bytes(), full.as_slice());
+}
+
+#[test]
+fn abbreviated_tiff_jpeg_with_soi_and_eoi_imports_supplied_coding_tables() {
+    let full = minimal_baseline_jpeg();
+    let tables = jpeg_tables_only(&full);
+    let tile = without_coding_tables(&full);
+    assert!(tile.starts_with(&[0xff, 0xd8]));
+    assert!(tile.ends_with(&[0xff, 0xd9]));
+    assert!(matches!(
+        Decoder::new(&tile),
+        Err(JpegError::MissingQuantTable { .. } | JpegError::MissingHuffmanTable { .. })
+    ));
+
+    let prepared = prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options())
+        .expect("supplied TIFF JPEGTables should complete the abbreviated stream");
+    let decoder = Decoder::new(prepared.as_bytes()).expect("prepared stream should decode");
+
+    assert!(matches!(prepared, PreparedJpeg::Owned(_)));
+    assert_eq!(decoder.info().dimensions, (16, 16));
+}
+
+#[test]
+fn complete_tiff_jpeg_missing_only_eoi_stays_borrowed_and_decodable() {
+    let mut bytes = minimal_baseline_jpeg();
+    bytes.truncate(bytes.len() - 2);
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options())
+        .expect("missing EOI remains a decodable complete stream");
+
+    let PreparedJpeg::Borrowed(prepared_bytes) = prepared else {
+        panic!("missing EOI should not force TIFF table assembly");
+    };
+    assert!(std::ptr::eq(prepared_bytes.as_ptr(), bytes.as_ptr()));
+    Decoder::new(prepared_bytes).expect("decoder accepts otherwise complete missing-EOI JPEG");
+}
+
+#[test]
+fn tiff_jpeg_tables_do_not_override_tile_restart_or_arithmetic_state() {
+    let full = minimal_baseline_jpeg();
+    let mut tables = jpeg_tables_only(&full);
+    tables.splice(
+        2..2,
+        [
+            0xff, 0xdd, 0x00, 0x04, 0x00, 0x01, // DRI from table stream
+            0xff, 0xcc, 0x00, 0x04, 0x00, 0x00, // DAC from table stream
+        ],
+    );
+    let tile = without_coding_tables(&full);
+
+    let prepared = prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options())
+        .expect("non-coding table-stream state should be ignored");
+    let markers = iter_segments(prepared.as_bytes())
+        .map(|segment| segment.expect("prepared marker parses").marker)
+        .collect::<Vec<_>>();
+    let decoder = Decoder::new(prepared.as_bytes()).expect("prepared stream should decode");
+
+    assert!(
+        !markers.contains(&0xdd),
+        "JPEGTables DRI must not leak into tile state"
+    );
+    assert!(
+        !markers.contains(&0xcc),
+        "JPEGTables DAC must not leak into tile state"
+    );
+    assert_eq!(decoder.info().restart_interval, None);
+}
+
+#[test]
+fn abbreviated_tiff_jpeg_rejects_supplied_tables_without_required_coding_tables() {
+    let full = minimal_baseline_jpeg();
+    let tile = without_coding_tables(&full);
+    let tables = [
+        0xff, 0xd8, // SOI
+        0xff, 0xdd, 0x00, 0x04, 0x00, 0x01, // ignored DRI
+        0xff, 0xd9, // EOI
+    ];
+
+    let error = prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options())
+        .expect_err("non-coding JPEGTables cannot complete an abbreviated JPEG");
+
+    assert!(matches!(
+        error,
+        JpegError::InvalidJpegAssembly {
+            reason: "supplied JPEGTables does not define every coding table required by the tile",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -631,9 +746,55 @@ fn jpeg_view_exposes_baseline_passthrough_candidate_with_original_bytes() {
 }
 
 #[test]
-fn jpeg_progressive_is_not_offered_as_active_passthrough_candidate() {
+fn jpeg_progressive_is_offered_as_matching_passthrough_candidate() {
     let bytes = progressive_8x8_jpeg();
     let view = JpegView::parse(&bytes).expect("progressive view");
+    let candidate = view
+        .passthrough_candidate()
+        .expect("progressive JPEG passthrough candidate");
+    let requirements = PassthroughRequirements::new(
+        CompressedTransferSyntax::JpegProgressive,
+        CompressedPayloadKind::JpegInterchange,
+    );
 
-    assert!(view.passthrough_candidate().is_none());
+    assert_eq!(
+        candidate.evaluate(&requirements),
+        PassthroughDecision::Copy {
+            bytes: bytes.as_slice()
+        }
+    );
+}
+
+#[test]
+fn jpeg_lossless_sv1_is_offered_as_matching_passthrough_candidate() {
+    let bytes = fixtures::lossless_predictor_rgb_3x3_jpeg(1);
+    let view = JpegView::parse(&bytes).expect("lossless view");
+    let candidate = view
+        .passthrough_candidate()
+        .expect("lossless JPEG passthrough candidate");
+    let requirements = PassthroughRequirements::new(
+        CompressedTransferSyntax::JpegLosslessSv1,
+        CompressedPayloadKind::JpegInterchange,
+    );
+
+    assert!(candidate.transfer_syntax().is_lossless());
+    assert_eq!(
+        candidate.evaluate(&requirements),
+        PassthroughDecision::Copy {
+            bytes: bytes.as_slice()
+        }
+    );
+}
+
+#[test]
+fn jpeg_lossless_other_predictors_use_general_lossless_syntax() {
+    let bytes = fixtures::lossless_predictor_rgb_3x3_jpeg(2);
+    let view = JpegView::parse(&bytes).expect("lossless view");
+    assert_eq!(view.lossless_predictor(), Some(2));
+    assert_eq!(
+        view.passthrough_candidate()
+            .expect("lossless JPEG passthrough candidate")
+            .transfer_syntax(),
+        CompressedTransferSyntax::JpegLossless
+    );
 }

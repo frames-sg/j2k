@@ -5,9 +5,9 @@ use crate::metal_types::prelude::*;
 
 use super::super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
-    hybrid_stage_signpost, label_compute_encoder, new_command_buffer, new_compute_command_encoder,
-    with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error, J2kIdwt97StepParams,
-    J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob, MetalRuntime,
+    dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
+    new_compute_command_encoder, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
+    Error, J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob,
     SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 use super::{IdwtSubBandBuffers, SingleIdwtDispatch};
@@ -90,7 +90,7 @@ fn decode_irreversible97_staged_single_decomposition_idwt_with_high_pass(
         dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pass(
             &encoder,
             SingleIdwtDispatch {
-                runtime,
+                kernels: runtime.decode()?,
                 sub_bands: IdwtSubBandBuffers {
                     ll: &ll,
                     ll_offset: 0,
@@ -147,7 +147,7 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pas
     high_pass: f32,
 ) {
     let SingleIdwtDispatch {
-        runtime,
+        kernels,
         sub_bands,
         params,
         decoded,
@@ -163,7 +163,7 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pas
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.setComputePipelineState(&runtime.idwt_interleave);
+    encoder.setComputePipelineState(&kernels.idwt_interleave);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
     encoder.set_buffer(2, Some(lh), lh_offset as u64);
@@ -172,36 +172,48 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pas
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
     dispatch_2d_pipeline(
         encoder,
-        &runtime.idwt_interleave,
+        &kernels.idwt_interleave,
         (params.width, params.height),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    dispatch_irreversible97_stages(encoder, runtime, decoded, decoded_offset, params, high_pass);
+    dispatch_irreversible97_stages(
+        encoder,
+        kernels,
+        decoded,
+        decoded_offset,
+        params,
+        high_pass,
+        1,
+    );
 }
 
-fn dispatch_irreversible97_stages(
+pub(super) fn dispatch_irreversible97_stages(
     encoder: &ComputeCommandEncoderRef,
-    runtime: &MetalRuntime,
+    kernels: &crate::engine::runtime::DecodeKernels,
     decoded: &Buffer,
     decoded_offset: usize,
     params: J2kIdwtSingleDecompositionParams,
     high_pass: f32,
+    batch_count: u32,
 ) {
-    encoder.setComputePipelineState(&runtime.idwt_irreversible97_horizontal_scale);
+    #[cfg(test)]
+    crate::engine::test_counters::record_idwt97_stage_sequence();
+
+    encoder.setComputePipelineState(&kernels.idwt_irreversible97_horizontal_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     encoder.set_bytes::<f32>(2, &high_pass);
-    dispatch_2d_pipeline(
+    dispatch_3d_pipeline(
         encoder,
-        &runtime.idwt_irreversible97_horizontal_scale,
-        (params.width, params.height),
+        &kernels.idwt_irreversible97_horizontal_scale,
+        (params.width, params.height, batch_count),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
     let first_even_x = (params.x0 + params.output_x) & 1;
     let first_odd_x = 1 - first_even_x;
-    encoder.setComputePipelineState(&runtime.idwt_irreversible97_horizontal_step);
+    encoder.setComputePipelineState(&kernels.idwt_irreversible97_horizontal_step);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     for (coefficient, parity) in [
@@ -217,27 +229,27 @@ fn dispatch_irreversible97_stages(
             _reserved1: 0,
         };
         encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
-        dispatch_2d_pipeline(
+        dispatch_3d_pipeline(
             encoder,
-            &runtime.idwt_irreversible97_horizontal_step,
-            (params.width, params.height),
+            &kernels.idwt_irreversible97_horizontal_step,
+            (params.width, params.height, batch_count),
         );
         encoder.memory_barrier_with_resources(&[decoded]);
     }
-    encoder.setComputePipelineState(&runtime.idwt_irreversible97_vertical_scale);
+    encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_scale);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     encoder.set_bytes::<f32>(2, &high_pass);
-    dispatch_2d_pipeline(
+    dispatch_3d_pipeline(
         encoder,
-        &runtime.idwt_irreversible97_vertical_scale,
-        (params.width, params.height),
+        &kernels.idwt_irreversible97_vertical_scale,
+        (params.width, params.height, batch_count),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
 
     let first_even_y = (params.y0 + params.output_y) & 1;
     let first_odd_y = 1 - first_even_y;
-    encoder.setComputePipelineState(&runtime.idwt_irreversible97_vertical_step);
+    encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_step);
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     for (coefficient, parity) in [
@@ -253,10 +265,10 @@ fn dispatch_irreversible97_stages(
             _reserved1: 0,
         };
         encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
-        dispatch_2d_pipeline(
+        dispatch_3d_pipeline(
             encoder,
-            &runtime.idwt_irreversible97_vertical_step,
-            (params.width, params.height),
+            &kernels.idwt_irreversible97_vertical_step,
+            (params.width, params.height, batch_count),
         );
         encoder.memory_barrier_with_resources(&[decoded]);
     }

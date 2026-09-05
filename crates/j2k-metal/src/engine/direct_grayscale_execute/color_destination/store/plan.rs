@@ -132,12 +132,12 @@ fn native_color_store_pipeline(
     format: PixelFormat,
 ) -> Result<&crate::metal_types::ComputePipelineState, Error> {
     match format {
-        PixelFormat::Rgb8 => Ok(&runtime.store_native_rgb_batch_u8),
-        PixelFormat::Rgb16 => Ok(&runtime.store_native_rgb_batch_u16),
-        PixelFormat::RgbI16 => Ok(&runtime.store_native_rgb_batch_i16),
-        PixelFormat::Rgba8 => Ok(&runtime.store_native_rgba_batch_u8),
-        PixelFormat::Rgba16 => Ok(&runtime.store_native_rgba_batch_u16),
-        PixelFormat::RgbaI16 => Ok(&runtime.store_native_rgba_batch_i16),
+        PixelFormat::Rgb8 => Ok(&runtime.decode()?.store_native_rgb_batch_u8),
+        PixelFormat::Rgb16 => Ok(&runtime.decode()?.store_native_rgb_batch_u16),
+        PixelFormat::RgbI16 => Ok(&runtime.decode()?.store_native_rgb_batch_i16),
+        PixelFormat::Rgba8 => Ok(&runtime.decode()?.store_native_rgba_batch_u8),
+        PixelFormat::Rgba16 => Ok(&runtime.decode()?.store_native_rgba_batch_u16),
+        PixelFormat::RgbaI16 => Ok(&runtime.decode()?.store_native_rgba_batch_i16),
         _ => Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::unsupported_format(
                 "J2K Metal stacked exact color destination supports native RGB/RGBA integers only",

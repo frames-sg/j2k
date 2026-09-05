@@ -159,17 +159,6 @@ fn non_apple_api_consistently_reports_unsupported_platform() {
         Err(Error::UnsupportedPlatform)
     ));
 
-    let spec = MpsGraphTensorSpec::new([1, 1, 1, 3], MpsGraphElementType::U8)
-        .expect("valid fallback graph input spec");
-    assert!(matches!(
-        MpsGraphProgram::identity(spec),
-        Err(Error::UnsupportedPlatform)
-    ));
-    assert!(matches!(
-        MpsGraphProgram::rgb8_nhwc_reference(1, 1, 1),
-        Err(Error::UnsupportedPlatform)
-    ));
-
     let submitted = SubmittedMpsGraphRun;
     assert!(!submitted.is_complete());
     assert!(matches!(submitted.wait(), Err(Error::UnsupportedPlatform)));

@@ -72,9 +72,9 @@ pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
             message: "J2K Metal grayscale destination item offset exceeds u32".to_string(),
         })?;
     let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.store_component_gray_u8,
-        PixelFormat::Gray16 => &runtime.store_component_gray_u16,
-        PixelFormat::GrayI16 => &runtime.store_component_gray_i16,
+        PixelFormat::Gray8 => &runtime.decode()?.store_component_gray_u8,
+        PixelFormat::Gray16 => &runtime.decode()?.store_component_gray_u16,
+        PixelFormat::GrayI16 => &runtime.decode()?.store_component_gray_i16,
         _ => {
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::unsupported_format(

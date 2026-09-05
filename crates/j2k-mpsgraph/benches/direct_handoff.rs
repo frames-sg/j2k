@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[path = "../dev_support/graph_programs.rs"]
+mod graph_programs;
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[expect(
     clippy::cast_precision_loss,
     clippy::similar_names,
@@ -9,9 +13,15 @@
 )]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use core::{ffi::c_void, ptr::NonNull};
-    use std::{sync::Arc, time::Instant};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
-    use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage};
+    use j2k::{
+        BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples, EncodedImage,
+        PreparedBatch,
+    };
     use j2k_mpsgraph::{MpsGraphBatchDecoder, MpsGraphProgram, MpsGraphTensorSpec};
     use j2k_test_support::{gpu_bench_rgb8, htj2k_rgb8_fixture};
     use objc2::AnyThread;
@@ -19,40 +29,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use objc2_metal_performance_shaders::MPSDataType;
     use objc2_metal_performance_shaders_graph::MPSGraphTensorData;
 
+    use graph_programs::{average_cpu, average_program};
+
     fn summarize(samples: &[f64]) -> (f64, f64, f64) {
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-        if samples.len() < 2 {
-            return (mean, mean, mean);
+        if samples.len() < 30 {
+            return (mean, f64::NAN, f64::NAN);
         }
         let variance = samples
             .iter()
             .map(|sample| (sample - mean).powi(2))
             .sum::<f64>()
             / (samples.len() - 1) as f64;
-        let half_width = 1.96 * (variance / samples.len() as f64).sqrt();
+        // The gate starts at 30 samples. Retaining that run's t-critical value
+        // for larger custom runs is conservative and keeps this harness small.
+        let half_width = 2.045 * (variance / samples.len() as f64).sqrt();
         (mean, mean - half_width, mean + half_width)
     }
 
-    fn read_score_sum(data: &MPSGraphTensorData, batch: usize) -> f32 {
+    fn read_scores(data: &MPSGraphTensorData, batch: usize) -> Vec<f32> {
         let mut values = vec![0.0_f32; batch];
         // SAFETY: every benchmark graph run is complete and returns one F32
-        // score for the first image. Reading that final scalar verifies that
-        // every compared path executed equivalent graph work.
+        // score per image. Reading every score lets the preflight compare each
+        // output independently with the CPU oracle.
         unsafe {
             data.mpsndarray().readBytes_strideBytes(
                 NonNull::new(values.as_mut_ptr().cast::<c_void>()).expect("nonempty batch"),
                 core::ptr::null_mut(),
             );
         }
-        values.into_iter().sum()
+        values
     }
 
     fn staged_iteration(
         decoder: &mut MpsGraphBatchDecoder,
         program: &MpsGraphProgram,
-        inputs: &[EncodedImage],
-    ) -> Result<f32, Box<dyn std::error::Error>> {
-        let decoded = decoder.decode(inputs.to_vec())?;
+        prepared: &PreparedBatch,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let decoded = decoder.decode_prepared(prepared)?;
         let (mut groups, errors, group_errors) = decoded.into_parts();
         if !errors.is_empty() || !group_errors.is_empty() || groups.len() != 1 {
             return Err(std::io::Error::other("staged decode did not produce one group").into());
@@ -99,7 +113,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let result = results
             .objectForKey(program.targets()[0].as_ref())
             .ok_or_else(|| std::io::Error::other("staged graph omitted its target"))?;
-        Ok(read_score_sum(&result, spec.shape()[0]))
+        Ok(read_scores(&result, spec.shape()[0]))
+    }
+
+    fn run_path(
+        path: &str,
+        decoder: &mut MpsGraphBatchDecoder,
+        program: &MpsGraphProgram,
+        prepared: &PreparedBatch,
+    ) -> Result<(Vec<f32>, Duration), Box<dyn std::error::Error>> {
+        let group = &prepared.groups()[0];
+        let batch = group.images().len();
+        let started = Instant::now();
+        match path {
+            "staged" => {
+                let scores = staged_iteration(decoder, program, prepared)?;
+                Ok((scores, started.elapsed()))
+            }
+            "completed" => {
+                let decoded = decoder.decode_prepared(prepared)?;
+                let (mut groups, errors, group_errors) = decoded.into_parts();
+                if !errors.is_empty() || !group_errors.is_empty() || groups.len() != 1 {
+                    return Err(std::io::Error::other(
+                        "completed path did not produce one successful group",
+                    )
+                    .into());
+                }
+                let output = program
+                    .submit_completed(decoder.command_queue(), groups.remove(0))?
+                    .wait()?;
+                Ok((read_scores(&output.results()[0], batch), started.elapsed()))
+            }
+            "pipelined" => {
+                let output = decoder.run_prepared_group(program, group)?;
+                Ok((read_scores(&output.results()[0], batch), started.elapsed()))
+            }
+            "submit_latency" => {
+                let submitted = decoder.submit_prepared_group(program, group)?;
+                let submit_elapsed = started.elapsed();
+                let output = submitted.wait()?;
+                Ok((read_scores(&output.results()[0], batch), submit_elapsed))
+            }
+            _ => unreachable!("fixed benchmark path matrix"),
+        }
+    }
+
+    fn validate_scores(
+        path: &str,
+        actual: &[f32],
+        expected: &[f32],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if actual.len() != expected.len() {
+            return Err(std::io::Error::other(format!(
+                "{path} returned {} scores, expected {}",
+                actual.len(),
+                expected.len(),
+            ))
+            .into());
+        }
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            if (actual - expected).abs() > 1.0e-5 {
+                return Err(std::io::Error::other(format!(
+                    "{path} score {index} differs from the CPU oracle: MPSGraph={actual}, CPU={expected}",
+                ))
+                .into());
+            }
+        }
+        Ok(())
     }
 
     fn fixture(codec: &str, size: u32) -> Vec<u8> {
@@ -123,10 +203,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    const PATHS: [&str; 4] = ["staged", "completed", "pipelined", "submit_latency"];
+
     let iterations = std::env::var("J2K_MPSGRAPH_BENCH_ITERATIONS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(if cfg!(debug_assertions) { 1 } else { 5 })
+        .unwrap_or(if cfg!(debug_assertions) { 1 } else { 30 })
         .max(1);
     println!("codec,size,batch,path,mean_ms,ci95_low_ms,ci95_high_ms,checksum");
 
@@ -142,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let inputs = (0..batch)
                     .map(|_| EncodedImage::full(encoded.clone()))
                     .collect::<Vec<_>>();
-                let prepared = decoder.prepare(inputs.clone())?;
+                let prepared = decoder.prepare(inputs)?;
                 if prepared.groups().len() != 1 {
                     println!("{codec},{size},{batch},all,unsupported,unsupported,unsupported,0");
                     continue;
@@ -151,64 +233,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     prepared.groups()[0].info(),
                     prepared.groups()[0].images().len(),
                 )?;
-                let program = MpsGraphProgram::rgb8_nhwc_reference(
+                let program = average_program(spec.shape()[0], spec.shape()[1], spec.shape()[2])?;
+                let mut cpu = CpuBatchDecoder::new(options);
+                let cpu_decoded = cpu.decode_prepared(&prepared)?;
+                if !cpu_decoded.errors().is_empty() || cpu_decoded.groups().len() != 1 {
+                    return Err(std::io::Error::other(
+                        "CPU benchmark oracle did not produce one successful group",
+                    )
+                    .into());
+                }
+                let CpuBatchSamples::U8(cpu_pixels) = cpu_decoded.groups()[0].samples() else {
+                    return Err(std::io::Error::other("CPU benchmark oracle was not RGB8").into());
+                };
+                let expected_scores = average_cpu(
+                    cpu_pixels,
                     spec.shape()[0],
                     spec.shape()[1],
                     spec.shape()[2],
                 )?;
-                let mut rows = Vec::new();
 
-                for path in ["staged", "completed", "pipelined", "nonblocking"] {
-                    let mut durations = Vec::with_capacity(iterations);
-                    let mut checksum = 0.0_f64;
-                    for _ in 0..iterations {
-                        let started = Instant::now();
-                        let score = match path {
-                            "staged" => staged_iteration(&mut decoder, &program, &inputs)?,
-                            "completed" => {
-                                let decoded = decoder.decode(inputs.clone())?;
-                                let (mut groups, errors, group_errors) = decoded.into_parts();
-                                if !errors.is_empty()
-                                    || !group_errors.is_empty()
-                                    || groups.len() != 1
-                                {
-                                    return Err(std::io::Error::other(
-                                        "completed path did not produce one group",
-                                    )
-                                    .into());
-                                }
-                                let output = program
-                                    .submit_completed(decoder.command_queue(), groups.remove(0))?
-                                    .wait()?;
-                                read_score_sum(&output.results()[0], batch)
-                            }
-                            "pipelined" => {
-                                let output =
-                                    decoder.run_prepared_group(&program, &prepared.groups()[0])?;
-                                read_score_sum(&output.results()[0], batch)
-                            }
-                            "nonblocking" => {
-                                let submitted = decoder
-                                    .submit_prepared_group(&program, &prepared.groups()[0])?;
-                                let output = submitted.wait()?;
-                                read_score_sum(&output.results()[0], batch)
-                            }
-                            _ => unreachable!(),
-                        };
-                        checksum += f64::from(std::hint::black_box(score));
-                        durations.push(started.elapsed().as_secs_f64() * 1_000.0);
-                    }
-                    let (mean, low, high) = summarize(&durations);
-                    println!(
-                        "{codec},{size},{batch},{path},{mean:.3},{low:.3},{high:.3},{checksum:.6}"
-                    );
-                    rows.push((path, mean, low, high));
+                for path in PATHS {
+                    let (scores, _) = run_path(path, &mut decoder, &program, &prepared)?;
+                    validate_scores(path, &scores, &expected_scores)?;
                 }
 
-                let staged = rows[0];
-                let direct = rows[2];
+                let mut durations: [Vec<f64>; 4] =
+                    core::array::from_fn(|_| Vec::with_capacity(iterations));
+                let mut checksums = [0.0_f64; 4];
+                for sample_index in 0..iterations {
+                    for step in 0..PATHS.len() {
+                        let path_index = (sample_index + step) % PATHS.len();
+                        let path = PATHS[path_index];
+                        let (scores, elapsed) = run_path(path, &mut decoder, &program, &prepared)?;
+                        validate_scores(path, &scores, &expected_scores)?;
+                        checksums[path_index] += scores
+                            .into_iter()
+                            .map(std::hint::black_box)
+                            .map(f64::from)
+                            .sum::<f64>();
+                        durations[path_index].push(elapsed.as_secs_f64() * 1_000.0);
+                    }
+                }
+
+                let mut statistics = [(0.0_f64, 0.0_f64, 0.0_f64); 4];
+                for (path_index, path) in PATHS.into_iter().enumerate() {
+                    let (mean, low, high) = summarize(&durations[path_index]);
+                    println!(
+                        "{codec},{size},{batch},{path},{mean:.3},{low:.3},{high:.3},{:.6}",
+                        checksums[path_index],
+                    );
+                    statistics[path_index] = (mean, low, high);
+                }
+
+                let staged = statistics[0];
+                let direct = statistics[2];
                 let qualifies =
-                    iterations >= 2 && direct.1 <= staged.1 * 0.90 && direct.3 < staged.2;
+                    iterations >= 30 && direct.0 <= staged.0 * 0.90 && direct.2 < staged.1;
                 println!(
                 "{codec},{size},{batch},speed_claim_qualified,{qualifies},unsupported,unsupported,0"
             );
@@ -224,7 +304,7 @@ fn main() {
     for codec in ["htj2k", "j2k"] {
         for size in [512, 1024] {
             for batch in [1, 8, 32] {
-                for path in ["staged", "completed", "pipelined", "nonblocking"] {
+                for path in ["staged", "completed", "pipelined", "submit_latency"] {
                     println!("{codec},{size},{batch},{path},unsupported,unsupported,unsupported,0");
                 }
             }

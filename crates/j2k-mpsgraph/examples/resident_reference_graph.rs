@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[path = "../dev_support/graph_programs.rs"]
+mod graph_programs;
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use core::{ffi::c_void, ptr::NonNull};
     use std::sync::Arc;
 
+    use graph_programs::{average_cpu, average_program};
     use j2k::{BatchDecodeOptions, BatchLayout, EncodedImage};
-    use j2k_mpsgraph::{rgb8_nhwc_reference_cpu, MpsGraphBatchDecoder, MpsGraphProgram};
+    use j2k_mpsgraph::MpsGraphBatchDecoder;
     use j2k_test_support::htj2k_rgb8_fixture_with_pixels;
 
     fn score(output: &j2k_mpsgraph::MpsGraphRunOutput) -> f32 {
         let mut value = 0.0_f32;
         // SAFETY: `value` is a valid writable F32 output allocation. The run
-        // has completed, synchronized its result, and the reference graph
+        // has completed, synchronized its result, and the custom graph
         // produces exactly one F32 value for this one-image batch.
         unsafe {
             output.results()[0].mpsndarray().readBytes_strideBytes(
@@ -30,8 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..BatchDecodeOptions::default()
     };
     let mut decoder = MpsGraphBatchDecoder::system_default(options)?;
-    let graph = MpsGraphProgram::rgb8_nhwc_reference(1, 64, 64)?;
-    let oracle = rgb8_nhwc_reference_cpu(&pixels, 1, 64, 64)?[0];
+    let program = average_program(1, 64, 64)?;
+    let oracle = average_cpu(&pixels, 1, 64, 64)?[0];
 
     let completed = decoder.decode(vec![EncodedImage::full(encoded.clone())])?;
     let (mut groups, errors, group_errors) = completed.into_parts();
@@ -39,15 +44,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(std::io::Error::other("completed decode was incomplete").into());
     }
     let completed_score = score(
-        &graph
+        &program
             .submit_completed(decoder.command_queue(), groups.remove(0))?
             .wait()?,
     );
 
-    let prepared = decoder.prepare(vec![EncodedImage::full(encoded.clone())])?;
-    let pipelined_score = score(&decoder.run_prepared_group(&graph, &prepared.groups()[0])?);
+    let prepared = decoder.prepare(vec![EncodedImage::full(encoded)])?;
+    let pipelined_score = score(&decoder.run_prepared_group(&program, &prepared.groups()[0])?);
 
-    let submitted = decoder.submit_prepared_group(&graph, &prepared.groups()[0])?;
+    let submitted = decoder.submit_prepared_group(&program, &prepared.groups()[0])?;
     while !submitted.is_complete() {
         std::thread::yield_now();
     }
@@ -64,12 +69,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .into());
         }
-        println!("{label}: score={observed:.6}, CPU oracle={oracle:.6}");
+        println!("{label}: custom average={observed:.6}, CPU oracle={oracle:.6}");
     }
     Ok(())
 }
 
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 fn main() {
-    eprintln!("the direct MPSGraph reference workflow requires Apple Silicon macOS 11+");
+    eprintln!("the direct MPSGraph workflow requires Apple Silicon macOS 11+");
 }

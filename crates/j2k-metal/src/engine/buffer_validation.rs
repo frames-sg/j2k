@@ -43,7 +43,7 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&command_buffer, "j2k lossless coefficient prep");
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.validate_bytes_equal);
+        encoder.setComputePipelineState(&runtime.buffers()?.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(&expected_buffer), 0);
         encoder.set_buffer(2, Some(&status_buffer), 0);
@@ -100,7 +100,7 @@ pub(crate) fn validate_metal_buffers_match(
         let command_buffer = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&command_buffer, "j2k lossless coefficient prep batch");
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.validate_bytes_equal);
+        encoder.setComputePipelineState(&runtime.buffers()?.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(expected_buffer), expected_offset);
         encoder.set_buffer(2, Some(&status_buffer), 0);
@@ -183,13 +183,13 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
         };
         let command_buffer = new_command_buffer(&runtime.queue)?;
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.copy_interleaved_padded);
+        encoder.setComputePipelineState(&runtime.buffers()?.copy_interleaved_padded);
         encoder.set_buffer(0, Some(copy.src_buffer), src_offset);
         encoder.set_buffer(1, Some(&dst_buffer), 0);
         encoder.set_bytes::<J2kCopyInterleavedParams>(2, &params);
         dispatch_2d_pipeline(
             &encoder,
-            &runtime.copy_interleaved_padded,
+            &runtime.buffers()?.copy_interleaved_padded,
             (copy.dst_width, copy.dst_height),
         );
         encoder.endEncoding();

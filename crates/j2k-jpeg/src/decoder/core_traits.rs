@@ -3,7 +3,7 @@
 use super::{
     ComponentRowWriter, CompressedTransferSyntax, CoreDecodeOutcome, DecodeOutcome,
     DecodeRowsError, Decoder, DecoderContext, Downscale, DownscaleFactor, ImageCodec, ImageDecode,
-    ImageDecodeRows, Info, InterleavedRgbWriter, JpegCodec, JpegError, JpegView, OutputWriter,
+    ImageDecodeRows, InterleavedRgbWriter, JpegCodec, JpegError, JpegView, OutputWriter,
     PixelFormat, Rect, RowSink, ScratchPool, SofKind, TileBatchDecode, Vec, Warning,
 };
 use crate::allocation::{
@@ -15,15 +15,21 @@ use j2k_core::TileRegionScaledDecodeJob;
 #[cfg(test)]
 mod tests;
 
-pub(super) fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
+pub(super) fn jpeg_passthrough_syntax(view: &JpegView<'_>) -> Option<CompressedTransferSyntax> {
+    let info = view.info();
     match info.sof_kind {
         SofKind::Baseline8 if info.bit_depth == 8 => Some(CompressedTransferSyntax::JpegBaseline8),
         SofKind::Extended8 | SofKind::Extended12 => {
             Some(CompressedTransferSyntax::JpegExtendedSequential)
         }
-        SofKind::Baseline8 | SofKind::Progressive8 | SofKind::Progressive12 | SofKind::Lossless => {
-            None
+        SofKind::Progressive8 | SofKind::Progressive12 => {
+            Some(CompressedTransferSyntax::JpegProgressive)
         }
+        SofKind::Lossless if view.lossless_predictor() == Some(1) => {
+            Some(CompressedTransferSyntax::JpegLosslessSv1)
+        }
+        SofKind::Lossless => Some(CompressedTransferSyntax::JpegLossless),
+        SofKind::Baseline8 => None,
     }
 }
 

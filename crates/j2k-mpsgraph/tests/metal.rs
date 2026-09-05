@@ -19,6 +19,38 @@ use objc2_foundation::{NSArray, NSNumber};
 use objc2_metal_performance_shaders::MPSDataType;
 use objc2_metal_performance_shaders_graph::MPSGraph;
 
+#[path = "../dev_support/graph_programs.rs"]
+mod graph_programs;
+
+use graph_programs::{average_cpu, average_program};
+
+fn mps_data_type(element_type: MpsGraphElementType) -> MPSDataType {
+    match element_type {
+        MpsGraphElementType::U8 => MPSDataType::UInt8,
+        MpsGraphElementType::U16 => MPSDataType::UInt16,
+        MpsGraphElementType::I16 => MPSDataType::Int16,
+        _ => unreachable!("test tensor element type matrix is fixed"),
+    }
+}
+
+fn identity_program(spec: MpsGraphTensorSpec) -> MpsGraphProgram {
+    let dimensions = spec.shape().map(NSNumber::new_usize);
+    let shape = NSArray::from_retained_slice(&dimensions);
+    // SAFETY: standard graph construction with a validated static shape and
+    // its corresponding native integer MPS data type.
+    let (graph, placeholder) = unsafe {
+        let graph = MPSGraph::new();
+        let placeholder = graph.placeholderWithShape_dataType_name(
+            Some(&shape),
+            mps_data_type(spec.element_type()),
+            None,
+        );
+        (graph, placeholder)
+    };
+    MpsGraphProgram::new(graph, placeholder.clone(), vec![placeholder], spec)
+        .expect("valid identity test program")
+}
+
 fn read_u8_result(output: &j2k_mpsgraph::MpsGraphRunOutput, len: usize) -> Vec<u8> {
     let mut bytes = vec![0_u8; len];
     // SAFETY: the graph run has completed and `bytes` exactly covers the
@@ -43,6 +75,48 @@ fn read_result_bytes(output: &j2k_mpsgraph::MpsGraphRunOutput, len: usize) -> Ve
         );
     }
     bytes
+}
+
+fn read_f32_result(output: &j2k_mpsgraph::MpsGraphRunOutput, len: usize) -> Vec<f32> {
+    let mut values = vec![0.0_f32; len];
+    // SAFETY: the graph run has completed and `values` exactly covers the
+    // average graph's validated one-F32-per-image output shape.
+    unsafe {
+        output.results()[0].mpsndarray().readBytes_strideBytes(
+            NonNull::new(values.as_mut_ptr().cast::<c_void>()).expect("nonempty output"),
+            core::ptr::null_mut(),
+        );
+    }
+    values
+}
+
+fn assert_f32_scores_close(actual: &[f32], expected: &[f32]) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() <= 1.0e-5,
+            "average score {index} differs: MPSGraph={actual}, CPU={expected}",
+        );
+    }
+}
+
+#[test]
+fn dev_average_cpu_oracle_reduces_images_and_rejects_invalid_shapes() {
+    let scores = average_cpu(&[0, 0, 0, 255, 127, 1], 2, 1, 1)
+        .expect("two one-pixel images have a valid oracle shape");
+    assert!(scores[0].abs() <= f32::EPSILON);
+    assert!((scores[1] - (383.0 / 765.0)).abs() <= f32::EPSILON);
+
+    assert!(matches!(
+        average_cpu(&[0; 5], 1, 1, 2),
+        Err(Error::InvalidTensorContract { .. })
+    ));
+    for (batch, height, width) in [(0, 1, 1), (1, 0, 1), (1, 1, 0)] {
+        assert!(matches!(
+            average_cpu(&[], batch, height, width),
+            Err(Error::InvalidTensorContract { .. })
+        ));
+    }
 }
 
 fn native_fixture(color: PixelLayout, sample_type: SampleType) -> Arc<[u8]> {
@@ -189,7 +263,7 @@ fn identity_program_rejects_a_different_static_input_contract() {
         .expect("valid expected spec");
     let actual =
         MpsGraphTensorSpec::new([1, 8, 8, 3], MpsGraphElementType::U8).expect("valid actual spec");
-    let program = MpsGraphProgram::identity(expected).expect("identity graph");
+    let program = identity_program(expected);
 
     assert!(matches!(
         program.validate_input_spec(actual),
@@ -240,7 +314,7 @@ fn prepared_group_submits_decode_and_identity_graph_without_a_cpu_wait() {
     let group = &prepared.groups()[0];
     let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
         .expect("group tensor spec");
-    let program = MpsGraphProgram::identity(spec).expect("identity graph");
+    let program = identity_program(spec);
 
     let submitted = decoder
         .submit_prepared_group(&program, group)
@@ -265,7 +339,7 @@ fn dropping_an_inflight_run_waits_before_releasing_its_input() {
     let group = &prepared.groups()[0];
     let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
         .expect("group tensor spec");
-    let program = MpsGraphProgram::identity(spec).expect("identity graph");
+    let program = identity_program(spec);
 
     drop(
         decoder
@@ -323,7 +397,7 @@ fn identity_graph_matches_cpu_for_layouts_and_all_request_shapes() {
             let group = &prepared.groups()[0];
             let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
                 .expect("request tensor spec");
-            let program = MpsGraphProgram::identity(spec).expect("identity graph");
+            let program = identity_program(spec);
             let actual = decoder
                 .run_prepared_group(&program, group)
                 .expect("direct identity run");
@@ -356,10 +430,7 @@ fn irreversible_identity_graph_stays_within_one_integer_lsb() {
     let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
         .expect("irreversible tensor spec");
     let output = decoder
-        .run_prepared_group(
-            &MpsGraphProgram::identity(spec).expect("identity graph"),
-            group,
-        )
+        .run_prepared_group(&identity_program(spec), group)
         .expect("irreversible direct identity run");
     let actual = read_u8_result(&output, expected.len());
     assert!(actual
@@ -393,10 +464,7 @@ fn identity_graph_is_exact_for_every_native_color_dtype_and_layout() {
                 let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
                     .expect("native matrix tensor spec");
                 let actual = decoder
-                    .run_prepared_group(
-                        &MpsGraphProgram::identity(spec).expect("identity graph"),
-                        group,
-                    )
+                    .run_prepared_group(&identity_program(spec), group)
                     .expect("native matrix identity run");
                 assert_eq!(
                     read_result_bytes(&actual, expected.len()),
@@ -424,7 +492,7 @@ fn completed_pipelined_and_nonblocking_paths_are_equivalent() {
     let group = &prepared.groups()[0];
     let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
         .expect("tensor spec");
-    let program = MpsGraphProgram::identity(spec).expect("identity graph");
+    let program = identity_program(spec);
     let byte_len = spec.shape().into_iter().product::<usize>();
 
     let completed = decoder.decode(inputs).expect("completed decode");
@@ -455,6 +523,66 @@ fn completed_pipelined_and_nonblocking_paths_are_equivalent() {
 }
 
 #[test]
+fn caller_built_f32_graph_matches_cpu_for_every_submission_path() {
+    const BATCH: usize = 2;
+    const HEIGHT: usize = 512;
+    const WIDTH: usize = 512;
+
+    if !metal_runtime_gate("j2k-mpsgraph caller-built F32 graph parity") {
+        return;
+    }
+    let encoded = Arc::<[u8]>::from(htj2k_rgb8_fixture(
+        u32::try_from(WIDTH).expect("fixture width fits u32"),
+        u32::try_from(HEIGHT).expect("fixture height fits u32"),
+    ));
+    let inputs = (0..BATCH)
+        .map(|_| EncodedImage::full(encoded.clone()))
+        .collect::<Vec<_>>();
+    let options = BatchDecodeOptions {
+        layout: BatchLayout::Nhwc,
+        ..BatchDecodeOptions::default()
+    };
+    let mut cpu = CpuBatchDecoder::new(options);
+    let cpu_output = cpu.decode(inputs.clone()).expect("CPU reference pixels");
+    let CpuBatchSamples::U8(pixels) = cpu_output.groups()[0].samples() else {
+        panic!("RGB8 CPU oracle must use U8 storage")
+    };
+    let expected =
+        average_cpu(pixels, BATCH, HEIGHT, WIDTH).expect("valid average CPU oracle input");
+
+    let program = average_program(BATCH, HEIGHT, WIDTH).expect("valid caller-built average graph");
+    let mut decoder = MpsGraphBatchDecoder::system_default(options).expect("MPSGraph decoder");
+    let prepared = decoder.prepare(inputs).expect("prepared reference input");
+    let group = &prepared.groups()[0];
+
+    let completed = decoder
+        .decode_prepared(&prepared)
+        .expect("completed resident decode");
+    let (mut completed_groups, errors, group_errors) = completed.into_parts();
+    assert!(errors.is_empty());
+    assert!(group_errors.is_empty());
+    assert_eq!(completed_groups.len(), 1);
+    let completed = program
+        .submit_completed(decoder.command_queue(), completed_groups.remove(0))
+        .expect("completed-buffer graph submission")
+        .wait()
+        .expect("completed-buffer graph output");
+    assert_f32_scores_close(&read_f32_result(&completed, BATCH), &expected);
+
+    let pipelined = decoder
+        .run_prepared_group(&program, group)
+        .expect("pipelined graph output");
+    assert_f32_scores_close(&read_f32_result(&pipelined, BATCH), &expected);
+
+    let nonblocking = decoder
+        .submit_prepared_group(&program, group)
+        .expect("nonblocking graph submission")
+        .wait()
+        .expect("nonblocking graph output");
+    assert_f32_scores_close(&read_f32_result(&nonblocking, BATCH), &expected);
+}
+
+#[test]
 #[ignore = "1,000-submission release soak"]
 fn one_thousand_direct_submissions_reuse_one_session() {
     if !metal_runtime_gate("j2k-mpsgraph 1,000-submission soak") {
@@ -469,7 +597,7 @@ fn one_thousand_direct_submissions_reuse_one_session() {
     let group = &prepared.groups()[0];
     let spec = MpsGraphTensorSpec::from_group_info(group.info(), group.images().len())
         .expect("soak tensor spec");
-    let program = MpsGraphProgram::identity(spec).expect("identity graph");
+    let program = identity_program(spec);
     for _ in 0..1_000 {
         decoder
             .run_prepared_group(&program, group)

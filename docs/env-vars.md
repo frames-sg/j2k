@@ -40,6 +40,7 @@ override it.
 | `J2K_CUDA_JPEG_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 split-process A/B control; it has no effect after staged baseline encode promotion and serial fallback removal. | No effect | Historical |
 | `J2K_CUDA_JPEG_DISABLE_PACKED_CHECKPOINTS` | Historical P19 split-process A/B control; it has no effect after adaptive checkpoint launch promotion and removal of the all-serial fallback branch. | No effect | Historical |
 | `J2K_CUDA_JPEG_DISABLE_COEFFICIENT_IDCT_SPLIT` | Historical P19 split-process A/B control; it has no effect after the coefficient/IDCT split candidate was rejected and removed. | No effect | Historical |
+| `J2K_CUDA_HT_ENCODE_BLOCK_THREADS` | Historical P26 split-process control for 1/32/128-thread HT encode blocks. Removed after the smaller-block candidates were rejected. | No effect | Historical |
 | `J2K_CUDA_DISABLE_STAGE_TIMINGS` | Disables CUDA stage timing collection for benchmark runs. | Timings enabled | Experimental |
 | `J2K_CUDA_DISABLE_COMPACT_PREENCODED` | Forces the CUDA transcode adapter to decline compact preencoded resident HT encode support. | Compact resident support enabled when supported | Experimental |
 | `J2K_JPEG_METAL_FAST420_BATCH_TIMING` | Emits JPEG Metal fast 4:2:0 batch timing profiles. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
@@ -65,6 +66,10 @@ override it.
 | `J2K_JPEG_METAL_DISABLE_SPLIT_COEFF_IDCT` | Historical P19 same-host benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
 | `J2K_JPEG_METAL_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 same-host A/B switch recorded in validated promotion evidence; the promoted staged route has no runtime switch and production code no longer reads this variable. | No effect | Historical experiment control |
 | `J2K_METAL_DISABLE_FUSED_INPUT_MCT` | Historical P5 A/B switch retained in experiment records. The promoted route is now limited to the measured unsigned RGB8 512x512 geometry, and production code no longer reads this variable. | No effect | Historical experiment control |
+| `J2K_METAL_DISABLE_BATCHED_IDWT97` | Historical P20 A/B control for per-image versus bounded batched 9/7 reconstruction. Removed after promotion; production code no longer reads it. | No effect | Historical experiment control |
+| `J2K_METAL_FORCE_SPLIT_ENCODE` | Historical P21 A/B control for HT command-buffer coalescing. Removed with the rejected candidate. | No effect | Historical experiment control |
+| `J2K_METAL_DISABLE_SMALL_HT_STATE` | Historical P21/P22 A/B control for width-specialized HT context arrays. Removed with the rejected candidate. | No effect | Historical experiment control |
+| `J2K_METAL_IDWT97_SMALL_GROUPS` | Historical P25 A/B control for 128-thread inverse-transform groups. Removed with the rejected candidate. | No effect | Historical experiment control |
 | `J2K_TRANSCODE_METAL_PROFILE_STAGES` | Enables transcode Metal profiling in the DCT 5/3 and 9/7 benchmark harness. Use `1` for rows or `summary` for aggregate rows. | Disabled | Benchmark |
 
 ## Experimental Backend Routing

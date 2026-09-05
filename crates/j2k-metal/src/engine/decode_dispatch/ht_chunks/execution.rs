@@ -90,7 +90,7 @@ pub(in crate::engine) fn encode_metal_ht_batches_in_encoder(
             message: "HTJ2K Metal chunk status offset exceeds u64".to_string(),
         })?;
         dispatch_ht_cleanup_batched_in_encoder_with_status_offset(
-            runtime,
+            runtime.decode()?,
             encoder,
             metal_ht_pipeline_kind_for_bucket(chunk.bucket),
             HtCleanupBatchDispatch {
@@ -273,7 +273,7 @@ impl RepeatedHtChunkEncoder<'_, '_> {
                 message: "HTJ2K Metal repeated chunk job count exceeds u32".to_string(),
             })?;
             dispatch_ht_cleanup_repeated_batched_in_encoder_with_status_offset(
-                self.runtime,
+                self.runtime.decode()?,
                 self.encoder,
                 metal_ht_pipeline_kind_for_bucket(chunk.bucket),
                 HtCleanupRepeatedBatchDispatch {

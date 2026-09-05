@@ -14,7 +14,7 @@ pub(super) fn application_warning(
     let (payload, next) = marker_payload(bytes, marker_offset, code)?;
     let warning = match code {
         0xe0 | 0xfe => None,
-        0xe2 => Some(Warning::IccProfileIgnored {
+        0xe2 if crate::icc::is_icc_app2_payload(payload) => Some(Warning::IccProfileIgnored {
             size: payload.len(),
         }),
         0xee => match parse_adobe_app14(payload) {

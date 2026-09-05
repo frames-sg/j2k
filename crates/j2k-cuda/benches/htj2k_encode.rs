@@ -40,6 +40,9 @@ const ENCODE_WARM_UP: Duration = Duration::from_millis(500);
 const ENCODE_MEASUREMENT: Duration = Duration::from_secs(1);
 const CUDA_ENCODE_MANIFEST_LABEL: &str = "CUDA encode manifest";
 
+#[path = "htj2k_encode/launch_matrix.rs"]
+mod launch_matrix;
+
 struct EncodeBenchCase {
     id: String,
     pixels: Vec<u8>,
@@ -77,6 +80,9 @@ fn bench_htj2k_encode(c: &mut Criterion) {
     bench_external_host_input(c, &external_cases, cuda_available);
     bench_codeblock_microkernels(c, &coefficients, &jobs, cuda_available);
     bench_device_input_regions(c, &region_coefficients, &region_jobs, cuda_available);
+    if cuda_available && include_generated_host_input() {
+        launch_matrix::bench(c);
+    }
 }
 
 fn bench_host_input(c: &mut Criterion, pixels: &[u8], cuda_available: bool) {

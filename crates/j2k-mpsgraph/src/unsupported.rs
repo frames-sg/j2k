@@ -2,7 +2,7 @@
 
 use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch, PreparedBatchGroup, PreparedImage};
 
-use crate::{Error, MpsGraphTensorSpec};
+use crate::Error;
 
 /// Unavailable `MPSGraph` decoder on non-Apple-Silicon targets.
 #[derive(Debug)]
@@ -83,22 +83,6 @@ impl MpsGraphBatchDecoder {
         _program: &MpsGraphProgram,
         _group: &PreparedBatchGroup,
     ) -> Result<MpsGraphRunOutput, Error> {
-        Err(Error::UnsupportedPlatform)
-    }
-}
-
-impl MpsGraphProgram {
-    /// Return the typed platform error on unsupported targets.
-    pub fn identity(_input_spec: MpsGraphTensorSpec) -> Result<Self, Error> {
-        Err(Error::UnsupportedPlatform)
-    }
-
-    /// Return the typed platform error on unsupported targets.
-    pub fn rgb8_nhwc_reference(
-        _batch: usize,
-        _height: usize,
-        _width: usize,
-    ) -> Result<Self, Error> {
         Err(Error::UnsupportedPlatform)
     }
 }

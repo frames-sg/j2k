@@ -1186,6 +1186,20 @@ fn passthrough_info() -> Info {
 }
 
 #[test]
+fn classic_jpeg_transfer_syntaxes_report_losslessness() {
+    assert!(!CompressedTransferSyntax::JpegBaseline8.is_lossless());
+    assert!(CompressedTransferSyntax::JpegBaseline8.is_jpeg_family());
+    assert!(!CompressedTransferSyntax::JpegExtendedSequential.is_lossless());
+    assert!(!CompressedTransferSyntax::JpegProgressive.is_lossless());
+    assert!(CompressedTransferSyntax::JpegLossless.is_lossless());
+    assert!(CompressedTransferSyntax::JpegLosslessSv1.is_lossless());
+    assert!(CompressedTransferSyntax::JpegLosslessSv1.is_jpeg_family());
+    assert!(!CompressedTransferSyntax::JpegLossless.is_jpeg2000_family());
+    assert!(!CompressedTransferSyntax::JpegLosslessSv1.is_jpeg2000_family());
+    assert!(!CompressedTransferSyntax::Jpeg2000Lossless.is_jpeg_family());
+}
+
+#[test]
 fn passthrough_candidate_copies_when_syntax_payload_and_metadata_match() {
     let bytes = [0xff, 0x4f, 0xff, 0xd9];
     let candidate = PassthroughCandidate::new(
