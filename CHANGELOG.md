@@ -3,6 +3,23 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Corrects TIFF `JPEGTables` assembly for abbreviated JPEG tiles, including
+  SOI/EOI-bearing tiles with external DQT/DHT definitions, missing tile or
+  length-delimited `JPEGTables` EOI markers, and TIFF-defined DRI/DAC handling.
+- Adds progressive, general lossless, and DICOM lossless-SV1 JPEG passthrough
+  syntax classification plus ordered APP2 ICC profile extraction, insertion,
+  and fail-closed replacement helpers.
+- Hardens `j2k-mpsgraph` completed-buffer handoff with same-device validation,
+  adds automated F32 graph parity against a higher-precision CPU oracle, and
+  makes direct-handoff benchmark paths prepared-input-equivalent, warmed,
+  interleaved, and correctness-checked before any speed qualification. Its
+  runnable example now constructs a caller-owned graph through the public
+  `MpsGraphProgram::new` boundary. Breaking: removes the repository-specific
+  identity, RGB8 reference-graph, and CPU-oracle convenience APIs from the
+  experimental production surface; equivalent fixtures remain dev-only.
+
 ## [0.10.0] - 2026-08-25
 
 - Adds the experimental `j2k-mpsgraph` crate for Apple Silicon macOS 11+.

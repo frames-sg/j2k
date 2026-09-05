@@ -225,7 +225,7 @@ fn submit_classic_packet_stages(
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "J2K packetization");
-    encoder.setComputePipelineState(&runtime.packet_encode_resident_classic_batched);
+    encoder.setComputePipelineState(&runtime.encode()?.packet_encode_resident_classic_batched);
     encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
     encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
     encoder.set_buffer(2, Some(&resident_block_buffer), 0);
@@ -246,6 +246,7 @@ fn submit_classic_packet_stages(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(
             runtime
+                .encode()?
                 .packet_encode_resident_classic_batched
                 .threadExecutionWidth()
                 .max(1) as u64,
@@ -314,7 +315,7 @@ fn submit_classic_packet_stages(
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "J2K codestream assembly");
-    encoder.setComputePipelineState(&runtime.lossless_codestream_assemble_batched);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_codestream_assemble_batched);
     encoder.set_buffer(0, Some(&codestream_buffer), 0);
     encoder.set_buffer(1, Some(&packet_status_buffer), 0);
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
@@ -324,6 +325,7 @@ fn submit_classic_packet_stages(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(
             runtime
+                .encode()?
                 .lossless_codestream_assemble_batched
                 .threadExecutionWidth()
                 .max(1) as u64,

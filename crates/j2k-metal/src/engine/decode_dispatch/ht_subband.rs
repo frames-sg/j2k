@@ -171,9 +171,13 @@ pub(in crate::engine) fn dispatch_zero_u32_buffer_in_encoder(
         return Ok(());
     }
 
-    encoder.setComputePipelineState(&runtime.zero_u32_buffer);
+    encoder.setComputePipelineState(&runtime.buffers()?.zero_u32_buffer);
     encoder.set_buffer(0, Some(buffer), 0);
     encoder.set_bytes::<u32>(1, &word_count);
-    dispatch_1d_pipeline(encoder, &runtime.zero_u32_buffer, u64::from(word_count));
+    dispatch_1d_pipeline(
+        encoder,
+        &runtime.buffers()?.zero_u32_buffer,
+        u64::from(word_count),
+    );
     Ok(())
 }

@@ -24,6 +24,8 @@ enum FixtureColor {
 enum FixtureRoute {
     Classic,
     Ht,
+    Classic97,
+    Ht97,
 }
 
 impl FixtureColor {
@@ -44,16 +46,20 @@ impl FixtureColor {
     }
 }
 
-fn distinct_j2k(route: FixtureRoute, color: FixtureColor, seed: u8) -> Arc<[u8]> {
-    const WIDTH: u32 = 8;
-    const HEIGHT: u32 = 8;
+fn distinct_j2k(
+    route: FixtureRoute,
+    color: FixtureColor,
+    seed: u8,
+    dimensions: (u32, u32),
+) -> Arc<[u8]> {
+    let (width, height) = dimensions;
 
     let channels = color.channels();
-    let mut pixels = Vec::with_capacity(WIDTH as usize * HEIGHT as usize * channels);
-    for y in 0..HEIGHT {
-        let y = u8::try_from(y).expect("fixture height fits u8");
-        for x in 0..WIDTH {
-            let x = u8::try_from(x).expect("fixture width fits u8");
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * channels);
+    for y in 0..height {
+        let y = u8::try_from(y & 255).expect("masked fixture coordinate fits u8");
+        for x in 0..width {
+            let x = u8::try_from(x & 255).expect("masked fixture coordinate fits u8");
             for channel in 0..channels {
                 let channel = u8::try_from(channel).expect("fixture channel count fits u8");
                 pixels.push(
@@ -67,14 +73,18 @@ fn distinct_j2k(route: FixtureRoute, color: FixtureColor, seed: u8) -> Arc<[u8]>
     }
     let channels = u16::try_from(channels).expect("fixture channel count fits u16");
     let options = EncodeOptions {
-        reversible: true,
+        reversible: matches!(route, FixtureRoute::Classic | FixtureRoute::Ht),
         num_decomposition_levels: 2,
         use_mct: matches!(color, FixtureColor::Rgb),
         ..EncodeOptions::default()
     };
     let codestream = match route {
-        FixtureRoute::Classic => encode(&pixels, WIDTH, HEIGHT, channels, 8, false, &options),
-        FixtureRoute::Ht => encode_htj2k(&pixels, WIDTH, HEIGHT, channels, 8, false, &options),
+        FixtureRoute::Classic | FixtureRoute::Classic97 => {
+            encode(&pixels, width, height, channels, 8, false, &options)
+        }
+        FixtureRoute::Ht | FixtureRoute::Ht97 => {
+            encode_htj2k(&pixels, width, height, channels, 8, false, &options)
+        }
     }
     .expect("encode structural J2K fixture");
     if !matches!(color, FixtureColor::Rgba) {
@@ -107,8 +117,8 @@ fn distinct_j2k(route: FixtureRoute, color: FixtureColor, seed: u8) -> Arc<[u8]>
         wrap_j2k_codestream(
             &codestream,
             match route {
-                FixtureRoute::Classic => J2kFileWrapOptions::jp2(),
-                FixtureRoute::Ht => J2kFileWrapOptions::jph(),
+                FixtureRoute::Classic | FixtureRoute::Classic97 => J2kFileWrapOptions::jp2(),
+                FixtureRoute::Ht | FixtureRoute::Ht97 => J2kFileWrapOptions::jph(),
             }
             .with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb))
             .with_metadata(J2kFileBoxMetadata {
@@ -125,6 +135,7 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
     route: FixtureRoute,
     color: FixtureColor,
     count: usize,
+    dimensions: (u32, u32),
 ) -> Option<(usize, usize)> {
     if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return None;
@@ -139,6 +150,7 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
                 route,
                 color,
                 u8::try_from(index).expect("structural batch index fits u8"),
+                dimensions,
             )
         })
         .collect::<Vec<_>>();
@@ -176,6 +188,7 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
             .expect("structural destination")
     };
 
+    crate::engine::reset_idwt97_stage_sequences_for_test();
     crate::engine::reset_metal_command_buffers_for_test();
     crate::engine::reset_metal_compute_encoders_for_test();
     let completion = decoder
@@ -196,10 +209,15 @@ fn assert_external_group_uses_one_command_buffer_and_encoder(
     let CpuBatchSamples::U8(expected) = expected_group.samples() else {
         panic!("8-bit structural fixtures must have a U8 CPU oracle")
     };
-    assert_eq!(
-        actual,
-        expected.as_slice(),
-        "{route:?} {color:?} batch {count} must retain exact source-order CPU parity"
+    assert_eq!(actual.len(), expected.len());
+    let mismatch = actual
+        .iter()
+        .zip(expected.as_slice())
+        .enumerate()
+        .find(|(_, (actual, expected))| actual != expected);
+    assert!(
+        mismatch.is_none(),
+        "{route:?} {color:?} {dimensions:?} batch {count}: first CPU mismatch {mismatch:?}"
     );
 
     Some((
@@ -214,9 +232,12 @@ fn external_groups_use_one_producer_command_buffer_and_compute_encoder() {
     for route in [FixtureRoute::Classic, FixtureRoute::Ht] {
         for count in [1, 8] {
             for color in [FixtureColor::Gray, FixtureColor::Rgb, FixtureColor::Rgba] {
-                if let Some(actual) =
-                    assert_external_group_uses_one_command_buffer_and_encoder(route, color, count)
-                {
+                if let Some(actual) = assert_external_group_uses_one_command_buffer_and_encoder(
+                    route,
+                    color,
+                    count,
+                    (8, 8),
+                ) {
                     counts.push(actual);
                 }
             }
@@ -227,6 +248,56 @@ fn external_groups_use_one_producer_command_buffer_and_compute_encoder() {
             counts,
             vec![(1, 1); 12],
             "classic and HT Gray/RGB/RGBA batch 1 and 8 must each use one producer command buffer and one compute encoder"
+        );
+    }
+}
+
+#[test]
+fn irreversible_groups_batch_transform_stages_without_changing_pixels() {
+    for dimensions in [(8, 8), (17, 9)] {
+        for route in [FixtureRoute::Classic97, FixtureRoute::Ht97] {
+            for count in [1, 8] {
+                for color in [FixtureColor::Gray, FixtureColor::Rgb] {
+                    if assert_external_group_uses_one_command_buffer_and_encoder(
+                        route, color, count, dimensions,
+                    )
+                    .is_none()
+                    {
+                        continue;
+                    }
+                    assert_eq!(
+                        crate::engine::idwt97_stage_sequences_for_test(),
+                        color.channels() * 2,
+                        "{route:?} {color:?} batch {count}: IDWT stage sequences must not grow with batch size",
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn large_irreversible_groups_bound_the_working_set_without_changing_pixels() {
+    // P27 retained per-image reconstruction above 20 MiB after chunking regressed.
+    for (dimensions, count, expected_sequences) in [
+        ((1024, 1024), 6, 7),
+        ((1024, 1024), 9, 10),
+        ((1025, 513), 11, 12),
+    ] {
+        if assert_external_group_uses_one_command_buffer_and_encoder(
+            FixtureRoute::Ht97,
+            FixtureColor::Gray,
+            count,
+            dimensions,
+        )
+        .is_none()
+        {
+            return;
+        }
+        assert_eq!(
+            crate::engine::idwt97_stage_sequences_for_test(),
+            expected_sequences,
+            "{dimensions:?} batch {count}: one small level plus bounded final-level chunks",
         );
     }
 }

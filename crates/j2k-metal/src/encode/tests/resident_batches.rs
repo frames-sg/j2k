@@ -56,6 +56,10 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
         validation: J2kEncodeValidation::External,
     };
 
+    let _profile = crate::profile_env::force_metal_profile_stage_mode_for_test(
+        j2k_profile::ProfileStageMode::Disabled,
+    );
+    compute::reset_metal_command_buffers_for_test();
     compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
     let encoded = super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
         &tiles, &options, &session,
@@ -63,10 +67,32 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
     .expect("Metal RGB8 HTJ2K batch encode");
 
     assert_eq!(encoded.len(), 2);
+    assert_eq!(
+        compute::metal_command_buffers_for_test(),
+        7,
+        "resident HT batch retains the measured separate-stage submission route",
+    );
     assert!(
         compute::lossless_deinterleave_rct_fused_dispatches_for_test() > 0,
         "RGB8 resident lossless encode should fuse deinterleave and RCT"
     );
+    let profiled = {
+        let _profile = crate::profile_env::force_metal_profile_stages_for_test(true);
+        super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles, &options, &session,
+        )
+        .expect("profiled Metal HTJ2K batch encode")
+    };
+    for (plain, profiled) in encoded.iter().zip(&profiled) {
+        assert_eq!(
+            plain.encoded.codestream_bytes().expect("plain codestream"),
+            profiled
+                .encoded
+                .codestream_bytes()
+                .expect("profiled codestream"),
+            "profiling must preserve the codestream",
+        );
+    }
     for (frame, expected) in encoded.iter().zip([first, second]) {
         let codestream = frame
             .encoded
@@ -393,6 +419,7 @@ fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
     reason = "bounded synthetic pixel expression is nonnegative"
 )]
 fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
+    let _profile = crate::profile_env::force_metal_profile_stages_for_test(false);
     if !should_run_metal_runtime() {
         return;
     }

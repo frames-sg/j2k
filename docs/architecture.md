@@ -38,6 +38,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters over `j2k-metal-support`; J2K transform, Tier-1, packetization, store, and resident encode/decode live behind the private `j2k-metal::engine` boundary, while transcode owns its coefficient-domain kernels without depending on the public J2K adapter. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
+| `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
@@ -89,7 +90,7 @@ j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
-j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support
+j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
@@ -211,3 +212,35 @@ return a structured fast-batch representability error. Backend selection stays
 explicit until the requested shape has appropriate evidence. Dated machines,
 measurements, and publication qualifications are owned by
 [`docs/benchmark-evidence.md`](benchmark-evidence.md).
+
+## Graph submission lifetime
+
+The J2K and JPEG XR adapters share `j2k-mpsgraph-support`. It retains the graph,
+placeholder, feed/target/result dictionaries, descriptor and completion block as
+one in-flight owner. A concrete input guard retains either a standalone buffer or
+a resident batch lease until graph completion. Codec submission, tensor validation,
+metadata and output allocation remain in each adapter. Drop waits without invoking
+result extraction, so cleanup has no output-vector allocation or metadata-consumption
+precondition. Graph errors are copied out of NSError during the callback.
+
+The shared package introduces no codec dependency or new Objective-C version.
+A generic input owner expresses the two existing storage lifetimes; it is not an
+extension registry or a general GPU execution framework. Both adapters retain their
+public API and test identity outputs, early drop, and repeated submissions on-device.
+
+## Metal kernel initialization
+
+`MetalRuntime` owns the device, queue, scratch pools, prepared-plan cache, and four
+lazy kernel groups: decode, encode, profiling and small buffer operations. Each
+OnceLock caches either a fully initialized immutable group or its typed failure.
+Pipeline handles and HT lookup buffers belong to the stage that uses them. Requesting
+decode does not compile or allocate encode/profile resources, and an optional group's
+failure leaves decode and buffer validation usable. Leaf IDWT, store and Tier-1
+dispatchers receive initialized kernel references rather than initializing inside
+transform loops.
+
+Shader compilation follows the same boundaries. Forward and inverse MCT code have
+separate sources with one ABI owner; production classic encoding excludes the profile
+entrypoints and their token-planning implementation. Device tests exercise actual
+pipeline creation and resource queries, cached reuse, failure isolation, and decode/
+encode parity. This is an ownership/startup change; no throughput claim is made.

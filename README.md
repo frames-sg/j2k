@@ -244,7 +244,7 @@ Use lower-level crates only when you need a specific integration point:
 | Shared traits and backend types | `j2k-core` |
 | Shared encode-stage contracts | `j2k-types` |
 | Shared codec constants and pure helper algorithms | `j2k-codec-math` |
-| JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
+| JPEG inspect/decode and portable baseline encode | `j2k-jpeg` |
 | Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
 | JPEG-to-HTJ2K coefficient-domain transcode | `j2k-transcode` |
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |

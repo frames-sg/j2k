@@ -90,7 +90,7 @@ mod tests {
             let rgb8 = new_shared_buffer(&runtime.device, 6)?;
             dispatch_test_store(
                 runtime,
-                &runtime.store_native_rgb_batch_u8,
+                &runtime.decode()?.store_native_rgb_batch_u8,
                 &rgb_planes,
                 &rgb8,
                 J2kNativeColorBatchStoreParams {
@@ -121,7 +121,7 @@ mod tests {
             let rgba16 = new_shared_buffer(&runtime.device, rgba_output_bytes)?;
             dispatch_test_store(
                 runtime,
-                &runtime.store_native_rgba_batch_u16,
+                &runtime.decode()?.store_native_rgba_batch_u16,
                 &irreversible_rgba_planes,
                 &rgba16,
                 J2kNativeColorBatchStoreParams {

@@ -872,6 +872,7 @@ pub const fn j2k_core::CapabilityRejection::unsupported_operation(&'static str) 
 pub const fn j2k_core::CapabilityRejection::unsupported_sampling(&'static str) -> Self
 pub const fn j2k_core::CodedUnitLayout::unit_count(&self) -> u32
 pub const fn j2k_core::CompressedTransferSyntax::is_jpeg2000_family(self) -> bool
+pub const fn j2k_core::CompressedTransferSyntax::is_jpeg_family(self) -> bool
 pub const fn j2k_core::CompressedTransferSyntax::is_lossless(self) -> bool
 pub const fn j2k_core::Downscale::denominator(self) -> u32
 pub const fn j2k_core::Downscale::output_block_size(self) -> u32
@@ -1103,6 +1104,9 @@ pub j2k_core::CompressedTransferSyntax::Jpeg2000Lossless
 pub j2k_core::CompressedTransferSyntax::Jpeg2000Lossy
 pub j2k_core::CompressedTransferSyntax::JpegBaseline8
 pub j2k_core::CompressedTransferSyntax::JpegExtendedSequential
+pub j2k_core::CompressedTransferSyntax::JpegLossless
+pub j2k_core::CompressedTransferSyntax::JpegLosslessSv1
+pub j2k_core::CompressedTransferSyntax::JpegProgressive
 pub j2k_core::CpuFeatures::avx2: bool
 pub j2k_core::CpuFeatures::neon: bool
 pub j2k_core::CpuFeatures::sse41: bool
@@ -1438,6 +1442,7 @@ pub struct j2k_codec_math::jpeg::CanonicalHuffmanDerivation
 ## `j2k-jpeg`
 
 ```text
+#[non_exhaustive] pub enum j2k_jpeg::IccProfileError
 #[non_exhaustive] pub enum j2k_jpeg::JpegError
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanStateError
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanTerminationError
@@ -1562,6 +1567,7 @@ pub fn j2k_jpeg::JpegSegmentIter<'a>::next(&mut self) -> core::option::Option<Se
 pub fn j2k_jpeg::JpegTilePrepareOptions::default() -> Self
 pub fn j2k_jpeg::JpegView<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k_jpeg::JpegView<'a>::info(&self) -> &j2k_jpeg::Info
+pub fn j2k_jpeg::JpegView<'a>::lossless_predictor(&self) -> core::option::Option<u8>
 pub fn j2k_jpeg::JpegView<'a>::parse(&'a [u8]) -> core::result::Result<Self, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::JpegView<'a>::parse_with_options(&'a [u8], j2k_jpeg::DecodeOptions) -> core::result::Result<Self, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::JpegView<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
@@ -1587,12 +1593,15 @@ pub fn j2k_jpeg::decode_tiles_into(&mut [j2k_jpeg::TileDecodeJob<'_, '_>], j2k_c
 pub fn j2k_jpeg::decode_tiles_region_scaled_into(&mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::decode_tiles_scaled_into(&mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::encode_jpeg_baseline(j2k_jpeg::JpegSamples<'_>, j2k_jpeg::JpegEncodeOptions) -> core::result::Result<j2k_jpeg::EncodedJpeg, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::extract_icc_profile(&[u8]) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, j2k_jpeg::IccProfileError>
 pub fn j2k_jpeg::find_scan_ranges(&[u8]) -> core::result::Result<j2k_jpeg::JpegScanRanges, j2k_jpeg::JpegError>
+pub fn j2k_jpeg::insert_icc_profile(&[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::IccProfileError>
 pub fn j2k_jpeg::iter_segments(&[u8]) -> j2k_jpeg::JpegSegmentIter<'_>
 pub fn j2k_jpeg::parse_dri(&[u8]) -> core::result::Result<core::option::Option<u16>, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::parse_sof_info(u8, &[u8]) -> core::result::Result<j2k_jpeg::JpegSofInfo, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::prepare_tiff_jpeg_tile<'a>(&'a [u8], core::option::Option<&'a [u8]>, j2k_jpeg::JpegTilePrepareOptions) -> core::result::Result<j2k_jpeg::PreparedJpeg<'a>, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::rewrite_sof_dimensions(&[u8], (u16, u16)) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::JpegError>
+pub fn j2k_jpeg::set_icc_profile(&[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::IccProfileError>
 pub j2k_jpeg::BuilderConflictReason::InputAndScanFragments
 pub j2k_jpeg::BuilderConflictReason::NoInput
 pub j2k_jpeg::BuilderConflictReason::ScanFragmentsEmpty
@@ -1619,6 +1628,28 @@ pub j2k_jpeg::EncodedJpeg::data: alloc::vec::Vec<u8>
 pub j2k_jpeg::HuffmanFailure::CodeOverflow
 pub j2k_jpeg::HuffmanFailure::InvalidSymbol
 pub j2k_jpeg::HuffmanFailure::TableExhausted
+pub j2k_jpeg::IccProfileError::AllocationFailed
+pub j2k_jpeg::IccProfileError::AllocationFailed::requested: usize
+pub j2k_jpeg::IccProfileError::DuplicateChunk
+pub j2k_jpeg::IccProfileError::DuplicateChunk::offset: usize
+pub j2k_jpeg::IccProfileError::DuplicateChunk::sequence: u8
+pub j2k_jpeg::IccProfileError::EmptyProfile
+pub j2k_jpeg::IccProfileError::InconsistentChunkCount
+pub j2k_jpeg::IccProfileError::InconsistentChunkCount::expected: u8
+pub j2k_jpeg::IccProfileError::InconsistentChunkCount::found: u8
+pub j2k_jpeg::IccProfileError::InconsistentChunkCount::offset: usize
+pub j2k_jpeg::IccProfileError::InvalidChunkNumber
+pub j2k_jpeg::IccProfileError::InvalidChunkNumber::count: u8
+pub j2k_jpeg::IccProfileError::InvalidChunkNumber::offset: usize
+pub j2k_jpeg::IccProfileError::InvalidChunkNumber::sequence: u8
+pub j2k_jpeg::IccProfileError::Jpeg(j2k_jpeg::JpegError)
+pub j2k_jpeg::IccProfileError::LengthOverflow
+pub j2k_jpeg::IccProfileError::MissingChunk
+pub j2k_jpeg::IccProfileError::MissingChunk::count: u8
+pub j2k_jpeg::IccProfileError::MissingChunk::sequence: u8
+pub j2k_jpeg::IccProfileError::ProfileAlreadyPresent
+pub j2k_jpeg::IccProfileError::TooManyChunks
+pub j2k_jpeg::IccProfileError::TooManyChunks::chunks: usize
 pub j2k_jpeg::Info::bit_depth: u8
 pub j2k_jpeg::Info::color_space: j2k_jpeg::ColorSpace
 pub j2k_jpeg::Info::dimensions: (u32, u32)
@@ -4955,7 +4986,6 @@ pub const fn j2k_mpsgraph::MpsGraphProgram::input_spec(&self) -> j2k_mpsgraph::M
 pub const fn j2k_mpsgraph::MpsGraphRunOutput::info(&self) -> &j2k::owned_batch::contracts::BatchGroupInfo
 pub const fn j2k_mpsgraph::MpsGraphTensorSpec::element_type(self) -> j2k_mpsgraph::MpsGraphElementType
 pub const fn j2k_mpsgraph::MpsGraphTensorSpec::shape(self) -> [usize; 4]
-pub const j2k_mpsgraph::RGB8_REFERENCE_CHANNEL_WEIGHTS: [f32; 3]
 pub fn j2k_mpsgraph::MpsGraphBatchDecode::errors(&self) -> &[j2k::owned_batch::errors::IndexedBatchError]
 pub fn j2k_mpsgraph::MpsGraphBatchDecode::group_errors(&self) -> &[j2k_metal::batch_decoder::contracts::MetalBatchGroupError]
 pub fn j2k_mpsgraph::MpsGraphBatchDecode::groups(&self) -> &[j2k_mpsgraph::MpsGraphInputGroup]
@@ -4980,10 +5010,8 @@ pub fn j2k_mpsgraph::MpsGraphInputGroup::tensor_data(&self) -> &objc2_metal_perf
 pub fn j2k_mpsgraph::MpsGraphInputGroup::warnings(&self) -> &[alloc::vec::Vec<j2k::decode::J2kDecodeWarning>]
 pub fn j2k_mpsgraph::MpsGraphProgram::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_mpsgraph::MpsGraphProgram::graph(&self) -> &objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph
-pub fn j2k_mpsgraph::MpsGraphProgram::identity(j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<Self, j2k_mpsgraph::Error>
 pub fn j2k_mpsgraph::MpsGraphProgram::image_placeholder(&self) -> &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor
 pub fn j2k_mpsgraph::MpsGraphProgram::new(objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph>, objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>, alloc::vec::Vec<objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>>, j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<Self, j2k_mpsgraph::Error>
-pub fn j2k_mpsgraph::MpsGraphProgram::rgb8_nhwc_reference(usize, usize, usize) -> core::result::Result<Self, j2k_mpsgraph::Error>
 pub fn j2k_mpsgraph::MpsGraphProgram::submit_completed(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>, j2k_mpsgraph::MpsGraphInputGroup) -> core::result::Result<j2k_mpsgraph::SubmittedMpsGraphRun, j2k_mpsgraph::Error>
 pub fn j2k_mpsgraph::MpsGraphProgram::targets(&self) -> &[objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>]
 pub fn j2k_mpsgraph::MpsGraphProgram::validate_input_spec(&self, j2k_mpsgraph::MpsGraphTensorSpec) -> core::result::Result<(), j2k_mpsgraph::Error>
@@ -4998,7 +5026,6 @@ pub fn j2k_mpsgraph::SubmittedMpsGraphRun::drop(&mut self)
 pub fn j2k_mpsgraph::SubmittedMpsGraphRun::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_mpsgraph::SubmittedMpsGraphRun::is_complete(&self) -> bool
 pub fn j2k_mpsgraph::SubmittedMpsGraphRun::wait(self) -> core::result::Result<j2k_mpsgraph::MpsGraphRunOutput, j2k_mpsgraph::Error>
-pub fn j2k_mpsgraph::rgb8_nhwc_reference_cpu(&[u8], usize, usize, usize) -> core::result::Result<alloc::vec::Vec<f32>, j2k_mpsgraph::Error>
 pub j2k_mpsgraph::Error::Allocation
 pub j2k_mpsgraph::Error::Allocation::requested: usize
 pub j2k_mpsgraph::Error::Allocation::source: alloc::collections::TryReserveError
@@ -5026,6 +5053,30 @@ pub struct j2k_mpsgraph::MpsGraphProgram
 pub struct j2k_mpsgraph::MpsGraphRunOutput
 pub struct j2k_mpsgraph::MpsGraphTensorSpec
 pub struct j2k_mpsgraph::SubmittedMpsGraphRun
+```
+
+## `j2k-mpsgraph-support`
+
+```text
+impl core::error::Error for j2k_mpsgraph_support::GraphExecutionError
+impl core::fmt::Display for j2k_mpsgraph_support::GraphExecutionError
+impl<InputOwner> core::fmt::Debug for j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>
+impl<InputOwner> core::ops::drop::Drop for j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>
+impl<InputOwner> j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>
+pub fn j2k_mpsgraph_support::GraphExecutionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::drop(&mut self)
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::is_complete(&self) -> bool
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::output(&self, usize) -> core::result::Result<core::option::Option<objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensorData::MPSGraphTensorData>>, j2k_mpsgraph_support::GraphExecutionError>
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::target_count(&self) -> usize
+pub fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::wait(&self) -> core::result::Result<(), j2k_mpsgraph_support::GraphExecutionError>
+pub j2k_mpsgraph_support::GraphExecutionError::code: isize
+pub j2k_mpsgraph_support::GraphExecutionError::description: alloc::string::String
+pub j2k_mpsgraph_support::GraphExecutionError::domain: alloc::string::String
+pub mod j2k_mpsgraph_support
+pub struct j2k_mpsgraph_support::GraphExecutionError
+pub struct j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>
+pub unsafe fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::submit(&objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph, &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor, &[objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>], &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>, &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensorData::MPSGraphTensorData, InputOwner) -> Self
 ```
 
 ## `j2k-cli`

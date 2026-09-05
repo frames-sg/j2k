@@ -52,17 +52,6 @@ const CUDA_FFI_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
     "runtime_raii_primitives_smoke_when_required",
 )];
 
-const METAL_SHADER_EVIDENCE: &[EvidenceTest] = &[
-    primary_evidence(
-        "crates/j2k-metal/tests/shader_integrity.rs",
-        "metal_kernels_are_wired_to_host_pipelines",
-    ),
-    supplemental_evidence(
-        "crates/j2k-metal/tests/device.rs",
-        "full_classic_grayscale_decode_to_metal_matches_host_decode",
-    ),
-];
-
 const GENERATED_DWT_EVIDENCE: &[EvidenceTest] = &[
     primary_evidence(
         "crates/j2k-codec-math/tests/generated_freshness.rs",
@@ -120,16 +109,6 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
             end: "pub(crate) type NvtxRangePop = unsafe extern \"C\" fn() -> c_int;",
         },
         evidence: CUDA_FFI_EVIDENCE,
-    },
-    CoverageExclusion {
-        id: "metal-embedded-shader-body",
-        reason: "the embedded Metal shader body is MSL text, not executable host Rust",
-        matcher: ExclusionMatcher::MarkerSpan {
-            path: "crates/j2k-metal/src/engine/shader_source.rs",
-            start: "        r\"",
-            end: "\",",
-        },
-        evidence: METAL_SHADER_EVIDENCE,
     },
     CoverageExclusion {
         id: "generated-codec-math-fragment",

@@ -131,14 +131,14 @@ fn encode_ht_code_block_jobs_with_runtime_and_statuses<J: MetalHtCodeBlockJobSou
     label_command_buffer(&command_buffer, "j2k htj2k tier1 batch");
     let encoder = new_compute_command_encoder(&command_buffer)?;
     label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
-    let pipeline = &runtime.ht_encode_code_blocks;
+    let pipeline = &runtime.encode()?.ht_encode_code_blocks;
     encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(&coefficient_buffer), 0);
     encoder.set_buffer(1, Some(&output), 0);
     encoder.set_buffer(2, Some(&job_buffer), 0);
-    encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
-    encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
-    encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
+    encoder.set_buffer(3, Some(&runtime.encode()?.ht_vlc_encode_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.encode()?.ht_vlc_encode_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.encode()?.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
     encoder.set_bytes::<u32>(7, &job_count);
     dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));

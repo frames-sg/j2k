@@ -1091,6 +1091,7 @@ impl<'a> j2k_core::traits::ImageDecodeDevice<'a> for j2k_metal::J2kDecoder<'a>
 impl<'a> j2k_core::traits::ImageDecodeSubmit<'a> for j2k_metal::J2kDecoder<'a>
 pub const fn j2k_metal::MetalBatchGroup::dispatch_report(&self) -> &j2k_metal::MetalDecodeDispatchReport
 pub const fn j2k_metal::MetalDecodeDispatchReport::new() -> Self
+pub const fn j2k_metal::MetalEncodeStageAccelerator::ht_candidate_set_dispatches(&self) -> usize
 pub enum j2k_metal::DecodeOperation
 pub fn j2k_metal::Codec::decode_tiles_to_device(&mut Self::Context, &mut Self::Pool, &[&[u8]], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<alloc::vec::Vec<Self::DeviceSurface>, Self::Error>
 pub fn j2k_metal::Codec::submit_tile_region_scaled_to_device(&mut Self::Context, &mut Self::Session, &mut Self::Pool, j2k_core::batch::TileRegionScaledDeviceDecodeRequest<'_>) -> core::result::Result<Self::SubmittedSurface, Self::Error>
@@ -1130,6 +1131,7 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt97(&mut self, j
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::transform::mct::J2kForwardIctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::transform::mct::J2kForwardRctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::tier1::htj2k::J2kHtCodeBlockEncodeJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::tier1::htj2k::EncodedHtJ2kCodeBlock>>
+pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block_sets(&mut self, &[j2k_types::tier1::htj2k::J2kHtCodeBlockSetEncodeJob<'_>]) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<j2k_types::tier1::htj2k::EncodedHtJ2kCodeBlockSet>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[j2k_types::tier1::htj2k::J2kHtCodeBlockEncodeJob<'_>]) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<j2k_types::tier1::htj2k::EncodedHtJ2kCodeBlock>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_htj2k_tile(&mut self, j2k_types::dispatch::accelerator::J2kHtj2kTileEncodeJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<u8>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_packetization(&mut self, j2k_types::packetization::jobs::J2kPacketizationEncodeJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<u8>>>
@@ -4306,6 +4308,11 @@ pub struct j2k_cuda_transcode_engine::CudaTranscodeReversible53Bands
 ```
 
 ## `j2k-mpsgraph`
+
+```text
+```
+
+## `j2k-mpsgraph-support`
 
 ```text
 ```

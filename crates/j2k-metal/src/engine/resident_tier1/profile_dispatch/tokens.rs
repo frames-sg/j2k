@@ -82,7 +82,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 split token emit");
-    encoder.setComputePipelineState(&runtime.classic_tier1_split_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.split_token_emit);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -97,7 +97,8 @@ pub(in crate::engine) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
             runtime
-                .classic_tier1_split_token_emit_bypass_u16_32
+                .profile()?
+                .split_token_emit
                 .threadExecutionWidth()
                 .max(1) as u64,
             1,
@@ -225,9 +226,9 @@ pub(in crate::engine) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
         })?;
 
     let emit_pipeline = if use_mq_byte_emit {
-        &runtime.classic_tier1_split_mq_byte_token_emit_bypass_u16_32
+        &runtime.profile()?.split_mq_byte_token_emit
     } else {
-        &runtime.classic_tier1_split_token_emit_bypass_u16_32
+        &runtime.profile()?.split_token_emit
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
@@ -321,7 +322,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_token_emit_for_gpu_pack(
 
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
-    encoder.setComputePipelineState(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.setComputePipelineState(&runtime.profile()?.token_emit);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
     encoder.set_buffer(2, Some(&counter_buffer), 0);
@@ -333,10 +334,7 @@ pub(in crate::engine) fn dispatch_classic_tier1_token_emit_for_gpu_pack(
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(u64::from(job_count), 1, 1),
         j2k_metal_support::mtl_size(
-            runtime
-                .classic_tier1_token_emit_bypass_u16_32
-                .threadExecutionWidth()
-                .max(1) as u64,
+            runtime.profile()?.token_emit.threadExecutionWidth().max(1) as u64,
             1,
             1,
         ),
@@ -376,7 +374,7 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
     let encoder = new_compute_command_encoder(command_buffer)?;
     let (pipeline, job_count) = match token_buffers {
         ClassicTier1TokenPackBuffers::Combined(token_buffers) => {
-            let pipeline = &runtime.classic_tier1_token_pack_bypass_u16_32;
+            let pipeline = &runtime.profile()?.token_pack;
             label_compute_encoder(&encoder, "J2K classic Tier-1 token pack");
             encoder.setComputePipelineState(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);
@@ -392,7 +390,7 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
             (pipeline, token_buffers.job_count)
         }
         ClassicTier1TokenPackBuffers::Split(token_buffers) => {
-            let pipeline = &runtime.classic_tier1_split_token_pack_bypass_u16_32;
+            let pipeline = &runtime.profile()?.split_token_pack;
             label_compute_encoder(&encoder, "J2K classic Tier-1 split token pack");
             encoder.setComputePipelineState(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);

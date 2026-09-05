@@ -4,6 +4,10 @@ const HOST_SOURCE: &str = concat!(
     include_str!("../src/engine.rs"),
     "\n",
     include_str!("../src/engine/runtime.rs"),
+    include_str!("../src/engine/runtime/decode.rs"),
+    include_str!("../src/engine/runtime/encode.rs"),
+    include_str!("../src/engine/runtime/profile.rs"),
+    include_str!("../src/engine/runtime/buffers.rs"),
 );
 const NATIVE_COLOR_BATCH_SOURCE: &str = include_str!("../src/store_native_color_batch.metal");
 const PACKETIZATION_SOURCE: &str = include_str!("../src/encode_bitstream_packetize.metal");
@@ -29,6 +33,12 @@ const CLASSIC_SOURCE: &str = concat!(
 const SHADER_SOURCES: &[&str] = &[
     HOST_SOURCE,
     CLASSIC_SOURCE,
+    include_str!("../src/buffer_ops.metal"),
+    include_str!("../src/encode_input.metal"),
+    include_str!("../src/pack.metal"),
+    include_str!("../src/forward_mct.metal"),
+    include_str!("../src/mct_abi.metal"),
+    include_str!("../src/encode_bitstream_classic_profile_kernels.metal"),
     include_str!("../src/encode_bitstream.metal"),
     include_str!("../src/encode_bitstream_shared.metal"),
     include_str!("../src/encode_bitstream_classic_core.metal"),

@@ -769,7 +769,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     let command_buffer = new_command_buffer(&runtime.queue)?;
     if !resident_blocks.is_empty() {
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(T::packet_block_prepare_pipeline(runtime));
+        encoder.setComputePipelineState(T::packet_block_prepare_pipeline(runtime.encode()?));
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(tier1.job_buffer()), 0);
         encoder.set_buffer(2, Some(tier1.status_buffer()), 0);
@@ -778,7 +778,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         encoder.dispatchThreads_threadsPerThreadgroup(
             j2k_metal_support::mtl_size(resident_blocks.len() as u64, 1, 1),
             j2k_metal_support::mtl_size(
-                T::packet_block_prepare_pipeline(runtime)
+                T::packet_block_prepare_pipeline(runtime.encode()?)
                     .threadExecutionWidth()
                     .max(1) as u64,
                 1,
@@ -789,7 +789,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     }
 
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.setComputePipelineState(&runtime.packet_encode);
+    encoder.setComputePipelineState(&runtime.encode()?.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
     encoder.set_buffer(2, Some(&packet_block_buffer), 0);
@@ -805,7 +805,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     encoder.endEncoding();
 
     let encoder = new_compute_command_encoder(&command_buffer)?;
-    encoder.setComputePipelineState(&runtime.lossless_codestream_assemble);
+    encoder.setComputePipelineState(&runtime.encode()?.lossless_codestream_assemble);
     encoder.set_buffer(0, Some(&output_buffer), 0);
     encoder.set_buffer(1, Some(&status_buffer), 0);
     encoder.set_buffer(2, Some(&codestream_buffer), 0);

@@ -188,16 +188,16 @@ pub(crate) use self::test_counters::{
     direct_tier1_input_buffer_runtime_for_test, flattened_hybrid_cpu_decode_batches_for_test,
     ht_batch_coefficient_copy_blits_for_test, hybrid_cpu_decode_inputs_for_test,
     hybrid_cpu_decode_worker_inits_for_test, hybrid_repeated_output_blits_for_test,
-    hybrid_stacked_component_batches_for_test, lossless_deinterleave_rct_fused_dispatches_for_test,
-    metal_command_buffers_for_test, metal_compute_encoders_for_test,
-    reset_classic_gpu_token_pack_dispatches_for_test,
+    hybrid_stacked_component_batches_for_test, idwt97_stage_sequences_for_test,
+    lossless_deinterleave_rct_fused_dispatches_for_test, metal_command_buffers_for_test,
+    metal_compute_encoders_for_test, reset_classic_gpu_token_pack_dispatches_for_test,
     reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test,
     reset_direct_destination_event_bridge_for_test,
     reset_direct_tier1_input_buffer_prepares_for_test,
     reset_flattened_hybrid_cpu_decode_batches_for_test,
     reset_ht_batch_coefficient_copy_blits_for_test, reset_hybrid_cpu_decode_inputs_for_test,
     reset_hybrid_cpu_decode_worker_inits_for_test, reset_hybrid_repeated_output_blits_for_test,
-    reset_hybrid_stacked_component_batches_for_test,
+    reset_hybrid_stacked_component_batches_for_test, reset_idwt97_stage_sequences_for_test,
     reset_lossless_deinterleave_rct_fused_dispatches_for_test,
     reset_metal_command_buffers_for_test, reset_metal_compute_encoders_for_test,
     reset_resident_codestream_command_buffer_waits_for_test,
@@ -349,10 +349,14 @@ pub(crate) use self::decode_dispatch::store::decode_store_component_and_capture;
 #[cfg(target_os = "macos")]
 mod forward_transform;
 #[cfg(target_os = "macos")]
+mod lossy_prepare;
+#[cfg(target_os = "macos")]
 pub(crate) use self::forward_transform::{
     encode_deinterleave_mct_to_f32, encode_deinterleave_to_f32, encode_forward_dwt53,
     encode_forward_dwt97,
 };
+#[cfg(target_os = "macos")]
+pub(crate) use lossy_prepare::encode_resident_lossy_ht_blocks;
 #[cfg(target_os = "macos")]
 mod lossless_prepare;
 #[cfg(target_os = "macos")]

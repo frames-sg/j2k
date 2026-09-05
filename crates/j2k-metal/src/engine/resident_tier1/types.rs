@@ -176,7 +176,9 @@ pub(crate) trait ResidentLosslessTier1Metal {
     fn job_buffer(&self) -> &Buffer;
     fn prepare_command_buffer(&self) -> &CommandBuffer;
     fn tier1_command_buffer(&self) -> &CommandBuffer;
-    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
+    fn packet_block_prepare_pipeline(
+        kernels: &crate::engine::runtime::EncodeKernels,
+    ) -> &ComputePipelineState;
 }
 
 #[cfg(target_os = "macos")]
@@ -214,8 +216,10 @@ impl ResidentLosslessTier1Metal for J2kResidentLosslessTier1CodeBlocks {
     fn tier1_command_buffer(&self) -> &CommandBuffer {
         &self.tier1_command_buffer
     }
-    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.packet_block_prepare_resident_classic
+    fn packet_block_prepare_pipeline(
+        kernels: &crate::engine::runtime::EncodeKernels,
+    ) -> &ComputePipelineState {
+        &kernels.packet_block_prepare_resident_classic
     }
 }
 
@@ -254,8 +258,10 @@ impl ResidentLosslessTier1Metal for J2kResidentLosslessHtCodeBlocks {
     fn tier1_command_buffer(&self) -> &CommandBuffer {
         &self.tier1_command_buffer
     }
-    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.packet_block_prepare_resident_ht
+    fn packet_block_prepare_pipeline(
+        kernels: &crate::engine::runtime::EncodeKernels,
+    ) -> &ComputePipelineState {
+        &kernels.packet_block_prepare_resident_ht
     }
 }
 

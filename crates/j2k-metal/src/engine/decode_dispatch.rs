@@ -75,6 +75,8 @@ pub(in crate::engine) use self::ht_subband::{
     ht_output_word_count, required_ht_output_len,
 };
 pub(in crate::engine) use self::idwt::{
+    dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
+    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,
     dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets,

@@ -430,12 +430,13 @@ kernel void j2k_idwt_irreversible97_horizontal_scale(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
     constant float &high_pass [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height) {
         return;
     }
 
+    out += ulong(gid.z) * params.width * params.height;
     const float KAPPA = CODEC_MATH_DWT97_KAPPA;
     float sample = out[gid.y * params.width + gid.x];
 
@@ -455,12 +456,13 @@ kernel void j2k_idwt_irreversible97_vertical_scale(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
     constant float &high_pass [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height) {
         return;
     }
 
+    out += ulong(gid.z) * params.width * params.height;
     const float KAPPA = CODEC_MATH_DWT97_KAPPA;
     float sample = out[gid.y * params.width + gid.x];
 
@@ -480,13 +482,14 @@ kernel void j2k_idwt_irreversible97_horizontal_step(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
     constant J2kIdwt97StepParams &step [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height || params.width <= 1u
         || (gid.x & 1u) != step.parity) {
         return;
     }
 
+    out += ulong(gid.z) * params.width * params.height;
     const uint left = periodic_symmetric_extension_left_u32(gid.x, 1u);
     const uint right = periodic_symmetric_extension_right_u32(gid.x, 1u, params.width);
     const uint idx = gid.y * params.width + gid.x;
@@ -499,13 +502,14 @@ kernel void j2k_idwt_irreversible97_vertical_step(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
     constant J2kIdwt97StepParams &step [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height || params.height <= 1u
         || (gid.y & 1u) != step.parity) {
         return;
     }
 
+    out += ulong(gid.z) * params.width * params.height;
     const uint above = periodic_symmetric_extension_left_u32(gid.y, 1u);
     const uint below = periodic_symmetric_extension_right_u32(gid.y, 1u, params.height);
     const uint idx = gid.y * params.width + gid.x;

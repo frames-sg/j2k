@@ -34,12 +34,23 @@ const REVIEWED_SAFETY_ALLOWS: &[(&str, &str, &str)] = &[
     ("crates/j2k-metal/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-ml/Cargo.toml", "rust", "unsafe_code"),
     ("crates/j2k-mpsgraph/Cargo.toml", "rust", "unsafe_code"),
+    // Owns the callback/retention boundary formerly duplicated in codec adapters.
+    (
+        "crates/j2k-mpsgraph-support/Cargo.toml",
+        "rust",
+        "unsafe_code",
+    ),
 ];
 
 // Non-safety API/documentation suppressions remain a ceiling: deleting one is
 // progress and does not require a replacement. Adding or moving one requires a
 // deliberate policy edit.
 const REVIEWED_ALLOW_CEILING: &[(&str, &str, &str)] = &[
+    (
+        "crates/j2k-mpsgraph-support/Cargo.toml",
+        "clippy",
+        "module_name_repetitions",
+    ),
     ("Cargo.toml", "clippy", "missing_errors_doc"),
     ("Cargo.toml", "clippy", "missing_panics_doc"),
     ("Cargo.toml", "clippy", "module_name_repetitions"),

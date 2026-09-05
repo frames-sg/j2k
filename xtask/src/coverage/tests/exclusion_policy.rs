@@ -8,31 +8,18 @@ use super::super::exclusion_policy::{
 };
 
 #[test]
-fn metal_raw_shader_span_is_narrower_than_the_host_source_file() {
+fn metal_shader_composition_is_fully_host_covered() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let path = "crates/j2k-metal/src/engine/shader_source.rs";
     let source = fs::read_to_string(root.join(path)).unwrap();
     let lines = source.lines().collect::<Vec<_>>();
-    let embedded_shader_line = lines
-        .iter()
-        .position(|line| line.contains("#include <metal_stdlib>"))
-        .expect("embedded shader marker")
-        + 1;
-    let included_shader_line = lines
-        .iter()
-        .position(|line| line.contains("include_str!(\"../store.metal\")"))
-        .expect("included shader marker")
-        + 1;
-
-    assert_eq!(
-        matching_exclusion(path, embedded_shader_line, &lines)
-            .unwrap()
-            .map(|rule| rule.id),
-        Some("metal-embedded-shader-body")
-    );
-    assert!(matching_exclusion(path, included_shader_line, &lines)
-        .unwrap()
-        .is_none());
+    assert!(source.contains("include_str!(\"../store.metal\")"));
+    for line in 1..=lines.len() {
+        assert!(
+            matching_exclusion(path, line, &lines).unwrap().is_none(),
+            "shader composition is host Rust and must remain covered (line {line})"
+        );
+    }
 }
 
 #[test]

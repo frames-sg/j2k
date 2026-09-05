@@ -153,6 +153,54 @@ impl MetalEncodeDispatchStages {
 }
 
 impl MetalEncodeStageAccelerator {
+    #[cfg(target_os = "macos")]
+    fn try_encode_resident_lossy_tile(
+        &mut self,
+        job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
+        if !job.reversible && self.dispatch_stages.0 == MetalEncodeDispatchStages::ALL.0 {
+            if let Some(Some(encoded)) = metal_dispatch_option(
+                super::resident_lossy::encode_resident_lossy_ht_tile(job),
+                "resident irreversible HT tile encode",
+            )? {
+                self.ht_tile_required_magnitude_bound = Some(encoded.required_magnitude_bound);
+                let transformed_components = usize::from(job.num_components)
+                    * usize::from(job.num_decomposition_levels != 0);
+                self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
+                self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(1);
+                self.combined_input_mct_attempts = self
+                    .combined_input_mct_attempts
+                    .saturating_add(usize::from(job.use_mct));
+                self.combined_input_mct_dispatches = self
+                    .combined_input_mct_dispatches
+                    .saturating_add(usize::from(job.use_mct));
+                self.forward_ict_attempts = self
+                    .forward_ict_attempts
+                    .saturating_add(usize::from(job.use_mct));
+                self.forward_ict_dispatches = self
+                    .forward_ict_dispatches
+                    .saturating_add(usize::from(job.use_mct));
+                self.forward_dwt97_attempts = self
+                    .forward_dwt97_attempts
+                    .saturating_add(transformed_components);
+                self.forward_dwt97_dispatches = self
+                    .forward_dwt97_dispatches
+                    .saturating_add(transformed_components);
+                self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
+                self.quantize_subband_dispatches =
+                    self.quantize_subband_dispatches.saturating_add(1);
+                self.ht_code_block_attempts = self
+                    .ht_code_block_attempts
+                    .saturating_add(encoded.code_block_count);
+                self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
+                self.packetization_attempts = self.packetization_attempts.saturating_add(1);
+                self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
+                return Ok(Some(encoded.data));
+            }
+        }
+        Ok(None)
+    }
+
     /// Create an accelerator that leaves forward RCT on the CPU path.
     pub fn with_cpu_forward_rct() -> Self {
         Self {
@@ -884,6 +932,9 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         #[cfg(target_os = "macos")]
         {
+            if let Some(encoded) = self.try_encode_resident_lossy_tile(job)? {
+                return Ok(Some(encoded));
+            }
             if !matches!(
                 self.route_profile,
                 MetalEncodeRouteProfile::AutoHostOutput

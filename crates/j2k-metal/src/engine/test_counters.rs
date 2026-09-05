@@ -271,3 +271,19 @@ pub(crate) fn record_ht_immutable_payload_upload() {
 pub(crate) fn record_ht_immutable_job_upload() {
     HT_IMMUTABLE_JOB_UPLOADS.with(|uploads| uploads.set(uploads.get().saturating_add(1)));
 }
+
+std::thread_local! {
+    static IDWT97_STAGE_SEQUENCES: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn reset_idwt97_stage_sequences_for_test() {
+    IDWT97_STAGE_SEQUENCES.set(0);
+}
+
+pub(crate) fn idwt97_stage_sequences_for_test() -> usize {
+    IDWT97_STAGE_SEQUENCES.get()
+}
+
+pub(crate) fn record_idwt97_stage_sequence() {
+    IDWT97_STAGE_SEQUENCES.set(IDWT97_STAGE_SEQUENCES.get() + 1);
+}

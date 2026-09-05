@@ -15,7 +15,7 @@ use super::plan::LosslessDeviceEncodePlan;
 use crate::batch_allocation::{checked_count_sum, BatchMetadataBudget, BatchMetadataRequest};
 use crate::engine as compute;
 
-fn lossless_progression_from_packetization_order(
+pub(super) fn lossless_progression_from_packetization_order(
     order: J2kPacketizationProgressionOrder,
 ) -> J2kProgressionOrder {
     match order {

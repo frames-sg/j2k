@@ -249,13 +249,13 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid MCT RGB8 pack");
-    encoder.setComputePipelineState(&runtime.pack_mct_rgb8);
+    encoder.setComputePipelineState(&runtime.decode()?.pack_mct_rgb8);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_buffer(3, Some(&out_buffer), 0);
     encoder.set_bytes::<J2kMctRgb8PackParams>(4, &params);
-    dispatch_2d_pipeline(&encoder, &runtime.pack_mct_rgb8, dims);
+    dispatch_2d_pipeline(&encoder, &runtime.decode()?.pack_mct_rgb8, dims);
     encoder.endEncoding();
     drop(signpost);
 
@@ -325,7 +325,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid batched MCT RGB8 pack");
-    encoder.setComputePipelineState(&runtime.pack_mct_rgb8_batched);
+    encoder.setComputePipelineState(&runtime.decode()?.pack_mct_rgb8_batched);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
@@ -333,7 +333,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
     encoder.set_bytes::<J2kBatchedMctRgb8PackParams>(4, &params);
     dispatch_3d_pipeline(
         &encoder,
-        &runtime.pack_mct_rgb8_batched,
+        &runtime.decode()?.pack_mct_rgb8_batched,
         (dims.0, dims.1, count_u32),
     );
     encoder.endEncoding();
@@ -414,13 +414,13 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated MCT RGB8 pack");
-    encoder.setComputePipelineState(&runtime.pack_mct_rgb8_batched);
+    encoder.setComputePipelineState(&runtime.decode()?.pack_mct_rgb8_batched);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
     encoder.set_buffer(2, Some(planes[2]), 0);
     encoder.set_buffer(3, Some(&out_buffer), 0);
     encoder.set_bytes::<J2kBatchedMctRgb8PackParams>(4, &params);
-    dispatch_2d_pipeline(&encoder, &runtime.pack_mct_rgb8_batched, dims);
+    dispatch_2d_pipeline(&encoder, &runtime.decode()?.pack_mct_rgb8_batched, dims);
     encoder.endEncoding();
     drop(signpost);
 

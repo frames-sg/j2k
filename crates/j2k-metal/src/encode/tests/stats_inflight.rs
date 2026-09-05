@@ -105,6 +105,10 @@ fn submitted_lossless_metal_buffer_encode_public_api_is_available() {
     clippy::too_many_lines,
     reason = "exhaustive default-field assertion guards the public stats contract"
 )]
+#[expect(
+    deprecated,
+    reason = "Verify retained public compatibility fields remain zero"
+)]
 fn resident_lossless_stage_stats_default_to_zero() {
     let stats = super::super::MetalLosslessEncodeBatchStats::default();
 

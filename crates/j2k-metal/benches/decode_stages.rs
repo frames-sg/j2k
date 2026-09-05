@@ -17,6 +17,9 @@ use j2k_native::{encode_htj2k, EncodeOptions};
 #[cfg(target_os = "macos")]
 const DIMENSION: u32 = 512;
 #[cfg(target_os = "macos")]
+#[path = "decode_stages/geometry.rs"]
+mod geometry;
+#[cfg(target_os = "macos")]
 const BATCH_SIZE: usize = 16;
 #[cfg(target_os = "macos")]
 const STAGE_MARKERS: &[&str] = &[
@@ -310,11 +313,10 @@ fn bench_decode_stages_classic(criterion: &mut Criterion) {
 }
 
 #[cfg(target_os = "macos")]
-criterion_group!(
-    benches,
-    bench_decode_stages,
-    bench_decode_stages_idwt97,
-    bench_decode_stages_classic
-);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().sample_size(10);
+    targets = bench_decode_stages, bench_decode_stages_idwt97, bench_decode_stages_classic, geometry::bench
+}
 #[cfg(target_os = "macos")]
 criterion_main!(benches);
