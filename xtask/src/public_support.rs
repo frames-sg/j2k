@@ -212,8 +212,8 @@ const REQUIRED_TEST_REFERENCES: &[&str] = &[
     "ht_cpu_fallback_encodes_three_pass_magref_refinement",
     "ht_cpu_fallback_rejects_unsupported_refinement_pass_count",
     "accelerator_facade_ht_lossless_quality_layers_keep_cleanup_only",
-    "ht_layer_contributions_split_cleanup_and_refinement_across_layers",
-    "htj2k_lossy_quality_layers_decode_split_refinement_layer",
+    "ht_layer_contributions_emit_the_selected_ht_set_atomically",
+    "htj2k_lossy_quality_layers_decode_atomic_ht_sets",
     "public_decode_matches_openhtj2k_refinement_fixtures",
     "cargo xtask adoption-report",
 ];

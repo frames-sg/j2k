@@ -89,10 +89,11 @@ fn configure_openhtj2k(config: &StaticReferenceConfig) {
         .file("src/openhtj2k_shim.cpp")
         .include(config.source_dir.join("source/core/interface"))
         .include(config.source_dir.join("source/core/common"))
+        .std("c++17")
         .warnings(true)
         .extra_warnings(true)
         .warnings_into_errors(true)
-        .flag_if_supported("-std=c++17")
+        .flag_if_supported("/EHsc")
         .flag_if_supported("-Wconversion")
         .flag_if_supported("-Wsign-conversion")
         .compile("j2k_openhtj2k_shim");
