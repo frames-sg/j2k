@@ -119,6 +119,9 @@ fn sampled_color_batch_keeps_one_resident_submission() {
     }
 }
 
+// This local timing harness requires a release build and an external corpus.
+// The generated-fixture test above exercises the same assertions in CI coverage.
+#[cfg(not(debug_assertions))]
 #[test]
 #[ignore = "release sampled DICOM decode characterization; requires J2K_SAMPLED_CORPUS"]
 fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
