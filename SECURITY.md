@@ -4,7 +4,8 @@
 
 | Version | Status |
 | --- | --- |
-| `0.11.0` | Latest published and security-supported release |
+| `0.11.1` | Latest published and security-supported release |
+| `0.11.0` | Previous published release; security-supported |
 | `0.10.0` | Previous published release line; security-supported |
 | `0.9.0` | Previous published release line; security-supported |
 | `0.8.1` | Previous published release line; security-supported |

@@ -1,6 +1,6 @@
 # Release Policy
 
-The `j2k` 0.11.0 public crate release is published and security-supported.
+The `j2k` 0.11.1 public crate release is published and security-supported.
 The published 0.11.0 line carries the release-scoped Part 1 and selected
 Part 15 T.803 decoder evidence described in
 [`T.803 conformance`](t803-conformance.md).
@@ -8,13 +8,11 @@ Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
 
-The workspace stages 0.11.1; publication requires the candidate and tag gates below.
-
 ## Release status
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.11.1` | Candidate frozen; dated notes are in the changelog. | Candidate; not published. |
+| `0.11.1` | Published on [crates.io](https://crates.io/crates/j2k/0.11.1) from tag `v0.11.1`; dated notes are in the [changelog](../CHANGELOG.md). | Security-supported. |
 | `0.11.0` | Published release line. Distribution is recorded in the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0) and [crate registry](https://crates.io/crates/j2k/0.11.0) after the required gates passed. | Security-supported. |
 | `0.10.0` | Published on crates.io from annotated tag `v0.10.0`, with reviewed architecture-transition API evidence. | Supported. |
 | `0.9.0` | Published on crates.io from annotated tag `v0.9.0`, with reviewed `objc2-metal` API-break evidence. | Supported. |
