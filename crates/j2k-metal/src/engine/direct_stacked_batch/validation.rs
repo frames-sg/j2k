@@ -140,6 +140,7 @@ pub(in super::super) fn supports_stacked_direct_component_plane_batch(
     if plans.iter().any(|plan| {
         plan.dimensions != first.dimensions
             || plan.bit_depth != first.bit_depth
+            || plan.round_centered_store != first.round_centered_store
             || plan.steps.len() != first.steps.len()
     }) {
         return false;

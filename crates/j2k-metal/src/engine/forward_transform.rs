@@ -165,6 +165,7 @@ pub(crate) fn encode_forward_dwt53(
                     input,
                     output,
                     params,
+                    params.current_width,
                     "J2K forward DWT 5/3 vertical",
                 )?;
                 active_is_a = !active_is_a;
@@ -178,6 +179,7 @@ pub(crate) fn encode_forward_dwt53(
                     input,
                     output,
                     params,
+                    params.low_width,
                     "J2K forward DWT 5/3 horizontal",
                 )?;
                 active_is_a = !active_is_a;
@@ -541,6 +543,7 @@ pub(super) fn dispatch_forward_dwt53_pass(
     input: &Buffer,
     output: &Buffer,
     params: J2kForwardDwt53Params,
+    dispatch_width: u32,
     label: &str,
 ) -> Result<(), Error> {
     let encoder = new_compute_command_encoder(command_buffer)?;
@@ -549,11 +552,7 @@ pub(super) fn dispatch_forward_dwt53_pass(
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
     encoder.set_bytes::<J2kForwardDwt53Params>(2, &params);
-    dispatch_2d_pipeline(
-        &encoder,
-        pipeline,
-        (params.current_width, params.current_height),
-    );
+    dispatch_2d_pipeline(&encoder, pipeline, (dispatch_width, params.current_height));
     encoder.endEncoding();
     Ok(())
 }
@@ -565,6 +564,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
     inputs: &[Buffer],
     outputs: &[Buffer],
     params: J2kForwardDwt53BatchedParams,
+    dispatch_width: u32,
     label: &str,
 ) -> Result<(), Error> {
     debug_assert!(!inputs.is_empty());
@@ -591,7 +591,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
         &encoder,
         pipeline,
         (
-            params.current_width,
+            dispatch_width,
             params.current_height,
             params.component_count,
         ),

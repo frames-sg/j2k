@@ -13,13 +13,90 @@ use criterion::{Criterion, Throughput};
 use j2k_core::PixelFormat;
 use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_metal::{
-    Codec, Decoder, MetalBackendSession, MetalBatchOutputBuffer, MetalBufferBatchTarget,
-    Rgb8MetalBatchOp, Rgb8MetalBatchRequest, Rgb8MetalBatchSource,
+    Codec, Decoder, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput,
+    MetalBufferBatchTarget, Rgb8MetalBatchOp, Rgb8MetalBatchRequest, Rgb8MetalBatchSource,
 };
-use jpeg_encoder::SamplingFactor;
+use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use std::{hint::black_box, sync::Barrier, time::Instant};
 
 const BATCH_SIZE: usize = 4;
+
+pub(super) fn bench_mixed(c: &mut Criterion) {
+    const SIDE: u16 = 128;
+    const COUNT: usize = 16;
+    let dimensions = (u32::from(SIDE), u32::from(SIDE));
+    let pixels = j2k_test_support::gpu_bench_rgb8(dimensions.0, dimensions.1);
+    let mut group = c.benchmark_group("jpeg_metal_mixed_tables");
+    for (family, sampling) in [
+        ("420", SamplingFactor::F_2_2),
+        ("444", SamplingFactor::F_1_1),
+    ] {
+        for table_count in [2, 4] {
+            let inputs = [95, 85, 70, 50][..table_count]
+                .iter()
+                .map(|&quality| {
+                    let mut bytes = Vec::new();
+                    let mut encoder = Encoder::new(&mut bytes, quality);
+                    encoder.set_sampling_factor(sampling);
+                    encoder
+                        .encode(&pixels, SIDE, SIDE, ColorType::Rgb)
+                        .expect("mixed-table JPEG");
+                    bytes
+                })
+                .collect::<Vec<_>>();
+            let expected = inputs
+                .iter()
+                .map(|bytes| native_request_pixels(bytes, DecodeRequest::full(PixelFormat::Rgb8)))
+                .collect::<Vec<_>>();
+            let decoders = inputs
+                .iter()
+                .map(|bytes| Decoder::new(bytes).expect("mixed-table decoder"))
+                .collect::<Vec<_>>();
+            let refs = (0..COUNT)
+                .map(|index| &decoders[index % table_count])
+                .collect::<Vec<_>>();
+            let session = MetalBackendSession::system_default().expect("mixed-table Metal session");
+            let output = MetalBatchOutputBuffer::new_rgb8_tiles(&session, dimensions, COUNT)
+                .expect("mixed-table RGB output");
+            let decode = || {
+                Codec::decode_rgb8_batch_into_buffer_with_session(
+                    Rgb8MetalBatchRequest {
+                        source: Rgb8MetalBatchSource::Decoders(&refs),
+                        op: Rgb8MetalBatchOp::Full,
+                    },
+                    MetalBufferBatchTarget::Reusable(&output),
+                    &session,
+                )
+                .expect("mixed-table RGB decode")
+            };
+            for (index, surface) in decode().into_iter().enumerate() {
+                assert_metal_surface_pixels(
+                    &surface.expect("mixed-table surface"),
+                    &expected[index % table_count],
+                );
+            }
+            group.bench_function(
+                format!("{family}/tables{table_count}/batch{COUNT}/rgb"),
+                |b| {
+                    b.iter(|| black_box(decode()));
+                },
+            );
+            let mut textures =
+                MetalBatchTextureOutput::new_rgba8_tiles(&session, dimensions, COUNT)
+                    .expect("mixed-table textures");
+            group.bench_function(format!("{family}/tables{table_count}/batch{COUNT}/textures"), |b| {
+                b.iter(|| {
+                    let tiles = Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
+                        &refs, &mut textures, &session,
+                    ).expect("mixed-table texture decode");
+                    assert_eq!(tiles.len(), COUNT);
+                    for tile in tiles { black_box(tile.expect("mixed-table texture")); }
+                });
+            });
+        }
+    }
+    group.finish();
+}
 
 pub(super) fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_metal_distinct_batch");

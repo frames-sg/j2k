@@ -9,7 +9,15 @@ use crate::metal_types::{Buffer, Device};
 
 use super::MetalBufferPoolDiagnostics;
 
-const DEFAULT_RETAINED_BYTES_PER_POOL: usize = 256 * 1024 * 1024;
+/// Retained-byte bounds for one pool. A pool keeps completed buffers cached for
+/// exact-size reuse; decodes still allocate what they need beyond it. Each
+/// runtime owns a private and a shared pool, so one session can retain up to
+/// twice the per-pool cap until it is dropped.
+const MIN_RETAINED_BYTES_PER_POOL: usize = 256 * 1024 * 1024;
+const MAX_RETAINED_BYTES_PER_POOL: usize = 1024 * 1024 * 1024;
+/// Share of the device's recommended working set one pool may retain: about
+/// 680 MB on an 8 GB Mac, the 1 GiB ceiling from 16 GB up.
+const RETAINED_WORKING_SET_DIVISOR: u64 = 8;
 const DEFAULT_PRIVATE_RETAINED_BUFFERS_PER_POOL: usize =
     crate::resident_limits::RESIDENT_PRIVATE_POOL_BUFFER_LIMIT;
 const DEFAULT_SHARED_RETAINED_BUFFERS_PER_POOL: usize = 64;
@@ -30,11 +38,18 @@ impl PoolLimits {
     }
 
     fn for_device(device: &Device, retained_buffers: usize) -> Self {
-        let device_limit = device.maxBufferLength();
         Self {
-            retained_bytes: device_limit.min(DEFAULT_RETAINED_BYTES_PER_POOL),
+            retained_bytes: retained_bytes_for_device(
+                device.maxBufferLength(),
+                device.recommendedMaxWorkingSetSize(),
+            ),
             retained_buffers,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn retained_bytes_for_test(self) -> usize {
+        self.retained_bytes
     }
 
     #[cfg(test)]
@@ -44,6 +59,19 @@ impl PoolLimits {
             retained_buffers,
         }
     }
+}
+
+/// Per-pool retained-byte cap: an eighth of the recommended working set,
+/// clamped to [256 MiB, 1 GiB] and never above the largest single buffer.
+pub(super) fn retained_bytes_for_device(
+    max_buffer_length: usize,
+    recommended_working_set_bytes: u64,
+) -> usize {
+    let scaled = usize::try_from(recommended_working_set_bytes / RETAINED_WORKING_SET_DIVISOR)
+        .unwrap_or(usize::MAX);
+    scaled
+        .clamp(MIN_RETAINED_BYTES_PER_POOL, MAX_RETAINED_BYTES_PER_POOL)
+        .min(max_buffer_length)
 }
 
 #[derive(Default)]

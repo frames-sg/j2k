@@ -22,9 +22,10 @@ Explicit `BackendRequest::Metal` is strict:
 
 - Single-image full, region, scaled, and region-scaled requests stay on CPU even
   when a fast packet exists.
-- Small restart-coded tile batches stay CPU.
-- Existing restart-coded batch threshold tests cover the current macOS Auto path
-  that can use Metal for coalesced WSI-style batches.
+- Full RGB batches can use Metal for at least 16 compatible non-restart 4:2:0
+  or 4:2:2 tiles at least 256×256 pixels, including distinct inputs. Dimensions,
+  tables, and checkpoint counts must match across the batch.
+- Smaller, mixed-table, restart-coded, and scaled tile batches stay CPU.
 - Sparse viewport workloads stay CPU for scheduled surface output; contiguous
   restart-coded viewports may use the hybrid path on macOS. Reusable resident
   viewport outputs may use direct contiguous decode or resident composition.
@@ -47,6 +48,10 @@ Use these groups to decide where Metal makes sense:
   check for CPU-preferred single decode.
 - `wsi_tile_batch_rgb` and `wsi_tile_batch_scaled_rgb_q4`: repeated tile batches
   comparing CPU, explicit Metal, and Auto.
+- `jpeg_distinct_batch_routing`: completed submissions for distinct 4:2:0 and
+  4:2:2 inputs, including plan construction, at 64×64 and 256×256 dimensions.
+- `jpeg_metal_mixed_tables`: interleaved table groups targeting reusable RGB
+  buffers and textures, to measure the cost of submitting multiple groups.
 - `wsi_tile_batch_region_scaled_coalesced_rgb_q4`: coalesced region+scaled batch
   candidate where Metal can amortize setup.
 - `wsi_tile_batch_region_scaled_distinct_rgb_q4`: low-coalescing control case.

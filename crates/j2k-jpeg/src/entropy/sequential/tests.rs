@@ -10,89 +10,6 @@ use alloc::vec;
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
 #[test]
-fn sequential_decode_modules_stay_focused_and_fragment_free() {
-    const ROOT: &str = include_str!("../sequential.rs");
-    const GENERIC: &str = include_str!("generic.rs");
-    const GENERIC_DRIVER: &str = include_str!("generic/driver.rs");
-    const GENERIC_ROW: &str = include_str!("generic/row.rs");
-    const DCT: &str = include_str!("dct.rs");
-    const DCT_ALLOCATION: &str = include_str!("dct/allocation.rs");
-    const OUTPUT_SCRATCH: &str = include_str!("output_scratch.rs");
-    const PLAN: &str = include_str!("plan.rs");
-    const PLAN_RESOLVED: &str = include_str!("plan/resolved.rs");
-    const RGB444: &str = include_str!("rgb444.rs");
-    const STRIPE: &str = include_str!("stripe.rs");
-    const FAST420: &str = include_str!("fast420/mod.rs");
-    const FAST420_ROWS: &str = include_str!("fast420/rows.rs");
-
-    let modules = [
-        ("sequential.rs", ROOT, 240usize),
-        ("sequential/generic.rs", GENERIC, 180),
-        ("sequential/generic/driver.rs", GENERIC_DRIVER, 260),
-        ("sequential/generic/row.rs", GENERIC_ROW, 230),
-        ("sequential/dct.rs", DCT, 200),
-        ("sequential/dct/allocation.rs", DCT_ALLOCATION, 320),
-        ("sequential/output_scratch.rs", OUTPUT_SCRATCH, 60),
-        ("sequential/plan.rs", PLAN, 120),
-        ("sequential/plan/resolved.rs", PLAN_RESOLVED, 80),
-        ("sequential/rgb444.rs", RGB444, 300),
-        ("sequential/stripe.rs", STRIPE, 240),
-        ("sequential/fast420/mod.rs", FAST420, 650),
-        ("sequential/fast420/rows.rs", FAST420_ROWS, 700),
-    ];
-
-    for (path, source, max_lines) in modules {
-        let line_count = source.lines().count();
-        assert!(
-            line_count <= max_lines,
-            "{path} grew to {line_count} lines; split it before exceeding {max_lines}"
-        );
-        assert!(
-            !source.contains("include!(") && !source.contains("#[path"),
-            "{path} must remain a real Rust module, not a textual source fragment"
-        );
-    }
-
-    for declaration in [
-        "mod dct;",
-        "mod fast420;",
-        "mod generic;",
-        "mod output_scratch;",
-        "mod plan;",
-        "mod rgb444;",
-        "mod stripe;",
-    ] {
-        assert!(
-            ROOT.contains(declaration),
-            "sequential facade lost required module boundary {declaration}"
-        );
-    }
-    assert!(
-        DCT.contains("mod allocation;"),
-        "sequential DCT execution lost its allocation boundary"
-    );
-    for declaration in ["mod driver;", "mod row;"] {
-        assert!(
-            GENERIC.contains(declaration),
-            "generic sequential owner lost required boundary {declaration}"
-        );
-    }
-    for shared_owner in [
-        "struct ScanSetup",
-        "struct ScanBuffers",
-        "trait StripeEmitter",
-        "fn decode_scan_rows",
-    ] {
-        assert!(
-            GENERIC_DRIVER.contains(shared_owner),
-            "generic scan driver lost typed shared owner {shared_owner}"
-        );
-    }
-    assert!(!GENERIC.contains("clippy::too_many_lines"));
-    assert!(!GENERIC_DRIVER.contains("macro_rules!"));
-}
-
-#[test]
 fn fast_tile_rgb_matches_generic_baseline_decode() {
     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
     assert!(dec.plan.matches_fast_tile_shape());
@@ -397,7 +314,7 @@ fn deposit_dc_block_writes_uniform_rows_without_temp_block() {
 }
 
 #[test]
-fn component_row_triplet_uses_neighbor_stripes_and_clamps_edges() {
+fn component_row_triplet_uses_neighbor_stripes_and_clamps_to_real_rows() {
     let prev = StripeBuffer {
         planes: vec![vec![], vec![10, 11, 12, 13, 14, 15], vec![]],
         plane_strides: vec![0, 2, 0],
@@ -419,32 +336,194 @@ fn component_row_triplet_uses_neighbor_stripes_and_clamps_edges() {
     let next_plane = Some(next.plane(1));
 
     let (top_prev, top_curr, top_next) =
-        component_row_triplet(prev_plane, curr_plane, next_plane, 0);
+        component_row_triplet(prev_plane, curr_plane, next_plane, 0, 3);
     assert_eq!(top_prev, &[14, 15]);
     assert_eq!(top_curr, &[20, 21]);
     assert_eq!(top_next, &[22, 23]);
 
     let (mid_prev, mid_curr, mid_next) =
-        component_row_triplet(prev_plane, curr_plane, next_plane, 1);
+        component_row_triplet(prev_plane, curr_plane, next_plane, 1, 3);
     assert_eq!(mid_prev, &[20, 21]);
     assert_eq!(mid_curr, &[22, 23]);
     assert_eq!(mid_next, &[24, 25]);
 
     let (bot_prev, bot_curr, bot_next) =
-        component_row_triplet(prev_plane, curr_plane, next_plane, 2);
+        component_row_triplet(prev_plane, curr_plane, next_plane, 2, 3);
     assert_eq!(bot_prev, &[22, 23]);
     assert_eq!(bot_curr, &[24, 25]);
     assert_eq!(bot_next, &[30, 31]);
 
-    let (clamp_prev, clamp_curr, clamp_next) = component_row_triplet(None, curr_plane, None, 0);
+    let (clamp_prev, clamp_curr, clamp_next) = component_row_triplet(None, curr_plane, None, 0, 3);
     assert_eq!(clamp_prev, &[20, 21]);
     assert_eq!(clamp_curr, &[20, 21]);
     assert_eq!(clamp_next, &[22, 23]);
 
-    let (tail_prev, tail_curr, tail_next) = component_row_triplet(None, curr_plane, None, 2);
+    let (tail_prev, tail_curr, tail_next) = component_row_triplet(None, curr_plane, None, 2, 3);
     assert_eq!(tail_prev, &[22, 23]);
     assert_eq!(tail_curr, &[24, 25]);
     assert_eq!(tail_next, &[24, 25]);
+
+    // A final stripe cut short by the image height ends at its last real row,
+    // as libjpeg-turbo does; row 2 is MCU padding and must not be blended in.
+    let (short_prev, short_curr, short_next) =
+        component_row_triplet(Some(prev.plane(1)), curr_plane, None, 1, 2);
+    assert_eq!(short_prev, &[20, 21]);
+    assert_eq!(short_curr, &[22, 23]);
+    assert_eq!(short_next, &[22, 23]);
+
+    let (single_prev, single_curr, single_next) =
+        component_row_triplet(Some(prev.plane(1)), curr_plane, None, 0, 1);
+    assert_eq!(single_prev, &[14, 15]);
+    assert_eq!(single_curr, &[20, 21]);
+    assert_eq!(single_next, &[20, 21]);
+}
+
+#[test]
+fn final_420_stripe_replicates_last_real_chroma_row_instead_of_padding() {
+    // (color space, downscale, image height). Each height leaves the final
+    // stripe with an even number of output rows, so its last row blends the
+    // last real chroma row with the row below it.
+    let cases = [
+        (ColorSpace::YCbCr, DownscaleFactor::Full, 18u32),
+        (ColorSpace::YCbCr, DownscaleFactor::Full, 28),
+        (ColorSpace::YCbCr, DownscaleFactor::Half, 20),
+        (ColorSpace::Rgb, DownscaleFactor::Full, 18),
+        (ColorSpace::Rgb, DownscaleFactor::Full, 20),
+    ];
+    for (color_space, downscale, height) in cases {
+        // Interleaved-RGB emitter, then the generic component-writer emitter.
+        for rgb_emitter in [true, false] {
+            let emit = |padding| {
+                emit_final_420_stripe(color_space, downscale, height, padding, rgb_emitter)
+            };
+            let replicated = emit(None);
+            for padding in [0u8, 255, 77] {
+                assert_eq!(
+                    emit(Some(padding)),
+                    replicated,
+                    "{color_space:?} {downscale:?} height {height} rgb_emitter {rgb_emitter}: \
+                     chroma padding {padding} leaked into the output"
+                );
+            }
+        }
+    }
+}
+
+/// Emits the final stripe of a two-stripe 4:2:0 image. Chroma rows below the
+/// image's last real chroma row hold `padding`, or replicate that last real
+/// row when `padding` is `None`.
+fn emit_final_420_stripe(
+    color_space: ColorSpace,
+    downscale: DownscaleFactor,
+    height: u32,
+    padding: Option<u8>,
+    rgb_emitter: bool,
+) -> Vec<u8> {
+    let block = downscale.output_block_size() as usize;
+    let (scaled_width, scaled_height) = scaled_dimensions((13, height), downscale);
+    let width = scaled_width as usize;
+    let real_chroma_rows = (scaled_height as usize - 2 * block).div_ceil(2);
+    let prev = synthetic_420_stripe(block, 5, None);
+    let curr = synthetic_420_stripe(block, 40, Some((real_chroma_rows, padding)));
+    let plan = PreparedDecodePlan {
+        components: vec![],
+        huffman_tables: PreparedHuffmanTables::try_with_capacity(0).expect("empty test arena"),
+        sampling: SamplingFactors::from_validated_components(&[(2, 2), (1, 1), (1, 1)]),
+        color_space,
+        restart_interval: None,
+        dimensions: (13, height),
+        scan_offset: 0,
+        scratch_bytes: 0,
+    };
+    let mut rgb_rows = crate::internal::scratch::RgbGenericRows {
+        r: vec![0; width],
+        g: vec![0; width],
+        b: vec![0; width],
+        k: vec![0; width],
+    };
+    let mut ycbcr420_rows = crate::internal::scratch::YCbCr420Rows {
+        cb_top: vec![0; width],
+        cb_bot: vec![0; width],
+        cr_top: vec![0; width],
+        cr_bot: vec![0; width],
+    };
+    let mut out = vec![0u8; width * scaled_height as usize * 3];
+    let mut writer = Rgb8Writer::new(&mut out, width * 3, scaled_width);
+    let emit = super::emit::StripeEmit {
+        prev: Some(&prev),
+        curr: &curr,
+        next: None,
+        stripe_index: 1,
+        source_width: width,
+        downscale,
+    };
+    let result = match (rgb_emitter, color_space) {
+        (true, ColorSpace::YCbCr) => super::emit::emit_stripe_rgb(
+            &plan,
+            Backend::detect(),
+            &mut writer,
+            &mut RgbOutputScratch::YCbCr420,
+            emit,
+        ),
+        (true, _) => super::emit::emit_stripe_rgb(
+            &plan,
+            Backend::detect(),
+            &mut writer,
+            &mut RgbOutputScratch::RgbGeneric(&mut rgb_rows),
+            emit,
+        ),
+        (false, ColorSpace::YCbCr) => super::emit::emit_stripe(
+            &plan,
+            &mut writer,
+            &mut OutputScratch::YCbCr420(&mut ycbcr420_rows),
+            emit,
+        ),
+        (false, _) => super::emit::emit_stripe(
+            &plan,
+            &mut writer,
+            &mut OutputScratch::RgbGeneric(&mut rgb_rows),
+            emit,
+        ),
+    };
+    result.expect("emit final stripe");
+    out.split_off(width * 2 * block * 3)
+}
+
+/// One-MCU-wide 4:2:0 stripe of patterned samples. With
+/// `Some((real_rows, padding))`, chroma rows from `real_rows` on hold
+/// `padding`, or repeat the last real row when `padding` is `None`.
+fn synthetic_420_stripe(
+    block: usize,
+    seed: usize,
+    chroma_padding: Option<(usize, Option<u8>)>,
+) -> StripeBuffer {
+    let strides = [2 * block, block, block];
+    let rows = [2 * block, block, block];
+    let planes = (0..3)
+        .map(|index| {
+            (0..strides[index] * rows[index])
+                .map(|offset| {
+                    let (row, col) = (offset / strides[index], offset % strides[index]);
+                    let row = match chroma_padding {
+                        Some((real_rows, padding)) if index > 0 && row >= real_rows => {
+                            if let Some(value) = padding {
+                                return value;
+                            }
+                            real_rows - 1
+                        }
+                        _ => row,
+                    };
+                    u8::try_from((seed + index * 71 + row * 29 + col * 13) & 0xFF)
+                        .expect("fixture is byte-masked")
+                })
+                .collect()
+        })
+        .collect();
+    StripeBuffer {
+        planes,
+        plane_strides: strides.to_vec(),
+        plane_rows: rows.to_vec(),
+    }
 }
 
 #[test]

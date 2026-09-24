@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::metal_types::prelude::*;
+use objc2_metal::MTLCommandBuffer;
 
 #[cfg(test)]
 use super::MetalBatchScratch;
 use super::{
-    bind_fast_decode_entropy_inputs, commit_and_wait_jpeg, dispatch_1d_pipeline,
-    dispatch_rgba_texture_pack, fast_packet_huffman_tables, full_rgba_texture_status_buffer,
-    new_command_buffer, new_compute_command_encoder, packed_pair_extent,
-    texture_batch_error_results, texture_batch_success_results, BatchEntropyBuffers, Buffer,
-    CommandBufferRef, Error, FastBatchDecodeMode, FastDecodeEntropyInputs, FastSubsampledMetal,
+    bind_fast_decode_entropy_inputs, dispatch_1d_pipeline, dispatch_rgba_texture_pack,
+    fast_packet_huffman_tables, full_rgba_texture_status_buffer, new_command_buffer,
+    new_compute_command_encoder, plane_mode_to_u32, BatchEntropyBuffers, Buffer, CommandBufferRef,
+    Error, FastBatchDecodeMode, FastDecodeEntropyInputs, FastSubsampledMetal,
     FullRgbaTextureBatchCtx, FullRgbaTextureBatchShape, JpegFast420BatchParams,
-    JpegTexturePackBatchParams, PreparedHuffmanHost, MODE_YCBCR,
+    JpegTexturePackBatchParams, PendingTextureBatch, PreparedHuffmanHost,
 };
 #[cfg(test)]
 use crate::compute::{encode_split_coeff_idct_passes, SplitCoeffIdctPasses};
@@ -37,11 +37,14 @@ struct FullRgbaStagedDecodePass<'a, P> {
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]
-pub(super) fn decode_fast_subsampled_full_rgba_staged_texture_batch<P: FastSubsampledMetal>(
-    ctx: FullRgbaTextureBatchCtx<'_, '_, P>,
+pub(super) fn decode_fast_subsampled_full_rgba_staged_texture_batch<
+    'runtime,
+    P: FastSubsampledMetal,
+>(
+    ctx: FullRgbaTextureBatchCtx<'_, 'runtime, P>,
     decode_mode: FastBatchDecodeMode,
     #[cfg(test)] total_blocks: Option<usize>,
-) -> Result<Vec<Result<crate::MetalTextureTile, Error>>, Error> {
+) -> Result<PendingTextureBatch<'runtime>, Error> {
     let FullRgbaTextureBatchCtx {
         runtime,
         requests,
@@ -97,7 +100,7 @@ pub(super) fn decode_fast_subsampled_full_rgba_staged_texture_batch<P: FastSubsa
         chroma_height: shape.chroma_height,
         tile_index: 0,
         alpha: u32::from(u8::MAX),
-        mode: MODE_YCBCR,
+        mode: plane_mode_to_u32(shape.mode),
     };
     dispatch_rgba_texture_pack(
         &command_buffer,
@@ -107,19 +110,19 @@ pub(super) fn decode_fast_subsampled_full_rgba_staged_texture_batch<P: FastSubsa
         pack_params,
         shape.tile_count,
         (
-            packed_pair_extent(shape.width),
+            P::packed_width_extent(shape.width),
             P::packed_height_extent(shape.height),
         ),
     )?;
 
-    commit_and_wait_jpeg(&command_buffer)?;
-    // Keep scratch leased until the CPU has consumed the GPU status below.
-    if let Some(results) =
-        texture_batch_error_results(requests, &status_buffer, shape.total_decode_threads)?
-    {
-        return Ok(results);
-    }
-    texture_batch_success_results(requests, output, first.dimensions(), requests.len())
+    command_buffer.commit();
+    Ok(PendingTextureBatch {
+        command_buffer,
+        _batch_scratch: batch_scratch,
+        status_buffer,
+        shape,
+        waited: false,
+    })
 }
 
 fn encode_fast_subsampled_full_rgba_staged_decode<P: FastSubsampledMetal>(

@@ -37,6 +37,12 @@ impl SubmissionContext<'_, '_, '_> {
         idwt: &PreparedDirectIdwt,
         output: &crate::metal_types::Buffer,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        if !crate::engine::test_counters::decode_stage_enabled(
+            crate::engine::test_counters::DecodeStageLimit::Idwt,
+        ) {
+            return Ok(());
+        }
         let (ll, low_low_stride) = lookup_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
             idwt.step.ll_band_id,
@@ -113,6 +119,12 @@ impl SubmissionContext<'_, '_, '_> {
         output: &crate::metal_types::Buffer,
         span: &CheckedF32BatchSpan,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        if !crate::engine::test_counters::decode_stage_enabled(
+            crate::engine::test_counters::DecodeStageLimit::Idwt,
+        ) {
+            return Ok(());
+        }
         for (instance_idx, bands) in self.resources.band_sets.iter().enumerate() {
             let PreparedDirectGrayscaleStep::Idwt(step) = &self.plans[instance_idx].steps[step_idx]
             else {
@@ -173,9 +185,13 @@ impl SubmissionContext<'_, '_, '_> {
         )?;
         let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
         let encode_started = self.profile_stages.then(Instant::now);
-        // Bound the simultaneously reconstructed planes: the measured 16-image
-        // 640x480 stage wins, while a 64 MiB 1024x1024 stage regresses (P20).
-        let use_single = self.count == 1 || span.total_bytes > 20 * 1024 * 1024;
+        // Batches reconstruct every instance in one dispatch per level. P20
+        // bounded this at 20 MiB when the per-step kernels regressed at
+        // 16 x 1024x1024; with the fused lifting (P31) the batched route is
+        // 11% faster there in GPU time (P36).
+        let use_single = self.count == 1;
+        #[cfg(test)]
+        let use_single = use_single || crate::engine::test_counters::per_image_idwt_forced();
         if idwt.step.transform == J2kWaveletTransform::Irreversible97 && use_single {
             self.encode_distinct_irreversible97_idwt(step_idx, &output.buffer, &span)?;
         } else {

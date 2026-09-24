@@ -2,7 +2,8 @@
 
 use super::{super::StripePlane, types::StripeNeighbors};
 use crate::color::upsample::{
-    upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
+    upsample_1x1, upsample_h1v2_fancy_row, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row,
+    upsample_h2v2_fancy_rows,
 };
 
 #[derive(Clone, Copy)]
@@ -13,6 +14,7 @@ pub(super) struct StripeComponentUpsampleSpec {
     pub(super) max_h: u32,
     pub(super) max_v: u32,
     pub(super) local_y_out: u32,
+    pub(super) stripe_rows: usize,
     pub(super) width: usize,
 }
 
@@ -26,6 +28,7 @@ pub(super) struct StripeComponentUpsample<'a, 'b> {
 pub(super) struct Stripe420PairSpec {
     pub(super) plane_idx: usize,
     pub(super) local_y_out: u32,
+    pub(super) stripe_rows: usize,
     pub(super) width: usize,
 }
 
@@ -36,18 +39,40 @@ pub(super) struct Stripe420PairUpsample<'a, 'b> {
     pub(super) bot: &'b mut [u8],
 }
 
+/// Rows of a component plane that hold image samples when its stripe emits
+/// `stripe_rows` output rows. Only the image's final stripe is short; the rest
+/// of that stripe's plane is MCU padding.
+pub(super) fn valid_component_rows(stripe_rows: usize, v_ratio: usize) -> usize {
+    stripe_rows.div_ceil(v_ratio)
+}
+
+/// Returns the rows above, at, and below `local_row` for vertical upsampling.
+///
+/// `valid_rows` counts the rows of `curr` that hold image samples. Below the
+/// last of them the current row is replicated, as libjpeg-turbo does
+/// (`set_bottom_pointers` in `jdmainct.c`), so decoded MCU padding never
+/// reaches the output.
 pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
     prev: Option<StripePlane<'a>>,
     curr: StripePlane<'a>,
     next: Option<StripePlane<'a>>,
     local_row: usize,
+    valid_rows: usize,
 ) -> (&'a [u8], &'a [u8], &'a [u8]) {
     fn plane_row(plane: StripePlane<'_>, row: usize) -> &[u8] {
         let start = row * plane.stride;
         &plane.data[start..start + plane.stride]
     }
 
-    let curr_rows = curr.rows;
+    let curr_rows = curr.rows.min(valid_rows);
+    debug_assert!(
+        local_row < curr_rows,
+        "row {local_row} is outside the image"
+    );
+    debug_assert!(
+        next.is_none() || curr_rows == curr.rows,
+        "only the final stripe may end before its padded height"
+    );
     let prev_row = if local_row == 0 {
         match prev {
             Some(plane) => plane_row(plane, plane.rows - 1),
@@ -86,6 +111,7 @@ pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_,
         max_h,
         max_v,
         local_y_out,
+        stripe_rows,
         width,
     } = spec;
     let v_ratio = max_v / comp_v;
@@ -98,6 +124,7 @@ pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_,
         curr_plane,
         next.map(|stripe| stripe.plane(plane_idx)),
         chroma_y as usize,
+        valid_component_rows(stripe_rows, v_ratio as usize),
     );
 
     match (h_ratio, v_ratio) {
@@ -107,6 +134,16 @@ pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_,
         (2, 1) => {
             let chroma_cols = width.div_ceil(2);
             upsample_h2v1_fancy_row(&curr_row[..chroma_cols], width, out);
+        }
+        (1, 2) => {
+            upsample_h1v2_fancy_row(
+                &prev_row[..width],
+                &curr_row[..width],
+                &next_row[..width],
+                width,
+                !local_y_out.is_multiple_of(2),
+                out,
+            );
         }
         (2, 2) => {
             let chroma_cols = width.div_ceil(2);
@@ -143,6 +180,7 @@ pub(super) fn upsample_420_pair(request: Stripe420PairUpsample<'_, '_>) {
     let Stripe420PairSpec {
         plane_idx,
         local_y_out,
+        stripe_rows,
         width,
     } = spec;
     let curr_plane = curr.plane(plane_idx);
@@ -153,6 +191,7 @@ pub(super) fn upsample_420_pair(request: Stripe420PairUpsample<'_, '_>) {
         curr_plane,
         next.map(|stripe| stripe.plane(plane_idx)),
         chroma_y as usize,
+        valid_component_rows(stripe_rows, 2),
     );
 
     upsample_h2v2_fancy_rows(prev_row, curr_row, next_row, width, top, bot);

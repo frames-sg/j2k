@@ -99,6 +99,7 @@ pub(super) fn finish_referenced_component_plan(
     Ok(PreparedDirectGrayscalePlan {
         dimensions,
         bit_depth,
+        round_centered_store: true,
         tier1_prepare_mode,
         steps,
         classic_groups,

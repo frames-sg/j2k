@@ -13,6 +13,7 @@ struct J2kStoreParams {
     uint output_x;
     uint output_y;
     float addend;
+    uint round_centered;
 };
 
 struct J2kRepeatedStoreParams {
@@ -29,6 +30,7 @@ struct J2kRepeatedStoreParams {
     uint output_y;
     float addend;
     uint batch_count;
+    uint round_centered;
 };
 
 struct J2kRepeatedGrayStoreParams {
@@ -79,25 +81,6 @@ inline float j2k_unsigned_native_sample(float value, uint bit_depth) {
     return floor(clamp(value, 0.0f, max_value) + 0.5f);
 }
 
-inline float j2k_round_ties_even_centered(float value) {
-    // Every finite f32 at or beyond 2^23 is already integral. Keeping those
-    // values out of the integer conversion also bounds the no-libdevice floor.
-    if (!isfinite(value) || abs(value) >= 8388608.0f) {
-        return value;
-    }
-    const float truncated = float(int(value));
-    const float lower = truncated > value ? truncated - 1.0f : truncated;
-    const float upper = lower + 1.0f;
-    const float midpoint = lower + 0.5f;
-    if (value < midpoint) {
-        return lower;
-    }
-    if (value > midpoint || (int(lower) & 1) != 0) {
-        return upper;
-    }
-    return lower;
-}
-
 inline float3 j2k_native_color_samples(
     float value0,
     float value1,
@@ -124,20 +107,12 @@ inline float3 j2k_native_color_samples(
         const float green = value0 - floor((value2 + value1) * 0.25f);
         return float3(value2 + green, green, value1 + green) + addends;
     }
-    {
-#pragma clang fp reassociate(off)
-#pragma clang fp contract(off)
-        const float3 centered = float3(
-            fma(value2, 1.402f, value0),
-            fma(value2, -0.71414f, fma(value1, -0.34413f, value0)),
-            fma(value1, 1.772f, value0)
-        );
-        return float3(
-            j2k_round_ties_even_centered(centered[0]),
-            j2k_round_ties_even_centered(centered[1]),
-            j2k_round_ties_even_centered(centered[2])
-        ) + addends;
-    }
+    const float3 centered = j2k_inverse_ict_centered(value0, value1, value2);
+    return float3(
+        j2k_round_ties_even_centered(centered[0]),
+        j2k_round_ties_even_centered(centered[1]),
+        j2k_round_ties_even_centered(centered[2])
+    ) + addends;
 }
 
 inline uint j2k_native_color_output_index(
@@ -210,7 +185,8 @@ kernel void j2k_store_component(
         0u,
         0u
     );
-    output[indices.dst_idx] = input[indices.src_idx] + params.addend;
+    output[indices.dst_idx] =
+        j2k_shift_centered_sample(input[indices.src_idx], params.addend, params.round_centered != 0u);
 }
 
 kernel void j2k_store_component_repeated(
@@ -235,7 +211,8 @@ kernel void j2k_store_component_repeated(
         gid.z * params.input_instance_stride,
         gid.z * output_plane_len
     );
-    output[indices.dst_idx] = input[indices.src_idx] + params.addend;
+    output[indices.dst_idx] =
+        j2k_shift_centered_sample(input[indices.src_idx], params.addend, params.round_centered != 0u);
 }
 
 kernel void j2k_store_component_repeated_gray_u8(
@@ -261,7 +238,7 @@ kernel void j2k_store_component_repeated_gray_u8(
         gid.z * input_plane_len,
         gid.z * output_plane_len
     );
-    output[indices.dst_idx] = scale_to_u8(input[indices.src_idx] + params.addend, params.max_value, params.u8_scale);
+    output[indices.dst_idx] = scale_to_u8(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u8_scale);
 }
 
 kernel void j2k_store_component_repeated_gray_u16(
@@ -287,7 +264,7 @@ kernel void j2k_store_component_repeated_gray_u16(
         gid.z * input_plane_len,
         gid.z * output_plane_len
     );
-    output[indices.dst_idx] = pack_to_u16(input[indices.src_idx] + params.addend, params.max_value, params.u16_scale);
+    output[indices.dst_idx] = pack_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale);
 }
 
 kernel void j2k_store_component_repeated_gray_i16(
@@ -314,7 +291,7 @@ kernel void j2k_store_component_repeated_gray_i16(
         gid.z * output_plane_len
     );
     output[indices.dst_idx] = j2k_pack_native_i16(
-        input[indices.src_idx] + params.addend,
+        j2k_shift_centered_sample(input[indices.src_idx], params.addend, true),
         params.max_value
     );
 }
@@ -331,7 +308,7 @@ kernel void j2k_store_component_repeated_gray_u8_contiguous(
         return;
     }
 
-    output[gid] = scale_to_u8(input[gid] + params.addend, params.max_value, params.u8_scale);
+    output[gid] = scale_to_u8(j2k_shift_centered_sample(input[gid], params.addend, true), params.max_value, params.u8_scale);
 }
 
 kernel void j2k_store_component_repeated_gray_u16_contiguous(
@@ -346,7 +323,7 @@ kernel void j2k_store_component_repeated_gray_u16_contiguous(
         return;
     }
 
-    output[gid] = pack_to_u16(input[gid] + params.addend, params.max_value, params.u16_scale);
+    output[gid] = pack_to_u16(j2k_shift_centered_sample(input[gid], params.addend, true), params.max_value, params.u16_scale);
 }
 
 kernel void j2k_store_component_gray_u8(
@@ -370,7 +347,7 @@ kernel void j2k_store_component_gray_u8(
         0u,
         params.output_item_offset
     );
-    output[indices.dst_idx] = scale_to_u8(input[indices.src_idx] + params.addend, params.max_value, params.u8_scale);
+    output[indices.dst_idx] = scale_to_u8(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u8_scale);
 }
 
 kernel void j2k_store_component_gray_u16(
@@ -394,7 +371,7 @@ kernel void j2k_store_component_gray_u16(
         0u,
         params.output_item_offset
     );
-    output[indices.dst_idx] = pack_to_u16(input[indices.src_idx] + params.addend, params.max_value, params.u16_scale);
+    output[indices.dst_idx] = pack_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale);
 }
 
 kernel void j2k_store_component_gray_i16(
@@ -419,7 +396,7 @@ kernel void j2k_store_component_gray_i16(
         params.output_item_offset
     );
     output[indices.dst_idx] = j2k_pack_native_i16(
-        input[indices.src_idx] + params.addend,
+        j2k_shift_centered_sample(input[indices.src_idx], params.addend, true),
         params.max_value
     );
 }

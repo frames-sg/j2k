@@ -111,7 +111,7 @@ jpeg-encoder = "0.7.0"
 jpeg-decoder = { version = "0.3.2", default-features = false }
 zune-core = "0.5.1"
 zune-jpeg = "0.5.15"
-fearless_simd = "0.7"
+fearless_simd = "1.0"
 libm = { version = "0.2", default-features = false }
 openjpeg-sys = "1.0.12"
 proc-macro2 = "1.0.106"

@@ -10,7 +10,7 @@ use crate::encoded_output::CappedBytes;
 
 pub(crate) struct BitWriter {
     bytes: CappedBytes,
-    current: u8,
+    current: u64,
     used: u8,
 }
 
@@ -24,27 +24,43 @@ impl BitWriter {
     }
 
     fn write_bits(&mut self, code: u32, len: u8) -> Result<(), JpegEncodeError> {
-        for bit_idx in (0..len).rev() {
-            let bit = u8::from(((code >> bit_idx) & 1) != 0);
-            self.current = (self.current << 1) | bit;
-            self.used += 1;
-            if self.used == 8 {
-                self.push_byte(self.current)?;
-                self.current = 0;
-                self.used = 0;
-            }
+        debug_assert!(len <= 32);
+        if self.used + len > 64 {
+            self.flush_bytes()?;
         }
+        self.current = (self.current << len) | (u64::from(code) & ((1u64 << len) - 1));
+        self.used += len;
         Ok(())
     }
 
+    fn flush_bytes(&mut self) -> Result<(), JpegEncodeError> {
+        // Eight data bytes plus, at worst, eight JPEG stuffing bytes. Reserve
+        // output once per word rather than once for every emitted byte.
+        let mut bytes = [0u8; 16];
+        let mut len = 0;
+        while self.used >= 8 {
+            self.used -= 8;
+            let byte = ((self.current >> self.used) & 0xff) as u8;
+            bytes[len] = byte;
+            len += 1;
+            if byte == 0xff {
+                bytes[len] = 0;
+                len += 1;
+            }
+        }
+        self.current &= (1u64 << self.used) - 1;
+        self.bytes.extend_from_slice(&bytes[..len])
+    }
+
     fn align_with_ones(&mut self) -> Result<(), JpegEncodeError> {
+        self.flush_bytes()?;
         if self.used == 0 {
             return Ok(());
         }
         let remaining = 8 - self.used;
         self.current <<= remaining;
-        self.current |= (1u8 << remaining) - 1;
-        self.push_byte(self.current)?;
+        self.current |= (1u64 << remaining) - 1;
+        self.push_byte(self.current.to_le_bytes()[0])?;
         self.current = 0;
         self.used = 0;
         Ok(())

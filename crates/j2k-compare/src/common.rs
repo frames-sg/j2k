@@ -432,7 +432,42 @@ pub fn mib_per_second(bytes: usize, elapsed_us: f64) -> f64 {
 mod tests {
     use std::path::Path;
 
-    use super::infer_corpus_category;
+    use super::{batch_size_config_from_values, infer_corpus_category, BatchSizeConfig};
+
+    #[test]
+    fn batch_size_config_preserves_defaults_and_independent_legacy_overrides() {
+        for (case_sizes, mixed_sizes, legacy, expected_case, expected_mixed) in [
+            (None, None, None, vec![1], vec![1, 16, 256, 1024]),
+            (Some("3"), None, Some(vec![2, 4]), vec![3], vec![2, 4]),
+            (
+                None,
+                Some("8,16"),
+                Some(vec![2, 4]),
+                vec![2, 4],
+                vec![8, 16],
+            ),
+        ] {
+            let config = batch_size_config_from_values(
+                case_sizes,
+                mixed_sizes,
+                legacy,
+                "case batch sizes",
+                "mixed batch sizes",
+                &[1],
+                &[1, 16, 256, 1024],
+            )
+            .expect("batch size config parses");
+
+            assert_eq!(
+                config,
+                BatchSizeConfig {
+                    case_batch_sizes: expected_case,
+                    mixed_batch_sizes: expected_mixed,
+                },
+                "case sizes {case_sizes:?}, mixed sizes {mixed_sizes:?}"
+            );
+        }
+    }
 
     #[test]
     fn corpus_category_rules_cover_every_supported_needle() {

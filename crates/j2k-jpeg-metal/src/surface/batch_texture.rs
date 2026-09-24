@@ -270,6 +270,14 @@ impl MetalBatchTextureOutput {
         })
     }
 
+    pub(crate) fn account_texture_handle_capacity(
+        &self,
+        budget: &mut crate::batch_allocation::BatchMetadataBudget,
+    ) -> Result<(), Error> {
+        budget.account_capacity::<Texture>(self.set.textures.capacity())?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn shares_allocation_set_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.set, &other.set)

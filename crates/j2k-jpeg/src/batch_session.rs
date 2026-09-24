@@ -38,10 +38,9 @@ type BatchResultSlot<T> = j2k_core::BatchResultSlot<T, JpegError>;
 /// Reusable JPEG tile-batch runtime for WSI viewport loops.
 ///
 /// The session keeps one decoder context and scratch pool per active worker
-/// during a batch and retains worker slots across calls. Before planning the
-/// next batch it may preserve one bounded decoder context, while evicting
-/// stale scratch and other contexts so the planning decoder retains the full
-/// codec memory allowance. Callers continue to own compressed inputs and
+/// across calls. Planning counts retained worker storage against the codec
+/// memory allowance and evicts it only when a new request would exceed that
+/// allowance. Callers continue to own compressed inputs and
 /// decoded output buffers.
 #[derive(Debug)]
 pub struct JpegBatchSession {
@@ -144,17 +143,22 @@ impl JpegBatchSession {
         }
         let job_count = jobs.len();
         let planning_metadata = self.prepare_job_planning(job_count)?;
-        let planning_context = self.planning_context()?;
-        let plans = plan_regular_jobs(jobs, planning_metadata, planning_context, |job, ctx| {
-            planned_jpeg_tile_decode_live_bytes(
-                job.input,
-                ctx,
-                fmt,
-                None,
-                j2k_core::Downscale::None,
-                decode_options,
-            )
-        })?;
+        let plans = plan_regular_jobs(
+            jobs,
+            planning_metadata,
+            &mut self.workers,
+            |job, ctx, external_live_bytes| {
+                planned_jpeg_tile_decode_live_bytes(
+                    job.input,
+                    ctx,
+                    fmt,
+                    None,
+                    j2k_core::Downscale::None,
+                    decode_options,
+                    external_live_bytes,
+                )
+            },
+        )?;
         let batch = self.prepare_batch::<DecodeOutcome, DecodeOutcome>(
             &plans,
             vec_capacity_bytes(&plans)?,
@@ -202,17 +206,22 @@ impl JpegBatchSession {
         }
         let job_count = jobs.len();
         let planning_metadata = self.prepare_job_planning(job_count)?;
-        let planning_context = self.planning_context()?;
-        let plans = plan_per_tile_jobs(jobs, planning_metadata, planning_context, |job, ctx| {
-            planned_jpeg_tile_decode_live_bytes(
-                job.input.as_bytes(),
-                ctx,
-                PixelFormat::Rgb8,
-                None,
-                j2k_core::Downscale::None,
-                job.options,
-            )
-        })?;
+        let plans = plan_per_tile_jobs(
+            jobs,
+            planning_metadata,
+            &mut self.workers,
+            |job, ctx, external_live_bytes| {
+                planned_jpeg_tile_decode_live_bytes(
+                    job.input.as_bytes(),
+                    ctx,
+                    PixelFormat::Rgb8,
+                    None,
+                    j2k_core::Downscale::None,
+                    job.options,
+                    external_live_bytes,
+                )
+            },
+        )?;
         let batch = self.prepare_batch::<DecodedTile, Result<DecodedTile, JpegError>>(
             &plans,
             vec_capacity_bytes(&plans)?,
@@ -271,17 +280,22 @@ impl JpegBatchSession {
         }
         let job_count = jobs.len();
         let planning_metadata = self.prepare_job_planning(job_count)?;
-        let planning_context = self.planning_context()?;
-        let plans = plan_regular_jobs(jobs, planning_metadata, planning_context, |job, ctx| {
-            planned_jpeg_tile_decode_live_bytes(
-                job.input,
-                ctx,
-                fmt,
-                None,
-                job.scale,
-                decode_options,
-            )
-        })?;
+        let plans = plan_regular_jobs(
+            jobs,
+            planning_metadata,
+            &mut self.workers,
+            |job, ctx, external_live_bytes| {
+                planned_jpeg_tile_decode_live_bytes(
+                    job.input,
+                    ctx,
+                    fmt,
+                    None,
+                    job.scale,
+                    decode_options,
+                    external_live_bytes,
+                )
+            },
+        )?;
         let batch = self.prepare_batch::<DecodeOutcome, DecodeOutcome>(
             &plans,
             vec_capacity_bytes(&plans)?,
@@ -346,17 +360,22 @@ impl JpegBatchSession {
         }
         let job_count = jobs.len();
         let planning_metadata = self.prepare_job_planning(job_count)?;
-        let planning_context = self.planning_context()?;
-        let plans = plan_regular_jobs(jobs, planning_metadata, planning_context, |job, ctx| {
-            planned_jpeg_tile_decode_live_bytes(
-                job.input,
-                ctx,
-                fmt,
-                Some(job.roi.into()),
-                job.scale,
-                decode_options,
-            )
-        })?;
+        let plans = plan_regular_jobs(
+            jobs,
+            planning_metadata,
+            &mut self.workers,
+            |job, ctx, external_live_bytes| {
+                planned_jpeg_tile_decode_live_bytes(
+                    job.input,
+                    ctx,
+                    fmt,
+                    Some(job.roi.into()),
+                    job.scale,
+                    decode_options,
+                    external_live_bytes,
+                )
+            },
+        )?;
         let batch = self.prepare_batch::<DecodeOutcome, DecodeOutcome>(
             &plans,
             vec_capacity_bytes(&plans)?,

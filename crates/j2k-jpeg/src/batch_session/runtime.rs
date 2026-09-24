@@ -16,7 +16,6 @@ use super::{
     available_tile_batch_workers, BatchResultSlot, JpegBatchSession, SMALL_OUTPUT_BYTES,
     SMALL_OUTPUT_DEFAULT_WORKER_CAP,
 };
-use crate::context::DecoderContext;
 
 impl JpegBatchSession {
     pub(super) fn prepare_job_planning(
@@ -30,21 +29,6 @@ impl JpegBatchSession {
                 cap: JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
             },
         )?;
-
-        // One existing context may participate in the planning decoder's
-        // authoritative codec claim. All scratch and every other context are
-        // evicted before parsing so no stale codec owner sits beside that full
-        // claim. Worker-slot descriptors remain metadata and are charged below.
-        for (index, slot) in self.workers.iter_mut().enumerate() {
-            let worker = slot
-                .get_mut()
-                .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
-            if index == 0 {
-                worker.prepare_for_planning();
-            } else {
-                worker.release_allocations();
-            }
-        }
 
         let mut worker_metadata_bytes = vec_capacity_bytes(&self.workers)?;
         let combined = match ensure_metadata_bytes(
@@ -66,19 +50,6 @@ impl JpegBatchSession {
         };
         ensure_planning_phase(combined)?;
         Ok(worker_metadata_bytes)
-    }
-
-    pub(super) fn planning_context(
-        &mut self,
-    ) -> Result<Option<&mut DecoderContext>, BatchInfrastructureError> {
-        self.workers
-            .first_mut()
-            .map(|slot| {
-                slot.get_mut()
-                    .map(WorkerSlot::planning_context)
-                    .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)
-            })
-            .transpose()
     }
 
     pub(super) fn prepare_batch<R, O>(

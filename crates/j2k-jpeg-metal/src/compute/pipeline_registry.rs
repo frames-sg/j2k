@@ -150,6 +150,7 @@ pub(in crate::compute) struct JpegPipelineRegistry {
     pub(in crate::compute) fast444_scaled_decode: ComputePipelineState,
     pub(in crate::compute) fast444_scaled_region_decode: ComputePipelineState,
     pub(in crate::compute) fast444_scaled_region_batch_decode: ComputePipelineState,
+    pub(in crate::compute) fast444_batch_decode: ComputePipelineState,
     pub(in crate::compute) fast444_rgba_texture_batch_decode: ComputePipelineState,
     pub(in crate::compute) rgb8_to_rgba_texture: ComputePipelineState,
 }
@@ -166,7 +167,16 @@ impl JpegPipelineRegistry {
     }
 
     pub(in crate::compute) fn load(device: &Device) -> Result<Self, MetalSupportError> {
-        let loader = MetalPipelineLoader::new(device, SHADER_SOURCE)?;
+        Self::load_from_source(device, SHADER_SOURCE)
+    }
+
+    /// Builds every pipeline from `source`. Production passes
+    /// [`SHADER_SOURCE`]; the kernel harness passes baseline or probe variants.
+    pub(in crate::compute) fn load_from_source(
+        device: &Device,
+        source: &str,
+    ) -> Result<Self, MetalSupportError> {
+        let loader = MetalPipelineLoader::new(device, source)?;
         let pipeline = |name: &str| loader.pipeline(name);
         Ok(Self {
             pack: pipeline("jpeg_pack")?,
@@ -236,6 +246,7 @@ impl JpegPipelineRegistry {
             fast444_scaled_region_batch_decode: pipeline(
                 "jpeg_decode_fast444_scaled_region_batch",
             )?,
+            fast444_batch_decode: pipeline("jpeg_decode_fast444_batch")?,
             fast444_rgba_texture_batch_decode: pipeline("jpeg_decode_fast444_rgba_texture_batch")?,
             rgb8_to_rgba_texture: pipeline("jpeg_copy_rgb8_to_rgba_texture")?,
         })

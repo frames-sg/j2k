@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::metal_types::Buffer;
-use j2k_core::{BackendRequest, Rect};
+use j2k_core::{BackendRequest, PixelFormat, Rect};
 use j2k_jpeg::adapter::{
     JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
 };
@@ -79,22 +79,76 @@ impl BatchDeviceBufferCache {
     }
 }
 
-fn request_allows_batched_packet(
-    _requests: &[batch::QueuedRequest],
-    request: &batch::QueuedRequest,
-    _restart_interval_mcus: u32,
-    _dimensions: (u32, u32),
-) -> bool {
-    match request.backend {
-        BackendRequest::Metal => true,
-        BackendRequest::Auto | BackendRequest::Cpu | BackendRequest::Cuda => false,
+fn auto_batch_is_profitable(requests: &[batch::QueuedRequest]) -> bool {
+    // Auto already prepares fast packets before flush. Completed-submission
+    // measurements favor Metal for compatible 256x256 RGB batches of 16+,
+    // including distinct inputs; smaller work stays on the CPU.
+    if requests.len() < 16
+        || requests.iter().any(|request| {
+            !matches!(
+                request.backend,
+                BackendRequest::Auto | BackendRequest::Metal
+            ) || request.fmt != PixelFormat::Rgb8
+                || request.op != batch::BatchOp::Full
+        })
+    {
+        return false;
     }
+    let Some(packet) = &requests[0].fast_packet else {
+        return false;
+    };
+    if let Some(first) = packet.fast420() {
+        return auto_packets_share_profitable_shape(
+            requests,
+            first,
+            crate::SharedJpegFastPacket::fast420,
+        );
+    }
+    if let Some(first) = packet.fast422() {
+        return auto_packets_share_profitable_shape(
+            requests,
+            first,
+            crate::SharedJpegFastPacket::fast422,
+        );
+    }
+    false
+}
+
+fn auto_packets_share_profitable_shape<P: super::FastSubsampledPacket>(
+    requests: &[batch::QueuedRequest],
+    first: &P,
+    family: for<'a> fn(&'a crate::SharedJpegFastPacket) -> Option<&'a P>,
+) -> bool {
+    let dimensions = first.dimensions();
+    dimensions.0 >= 256
+        && dimensions.1 >= 256
+        && requests.iter().all(|request| {
+            request
+                .fast_packet
+                .as_ref()
+                .and_then(family)
+                .is_some_and(|packet| {
+                    packet.restart_interval_mcus() == 0
+                        && super::fast_subsampled_packets_share_full_rgb_batch_shape(
+                            first,
+                            packet,
+                            first.entropy_checkpoints().len(),
+                        )
+                })
+        })
 }
 
 pub(super) fn batched_fast_packets(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<BatchedFastPacket<'_>>>, Error> {
     if requests.is_empty() {
+        return Ok(None);
+    }
+    if requests
+        .iter()
+        .any(|request| request.backend == BackendRequest::Auto)
+        && !auto_batch_is_profitable(requests)
+    {
         return Ok(None);
     }
 
@@ -136,14 +190,6 @@ pub(super) fn batched_fast_packets(
             .as_ref()
             .and_then(crate::SharedJpegFastPacket::fast420)
         {
-            if !request_allows_batched_packet(
-                requests,
-                request,
-                packet.restart_interval_mcus,
-                packet.dimensions,
-            ) {
-                return Ok(None);
-            }
             packets.push(BatchedFastPacket::Fast420(packet));
             continue;
         }
@@ -153,14 +199,6 @@ pub(super) fn batched_fast_packets(
             .as_ref()
             .and_then(crate::SharedJpegFastPacket::fast422)
         {
-            if !request_allows_batched_packet(
-                requests,
-                request,
-                packet.restart_interval_mcus,
-                packet.dimensions,
-            ) {
-                return Ok(None);
-            }
             packets.push(BatchedFastPacket::Fast422(packet));
             continue;
         }
@@ -170,14 +208,6 @@ pub(super) fn batched_fast_packets(
             .as_ref()
             .and_then(crate::SharedJpegFastPacket::fast444)
         {
-            if !request_allows_batched_packet(
-                requests,
-                request,
-                packet.restart_interval_mcus,
-                packet.dimensions,
-            ) {
-                return Ok(None);
-            }
             let mode = match request.plane_mode_hint() {
                 batch::PlaneModeHint::YCbCr => PlaneMode::YCbCr,
                 batch::PlaneModeHint::Rgb => PlaneMode::Rgb,

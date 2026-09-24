@@ -79,10 +79,14 @@ impl Decoder<'_> {
                         .ok_or(JpegError::InternalInvariant {
                             reason: "parsed SOS offset is outside the JPEG input",
                         })?;
-                let plan =
-                    ctx.resolve_decode_plan(header_prefix, retained_parsed_bytes, |ctx| {
-                        Self::build_prepared_plan(&header, &info, ctx, &mut construction)
-                    })?;
+                let plan = ctx.resolve_decode_plan(
+                    header_prefix,
+                    crate::allocation::checked_add_allocation_bytes(
+                        external_live_bytes,
+                        retained_parsed_bytes,
+                    )?,
+                    |ctx| Self::build_prepared_plan(&header, &info, ctx, &mut construction),
+                )?;
                 construction.rebase_after_plan_cache(
                     ctx.retained_allocation_bytes(),
                     plan.retained_allocation_bytes()?,

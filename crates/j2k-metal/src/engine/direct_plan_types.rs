@@ -17,6 +17,11 @@ mod allocation;
 pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depth: u8,
+    /// Whether the final store rounds centered samples ties-to-even before
+    /// the level shift, as the CPU does for integer output. False only for
+    /// the first three components of an MCT color plan, which the inverse
+    /// transform rounds instead.
+    pub(super) round_centered_store: bool,
     pub(super) tier1_prepare_mode: DirectTier1Mode,
     pub(super) steps: Vec<PreparedDirectGrayscaleStep>,
     pub(super) classic_groups: Vec<PreparedClassicSubBandGroup>,
@@ -48,6 +53,19 @@ unsafe impl Send for PreparedDirectColorPlan {}
 // SAFETY: No mutable state is exposed after construction, so concurrent cache
 // readers cannot race host or GPU writes through this owner.
 unsafe impl Sync for PreparedDirectColorPlan {}
+
+/// Applies the CPU's color rounding split to freshly prepared component plans:
+/// with MCT, components 0-2 are rounded after the inverse transform and any
+/// alpha component at its own store.
+pub(super) fn with_color_store_rounding(
+    mut component_plans: Vec<PreparedDirectGrayscalePlan>,
+    mct: bool,
+) -> Vec<PreparedDirectGrayscalePlan> {
+    for (index, plan) in component_plans.iter_mut().enumerate() {
+        plan.round_centered_store = !(mct && index < 3);
+    }
+    component_plans
+}
 
 pub(super) enum PreparedDirectGrayscaleStep {
     ClassicSubBand(PreparedClassicSubBand),

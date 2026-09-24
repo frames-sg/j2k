@@ -8,51 +8,9 @@ use super::metadata::{
 use super::{
     canonicalize_manifest_row_path, publication_blockers, unique_input_count, BenchmarkMode, Codec,
     Container, DecoderKind, FixtureCase, MixedFixtureBatch, Operation, OperationClass,
-    DEFAULT_CASE_BATCH_SIZES, DEFAULT_MIXED_BATCH_SIZES,
 };
-use crate::common;
 use j2k_core::{Downscale, PixelFormat, Rect};
 use std::path::Path;
-
-fn test_batch_size_config_from_values(
-    case_batch_sizes: Option<&str>,
-    mixed_batch_sizes: Option<&str>,
-    legacy: Option<Vec<usize>>,
-) -> Result<common::BatchSizeConfig, String> {
-    common::batch_size_config_from_values(
-        case_batch_sizes,
-        mixed_batch_sizes,
-        legacy,
-        "J2K_FIXTURE_COMPARE_CASE_BATCH_SIZES",
-        "J2K_FIXTURE_COMPARE_MIXED_BATCH_SIZES",
-        DEFAULT_CASE_BATCH_SIZES,
-        DEFAULT_MIXED_BATCH_SIZES,
-    )
-}
-
-#[test]
-fn decode_batch_config_defaults_keep_large_batches_mixed_only() {
-    let config =
-        test_batch_size_config_from_values(None, None, None).expect("default batch config parses");
-
-    assert_eq!(config.case_batch_sizes, DEFAULT_CASE_BATCH_SIZES);
-    assert_eq!(config.mixed_batch_sizes, DEFAULT_MIXED_BATCH_SIZES);
-}
-
-#[test]
-fn decode_batch_config_split_env_overrides_legacy_independently() {
-    let config = test_batch_size_config_from_values(Some("3"), None, Some(vec![2, 4]))
-        .expect("case override with legacy config parses");
-
-    assert_eq!(config.case_batch_sizes, vec![3]);
-    assert_eq!(config.mixed_batch_sizes, vec![2, 4]);
-
-    let config = test_batch_size_config_from_values(None, Some("8,16"), Some(vec![2, 4]))
-        .expect("mixed override with legacy config parses");
-
-    assert_eq!(config.case_batch_sizes, vec![2, 4]);
-    assert_eq!(config.mixed_batch_sizes, vec![8, 16]);
-}
 
 #[test]
 fn decode_manifest_path_remaps_to_supplied_fixture_root_by_suffix() {

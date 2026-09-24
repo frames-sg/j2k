@@ -152,6 +152,7 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         destination,
         destination_item_index,
         destination_written: false,
+        round_centered_store: plan.round_centered_store,
     };
     let result = (|| {
         let mut step_idx = 0;

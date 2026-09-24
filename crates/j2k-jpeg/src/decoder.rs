@@ -5,7 +5,7 @@
 use crate::backend::Backend;
 use crate::context::DecoderContext;
 use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
-use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTableId, PreparedHuffmanTables};
+use crate::entropy::huffman::{PreparedHuffmanTableId, PreparedHuffmanTables};
 use crate::entropy::progressive::{
     decode_progressive, decode_progressive_dct_blocks, PreparedProgressiveComponentPlan,
     PreparedProgressivePlan, PreparedProgressiveScan, PreparedProgressiveScanComponent,
@@ -448,6 +448,15 @@ impl<'a> Decoder<'a> {
         ctx: &mut DecoderContext,
         operation: impl FnOnce(&Self) -> Result<R, JpegError>,
     ) -> Result<R, JpegError> {
+        Self::with_view_in_context_with_external_live(view, ctx, 0, operation)
+    }
+
+    pub(super) fn with_view_in_context_with_external_live<R>(
+        view: JpegView<'a>,
+        ctx: &mut DecoderContext,
+        external_live_bytes: usize,
+        operation: impl FnOnce(&Self) -> Result<R, JpegError>,
+    ) -> Result<R, JpegError> {
         let cache_prefix = if view.options == DecodeOptions::default()
             && matches!(
                 view.info.sof_kind,
@@ -460,14 +469,16 @@ impl<'a> Decoder<'a> {
             None
         };
         let Some(cache_prefix) = cache_prefix else {
-            let decoder = Self::from_view_in_context(view, ctx)?;
+            let decoder =
+                Self::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?;
             return operation(&decoder);
         };
         let Some(cached_plan) = ctx.cached_decode_plan(cache_prefix) else {
-            let decoder = Self::from_view_in_context(view, ctx)?;
+            let decoder =
+                Self::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?;
             return operation(&decoder);
         };
-        Self::validate_cached_plan_lease(&view.header, ctx, cached_plan, 0)?;
+        Self::validate_cached_plan_lease(&view.header, ctx, cached_plan, external_live_bytes)?;
         let Some((lease, plan)) = ctx.lease_cached_decode_plan(cache_prefix)? else {
             return Err(JpegError::InternalInvariant {
                 reason: "validated cached decode plan disappeared before execution",

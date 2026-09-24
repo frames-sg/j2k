@@ -214,7 +214,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::engine as compute;
     #[cfg(target_os = "macos")]
-    use j2k_native::{decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder};
+    use j2k_native::{
+        decode_ht_code_block_scalar, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
+        HtSubBandDecodeJob,
+    };
     use j2k_native::{
         encode_htj2k, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, Image,
     };
@@ -548,6 +551,67 @@ mod tests {
         let mut actual = vec![13_579.0f32; job.output_len()];
         compute::decode_ht_cleanup_code_block(job.as_job(), &mut actual, false)
             .expect("metal decode");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_ht_subband_mixed_cleanup_and_refinement_matches_scalar() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let refinement = synthetic_refinement_job(3);
+        let mut cleanup = refinement.clone();
+        cleanup.data.truncate(cleanup.cleanup_length as usize);
+        cleanup.refinement_length = 0;
+        cleanup.missing_bit_planes = cleanup
+            .missing_bit_planes
+            .checked_add(1)
+            .expect("cleanup missing-bitplane count fits u8");
+        cleanup.number_of_coding_passes = 1;
+
+        let width = cleanup.width + refinement.width;
+        let height = cleanup.height.max(refinement.height);
+        let output_len = width as usize * height as usize;
+        let cleanup_job = HtCodeBlockDecodeJob {
+            output_stride: width as usize,
+            ..cleanup.as_job()
+        };
+        let refinement_job = HtCodeBlockDecodeJob {
+            output_stride: width as usize,
+            ..refinement.as_job()
+        };
+        let jobs = [
+            HtCodeBlockBatchJob {
+                output_x: 0,
+                output_y: 0,
+                code_block: cleanup_job,
+            },
+            HtCodeBlockBatchJob {
+                output_x: cleanup.width,
+                output_y: 0,
+                code_block: refinement_job,
+            },
+        ];
+
+        let mut expected = vec![0.0f32; output_len];
+        decode_ht_code_block_scalar(cleanup_job, &mut expected).expect("scalar cleanup decode");
+        decode_ht_code_block_scalar(refinement_job, &mut expected[cleanup.width as usize..])
+            .expect("scalar refinement decode");
+
+        let mut actual = vec![13_579.0f32; output_len];
+        compute::decode_ht_cleanup_sub_band(
+            HtSubBandDecodeJob {
+                width,
+                height,
+                jobs: &jobs,
+            },
+            &mut actual,
+            false,
+        )
+        .expect("mixed Metal sub-band decode");
 
         assert_eq!(actual, expected);
     }

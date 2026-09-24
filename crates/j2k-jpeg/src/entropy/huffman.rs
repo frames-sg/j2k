@@ -14,6 +14,7 @@
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
 use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 
@@ -62,13 +63,12 @@ pub(crate) struct AcHuffmanTable<'a>(&'a HuffmanTable);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PreparedHuffmanTableId(NonZeroU32);
 
-/// Heap owner for every compiled Huffman table referenced by one decoder.
-///
-/// Table values are fully inline, so this vector is the only Huffman-table
-/// allocation retained by prepared decode metadata.
+/// Compiled tables are immutable after construction and shared by cached plans.
+/// The size-dependent vector is allocated fallibly; the fixed Arc owner is
+/// charged separately, as it is for the shared packet-cache owners.
 #[derive(Debug)]
 pub(crate) struct PreparedHuffmanTables {
-    entries: Vec<HuffmanTable>,
+    entries: Arc<Vec<HuffmanTable>>,
 }
 
 pub(crate) type CanonicalHuffmanDerivation = j2k_codec_math::jpeg::CanonicalHuffmanDerivation;
@@ -411,6 +411,16 @@ impl PreparedHuffmanTableId {
 }
 
 impl PreparedHuffmanTables {
+    const OWNER_BYTES: usize =
+        core::mem::size_of::<Vec<HuffmanTable>>() + 2 * core::mem::size_of::<usize>();
+
+    pub(crate) fn allocation_bytes_for_capacity(capacity: usize) -> Result<usize, JpegError> {
+        crate::allocation::checked_add_allocation_bytes(
+            Self::OWNER_BYTES,
+            crate::allocation::checked_allocation_bytes::<HuffmanTable>(capacity)?,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, JpegError> {
         let mut live_bytes = 0;
@@ -426,6 +436,11 @@ impl PreparedHuffmanTables {
         live_bytes: &mut usize,
         cap: usize,
     ) -> Result<Self, JpegError> {
+        let requested = live_bytes.saturating_add(Self::OWNER_BYTES);
+        if requested > cap {
+            return Err(JpegError::MemoryCapExceeded { requested, cap });
+        }
+        *live_bytes = requested;
         let mut entries = Vec::new();
         crate::allocation::try_reserve_for_len_with_live_budget(
             &mut entries,
@@ -433,7 +448,9 @@ impl PreparedHuffmanTables {
             live_bytes,
             cap,
         )?;
-        Ok(Self { entries })
+        Ok(Self {
+            entries: Arc::new(entries),
+        })
     }
 
     pub(crate) fn push(
@@ -446,7 +463,11 @@ impl PreparedHuffmanTables {
                 reason: "prepared Huffman arena exceeded its reserved capacity",
             });
         }
-        self.entries.push(table);
+        Arc::get_mut(&mut self.entries)
+            .ok_or(JpegError::InternalInvariant {
+                reason: "prepared Huffman arena was shared before construction finished",
+            })?
+            .push(table);
         Ok(id)
     }
 
@@ -484,7 +505,7 @@ impl PreparedHuffmanTables {
     }
 
     pub(crate) fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
-        crate::allocation::checked_allocation_bytes::<HuffmanTable>(self.entries.capacity())
+        Self::allocation_bytes_for_capacity(self.entries.capacity())
     }
 
     pub(crate) fn try_clone_with_live_budget(
@@ -492,15 +513,16 @@ impl PreparedHuffmanTables {
         live_bytes: &mut usize,
         cap: usize,
     ) -> Result<Self, JpegError> {
-        let mut entries = Vec::new();
-        crate::allocation::try_reserve_for_len_with_live_budget(
-            &mut entries,
-            self.entries.len(),
-            live_bytes,
-            cap,
-        )?;
-        entries.extend(self.entries.iter().cloned());
-        Ok(Self { entries })
+        // Charge the full retained arena to each owner conservatively, even
+        // though cloning only increments the reference count.
+        let requested = live_bytes.saturating_add(self.retained_allocation_bytes()?);
+        if requested > cap {
+            return Err(JpegError::MemoryCapExceeded { requested, cap });
+        }
+        *live_bytes = requested;
+        Ok(Self {
+            entries: Arc::clone(&self.entries),
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -818,6 +840,8 @@ mod tests {
         assert_eq!(
             arena.retained_allocation_bytes().unwrap(),
             arena.capacity() * core::mem::size_of::<HuffmanTable>()
+                + core::mem::size_of::<Vec<HuffmanTable>>()
+                + 2 * core::mem::size_of::<usize>()
         );
     }
 

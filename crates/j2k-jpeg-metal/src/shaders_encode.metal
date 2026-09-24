@@ -356,93 +356,28 @@ inline bool configure_batch_entropy_thread(
         cr_prev_dc \
     )
 
-inline void prepare_huffman(
-    constant JpegHuffmanTable &raw,
-    thread PreparedHuffman &out
-) {
-    uchar huffsize[256];
-    ushort huffcode[256];
-    ushort huffsize_len = 0;
-    for (uint i = 0; i < 17; ++i) {
-        out.min_code[i] = 0x7fffffff;
-        out.max_code[i] = -1;
-        out.val_offset[i] = 0;
-    }
-    for (uint i = 0; i < raw.values_len; ++i) {
-        out.values[i] = raw.values[i];
-    }
-    for (uint i = 0; i < 512; ++i) {
-        out.fast_symbol[i] = 0;
-        out.fast_len[i] = 0;
-    }
-    out.values_len = raw.values_len;
-    for (uint len_minus_1 = 0; len_minus_1 < 16; ++len_minus_1) {
-        const uchar len = uchar(len_minus_1 + 1);
-        for (uchar count = 0; count < raw.bits[len_minus_1]; ++count) {
-            huffsize[huffsize_len] = len;
-            huffsize_len += 1;
-        }
-    }
-
-    uint code = 0;
-    uchar si = huffsize_len == 0 ? 0 : huffsize[0];
-    for (ushort k = 0; k < huffsize_len; ++k) {
-        const uchar s = huffsize[k];
-        while (s != si) {
-            code <<= 1;
-            si += 1;
-        }
-        huffcode[k] = ushort(code);
-        code += 1;
-    }
-
-    ushort k = 0;
-    for (uint len_minus_1 = 0; len_minus_1 < 16; ++len_minus_1) {
-        const uint len = len_minus_1 + 1;
-        const ushort count = raw.bits[len_minus_1];
-        if (count == 0) {
-            continue;
-        }
-        out.min_code[len] = int(huffcode[k]);
-        out.max_code[len] = int(huffcode[k + count - 1]);
-        out.val_offset[len] = int(k) - out.min_code[len];
-        k += count;
-    }
-
-    for (uint idx = 0; idx < huffsize_len; ++idx) {
-        const uint len = uint(huffsize[idx]);
-        if (len == 0u || len > 9u) {
-            continue;
-        }
-        const uint prefix = uint(huffcode[idx]) << (9u - len);
-        const uint fill = 1u << (9u - len);
-        for (uint suffix = 0; suffix < fill; ++suffix) {
-            out.fast_symbol[prefix | suffix] = raw.values[idx];
-            out.fast_len[prefix | suffix] = huffsize[idx];
-        }
-    }
-}
-
-inline bool decode_symbol(
+// Decodes one symbol once at least 9 bits (real or 1-padded) are buffered.
+inline bool decode_symbol_from_lookahead(
     thread BitReader &br,
     device const uchar *bytes,
     uint len,
     constant PreparedHuffman &table,
     device JpegDecodeStatus *status,
+    uint lookahead,
     thread uchar &symbol
 ) {
-    ensure_bits_padded(br, bytes, len, 9);
-    const uint fast_index = peek_bits(br, 9);
-    const uchar len9 = table.fast_len[fast_index];
-    if (len9 != 0) {
-        consume_bits(br, uint(len9));
-        symbol = table.fast_symbol[fast_index];
+    const uint fast = uint(table.fast[lookahead]);
+    if (fast != 0u) {
+        consume_bits(br, fast >> 8);
+        symbol = uchar(fast);
         return true;
     }
 
+    // Every code of at most 9 bits has a lookahead entry, so the canonical
+    // search starts at length 10.
     ensure_bits_padded(br, bytes, len, 16);
     const int code16 = int(peek_bits(br, 16));
-    for (uint length = 1; length <= 16; ++length) {
+    for (uint length = 10; length <= 16; ++length) {
         const int code = code16 >> (16 - int(length));
         if (code <= table.max_code[length]) {
             if (code < table.min_code[length]) {
@@ -462,6 +397,18 @@ inline bool decode_symbol(
     status->code = FAST420_STATUS_HUFFMAN;
     status->position = br.pos;
     return false;
+}
+
+inline bool decode_symbol(
+    thread BitReader &br,
+    device const uchar *bytes,
+    uint len,
+    constant PreparedHuffman &table,
+    device JpegDecodeStatus *status,
+    thread uchar &symbol
+) {
+    ensure_bits_padded(br, bytes, len, 9);
+    return decode_symbol_from_lookahead(br, bytes, len, table, status, peek_bits(br, 9), symbol);
 }
 
 inline bool decode_block(
@@ -500,8 +447,27 @@ inline bool decode_block(
     dc_only = true;
     uint k = 1;
     while (k < 64) {
+        ensure_bits_padded(br, bytes, len, 9);
+        const uint lookahead = peek_bits(br, 9);
+        const int fast_ac = int(ac_table.fast_ac[lookahead]);
+        if (fast_ac != 0) {
+            // Code and extra bits both lie in the buffered lookahead, exactly
+            // the bits decode_symbol and receive_extend would consume.
+            consume_bits(br, uint(fast_ac & 15));
+            k += uint(fast_ac >> 4) & 15u;
+            if (k >= 64) {
+                status->code = FAST420_STATUS_HUFFMAN;
+                status->position = br.pos;
+                return false;
+            }
+            coeffs[ZIGZAG[k]] = clamp_i16((fast_ac >> 8) * int(quant[k]));
+            dc_only = false;
+            k += 1;
+            continue;
+        }
+
         uchar symbol = 0;
-        if (!decode_symbol(br, bytes, len, ac_table, status, symbol)) {
+        if (!decode_symbol_from_lookahead(br, bytes, len, ac_table, status, lookahead, symbol)) {
             return false;
         }
         const uint run = uint(symbol >> 4);
@@ -559,8 +525,23 @@ inline bool decode_block_skip(
 
     uint k = 1;
     while (k < 64) {
+        ensure_bits_padded(br, bytes, len, 9);
+        const uint lookahead = peek_bits(br, 9);
+        const int fast_ac = int(ac_table.fast_ac[lookahead]);
+        if (fast_ac != 0) {
+            consume_bits(br, uint(fast_ac & 15));
+            k += uint(fast_ac >> 4) & 15u;
+            if (k >= 64) {
+                status->code = FAST420_STATUS_HUFFMAN;
+                status->position = br.pos;
+                return false;
+            }
+            k += 1;
+            continue;
+        }
+
         uchar symbol = 0;
-        if (!decode_symbol(br, bytes, len, ac_table, status, symbol)) {
+        if (!decode_symbol_from_lookahead(br, bytes, len, ac_table, status, lookahead, symbol)) {
             return false;
         }
         const uint run = uint(symbol >> 4);
@@ -614,170 +595,77 @@ inline uchar descale_and_clamp(int value, int shift) {
     return clamp_u8(shifted + 128);
 }
 
-inline void idct_1d_column(
-    thread const short input[64],
-    thread int work[64],
-    uint col
+// libjpeg islow column pass over four columns at once. There is no per-column
+// DC shortcut: with all AC terms zero the full expression is exactly p0 << PASS1_BITS,
+// and i16 inputs cannot overflow it.
+inline void idct_islow_columns_x4(
+    int4 p0, int4 p1, int4 p2, int4 p3, int4 p4, int4 p5, int4 p6, int4 p7,
+    thread int4 (&out)[8]
 ) {
-    const int p0 = int(input[col]);
-    const int p1 = int(input[col + 8]);
-    const int p2 = int(input[col + 16]);
-    const int p3 = int(input[col + 24]);
-    const int p4 = int(input[col + 32]);
-    const int p5 = int(input[col + 40]);
-    const int p6 = int(input[col + 48]);
-    const int p7 = int(input[col + 56]);
+    const int4 z1 = (p2 + p6) * FIX_0_541196100;
+    const int4 tmp2 = z1 - p6 * FIX_1_847759065;
+    const int4 tmp3 = z1 + p2 * FIX_0_765366865;
 
-    if (p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const int dc = p0 << PASS1_BITS;
-        work[col] = dc;
-        work[col + 8] = dc;
-        work[col + 16] = dc;
-        work[col + 24] = dc;
-        work[col + 32] = dc;
-        work[col + 40] = dc;
-        work[col + 48] = dc;
-        work[col + 56] = dc;
-        return;
-    }
+    const int4 tmp0 = (p0 + p4) << CONST_BITS;
+    const int4 tmp1 = (p0 - p4) << CONST_BITS;
 
-    const int z2 = p2;
-    const int z3 = p6;
-    const int z1 = (z2 + z3) * FIX_0_541196100;
-    const int tmp2 = z1 - z3 * FIX_1_847759065;
-    const int tmp3 = z1 + z2 * FIX_0_765366865;
+    const int4 tmp10 = tmp0 + tmp3;
+    const int4 tmp13 = tmp0 - tmp3;
+    const int4 tmp11 = tmp1 + tmp2;
+    const int4 tmp12 = tmp1 - tmp2;
 
-    const int tmp0 = (p0 + p4) << CONST_BITS;
-    const int tmp1 = (p0 - p4) << CONST_BITS;
+    const int4 z1o = p7 + p1;
+    const int4 z2o = p5 + p3;
+    const int4 z3o = p7 + p3;
+    const int4 z4o = p5 + p1;
+    const int4 z5 = (z3o + z4o) * FIX_1_175875602;
 
-    const int tmp10 = tmp0 + tmp3;
-    const int tmp13 = tmp0 - tmp3;
-    const int tmp11 = tmp1 + tmp2;
-    const int tmp12 = tmp1 - tmp2;
+    const int4 z1m = z1o * -FIX_0_899976223;
+    const int4 z2m = z2o * -FIX_2_562915447;
+    const int4 z3m = z3o * -FIX_1_961570560 + z5;
+    const int4 z4m = z4o * -FIX_0_390180644 + z5;
 
-    const int z1o = p7 + p1;
-    const int z2o = p5 + p3;
-    const int z3o = p7 + p3;
-    const int z4o = p5 + p1;
-    const int z5 = (z3o + z4o) * FIX_1_175875602;
-
-    const int tmp0o = p7 * FIX_0_298631336;
-    const int tmp1o = p5 * FIX_2_053119869;
-    const int tmp2o = p3 * FIX_3_072711026;
-    const int tmp3o = p1 * FIX_1_501321110;
-    const int z1m = z1o * -FIX_0_899976223;
-    const int z2m = z2o * -FIX_2_562915447;
-    const int z3m = z3o * -FIX_1_961570560 + z5;
-    const int z4m = z4o * -FIX_0_390180644 + z5;
-
-    const int out0 = tmp0o + z1m + z3m;
-    const int out1 = tmp1o + z2m + z4m;
-    const int out2 = tmp2o + z2m + z3m;
-    const int out3 = tmp3o + z1m + z4m;
+    const int4 out0 = p7 * FIX_0_298631336 + z1m + z3m;
+    const int4 out1 = p5 * FIX_2_053119869 + z2m + z4m;
+    const int4 out2 = p3 * FIX_3_072711026 + z2m + z3m;
+    const int4 out3 = p1 * FIX_1_501321110 + z1m + z4m;
 
     const int shift = CONST_BITS - PASS1_BITS;
     const int rounding = 1 << (shift - 1);
-    work[col] = descale(tmp10 + out3 + rounding, shift);
-    work[col + 56] = descale(tmp10 - out3 + rounding, shift);
-    work[col + 8] = descale(tmp11 + out2 + rounding, shift);
-    work[col + 48] = descale(tmp11 - out2 + rounding, shift);
-    work[col + 16] = descale(tmp12 + out1 + rounding, shift);
-    work[col + 40] = descale(tmp12 - out1 + rounding, shift);
-    work[col + 24] = descale(tmp13 + out0 + rounding, shift);
-    work[col + 32] = descale(tmp13 - out0 + rounding, shift);
+    out[0] = (tmp10 + out3 + rounding) >> shift;
+    out[7] = (tmp10 - out3 + rounding) >> shift;
+    out[1] = (tmp11 + out2 + rounding) >> shift;
+    out[6] = (tmp11 - out2 + rounding) >> shift;
+    out[2] = (tmp12 + out1 + rounding) >> shift;
+    out[5] = (tmp12 - out1 + rounding) >> shift;
+    out[3] = (tmp13 + out0 + rounding) >> shift;
+    out[4] = (tmp13 - out0 + rounding) >> shift;
 }
 
-inline void idct_1d_column_bottom_half_zero(
-    thread const short input[64],
-    thread int work[64],
-    uint col
-) {
-    const int p0 = int(input[col]);
-    const int p1 = int(input[col + 8]);
-    const int p2 = int(input[col + 16]);
-    const int p3 = int(input[col + 24]);
-
-    if (p1 == 0 && p2 == 0 && p3 == 0) {
-        const int dc = p0 << PASS1_BITS;
-        work[col] = dc;
-        work[col + 8] = dc;
-        work[col + 16] = dc;
-        work[col + 24] = dc;
-        work[col + 32] = dc;
-        work[col + 40] = dc;
-        work[col + 48] = dc;
-        work[col + 56] = dc;
-        return;
-    }
-
-    const int z1 = p2 * FIX_0_541196100;
-    const int tmp2 = z1;
-    const int tmp3 = z1 + p2 * FIX_0_765366865;
-
-    const int tmp0 = p0 << CONST_BITS;
-    const int tmp1 = p0 << CONST_BITS;
-
-    const int tmp10 = tmp0 + tmp3;
-    const int tmp13 = tmp0 - tmp3;
-    const int tmp11 = tmp1 + tmp2;
-    const int tmp12 = tmp1 - tmp2;
-
-    const int z5 = (p1 + p3) * FIX_1_175875602;
-    const int z1m = p1 * -FIX_0_899976223;
-    const int z2m = p3 * -FIX_2_562915447;
-    const int z3m = p3 * -FIX_1_961570560 + z5;
-    const int z4m = p1 * -FIX_0_390180644 + z5;
-
-    const int out0 = z1m + z3m;
-    const int out1 = z2m + z4m;
-    const int out2 = p3 * FIX_3_072711026 + z2m + z3m;
-    const int out3 = p1 * FIX_1_501321110 + z1m + z4m;
-
-    const int shift = CONST_BITS - PASS1_BITS;
-    const int rounding = 1 << (shift - 1);
-    work[col] = descale(tmp10 + out3 + rounding, shift);
-    work[col + 56] = descale(tmp10 - out3 + rounding, shift);
-    work[col + 8] = descale(tmp11 + out2 + rounding, shift);
-    work[col + 48] = descale(tmp11 - out2 + rounding, shift);
-    work[col + 16] = descale(tmp12 + out1 + rounding, shift);
-    work[col + 40] = descale(tmp12 - out1 + rounding, shift);
-    work[col + 24] = descale(tmp13 + out0 + rounding, shift);
-    work[col + 32] = descale(tmp13 - out0 + rounding, shift);
-}
-
-inline void idct_1d_row(
-    thread const int work[64],
-    thread uchar output[64],
-    uint row
-) {
-    const uint base = row * 8;
-    const int p0 = work[base];
-    const int p1 = work[base + 1];
-    const int p2 = work[base + 2];
-    const int p3 = work[base + 3];
-    const int p4 = work[base + 4];
-    const int p5 = work[base + 5];
-    const int p6 = work[base + 6];
-    const int p7 = work[base + 7];
-
-    const int shift = CONST_BITS + PASS1_BITS + 3;
-    const int rounding = 1 << (shift - 1);
+// libjpeg islow row pass for one row held in registers. The AC-zero shortcut stays: the
+// pass-1 DC can be large enough that the full expression would overflow.
+inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thread uchar4 &right) {
+    const int p0 = left_in.x;
+    const int p1 = left_in.y;
+    const int p2 = left_in.z;
+    const int p3 = left_in.w;
+    const int p4 = right_in.x;
+    const int p5 = right_in.y;
+    const int p6 = right_in.z;
+    const int p7 = right_in.w;
 
     if (p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
         const int dc_shift = PASS1_BITS + 3;
         const int dc_rounding = 1 << (dc_shift - 1);
         const uchar pixel = descale_and_clamp(p0 + dc_rounding, dc_shift);
-        for (uint i = 0; i < 8; ++i) {
-            output[base + i] = pixel;
-        }
+        left = uchar4(pixel);
+        right = uchar4(pixel);
         return;
     }
 
-    const int z2 = p2;
-    const int z3 = p6;
-    const int z1 = (z2 + z3) * FIX_0_541196100;
-    const int tmp2 = z1 - z3 * FIX_1_847759065;
-    const int tmp3 = z1 + z2 * FIX_0_765366865;
+    const int z1 = (p2 + p6) * FIX_0_541196100;
+    const int tmp2 = z1 - p6 * FIX_1_847759065;
+    const int tmp3 = z1 + p2 * FIX_0_765366865;
 
     const int tmp0 = (p0 + p4) << CONST_BITS;
     const int tmp1 = (p0 - p4) << CONST_BITS;
@@ -793,51 +681,58 @@ inline void idct_1d_row(
     const int z4o = p5 + p1;
     const int z5 = (z3o + z4o) * FIX_1_175875602;
 
-    const int tmp0o = p7 * FIX_0_298631336;
-    const int tmp1o = p5 * FIX_2_053119869;
-    const int tmp2o = p3 * FIX_3_072711026;
-    const int tmp3o = p1 * FIX_1_501321110;
     const int z1m = z1o * -FIX_0_899976223;
     const int z2m = z2o * -FIX_2_562915447;
     const int z3m = z3o * -FIX_1_961570560 + z5;
     const int z4m = z4o * -FIX_0_390180644 + z5;
 
-    const int out0 = tmp0o + z1m + z3m;
-    const int out1 = tmp1o + z2m + z4m;
-    const int out2 = tmp2o + z2m + z3m;
-    const int out3 = tmp3o + z1m + z4m;
+    const int out0 = p7 * FIX_0_298631336 + z1m + z3m;
+    const int out1 = p5 * FIX_2_053119869 + z2m + z4m;
+    const int out2 = p3 * FIX_3_072711026 + z2m + z3m;
+    const int out3 = p1 * FIX_1_501321110 + z1m + z4m;
 
-    output[base] = descale_and_clamp(tmp10 + out3 + rounding, shift);
-    output[base + 7] = descale_and_clamp(tmp10 - out3 + rounding, shift);
-    output[base + 1] = descale_and_clamp(tmp11 + out2 + rounding, shift);
-    output[base + 6] = descale_and_clamp(tmp11 - out2 + rounding, shift);
-    output[base + 2] = descale_and_clamp(tmp12 + out1 + rounding, shift);
-    output[base + 5] = descale_and_clamp(tmp12 - out1 + rounding, shift);
-    output[base + 3] = descale_and_clamp(tmp13 + out0 + rounding, shift);
-    output[base + 4] = descale_and_clamp(tmp13 - out0 + rounding, shift);
+    const int shift = CONST_BITS + PASS1_BITS + 3;
+    const int rounding = 1 << (shift - 1);
+    left = uchar4(
+        descale_and_clamp(tmp10 + out3 + rounding, shift),
+        descale_and_clamp(tmp11 + out2 + rounding, shift),
+        descale_and_clamp(tmp12 + out1 + rounding, shift),
+        descale_and_clamp(tmp13 + out0 + rounding, shift)
+    );
+    right = uchar4(
+        descale_and_clamp(tmp13 - out0 + rounding, shift),
+        descale_and_clamp(tmp12 - out1 + rounding, shift),
+        descale_and_clamp(tmp11 - out2 + rounding, shift),
+        descale_and_clamp(tmp10 - out3 + rounding, shift)
+    );
 }
 
 inline void idct_islow(
     thread const short input[64],
     thread uchar output[64]
 ) {
-    thread int work[64];
-    bool upper_half_zero = true;
-    for (uint i = 32; i < 64; ++i) {
-        if (input[i] != 0) {
-            upper_half_zero = false;
-            break;
+    thread const short4 *rows = reinterpret_cast<thread const short4 *>(input);
+    int4 left_cols[8];
+    int4 right_cols[8];
+    idct_islow_columns_x4(
+        int4(rows[0]), int4(rows[2]), int4(rows[4]), int4(rows[6]),
+        int4(rows[8]), int4(rows[10]), int4(rows[12]), int4(rows[14]),
+        left_cols
+    );
+    idct_islow_columns_x4(
+        int4(rows[1]), int4(rows[3]), int4(rows[5]), int4(rows[7]),
+        int4(rows[9]), int4(rows[11]), int4(rows[13]), int4(rows[15]),
+        right_cols
+    );
+    for (uint row = 0; row < 8u; ++row) {
+        uchar4 left;
+        uchar4 right;
+        idct_islow_row(left_cols[row], right_cols[row], left, right);
+        thread uchar *out_row = output + row * 8u;
+        for (uint i = 0; i < 4u; ++i) {
+            out_row[i] = left[i];
+            out_row[i + 4u] = right[i];
         }
-    }
-    for (uint col = 0; col < 8; ++col) {
-        if (upper_half_zero) {
-            idct_1d_column_bottom_half_zero(input, work, col);
-        } else {
-            idct_1d_column(input, work, col);
-        }
-    }
-    for (uint row = 0; row < 8; ++row) {
-        idct_1d_row(work, output, row);
     }
 }
 
@@ -904,6 +799,92 @@ inline void deposit_block(
     }
 }
 
+// Stores one output row with deposit_block's clipping and store widths.
+inline void deposit_block_row(
+    device uchar *plane,
+    uint stride,
+    uint x,
+    uint row_y,
+    uint copy_width,
+    bool vector_store,
+    uchar4 left,
+    uchar4 right
+) {
+    device uchar *dst = plane + row_y * stride + x;
+    if (vector_store) {
+        *(device uchar4 *)(dst) = left;
+        *(device uchar4 *)(dst + 4u) = right;
+        return;
+    }
+    for (uint bx = 0; bx < copy_width; ++bx) {
+        dst[bx] = bx < 4u ? left[bx] : right[bx - 4u];
+    }
+}
+
+// idct_islow followed by deposit_block, with the block kept in registers and
+// each row stored as soon as it is computed.
+inline void idct_islow_deposit(
+    thread const short coeffs[64],
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint x,
+    uint y
+) {
+    if (x >= width || y >= height) {
+        return;
+    }
+    thread const short4 *rows = reinterpret_cast<thread const short4 *>(coeffs);
+    int4 left_cols[8];
+    int4 right_cols[8];
+    idct_islow_columns_x4(
+        int4(rows[0]), int4(rows[2]), int4(rows[4]), int4(rows[6]),
+        int4(rows[8]), int4(rows[10]), int4(rows[12]), int4(rows[14]),
+        left_cols
+    );
+    idct_islow_columns_x4(
+        int4(rows[1]), int4(rows[3]), int4(rows[5]), int4(rows[7]),
+        int4(rows[9]), int4(rows[11]), int4(rows[13]), int4(rows[15]),
+        right_cols
+    );
+
+    const uint copy_width = min(8u, width - x);
+    const uint copy_height = min(8u, height - y);
+    const bool vector_store = copy_width == 8u && copy_height == 8u && (stride & 3u) == 0u;
+    for (uint row = 0; row < 8u; ++row) {
+        if (row >= copy_height) {
+            break;
+        }
+        uchar4 left;
+        uchar4 right;
+        idct_islow_row(left_cols[row], right_cols[row], left, right);
+        deposit_block_row(plane, stride, x, y + row, copy_width, vector_store, left, right);
+    }
+}
+
+// idct_islow_dc_only followed by deposit_block.
+inline void deposit_dc_block(
+    short dc_coeff,
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint x,
+    uint y
+) {
+    if (x >= width || y >= height) {
+        return;
+    }
+    const uchar4 pixel = uchar4(clamp_u8(((int(dc_coeff) + 4) >> 3) + 128));
+    const uint copy_width = min(8u, width - x);
+    const uint copy_height = min(8u, height - y);
+    const bool vector_store = copy_width == 8u && copy_height == 8u && (stride & 3u) == 0u;
+    for (uint row = 0; row < copy_height; ++row) {
+        deposit_block_row(plane, stride, x, y + row, copy_width, vector_store, pixel, pixel);
+    }
+}
+
 inline bool decode_idct_deposit_block(
     thread BitReader &br,
     device const uchar *bytes,
@@ -919,15 +900,17 @@ inline bool decode_idct_deposit_block(
     uint height,
     uint x,
     uint y,
-    thread short coeffs[64],
-    thread uchar pixels[64]
+    thread short coeffs[64]
 ) {
     bool dc_only = false;
     if (!decode_block(br, bytes, len, dc_table, ac_table, quant, prev_dc, status, coeffs, dc_only)) {
         return false;
     }
-    idct_block(coeffs, dc_only, pixels);
-    deposit_block(plane, stride, width, height, x, y, pixels);
+    if (dc_only) {
+        deposit_dc_block(coeffs[0], plane, stride, width, height, x, y);
+    } else {
+        idct_islow_deposit(coeffs, plane, stride, width, height, x, y);
+    }
     return true;
 }
 

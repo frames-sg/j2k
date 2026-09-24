@@ -77,6 +77,7 @@ impl SubmissionContext<'_, '_, '_> {
             batch_count: u32::try_from(self.count).map_err(|_| Error::MetalKernel {
                 message: "J2K MetalDirect color store batch count exceeds u32".to_string(),
             })?,
+            round_centered: u32::from(self.round_centered_store),
         };
         if let Some(encoder) = self.compute_encoder {
             dispatch_store_component_repeated_in_encoder(

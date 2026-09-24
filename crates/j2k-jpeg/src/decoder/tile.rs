@@ -128,9 +128,12 @@ pub(crate) fn planned_jpeg_tile_decode_live_bytes(
     roi: Option<Rect>,
     scale: Downscale,
     options: DecodeOptions,
+    external_live_bytes: usize,
 ) -> Result<PlannedJpegTileDecode, JpegError> {
-    let view = JpegView::parse_with_options(input, options)?;
-    Decoder::with_view_in_context(view, ctx, |decoder| {
+    let parsing_live_bytes =
+        checked_add_allocation_bytes(external_live_bytes, ctx.retained_allocation_bytes())?;
+    let view = JpegView::parse_with_options_and_external_live(input, options, parsing_live_bytes)?;
+    Decoder::with_view_in_context_with_external_live(view, ctx, external_live_bytes, |decoder| {
         let source_rect = roi.unwrap_or_else(|| Rect::full(decoder.info.dimensions));
         if !source_rect.is_within(decoder.info.dimensions) {
             return Err(JpegError::RectOutOfBounds {
