@@ -3,6 +3,14 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Upgrades `fearless_simd` to 1.0.0 for the `j2k-jpeg` AArch64 NEON kernels
+  and the optional `j2k-native` `simd` feature. The dependency is private, so
+  public APIs are unchanged. `j2k-jpeg` keeps its private exact-AVX2 token on
+  x86-64 because `fearless_simd::Avx2` still represents the broader x86-64-v3
+  feature set.
+
 ## [0.11.1] - 2026-09-12
 
 - Adds full-image and batched Metal reconstruction for sampled RGB components without MCT, including odd dimensions and 4:2:2/4:2:0 sampling.
