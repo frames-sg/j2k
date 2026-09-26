@@ -10,8 +10,15 @@ use crate::routing::promotion::{PromotionCell, PromotionOperation as Operation};
 const METAL_PART1: &str = "162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879";
 const METAL_PART15: &str = "cfa66686d053bb3e2d4c8756abaf84aab65d8505a635795cefd38de53573c1f5";
 const METAL_HOST_OUTPUT: &str = "c98f11c0b2a2a96853953ceee7ea672e0e5044bdb8abbd397c8c36eb82fe53b8";
+const METAL_LOCAL_COMBINED: &str =
+    "66f9d83f932efb7df6cab2de0048849f09343da00915e22794b0056b29f2aa5f";
 
-pub(crate) const SOURCE_EVIDENCE: &[&str] = &[METAL_PART1, METAL_PART15, METAL_HOST_OUTPUT];
+pub(crate) const SOURCE_EVIDENCE: &[&str] = &[
+    METAL_PART1,
+    METAL_PART15,
+    METAL_HOST_OUTPUT,
+    METAL_LOCAL_COMBINED,
+];
 
 #[cfg(any(test, target_os = "macos"))]
 const fn decode_cell(
@@ -38,52 +45,116 @@ const fn decode_cell(
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[
     decode_cell(
-        PixelFormat::Gray8,
-        Syntax::Jpeg2000Lossy,
-        Payload::Jpeg2000Codestream,
-        Operation::Repeated,
-        (0, 0, 2_960_793, 16),
-        METAL_PART1,
-    ),
-    decode_cell(
         PixelFormat::Rgb8,
-        Syntax::Jpeg2000Lossy,
+        Syntax::HtJpeg2000Lossless,
         Payload::Jpeg2000Codestream,
         Operation::Repeated,
-        (0, 0, 307_200, 16),
-        METAL_PART1,
-    ),
-    decode_cell(
-        PixelFormat::Rgb8,
-        Syntax::Jpeg2000Lossless,
-        Payload::Jpeg2000Codestream,
-        Operation::Repeated,
-        (0, 0, 5_038_848, 16),
-        METAL_PART1,
-    ),
-    decode_cell(
-        PixelFormat::Rgb8,
-        Syntax::HtJpeg2000Lossy,
-        Payload::Jpeg2000Codestream,
-        Operation::Repeated,
-        (640, 480, 0, 16),
-        METAL_PART15,
+        (256, 256, 65_536, 16),
+        METAL_LOCAL_COMBINED,
     ),
     decode_cell(
         PixelFormat::Rgb8,
         Syntax::HtJpeg2000Lossless,
         Payload::JphFile,
         Operation::Repeated,
-        (768, 512, 0, 16),
-        METAL_PART15,
+        (640, 480, 307_200, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::HtJpeg2000Lossless,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (640, 480, 307_200, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Rgb8,
+        Syntax::Jpeg2000Lossless,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (640, 480, 307_200, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::Jpeg2000Lossless,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (2048, 2048, 4_194_304, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Rgb8,
+        Syntax::HtJpeg2000Lossless,
+        Payload::Jpeg2000Codestream,
+        Operation::Full,
+        (640, 480, 307_200, 1),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Rgb8,
+        Syntax::HtJpeg2000Lossless,
+        Payload::JphFile,
+        Operation::Full,
+        (640, 480, 307_200, 1),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::HtJpeg2000Lossless,
+        Payload::Jpeg2000Codestream,
+        Operation::Full,
+        (640, 480, 307_200, 1),
+        METAL_LOCAL_COMBINED,
     ),
     decode_cell(
         PixelFormat::Rgb8,
         Syntax::HtJpeg2000Lossy,
         Payload::Jpeg2000Codestream,
-        Operation::ScaledHalf,
-        (320, 240, 0, 1),
-        METAL_PART15,
+        Operation::Repeated,
+        (256, 256, 65_536, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Rgb8,
+        Syntax::Jpeg2000Lossy,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (1024, 1024, 1_048_576, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::HtJpeg2000Lossy,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (2048, 2048, 4_194_304, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::Jpeg2000Lossy,
+        Payload::Jpeg2000Codestream,
+        Operation::Repeated,
+        (2048, 2048, 4_194_304, 16),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Rgb8,
+        Syntax::HtJpeg2000Lossy,
+        Payload::Jpeg2000Codestream,
+        Operation::Full,
+        (640, 480, 307_200, 1),
+        METAL_LOCAL_COMBINED,
+    ),
+    decode_cell(
+        PixelFormat::Gray8,
+        Syntax::HtJpeg2000Lossy,
+        Payload::Jpeg2000Codestream,
+        Operation::Full,
+        (640, 480, 307_200, 1),
+        METAL_LOCAL_COMBINED,
     ),
 ];
 
@@ -105,5 +176,5 @@ pub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, hei
 }
 
 pub(crate) fn auto_lossy_rgb8_encode_qualifies(pixels: usize) -> bool {
-    pixels >= 5_038_848 && SOURCE_EVIDENCE.contains(&METAL_PART1)
+    pixels >= 4_194_304 && SOURCE_EVIDENCE.contains(&METAL_LOCAL_COMBINED)
 }

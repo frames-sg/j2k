@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 
 use crate::allocation::{checked_add_allocation_bytes, checked_allocation_bytes};
-use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTableId, PreparedHuffmanTables};
+use crate::entropy::huffman::{PreparedHuffmanTableId, PreparedHuffmanTables};
 use crate::error::JpegError;
 use crate::info::{ColorSpace, SamplingFactors};
 
@@ -46,7 +46,7 @@ impl PreparedDecodePlan {
         let mut total = checked_allocation_bytes::<PreparedComponentPlan>(component_count)?;
         total = checked_add_allocation_bytes(
             total,
-            checked_allocation_bytes::<HuffmanTable>(huffman_table_count)?,
+            PreparedHuffmanTables::allocation_bytes_for_capacity(huffman_table_count)?,
         )?;
         Ok(total)
     }

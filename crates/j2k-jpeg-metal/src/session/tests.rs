@@ -202,3 +202,25 @@ fn rewrite_first_sof_quant_table_selector(mut bytes: Vec<u8>, selector: u8) -> V
     }
     panic!("fixture must contain a supported SOF marker");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_sessions_without_a_backend_share_one_default_runtime() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let runtime_of = |session: &MetalSession| {
+        let mut state = session.shared.lock().expect("session state");
+        let backend = state.backend_session().expect("default backend").clone();
+        backend.runtime_result().as_ref().expect("runtime");
+        backend.runtime_ptr_for_test().expect("initialized runtime")
+    };
+    let first = MetalSession::default();
+    let second = MetalSession::default();
+    assert_eq!(runtime_of(&first), runtime_of(&second));
+    let explicit = MetalSession::with_backend_session(
+        MetalBackendSession::system_default().expect("explicit session"),
+    );
+    assert_ne!(runtime_of(&explicit), runtime_of(&first));
+    crate::release_default_session_buffers().expect("release default buffers");
+}

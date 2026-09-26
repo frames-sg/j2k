@@ -184,6 +184,94 @@ decode routes were slower, and the measured lossless and lossy encode medians
 were only about 4.2% and 7.8% faster than CPU. No `Auto` threshold was changed
 from that diagnostic.
 
+### Local Metal lossless routing run - 2026-09-24
+
+This run replaced the Metal decode cells; the combined run below has since
+re-measured them. Its corpus is local, not a
+publication corpus: 512x512 tiles from GDC whole-slide DICOM files, decoded with
+`opj_decompress`, stitched into 256x256, 640x480, 1024x1024, and 2048x2048 RGB
+images and 640x480 and 2048x2048 gray images, then re-encoded as Part 1
+lossless (OpenJPEG), HTJ2K lossless codestreams (OpenJPH `-reversible true`),
+and HTJ2K lossless JPH files (Grok). There are 22 cases (14 decode, 8 encode);
+manifest SHA-256
+`217d700a9f882c4cd63b76aed250de92124d74a0bf476d33855dbbe857d6befe`.
+The run used `release-bench`, candidate `c1cc3ff1` with a dirty tree, and an
+Apple M4 Pro (16 GPU cores) on macOS 27.0. The verifier accepted all 76 cells
+and promoted 33. The verified artifact SHA-256 is
+`69987ce1cee902e4ef664964250059021ef15b59e0828802098fbe84d192df77`.
+
+Lossy inputs were excluded from this run. `tests/auto_routing_parity.rs` found
+that Metal 9/7 decode differed from the CPU by one code value in roughly 10
+samples per million on every third-party 9/7 file, while every 5/3 file matched.
+Because promotion requires identical bytes, the earlier 9/7 Metal cells
+(`metal_part1` lossy repeated, `metal_part15` lossy repeated and half-scale)
+were withdrawn. The cause was found and fixed the same day; see "Local Metal
+routing run with lossy inputs" below.
+
+The resulting Metal cells cover lossless inputs only. Repeated batches of 16 run
+on Metal for HTJ2K RGB8 from 256x256 (JPH from 640x480), HTJ2K Gray8 from
+640x480, Part 1 RGB8 from 640x480, and Part 1 Gray8 from 2048x2048.
+Single full-image decodes run on Metal for HTJ2K from 640x480, for RGB8 and
+Gray8 and for codestreams and JPH, when the source components match the output
+format. Part 1 single-image decodes stay on the CPU because Metal measured 105%
+to 1400% slower. ROI and half-scale decodes promoted only HTJ2K Gray8 at 2048x2048;
+Metal Auto does not route those operations for gray sources, so they stay on the CPU.
+The lossy RGB8 encode threshold is now 2048x2048 pixels, where HTJ2K and Part 1
+lossy encode measured 54% and 38% faster; at 640x480 they were within 4% of the CPU.
+
+### Local Metal routing run with lossy inputs - 2026-09-24
+
+The 9/7 mismatch was in output rounding, not in the wavelet transform. The CPU
+rounds each centered sample to the nearest integer, ties to even, and only then
+adds the unsigned level shift, as OpenJPEG does (`opj_lrintf(value) +
+dc_level_shift`). The Metal store, pack, and inverse-colour-transform kernels
+added the shift first and rounded half up. Adding 128 in f32 drops one bit of
+precision, so a value just below `k + 0.5` became a tie and rounded up: every
+mismatch was Metal one code value high, at a sample whose shifted CPU value was
+exactly `k + 0.5`. The fix makes Metal integer output round before the shift and
+compute the inverse ICT with the CPU's fused expressions. Three CPU paths
+disagreed with the CPU full decode in the same way (region decode, row
+streaming, and `CpuBatchDecoder`, which built integer output from unrounded
+component planes), as did the CPU inverse ICT's non-SIMD tail. They now follow
+the same contract, so a CPU region decode equals the crop of the full decode.
+
+The first run of this corpus also exposed an unrelated Metal bug: the repeated
+Part 1 batch path decoded into a recycled scratch buffer without zero-filling
+code blocks that have no coding passes, so a lossy batch decoded after a
+lossless one of the same geometry kept stale coefficients (39% of bytes wrong
+for `gray8-2048x2048-part1-lossy`). That path now zero-fills like the
+single-image, grouped, and distinct-batch paths.
+
+The corpus is the lossless run's 22 cases plus 12 lossy decode files made from
+the same stitched sources: Part 1 lossy (OpenJPEG) and HTJ2K lossy codestreams
+(OpenJPH) for every RGB and gray size. There are 34 cases (26 decode, 8 encode);
+manifest SHA-256
+`dd6363374dccf8d6b34656f90b9557b5a01f8582b94f5014e3165dc61f1248ec`.
+`tests/auto_routing_parity.rs` found no mismatch in any full, ROI, or half-scale
+decode, and the bench's own parity check passed for every CPU, Metal, and Auto
+route. The run used `release-bench`, candidate `c1cc3ff1` with a dirty tree,
+and the same Apple M4 Pro on macOS 27.0. The verifier accepted all 124 cells and
+promoted 49. The verified artifact SHA-256 is
+`66f9d83f932efb7df6cab2de0048849f09343da00915e22794b0056b29f2aa5f`; its cells
+are recorded under the `metal_local_combined` source.
+
+Every lossless cell re-measured to the same thresholds as the lossless run. The
+new lossy cells are:
+
+- Repeated batches of 16: HTJ2K RGB8 from 256x256 (46% faster at 256x256),
+  Part 1 RGB8 from 1024x1024 (56%; 640x480 measured 10% slower), and HTJ2K and
+  Part 1 Gray8 from 2048x2048 (62% and 18%; HTJ2K Gray8 at 640x480 was only 8%
+  faster, below the 10% bar).
+- Single full-image decodes: HTJ2K RGB8 and Gray8 from 640x480 (44% and 37%
+  faster at 640x480, 77% and 78% at 2048x2048).
+
+Part 1 lossy single-image decodes stay on the CPU (66% to 2400% slower on
+Metal). No half-scale cell qualified: HTJ2K lossy RGB8 half-scale measured 3%
+to 176% slower, so the earlier `metal_part15` half-scale cell stays withdrawn.
+ROI and half-scale promoted only for HTJ2K Gray8, which Metal Auto does not
+route. The lossy RGB8 encode threshold stays at 2048x2048 pixels (Part 1 and
+HTJ2K 36% and 57% faster there).
+
 ### External CUDA routing development run - 2026-08-05
 
 The uninterrupted CUDA matrix used the same 12 external cases from

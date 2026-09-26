@@ -73,7 +73,16 @@ pub(crate) fn decode_compatible_batch_with_session(
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     #[cfg(target_os = "macos")]
     {
-        batch_entry::decode_full_batch_to_surfaces_with_session_state(requests, session)
+        match batch_entry::decode_full_batch_to_surfaces_with_session_state(requests, session) {
+            Err(Error::MetalUnavailable)
+                if requests
+                    .iter()
+                    .all(|request| request.backend == BackendRequest::Auto) =>
+            {
+                Ok(None)
+            }
+            result => result,
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {

@@ -45,6 +45,8 @@ pub use codec_batch::{
     MetalBufferBatchTarget, MetalTextureBatchTarget, Rgb8MetalBatchOp, Rgb8MetalBatchRequest,
     Rgb8MetalBatchSource,
 };
+#[cfg(target_os = "macos")]
+pub use compute::release_default_session_buffers;
 pub use decode_request::{MetalDecodeOp, MetalDecodeRequest};
 pub use decoder::Decoder;
 pub use encode::{

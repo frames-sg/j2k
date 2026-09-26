@@ -396,7 +396,8 @@ fn metal_irreversible97_stage_gpu_timing() {
             );
             let (probe_logical_positions, probe_dispatches) =
                 crate::engine::test_counters::idwt97_logical_dispatches_for_test();
-            assert_eq!(probe_dispatches, 10);
+            // Horizontal scale, then one fused pass per axis.
+            assert_eq!(probe_dispatches, 3);
 
             let warm_started = Instant::now();
             while warm_started.elapsed() < WARM_DURATION {

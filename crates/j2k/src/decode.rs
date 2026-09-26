@@ -122,7 +122,10 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
     match fmt {
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
             let components = image
-                .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
+                .decode_region_components_for_integer_output_with_context(
+                    (roi.x, roi.y, roi.w, roi.h),
+                    native_context,
+                )
                 .map_err(J2kError::from_native_decode_error)?;
             write_components_u8_output(&components, out, stride, fmt)
         }
@@ -154,7 +157,7 @@ pub(crate) fn decode_prepared_image_region_into(
     roi: Rect,
 ) -> Result<(), J2kError> {
     let components = decoder
-        .decode_region_components((roi.x, roi.y, roi.w, roi.h))
+        .decode_region_components_for_integer_output((roi.x, roi.y, roi.w, roi.h))
         .map_err(J2kError::from_native_decode_error)?;
     match fmt {
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {

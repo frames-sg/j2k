@@ -135,6 +135,33 @@ pub(crate) fn upsample_h2v2_fancy_rows(
     emit_h2v2_row(next, curr, output_width, out_bot);
 }
 
+/// Emit one visible output row of a 4:4:0 (h1v2) component, as libjpeg-turbo's
+/// `h1v2_fancy_upsample` does: three quarters of the nearest input row plus
+/// one quarter of the next nearest, which is the row above for the top output
+/// row of a pair (rounding bias 1) and the row below for the bottom (bias 2).
+pub(crate) fn upsample_h1v2_fancy_row(
+    prev: &[u8],
+    curr: &[u8],
+    next: &[u8],
+    output_width: usize,
+    output_is_bottom: bool,
+    out: &mut [u8],
+) {
+    let (far, bias) = if output_is_bottom {
+        (next, 2)
+    } else {
+        (prev, 1)
+    };
+    for ((slot, &near), &far) in out[..output_width]
+        .iter_mut()
+        .zip(&curr[..output_width])
+        .zip(&far[..output_width])
+    {
+        let sum = 3 * u16::from(near) + u16::from(far) + bias;
+        *slot = u8::try_from(sum >> 2).expect("weighted mean of u8 samples fits u8");
+    }
+}
+
 /// Emit one visible output row from a 4:2:0 fancy-upsampled chroma triple.
 pub(crate) fn upsample_h2v2_fancy_row(
     prev: &[u8],

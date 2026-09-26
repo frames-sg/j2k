@@ -43,6 +43,7 @@ pub(super) struct SingleGrayscaleExecution<'a> {
     pub(super) destination: Option<&'a MetalImageDestination>,
     pub(super) destination_item_index: usize,
     pub(super) destination_written: bool,
+    pub(super) round_centered_store: bool,
 }
 
 impl SingleGrayscaleExecution<'_> {
@@ -285,45 +286,57 @@ impl SingleGrayscaleExecution<'_> {
                 )?);
             }
         } else {
-            let output_span = checked_f32_span(
-                store.output_width as usize,
-                store.output_height as usize,
-                "J2K MetalDirect single stored component plane",
-            )?;
-            let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
-            let params = J2kStoreParams {
-                input_width: store.input_rect.width(),
-                source_x: store.source_x,
-                source_y: store.source_y,
-                copy_width: store.copy_width,
-                copy_height: store.copy_height,
-                output_width: store.output_width,
-                output_x: store.output_x,
-                output_y: store.output_y,
-                addend: store.addend,
-            };
-            dispatch_store_component_buffer_in_encoder_with_offsets(
-                self.runtime.decode()?,
-                self.encoder,
-                &input,
-                input_offset,
-                &output.buffer,
-                0,
-                params,
-            );
-            self.encoder
-                .memory_barrier_with_resources(&[&output.buffer]);
-            self.retained_buffers.push(output.buffer.clone());
-            self.final_surface = Some(encode_gray_plane_to_surface_in_encoder(
-                self.runtime,
-                self.encoder,
-                &output.buffer,
-                self.dimensions,
-                self.bit_depth,
-                self.fmt,
-            )?);
-            self.scratch_buffers.push(output);
+            self.encode_store_through_plane(store, &input, input_offset)?;
         }
+        Ok(())
+    }
+
+    /// Stores into an f32 plane, then packs it to a non-gray output format.
+    fn encode_store_through_plane(
+        &mut self,
+        store: &J2kDirectStoreStep,
+        input: &Buffer,
+        input_offset: usize,
+    ) -> Result<(), Error> {
+        let output_span = checked_f32_span(
+            store.output_width as usize,
+            store.output_height as usize,
+            "J2K MetalDirect single stored component plane",
+        )?;
+        let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
+        let params = J2kStoreParams {
+            input_width: store.input_rect.width(),
+            source_x: store.source_x,
+            source_y: store.source_y,
+            copy_width: store.copy_width,
+            copy_height: store.copy_height,
+            output_width: store.output_width,
+            output_x: store.output_x,
+            output_y: store.output_y,
+            addend: store.addend,
+            round_centered: u32::from(self.round_centered_store),
+        };
+        dispatch_store_component_buffer_in_encoder_with_offsets(
+            self.runtime.decode()?,
+            self.encoder,
+            input,
+            input_offset,
+            &output.buffer,
+            0,
+            params,
+        );
+        self.encoder
+            .memory_barrier_with_resources(&[&output.buffer]);
+        self.retained_buffers.push(output.buffer.clone());
+        self.final_surface = Some(encode_gray_plane_to_surface_in_encoder(
+            self.runtime,
+            self.encoder,
+            &output.buffer,
+            self.dimensions,
+            self.bit_depth,
+            self.fmt,
+        )?);
+        self.scratch_buffers.push(output);
         Ok(())
     }
 

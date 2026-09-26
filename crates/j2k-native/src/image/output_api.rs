@@ -7,9 +7,10 @@ use alloc::vec::Vec;
 use crate::color::{ComponentPlane, DecodedComponents, DecodedNativeComponents, RawBitmap};
 use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::j2c::{self, ComponentData, DecoderContext, Reversible53CoefficientImage};
+use crate::jp2::DecodedImage;
 use crate::{
     checked_decode_byte_len3, checked_decode_byte_len4, checked_decode_sample_count,
-    native_bytes_per_sample, try_reserve_decode_elements, validate_roi,
+    native_bytes_per_sample, try_reserve_decode_elements, validate_roi, HtCodeBlockDecoder,
 };
 
 use super::native::{try_clone_color_space, NativeOutputBudget};
@@ -403,5 +404,109 @@ impl<'a> Image<'a> {
             ));
         }
         Ok(())
+    }
+}
+
+/// Borrowed component planes rounded for integer output.
+///
+/// The plain component-plane methods return unrounded irreversible (9/7)
+/// samples with the unsigned level shift already added. Rounding those planes
+/// afterwards differs from [`Image::decode`] on exact ties, because adding the
+/// shift costs one bit of f32 precision. These methods round each centered
+/// sample ties-to-even before the shift, as the interleaved decode paths do, so
+/// converting their planes to integer samples reproduces that output.
+/// Reversible (5/3) samples are unchanged.
+impl<'a> Image<'a> {
+    /// Rounded-for-integer-output counterpart of
+    /// [`Self::decode_components_with_context`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when component precision is unsupported or decoding fails.
+    #[doc(hidden)]
+    pub fn decode_components_for_integer_output_with_context<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+    ) -> Result<DecodedComponents<'ctx>> {
+        self.decode_borrowed_component_planes(decoder_context, None, None, true)
+    }
+
+    /// Rounded-for-integer-output counterpart of
+    /// [`Self::decode_region_components_with_context`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid, precision is unsupported, or decoding fails.
+    #[doc(hidden)]
+    pub fn decode_region_components_for_integer_output_with_context<'ctx>(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &'ctx mut DecoderContext<'a>,
+    ) -> Result<DecodedComponents<'ctx>> {
+        self.decode_borrowed_component_planes(decoder_context, Some(roi), None, true)
+    }
+
+    /// Rounded-for-integer-output counterpart of
+    /// [`Self::decode_components_with_ht_decoder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when component precision is unsupported or decoding fails.
+    #[doc(hidden)]
+    pub fn decode_components_for_integer_output_with_ht_decoder<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+        ht_decoder: &mut dyn HtCodeBlockDecoder,
+    ) -> Result<DecodedComponents<'ctx>> {
+        self.decode_borrowed_component_planes(decoder_context, None, Some(ht_decoder), true)
+    }
+
+    /// Rounded-for-integer-output counterpart of
+    /// [`Self::decode_region_components_with_ht_decoder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid, precision is unsupported, or decoding fails.
+    #[doc(hidden)]
+    pub fn decode_region_components_for_integer_output_with_ht_decoder<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+        roi: (u32, u32, u32, u32),
+        ht_decoder: &mut dyn HtCodeBlockDecoder,
+    ) -> Result<DecodedComponents<'ctx>> {
+        self.decode_borrowed_component_planes(decoder_context, Some(roi), Some(ht_decoder), true)
+    }
+
+    pub(super) fn decode_borrowed_component_planes<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+        roi: Option<(u32, u32, u32, u32)>,
+        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
+        round_irreversible_output: bool,
+    ) -> Result<DecodedComponents<'ctx>> {
+        let dimensions = match roi {
+            Some(roi) => {
+                validate_roi((self.width(), self.height()), roi)?;
+                (roi.2, roi.3)
+            }
+            None => (self.width(), self.height()),
+        };
+        self.validate_component_plane_precision()?;
+        let decoded_image = self.decode_image(
+            decoder_context,
+            roi,
+            ht_decoder,
+            round_irreversible_output,
+            self.retained_metadata_bytes()?,
+        )?;
+        let DecodedImage {
+            decoded_components,
+            boxes: _,
+        } = decoded_image;
+        self.try_borrow_component_planes(
+            decoded_components.as_slice(),
+            decoded_components.capacity(),
+            dimensions,
+        )
     }
 }

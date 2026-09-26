@@ -267,3 +267,88 @@ fn explicit_metal_unsupported_rgba16_report_variants_are_rejected() {
         MetalDecodeRequest::region_scaled(PixelFormat::Rgba16, roi, scale, BackendRequest::Metal),
     ));
 }
+
+/// Gray Part 1 image of `size` pixels per side. Lossy fixtures are quantized
+/// hard enough that high-frequency code blocks carry no coding passes, which
+/// the Metal repeated classic path must zero-fill instead of decoding.
+fn classic_gray_fixture(size: u32, reversible: bool, seed: u32) -> Vec<u8> {
+    let mut state = seed;
+    let pixels: Vec<u8> = (0..size * size)
+        .map(|index| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let (x, y) = (index % size, index / size);
+            let base = (x + 2 * y) / 5 % 200 + 20;
+            u8::try_from(base + state % 29).expect("sample fits u8")
+        })
+        .collect();
+    let options = EncodeOptions {
+        reversible,
+        irreversible_quantization_scale: 64.0,
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, size, size, 1, 8, false, &options).expect("encode classic gray fixture")
+}
+
+fn tile_batch_gray8(bytes: &Arc<[u8]>, backend: BackendRequest, count: usize) -> Vec<Vec<u8>> {
+    let mut batch = MetalTileBatch::with_capacity(count);
+    for _ in 0..count {
+        batch
+            .push_shared_tile_request(
+                Arc::clone(bytes),
+                MetalDecodeRequest::full(PixelFormat::Gray8, backend),
+            )
+            .expect("queue repeated gray tile");
+    }
+    batch
+        .decode_all()
+        .expect("repeated gray batch")
+        .iter()
+        .map(|surface| surface.as_bytes().expect("surface bytes").into_owned())
+        .collect()
+}
+
+#[test]
+fn repeated_classic_batch_zero_fills_empty_code_blocks_in_recycled_buffers() {
+    const SIZE: u32 = 256;
+    const COUNT: usize = 16;
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let lossless: Arc<[u8]> = Arc::from(classic_gray_fixture(SIZE, true, 0x1357_9bdf));
+    let lossy: Arc<[u8]> = Arc::from(classic_gray_fixture(SIZE, false, 0x2468_ace0));
+    let image = j2k_native::Image::new(&lossy, &j2k_native::DecodeSettings::default())
+        .expect("inspect lossy fixture");
+    let plan = image
+        .build_direct_grayscale_plan_with_context(&mut j2k_native::DecoderContext::default())
+        .expect("lossy direct plan");
+    let empty_blocks = plan.steps.iter().any(|step| match step {
+        j2k_native::J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+            let covered: u64 = sub_band
+                .jobs
+                .iter()
+                .map(|job| u64::from(job.width) * u64::from(job.height))
+                .sum();
+            covered < u64::from(sub_band.width) * u64::from(sub_band.height)
+                || sub_band
+                    .jobs
+                    .iter()
+                    .any(|job| job.number_of_coding_passes == 0)
+        }
+        _ => false,
+    });
+    assert!(empty_blocks, "lossy fixture must contain empty code blocks");
+
+    let expected = tile_batch_gray8(&lossy, BackendRequest::Cpu, COUNT);
+    // Leave recycled scratch buffers of the same geometry holding nonzero
+    // coefficients, as a prior decode in a long-lived process does.
+    for round in 0..3 {
+        let _ = tile_batch_gray8(&lossless, BackendRequest::Metal, COUNT);
+        let actual = tile_batch_gray8(&lossy, BackendRequest::Metal, COUNT);
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(actual, expected, "round {round} item {index}");
+        }
+    }
+}

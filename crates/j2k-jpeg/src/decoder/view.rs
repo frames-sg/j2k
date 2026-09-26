@@ -54,7 +54,7 @@ impl<'a> JpegView<'a> {
         Ok(Self::from_header(input, header, options))
     }
 
-    fn parse_with_options_and_external_live(
+    pub(super) fn parse_with_options_and_external_live(
         input: &'a [u8],
         options: DecodeOptions,
         external_live_bytes: usize,

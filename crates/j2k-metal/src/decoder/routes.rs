@@ -115,6 +115,22 @@ impl J2kDecoder<'_> {
 
         #[cfg(target_os = "macos")]
         let selected = match request.op {
+            MetalDecodeOp::Full
+                if request.backend == BackendRequest::Auto
+                    && j2k::J2kDecoder::inspect_support(self.bytes)
+                        .ok()
+                        .is_some_and(|support| {
+                            routing::auto_full_decode_uses_metal(
+                                plan.output_dims(),
+                                support.component_count(),
+                                request.fmt,
+                                support.transfer_syntax,
+                                support.payload_kind,
+                            )
+                        }) =>
+            {
+                BackendRequest::Metal
+            }
             MetalDecodeOp::Scaled(scale)
                 if request.backend == BackendRequest::Auto
                     && j2k::J2kDecoder::inspect_support(self.bytes)

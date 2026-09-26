@@ -285,11 +285,12 @@ fn irreversible97_production_decomposition_dispatch_count() {
             encoder.endEncoding();
             commit_and_wait_metal(&command).unwrap();
             let (positions, dispatches) = idwt97_logical_dispatches_for_test();
-            assert_eq!(dispatches, 10, "actual production launches, batch {batch}");
+            // Interleave with horizontal scale, then one fused pass per axis.
+            assert_eq!(dispatches, 3, "actual production launches, batch {batch}");
             assert_eq!(
                 positions,
-                6 * count,
-                "actual requested production positions"
+                3 * count,
+                "each production pass covers every sample once"
             );
         }
         Ok(())

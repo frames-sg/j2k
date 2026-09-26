@@ -261,12 +261,28 @@ pub(crate) struct J2kRepeatedIdwtSingleDecompositionParams {
     pub(crate) batch_count: u32,
 }
 
-#[cfg(target_os = "macos")]
+/// One lifting step of the original per-step 9/7 kernels, now used only by
+/// the full-grid reference oracle in the lifting parity tests.
+#[cfg(all(test, target_os = "macos"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct J2kIdwt97StepParams {
     pub(crate) coefficient: f32,
     pub(crate) parity: u32,
+    pub(crate) _reserved0: u32,
+    pub(crate) _reserved1: u32,
+}
+
+/// All four lifting steps of one 9/7 axis; mirrors `J2kIdwt97LiftSteps` in
+/// `idwt.metal`. `first_parity` is the parity step 0 updates; later steps
+/// alternate. `high_pass_bits` carries the vertical high-pass scale.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kIdwt97LiftSteps {
+    pub(crate) coefficients: [f32; 4],
+    pub(crate) first_parity: u32,
+    pub(crate) high_pass_bits: u32,
     pub(crate) _reserved0: u32,
     pub(crate) _reserved1: u32,
 }
@@ -285,6 +301,9 @@ pub(crate) struct J2kInverseMctParams {
     pub(crate) _addend0: f32,
     pub(crate) _addend1: f32,
     pub(crate) _addend2: f32,
+    /// Nonzero rounds irreversible samples ties-to-even before the addend,
+    /// as integer output requires; zero keeps float-plane semantics.
+    pub(crate) _round_centered: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -381,6 +400,9 @@ pub(crate) struct J2kStoreParams {
     pub(crate) output_x: u32,
     pub(crate) output_y: u32,
     pub(crate) addend: f32,
+    /// Nonzero rounds the centered sample ties-to-even before the addend, as
+    /// the CPU does for irreversible integer output.
+    pub(crate) round_centered: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -400,6 +422,8 @@ pub(crate) struct J2kRepeatedStoreParams {
     pub(crate) output_y: u32,
     pub(crate) addend: f32,
     pub(crate) batch_count: u32,
+    /// See [`J2kStoreParams::round_centered`].
+    pub(crate) round_centered: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -514,6 +538,16 @@ pub(crate) struct J2kHtRepeatedBatchParams {
     pub(crate) job_count: u32,
     pub(crate) output_plane_len: u32,
     pub(crate) batch_count: u32,
+}
+
+/// Blocks per SIMD group for the cooperative HT VLC kernels; mirrors
+/// `J2kHtVlcDispatchParams` in `ht_cleanup_simd.metal`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kHtVlcDispatchParams {
+    pub(crate) job_count: u32,
+    pub(crate) lanes_per_simd: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1048,7 +1082,7 @@ impl_gpu_readback_abi!(
     J2kClassicStatus,
     J2kIdwtSingleDecompositionParams,
     J2kRepeatedIdwtSingleDecompositionParams,
-    J2kIdwt97StepParams,
+    J2kIdwt97LiftSteps,
     J2kInverseMctParams,
     J2kForwardRctParams,
     J2kForwardIctParams,
@@ -1065,6 +1099,7 @@ impl_gpu_readback_abi!(
     J2kHtCleanupParams,
     J2kHtCleanupBatchJob,
     J2kHtRepeatedBatchParams,
+    J2kHtVlcDispatchParams,
     J2kClassicRepeatedBatchParams,
     J2kHtStatus,
     J2kClassicEncodeParams,
@@ -1093,6 +1128,9 @@ impl_gpu_readback_abi!(
     J2kBatchedCodestreamAssemblyJob,
     J2kCodestreamAssemblyStatus,
 );
+
+#[cfg(all(test, target_os = "macos"))]
+impl_gpu_readback_abi!(J2kIdwt97StepParams);
 
 #[cfg(all(test, target_os = "macos"))]
 mod gpu_readback_abi_tests {

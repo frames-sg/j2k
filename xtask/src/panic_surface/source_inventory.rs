@@ -15,7 +15,7 @@ const PANIC_MACRO_BASELINE: PanicMacroInventory = PanicMacroInventory {
     assert: 8,
     assert_eq: 3,
     assert_ne: 0,
-    debug_assert: 91,
+    debug_assert: 95,
     debug_assert_eq: 66,
     debug_assert_ne: 0,
 };

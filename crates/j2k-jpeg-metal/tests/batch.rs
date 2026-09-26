@@ -255,6 +255,72 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_compatible_256_tile_batches_use_metal_and_preserve_pixels() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    for sampling in [
+        jpeg_encoder::SamplingFactor::F_2_2,
+        jpeg_encoder::SamplingFactor::F_2_1,
+    ] {
+        let inputs = (0_u8..16)
+            .map(|index| {
+                let mut rgb = j2k_test_support::patterned_rgb8(256, 256);
+                for pixel in rgb.chunks_exact_mut(3) {
+                    pixel[0] = pixel[0].wrapping_add(index.wrapping_mul(17));
+                    pixel[2] ^= index.wrapping_mul(29);
+                }
+                let mut input = Vec::new();
+                let mut encoder = jpeg_encoder::Encoder::new(&mut input, 90);
+                encoder.set_sampling_factor(sampling);
+                encoder
+                    .encode(&rgb, 256, 256, jpeg_encoder::ColorType::Rgb)
+                    .expect("JPEG encode");
+                input
+            })
+            .collect::<Vec<_>>();
+        let expected = inputs
+            .iter()
+            .map(|input| {
+                CpuDecoder::new(input)
+                    .expect("CPU decoder")
+                    .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                    .expect("CPU decode")
+                    .0
+            })
+            .collect::<Vec<_>>();
+        for (count, distinct) in [(64, 1), (16, 16)] {
+            let mut context = JpegDecoderContext::default();
+            let mut pool = ScratchPool::new();
+            let mut session = MetalSession::default();
+            let submissions = (0..count)
+                .map(|index| {
+                    <Codec as TileBatchDecodeSubmit>::submit_tile_to_device(
+                        &mut context,
+                        &mut session,
+                        &mut pool,
+                        &inputs[index % distinct],
+                        PixelFormat::Rgb8,
+                        BackendRequest::Auto,
+                    )
+                    .expect("Auto submit")
+                })
+                .collect::<Vec<_>>();
+            for (index, submission) in submissions.into_iter().enumerate() {
+                let surface = submission.wait().expect("Auto result");
+                assert_eq!(surface.backend_kind(), BackendKind::Metal);
+                assert_eq!(
+                    surface.as_bytes().expect("pixels"),
+                    expected[index % distinct].as_slice()
+                );
+            }
+            assert_eq!(session.submissions().expect("submissions"), 1);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn auto_restart_wsi_tile_batch_stays_on_cpu_without_promotion_evidence() {
     if !should_run_metal_runtime() {
         return;

@@ -11,8 +11,8 @@ use crate::Error;
 use super::direct_plan_types::PreparedDirectGrayscaleStep;
 use super::{
     direct_plan_types::{
-        PreparedClassicSubBandGroup, PreparedDirectColorPlan, PreparedDirectGrayscalePlan,
-        PreparedHtSubBandGroup,
+        with_color_store_rounding, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
+        PreparedDirectGrayscalePlan, PreparedHtSubBandGroup,
     },
     direct_prepare::{prepare_direct_grayscale_plan, prepare_direct_grayscale_plan_for_cpu_upload},
     direct_roi::crop_prepared_direct_grayscale_plan_to_output_region,
@@ -63,7 +63,7 @@ fn prepare_direct_color_plan_with_tier1_mode(
         signed: false,
         mct: plan.mct,
         transform: plan.transform,
-        component_plans,
+        component_plans: with_color_store_rounding(component_plans, plan.mct),
     })
 }
 

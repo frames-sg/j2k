@@ -608,6 +608,36 @@ fn auto_decode_tile_batch(bytes: &[u8], batch_size: usize) {
     device_decode_tile_batch(bytes, batch_size, BackendRequest::Auto);
 }
 
+/// Decode context, scratch, and Metal session kept across iterations, as a
+/// long-running tile server would, unlike `device_decode_tile_batch`.
+#[derive(Default)]
+struct RetainedTileBatchState {
+    ctx: JpegDecoderContext,
+    pool: ScratchPool,
+    session: MetalSession,
+}
+
+impl RetainedTileBatchState {
+    fn decode(&mut self, bytes: &[u8], batch_size: usize, backend: BackendRequest) {
+        let submissions = (0..batch_size)
+            .map(|_| {
+                <Codec as TileBatchDecodeSubmit>::submit_tile_to_device(
+                    &mut self.ctx,
+                    &mut self.session,
+                    &mut self.pool,
+                    bytes,
+                    PixelFormat::Rgb8,
+                    backend,
+                )
+                .expect("submit")
+            })
+            .collect::<Vec<_>>();
+        for submission in submissions {
+            std::hint::black_box(submission.wait().expect("surface"));
+        }
+    }
+}
+
 fn device_decode_tile_batch(bytes: &[u8], batch_size: usize, backend: BackendRequest) {
     let mut ctx = JpegDecoderContext::default();
     let mut pool = ScratchPool::new();
@@ -628,6 +658,65 @@ fn device_decode_tile_batch(bytes: &[u8], batch_size: usize, backend: BackendReq
     for submission in submissions {
         std::hint::black_box(submission.wait().expect("surface"));
     }
+}
+
+#[cfg(target_os = "macos")]
+fn bench_distinct_batch_routing(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jpeg_distinct_batch_routing");
+    for (family, sampling) in [
+        ("420", SamplingFactor::F_2_2),
+        ("422", SamplingFactor::F_2_1),
+    ] {
+        for side in [64_u16, 256] {
+            let inputs = (0..64)
+                .map(|index| generated_rgb_jpeg_variant(side, side, sampling, None, index))
+                .collect::<Vec<_>>();
+            for count in [16, 64] {
+                let decode = |backend| {
+                    let mut context = JpegDecoderContext::default();
+                    let mut session = MetalSession::default();
+                    let mut pool = ScratchPool::new();
+                    let submissions = inputs[..count]
+                        .iter()
+                        .map(|bytes| {
+                            <Codec as TileBatchDecodeSubmit>::submit_tile_to_device(
+                                &mut context,
+                                &mut session,
+                                &mut pool,
+                                bytes,
+                                PixelFormat::Rgb8,
+                                backend,
+                            )
+                            .expect("distinct routing submission")
+                        })
+                        .collect::<Vec<_>>();
+                    submissions
+                        .into_iter()
+                        .map(|submission| submission.wait().expect("distinct routing result"))
+                        .collect::<Vec<_>>()
+                };
+                let metal = decode(BackendRequest::Metal);
+                let cpu = decode(BackendRequest::Cpu);
+                for (actual, expected) in metal.iter().zip(&cpu) {
+                    assert_metal_surface_pixels(
+                        actual,
+                        expected.as_bytes().expect("CPU pixels").as_ref(),
+                    );
+                }
+                for (label, backend) in [
+                    ("cpu", BackendRequest::Cpu),
+                    ("metal", BackendRequest::Metal),
+                    ("auto", BackendRequest::Auto),
+                ] {
+                    group.bench_function(
+                        format!("{family}/{side}x{side}/batch{count}/{label}"),
+                        |b| b.iter(|| std::hint::black_box(decode(backend))),
+                    );
+                }
+            }
+        }
+    }
+    group.finish();
 }
 
 fn metal_decode_tile_batch_scaled(bytes: &[u8], batch_size: usize, factor: Downscale) {
@@ -885,6 +974,13 @@ fn bench_full_and_tile_decode_groups(c: &mut Criterion, inputs: &[BenchInput], h
             wsi_tile_batch_rgb.bench_function(format!("{}/metal", input.name), |b| {
                 b.iter(|| metal_decode_tile_batch(&input.bytes, 64));
             });
+            let mut retained = RetainedTileBatchState::default();
+            wsi_tile_batch_rgb.bench_function(
+                format!("{}/metal_retained_session", input.name),
+                |b| {
+                    b.iter(|| retained.decode(&input.bytes, 64, BackendRequest::Metal));
+                },
+            );
         }
         wsi_tile_batch_rgb.bench_function(format!("{}/auto", input.name), |b| {
             b.iter(|| auto_decode_tile_batch(&input.bytes, 64));
@@ -1634,6 +1730,8 @@ fn bench_compare(c: &mut Criterion) {
     #[cfg(target_os = "macos")]
     if has_metal {
         distinct_batch::bench(c);
+        distinct_batch::bench_mixed(c);
+        bench_distinct_batch_routing(c);
         representative_matrix::bench(c);
     }
     bench_resident_texture_batches(c, &inputs, has_metal);

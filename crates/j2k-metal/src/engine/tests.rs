@@ -2,6 +2,7 @@
 
 mod capacity;
 mod classic;
+mod decode_stage_profile;
 mod grouping;
 mod hybrid;
 mod hybrid_support;

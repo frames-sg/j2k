@@ -164,12 +164,6 @@ impl WorkerSlot {
         self.pool = ScratchPool::default();
     }
 
-    pub(super) fn prepare_for_planning(&mut self) {
-        // Planning reuses one bounded decoder context, but no stale decode
-        // scratch may coexist with the planning decoder's full codec claim.
-        self.pool = ScratchPool::default();
-    }
-
     pub(super) fn planning_context(&mut self) -> &mut DecoderContext {
         &mut self.ctx
     }

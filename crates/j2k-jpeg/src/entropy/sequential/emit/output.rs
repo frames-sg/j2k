@@ -2,7 +2,7 @@
 
 use super::{
     super::{is_ycbcr_420, scaled_dimensions, OutputScratch, PreparedDecodePlan},
-    four_component::fill_four_component_rgb_row,
+    four_component::{fill_four_component_rgb_row, FourComponentRow},
     types::{StripeEmit, StripeNeighbors},
     upsample::{
         upsample_420_pair, upsample_component_row_stripe, Stripe420PairSpec, Stripe420PairUpsample,
@@ -88,6 +88,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                         spec: Stripe420PairSpec {
                             plane_idx: 1,
                             local_y_out: local_y as u32,
+                            stripe_rows,
                             width,
                         },
                         top: &mut scratch.cb_top,
@@ -98,6 +99,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                         spec: Stripe420PairSpec {
                             plane_idx: 2,
                             local_y_out: local_y as u32,
+                            stripe_rows,
                             width,
                         },
                         top: &mut scratch.cr_top,
@@ -136,6 +138,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                             max_h,
                             max_v,
                             local_y_out: local_y as u32,
+                            stripe_rows,
                             width,
                         },
                         out: &mut scratch.cb_up,
@@ -149,6 +152,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                             max_h,
                             max_v,
                             local_y_out: local_y as u32,
+                            stripe_rows,
                             width,
                         },
                         out: &mut scratch.cr_up,
@@ -196,6 +200,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.r,
@@ -209,6 +214,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.g,
@@ -222,6 +228,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.b,
@@ -241,11 +248,12 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
             for local_y in 0..stripe_rows {
                 fill_four_component_rgb_row(
                     plan,
-                    prev,
-                    curr,
-                    next,
-                    local_y as u32,
-                    width,
+                    neighbors,
+                    FourComponentRow {
+                        local_y: local_y as u32,
+                        stripe_rows,
+                        width,
+                    },
                     scratch,
                 )?;
                 writer.write_rgb_row(

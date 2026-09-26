@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::engine::abi::J2kIdwt97StepParams;
 use crate::engine::runtime::MetalRuntime;
 use crate::metal_types::ComputePipelineState;
 use j2k_metal_support::MetalPipelineLoader;
 
 // Original full-grid lifting kernels, kept only as an independent test oracle.
-const REFERENCE_STEPS: &str = r"kernel void audit_idwt97_horizontal_reference(
+const REFERENCE_STEPS: &str = r"struct J2kIdwt97ReferenceStep {
+    float coefficient;
+    uint parity;
+    uint reserved0;
+    uint reserved1;
+};
+
+kernel void audit_idwt97_horizontal_reference(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
-    constant J2kIdwt97StepParams &step [[buffer(2)]],
+    constant J2kIdwt97ReferenceStep &step [[buffer(2)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height || params.width <= 1u
@@ -26,10 +34,36 @@ const REFERENCE_STEPS: &str = r"kernel void audit_idwt97_horizontal_reference(
                    out[idx]);
 }
 
+kernel void audit_idwt97_vertical_scale_reference(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    constant float &high_pass [[buffer(2)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    out += ulong(gid.z) * params.width * params.height;
+    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+    float sample = out[gid.y * params.width + gid.x];
+
+    if (params.height == 1u) {
+        if (((params.y0 + params.output_y) & 1u) != 0u) {
+            sample *= 0.5f;
+        }
+    } else {
+        const uint first_even_y = (params.y0 + params.output_y) & 1u;
+        sample *= (gid.y & 1u) == first_even_y ? KAPPA : high_pass;
+    }
+
+    out[gid.y * params.width + gid.x] = sample;
+}
+
 kernel void audit_idwt97_vertical_reference(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
-    constant J2kIdwt97StepParams &step [[buffer(2)]],
+    constant J2kIdwt97ReferenceStep &step [[buffer(2)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.width || gid.y >= params.height || params.height <= 1u
@@ -47,47 +81,10 @@ kernel void audit_idwt97_vertical_reference(
 }
 ";
 
-#[derive(Clone, Copy)]
-enum Stage {
-    Scale(f32),
-    Lift(J2kIdwt97StepParams),
-}
-
-fn compare_stage(
-    runtime: &MetalRuntime,
-    buffers: &[Buffer; 2],
-    pipelines: [&ComputePipelineState; 2],
-    params: &J2kIdwtSingleDecompositionParams,
-    batch: u32,
-    stage: Stage,
-) {
-    const PREFIX: usize = 4;
-    let command = new_command_buffer(&runtime.queue).expect("comparison command");
-    let encoder = new_compute_command_encoder(&command).expect("comparison encoder");
-    for (buffer, pipeline) in buffers.iter().zip(pipelines) {
-        encoder.setComputePipelineState(pipeline);
-        encoder.set_buffer(0, Some(buffer), (PREFIX * size_of::<f32>()) as u64);
-        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, params);
-        match stage {
-            Stage::Scale(high_pass) => encoder.set_bytes::<f32>(2, &high_pass),
-            Stage::Lift(step) => encoder.set_bytes::<J2kIdwt97StepParams>(2, &step),
-        }
-        // Full original bounds remain a legal upper bound for a compact
-        // kernel's guards. Production grid coverage is checked separately.
-        dispatch_3d_pipeline(&encoder, pipeline, (params.width, params.height, batch));
-    }
-    encoder.endEncoding();
-    commit_and_wait_metal(&command).expect("completed comparison");
-    let len = PREFIX + params.width as usize * params.height as usize * batch as usize + PREFIX;
-    let expected = checked_buffer_slice::<f32>(&buffers[0], len, "reference stages").unwrap();
-    let actual = checked_buffer_slice::<f32>(&buffers[1], len, "production stages").unwrap();
-    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-        assert!(actual.is_finite());
-        assert_eq!(actual.to_bits(), expected.to_bits(), "coefficient {index}");
-    }
-    for value in actual[..PREFIX].iter().chain(&actual[len - PREFIX..]) {
-        assert_eq!(value.to_bits(), 7.0_f32.to_bits(), "offset guard changed");
-    }
+struct References {
+    horizontal: ComputePipelineState,
+    vertical_scale: ComputePipelineState,
+    vertical: ComputePipelineState,
 }
 
 fn geometry_params(geometry: (u32, u32, u32, u32, u32, u32)) -> J2kIdwtSingleDecompositionParams {
@@ -118,75 +115,109 @@ fn geometry_params(geometry: (u32, u32, u32, u32, u32, u32)) -> J2kIdwtSingleDec
     }
 }
 
-fn compare_geometry(
-    runtime: &MetalRuntime,
-    references: &[ComputePipelineState; 2],
-    geometry: (u32, u32, u32, u32, u32, u32),
+/// Runs the original one-pass-per-step lifting sequence on `buffer`.
+fn encode_reference_stages(
+    encoder: &ComputeCommandEncoderRef,
+    references: &References,
+    buffer: &Buffer,
+    offset: u64,
+    params: &J2kIdwtSingleDecompositionParams,
     batch: u32,
     high_pass: f32,
 ) {
-    let (width, height, x0, y0, output_x, output_y) = geometry;
-    let params = geometry_params(geometry);
-    let count = width as usize * height as usize * batch as usize;
-    let mut seed = vec![7.0; count + 8];
-    for (index, value) in seed[4..count + 4].iter_mut().enumerate() {
-        *value = f32::from(i16::try_from(index % 257).unwrap() - 128) * 0.03125;
-    }
-    let buffers = [
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-    ];
-    let kernels = runtime.decode().expect("production kernels");
-    for (axis, origin, offset, scale, lift) in [
-        (
-            0,
-            x0,
-            output_x,
-            &kernels.idwt_irreversible97_horizontal_scale,
-            &kernels.idwt_irreversible97_horizontal_step,
-        ),
-        (
-            1,
-            y0,
-            output_y,
-            &kernels.idwt_irreversible97_vertical_scale,
-            &kernels.idwt_irreversible97_vertical_step,
-        ),
-    ] {
-        compare_stage(
-            runtime,
-            &buffers,
-            [scale, scale],
-            &params,
-            batch,
-            Stage::Scale(high_pass),
-        );
-        let even = (origin + offset) & 1;
+    let grid = (params.width, params.height, batch);
+    let lifts = |origin: u32, pipeline: &ComputePipelineState| {
+        let even = origin & 1;
         for (coefficient, parity) in [
             (dwt::IDWT97_NEG_DELTA_F32, even),
             (dwt::IDWT97_NEG_GAMMA_F32, 1 - even),
             (dwt::IDWT97_NEG_BETA_F32, even),
             (dwt::IDWT97_NEG_ALPHA_F32, 1 - even),
         ] {
-            compare_stage(
-                runtime,
-                &buffers,
-                [&references[axis], lift],
-                &params,
-                batch,
-                Stage::Lift(J2kIdwt97StepParams {
-                    coefficient,
-                    parity,
-                    _reserved0: 0,
-                    _reserved1: 0,
-                }),
-            );
+            let step = J2kIdwt97StepParams {
+                coefficient,
+                parity,
+                _reserved0: 0,
+                _reserved1: 0,
+            };
+            encoder.setComputePipelineState(pipeline);
+            encoder.set_buffer(0, Some(buffer), offset);
+            encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, params);
+            encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
+            dispatch_3d_pipeline(encoder, pipeline, grid);
+            encoder.memory_barrier_with_resources(&[buffer]);
         }
+    };
+    lifts(params.x0 + params.output_x, &references.horizontal);
+    encoder.setComputePipelineState(&references.vertical_scale);
+    encoder.set_buffer(0, Some(buffer), offset);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, params);
+    encoder.set_bytes::<f32>(2, &high_pass);
+    dispatch_3d_pipeline(encoder, &references.vertical_scale, grid);
+    encoder.memory_barrier_with_resources(&[buffer]);
+    lifts(params.y0 + params.output_y, &references.vertical);
+}
+
+fn compare_geometry(
+    runtime: &MetalRuntime,
+    references: &References,
+    geometry: (u32, u32, u32, u32, u32, u32),
+    batch: u32,
+    high_pass: f32,
+) {
+    const PREFIX: usize = 4;
+    let (width, height, ..) = geometry;
+    let params = geometry_params(geometry);
+    let count = width as usize * height as usize * batch as usize;
+    let mut seed = vec![7.0; count + 2 * PREFIX];
+    for (index, value) in seed[PREFIX..count + PREFIX].iter_mut().enumerate() {
+        *value = f32::from(i16::try_from(index % 257).unwrap() - 128) * 0.03125;
+    }
+    let buffers = [
+        copied_slice_buffer(&runtime.device, &seed).unwrap(),
+        copied_slice_buffer(&runtime.device, &seed).unwrap(),
+    ];
+    let offset = (PREFIX * size_of::<f32>()) as u64;
+    let command = new_command_buffer(&runtime.queue).expect("comparison command");
+    let encoder = new_compute_command_encoder(&command).expect("comparison encoder");
+    encode_reference_stages(
+        &encoder,
+        references,
+        &buffers[0],
+        offset,
+        &params,
+        batch,
+        high_pass,
+    );
+    dispatch_irreversible97_stages_after_horizontal_scale(
+        &encoder,
+        runtime.decode().expect("production kernels"),
+        &buffers[1],
+        PREFIX * size_of::<f32>(),
+        params,
+        high_pass,
+        batch,
+    );
+    encoder.endEncoding();
+    commit_and_wait_metal(&command).expect("completed comparison");
+    let len = count + 2 * PREFIX;
+    let expected = checked_buffer_slice::<f32>(&buffers[0], len, "reference stages").unwrap();
+    let actual = checked_buffer_slice::<f32>(&buffers[1], len, "fused stages").unwrap();
+    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+        assert!(actual.is_finite());
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "geometry {geometry:?} batch {batch}: coefficient {index}"
+        );
+    }
+    for value in actual[..PREFIX].iter().chain(&actual[len - PREFIX..]) {
+        assert_eq!(value.to_bits(), 7.0_f32.to_bits(), "offset guard changed");
     }
 }
 
 #[test]
-fn irreversible97_lifting_intermediates_match_full_grid_reference_bits() {
+fn irreversible97_fused_lifting_matches_full_grid_reference_bits() {
     if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
     }
@@ -196,12 +227,17 @@ fn irreversible97_lifting_intermediates_match_full_grid_reference_bits() {
             crate::engine::shader_source::decode_shader_source()
         );
         let loader = MetalPipelineLoader::new(&runtime.device, &source).expect("reference library");
-        let references = [
-            loader
+        let references = References {
+            horizontal: loader
                 .pipeline("audit_idwt97_horizontal_reference")
                 .unwrap(),
-            loader.pipeline("audit_idwt97_vertical_reference").unwrap(),
-        ];
+            vertical_scale: loader
+                .pipeline("audit_idwt97_vertical_scale_reference")
+                .unwrap(),
+            vertical: loader.pipeline("audit_idwt97_vertical_reference").unwrap(),
+        };
+        // Small edge cases, then shapes spanning several row tiles (128) and
+        // column tiles (64), with partial final tiles and odd origins.
         for geometry in [
             (1, 1, 0, 0, 0, 0),
             (1, 1, 1, 1, 0, 0),
@@ -212,6 +248,12 @@ fn irreversible97_lifting_intermediates_match_full_grid_reference_bits() {
             (5, 7, 0, 0, 1, 1),
             (18, 31, 1, 1, 2, 3),
             (129, 7, 0, 1, 3, 2),
+            (320, 240, 0, 0, 0, 0),
+            (257, 131, 1, 0, 0, 1),
+            (131, 257, 0, 1, 1, 0),
+            (640, 65, 1, 1, 0, 0),
+            (2, 200, 0, 0, 0, 1),
+            (200, 2, 1, 0, 0, 0),
         ] {
             for batch in [1, 3, 16] {
                 for high_pass in [
@@ -224,11 +266,11 @@ fn irreversible97_lifting_intermediates_match_full_grid_reference_bits() {
         }
         Ok(())
     })
-    .expect("intermediate bitwise comparison");
+    .expect("fused lifting bitwise comparison");
 }
 
 #[test]
-fn irreversible97_stage_grids_remove_inactive_parity_positions() {
+fn irreversible97_fused_stages_encode_one_pass_per_axis() {
     if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
     }
@@ -253,44 +295,21 @@ fn irreversible97_stage_grids_remove_inactive_parity_positions() {
             commit_and_wait_metal(&command)?;
             let (positions, dispatches) =
                 crate::engine::test_counters::idwt97_logical_dispatches_for_test();
+            let horizontal_lift = usize::from(width > 1);
             assert_eq!(
                 positions,
-                6 * samples.len(),
-                "two scales plus eight half-parity lifts"
+                (2 + horizontal_lift) * samples.len(),
+                "horizontal scale, horizontal lifts, and vertical scale plus lifts each cover every sample once"
             );
             assert_eq!(
                 dispatches,
-                2 + if width == 1 { 2 } else { 4 } + if height == 1 { 2 } else { 4 },
-                "zero-count parity dispatches must be skipped"
+                2 + horizontal_lift,
+                "single-column planes skip the horizontal lifting pass"
             );
         }
         Ok(())
     })
-    .expect("production parity grids");
-}
-
-#[test]
-fn compact_parity_axis_enumerates_original_active_coordinates() {
-    for length in 0..=257 {
-        for odd in [false, true] {
-            let parity = u32::from(odd);
-            let original = (0..length)
-                .filter(|index| index & 1 == parity)
-                .collect::<Vec<_>>();
-            let compact = (0..parity_axis_len(length, odd))
-                .map(|index| index * 2 + parity)
-                .collect::<Vec<_>>();
-            assert_eq!(compact, original, "length={length}, odd={odd}");
-        }
-    }
-    assert_eq!(parity_axis_len(u32::MAX, false), 1_u32 << 31);
-    assert_eq!(parity_axis_len(u32::MAX, true), (1_u32 << 31) - 1);
-    for (odd, expected_last) in [(false, u32::MAX - 1), (true, u32::MAX - 2)] {
-        let last = (parity_axis_len(u32::MAX, odd) - 1)
-            .checked_mul(2)
-            .and_then(|index| index.checked_add(u32::from(odd)));
-        assert_eq!(last, Some(expected_last));
-    }
+    .expect("production fused grids");
 }
 
 #[path = "interleave_tests.rs"]

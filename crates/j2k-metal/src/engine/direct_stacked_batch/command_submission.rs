@@ -33,6 +33,7 @@ struct SubmissionContext<'a, 'p, 'r> {
     count: usize,
     broadcast_tier1_inputs: bool,
     profile_stages: bool,
+    round_centered_store: bool,
     resources: &'r mut StackedComponentResources,
 }
 
@@ -97,6 +98,7 @@ pub(super) fn submit_stacked_component_commands<'p>(
         count: plan.count,
         broadcast_tier1_inputs: plan.broadcast_tier1_inputs,
         profile_stages,
+        round_centered_store: plan.first.round_centered_store,
         resources,
     };
 

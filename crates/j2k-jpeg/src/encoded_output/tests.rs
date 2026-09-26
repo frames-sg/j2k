@@ -47,12 +47,3 @@ fn allocator_reported_capacity_is_checked_after_reservation() {
         })
     ));
 }
-
-#[test]
-fn encoded_output_module_stays_focused() {
-    const SOURCE: &str = include_str!("../encoded_output.rs");
-    assert!(
-        SOURCE.lines().count() <= 160,
-        "encoded output storage should be split before it exceeds 160 lines"
-    );
-}

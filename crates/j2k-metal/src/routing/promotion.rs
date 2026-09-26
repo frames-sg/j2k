@@ -4,6 +4,7 @@ use j2k_core::{CompressedPayloadKind, CompressedTransferSyntax, Downscale, Pixel
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PromotionOperation {
+    Full,
     ScaledHalf,
     Repeated,
 }
@@ -39,6 +40,29 @@ pub(crate) fn auto_scaled_decode_uses_metal(
             PromotionOperation::ScaledHalf,
             1,
         )
+}
+
+/// Single full-image decodes. Cells are measured on one-component sources
+/// decoded to `Gray8` and three-component sources decoded to `Rgb8`; other
+/// pairings stay on the CPU.
+pub(crate) fn auto_full_decode_uses_metal(
+    dimensions: (u32, u32),
+    source_components: u16,
+    format: PixelFormat,
+    transfer_syntax: CompressedTransferSyntax,
+    payload_kind: CompressedPayloadKind,
+) -> bool {
+    matches!(
+        (source_components, format),
+        (1, PixelFormat::Gray8) | (3, PixelFormat::Rgb8)
+    ) && qualifies(
+        dimensions,
+        format,
+        transfer_syntax,
+        payload_kind,
+        PromotionOperation::Full,
+        1,
+    )
 }
 
 pub(crate) fn auto_repeated_decode_uses_metal(

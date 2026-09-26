@@ -12,20 +12,27 @@ use crate::error::Warning;
 
 use super::warning_ownership::warning_merge_peak_bytes;
 use super::{
-    checked_usize_product, Decoder, HuffmanTable, JpegError, ParsedHeader, PreparedDecodePlan,
-    PreparedProgressiveComponentPlan, PreparedProgressiveScan, PreparedProgressiveScanComponent,
-    SofKind, COMPONENT_IMAGE_METADATA_BYTES, DEFAULT_MAX_DECODE_BYTES,
+    checked_usize_product, Decoder, JpegError, ParsedHeader, PreparedDecodePlan,
+    PreparedHuffmanTables, PreparedProgressiveComponentPlan, PreparedProgressiveScan,
+    PreparedProgressiveScanComponent, SofKind, COMPONENT_IMAGE_METADATA_BYTES,
+    DEFAULT_MAX_DECODE_BYTES,
 };
 
 impl Decoder<'_> {
-    /// Exact retained host bytes that remain live while the CPU checkpoint
-    /// cache grows. The cache itself is deliberately excluded so replacement
-    /// growth can count the old and new cache capacities exactly once.
+    /// Exact retained host bytes this decoder owns that remain live while the
+    /// CPU checkpoint cache grows. The cache itself is deliberately excluded so
+    /// replacement growth can count the old and new cache capacities exactly
+    /// once.
+    ///
+    /// The shared [`DecoderContext`](crate::DecoderContext) reserve,
+    /// `MAX_DECODER_CONTEXT_ALLOCATION_BYTES`, is not owned by any one decoder:
+    /// many decoders share one context. Each budget with a live context
+    /// charges that reserve once (decode workspace planning, checkpoint
+    /// growth, device planning), so summing decoders never multiplies it.
     pub(crate) fn retained_allocation_bytes_excluding_cpu_checkpoint_cache(
         &self,
     ) -> Result<usize, JpegError> {
-        let mut total = MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
-        total = checked_add_allocation_bytes(total, self.plan.retained_allocation_bytes()?)?;
+        let mut total = self.plan.retained_allocation_bytes()?;
         if let Some(progressive) = &self.progressive_plan {
             total = checked_add_allocation_bytes(total, progressive.retained_allocation_bytes()?)?;
         }
@@ -90,7 +97,7 @@ pub(super) fn progressive_prepared_allocation_bytes(
     )?;
     total = checked_add_allocation_bytes(
         total,
-        checked_allocation_bytes::<HuffmanTable>(huffman_table_count)?,
+        PreparedHuffmanTables::allocation_bytes_for_capacity(huffman_table_count)?,
     )?;
     total = checked_add_allocation_bytes(
         total,
@@ -241,7 +248,9 @@ mod tests {
         let huffman_tables = 7usize;
         let expected = components * size_of::<PreparedProgressiveComponentPlan>()
             + scan_components * size_of::<PreparedProgressiveScanComponent>()
-            + huffman_tables * size_of::<HuffmanTable>()
+            + huffman_tables * size_of::<crate::entropy::huffman::HuffmanTable>()
+            + 2 * (size_of::<Vec<crate::entropy::huffman::HuffmanTable>>()
+                + 2 * size_of::<usize>())
             + scans * size_of::<PreparedProgressiveScan>()
             + components * size_of::<PreparedComponentPlan>();
         assert_eq!(
@@ -257,8 +266,11 @@ mod tests {
     }
 
     #[test]
-    fn prepared_decode_formula_counts_one_inline_arena() {
-        let expected = size_of::<PreparedComponentPlan>() + 2 * size_of::<HuffmanTable>();
+    fn prepared_decode_formula_counts_shared_arena_and_owner() {
+        let expected = size_of::<PreparedComponentPlan>()
+            + 2 * size_of::<crate::entropy::huffman::HuffmanTable>()
+            + size_of::<Vec<crate::entropy::huffman::HuffmanTable>>()
+            + 2 * size_of::<usize>();
         assert_eq!(
             prepared_decode_plan_allocation_bytes(1, 2).unwrap(),
             expected
@@ -271,6 +283,8 @@ mod tests {
         let before = decoder
             .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
             .expect("bounded decoder baseline");
+        let owned_before = crate::adapter::decoder_retained_allocation_bytes(&decoder)
+            .expect("empty-cache decoder ownership");
         let workspace_before = decoder
             .decode_workspace_cap()
             .expect("empty-cache workspace cap");
@@ -290,8 +304,11 @@ mod tests {
         let after = decoder
             .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
             .expect("bounded decoder baseline");
+        let owned_after = crate::adapter::decoder_retained_allocation_bytes(&decoder)
+            .expect("populated-cache decoder ownership");
 
         assert_eq!(before, after);
+        assert_eq!(owned_after, owned_before + retained_checkpoint_bytes);
         assert_eq!(
             decoder
                 .decode_workspace_cap()

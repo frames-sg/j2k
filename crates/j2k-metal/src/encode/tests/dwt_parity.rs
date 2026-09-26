@@ -55,51 +55,71 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
         return;
     }
 
-    let width = 8;
-    let height = 8;
-    let samples = (0..width * height)
-        .map(|idx| f32::from(u16::try_from(idx).expect("test index fits u16")) * 0.5 - 15.25)
-        .collect::<Vec<_>>();
-    let expected =
-        forward_dwt53_reference(&samples, width, height, 1).expect("native 5/3 reference DWT");
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    for (width, height, num_levels) in [
+        (8, 8, 1),
+        (31, 7, 1),
+        (32, 7, 1),
+        (33, 7, 1),
+        (63, 7, 1),
+        (64, 7, 1),
+        (65, 35, 2),
+    ] {
+        let samples = (0..width * height)
+            .map(|idx| {
+                if width == 8 && height == 8 {
+                    return f32::from(u16::try_from(idx).expect("test index fits u16")) * 0.5
+                        - 15.25;
+                }
+                let x = idx % width;
+                let y = idx / width;
+                let mixed = (x * 37 + y * 53 + x * y * 11) % 257;
+                let checker = if (x + y) & 1 == 0 { 0.125 } else { -0.25 };
+                f32::from(u16::try_from(mixed).expect("bounded test sample fits u16")) * 0.375
+                    - 48.625
+                    + checker
+            })
+            .collect::<Vec<_>>();
+        let expected = forward_dwt53_reference(&samples, width, height, num_levels)
+            .expect("native 5/3 reference DWT");
+        let mut accelerator = MetalEncodeStageAccelerator::default();
 
-    let actual = accelerator
-        .encode_forward_dwt53(J2kForwardDwt53Job {
-            samples: &samples,
-            width,
-            height,
-            num_levels: 1,
-        })
-        .expect("metal DWT 5/3 stage")
-        .expect("metal DWT 5/3 dispatch");
+        let actual = accelerator
+            .encode_forward_dwt53(J2kForwardDwt53Job {
+                samples: &samples,
+                width,
+                height,
+                num_levels,
+            })
+            .expect("metal DWT 5/3 stage")
+            .expect("metal DWT 5/3 dispatch");
 
-    assert_eq!(actual.ll_width, expected.ll_width);
-    assert_eq!(actual.ll_height, expected.ll_height);
-    assert_slice_near(&actual.ll, &expected.ll, "LL");
-    assert_eq!(actual.levels.len(), expected.levels.len());
-    for (index, (actual, expected)) in actual.levels.iter().zip(&expected.levels).enumerate() {
-        assert_eq!(actual.width, expected.width, "level {index} width");
-        assert_eq!(actual.height, expected.height, "level {index} height");
-        assert_eq!(
-            actual.low_width, expected.low_width,
-            "level {index} low width"
-        );
-        assert_eq!(
-            actual.low_height, expected.low_height,
-            "level {index} low height"
-        );
-        assert_eq!(
-            actual.high_width, expected.high_width,
-            "level {index} high width"
-        );
-        assert_eq!(
-            actual.high_height, expected.high_height,
-            "level {index} high height"
-        );
-        assert_slice_near(&actual.hl, &expected.hl, "HL");
-        assert_slice_near(&actual.lh, &expected.lh, "LH");
-        assert_slice_near(&actual.hh, &expected.hh, "HH");
+        assert_eq!(actual.ll_width, expected.ll_width);
+        assert_eq!(actual.ll_height, expected.ll_height);
+        assert_slice_near(&actual.ll, &expected.ll, "LL");
+        assert_eq!(actual.levels.len(), expected.levels.len());
+        for (index, (actual, expected)) in actual.levels.iter().zip(&expected.levels).enumerate() {
+            assert_eq!(actual.width, expected.width, "level {index} width");
+            assert_eq!(actual.height, expected.height, "level {index} height");
+            assert_eq!(
+                actual.low_width, expected.low_width,
+                "level {index} low width"
+            );
+            assert_eq!(
+                actual.low_height, expected.low_height,
+                "level {index} low height"
+            );
+            assert_eq!(
+                actual.high_width, expected.high_width,
+                "level {index} high width"
+            );
+            assert_eq!(
+                actual.high_height, expected.high_height,
+                "level {index} high height"
+            );
+            assert_slice_near(&actual.hl, &expected.hl, "HL");
+            assert_slice_near(&actual.lh, &expected.lh, "LH");
+            assert_slice_near(&actual.hh, &expected.hh, "HH");
+        }
     }
 }
 

@@ -111,6 +111,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     classic_workspace,
                     ht_workspace,
                     &mut output_initialized[0],
+                    true,
                 )?;
             } else if let Some(geometry) = tile.color_geometry() {
                 execute_color_components_referenced(

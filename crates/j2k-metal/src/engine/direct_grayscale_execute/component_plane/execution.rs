@@ -64,6 +64,7 @@ struct ComponentPlaneExecution<'a> {
     scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
     bands: Vec<DirectBandSlice>,
     final_plane: FinalComponentPlane,
+    round_centered_store: bool,
 }
 
 impl ComponentPlaneExecution<'_> {
@@ -343,6 +344,7 @@ impl ComponentPlaneExecution<'_> {
                 output_x: store.output_x,
                 output_y: store.output_y,
                 addend: store.addend,
+                round_centered: u32::from(self.round_centered_store),
             },
         );
         if let Some(started) = encode_started {
@@ -400,6 +402,7 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
         scratch_buffers,
         bands,
         final_plane: FinalComponentPlane::empty(),
+        round_centered_store: plan.round_centered_store,
     };
     let mut step_idx = 0;
     while step_idx < plan.steps.len() {

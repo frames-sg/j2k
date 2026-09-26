@@ -3,7 +3,7 @@
 use super::{
     super::{scaled_dimensions, PreparedDecodePlan},
     types::{Fast420RegionStripe, StripeNeighbors},
-    upsample::component_row_triplet,
+    upsample::{component_row_triplet, valid_component_rows},
 };
 use crate::{
     backend::{Backend, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair},
@@ -54,6 +54,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb_420_region<
     let crop_width = region_layout.crop_end - region_layout.crop_start;
     let crop_len = crop_width * 3;
     let use_direct_crop = should_use_direct_420_crop(backend, downscale, row_width, crop_width);
+    let chroma_valid_rows = valid_component_rows(stripe_rows, 2);
     let mut local_y = 0usize;
     while local_y < stripe_rows {
         let next_local_y = local_y + 1;
@@ -75,12 +76,14 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb_420_region<
             curr.plane(1),
             next.map(|stripe| stripe.plane(1)),
             chroma_y,
+            chroma_valid_rows,
         );
         let (prev_cr, curr_cr, next_cr) = component_row_triplet(
             prev.map(|stripe| stripe.plane(2)),
             curr.plane(2),
             next.map(|stripe| stripe.plane(2)),
             chroma_y,
+            chroma_valid_rows,
         );
         let chroma = Rgb420ChromaRows::new(
             &prev_cb[..chroma_width],

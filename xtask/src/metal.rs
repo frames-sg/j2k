@@ -62,6 +62,8 @@ const METAL_OPTIONAL_IGNORED_TESTS: &[&str] = &[
     "engine::decode_dispatch::idwt::irreversible::performance::metal_irreversible97_interleave_horizontal_scale_gpu_timing",
     "engine::direct_buffers::performance::metal_checked_buffer_copy_into_perf",
     "engine::decode_dispatch::idwt::irreversible::performance::metal_irreversible97_stage_gpu_timing",
+    "engine::tests::decode_stage_profile::batched_idwt_route_profile",
+    "engine::tests::decode_stage_profile::decode_stage_profile",
 ];
 
 struct MetalTestSuite {

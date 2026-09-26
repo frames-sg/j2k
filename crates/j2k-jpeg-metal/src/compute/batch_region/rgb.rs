@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::metal_types::prelude::*;
+use objc2_metal::MTLCommandBuffer;
 
+use super::super::scratch_pool::BatchScratchLease;
 use super::super::{
     batch, batch_entropy_buffers, batch_output_buffer_or_new, bind_three_plane_pack, checked_u32,
-    commit_and_wait_jpeg, copy_grouped_surfaces_to_output, dispatch_3d_pipeline,
-    fast444_scaled_region_params, fast_subsampled_region_scaled_batch_groups,
-    fast_subsampled_region_scaled_batch_plan, new_command_buffer, new_compute_command_encoder,
-    region_scaled_batch_error_results, surface_batch_success_results, BatchEntropyBufferKeys,
-    BatchEntropyBufferPlan, BatchedFastPacket, Error, FastRegionScaledMetal, JpegDecodeStatus,
-    JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1, JpegWindowedPackBatchParams,
-    MetalRuntime, PixelFormat, PlaneMode, Rect, RegionScaledBatchPlan, Surface,
+    copy_grouped_surfaces_to_output, dispatch_3d_pipeline, fast444_scaled_region_params,
+    fast_subsampled_region_scaled_batch_groups, fast_subsampled_region_scaled_batch_plan,
+    new_command_buffer, new_compute_command_encoder, region_scaled_batch_error_results,
+    surface_batch_success_results, wait_for_completion_jpeg, BatchEntropyBufferKeys,
+    BatchEntropyBufferPlan, BatchedFastPacket, Buffer, CommandBuffer, CommandBufferRef, Error,
+    FastRegionScaledMetal, JpegDecodeStatus, JpegFast420PacketV1, JpegFast422PacketV1,
+    JpegFast444PacketV1, JpegWindowedPackBatchParams, MetalRuntime, PixelFormat, PlaneMode, Rect,
+    RegionScaledBatchPlan, Surface,
 };
 use super::common::{
     decode_region_scaled_packet_surface, encode_subsampled_region_rgb_decode,
     first_region_scaled_op, region_plane_buffers, subsampled_region_rgb_batch_shape,
-    subsampled_region_rgb_packets,
+    subsampled_region_rgb_packets, SubsampledRegionBatchShape,
 };
 
 #[cfg(target_os = "macos")]
@@ -226,14 +229,6 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgb_batch_to_surfaces_with_o
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the region-scaled GPU path keeps batch eligibility, scratch allocation, command encoding, and output copies in dispatch order"
-)]
-#[expect(
-    clippy::similar_names,
-    reason = "Cb and Cr are normative JPEG component names"
-)]
 pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output<
     P: FastRegionScaledMetal,
 >(
@@ -246,12 +241,12 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         return Ok(None);
     };
 
-    let Some((first, first_mode)) = family_packets.first().copied() else {
+    let Some((first, _)) = family_packets.first().copied() else {
         return Ok(None);
     };
-    let Some((first_roi, first_scale)) = first_region_scaled_op(requests) else {
+    if first_region_scaled_op(requests).is_none() {
         return Ok(None);
-    };
+    }
     if family_packets
         .iter()
         .any(|(packet, _)| packet.restart_interval_mcus() != 0)
@@ -281,9 +276,40 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         );
     }
 
-    let Some(shape) = subsampled_region_rgb_batch_shape::<P>(
+    let Some(pending) = try_submit_compatible_region_scaled_rgb_batch::<P>(
+        runtime,
         requests,
         &family_packets,
+        output,
+        runtime.batch_scratch()?,
+    )?
+    else {
+        return Ok(None);
+    };
+    pending.finish(requests, output).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
+fn try_submit_compatible_region_scaled_rgb_batch<'runtime, P: FastRegionScaledMetal>(
+    runtime: &'runtime MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    family_packets: &[(&P, PlaneMode)],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    mut batch_scratch: BatchScratchLease<'runtime>,
+) -> Result<Option<PendingRegionScaledRgbBatch<'runtime>>, Error> {
+    let Some((first, first_mode)) = family_packets.first().copied() else {
+        return Ok(None);
+    };
+    let Some((first_roi, first_scale)) = first_region_scaled_op(requests) else {
+        return Ok(None);
+    };
+    let Some(shape) = subsampled_region_rgb_batch_shape::<P>(
+        requests,
+        family_packets,
         first,
         first_mode,
         first_roi,
@@ -293,7 +319,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         return Ok(None);
     };
 
-    let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
         requests,
@@ -360,17 +385,47 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         shape,
     )?;
 
-    let pack_encoder = new_compute_command_encoder(&command_buffer)?;
-    pack_encoder.setComputePipelineState(P::pack_windowed_rgb_batch_pipeline(runtime));
+    encode_subsampled_region_rgb_pack::<P>(
+        runtime,
+        &command_buffer,
+        [&y_plane, &cb_plane, &cr_plane],
+        &out_buffer,
+        shape,
+    )?;
+
+    command_buffer.commit();
+    Ok(Some(PendingRegionScaledRgbBatch {
+        command_buffer,
+        _batch_scratch: batch_scratch,
+        status_buffer,
+        out_buffer,
+        shape,
+        waited: false,
+    }))
+}
+
+/// Encodes the windowed pack that upsamples and color-converts the decoded
+/// component planes into the batch's RGB output.
+#[cfg(target_os = "macos")]
+fn encode_subsampled_region_rgb_pack<P: FastRegionScaledMetal>(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    out_buffer: &Buffer,
+    shape: SubsampledRegionBatchShape,
+) -> Result<(), Error> {
+    let pipeline = P::pack_windowed_rgb_batch_pipeline(runtime);
+    let pack_encoder = new_compute_command_encoder(command_buffer)?;
+    pack_encoder.setComputePipelineState(pipeline);
     bind_three_plane_pack::<JpegWindowedPackBatchParams>(
         &pack_encoder,
-        [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
-        &out_buffer,
+        planes.map(Some),
+        out_buffer,
         &shape.plan.pack_params,
     );
     dispatch_3d_pipeline(
         &pack_encoder,
-        P::pack_windowed_rgb_batch_pipeline(runtime),
+        pipeline,
         (
             shape.plan.out_dims.0,
             shape.plan.out_dims.1,
@@ -378,25 +433,52 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         ),
     );
     pack_encoder.endEncoding();
+    Ok(())
+}
 
-    commit_and_wait_jpeg(&command_buffer)?;
-    // Keep scratch leased until the CPU has consumed the GPU status below.
+struct PendingRegionScaledRgbBatch<'runtime> {
+    command_buffer: CommandBuffer,
+    _batch_scratch: BatchScratchLease<'runtime>,
+    status_buffer: Buffer,
+    out_buffer: Buffer,
+    shape: SubsampledRegionBatchShape,
+    waited: bool,
+}
 
-    if let Some(results) =
-        region_scaled_batch_error_results(requests, &status_buffer, shape.total_decode_threads)?
-    {
-        return Ok(Some(results));
+impl PendingRegionScaledRgbBatch<'_> {
+    fn finish(
+        mut self,
+        requests: &[batch::QueuedRequest],
+        output: Option<&crate::MetalBatchOutputBuffer>,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        let completion = wait_for_completion_jpeg(&self.command_buffer);
+        self.waited = true;
+        completion?;
+        if let Some(results) = region_scaled_batch_error_results(
+            requests,
+            &self.status_buffer,
+            self.shape.total_decode_threads,
+        )? {
+            return Ok(results);
+        }
+        surface_batch_success_results(
+            requests,
+            &self.out_buffer,
+            self.shape.plan.out_dims,
+            PixelFormat::Rgb8,
+            requests.len(),
+            self.shape.plan.out_tile_len,
+            output,
+        )
     }
+}
 
-    Ok(Some(surface_batch_success_results(
-        requests,
-        &out_buffer,
-        shape.plan.out_dims,
-        PixelFormat::Rgb8,
-        requests.len(),
-        shape.plan.out_tile_len,
-        output,
-    )?))
+impl Drop for PendingRegionScaledRgbBatch<'_> {
+    fn drop(&mut self) {
+        if !self.waited {
+            self.command_buffer.waitUntilCompleted();
+        }
+    }
 }
 
 fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
@@ -408,6 +490,78 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
     try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<JpegFast420PacketV1>(
         runtime, requests, packets, output,
     )
+}
+
+struct PendingRegionScaledRgbGroup<'runtime> {
+    indices: Vec<usize>,
+    requests: Vec<batch::QueuedRequest>,
+    pending: PendingRegionScaledRgbBatch<'runtime>,
+}
+
+impl PendingRegionScaledRgbGroup<'_> {
+    fn finish<P: FastRegionScaledMetal>(
+        mut self,
+        runtime: &MetalRuntime,
+        output: Option<&crate::MetalBatchOutputBuffer>,
+        merged_results: &mut [Option<Result<Surface, Error>>],
+        external_live_bytes: usize,
+    ) -> Result<(), Error> {
+        let mut completion_budget =
+            crate::batch_allocation::BatchMetadataBudget::with_external_live(
+                "JPEG Metal pending region-scaled RGB completion",
+                external_live_bytes,
+            );
+        completion_budget.account_capacity::<usize>(self.indices.capacity())?;
+        completion_budget.account_capacity::<batch::QueuedRequest>(self.requests.capacity())?;
+        batch::stamp_execution_owner_baseline(
+            &mut self.requests,
+            0,
+            completion_budget.live_bytes(),
+        );
+        let plan = self.pending.shape.plan;
+        let group_results = self.pending.finish(&self.requests, None)?;
+        if let Some(output) = output {
+            for (original_index, result) in copy_grouped_surfaces_to_output(
+                runtime,
+                output,
+                plan.out_dims,
+                plan.out_tile_len,
+                &self.indices,
+                group_results,
+                completion_budget.live_bytes(),
+            )? {
+                merged_results[original_index] = Some(result);
+            }
+        } else {
+            if group_results.len() != self.indices.len() {
+                return Err(Error::MetalKernel {
+                    message: format!(
+                        "JPEG Metal grouped {} region scaled buffer result count mismatch",
+                        P::FAMILY_NAME
+                    ),
+                });
+            }
+            for (original_index, result) in self.indices.into_iter().zip(group_results) {
+                merged_results[original_index] = Some(result);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn pending_region_scaled_rgb_group_live_bytes(
+    base_live_bytes: usize,
+    pending_groups: &[PendingRegionScaledRgbGroup<'_>],
+) -> Result<usize, Error> {
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::with_external_live(
+        "JPEG Metal live pending region-scaled RGB groups",
+        base_live_bytes,
+    );
+    for group in pending_groups {
+        budget.account_capacity::<usize>(group.indices.capacity())?;
+        budget.account_capacity::<batch::QueuedRequest>(group.requests.capacity())?;
+    }
+    Ok(budget.live_bytes())
 }
 
 #[cfg(target_os = "macos")]
@@ -466,11 +620,41 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_o
         None,
         "JPEG Metal grouped region-scaled buffer result slots",
     )?;
+    let mut pending_groups: Vec<PendingRegionScaledRgbGroup<'_>> =
+        result_budget.try_vec(2, "JPEG Metal pending region-scaled RGB groups")?;
     for group_indices in groups {
-        let mut group_budget = crate::plan_owner_ledger::batch_execution_budget(
-            "JPEG Metal grouped region-scaled buffer sub-batch",
-            requests,
+        if pending_groups.len() == 2 {
+            let group = pending_groups.remove(0);
+            let external_live_bytes = pending_region_scaled_rgb_group_live_bytes(
+                result_budget.live_bytes(),
+                &pending_groups,
+            )?;
+            group.finish::<P>(runtime, output, &mut merged_results, external_live_bytes)?;
+        }
+        let scratch = if pending_groups.is_empty() {
+            runtime.batch_scratch()?
+        } else if let Some(scratch) = runtime.try_batch_scratch()? {
+            scratch
+        } else {
+            // Never wait for another lease while retaining one: concurrent
+            // batches may each own one of the pool's two slots.
+            let group = pending_groups.remove(0);
+            let external_live_bytes = pending_region_scaled_rgb_group_live_bytes(
+                result_budget.live_bytes(),
+                &pending_groups,
+            )?;
+            group.finish::<P>(runtime, output, &mut merged_results, external_live_bytes)?;
+            runtime.batch_scratch()?
+        };
+        let pending_live_bytes = pending_region_scaled_rgb_group_live_bytes(
+            result_budget.live_bytes(),
+            &pending_groups,
         )?;
+        let mut group_budget = crate::batch_allocation::BatchMetadataBudget::with_external_live(
+            "JPEG Metal grouped region-scaled buffer sub-batch",
+            pending_live_bytes,
+        );
+        group_budget.account_capacity::<usize>(group_indices.capacity())?;
         let mut group_requests = group_budget.try_vec(
             group_indices.len(),
             "JPEG Metal grouped region-scaled buffer requests",
@@ -480,72 +664,32 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_o
             group_indices.len(),
             "JPEG Metal grouped region-scaled buffer packets",
         )?;
-        group_packets.extend(group_indices.iter().map(|&index| {
-            let (packet, mode) = family_packets[index];
-            packet.to_region_scaled_batched(mode)
-        }));
+        group_packets.extend(group_indices.iter().map(|&index| family_packets[index]));
         batch::stamp_execution_owner_baseline(&mut group_requests, 0, group_budget.live_bytes());
 
-        let Some(group_results) =
-            try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<P>(
-                runtime,
-                &group_requests,
-                &group_packets,
-                None,
-            )?
+        let Some(pending) = try_submit_compatible_region_scaled_rgb_batch::<P>(
+            runtime,
+            &group_requests,
+            &group_packets,
+            None,
+            scratch,
+        )?
         else {
             return Ok(None);
         };
-
-        if let Some(output) = output {
-            let Some(&first_group_index) = group_indices.first() else {
-                continue;
-            };
-            let batch::BatchOp::RegionScaled { roi, scale } = requests[first_group_index].op else {
-                return Ok(None);
-            };
-            let (packet, mode) = family_packets[first_group_index];
-            let segment_count_u32 = checked_u32(
-                packet.entropy_checkpoints().len(),
-                &format!(
-                    "{} grouped region scaled buffer segment count",
-                    P::FAMILY_NAME
-                ),
-            )?;
-            let Some(plan) = fast_subsampled_region_scaled_batch_plan(
-                packet,
-                roi,
-                scale,
-                1,
-                segment_count_u32,
-                mode,
-            ) else {
-                return Ok(None);
-            };
-            for (original_index, result) in copy_grouped_surfaces_to_output(
-                runtime,
-                output,
-                plan.out_dims,
-                plan.out_tile_len,
-                &group_indices,
-                group_results,
-                result_budget.live_bytes(),
-            )? {
-                merged_results[original_index] = Some(result);
-            }
-        } else {
-            if group_results.len() != group_indices.len() {
-                return Err(Error::MetalKernel {
-                    message: format!(
-                        "JPEG Metal grouped {} region scaled buffer result count mismatch",
-                        P::FAMILY_NAME
-                    ),
-                });
-            }
-            for (original_index, result) in group_indices.into_iter().zip(group_results) {
-                merged_results[original_index] = Some(result);
-            }
-        }
+        pending_groups.push(PendingRegionScaledRgbGroup {
+            indices: group_indices,
+            requests: group_requests,
+            pending,
+        });
+    }
+    while !pending_groups.is_empty() {
+        let group = pending_groups.remove(0);
+        let external_live_bytes = pending_region_scaled_rgb_group_live_bytes(
+            result_budget.live_bytes(),
+            &pending_groups,
+        )?;
+        group.finish::<P>(runtime, output, &mut merged_results, external_live_bytes)?;
     }
 
     let mut results = result_budget.try_vec(

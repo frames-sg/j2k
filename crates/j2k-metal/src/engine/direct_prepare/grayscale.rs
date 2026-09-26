@@ -205,6 +205,7 @@ pub(super) fn prepare_direct_grayscale_plan_with_tier1_mode(
     Ok(PreparedDirectGrayscalePlan {
         dimensions: plan.dimensions,
         bit_depth: plan.bit_depth,
+        round_centered_store: true,
         tier1_prepare_mode,
         steps,
         classic_groups,

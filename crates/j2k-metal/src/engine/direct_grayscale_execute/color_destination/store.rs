@@ -38,6 +38,12 @@ pub(super) fn encode_exact_native_color_batch_store_in_encoder(
         params,
         pipeline,
     } = plan_exact_native_color_store(runtime, planes, plan, config, destination)?;
+    #[cfg(test)]
+    if !crate::engine::test_counters::decode_stage_enabled(
+        crate::engine::test_counters::DecodeStageLimit::Full,
+    ) {
+        return Ok(());
+    }
     match planes {
         [r, g, b] => encoder.memory_barrier_with_resources(&[r, g, b]),
         [r, g, b, a] => encoder.memory_barrier_with_resources(&[r, g, b, a]),

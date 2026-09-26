@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    super::{PreparedDecodePlan, StripeBuffer},
+    super::PreparedDecodePlan,
     types::StripeNeighbors,
     upsample::{
         upsample_component_row_stripe, StripeComponentUpsample, StripeComponentUpsampleSpec,
@@ -14,15 +14,26 @@ use crate::{
     internal::scratch::RgbGenericRows,
 };
 
+/// One output row of a stripe: its stripe-local index, the rows the stripe
+/// emits, and the output width.
+#[derive(Clone, Copy)]
+pub(super) struct FourComponentRow {
+    pub(super) local_y: u32,
+    pub(super) stripe_rows: usize,
+    pub(super) width: usize,
+}
+
 pub(super) fn fill_four_component_rgb_row(
     plan: &PreparedDecodePlan,
-    prev: Option<&StripeBuffer>,
-    curr: &StripeBuffer,
-    next: Option<&StripeBuffer>,
-    local_y: u32,
-    width: usize,
+    neighbors: StripeNeighbors<'_>,
+    row: FourComponentRow,
     scratch: &mut RgbGenericRows,
 ) -> Result<(), JpegError> {
+    let FourComponentRow {
+        local_y,
+        stripe_rows,
+        width,
+    } = row;
     let (c0_h, c0_v) = plan
         .sampling
         .component(0)
@@ -45,7 +56,6 @@ pub(super) fn fill_four_component_rgb_row(
         .ok_or(JpegError::UnsupportedComponentCount { count: 3 })?;
     let max_h = u32::from(plan.sampling.max_h);
     let max_v = u32::from(plan.sampling.max_v);
-    let neighbors = StripeNeighbors { prev, curr, next };
 
     upsample_component_row_stripe(StripeComponentUpsample {
         neighbors,
@@ -56,6 +66,7 @@ pub(super) fn fill_four_component_rgb_row(
             max_h,
             max_v,
             local_y_out: local_y,
+            stripe_rows,
             width,
         },
         out: &mut scratch.r,
@@ -69,6 +80,7 @@ pub(super) fn fill_four_component_rgb_row(
             max_h,
             max_v,
             local_y_out: local_y,
+            stripe_rows,
             width,
         },
         out: &mut scratch.g,
@@ -82,6 +94,7 @@ pub(super) fn fill_four_component_rgb_row(
             max_h,
             max_v,
             local_y_out: local_y,
+            stripe_rows,
             width,
         },
         out: &mut scratch.b,
@@ -95,6 +108,7 @@ pub(super) fn fill_four_component_rgb_row(
             max_h,
             max_v,
             local_y_out: local_y,
+            stripe_rows,
             width,
         },
         out: &mut scratch.k,

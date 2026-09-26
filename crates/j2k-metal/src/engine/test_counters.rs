@@ -343,3 +343,69 @@ pub(crate) fn record_idwt97_logical_dispatch(grid: (u32, u32, u32)) {
     );
     IDWT97_STAGE_DISPATCHES.set(IDWT97_STAGE_DISPATCHES.get().saturating_add(1));
 }
+
+/// Last decode stage whose GPU dispatches are encoded, for attributing GPU time
+/// by truncation (`decode_stage_profile`). Stages keep their buffers and host
+/// bookkeeping; only the dispatches of later stages are skipped, so outputs
+/// are meaningless below `Full`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DecodeStageLimit {
+    /// Zero-fill and the HT cleanup MEL/VLC kernel (it writes job status).
+    HtVlc,
+    /// Adds the HT cleanup `MagSgn` kernel.
+    Tier1,
+    /// Adds the inverse wavelet transform.
+    Idwt,
+    /// Adds the inverse color transform and final store.
+    Full,
+}
+
+static DECODE_STAGE_LIMIT: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(DecodeStageLimit::Full as u8);
+
+pub(crate) fn set_decode_stage_limit_for_test(limit: DecodeStageLimit) {
+    DECODE_STAGE_LIMIT.store(limit as u8, Ordering::Relaxed);
+}
+
+pub(crate) fn decode_stage_enabled(stage: DecodeStageLimit) -> bool {
+    DECODE_STAGE_LIMIT.load(Ordering::Relaxed) >= stage as u8
+}
+
+std::thread_local! {
+    /// `Some` while `decode_stage_profile` captures direct-destination command
+    /// buffers; capture is off otherwise so no test retains their resources.
+    static DIRECT_DESTINATION_COMMAND_BUFFERS: std::cell::RefCell<Option<Vec<crate::metal_types::CommandBuffer>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn record_direct_destination_command_buffer(
+    command_buffer: &crate::metal_types::CommandBuffer,
+) {
+    DIRECT_DESTINATION_COMMAND_BUFFERS.with(|buffers| {
+        if let Some(buffers) = buffers.borrow_mut().as_mut() {
+            buffers.push(command_buffer.clone());
+        }
+    });
+}
+
+pub(crate) fn begin_direct_destination_capture_for_test() {
+    DIRECT_DESTINATION_COMMAND_BUFFERS.with(|buffers| *buffers.borrow_mut() = Some(Vec::new()));
+}
+
+pub(crate) fn end_direct_destination_capture_for_test() -> Vec<crate::metal_types::CommandBuffer> {
+    DIRECT_DESTINATION_COMMAND_BUFFERS
+        .with(|buffers| buffers.borrow_mut().take().unwrap_or_default())
+}
+
+/// Forces the per-image 9/7 IDWT route for batches, the pre-P36 behaviour
+/// above 20 MiB, for same-process A/B probes.
+static PER_IMAGE_IDWT_FORCED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn force_per_image_idwt_for_test(forced: bool) {
+    PER_IMAGE_IDWT_FORCED.store(forced, Ordering::Relaxed);
+}
+
+pub(crate) fn per_image_idwt_forced() -> bool {
+    PER_IMAGE_IDWT_FORCED.load(Ordering::Relaxed)
+}

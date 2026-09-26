@@ -43,7 +43,11 @@ fn submitted_auto_repeated_jph_lossless_rgb_768x512_batch16_uses_metal() {
 }
 
 #[test]
-fn submitted_auto_repeated_raw_ht_lossless_rgb_768x512_batch16_stays_on_cpu() {
+fn submitted_auto_repeated_raw_ht_lossless_rgb_768x512_batch16_uses_metal() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = Arc::<[u8]>::from(fixture_ht_rgb_u8_sized(768, 512, 0));
     let mut batch = MetalTileBatch::with_capacity(16);
     for _ in 0..16 {
@@ -58,8 +62,19 @@ fn submitted_auto_repeated_raw_ht_lossless_rgb_768x512_batch16_stays_on_cpu() {
     let surfaces = batch.decode_all().expect("decode Auto raw HT RGB batch");
     assert_eq!(surfaces.len(), 16);
     assert!(surfaces.iter().all(|surface| {
-        surface.backend_kind() == BackendKind::Cpu && surface.residency() == SurfaceResidency::Host
+        surface.backend_kind() == BackendKind::Metal
+            && surface.residency() == SurfaceResidency::MetalResidentDecode
     }));
+    let mut cpu = J2kDecoder::new(&bytes).expect("CPU HT RGB decoder");
+    let mut expected = vec![0_u8; 768 * 512 * 3];
+    cpu.decode_into(&mut expected, 768 * 3, PixelFormat::Rgb8)
+        .expect("CPU HT RGB oracle");
+    for surface in surfaces {
+        assert_eq!(
+            surface.as_bytes().expect("Metal surface bytes").as_ref(),
+            expected
+        );
+    }
 }
 
 #[test]
