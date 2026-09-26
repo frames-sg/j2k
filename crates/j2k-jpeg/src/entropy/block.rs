@@ -25,8 +25,6 @@ use crate::entropy::ZIGZAG;
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
 
-const DENSE_CLEAR_THRESHOLD: usize = 4;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockActivity {
     DcOnly,
@@ -56,27 +54,21 @@ impl ReducedIdctCoefficients {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClearMode {
-    Sparse,
-    Dense,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CoefficientBlock {
     coeffs: [i16; 64],
-    touched: [u8; 64],
-    touched_len: usize,
-    clear_mode: ClearMode,
+    /// Set by any AC store. Clearing a block that holds AC coefficients
+    /// zeroes all 128 bytes (a handful of vector stores); a DC-only block
+    /// clears just the DC. This keeps per-coefficient bookkeeping to a single
+    /// flag store instead of an index list maintained in memory.
+    ac_written: bool,
 }
 
 impl Default for CoefficientBlock {
     fn default() -> Self {
         Self {
             coeffs: [0; 64],
-            touched: [0; 64],
-            touched_len: 0,
-            clear_mode: ClearMode::Sparse,
+            ac_written: false,
         }
     }
 }
@@ -88,16 +80,12 @@ impl CoefficientBlock {
     )]
     #[inline(always)]
     fn clear_touched(&mut self) {
-        match self.clear_mode {
-            ClearMode::Sparse => {
-                for &idx in &self.touched[..self.touched_len] {
-                    self.coeffs[idx as usize] = 0;
-                }
-            }
-            ClearMode::Dense => self.coeffs.fill(0),
+        if self.ac_written {
+            self.coeffs = [0; 64];
+            self.ac_written = false;
+        } else {
+            self.coeffs[0] = 0;
         }
-        self.touched_len = 0;
-        self.clear_mode = ClearMode::Sparse;
     }
 
     #[expect(
@@ -105,20 +93,18 @@ impl CoefficientBlock {
         reason = "measured entropy-block hot path requires cross-helper inlining"
     )]
     #[inline(always)]
+    fn store_dc(&mut self, value: i16) {
+        self.coeffs[0] = value;
+    }
+
     #[expect(
-        clippy::cast_possible_truncation,
-        reason = "coefficient indices are bounded to the 64-entry JPEG block"
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
     )]
+    #[inline(always)]
     fn store(&mut self, idx: usize, value: i16) {
         self.coeffs[idx] = value;
-        if self.clear_mode == ClearMode::Sparse {
-            if self.touched_len < DENSE_CLEAR_THRESHOLD {
-                self.touched[self.touched_len] = idx as u8;
-                self.touched_len += 1;
-            } else {
-                self.clear_mode = ClearMode::Dense;
-            }
-        }
+        self.ac_written = true;
     }
 
     #[expect(
@@ -140,17 +126,20 @@ impl CoefficientBlock {
     }
 }
 
+/// Classify a block from the OR of every stored AC coefficient's natural
+/// index. AC indices are nonzero, so any AC store makes the OR nonzero, and
+/// bit 5 is set exactly when some index is at least 32 (rows 4-7). Keeping
+/// one OR per coefficient replaces a per-coefficient state-machine update.
 #[expect(
     clippy::inline_always,
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-fn extend_activity(activity: BlockActivity, natural_idx: usize) -> BlockActivity {
-    if natural_idx < 32 {
-        match activity {
-            BlockActivity::DcOnly | BlockActivity::BottomHalfZero => BlockActivity::BottomHalfZero,
-            BlockActivity::General => BlockActivity::General,
-        }
+fn activity_from_ac_indices(ac_index_or: usize) -> BlockActivity {
+    if ac_index_or == 0 {
+        BlockActivity::DcOnly
+    } else if ac_index_or & 32 == 0 {
+        BlockActivity::BottomHalfZero
     } else {
         BlockActivity::General
     }
@@ -196,9 +185,9 @@ pub(crate) fn decode_block_with_activity(
     *prev_dc = prev_dc.wrapping_add(diff);
     // Dequant the DC in natural-order position 0 (zigzag index 0 → natural 0).
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store(0, clamp_i16(dc_dequant));
+    block.store_dc(clamp_i16(dc_dequant));
 
-    let mut activity = BlockActivity::DcOnly;
+    let mut ac_index_or = 0usize;
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         // Quant table entries are stored in zigzag order per T.81 §B.2.4.1,
@@ -206,10 +195,10 @@ pub(crate) fn decode_block_with_activity(
         let value = ac_decoded_value(ac);
         let dequant = value.wrapping_mul(i32::from(quant[k]));
         block.store(natural_idx, clamp_i16(dequant));
-        activity = extend_activity(activity, natural_idx);
+        ac_index_or |= natural_idx;
         Ok(())
     })?;
-    Ok(activity)
+    Ok(activity_from_ac_indices(ac_index_or))
 }
 
 /// Decode one dequantized block directly into a freshly zeroed output block.
@@ -265,21 +254,21 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     // DC.
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
-    quantized_block.store(0, clamp_i16(*prev_dc));
+    quantized_block.store_dc(clamp_i16(*prev_dc));
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    dequantized_block.store(0, clamp_i16(dc_dequant));
+    dequantized_block.store_dc(clamp_i16(dc_dequant));
 
-    let mut activity = BlockActivity::DcOnly;
+    let mut ac_index_or = 0usize;
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
         quantized_block.store(natural_idx, clamp_i16(value));
         let dequant = value.wrapping_mul(i32::from(quant[k]));
         dequantized_block.store(natural_idx, clamp_i16(dequant));
-        activity = extend_activity(activity, natural_idx);
+        ac_index_or |= natural_idx;
         Ok(())
     })?;
-    Ok(activity)
+    Ok(activity_from_ac_indices(ac_index_or))
 }
 
 #[expect(
@@ -301,7 +290,7 @@ pub(crate) fn decode_block_with_dc_status(
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store(0, clamp_i16(dc_dequant));
+    block.store_dc(clamp_i16(dc_dequant));
 
     let mut dc_only = true;
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
@@ -334,7 +323,7 @@ pub(crate) fn decode_block_for_reduced_idct(
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store(0, clamp_i16(dc_dequant));
+    block.store_dc(clamp_i16(dc_dequant));
 
     let mut dc_only_for_reduced_idct = true;
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
@@ -368,7 +357,7 @@ pub(crate) fn decode_block_for_1x1_idct(
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store(0, clamp_i16(dc_dequant));
+    block.store_dc(clamp_i16(dc_dequant));
 
     drive_ac_fast::<true, _>(br, ac_table, |_, _| Ok(()))?;
     Ok(())
@@ -793,58 +782,47 @@ mod tests {
     }
 
     #[test]
-    fn extend_activity_promotes_top_half_ac_without_marking_general() {
-        assert_eq!(
-            extend_activity(BlockActivity::DcOnly, 31),
-            BlockActivity::BottomHalfZero
-        );
-        assert_eq!(
-            extend_activity(BlockActivity::BottomHalfZero, 7),
-            BlockActivity::BottomHalfZero
-        );
+    fn top_half_ac_indices_classify_as_bottom_half_zero() {
+        for indices in [&[31usize][..], &[7], &[1, 8, 31], &[3, 17, 26]] {
+            let or = indices.iter().fold(0, |acc, &idx| acc | idx);
+            assert_eq!(
+                activity_from_ac_indices(or),
+                BlockActivity::BottomHalfZero,
+                "{indices:?}"
+            );
+        }
+        assert_eq!(activity_from_ac_indices(0), BlockActivity::DcOnly);
     }
 
     #[test]
-    fn extend_activity_marks_bottom_half_ac_as_general() {
-        assert_eq!(
-            extend_activity(BlockActivity::DcOnly, 32),
-            BlockActivity::General
-        );
-        assert_eq!(
-            extend_activity(BlockActivity::BottomHalfZero, 40),
-            BlockActivity::General
-        );
+    fn any_bottom_half_ac_index_classifies_as_general() {
+        for indices in [&[32usize][..], &[40], &[1, 63], &[7, 31, 32]] {
+            let or = indices.iter().fold(0, |acc, &idx| acc | idx);
+            assert_eq!(
+                activity_from_ac_indices(or),
+                BlockActivity::General,
+                "{indices:?}"
+            );
+        }
     }
 
     #[test]
-    fn switches_to_dense_clear_after_threshold_and_zeroes_full_block() {
+    fn clear_zeroes_every_coefficient_after_ac_stores() {
         let mut block = CoefficientBlock::default();
-        for (i, idx) in [0usize, 1, 8, 16, 24].into_iter().enumerate() {
+        block.store_dc(9);
+        for (i, idx) in [1usize, 8, 16, 24, 63].into_iter().enumerate() {
             block.store(
                 idx,
                 i16::try_from(i + 1).expect("fixture coefficient fits in i16"),
             );
         }
 
-        assert_eq!(block.clear_mode, ClearMode::Dense);
         block.clear_touched();
-
         assert!(block.coefficients().iter().all(|&c| c == 0));
-        assert_eq!(block.touched_len, 0);
-        assert_eq!(block.clear_mode, ClearMode::Sparse);
-    }
 
-    #[test]
-    fn stays_sparse_below_dense_clear_threshold() {
-        let mut block = CoefficientBlock::default();
-        for (i, idx) in [0usize, 2, 4, 6].into_iter().enumerate() {
-            block.store(
-                idx,
-                i16::try_from(i + 1).expect("fixture coefficient fits in i16"),
-            );
-        }
-
-        assert_eq!(block.clear_mode, ClearMode::Sparse);
-        assert_eq!(block.touched_len, DENSE_CLEAR_THRESHOLD);
+        // A DC-only block that follows must also clear back to all zeroes.
+        block.store_dc(-4);
+        block.clear_touched();
+        assert!(block.coefficients().iter().all(|&c| c == 0));
     }
 }

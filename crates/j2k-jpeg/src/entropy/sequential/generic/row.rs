@@ -40,11 +40,49 @@ pub(super) struct McuRowState<'a, 'b> {
     pub(super) expected_rst: &'a mut u8,
 }
 
+pub(super) fn decode_mcu_row(
+    context: &McuRowContext<'_>,
+    state: &mut McuRowState<'_, '_>,
+    mcu_y: u32,
+    stripe: &mut StripeBuffer,
+) -> Result<(), JpegError> {
+    // Decode against locals so the bit accumulator and DC predictors live in
+    // registers for the whole row instead of round-tripping through `state`
+    // on every symbol. They are written back even when the row fails.
+    let mut prev_dc = [0i32; 4];
+    let Some(local_dc) = prev_dc.get_mut(..state.prev_dc.len()) else {
+        return decode_mcu_row_local(context, state, mcu_y, stripe);
+    };
+    local_dc.copy_from_slice(state.prev_dc);
+    let mut br = state.br.clone();
+    let result = decode_mcu_row_local(
+        context,
+        &mut McuRowState {
+            br: &mut br,
+            prev_dc: &mut *local_dc,
+            coeff: &mut *state.coeff,
+            pixels: &mut *state.pixels,
+            mcus_since_restart: &mut *state.mcus_since_restart,
+            expected_rst: &mut *state.expected_rst,
+        },
+        mcu_y,
+        stripe,
+    );
+    *state.br = br;
+    state.prev_dc.copy_from_slice(local_dc);
+    result
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the MCU kernel traverses component sampling factors while preserving entropy, predictor, IDCT, and deposit order"
 )]
-pub(super) fn decode_mcu_row(
+#[expect(
+    clippy::inline_always,
+    reason = "inlining into the row wrapper is what keeps the local reader out of memory"
+)]
+#[inline(always)]
+fn decode_mcu_row_local(
     context: &McuRowContext<'_>,
     state: &mut McuRowState<'_, '_>,
     mcu_y: u32,

@@ -362,6 +362,26 @@ fn gray_rows_expand_to_equal_rgb_channels() {
     assert_eq!(dst, vec![10, 10, 10, 40, 40, 40, 90, 90, 90, 200, 200, 200]);
 }
 
+/// The SIMD converters restructure the fixed-point arithmetic, so check them
+/// against the scalar reference for every (Cb, Cr) pair, with luma swept
+/// across the range so both saturation edges are exercised.
+#[test]
+fn detected_backend_ycbcr_matches_scalar_for_every_chroma_pair() {
+    let backend = super::Backend::detect();
+    let cb: Vec<u8> = (0..=255u8).collect();
+    let mut expected = vec![0u8; 256 * 3];
+    let mut actual = vec![0u8; 256 * 3];
+    for cr_value in 0..=255u8 {
+        let cr = vec![cr_value; 256];
+        for y_value in (0..=255u8).step_by(15).chain([1, 128, 254, 255]) {
+            let y = vec![y_value; 256];
+            scalar::fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut expected);
+            backend.fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut actual);
+            assert_eq!(actual, expected, "y={y_value} cr={cr_value}");
+        }
+    }
+}
+
 #[test]
 fn ycbcr_rows_match_per_pixel_reference() {
     let y = [16u8, 40, 90, 200];

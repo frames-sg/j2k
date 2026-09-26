@@ -3,7 +3,8 @@
 //! Fixed-size `AArch64` NEON memory operations.
 
 use core::arch::aarch64::{
-    int16x8_t, uint8x16_t, uint8x8_t, uint8x8x3_t, vld1_u8, vld1q_s16, vst1_u8, vst1q_u8, vst3_u8,
+    int16x8_t, uint8x16_t, uint8x16x3_t, uint8x8_t, uint8x8x3_t, vld1_u8, vld1q_s16, vld1q_u8,
+    vst1_u8, vst1q_u8, vst3_u8, vst3q_u8,
 };
 
 #[inline]
@@ -80,4 +81,33 @@ pub(crate) fn store_rgb8(dst: &mut [u8; 24], red: uint8x8_t, green: uint8x8_t, b
     // - Aliasing: the exclusive reference prevents overlapping live access.
     // - Initialization: the store initializes all twenty-four output bytes.
     unsafe { vst3_u8(dst.as_mut_ptr(), uint8x8x3_t(red, green, blue)) };
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+pub(crate) fn load_u8x16(src: &[u8; 16]) -> uint8x16_t {
+    // SAFETY:
+    // - Feature availability: callers run inside a `Neon` token kernel.
+    // - Bounds: the array reference proves sixteen readable bytes.
+    // - Alignment: AArch64 `vld1q_u8` supports unaligned byte addresses.
+    // - Aliasing: the shared reference permits reads and no writes occur.
+    // - Initialization: all bytes behind a Rust reference are initialized.
+    unsafe { vld1q_u8(src.as_ptr()) }
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+pub(crate) fn store_rgb8x16(
+    dst: &mut [u8; 48],
+    red: uint8x16_t,
+    green: uint8x16_t,
+    blue: uint8x16_t,
+) {
+    // SAFETY:
+    // - Feature availability: callers run inside a `Neon` token kernel.
+    // - Bounds: the array reference proves space for sixteen three-byte pixels.
+    // - Alignment: AArch64 `vst3q_u8` supports unaligned byte addresses.
+    // - Aliasing: the exclusive reference prevents overlapping live access.
+    // - Initialization: the store initializes all forty-eight output bytes.
+    unsafe { vst3q_u8(dst.as_mut_ptr(), uint8x16x3_t(red, green, blue)) };
 }

@@ -115,22 +115,47 @@ struct FastRgb444McuRowState<'a, 'b> {
     expected_rst: &'a mut u8,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the 4:4:4 MCU kernel keeps three block decodes and direct RGB row deposition in sampling order"
-)]
 fn decode_mcu_row_fast_rgb_444(
     context: &FastRgb444McuRowContext<'_>,
     state: &mut FastRgb444McuRowState<'_, '_>,
     mcu_y: u32,
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
+    // Decode against locals so the bit accumulator and DC predictors live in
+    // registers for the whole row instead of round-tripping through `state`
+    // on every symbol. They are written back even when the row fails.
+    let mut br = state.br.clone();
+    let mut dc = [*state.y_dc, *state.cb_dc, *state.cr_dc];
+    let result = decode_mcu_row_fast_rgb_444_local(context, state, &mut br, &mut dc, mcu_y, stripe);
+    *state.br = br;
+    [*state.y_dc, *state.cb_dc, *state.cr_dc] = dc;
+    result
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the 4:4:4 MCU kernel keeps three block decodes and direct RGB row deposition in sampling order"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "inlining into the row wrapper is what keeps the local reader out of memory"
+)]
+#[inline(always)]
+fn decode_mcu_row_fast_rgb_444_local(
+    context: &FastRgb444McuRowContext<'_>,
+    state: &mut FastRgb444McuRowState<'_, '_>,
+    br: &mut BitReader<'_>,
+    dc: &mut [i32; 3],
+    mcu_y: u32,
+    stripe: &mut StripeBuffer,
+) -> Result<(), JpegError> {
+    let [y_dc, cb_dc, cr_dc] = dc;
     for plane_idx in 0..3 {
         assert_stripe_deposit_capacity(stripe, plane_idx, 1, 1, context.mcus_per_row, 8);
     }
     for mx in 0..context.mcus_per_row {
         if consume_restart_marker_if_due(
-            state.br,
+            br,
             context.restart,
             *state.mcus_since_restart,
             state.expected_rst,
@@ -139,19 +164,19 @@ fn decode_mcu_row_fast_rgb_444(
                 total: context.mcu_rows * context.mcus_per_row,
             },
         )? {
-            *state.y_dc = 0;
-            *state.cb_dc = 0;
-            *state.cr_dc = 0;
+            *y_dc = 0;
+            *cb_dc = 0;
+            *cr_dc = 0;
             *state.mcus_since_restart = 0;
         }
 
         let block_x = mx * 8;
 
         let y_activity = decode_block_with_activity(
-            state.br,
+            br,
             context.y_comp.dc_table,
             context.y_comp.ac_table,
-            state.y_dc,
+            y_dc,
             context.y_comp.quant,
             state.coeff,
         )?;
@@ -177,10 +202,10 @@ fn decode_mcu_row_fast_rgb_444(
         );
 
         let cb_activity = decode_block_with_activity(
-            state.br,
+            br,
             context.cb_comp.dc_table,
             context.cb_comp.ac_table,
-            state.cb_dc,
+            cb_dc,
             context.cb_comp.quant,
             state.coeff,
         )?;
@@ -206,10 +231,10 @@ fn decode_mcu_row_fast_rgb_444(
         );
 
         let cr_activity = decode_block_with_activity(
-            state.br,
+            br,
             context.cr_comp.dc_table,
             context.cr_comp.ac_table,
-            state.cr_dc,
+            cr_dc,
             context.cr_comp.quant,
             state.coeff,
         )?;
