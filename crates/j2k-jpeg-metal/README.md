@@ -23,9 +23,12 @@ fast 4:2:0, 4:2:2, or 4:4:4 baseline packet and only `Gray8`, `Rgb8`, or
 unsupported output formats return `UnsupportedMetalRequest` instead of silently
 falling back.
 
-`BackendRequest::Auto` stays conservative. Single-image decode remains CPU even
-when fast-packet capabilities match. Batched and resident-output paths are the
-places to look for Metal wins, and any future Auto widening should be backed by
+`BackendRequest::Auto` keeps single-image decode on the CPU. Full RGB batches
+can use Metal for at least 16 compatible non-restart 4:2:0 or 4:2:2 tiles of at
+least 256×256 pixels, including distinct inputs. The tiles must share dimensions,
+tables, and checkpoint count. Smaller, mixed-table, restart-coded, and scaled
+batches remain on the CPU. This threshold follows completed
+submission measurements on an M4 Pro; further widening should be backed by
 the benchmark groups documented in
 [`docs/routing-benchmarks.md`](docs/routing-benchmarks.md).
 

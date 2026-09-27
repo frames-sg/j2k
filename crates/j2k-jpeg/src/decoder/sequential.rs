@@ -3,6 +3,7 @@
 //! Sequential and progressive writer-based decode paths.
 
 use crate::allocation::checked_add_allocation_bytes;
+use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
 
 use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
@@ -93,8 +94,13 @@ impl Decoder<'_> {
             return Ok(None);
         }
 
+        // The shared decoder context stays live beside the decode, charged
+        // once as in `decode_workspace_cap`.
         let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
-            self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
+            checked_add_allocation_bytes(
+                MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
+                self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
+            )?,
             external_decode_phase_bytes,
         )?;
         let mut cache =

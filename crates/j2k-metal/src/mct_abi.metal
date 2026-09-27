@@ -9,6 +9,7 @@ struct J2kInverseMctParams {
     float addend0;
     float addend1;
     float addend2;
+    uint round_centered;
 };
 
 struct J2kMctStatus {

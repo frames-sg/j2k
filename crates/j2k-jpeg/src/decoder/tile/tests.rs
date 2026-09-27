@@ -308,6 +308,7 @@ fn warmed_batch_planning_reuses_the_cached_plan_without_cloning() {
         None,
         Downscale::None,
         DecodeOptions::default(),
+        0,
     )
     .expect("first batch plan");
     let clones = context.decode_plan_clone_count();
@@ -319,6 +320,7 @@ fn warmed_batch_planning_reuses_the_cached_plan_without_cloning() {
         None,
         Downscale::None,
         DecodeOptions::default(),
+        0,
     )
     .expect("warmed batch plan");
 
@@ -701,6 +703,7 @@ fn tile_planning_accounts_full_roi_and_rejects_out_of_bounds_roi() {
         None,
         Downscale::None,
         DecodeOptions::default(),
+        0,
     )
     .expect("full tile plan");
     let roi = Rect {
@@ -716,6 +719,7 @@ fn tile_planning_accounts_full_roi_and_rejects_out_of_bounds_roi() {
         Some(roi),
         Downscale::Quarter,
         DecodeOptions::default(),
+        0,
     )
     .expect("region tile plan");
     let error = planned_jpeg_tile_decode_live_bytes(
@@ -730,6 +734,7 @@ fn tile_planning_accounts_full_roi_and_rejects_out_of_bounds_roi() {
         }),
         Downscale::None,
         DecodeOptions::default(),
+        0,
     )
     .expect_err("out-of-bounds region must fail planning");
 
@@ -775,4 +780,19 @@ fn malformed_one_shot_input_does_not_mutate_output() {
 
     assert_eq!(output, [0xa5; 16]);
     assert!(!error.is_api_misuse());
+}
+#[test]
+fn planning_charges_retained_workers_before_parsing_or_preparing() {
+    let mut context = crate::DecoderContext::new();
+    let error = planned_jpeg_tile_decode_live_bytes(
+        j2k_test_support::JPEG_BASELINE_420_16X16,
+        &mut context,
+        PixelFormat::Rgb8,
+        None,
+        Downscale::None,
+        DecodeOptions::default(),
+        crate::decoder::DEFAULT_MAX_DECODE_BYTES,
+    )
+    .unwrap_err();
+    assert!(matches!(error, JpegError::MemoryCapExceeded { requested, cap } if requested > cap));
 }

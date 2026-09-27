@@ -186,6 +186,8 @@ pub(in crate::engine::direct_grayscale_execute) fn commit_direct_destination(
     metadata: DirectExecutionMetadata,
     consumer_ordering: DirectDestinationConsumerOrdering,
 ) -> Result<SubmittedDirectDestination, Error> {
+    #[cfg(test)]
+    crate::engine::test_counters::record_direct_destination_command_buffer(&command_buffer);
     let mut consumer_waits = Vec::new();
     #[cfg(test)]
     let mut known_consumer_event_ptr = None;

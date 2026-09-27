@@ -34,6 +34,46 @@ struct J2kBatchedMctRgb8PackParams {
     float u8_scales[3];
 };
 
+inline float j2k_round_ties_even_centered(float value) {
+    // Every finite f32 at or beyond 2^23 is already integral. Keeping those
+    // values out of the integer conversion also bounds the no-libdevice floor.
+    if (!isfinite(value) || abs(value) >= 8388608.0f) {
+        return value;
+    }
+    const float truncated = float(int(value));
+    const float lower = truncated > value ? truncated - 1.0f : truncated;
+    const float upper = lower + 1.0f;
+    const float midpoint = lower + 0.5f;
+    if (value < midpoint) {
+        return lower;
+    }
+    if (value > midpoint || (int(lower) & 1) != 0) {
+        return upper;
+    }
+    return lower;
+}
+
+// Integer output follows the CPU's `round_ties_even_then_add`: round the
+// centered sample ties-to-even, then add the unsigned level shift. Adding the
+// shift first loses one bit of precision, so `k + 0.5 - ulp` becomes a tie and
+// rounds up. Reversible (5/3) samples are integral and pass through unchanged.
+inline float j2k_shift_centered_sample(float centered, float addend, bool round_centered) {
+    return (round_centered ? j2k_round_ties_even_centered(centered) : centered) + addend;
+}
+
+// The CPU inverse ICT's nested fused expressions (`j2c/mct.rs`,
+// `direct_cpu/color.rs`). Contraction and reassociation are off so the
+// compiler cannot re-fuse or reorder them.
+inline float3 j2k_inverse_ict_centered(float y0, float y1, float y2) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+    return float3(
+        fma(y2, 1.402f, y0),
+        fma(y2, -0.71414f, fma(y1, -0.34413f, y0)),
+        fma(y1, 1.772f, y0)
+    );
+}
+
 inline uchar scale_to_u8(float sample, float max_value, float scale) {
     const float clamped = clamp(sample, 0.0f, max_value);
     return uchar(min(floor(clamped * scale + 0.5f), 255.0f));
@@ -108,9 +148,10 @@ kernel void j2k_pack_mct_rgb8(
         rgb1 = i1 + params.addends[1];
         rgb2 = y1 + i1 + params.addends[2];
     } else {
-        rgb0 = y2 * 1.402f + y0 + params.addends[0];
-        rgb1 = y2 * -0.71414f + y1 * -0.34413f + y0 + params.addends[1];
-        rgb2 = y1 * 1.772f + y0 + params.addends[2];
+        const float3 centered = j2k_inverse_ict_centered(y0, y1, y2);
+        rgb0 = j2k_shift_centered_sample(centered[0], params.addends[0], true);
+        rgb1 = j2k_shift_centered_sample(centered[1], params.addends[1], true);
+        rgb2 = j2k_shift_centered_sample(centered[2], params.addends[2], true);
     }
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
@@ -146,9 +187,10 @@ kernel void j2k_pack_mct_rgb8_batched(
         rgb1 = i1 + params.addends[1];
         rgb2 = y1 + i1 + params.addends[2];
     } else {
-        rgb0 = y2 * 1.402f + y0 + params.addends[0];
-        rgb1 = y2 * -0.71414f + y1 * -0.34413f + y0 + params.addends[1];
-        rgb2 = y1 * 1.772f + y0 + params.addends[2];
+        const float3 centered = j2k_inverse_ict_centered(y0, y1, y2);
+        rgb0 = j2k_shift_centered_sample(centered[0], params.addends[0], true);
+        rgb1 = j2k_shift_centered_sample(centered[1], params.addends[1], true);
+        rgb2 = j2k_shift_centered_sample(centered[2], params.addends[2], true);
     }
 
     const uint out_idx = gid.z * params.output_stride + gid.y * params.out_stride + gid.x * 3u;

@@ -23,7 +23,8 @@ pub use color::{execute_direct_color_plan_rgb8_into, execute_direct_color_plan_r
 mod component;
 use component::{
     checked_area, checked_sub_band_job_output_range, execute_component_plan, execute_idwt_step,
-    prepare_sub_band_output, resize_and_zero, store_component, SubBandJobOutputRange,
+    prepare_sub_band_output, resize_and_zero, rounds_at_store, store_component,
+    SubBandJobOutputRange,
 };
 mod referenced;
 pub use referenced::{

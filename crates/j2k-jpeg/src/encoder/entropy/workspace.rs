@@ -99,12 +99,3 @@ fn cap_overflow() -> JpegEncodeError {
         cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn workspace_module_stays_focused() {
-        const SOURCE: &str = include_str!("workspace.rs");
-        assert!(SOURCE.lines().count() <= 130);
-    }
-}

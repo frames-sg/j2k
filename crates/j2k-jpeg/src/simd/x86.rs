@@ -7,7 +7,7 @@ use j2k_core::CpuFeatures;
 /// Proof that AVX2 and the operating-system AVX register state are available.
 ///
 /// This deliberately represents AVX2 alone, rather than
-/// `fearless_simd::Avx2`, whose v0.7 contract is the wider x86-64-v3 feature
+/// `fearless_simd::Avx2`, whose contract is the wider x86-64-v3 feature
 /// set. Keeping the token private prevents callers from forging capability
 /// state while preserving the decoder's existing AVX2 acceleration envelope.
 #[derive(Debug, Clone, Copy)]

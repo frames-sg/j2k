@@ -101,7 +101,7 @@ pub(in crate::engine) fn encode_metal_ht_batches_in_encoder(
                 status_buffer: &status_buffer,
                 status_offset_bytes: status_offset,
             },
-        );
+        )?;
         let chunk_status_bytes = chunk
             .job_count()
             .checked_mul(abi_size_of::<super::super::J2kHtStatus>())
@@ -289,7 +289,7 @@ impl RepeatedHtChunkEncoder<'_, '_> {
                     status_buffer: self.status_buffer,
                     status_offset_bytes: status_offset,
                 },
-            );
+            )?;
             let chunk_status_count =
                 chunk
                     .job_count()

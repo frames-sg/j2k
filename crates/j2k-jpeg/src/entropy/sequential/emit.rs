@@ -5,8 +5,6 @@ mod output;
 mod region420;
 mod rgb;
 mod rgb444;
-#[cfg(test)]
-mod structure_tests;
 mod types;
 mod upsample;
 

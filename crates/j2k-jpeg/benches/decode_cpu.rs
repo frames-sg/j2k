@@ -13,9 +13,6 @@ use j2k_jpeg::{
 };
 use j2k_test_support::{patterned_gray8, patterned_rgb8};
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
 fn zeroed_bytes(len: usize) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes
@@ -47,7 +44,6 @@ struct DecodeCase {
     mode: DecodeMode,
     fast_packet: FastPacketKind,
     expected_output: Option<Vec<u8>>,
-    expected_checksum: u64,
 }
 
 impl DecodeCase {
@@ -63,13 +59,14 @@ impl DecodeCase {
         assert_eq!(decoder.info().dimensions, (width, height));
         let expected_output = match mode {
             DecodeMode::Buffer(format) => Some(decode_buffer_output(&decoder, format)),
-            DecodeMode::Rows => None,
+            DecodeMode::Rows => {
+                assert_eq!(
+                    decode_rows_output(&decoder),
+                    decode_buffer_output(&decoder, PixelFormat::Rgb8),
+                );
+                None
+            }
         };
-        let expected_checksum = expected_output.as_ref().map_or_else(
-            || decode_rows_checksum(&decoder),
-            |output| fnv1a_update(FNV_OFFSET_BASIS, output),
-        );
-        assert_ne!(expected_checksum, FNV_OFFSET_BASIS);
         Self {
             name,
             width,
@@ -78,7 +75,6 @@ impl DecodeCase {
             mode,
             fast_packet,
             expected_output,
-            expected_checksum,
         }
     }
 
@@ -87,18 +83,12 @@ impl DecodeCase {
     }
 }
 
-fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    for byte in bytes {
-        hash = (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
 fn bytes_per_pixel(format: PixelFormat) -> usize {
     match format {
         PixelFormat::Gray8 => 1,
         PixelFormat::Rgb8 => 3,
-        _ => panic!("decode benchmark only supports Gray8 and Rgb8"),
+        PixelFormat::Rgba8 => 4,
+        _ => panic!("decode benchmark only supports eight-bit output"),
     }
 }
 
@@ -113,43 +103,54 @@ fn decode_buffer_output(decoder: &Decoder<'_>, format: PixelFormat) -> Vec<u8> {
     output
 }
 
-struct ChecksumSink {
-    hash: u64,
+struct ValidationSink {
+    pixels: Vec<u8>,
     expected_y: u32,
     row_bytes: usize,
 }
 
-impl ChecksumSink {
+impl ValidationSink {
     fn new(row_bytes: usize) -> Self {
         Self {
-            hash: FNV_OFFSET_BASIS,
+            pixels: Vec::new(),
             expected_y: 0,
             row_bytes,
         }
     }
 }
 
-impl RowSink<u8> for ChecksumSink {
+impl RowSink<u8> for ValidationSink {
     type Error = JpegError;
 
     fn write_row(&mut self, y: u32, row: &[u8]) -> Result<(), Self::Error> {
         assert_eq!(y, self.expected_y);
         assert_eq!(row.len(), self.row_bytes);
-        self.hash = fnv1a_update(self.hash, row);
+        self.pixels.extend_from_slice(row);
         self.expected_y += 1;
         Ok(())
     }
 }
 
-fn decode_rows_checksum(decoder: &Decoder<'_>) -> u64 {
+fn decode_rows_output(decoder: &Decoder<'_>) -> Vec<u8> {
     let (width, height) = decoder.info().dimensions;
-    let mut sink = ChecksumSink::new(width as usize * 3);
+    let mut sink = ValidationSink::new(width as usize * 3);
     let outcome = decoder
         .decode_rows(&mut sink)
         .expect("generated benchmark JPEG row decode must succeed");
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
     assert_eq!(sink.expected_y, height);
-    sink.hash
+    sink.pixels
+}
+
+struct BenchSink;
+
+impl RowSink<u8> for BenchSink {
+    type Error = JpegError;
+
+    fn write_row(&mut self, _y: u32, row: &[u8]) -> Result<(), Self::Error> {
+        std::hint::black_box(row);
+        Ok(())
+    }
 }
 
 fn encode_gray(width: u32, height: u32) -> Vec<u8> {
@@ -225,7 +226,7 @@ fn decode_cases() -> Vec<DecodeCase> {
     let rgb_420 = encode_rgb(512, 512, JpegSubsampling::Ybr420);
     let mut cases = Vec::new();
     cases
-        .try_reserve_exact(7)
+        .try_reserve_exact(8)
         .expect("reserve deterministic benchmark cases");
     cases.push(DecodeCase::new(
         "gray8_512",
@@ -257,6 +258,14 @@ fn decode_cases() -> Vec<DecodeCase> {
         512,
         rgb_420.clone(),
         DecodeMode::Buffer(PixelFormat::Rgb8),
+        FastPacketKind::Ybr420,
+    ));
+    cases.push(DecodeCase::new(
+        "rgba8_512_420",
+        512,
+        512,
+        rgb_420.clone(),
+        DecodeMode::Buffer(PixelFormat::Rgba8),
         FastPacketKind::Ybr420,
     ));
     cases.push(DecodeCase::new(
@@ -490,7 +499,6 @@ fn bench_decode_cpu(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_cpu_decode_runtime");
     for case in &cases {
         let decoder = Decoder::new(&case.bytes).expect("benchmark JPEG must parse");
-        let expected_checksum = case.expected_checksum;
         group.throughput(Throughput::Elements(case.pixels()));
         match case.mode {
             DecodeMode::Buffer(format) => {
@@ -501,22 +509,18 @@ fn bench_decode_cpu(c: &mut Criterion) {
                         let outcome = decoder
                             .decode_into(&mut output, stride, format)
                             .expect("benchmark decode must succeed");
-                        std::hint::black_box(outcome);
-                        let checksum = fnv1a_update(FNV_OFFSET_BASIS, &output);
-                        debug_assert_eq!(checksum, expected_checksum);
-                        std::hint::black_box(checksum);
+                        std::hint::black_box((&output, outcome));
                     });
                 });
             }
             DecodeMode::Rows => {
                 group.bench_function(case.name, |b| {
                     b.iter(|| {
-                        let mut sink = ChecksumSink::new(case.width as usize * 3);
+                        let mut sink = BenchSink;
                         let outcome = decoder
                             .decode_rows(&mut sink)
                             .expect("benchmark row decode must succeed");
-                        debug_assert_eq!(sink.hash, expected_checksum);
-                        std::hint::black_box((outcome, sink.hash));
+                        std::hint::black_box(outcome);
                     });
                 });
             }

@@ -71,21 +71,75 @@ pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
     idct_islow_dc_only_sample::<u8>(dc_coeff)
 }
 
+/// Fractional bits kept between the passes of the 12-bit IDCT. libjpeg-turbo's
+/// `jidctint.c` keeps one instead of the 8-bit path's two, to leave headroom.
+const PASS1_BITS_12: usize = 1;
+
 /// Inverse DCT of a 12-bit JPEG block, returning native 0..4095 sample values.
+///
+/// Mirrors `jidctint.c` built with `BITS_IN_JSAMPLE == 12`: `PASS1_BITS = 1`
+/// and `JLONG` (64-bit on LP64 targets) intermediates, so nothing wraps. The
+/// zero-AC shortcuts of the C code give the same result as the full
+/// computation here and are omitted.
 pub(crate) fn idct_islow_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
-    let mut work = [Wrapping(0i32); 64];
-    if input[32..].iter().all(|&coeff| coeff == 0) {
-        for col in 0..8 {
-            idct_1d_column_bottom_half_zero(input, &mut work, col);
-        }
-    } else {
-        for col in 0..8 {
-            idct_1d_column(input, &mut work, col);
+    let mut work = [0i64; 64];
+    let column_shift = CONST_BITS - PASS1_BITS_12;
+    for col in 0..8 {
+        let samples = core::array::from_fn(|row| i64::from(input[row * 8 + col]));
+        let outputs = islow_1d_i64(samples);
+        for (row, value) in outputs.into_iter().enumerate() {
+            work[row * 8 + col] = descale_i64(value, column_shift);
         }
     }
+    let row_shift = CONST_BITS + PASS1_BITS_12 + 3;
     for row in 0..8 {
-        idct_1d_row::<u16>(&work, output, row);
+        let samples = core::array::from_fn(|col| work[row * 8 + col]);
+        let outputs = islow_1d_i64(samples);
+        for (col, value) in outputs.into_iter().enumerate() {
+            let sample = (descale_i64(value, row_shift) + 2048).clamp(0, 4095);
+            output[row * 8 + col] = u16::try_from(sample).expect("clamped 12-bit sample");
+        }
     }
+}
+
+/// One ISLOW 1-D pass in 64-bit arithmetic; outputs are scaled by
+/// `2^CONST_BITS` and not yet descaled.
+fn islow_1d_i64(p: [i64; 8]) -> [i64; 8] {
+    let fix = i64::from;
+    let z1 = (p[2] + p[6]) * fix(idct::FIX_0_541196100);
+    let tmp2 = z1 - p[6] * fix(idct::FIX_1_847759065);
+    let tmp3 = z1 + p[2] * fix(idct::FIX_0_765366865);
+    let tmp0 = (p[0] + p[4]) << CONST_BITS;
+    let tmp1 = (p[0] - p[4]) << CONST_BITS;
+    let (tmp10, tmp13) = (tmp0 + tmp3, tmp0 - tmp3);
+    let (tmp11, tmp12) = (tmp1 + tmp2, tmp1 - tmp2);
+
+    let (t0, t1, t2, t3) = (p[7], p[5], p[3], p[1]);
+    let z5 = (t0 + t2 + t1 + t3) * fix(idct::FIX_1_175875602);
+    let z1 = -(t0 + t3) * fix(idct::FIX_0_899976223);
+    let z2 = -(t1 + t2) * fix(idct::FIX_2_562915447);
+    let z3 = -(t0 + t2) * fix(idct::FIX_1_961570560) + z5;
+    let z4 = -(t1 + t3) * fix(idct::FIX_0_390180644) + z5;
+    let t0 = t0 * fix(idct::FIX_0_298631336) + z1 + z3;
+    let t1 = t1 * fix(idct::FIX_2_053119869) + z2 + z4;
+    let t2 = t2 * fix(idct::FIX_3_072711026) + z2 + z3;
+    let t3 = t3 * fix(idct::FIX_1_501321110) + z1 + z4;
+
+    [
+        tmp10 + t3,
+        tmp11 + t2,
+        tmp12 + t1,
+        tmp13 + t0,
+        tmp13 - t0,
+        tmp12 - t1,
+        tmp11 - t2,
+        tmp10 - t3,
+    ]
+}
+
+/// `DESCALE` from `jdct.h`: round half up, then arithmetic shift.
+const fn descale_i64(value: i64, shift: usize) -> i64 {
+    (value + (1 << (shift - 1))) >> shift
 }
 
 /// Return the uniform native 12-bit sample produced by the DC-only ISLOW path.

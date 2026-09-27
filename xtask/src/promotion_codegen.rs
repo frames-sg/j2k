@@ -275,29 +275,47 @@ fn render_metal(manifest: &Manifest) -> Result<String, String> {
     Ok(out)
 }
 
+/// rustfmt's `max_width`; generated lines that would exceed it are wrapped
+/// the way rustfmt wraps them, so the output is already formatted.
+const MAX_LINE_WIDTH: usize = 100;
+
 fn render_sources(out: &mut String, manifest: &Manifest, backend: &str) {
-    let sources = manifest
+    let names = manifest
         .sources
         .iter()
         .filter(|source| source.backend == backend)
+        .map(|source| (rust_source_name(&source.name), &source.artifact_sha256))
         .collect::<Vec<_>>();
-    for source in &sources {
-        writeln!(
-            out,
-            "const {}: &str = \"{}\";",
-            rust_source_name(&source.name),
-            source.artifact_sha256
-        )
+    for (name, sha256) in &names {
+        let line = format!("const {name}: &str = \"{sha256}\";");
+        if line.len() <= MAX_LINE_WIDTH {
+            writeln!(out, "{line}")
+        } else {
+            writeln!(out, "const {name}: &str =\n    \"{sha256}\";")
+        }
         .expect("writing to a String cannot fail");
     }
-    out.push_str("\npub(crate) const SOURCE_EVIDENCE: &[&str] = &[");
-    for (index, source) in sources.iter().enumerate() {
-        if index != 0 {
-            out.push_str(", ");
+    let list = names
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    let line = format!(
+        "pub(crate) const SOURCE_EVIDENCE: &[&str] = &[{}];",
+        list.join(", ")
+    );
+    if line.len() <= MAX_LINE_WIDTH {
+        writeln!(out, "\n{line}")
+    } else {
+        let mut items = String::new();
+        for name in &list {
+            writeln!(items, "    {name},").expect("writing to a String cannot fail");
         }
-        out.push_str(&rust_source_name(&source.name));
+        writeln!(
+            out,
+            "\npub(crate) const SOURCE_EVIDENCE: &[&str] = &[\n{items}];"
+        )
     }
-    out.push_str("];\n");
+    .expect("writing to a String cannot fail");
 }
 
 fn render_cuda_cell(out: &mut String, cell: &DecodeCell) -> Result<(), String> {

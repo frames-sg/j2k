@@ -345,7 +345,9 @@ fn shader_source_keeps_entropy_fast_paths() {
     assert!(SHADER_SOURCE.contains("inline bool refill_four_bytes("));
     assert!(SHADER_SOURCE.contains("return refill_four_bytes(br, bytes, len) || refill_one_byte"));
     assert!(SHADER_SOURCE.contains("ensure_bits_padded(br, bytes, len, 9)"));
-    assert!(SHADER_SOURCE.contains("table.fast_len[fast_index]"));
+    assert!(SHADER_SOURCE.contains("const uint fast = uint(table.fast[lookahead]);"));
+    assert!(SHADER_SOURCE.contains("const int fast_ac = int(ac_table.fast_ac[lookahead]);"));
+    assert!(SHADER_SOURCE.contains("for (uint length = 10; length <= 16; ++length)"));
     assert!(SHADER_SOURCE.contains("inline bool decode_block_skip("));
     assert!(SHADER_SOURCE.contains("skip_receive_extend(br, bytes, len, ssss, status)"));
     assert!(SHADER_SOURCE.contains("inline bool configure_batch_entropy_thread("));
@@ -517,6 +519,87 @@ fn auto_batched_packets_reject_restart_batch_without_validated_promotion_evidenc
     assert!(batched_fast_packets(&requests)
         .expect("packet lookup")
         .is_none());
+}
+
+#[test]
+fn auto_batched_packets_promote_only_large_compatible_full_rgb_batches() {
+    let input = Arc::<[u8]>::from(generated_rgb_jpeg(256));
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(&input).expect("packet"));
+    let request = batch::QueuedRequest::new(
+        Arc::clone(&input),
+        PixelFormat::Rgb8,
+        BackendRequest::Auto,
+        batch::BatchOp::Full,
+        None,
+        None,
+        Some(Arc::clone(&packet)),
+    );
+    let mut requests = vec![request.clone(); 16];
+    assert!(batched_fast_packets(&requests)
+        .expect("promoted batch")
+        .is_some());
+    assert!(batched_fast_packets(&requests[..15])
+        .expect("small batch")
+        .is_none());
+    let small = batch::QueuedRequest::new(
+        Arc::<[u8]>::from(BASELINE_420),
+        PixelFormat::Rgb8,
+        BackendRequest::Auto,
+        batch::BatchOp::Full,
+        None,
+        None,
+        Some(Arc::new(
+            j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("small packet"),
+        )),
+    );
+    assert!(batched_fast_packets(&vec![small; 16])
+        .expect("small tiles")
+        .is_none());
+    requests[15] = batch::QueuedRequest::new(
+        Arc::<[u8]>::from(input.as_ref()),
+        PixelFormat::Rgb8,
+        BackendRequest::Auto,
+        batch::BatchOp::Full,
+        None,
+        None,
+        Some(Arc::clone(&packet)),
+    );
+    assert!(batched_fast_packets(&requests)
+        .expect("distinct owners")
+        .is_some());
+    let mut different_tables = j2k_jpeg::adapter::build_fast420_packet(&input).expect("packet");
+    different_tables.y_quant[0] += 1;
+    requests[15] = request.clone();
+    requests[15].fast_packet = Some(
+        crate::SharedJpegFastPacket::try_new(j2k_jpeg::adapter::JpegFastPacket::Fast420(
+            different_tables,
+        ))
+        .expect("different table owner"),
+    );
+    assert!(batched_fast_packets(&requests)
+        .expect("incompatible table group")
+        .is_none());
+    for (backend, fmt, op) in [
+        (BackendRequest::Cpu, PixelFormat::Rgb8, batch::BatchOp::Full),
+        (
+            BackendRequest::Auto,
+            PixelFormat::Rgba8,
+            batch::BatchOp::Full,
+        ),
+        (
+            BackendRequest::Auto,
+            PixelFormat::Rgb8,
+            batch::BatchOp::Scaled(j2k_core::Downscale::Half),
+        ),
+    ] {
+        requests[15] = request.clone();
+        requests[15].backend = backend;
+        requests[15].fmt = fmt;
+        requests[15].op = op;
+        assert!(batched_fast_packets(&requests)
+            .expect("unpromoted batch")
+            .is_none());
+    }
 }
 
 #[test]
@@ -2091,3 +2174,6 @@ fn single_scratch_recovers_after_gpu_entropy_failure() {
         assert!(!runtime.batch_scratch_in_use_for_test());
     }
 }
+
+mod decode_kernel_harness;
+mod surface_output_reuse;

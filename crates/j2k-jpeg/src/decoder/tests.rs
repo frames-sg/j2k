@@ -445,6 +445,51 @@ fn large_fast_420_region_decode_populates_cpu_entropy_checkpoints() {
         .any(|checkpoint| checkpoint.mcu_index >= CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS));
 }
 
+#[test]
+fn decoder_retained_bytes_are_owned_metadata_without_the_context_reserve() {
+    use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
+
+    for bytes in [dc_only_420_jpeg(16, 16), dc_only_420_jpeg(1024, 2048)] {
+        let dec = Decoder::new(&bytes).expect("decoder");
+        let expected = dec.plan.retained_allocation_bytes().expect("plan bytes")
+            + dec.warnings.capacity() * core::mem::size_of::<Warning>();
+        let retained = dec
+            .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
+            .expect("retained bytes");
+        assert_eq!(retained, expected);
+        assert!(retained < MAX_DECODER_CONTEXT_ALLOCATION_BYTES / 64);
+    }
+}
+
+#[test]
+fn cpu_checkpoint_budget_charges_the_shared_context_reserve_once() {
+    use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
+    use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES as CAP;
+
+    let bytes = dc_only_420_jpeg(1024, 2048);
+    let target_mcu = CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS + 5;
+    let headroom = 64 * 1024;
+    let decode_phase_bytes = |reserve_room: usize| {
+        let dec = Decoder::new(&bytes).expect("decoder");
+        let retained = dec
+            .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
+            .expect("retained bytes");
+        let external = CAP - reserve_room - retained - headroom;
+        let scan_bytes = &bytes[dec.plan.scan_offset..];
+        dec.checkpoint_for_mcu(scan_bytes, target_mcu, external)
+    };
+
+    // Room for one reserve beside the decode phase: the cache may grow.
+    assert!(decode_phase_bytes(MAX_DECODER_CONTEXT_ALLOCATION_BYTES)
+        .expect("one context reserve fits")
+        .is_some());
+    // No room for the reserve: growth must fail with a typed cap error.
+    assert!(matches!(
+        decode_phase_bytes(0),
+        Err(JpegError::MemoryCapExceeded { cap: CAP, .. })
+    ));
+}
+
 #[derive(Default)]
 struct GrayRows {
     rows: Vec<(u32, Vec<u8>)>,

@@ -66,29 +66,44 @@ inline void j2k_fdwt53_horizontal_step(
     uint full_width,
     uint current_width,
     uint low_width,
-    uint2 gid
+    uint2 gid,
+    uint local_x,
+    uint simd_lane
 ) {
+    const bool active = gid.x < low_width;
+    const uint high_width = current_width - low_width;
     const uint row_base = gid.y * full_width;
-    if (gid.x < low_width) {
-        const uint even = gid.x * 2u;
-        const float left = gid.x > 0u
-            ? j2k_fdwt53_predict_row(src, row_base, current_width, gid.x - 1u)
-            : j2k_fdwt53_predict_row(src, row_base, current_width, 0u);
-        const float right = even + 1u < current_width
-            ? j2k_fdwt53_predict_row(src, row_base, current_width, gid.x)
-            : left;
-        dst[row_base + gid.x] =
-            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
+    float right = 0.0f;
+    if (active && gid.x < high_width) {
+        right = j2k_fdwt53_predict_row(src, row_base, current_width, gid.x);
+    }
+    // Each lane emits a low/high pair and shares its high prediction with the
+    // next lane. Nonuniform threadgroups can make SIMD groups cross rows;
+    // row and SIMD boundaries need an explicit one-sample halo.
+    const float shuffled_left = simd_shuffle_up(right, 1u);
+
+    if (!active) {
         return;
     }
 
-    const uint high_index = gid.x - low_width;
-    dst[row_base + gid.x] = j2k_fdwt53_predict_row(
-        src,
-        row_base,
-        current_width,
-        high_index
-    );
+    float left;
+    if (gid.x == 0u) {
+        left = right;
+    } else if (local_x == 0u || simd_lane == 0u) {
+        left = j2k_fdwt53_predict_row(src, row_base, current_width, gid.x - 1u);
+    } else {
+        left = shuffled_left;
+    }
+    if (gid.x >= high_width) {
+        right = left;
+    }
+
+    const uint even = gid.x * 2u;
+    dst[row_base + gid.x] =
+        src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
+    if (gid.x < high_width) {
+        dst[row_base + low_width + gid.x] = right;
+    }
 }
 
 inline void j2k_fdwt53_vertical_step(
@@ -126,7 +141,9 @@ kernel void j2k_forward_dwt53_horizontal(
     device const float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
     constant J2kForwardDwt53Params &params [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint2 gid [[thread_position_in_grid]],
+    uint2 local_id [[thread_position_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]]
 ) {
     if (gid.x >= params.current_width || gid.y >= params.current_height) {
         return;
@@ -138,7 +155,9 @@ kernel void j2k_forward_dwt53_horizontal(
         params.full_width,
         params.current_width,
         params.low_width,
-        gid
+        gid,
+        local_id.x,
+        simd_lane
     );
 }
 
@@ -170,7 +189,9 @@ kernel void j2k_forward_dwt53_horizontal_batched(
     device float *dst1 [[buffer(4)]],
     device float *dst2 [[buffer(5)]],
     constant J2kForwardDwt53BatchedParams &params [[buffer(6)]],
-    uint3 gid [[thread_position_in_grid]]
+    uint3 gid [[thread_position_in_grid]],
+    uint3 local_id [[thread_position_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]]
 ) {
     if (
         gid.x >= params.current_width ||
@@ -188,7 +209,9 @@ kernel void j2k_forward_dwt53_horizontal_batched(
         params.full_width,
         params.current_width,
         params.low_width,
-        gid.xy
+        gid.xy,
+        local_id.x,
+        simd_lane
     );
 }
 

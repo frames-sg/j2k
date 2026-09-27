@@ -473,23 +473,7 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
-        self.validate_component_plane_precision()?;
-        let decoded_image = self.decode_image(
-            decoder_context,
-            None,
-            None,
-            false,
-            self.retained_metadata_bytes()?,
-        )?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        self.try_borrow_component_planes(
-            decoded_components.as_slice(),
-            decoded_components.capacity(),
-            (self.width(), self.height()),
-        )
+        self.decode_borrowed_component_planes(decoder_context, None, None, false)
     }
 
     /// Decode the image into owned native-bit-depth component planes.
@@ -574,23 +558,7 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
         ht_decoder: &mut dyn HtCodeBlockDecoder,
     ) -> Result<DecodedComponents<'ctx>> {
-        self.validate_component_plane_precision()?;
-        let decoded_image = self.decode_image(
-            decoder_context,
-            None,
-            Some(ht_decoder),
-            false,
-            self.retained_metadata_bytes()?,
-        )?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        self.try_borrow_component_planes(
-            decoded_components.as_slice(),
-            decoded_components.capacity(),
-            (self.width(), self.height()),
-        )
+        self.decode_borrowed_component_planes(decoder_context, None, Some(ht_decoder), false)
     }
 
     /// Decode borrowed component planes for a requested region using a
@@ -604,25 +572,7 @@ impl<'a> Image<'a> {
         roi: (u32, u32, u32, u32),
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
-        validate_roi((self.width(), self.height()), roi)?;
-        self.validate_component_plane_precision()?;
-        let (_x, _y, width, height) = roi;
-        let decoded_image = self.decode_image(
-            decoder_context,
-            Some(roi),
-            None,
-            false,
-            self.retained_metadata_bytes()?,
-        )?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        self.try_borrow_component_planes(
-            decoded_components.as_slice(),
-            decoded_components.capacity(),
-            (width, height),
-        )
+        self.decode_borrowed_component_planes(decoder_context, Some(roi), None, false)
     }
 
     /// Decode a source-coordinate region into owned native-bit-depth component
@@ -666,25 +616,7 @@ impl<'a> Image<'a> {
         roi: (u32, u32, u32, u32),
         ht_decoder: &mut dyn HtCodeBlockDecoder,
     ) -> Result<DecodedComponents<'ctx>> {
-        validate_roi((self.width(), self.height()), roi)?;
-        self.validate_component_plane_precision()?;
-        let (_x, _y, width, height) = roi;
-        let decoded_image = self.decode_image(
-            decoder_context,
-            Some(roi),
-            Some(ht_decoder),
-            false,
-            self.retained_metadata_bytes()?,
-        )?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        self.try_borrow_component_planes(
-            decoded_components.as_slice(),
-            decoded_components.capacity(),
-            (width, height),
-        )
+        self.decode_borrowed_component_planes(decoder_context, Some(roi), Some(ht_decoder), false)
     }
 
     /// Decode a region of the image and return it as an 8-bit interleaved bitmap.
@@ -860,10 +792,34 @@ impl PreparedRegionDecoder<'_, '_, '_> {
         &mut self,
         roi: (u32, u32, u32, u32),
     ) -> Result<DecodedComponents<'_>> {
+        self.decode_region_component_planes(roi, false)
+    }
+
+    /// Rounded-for-integer-output counterpart of
+    /// [`Self::decode_region_components`]; see
+    /// [`Image::decode_components_for_integer_output_with_context`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region, component precision, or codestream is invalid.
+    #[doc(hidden)]
+    pub fn decode_region_components_for_integer_output(
+        &mut self,
+        roi: (u32, u32, u32, u32),
+    ) -> Result<DecodedComponents<'_>> {
+        self.decode_region_component_planes(roi, true)
+    }
+
+    fn decode_region_component_planes(
+        &mut self,
+        roi: (u32, u32, u32, u32),
+        round_irreversible_output: bool,
+    ) -> Result<DecodedComponents<'_>> {
         validate_roi((self.image.width(), self.image.height()), roi)?;
         self.image.validate_component_plane_precision()?;
         self.decoder_context.set_output_region(Some(roi));
-        self.decoder_context.set_round_irreversible_output(false);
+        self.decoder_context
+            .set_round_irreversible_output(round_irreversible_output);
         let decode_result = j2c::decode_preparsed(
             &self.image.header,
             self.retained_image_bytes,
@@ -871,6 +827,7 @@ impl PreparedRegionDecoder<'_, '_, '_> {
             self.decoder_context,
         );
         self.decoder_context.set_output_region(None);
+        self.decoder_context.set_round_irreversible_output(false);
         decode_result?;
         let (_x, _y, width, height) = roi;
         let decoded_image = self

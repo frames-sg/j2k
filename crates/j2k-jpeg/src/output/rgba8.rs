@@ -5,7 +5,7 @@
 
 use crate::backend::Backend;
 use crate::error::JpegError;
-use crate::output::OutputWriter;
+use crate::output::{InterleavedRgbWriter, OutputWriter};
 
 pub(crate) struct Rgba8Writer<'o> {
     out: &'o mut [u8],
@@ -13,6 +13,41 @@ pub(crate) struct Rgba8Writer<'o> {
     width: u32,
     alpha: u8,
     backend: Backend,
+}
+
+impl InterleavedRgbWriter for Rgba8Writer<'_> {
+    fn with_rgb_rows<R, F>(&mut self, y: u32, row_count: usize, fill: F) -> Result<R, JpegError>
+    where
+        F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
+    {
+        let width = self.width as usize;
+        let start = y as usize * self.stride;
+        let (top, bottom) = match row_count {
+            1 => (&mut self.out[start..start + width * 4], None),
+            2 => {
+                let (head, tail) = self.out.split_at_mut(start + self.stride);
+                (
+                    &mut head[start..start + width * 4],
+                    Some(&mut tail[..width * 4]),
+                )
+            }
+            _ => unreachable!("Rgba8Writer only supports one or two rows"),
+        };
+        let mut bottom = bottom;
+        let result = fill(
+            &mut top[..width * 3],
+            bottom.as_deref_mut().map(|row| &mut row[..width * 3]),
+        )?;
+        // The fused RGB kernels write into the caller's RGBA storage. Expanding
+        // backwards preserves unread RGB pixels and needs no intermediate rows.
+        for row in core::iter::once(top).chain(bottom) {
+            for x in (0..width).rev() {
+                let rgb = [row[x * 3], row[x * 3 + 1], row[x * 3 + 2]];
+                row[x * 4..x * 4 + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], self.alpha]);
+            }
+        }
+        Ok(result)
+    }
 }
 
 impl<'o> Rgba8Writer<'o> {

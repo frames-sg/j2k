@@ -9,7 +9,7 @@ use super::{
     dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
     dispatch_classic_cleanup_repeated_batched_in_command_buffer,
     dispatch_classic_store_repeated_batched_in_command_buffer, dispatch_zero_u32_buffer_in_encoder,
-    new_shared_buffer, take_classic_coefficients_scratch_buffer,
+    new_compute_command_encoder, new_shared_buffer, take_classic_coefficients_scratch_buffer,
     take_classic_states_scratch_buffer, Buffer, ClassicCleanupBatchDispatch,
     ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
     ClassicRepeatedStoreDispatch, CommandBufferRef, ComputeCommandEncoderRef, DirectScratchBuffer,
@@ -26,6 +26,7 @@ struct ClassicBatchView<'a> {
     jobs: &'a [J2kClassicCleanupBatchJob],
     segments: &'a [J2kClassicSegment],
     output_plane_len: usize,
+    zero_fill: bool,
     repeated_overflow_message: &'static str,
 }
 
@@ -39,6 +40,7 @@ impl<'a> ClassicBatchView<'a> {
             jobs: &job.jobs,
             segments: &job.segments,
             output_plane_len: job.width as usize * job.height as usize,
+            zero_fill: job.zero_fill,
             repeated_overflow_message: "classic J2K MetalDirect repeated job count overflow",
         }
     }
@@ -51,6 +53,7 @@ impl<'a> ClassicBatchView<'a> {
             jobs: &group.jobs,
             segments: &group.segments,
             output_plane_len: group.total_coefficients,
+            zero_fill: group.zero_fill,
             repeated_overflow_message:
                 "classic J2K MetalDirect repeated grouped job count overflow",
         }
@@ -154,6 +157,19 @@ fn dispatch_repeated_classic_cleanup(
 }
 
 #[cfg(target_os = "macos")]
+fn zero_repeated_classic_output(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    output: &Buffer,
+    word_count: usize,
+) -> Result<(), Error> {
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    let result = dispatch_zero_u32_buffer_in_encoder(runtime, &encoder, output, word_count);
+    encoder.endEncoding();
+    result
+}
+
+#[cfg(target_os = "macos")]
 fn empty_repeated_classic_execution(
     runtime: &MetalRuntime,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
@@ -180,6 +196,19 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
     output: &Buffer,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+    // The output is a recycled scratch buffer that may hold an earlier
+    // decode's coefficients. Samples no code-block job writes (empty blocks,
+    // or a job-less batch) must read as zero, as on the non-repeated paths.
+    if count != 0 && (batch.zero_fill || batch.jobs.is_empty()) {
+        let word_count =
+            batch
+                .output_plane_len
+                .checked_mul(count)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: batch.repeated_overflow_message.to_string(),
+                })?;
+        zero_repeated_classic_output(runtime, command_buffer, output, word_count)?;
+    }
     if count == 0 || batch.jobs.is_empty() {
         return empty_repeated_classic_execution(runtime);
     }

@@ -78,7 +78,8 @@ mod inner {
         #[inline(always)]
         pub(crate) fn mul_add(self, mul: Self, addend: Self) -> Self {
             Self {
-                inner: self.inner.mul_add(mul.inner, addend.inner),
+                // Preserve the scalar path's single-rounding contract without hardware FMA.
+                inner: self.inner.mul_add_precise(mul.inner, addend.inner),
             }
         }
 
@@ -894,6 +895,22 @@ mod simd_operator_tests {
                 "lane {index}: expected {expected}, got {actual}"
             );
         }
+    }
+
+    #[test]
+    fn vector_mul_add_preserves_fused_rounding() {
+        let a = [f32::from_bits(0x4526_ba09); SIMD_WIDTH];
+        let b = [f32::from_bits(0xbf41_420c); SIMD_WIDTH];
+        let c = [f32::from_bits(0x4470_e5c9); SIMD_WIDTH];
+        let mut output = [0.0; SIMD_WIDTH];
+
+        dispatch!(Level::new(), simd => {
+            f32x8::from_slice(simd, &a)
+                .mul_add(f32x8::from_slice(simd, &b), f32x8::from_slice(simd, &c))
+                .store(&mut output);
+        });
+
+        assert!(output.iter().all(|value| value.to_bits() == 0xc483_47a5));
     }
 }
 

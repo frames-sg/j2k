@@ -70,13 +70,15 @@ fn image_components<'ctx, 'input>(
     let decoded = backend::image(image.bytes(), options.settings, target_resolution)?;
     let output_rect = plan.output_rect();
     let decoded_dims = (decoded.width(), decoded.height());
+    // Every batch sample type is an integer output, so irreversible samples
+    // are rounded before the level shift exactly as the single-image decode.
     if output_rect == Rect::full(decoded_dims) {
         decoded
-            .decode_components_with_context(context)
+            .decode_components_for_integer_output_with_context(context)
             .map_err(J2kError::from_native_decode_error)
     } else {
         decoded
-            .decode_region_components_with_context(
+            .decode_region_components_for_integer_output_with_context(
                 (output_rect.x, output_rect.y, output_rect.w, output_rect.h),
                 context,
             )

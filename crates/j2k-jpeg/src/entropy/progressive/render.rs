@@ -6,7 +6,9 @@ use alloc::vec::Vec;
 
 use crate::allocation::{checked_allocation_len, try_reserve_for_len_with_live_budget};
 use crate::backend::Backend;
-use crate::color::upsample::{upsample_h2v1_fancy_row, upsample_h2v2_fancy_row};
+use crate::color::upsample::{
+    upsample_h1v2_fancy_row, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row,
+};
 use crate::entropy::block::clamp_i16;
 use crate::entropy::ZIGZAG;
 use crate::error::JpegError;
@@ -167,6 +169,14 @@ fn upsample_component_row(
         let curr = component_row(component, image, sample_y);
         let next = component_row(component, image, next_y);
         upsample_h2v2_fancy_row(prev, curr, next, out.len(), y % 2 == 1, out);
+    } else if h_ratio == 1 && v_ratio == 2 {
+        let sample_y = ((y / 2) as usize).min(component.sample_height.saturating_sub(1) as usize);
+        let prev_y = sample_y.saturating_sub(1);
+        let next_y = (sample_y + 1).min(component.sample_height.saturating_sub(1) as usize);
+        let prev = component_row(component, image, prev_y);
+        let curr = component_row(component, image, sample_y);
+        let next = component_row(component, image, next_y);
+        upsample_h1v2_fancy_row(prev, curr, next, out.len(), y % 2 == 1, out);
     } else {
         upsample_nearest(plan, component, image, y, out);
     }

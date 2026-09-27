@@ -10,6 +10,68 @@ fn metal_session() -> Option<MetalBackendSession> {
 }
 
 #[test]
+fn rgb8_four_table_groups_preserve_texture_order_and_reuse() {
+    let Some(session) = metal_session() else {
+        return;
+    };
+    let dimensions = (64, 64);
+    let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+    for subsampling in [
+        JpegSubsampling::Ybr420,
+        JpegSubsampling::Ybr422,
+        JpegSubsampling::Ybr444,
+    ] {
+        let jpegs = [95, 85, 70, 50].map(|quality| {
+            encode_jpeg_baseline(
+                JpegSamples::Rgb8 {
+                    data: &rgb,
+                    width: dimensions.0,
+                    height: dimensions.1,
+                },
+                JpegEncodeOptions {
+                    quality,
+                    subsampling,
+                    restart_interval: None,
+                    backend: JpegBackend::Cpu,
+                },
+            )
+            .expect("encode table group")
+        });
+        let expected: Vec<_> = jpegs
+            .iter()
+            .map(|jpeg| {
+                let (rgb, _) = CpuDecoder::new(&jpeg.data)
+                    .expect("CPU decoder")
+                    .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                    .expect("CPU decode");
+                rgb_to_rgba_opaque(&rgb)
+            })
+            .collect();
+        let order = [0, 1, 2, 3, 2, 0, 3, 1];
+        let inputs = order.map(|index| jpegs[index].data.as_slice());
+        let expected_tiles = order.map(|index| expected[index].as_slice());
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, dimensions, inputs.len())
+            .expect("texture output");
+        for _ in 0..2 {
+            let tiles = decode_rgb8_texture_batch_with_session(
+                Rgb8MetalBatchSource::Bytes(&inputs),
+                Rgb8MetalBatchOp::Full,
+                MetalTextureBatchTarget::Reusable(&output),
+                &session,
+            )
+            .expect("decode interleaved table groups");
+            assert_reusable_rgba_texture_tiles(
+                &session,
+                &output,
+                tiles,
+                dimensions,
+                &expected_tiles,
+            );
+        }
+    }
+}
+
+#[test]
 fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
     let Some(session) = metal_session() else {
         return;
@@ -1409,10 +1471,11 @@ fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
         return;
     }
 
+    // The three private allocations are the Y/Cb/Cr component planes.
     let cases = [
         (BASELINE_420, (16, 16), 3),
         (BASELINE_422, (16, 8), 3),
-        (BASELINE_444, (8, 8), 0),
+        (BASELINE_444, (8, 8), 3),
     ];
 
     for (input, dimensions, expected_private_allocations) in cases {
@@ -1447,7 +1510,7 @@ fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
+fn rgb8_fast444_texture_batch_decode_uses_reusable_component_planes() {
     let Some(session) = metal_session() else {
         return;
     };
@@ -1473,8 +1536,8 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     assert_reusable_rgba_texture_tiles(&session, &output, tiles, (8, 8), &expected_tiles);
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
-        0,
-        "fused 4:4:4 texture batch decode should not allocate private Y/Cb/Cr staging planes"
+        3,
+        "4:4:4 texture batch decode should stage one set of private Y/Cb/Cr planes"
     );
 }
 
@@ -1614,10 +1677,10 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
     assert_eq!(
-            compute::jpeg_private_buffer_allocations_for_test(),
-            0,
-            "table-mixed resident 4:4:4 texture dispatches should not allocate private Y/Cb/Cr staging planes"
-        );
+        compute::jpeg_private_buffer_allocations_for_test(),
+        6,
+        "table-mixed resident 4:4:4 texture groups should stage Y/Cb/Cr planes once per in-flight group"
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -1841,8 +1904,8 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
     }
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
-        3,
-        "subsampled texture decode allocates only three reusable component planes"
+        6,
+        "two in-flight table groups each retain three reusable component planes"
     );
 }
 
@@ -2369,7 +2432,7 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
     }
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
-        3,
-        "subsampled texture decode allocates only three reusable component planes"
+        6,
+        "two in-flight table groups each retain three reusable component planes"
     );
 }

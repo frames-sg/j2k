@@ -9,8 +9,8 @@ use crate::{
 use super::super::referenced::decoded_components as decoded_htj2k_components;
 use super::super::referenced_classic::decoded_components as decoded_classic_components;
 use super::super::{
-    apply_inverse_mct_region, execute_idwt_step, store_component, J2kDirectCpuScratch,
-    J2kDirectDecodedComponents, StagedDirectRoute,
+    apply_inverse_mct_region, execute_idwt_step, rounds_at_store, store_component,
+    J2kDirectCpuScratch, J2kDirectDecodedComponents, StagedDirectRoute,
 };
 use super::plan_access::{
     classic_tile_color_transform, classic_tile_components, ht_tile_color_transform,
@@ -110,6 +110,7 @@ pub(super) fn finish_tile_components(
     {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
+    let mct = color_transform.is_some_and(|(_, mct, _)| mct);
     for (component_index, component) in components.iter().enumerate() {
         let bands = &mut scratch.component_band_sets[component_index];
         let output = &mut scratch.component_planes[component_index];
@@ -126,7 +127,7 @@ pub(super) fn finish_tile_components(
                         bands.active(),
                         output,
                         &mut output_initialized,
-                        false,
+                        rounds_at_store(mct, component_index),
                     )?;
                     stored = true;
                 }
@@ -145,7 +146,7 @@ pub(super) fn finish_tile_components(
                 transform,
                 bit_depths,
                 signed,
-                false,
+                true,
                 destination,
                 [plane0, plane1, plane2],
             )?;

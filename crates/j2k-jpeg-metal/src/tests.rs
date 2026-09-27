@@ -311,24 +311,46 @@ fn assert_prepared_huffman_matches_shared(label: &str, table: &JpegHuffmanTable)
         "{label} values"
     );
 
-    let mut fast_symbol = [0u8; 512];
-    let mut fast_len = [0u8; 512];
-    for idx in 0..canonical.huffsize_len {
-        let len = usize::from(canonical.huffsize[idx]);
-        if len == 0 || len > 9 {
-            continue;
-        }
-        let code = usize::from(canonical.huffcode[idx]);
-        let prefix = code << (9 - len);
-        let fill = 1usize << (9 - len);
-        for suffix in 0..fill {
-            fast_symbol[prefix | suffix] = table.values[idx];
-            fast_len[prefix | suffix] = canonical.huffsize[idx];
-        }
-    }
+    // Independent reference: walk every 9-bit lookahead through the
+    // canonical codes, as the shader's slow path would.
+    for lookahead in 0..512usize {
+        let hit = (0..canonical.huffsize_len).find(|&idx| {
+            let len = usize::from(canonical.huffsize[idx]);
+            len != 0 && len <= 9 && lookahead >> (9 - len) == usize::from(canonical.huffcode[idx])
+        });
+        let expected_fast = hit.map_or(0, |idx| {
+            (u16::from(canonical.huffsize[idx]) << 8) | u16::from(table.values[idx])
+        });
+        assert_eq!(
+            prepared.fast[lookahead], expected_fast,
+            "{label} fast[{lookahead:#05x}]"
+        );
 
-    assert_eq!(prepared.fast_symbol, fast_symbol, "{label} fast_symbol");
-    assert_eq!(prepared.fast_len, fast_len, "{label} fast_len");
+        let expected_fast_ac = hit.and_then(|idx| {
+            let code_len = usize::from(canonical.huffsize[idx]);
+            let symbol = table.values[idx];
+            let ssss = usize::from(symbol & 0x0f);
+            if ssss == 0 || code_len + ssss > 9 {
+                return None;
+            }
+            let extra = (lookahead >> (9 - code_len - ssss)) & ((1 << ssss) - 1);
+            let extra = i32::try_from(extra).expect("extra bits fit in i32");
+            let value = if extra < 1 << (ssss - 1) {
+                extra + (-1 << ssss) + 1
+            } else {
+                extra
+            };
+            let value = i8::try_from(value).ok()?;
+            let run = i16::from(symbol >> 4);
+            let total = i16::try_from(code_len + ssss).expect("length fits in i16");
+            Some(i16::from(value) * 256 + run * 16 + total)
+        });
+        assert_eq!(
+            prepared.fast_ac[lookahead],
+            expected_fast_ac.unwrap_or(0),
+            "{label} fast_ac[{lookahead:#05x}]"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -917,6 +939,144 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
             expected.as_slice()
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rgb8_four_table_groups_preserve_buffer_order_and_reuse() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let dimensions = (64, 64);
+    let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+    for subsampling in [
+        JpegSubsampling::Ybr420,
+        JpegSubsampling::Ybr422,
+        JpegSubsampling::Ybr444,
+    ] {
+        let jpegs = [95, 85, 70, 50].map(|quality| {
+            encode_jpeg_baseline(
+                JpegSamples::Rgb8 {
+                    data: &rgb,
+                    width: dimensions.0,
+                    height: dimensions.1,
+                },
+                JpegEncodeOptions {
+                    quality,
+                    subsampling,
+                    restart_interval: None,
+                    backend: JpegBackend::Cpu,
+                },
+            )
+            .expect("encode table group")
+        });
+        let expected: Vec<_> = jpegs
+            .iter()
+            .map(|jpeg| {
+                CpuDecoder::new(&jpeg.data)
+                    .expect("CPU decoder")
+                    .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                    .expect("CPU decode")
+                    .0
+            })
+            .collect();
+        let order = [0, 1, 2, 3, 2, 0, 3, 1];
+        let inputs = order.map(|index| jpegs[index].data.as_slice());
+        let output = MetalBatchOutputBuffer::new_rgb8_tiles(&session, dimensions, inputs.len())
+            .expect("buffer output");
+        for _ in 0..2 {
+            let surfaces = decode_rgb8_buffer_batch_with_session(
+                Rgb8MetalBatchSource::Bytes(&inputs),
+                Rgb8MetalBatchOp::Full,
+                MetalBufferBatchTarget::Reusable(&output),
+                &session,
+            )
+            .expect("decode interleaved table groups");
+            for (index, surface) in surfaces.into_iter().enumerate() {
+                let surface = surface.expect("surface");
+                let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
+                assert!(std::ptr::eq(buffer, output.buffer_trusted()));
+                assert_eq!(offset, index * output.tile_stride_bytes());
+                assert_eq!(
+                    surface.as_bytes().expect("surface byte access"),
+                    expected[order[index]].as_slice()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn concurrent_four_group_buffer_batches_share_session_without_stalling() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        for variant in [0u8, 79] {
+            let session = &session;
+            let start = &start;
+            scope.spawn(move || {
+                let dimensions = (64, 64);
+                let mut rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+                for pixel in rgb.chunks_exact_mut(3) {
+                    pixel[0] = pixel[0].wrapping_add(variant);
+                }
+                let jpegs = [95, 85, 70, 50].map(|quality| {
+                    encode_jpeg_baseline(
+                        JpegSamples::Rgb8 {
+                            data: &rgb,
+                            width: dimensions.0,
+                            height: dimensions.1,
+                        },
+                        JpegEncodeOptions {
+                            quality,
+                            subsampling: JpegSubsampling::Ybr420,
+                            restart_interval: None,
+                            backend: JpegBackend::Cpu,
+                        },
+                    )
+                    .expect("encode concurrent table group")
+                });
+                let expected: Vec<_> = jpegs
+                    .iter()
+                    .map(|jpeg| {
+                        CpuDecoder::new(&jpeg.data)
+                            .expect("CPU decoder")
+                            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                            .expect("CPU decode")
+                            .0
+                    })
+                    .collect();
+                let inputs = jpegs.each_ref().map(|jpeg| jpeg.data.as_slice());
+                let output =
+                    MetalBatchOutputBuffer::new_rgb8_tiles(session, dimensions, inputs.len())
+                        .expect("buffer output");
+
+                start.wait();
+                let surfaces = decode_rgb8_buffer_batch_with_session(
+                    Rgb8MetalBatchSource::Bytes(&inputs),
+                    Rgb8MetalBatchOp::Full,
+                    MetalBufferBatchTarget::Reusable(&output),
+                    session,
+                )
+                .expect("decode concurrent table groups");
+                assert_eq!(surfaces.len(), inputs.len());
+                for (index, surface) in surfaces.into_iter().enumerate() {
+                    let surface = surface.expect("surface");
+                    assert_eq!(
+                        surface.as_bytes().expect("surface byte access"),
+                        expected[index].as_slice()
+                    );
+                }
+            });
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]

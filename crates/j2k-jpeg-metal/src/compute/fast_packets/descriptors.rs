@@ -57,6 +57,11 @@ pub(in crate::compute) trait FastSubsampledPacket {
     /// Vertical dispatch extent for the full-frame pack kernels: 4:2:0 packs
     /// 2x2 pixel quads per thread, 4:2:2 packs 2x1 pairs (full-height rows).
     fn packed_height_extent(height: u32) -> u32;
+    /// Horizontal dispatch extent for the full-frame pack kernels: the
+    /// subsampled families pack horizontal pairs, 4:4:4 one pixel per thread.
+    fn packed_width_extent(width: u32) -> u32 {
+        width.div_ceil(2).max(1)
+    }
 }
 
 macro_rules! impl_fast_subsampled_packet_accessors {
@@ -203,6 +208,9 @@ impl FastSubsampledPacket for JpegFast444PacketV1 {
     fn packed_height_extent(height: u32) -> u32 {
         height
     }
+    fn packed_width_extent(width: u32) -> u32 {
+        width
+    }
 }
 
 /// Scratch-pool cache keys for one batch driver's buffers; keys stay
@@ -253,9 +261,6 @@ pub(in crate::compute) trait FastSubsampledMetal: FastSubsampledPacket {
 
     fn from_batched<'a>(packet: &BatchedFastPacket<'a>) -> Option<&'a Self>;
     fn to_batched(&self) -> BatchedFastPacket<'_>;
-    fn to_batched_with_texture_mode(&self, _mode: PlaneMode) -> BatchedFastPacket<'_> {
-        self.to_batched()
-    }
     fn texture_plane_mode_from_batched(packet: &BatchedFastPacket<'_>) -> Option<PlaneMode> {
         Self::from_batched(packet).map(|_| PlaneMode::YCbCr)
     }

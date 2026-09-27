@@ -277,13 +277,11 @@ fn irreversible_groups_batch_transform_stages_without_changing_pixels() {
 }
 
 #[test]
-fn large_irreversible_groups_bound_the_working_set_without_changing_pixels() {
-    // P27 retained per-image reconstruction above 20 MiB after chunking regressed.
-    for (dimensions, count, expected_sequences) in [
-        ((1024, 1024), 6, 7),
-        ((1024, 1024), 9, 10),
-        ((1025, 513), 11, 12),
-    ] {
+fn large_irreversible_groups_batch_every_level_without_changing_pixels() {
+    // P36: with P31's fused lifting, batches reconstruct every level in one
+    // batched sequence per component, including stages above 20 MiB (P20/P27
+    // had fallen back to per-image reconstruction there).
+    for (dimensions, count) in [((1024, 1024), 6), ((1024, 1024), 9), ((1025, 513), 11)] {
         if assert_external_group_uses_one_command_buffer_and_encoder(
             FixtureRoute::Ht97,
             FixtureColor::Gray,
@@ -296,8 +294,8 @@ fn large_irreversible_groups_bound_the_working_set_without_changing_pixels() {
         }
         assert_eq!(
             crate::engine::idwt97_stage_sequences_for_test(),
-            expected_sequences,
-            "{dimensions:?} batch {count}: one small level plus bounded final-level chunks",
+            FixtureColor::Gray.channels() * 2,
+            "{dimensions:?} batch {count}: IDWT stage sequences must not grow with batch size",
         );
     }
 }

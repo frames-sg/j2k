@@ -5,19 +5,17 @@ use crate::metal_types::prelude::*;
 
 #[cfg(test)]
 use super::super::checked_buffer_slice;
+#[cfg(test)]
+use super::super::dispatch_3d_pipeline;
 use super::super::{
     checked_buffer_copy_into, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
-    dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer, CommandBufferRef,
-    ComputeCommandEncoderRef, Error, J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams,
-    J2kSingleDecompositionIdwtJob, SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
+    hybrid_stage_signpost, label_compute_encoder, new_command_buffer, new_compute_command_encoder,
+    new_shared_buffer, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error,
+    J2kIdwt97LiftSteps, J2kIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob,
+    SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 use super::{checked_host_output_layout, IdwtSubBandBuffers, SingleIdwtDispatch};
 use j2k_codec_math::dwt;
-
-const fn parity_axis_len(length: u32, odd: bool) -> u32 {
-    length / 2 + if odd { 0 } else { length % 2 }
-}
 
 pub(crate) fn decode_irreversible97_single_decomposition_idwt(
     job: J2kSingleDecompositionIdwtJob<'_>,
@@ -254,6 +252,23 @@ pub(super) fn dispatch_irreversible97_horizontal_scale(
     encoder.memory_barrier_with_resources(&[decoded]);
 }
 
+/// Threadgroup geometry of the fused lifting kernels; must match
+/// `J2K_IDWT97_*` in `idwt.metal`. Each horizontal group owns whole rows and
+/// each vertical group a whole strip of columns.
+const IDWT97_ROWS_PER_GROUP: u32 = 4;
+const IDWT97_ROW_THREADS: u32 = 64;
+const IDWT97_COL_TILE: u32 = 32;
+const IDWT97_COL_ROW_THREADS: u32 = 8;
+
+const IDWT97_LIFT_COEFFICIENTS: [f32; 4] = [
+    dwt::IDWT97_NEG_DELTA_F32,
+    dwt::IDWT97_NEG_GAMMA_F32,
+    dwt::IDWT97_NEG_BETA_F32,
+    dwt::IDWT97_NEG_ALPHA_F32,
+];
+
+/// Encodes the horizontal lifting steps, vertical scale, and vertical lifting
+/// steps as two fused tile dispatches.
 pub(super) fn dispatch_irreversible97_stages_after_horizontal_scale(
     encoder: &ComputeCommandEncoderRef,
     kernels: &crate::engine::runtime::DecodeKernels,
@@ -266,86 +281,78 @@ pub(super) fn dispatch_irreversible97_stages_after_horizontal_scale(
     #[cfg(test)]
     crate::engine::test_counters::record_idwt97_stage_sequence();
 
-    let horizontal_even_is_odd = ((params.x0 + params.output_x) & 1) != 0;
-    encoder.setComputePipelineState(&kernels.idwt_irreversible97_horizontal_step);
+    if params.width == 0 || params.height == 0 || batch_count == 0 {
+        return;
+    }
+    let size = j2k_metal_support::mtl_size;
     encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    for (coefficient, odd) in [
-        (dwt::IDWT97_NEG_DELTA_F32, horizontal_even_is_odd),
-        (dwt::IDWT97_NEG_GAMMA_F32, !horizontal_even_is_odd),
-        (dwt::IDWT97_NEG_BETA_F32, horizontal_even_is_odd),
-        (dwt::IDWT97_NEG_ALPHA_F32, !horizontal_even_is_odd),
-    ] {
-        let step = J2kIdwt97StepParams {
-            coefficient,
-            parity: u32::from(odd),
+
+    if params.width > 1 {
+        let horizontal = J2kIdwt97LiftSteps {
+            coefficients: IDWT97_LIFT_COEFFICIENTS,
+            first_parity: (params.x0 + params.output_x) & 1,
+            high_pass_bits: high_pass.to_bits(),
             _reserved0: 0,
             _reserved1: 0,
         };
-        encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
-        let horizontal_step_grid = (
-            parity_axis_len(params.width, odd),
+        let groups = (
+            1_u32,
+            params.height.div_ceil(IDWT97_ROWS_PER_GROUP),
+            batch_count,
+        );
+        #[cfg(test)]
+        crate::engine::test_counters::record_idwt97_logical_dispatch((
+            params.width,
             params.height,
             batch_count,
+        ));
+        encoder.setComputePipelineState(&kernels.idwt_irreversible97_horizontal_lift_fused);
+        encoder.set_bytes::<J2kIdwt97LiftSteps>(2, &horizontal);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            size(
+                u64::from(groups.0),
+                u64::from(groups.1),
+                u64::from(groups.2),
+            ),
+            size(
+                u64::from(IDWT97_ROW_THREADS),
+                u64::from(IDWT97_ROWS_PER_GROUP),
+                1,
+            ),
         );
-        if horizontal_step_grid.0 != 0 {
-            #[cfg(test)]
-            crate::engine::test_counters::record_idwt97_logical_dispatch(horizontal_step_grid);
-            dispatch_3d_pipeline(
-                encoder,
-                &kernels.idwt_irreversible97_horizontal_step,
-                horizontal_step_grid,
-            );
-        }
         encoder.memory_barrier_with_resources(&[decoded]);
     }
-    encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_scale);
-    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    encoder.set_bytes::<f32>(2, &high_pass);
-    let vertical_scale_grid = (params.width, params.height, batch_count);
+
+    let vertical = J2kIdwt97LiftSteps {
+        coefficients: IDWT97_LIFT_COEFFICIENTS,
+        first_parity: (params.y0 + params.output_y) & 1,
+        high_pass_bits: high_pass.to_bits(),
+        _reserved0: 0,
+        _reserved1: 0,
+    };
+    let groups = (params.width.div_ceil(IDWT97_COL_TILE), 1_u32, batch_count);
     #[cfg(test)]
-    crate::engine::test_counters::record_idwt97_logical_dispatch(vertical_scale_grid);
-    dispatch_3d_pipeline(
-        encoder,
-        &kernels.idwt_irreversible97_vertical_scale,
-        vertical_scale_grid,
+    crate::engine::test_counters::record_idwt97_logical_dispatch((
+        params.width,
+        params.height,
+        batch_count,
+    ));
+    encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_fused);
+    encoder.set_bytes::<J2kIdwt97LiftSteps>(2, &vertical);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        size(
+            u64::from(groups.0),
+            u64::from(groups.1),
+            u64::from(groups.2),
+        ),
+        size(
+            u64::from(IDWT97_COL_TILE),
+            u64::from(IDWT97_COL_ROW_THREADS),
+            1,
+        ),
     );
     encoder.memory_barrier_with_resources(&[decoded]);
-
-    let vertical_even_is_odd = ((params.y0 + params.output_y) & 1) != 0;
-    encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_step);
-    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    for (coefficient, odd) in [
-        (dwt::IDWT97_NEG_DELTA_F32, vertical_even_is_odd),
-        (dwt::IDWT97_NEG_GAMMA_F32, !vertical_even_is_odd),
-        (dwt::IDWT97_NEG_BETA_F32, vertical_even_is_odd),
-        (dwt::IDWT97_NEG_ALPHA_F32, !vertical_even_is_odd),
-    ] {
-        let step = J2kIdwt97StepParams {
-            coefficient,
-            parity: u32::from(odd),
-            _reserved0: 0,
-            _reserved1: 0,
-        };
-        encoder.set_bytes::<J2kIdwt97StepParams>(2, &step);
-        let vertical_step_grid = (
-            params.width,
-            parity_axis_len(params.height, odd),
-            batch_count,
-        );
-        if vertical_step_grid.1 != 0 {
-            #[cfg(test)]
-            crate::engine::test_counters::record_idwt97_logical_dispatch(vertical_step_grid);
-            dispatch_3d_pipeline(
-                encoder,
-                &kernels.idwt_irreversible97_vertical_step,
-                vertical_step_grid,
-            );
-        }
-        encoder.memory_barrier_with_resources(&[decoded]);
-    }
 }
 
 #[cfg(test)]

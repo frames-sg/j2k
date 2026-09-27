@@ -34,7 +34,6 @@ kernel void jpeg_decode_fast422(
     init_decode_status(thread_status);
 
     thread short coeffs[64];
-    thread uchar pixels[64];
 
     uint mx = 0u;
     uint my = 0u;
@@ -45,19 +44,19 @@ kernel void jpeg_decode_fast422(
         const uint c_x = mx * 8u;
         const uint c_y = my * 8u;
 
-        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.width, params.width, params.height, y_x, y_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.width, params.width, params.height, y_x, y_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.width, params.width, params.height, y_x + 8u, y_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.width, params.width, params.height, y_x + 8u, y_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs)) {
             return;
         }
         advance_mcu_cursor(mx, my, params.mcus_per_row);
@@ -107,7 +106,6 @@ kernel void jpeg_decode_fast422_batch(
     device uchar *tile_cr_plane = cr_plane + chroma_plane_base;
 
     thread short coeffs[64];
-    thread uchar pixels[64];
 
     uint mx = 0u;
     uint my = 0u;
@@ -118,19 +116,19 @@ kernel void jpeg_decode_fast422_batch(
         const uint c_x = mx * 8u;
         const uint c_y = my * 8u;
 
-        if (!decode_idct_deposit_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, tile_y_plane, params.width, params.width, params.height, y_x, y_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, tile_y_plane, params.width, params.width, params.height, y_x, y_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, tile_y_plane, params.width, params.width, params.height, y_x + 8u, y_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, tile_y_plane, params.width, params.width, params.height, y_x + 8u, y_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, tile_cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, tile_cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs)) {
             return;
         }
 
-        if (!decode_idct_deposit_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs, pixels)) {
+        if (!decode_idct_deposit_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, coeffs)) {
             return;
         }
         advance_mcu_cursor(mx, my, params.mcus_per_row);

@@ -79,12 +79,16 @@ pub(crate) fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
 ///
 /// Returned values are clamped to the native 12-bit range `[0, 4095]`, not
 /// scaled to the full `u16` range.
+///
+/// libjpeg-turbo has no SIMD converter for 12-bit samples, so this follows the
+/// C tables in `jdcolor.c`: green adds the rounded *negated* chroma terms,
+/// which differs from `ycbcr_to_rgb`'s SIMD-matching form on exact ties.
 pub(crate) fn ycbcr12_to_rgb16(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
     let y = i32::from(y);
     let cb_centered = i32::from(cb) - 2048;
     let cr_centered = i32::from(cr) - 2048;
     let r = y + ((FIX_1_40200 * cr_centered + ROUND) >> 16);
-    let g = y - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> 16);
+    let g = y + ((-FIX_0_34414 * cb_centered - FIX_0_71414 * cr_centered + ROUND) >> 16);
     let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
 
     (clamp_to_12bit(r), clamp_to_12bit(g), clamp_to_12bit(b))

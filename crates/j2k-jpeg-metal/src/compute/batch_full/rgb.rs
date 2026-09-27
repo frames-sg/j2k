@@ -16,9 +16,10 @@ use super::super::{
     new_command_buffer, new_compute_command_encoder, packed_pair_extent,
     surface_batch_error_results, surface_batch_success_results, wait_for_completion_jpeg,
     BatchEntropyBufferKeys, BatchEntropyLabels, BatchEntropyMetadata, BatchedFastPacket, Buffer,
-    CommandBufferRef, Error, FastBatchDecodeMode, FastBatchTiming, FastDecodeEntropyInputs,
-    FastSubsampledMetal, JpegDecodeStatus, JpegEntropyCheckpointHost, JpegFast420BatchParams,
-    MetalBatchScratch, MetalRuntime, PixelFormat, PreparedHuffmanHost, Surface,
+    CommandBuffer, CommandBufferRef, Error, FastBatchDecodeMode, FastBatchTiming,
+    FastDecodeEntropyInputs, FastSubsampledMetal, JpegDecodeStatus, JpegEntropyCheckpointHost,
+    JpegFast420BatchParams, MetalBatchScratch, MetalRuntime, PixelFormat, PreparedHuffmanHost,
+    Surface,
 };
 #[cfg(test)]
 use super::super::{encode_split_coeff_idct_passes, new_private_buffer, SplitCoeffIdctPasses};
@@ -60,10 +61,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the full-batch GPU path keeps eligibility, scratch allocation, command encoding, and completion timing in dispatch order"
-)]
 pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
     P: FastSubsampledMetal,
 >(
@@ -73,11 +70,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     decode_mode: FastBatchDecodeMode,
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    let timing_enabled =
-        decode_mode == FastBatchDecodeMode::Fused && P::full_rgb_batch_timing_enabled();
-    let timing_total_start = timing_enabled.then(Instant::now);
-    let mut timing = FastBatchTiming::default();
-
     if requests.is_empty()
         || requests
             .iter()
@@ -124,6 +116,37 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
         );
     }
 
+    let Some(pending) = try_submit_compatible_full_rgb_batch::<P>(
+        runtime,
+        requests,
+        &family_packets,
+        decode_mode,
+        output,
+        runtime.batch_scratch()?,
+    )?
+    else {
+        return Ok(None);
+    };
+    pending.finish(requests, output).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn try_submit_compatible_full_rgb_batch<'runtime, 'packet, P: FastSubsampledMetal>(
+    runtime: &'runtime MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    family_packets: &[&'packet P],
+    decode_mode: FastBatchDecodeMode,
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    mut batch_scratch: BatchScratchLease<'runtime>,
+) -> Result<Option<PendingFullRgbBatch<'runtime, 'packet, P>>, Error> {
+    let timing_enabled =
+        decode_mode == FastBatchDecodeMode::Fused && P::full_rgb_batch_timing_enabled();
+    let timing_total_start = timing_enabled.then(Instant::now);
+    let mut timing = FastBatchTiming::default();
+
+    let Some(first) = family_packets.first().copied() else {
+        return Ok(None);
+    };
     let segment_count = first.entropy_checkpoints().len();
     if !family_packets.iter().all(|packet| {
         fast_subsampled_packets_share_full_rgb_batch_shape(first, packet, segment_count)
@@ -163,13 +186,12 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     }
 
     let timing_buffer_start = timing_enabled.then(Instant::now);
-    let mut batch_scratch = runtime.batch_scratch()?;
     let buffers = full_rgb_surface_batch_buffers::<P>(
         runtime,
         requests,
         &mut batch_scratch,
         output,
-        &family_packets,
+        family_packets,
         shape,
         &entropy_metadata,
     )?;
@@ -193,25 +215,31 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
         timing_enabled,
         &mut timing,
     )?;
-    Ok(Some(finish_fast_subsampled_full_rgb_batch::<P>(
-        FullRgbFinishState {
-            runtime,
-            requests,
-            first,
-            command_buffer: &command_buffer,
-            batch_scratch,
-            buffers: &buffers,
-            shape,
-            split_scratch,
-        },
-        FullRgbFinishTiming {
+    encode_fast_subsampled_full_rgb_pack::<P>(
+        runtime,
+        &command_buffer,
+        &buffers,
+        shape,
+        timing_enabled,
+        &mut timing,
+    )?;
+    command_buffer.commit();
+
+    Ok(Some(PendingFullRgbBatch {
+        first,
+        command_buffer,
+        _batch_scratch: batch_scratch,
+        buffers,
+        shape,
+        split_scratch,
+        timing: FullRgbFinishTiming {
             enabled: timing_enabled,
             total_start: timing_total_start,
             timing,
             segment_count,
         },
-        output,
-    )?))
+        waited: false,
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -256,15 +284,15 @@ struct FullRgbDecodePass<'a, P> {
 }
 
 #[cfg(target_os = "macos")]
-struct FullRgbFinishState<'a, 'scratch, P> {
-    runtime: &'a MetalRuntime,
-    requests: &'a [batch::QueuedRequest],
-    first: &'a P,
-    command_buffer: &'a CommandBufferRef,
-    batch_scratch: BatchScratchLease<'scratch>,
-    buffers: &'a FullRgbSurfaceBatchBuffers,
+pub(super) struct PendingFullRgbBatch<'runtime, 'packet, P> {
+    first: &'packet P,
+    command_buffer: CommandBuffer,
+    _batch_scratch: BatchScratchLease<'runtime>,
+    buffers: FullRgbSurfaceBatchBuffers,
     shape: FullRgbSurfaceBatchShape,
     split_scratch: Option<(Buffer, Buffer)>,
+    timing: FullRgbFinishTiming,
+    waited: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -574,22 +602,15 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
 }
 
 #[cfg(target_os = "macos")]
-fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
-    state: FullRgbFinishState<'_, '_, P>,
-    mut timing: FullRgbFinishTiming,
-    output: Option<&crate::MetalBatchOutputBuffer>,
-) -> Result<Vec<Result<Surface, Error>>, Error> {
-    let FullRgbFinishState {
-        runtime,
-        requests,
-        first,
-        command_buffer,
-        batch_scratch: _batch_scratch,
-        buffers,
-        shape,
-        split_scratch,
-    } = state;
-    let timing_pack_encode_start = timing.enabled.then(Instant::now);
+fn encode_fast_subsampled_full_rgb_pack<P: FastSubsampledMetal>(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    buffers: &FullRgbSurfaceBatchBuffers,
+    shape: FullRgbSurfaceBatchShape,
+    timing_enabled: bool,
+    timing: &mut FastBatchTiming,
+) -> Result<(), Error> {
+    let timing_pack_encode_start = timing_enabled.then(Instant::now);
     let pack_pipeline = P::pack_full_rgb_batch_pipeline(runtime);
     let pack_encoder = new_compute_command_encoder(command_buffer)?;
     pack_encoder.setComputePipelineState(pack_pipeline);
@@ -614,42 +635,63 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
     );
     pack_encoder.endEncoding();
     if let Some(start) = timing_pack_encode_start {
-        timing.timing.encode_pack = start.elapsed();
+        timing.encode_pack = start.elapsed();
     }
+    Ok(())
+}
 
-    command_buffer.commit();
-    if timing.enabled {
-        let timing_wait_start = Instant::now();
-        wait_for_completion_jpeg(command_buffer)?;
-        timing.timing.wait_pack = timing_wait_start.elapsed();
-        if let Some(start) = timing.total_start {
-            timing.timing.total = start.elapsed();
+impl<P: FastSubsampledMetal> PendingFullRgbBatch<'_, '_, P> {
+    pub(super) fn finish(
+        mut self,
+        requests: &[batch::QueuedRequest],
+        output: Option<&crate::MetalBatchOutputBuffer>,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        let timing_wait_start = self.timing.enabled.then(Instant::now);
+        let completion = wait_for_completion_jpeg(&self.command_buffer);
+        self.waited = true;
+        completion?;
+        if self.timing.enabled {
+            let timing = &mut self.timing;
+            if let Some(start) = timing_wait_start {
+                timing.timing.wait_pack = start.elapsed();
+            }
+            if let Some(start) = timing.total_start {
+                timing.timing.total = start.elapsed();
+            }
+            timing.timing.log(
+                P::FULL_RGB_BATCH_TIMING_TAG,
+                "fused-stages",
+                self.shape.tile_count,
+                self.first.dimensions(),
+                timing.segment_count,
+            );
         }
-        timing.timing.log(
-            P::FULL_RGB_BATCH_TIMING_TAG,
-            "fused-stages",
-            shape.tile_count,
-            first.dimensions(),
-            timing.segment_count,
-        );
-    } else {
-        wait_for_completion_jpeg(command_buffer)?;
-    }
-    drop(split_scratch);
-    // Keep scratch leased until the CPU has consumed the GPU status below.
+        let _ = self.split_scratch.take();
+        // Keep scratch leased until the CPU has consumed the GPU status below.
 
-    if let Some(results) =
-        surface_batch_error_results(requests, &buffers.status_buffer, shape.total_decode_threads)?
-    {
-        return Ok(results);
+        if let Some(results) = surface_batch_error_results(
+            requests,
+            &self.buffers.status_buffer,
+            self.shape.total_decode_threads,
+        )? {
+            return Ok(results);
+        }
+        surface_batch_success_results(
+            requests,
+            &self.buffers.out_buffer,
+            self.first.dimensions(),
+            PixelFormat::Rgb8,
+            requests.len(),
+            self.shape.out_tile_len,
+            output,
+        )
     }
-    surface_batch_success_results(
-        requests,
-        &buffers.out_buffer,
-        first.dimensions(),
-        PixelFormat::Rgb8,
-        requests.len(),
-        shape.out_tile_len,
-        output,
-    )
+}
+
+impl<P> Drop for PendingFullRgbBatch<'_, '_, P> {
+    fn drop(&mut self) {
+        if !self.waited {
+            self.command_buffer.waitUntilCompleted();
+        }
+    }
 }

@@ -33,9 +33,8 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) idwt_reversible53_vertical_batched: ComputePipelineState,
     #[cfg(test)]
     pub(in crate::engine) idwt_irreversible97_horizontal_scale: ComputePipelineState,
-    pub(in crate::engine) idwt_irreversible97_vertical_scale: ComputePipelineState,
-    pub(in crate::engine) idwt_irreversible97_horizontal_step: ComputePipelineState,
-    pub(in crate::engine) idwt_irreversible97_vertical_step: ComputePipelineState,
+    pub(in crate::engine) idwt_irreversible97_horizontal_lift_fused: ComputePipelineState,
+    pub(in crate::engine) idwt_irreversible97_vertical_fused: ComputePipelineState,
     pub(in crate::engine) inverse_mct: ComputePipelineState,
     pub(in crate::engine) store_component: ComputePipelineState,
     pub(in crate::engine) store_component_repeated: ComputePipelineState,
@@ -54,6 +53,7 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) store_native_rgba_batch_u16: ComputePipelineState,
     pub(in crate::engine) store_native_rgba_batch_i16: ComputePipelineState,
     pub(in crate::engine) ht_cleanup: ComputePipelineState,
+    pub(in crate::engine) ht_cleanup_cleanup_only: ComputePipelineState,
     pub(in crate::engine) ht_cleanup_batched: ComputePipelineState,
     pub(in crate::engine) ht_cleanup_batched_cleanup_only: ComputePipelineState,
     pub(in crate::engine) ht_cleanup_batched_sigprop: ComputePipelineState,
@@ -61,6 +61,10 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) ht_cleanup_repeated_batched_cleanup_only: ComputePipelineState,
     pub(in crate::engine) ht_cleanup_repeated_batched_sigprop: ComputePipelineState,
     pub(in crate::engine) ht_cleanup_repeated_batched_magref: ComputePipelineState,
+    pub(in crate::engine) ht_cleanup_vlc_batched: ComputePipelineState,
+    pub(in crate::engine) ht_cleanup_vlc_repeated_batched: ComputePipelineState,
+    pub(in crate::engine) ht_cleanup_magsgn_batched: ComputePipelineState,
+    pub(in crate::engine) ht_cleanup_magsgn_repeated_batched: ComputePipelineState,
     pub(in crate::engine) ht_vlc_table0: Buffer,
     pub(in crate::engine) ht_vlc_table1: Buffer,
     pub(in crate::engine) ht_uvlc_table0: Buffer,
@@ -110,12 +114,10 @@ impl DecodeKernels {
             #[cfg(test)]
             idwt_irreversible97_horizontal_scale: loader
                 .pipeline("j2k_idwt_irreversible97_horizontal_scale")?,
-            idwt_irreversible97_vertical_scale: loader
-                .pipeline("j2k_idwt_irreversible97_vertical_scale")?,
-            idwt_irreversible97_horizontal_step: loader
-                .pipeline("j2k_idwt_irreversible97_horizontal_step")?,
-            idwt_irreversible97_vertical_step: loader
-                .pipeline("j2k_idwt_irreversible97_vertical_step")?,
+            idwt_irreversible97_horizontal_lift_fused: loader
+                .pipeline("j2k_idwt_irreversible97_horizontal_lift_fused")?,
+            idwt_irreversible97_vertical_fused: loader
+                .pipeline("j2k_idwt_irreversible97_vertical_fused")?,
             inverse_mct: loader.pipeline("j2k_inverse_mct")?,
             store_component: loader.pipeline("j2k_store_component")?,
             store_component_repeated: loader.pipeline("j2k_store_component_repeated")?,
@@ -139,6 +141,7 @@ impl DecodeKernels {
             store_native_rgba_batch_u16: loader.pipeline("j2k_store_native_rgba_batch_u16")?,
             store_native_rgba_batch_i16: loader.pipeline("j2k_store_native_rgba_batch_i16")?,
             ht_cleanup: loader.pipeline("j2k_decode_ht_cleanup")?,
+            ht_cleanup_cleanup_only: loader.pipeline("j2k_decode_ht_cleanup_cleanup_only")?,
             ht_cleanup_batched: loader.pipeline("j2k_decode_ht_cleanup_batched")?,
             ht_cleanup_batched_cleanup_only: loader
                 .pipeline("j2k_decode_ht_cleanup_batched_cleanup_only")?,
@@ -150,6 +153,12 @@ impl DecodeKernels {
                 .pipeline("j2k_decode_ht_cleanup_repeated_batched_sigprop")?,
             ht_cleanup_repeated_batched_magref: loader
                 .pipeline("j2k_decode_ht_cleanup_repeated_batched_magref")?,
+            ht_cleanup_vlc_batched: loader.pipeline("j2k_decode_ht_cleanup_vlc_batched")?,
+            ht_cleanup_vlc_repeated_batched: loader
+                .pipeline("j2k_decode_ht_cleanup_vlc_repeated_batched")?,
+            ht_cleanup_magsgn_batched: loader.pipeline("j2k_decode_ht_cleanup_magsgn_batched")?,
+            ht_cleanup_magsgn_repeated_batched: loader
+                .pipeline("j2k_decode_ht_cleanup_magsgn_repeated_batched")?,
             ht_vlc_table0: checked_shared_buffer_with_slice(device, ht_vlc_table0())?,
             ht_vlc_table1: checked_shared_buffer_with_slice(device, ht_vlc_table1())?,
             ht_uvlc_table0: checked_shared_buffer_with_slice(device, ht_uvlc_table0())?,

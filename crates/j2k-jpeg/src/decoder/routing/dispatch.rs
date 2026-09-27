@@ -45,7 +45,7 @@ impl Decoder<'_> {
             OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
                 let mut writer =
                     Rgba8Writer::new_with_backend(out, stride, output_rect.w, alpha, self.backend);
-                self.decode_with_writer(pool, &mut writer, downscale, source_roi)
+                self.decode_rgb_with_writer(pool, &mut writer, downscale, source_roi)
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
                 let mut writer = Gray8Writer::new(out, stride, output_rect.w);

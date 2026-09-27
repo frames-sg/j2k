@@ -91,6 +91,9 @@ pub(crate) fn decode_store_component_and_capture(
             output_x,
             output_y,
             addend,
+            // The CPU delegates this hook only for float planes or reversible
+            // samples; it rounds irreversible integer output itself.
+            round_centered: 0,
         };
         let input_buffer = copied_slice_buffer(&runtime.device, input)?;
         let output_buffer = copied_slice_buffer(&runtime.device, output)?;

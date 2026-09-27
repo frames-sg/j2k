@@ -4,7 +4,7 @@
 use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
 use crate::error::{bail, err, ColorError, Result};
-use crate::math::{dispatch, f32x8, floor_f32, round_ties_even_then_add, Level, Simd};
+use crate::math::{dispatch, f32x8, floor_f32, mul_add, round_ties_even_then_add, Level, Simd};
 use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
 use j2k_codec_math::mct;
 
@@ -242,9 +242,14 @@ fn apply_inner_impl<S: Simd>(
                 let src0 = *y0;
                 let src1 = *y1;
                 let src2 = *y2;
-                *y0 = src0 + mct::ICT_INV_R_CR * src2 + addends[0];
-                *y1 = src0 + mct::ICT_INV_G_CB * src1 + mct::ICT_INV_G_CR * src2 + addends[1];
-                *y2 = src0 + mct::ICT_INV_B_CB * src1 + addends[2];
+                // Same fused expressions as the SIMD body above and Metal.
+                *y0 = mul_add(src2, mct::ICT_INV_R_CR, src0) + addends[0];
+                *y1 = mul_add(
+                    src2,
+                    mct::ICT_INV_G_CR,
+                    mul_add(src1, mct::ICT_INV_G_CB, src0),
+                ) + addends[1];
+                *y2 = mul_add(src1, mct::ICT_INV_B_CB, src0) + addends[2];
             }
         }
         // Reversible MCT, specified in G.2.
@@ -341,6 +346,48 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn irreversible_scalar_tail_matches_simd_body_bits() {
+        // These inputs round differently fused and unfused, so a tail computed
+        // without FMA disagrees with the SIMD body and with Metal.
+        let y0 = f32::from_bits(0xc23e_1ece);
+        let y1 = f32::from_bits(0x4126_4c1f);
+        let y2 = f32::from_bits(0xc129_2742);
+        let expected = [
+            crate::math::mul_add(y2, mct::ICT_INV_R_CR, y0),
+            crate::math::mul_add(
+                y2,
+                mct::ICT_INV_G_CR,
+                crate::math::mul_add(y1, mct::ICT_INV_G_CB, y0),
+            ),
+            crate::math::mul_add(y1, mct::ICT_INV_B_CB, y0),
+        ];
+        assert_ne!(
+            expected[0].to_bits(),
+            (y0 + mct::ICT_INV_R_CR * y2).to_bits(),
+            "fixture must separate fused from unfused rounding"
+        );
+
+        let mut plane0 = [y0; 9];
+        let mut plane1 = [y1; 9];
+        let mut plane2 = [y2; 9];
+        apply_inner(
+            WaveletTransform::Irreversible97,
+            &mut plane0,
+            &mut plane1,
+            &mut plane2,
+            [0.0; 3],
+        );
+
+        for index in 0..plane0.len() {
+            assert_eq!(
+                [plane0[index], plane1[index], plane2[index]].map(f32::to_bits),
+                expected.map(f32::to_bits),
+                "sample {index}"
+            );
         }
     }
 

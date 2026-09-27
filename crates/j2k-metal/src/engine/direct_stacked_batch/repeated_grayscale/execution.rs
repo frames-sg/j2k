@@ -24,6 +24,7 @@ struct RepeatedGrayscaleExecution<'a> {
     band_sets: Vec<Vec<DirectBandSlice>>,
     surfaces: Vec<Surface>,
     stacked_outputs: bool,
+    round_centered_store: bool,
 }
 
 impl RepeatedGrayscaleExecution<'_> {
@@ -98,6 +99,7 @@ pub(in crate::engine) fn encode_repeated_direct_grayscale_plan_in_command_buffer
         band_sets,
         surfaces,
         stacked_outputs: true,
+        round_centered_store: plan.round_centered_store,
     };
     let mut step_idx = 0;
     while step_idx < plan.steps.len() {

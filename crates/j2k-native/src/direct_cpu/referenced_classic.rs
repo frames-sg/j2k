@@ -14,8 +14,8 @@ use super::allocation::prepare_referenced_classic_scratch;
 use super::referenced::{decoded_color_components, decoded_plane, payload_slice};
 use super::{
     apply_inverse_mct_region, checked_sub_band_job_output_range, execute_idwt_step,
-    prepare_sub_band_output, store_component, DirectComponentBandScratch, DirectComponentPlane,
-    J2kDirectCpuScratch, J2kDirectDecodedComponents, SubBandJobOutputRange,
+    prepare_sub_band_output, rounds_at_store, store_component, DirectComponentBandScratch,
+    DirectComponentPlane, J2kDirectCpuScratch, J2kDirectDecodedComponents, SubBandJobOutputRange,
 };
 
 /// Execute retained per-tile Gray/RGB/RGBA classic JPEG 2000 geometry
@@ -106,6 +106,7 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
                     compressed_payload,
                     classic_workspace,
                     &mut output_initialized[0],
+                    true,
                 )?;
             } else if let Some(geometry) = tile.color_geometry() {
                 execute_color_components_referenced(
@@ -188,6 +189,7 @@ fn execute_color_components_referenced(
             compressed_payload,
             classic_workspace,
             &mut output_initialized[component_index],
+            rounds_at_store(mct, component_index),
         )?;
     }
     if mct {
@@ -198,7 +200,7 @@ fn execute_color_components_referenced(
             transform,
             rgb_bit_depths,
             signed,
-            false,
+            true,
             destination,
             [plane0, plane1, plane2],
         )?;
@@ -206,6 +208,10 @@ fn execute_color_components_referenced(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "classic execution keeps its validated payload cursor, retained workspace, and store rounding explicit"
+)]
 fn execute_component_plan_referenced(
     plan: &J2kDirectGrayscalePlan,
     bands: &mut DirectComponentBandScratch,
@@ -214,6 +220,7 @@ fn execute_component_plan_referenced(
     compressed_payload: &mut alloc::vec::Vec<u8>,
     classic_workspace: &mut J2kCodeBlockDecodeWorkspace,
     output_initialized: &mut bool,
+    round_irreversible_output: bool,
 ) -> Result<()> {
     bands.reset();
     let mut stored = false;
@@ -235,7 +242,13 @@ fn execute_component_plan_referenced(
             }
             J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
             J2kDirectGrayscaleStep::Store(store) => {
-                store_component(store, bands.active(), output, output_initialized, false)?;
+                store_component(
+                    store,
+                    bands.active(),
+                    output,
+                    output_initialized,
+                    round_irreversible_output,
+                )?;
                 stored = true;
             }
         }

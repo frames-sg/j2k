@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::metal_types::prelude::*;
+use objc2_metal::MTLCommandBuffer;
 
 use super::super::scratch_pool::BatchScratchLease;
 
 use super::super::{
     batch, batch_entropy_buffers, bind_fast_decode_entropy_inputs, checked_u32,
-    commit_and_wait_jpeg, dispatch_1d_pipeline, dispatch_rgba_texture_pack,
-    fast_packet_huffman_tables, fast_subsampled_full_rgb_batch_groups, new_command_buffer,
-    new_compute_command_encoder, packed_pair_extent, plane_mode_to_u32,
-    texture_batch_error_results, texture_batch_success_results, validate_rgba_texture_batch_output,
-    BatchEntropyBufferKeys, BatchEntropyBufferPlan, BatchEntropyBuffers, BatchedFastPacket, Buffer,
+    dispatch_1d_pipeline, dispatch_rgba_texture_pack, fast_packet_huffman_tables,
+    fast_subsampled_full_rgb_batch_groups, new_command_buffer, new_compute_command_encoder,
+    plane_mode_to_u32, texture_batch_error_results, texture_batch_success_results,
+    validate_rgba_texture_batch_output, wait_for_completion_jpeg, BatchEntropyBufferKeys,
+    BatchEntropyBufferPlan, BatchEntropyBuffers, BatchedFastPacket, Buffer, CommandBuffer,
     CommandBufferRef, Error, FastBatchDecodeMode, FastDecodeEntropyInputs, FastSubsampledMetal,
     FastTextureRepairCtx, JpegDecodeStatus, JpegFast420BatchParams, JpegFast420TextureBatchParams,
     JpegFast444TextureBatchParams, JpegTexturePackBatchParams, MetalBatchScratch, MetalRuntime,
-    PixelFormat, PlaneMode, PreparedHuffmanHost, MODE_YCBCR,
+    PixelFormat, PlaneMode, PreparedHuffmanHost,
 };
 #[cfg(target_os = "macos")]
 mod staged;
@@ -23,10 +24,6 @@ use self::staged::decode_fast_subsampled_full_rgba_staged_texture_batch;
 use super::texture_grouped::try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures;
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "ordered Metal texture command and resource lifetime"
-)]
 pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures<
     P: FastSubsampledMetal,
 >(
@@ -97,20 +94,41 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
         );
     }
 
+    let Some(pending) = try_submit_compatible_full_rgba_texture_batch::<P>(
+        runtime,
+        requests,
+        &family_packets,
+        family_mode.unwrap_or(PlaneMode::YCbCr),
+        output,
+        decode_mode,
+        runtime.batch_scratch()?,
+    )?
+    else {
+        return Ok(None);
+    };
+    pending.finish(requests, output).map(Some)
+}
+
+pub(super) fn try_submit_compatible_full_rgba_texture_batch<'runtime, P: FastSubsampledMetal>(
+    runtime: &'runtime MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    family_packets: &[&P],
+    family_mode: PlaneMode,
+    output: &crate::MetalBatchTextureOutput,
+    decode_mode: FastBatchDecodeMode,
+    mut batch_scratch: BatchScratchLease<'runtime>,
+) -> Result<Option<PendingTextureBatch<'runtime>>, Error> {
+    let Some(first) = family_packets.first().copied() else {
+        return Ok(None);
+    };
     let segment_count = first.entropy_checkpoints().len();
     let tile_count = family_packets.len();
-    let shape = full_rgba_texture_batch_shape::<P>(
-        first,
-        tile_count,
-        segment_count,
-        family_mode.unwrap_or(PlaneMode::YCbCr),
-    )?;
+    let shape = full_rgba_texture_batch_shape::<P>(first, tile_count, segment_count, family_mode)?;
     validate_rgba_texture_batch_output(output, first.dimensions(), tile_count, shape.out_tile_len)?;
 
     #[cfg(test)]
     let total_blocks = full_rgba_texture_total_blocks::<P>(shape.total_mcus, shape.tile_count)?;
 
-    let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
         requests,
@@ -134,16 +152,14 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
         return Ok(None);
     };
 
-    // Subsampled batches distribute entropy/IDCT across all tiles, then pack
-    // private component planes. This avoids the direct shader's per-tile
-    // decode and chroma-repair passes. The 4:4:4 path has no chroma repair and
-    // uses a different plane-decode ABI, so it retains its direct kernel.
-    let direct_texture = P::USE_FAST444_TEXTURE_PARAMS;
+    // Every family distributes entropy/IDCT across all tiles in one dispatch,
+    // then packs private component planes. This avoids the direct shaders'
+    // per-tile decode dispatches and chroma-repair passes. The direct kernels
+    // stay reachable from tests for A/B comparison.
+    let direct_texture = false;
     #[cfg(test)]
-    let direct_texture = super::super::texture_tuning::component_planes()
-        .map_or(direct_texture, |planes| {
-            !planes || P::USE_FAST444_TEXTURE_PARAMS
-        });
+    let direct_texture =
+        super::super::texture_tuning::component_planes().map_or(direct_texture, |planes| !planes);
     if decode_mode == FastBatchDecodeMode::Fused && direct_texture {
         return Ok(Some(
             decode_fast_subsampled_full_rgba_fused_texture_batch::<P>(FullRgbaTextureBatchCtx {
@@ -174,6 +190,49 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
             total_blocks,
         )?,
     ))
+}
+
+// Completion owns the scratch lease even when a later group fails to submit.
+// Returning the lease before the GPU finishes would let another batch overwrite it.
+pub(super) struct PendingTextureBatch<'runtime> {
+    command_buffer: CommandBuffer,
+    _batch_scratch: BatchScratchLease<'runtime>,
+    status_buffer: Buffer,
+    shape: FullRgbaTextureBatchShape,
+    waited: bool,
+}
+
+impl PendingTextureBatch<'_> {
+    pub(super) fn finish(
+        mut self,
+        requests: &[batch::QueuedRequest],
+        output: &crate::MetalBatchTextureOutput,
+    ) -> Result<Vec<Result<crate::MetalTextureTile, Error>>, Error> {
+        let completion = wait_for_completion_jpeg(&self.command_buffer);
+        self.waited = true;
+        completion?;
+        if let Some(results) = texture_batch_error_results(
+            requests,
+            &self.status_buffer,
+            self.shape.total_decode_threads,
+        )? {
+            return Ok(results);
+        }
+        texture_batch_success_results(
+            requests,
+            output,
+            (self.shape.width, self.shape.height),
+            requests.len(),
+        )
+    }
+}
+
+impl Drop for PendingTextureBatch<'_> {
+    fn drop(&mut self) {
+        if !self.waited {
+            self.command_buffer.waitUntilCompleted();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -341,7 +400,7 @@ fn full_rgba_texture_batch_shape<P: FastSubsampledMetal>(
     )?;
     let width = first.dimensions().0;
     let height = first.dimensions().1;
-    let chroma_width = width.div_ceil(2);
+    let chroma_width = P::chroma_width(width);
     let chroma_height = P::chroma_height(height);
     let y_len = width as usize * height as usize;
     let chroma_len = chroma_width as usize * chroma_height as usize;
@@ -599,9 +658,9 @@ fn encode_fast_subsampled_full_rgba_texture_boundary_passes<P: FastSubsampledMet
 }
 
 #[cfg(target_os = "macos")]
-fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
-    ctx: FullRgbaTextureBatchCtx<'_, '_, P>,
-) -> Result<Vec<Result<crate::MetalTextureTile, Error>>, Error> {
+fn decode_fast_subsampled_full_rgba_fused_texture_batch<'runtime, P: FastSubsampledMetal>(
+    ctx: FullRgbaTextureBatchCtx<'_, 'runtime, P>,
+) -> Result<PendingTextureBatch<'runtime>, Error> {
     let FullRgbaTextureBatchCtx {
         runtime,
         requests,
@@ -664,12 +723,12 @@ fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
         },
     )?;
 
-    commit_and_wait_jpeg(&command_buffer)?;
-    // Keep scratch leased until the CPU has consumed the GPU status below.
-    if let Some(results) =
-        texture_batch_error_results(requests, &repair.status, shape.total_decode_threads)?
-    {
-        return Ok(results);
-    }
-    texture_batch_success_results(requests, output, first.dimensions(), requests.len())
+    command_buffer.commit();
+    Ok(PendingTextureBatch {
+        command_buffer,
+        _batch_scratch: batch_scratch,
+        status_buffer: repair.status,
+        shape,
+        waited: false,
+    })
 }

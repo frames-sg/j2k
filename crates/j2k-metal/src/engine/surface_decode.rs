@@ -23,8 +23,10 @@ pub(crate) fn decode_image_to_surface<'a>(
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
         let mut code_block_decoder = MetalCodeBlockDecoder::default();
+        // The planes are packed to integer surfaces, so irreversible samples
+        // must be rounded before the level shift, as the CPU decode does.
         let decoded = image
-            .decode_components_with_ht_decoder(context, &mut code_block_decoder)
+            .decode_components_for_integer_output_with_ht_decoder(context, &mut code_block_decoder)
             .map_err(native_decode_error)?;
         let stage = select_plane_stage(runtime, image, &decoded, &mut code_block_decoder)?;
         stage.finish_with_runtime(runtime, fmt)
@@ -51,7 +53,7 @@ pub(crate) fn decode_image_region_to_surface<'a>(
     with_runtime(|runtime| {
         let mut code_block_decoder = MetalCodeBlockDecoder::default();
         let decoded = image
-            .decode_region_components_with_ht_decoder(
+            .decode_region_components_for_integer_output_with_ht_decoder(
                 context,
                 (roi.x, roi.y, roi.w, roi.h),
                 &mut code_block_decoder,

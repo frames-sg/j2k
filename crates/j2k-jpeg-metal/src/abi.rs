@@ -361,11 +361,20 @@ pub(crate) struct PreparedHuffmanHost {
     pub(crate) max_code: [i32; 17],
     pub(crate) val_offset: [i32; 17],
     pub(crate) values: [u8; 256],
-    pub(crate) fast_symbol: [u8; 512],
-    pub(crate) fast_len: [u8; 512],
+    /// `(code length << 8) | symbol` for each 9-bit lookahead whose code is
+    /// at most 9 bits long; 0 when the code is longer.
+    pub(crate) fast: [u16; 512],
+    /// `(value << 8) | (run << 4) | total length` when an AC code and its
+    /// extra bits both fit in the 9-bit lookahead and the extended value fits
+    /// in `i8`; 0 otherwise. A valid entry is never 0 (total length >= 2).
+    pub(crate) fast_ac: [i16; 512],
     pub(crate) values_len: u16,
     pub(crate) reserved: u16,
 }
+
+/// Width of the Huffman lookahead tables in `PreparedHuffmanHost`.
+#[cfg(target_os = "macos")]
+pub(crate) const HUFFMAN_LOOKAHEAD_BITS: usize = 9;
 
 #[cfg(target_os = "macos")]
 impl From<&PacketHuffmanTable> for PreparedHuffmanHost {
@@ -374,23 +383,19 @@ impl From<&PacketHuffmanTable> for PreparedHuffmanHost {
             .derive_canonical()
             .expect("backend packet Huffman table must be canonicalizable");
         let mut values = [0u8; 256];
-        let mut fast_symbol = [0u8; 512];
-        let mut fast_len = [0u8; 512];
         let values_len = usize::from(value.values_len);
         values[..values_len].copy_from_slice(&value.values[..values_len]);
 
+        let mut fast = [0u16; 1 << HUFFMAN_LOOKAHEAD_BITS];
         for (idx, &symbol) in values.iter().enumerate().take(canonical.huffsize_len) {
             let len = usize::from(canonical.huffsize[idx]);
-            if len == 0 || len > 9 {
+            if len == 0 || len > HUFFMAN_LOOKAHEAD_BITS {
                 continue;
             }
             let code = usize::from(canonical.huffcode[idx]);
-            let prefix = code << (9 - len);
-            let fill = 1usize << (9 - len);
-            for suffix in 0..fill {
-                fast_symbol[prefix | suffix] = symbol;
-                fast_len[prefix | suffix] = canonical.huffsize[idx];
-            }
+            let prefix = code << (HUFFMAN_LOOKAHEAD_BITS - len);
+            let entry = (u16::from(canonical.huffsize[idx]) << 8) | u16::from(symbol);
+            fast[prefix..prefix + (1 << (HUFFMAN_LOOKAHEAD_BITS - len))].fill(entry);
         }
 
         Self {
@@ -398,12 +403,43 @@ impl From<&PacketHuffmanTable> for PreparedHuffmanHost {
             max_code: canonical.max_code,
             val_offset: canonical.val_offset,
             values,
-            fast_symbol,
-            fast_len,
+            fast_ac: fast_ac_table(&fast),
+            fast,
             values_len: value.values_len,
             reserved: 0,
         }
     }
+}
+
+/// Derives the fused AC lookahead table from the symbol table, mirroring the
+/// shader's `huff_extend` and the `receive_extend` bit order.
+#[cfg(target_os = "macos")]
+pub(crate) fn fast_ac_table(fast: &[u16; 1 << HUFFMAN_LOOKAHEAD_BITS]) -> [i16; 512] {
+    let mut fast_ac = [0i16; 1 << HUFFMAN_LOOKAHEAD_BITS];
+    for (lookahead, (&entry, slot)) in fast.iter().zip(fast_ac.iter_mut()).enumerate() {
+        let code_len = usize::from(entry >> 8);
+        let run = entry & 0xf0;
+        let ssss = usize::from(entry & 0x0f);
+        let total = code_len + ssss;
+        if code_len == 0 || ssss == 0 || total > HUFFMAN_LOOKAHEAD_BITS {
+            continue;
+        }
+        let extra = (lookahead >> (HUFFMAN_LOOKAHEAD_BITS - total)) & ((1 << ssss) - 1);
+        let extra = i32::try_from(extra).expect("extra bits fit in i32");
+        let value = if extra < 1 << (ssss - 1) {
+            extra - (1 << ssss) + 1
+        } else {
+            extra
+        };
+        let Ok(value) = i8::try_from(value) else {
+            continue;
+        };
+        let packed = (i32::from(value) << 8)
+            | i32::from(run)
+            | i32::try_from(total).expect("lookahead length fits in i32");
+        *slot = i16::try_from(packed).expect("packed fast AC entry fits in i16");
+    }
+    fast_ac
 }
 
 #[cfg(target_os = "macos")]
@@ -709,8 +745,8 @@ impl_gpu_readback_abi!(
         max_code: [i32; 17],
         val_offset: [i32; 17],
         values: [u8; 256],
-        fast_symbol: [u8; 512],
-        fast_len: [u8; 512],
+        fast: [u16; 512],
+        fast_ac: [i16; 512],
         values_len: u16,
         reserved: u16,
     },

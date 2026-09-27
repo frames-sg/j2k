@@ -44,6 +44,9 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             _addend0: addend0,
             _addend1: addend1,
             _addend2: addend2,
+            // The CPU delegates this hook only for float planes; it rounds
+            // irreversible integer output itself.
+            _round_centered: 0,
         };
         let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
         let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
@@ -108,6 +111,8 @@ pub(in crate::engine) fn dispatch_inverse_mct_buffers_in_command_buffer(
         _addend0: addends[0],
         _addend1: addends[1],
         _addend2: addends[2],
+        // Direct color planes feed integer output only.
+        _round_centered: 1,
     };
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;

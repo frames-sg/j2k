@@ -25,6 +25,7 @@ pub(super) fn decode_shader_source() -> String {
         include_str!("../sampled_plane.metal"),
         include_str!("../store_native_color_batch.metal"),
         include_str!("../ht_cleanup.metal"),
+        include_str!("../ht_cleanup_simd.metal"),
     ]
     .join("\n")
 }

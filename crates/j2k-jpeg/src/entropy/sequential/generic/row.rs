@@ -64,6 +64,17 @@ pub(super) fn decode_mcu_row(
     }
     let mut pixels_4x4 = [0u8; 16];
     let mut pixels_2x2 = [0u8; 4];
+    // Resolve immutable Huffman handles outside the MCU loop, including the
+    // generic grayscale, restart, and subsampled paths.
+    let mut resolved = [context.plan.resolved_component(0)?; 4];
+    if context.plan.components.len() > resolved.len() {
+        return Err(JpegError::InternalInvariant {
+            reason: "sequential decode supports at most four components",
+        });
+    }
+    for (tables, comp) in resolved.iter_mut().zip(&context.plan.components) {
+        *tables = context.plan.resolve_component(comp)?;
+    }
     for mx in 0..context.mcus_per_row {
         if consume_restart_marker_if_due(
             state.br,
@@ -79,10 +90,10 @@ pub(super) fn decode_mcu_row(
             *state.mcus_since_restart = 0;
         }
 
-        for comp in &context.plan.components {
+        for (comp, tables) in context.plan.components.iter().zip(&resolved) {
             let plane_idx = comp.output_index;
-            let dc_table = context.plan.dc_table(comp)?;
-            let ac_table = context.plan.ac_table(comp)?;
+            let dc_table = tables.dc_table;
+            let ac_table = tables.ac_table;
             let in_region = mx >= context.stripe_mcu_start && mx < stripe_mcu_end;
             let local_mcu_x0_px =
                 mx.saturating_sub(context.stripe_mcu_start) * u32::from(comp.h) * block_size;

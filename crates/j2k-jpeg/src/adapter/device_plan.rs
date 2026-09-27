@@ -4,6 +4,7 @@ use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, ensure_allocation_bytes,
     try_reserve_for_len_with_live_budget,
 };
+use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
 use crate::decoder::Decoder;
 use crate::error::JpegError;
 use crate::info::{ColorSpace, SofKind};
@@ -108,7 +109,12 @@ pub fn build_device_plan<'a>(
         cadence_mcus.max(1),
         restart_interval.map(u32::from),
     );
-    let retained_decoder_bytes = retained_decoder_allocation_bytes(decoder)?;
+    // The shared decoder context stays live while the plan is built; charge it
+    // once beside this decoder's own retained bytes.
+    let retained_decoder_bytes = checked_add_allocation_bytes(
+        MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
+        retained_decoder_allocation_bytes(decoder)?,
+    )?;
     let output_bytes = device_plan_output_allocation_bytes(
         expected_checkpoint_count,
         warning_count,

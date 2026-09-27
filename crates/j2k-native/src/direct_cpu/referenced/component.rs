@@ -11,8 +11,8 @@ use crate::{
 use super::super::referenced_classic::{execute_classic_sub_band_referenced, ClassicPayloadCursor};
 use super::super::{
     apply_inverse_mct_region, checked_sub_band_job_output_range, execute_idwt_step,
-    prepare_sub_band_output, store_component, DirectComponentBandScratch, DirectComponentPlane,
-    SubBandJobOutputRange,
+    prepare_sub_band_output, rounds_at_store, store_component, DirectComponentBandScratch,
+    DirectComponentPlane, SubBandJobOutputRange,
 };
 use super::payload::ReferencedPayloadCursor;
 
@@ -55,6 +55,7 @@ pub(super) fn execute_color_components_referenced(
             classic_workspace,
             ht_workspace,
             &mut output_initialized[component_index],
+            rounds_at_store(mct, component_index),
         )?;
     }
     if mct {
@@ -65,7 +66,7 @@ pub(super) fn execute_color_components_referenced(
             transform,
             rgb_bit_depths,
             signed,
-            false,
+            true,
             destination,
             [plane0, plane1, plane2],
         )?;
@@ -87,6 +88,7 @@ pub(super) fn execute_component_plan_referenced(
     classic_workspace: &mut crate::J2kCodeBlockDecodeWorkspace,
     ht_workspace: &mut HtCodeBlockDecodeWorkspace,
     output_initialized: &mut bool,
+    round_irreversible_output: bool,
 ) -> Result<()> {
     bands.reset();
     let mut stored = false;
@@ -112,7 +114,13 @@ pub(super) fn execute_component_plan_referenced(
             }
             J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
             J2kDirectGrayscaleStep::Store(store) => {
-                store_component(store, bands.active(), output, output_initialized, false)?;
+                store_component(
+                    store,
+                    bands.active(),
+                    output,
+                    output_initialized,
+                    round_irreversible_output,
+                )?;
                 stored = true;
             }
         }

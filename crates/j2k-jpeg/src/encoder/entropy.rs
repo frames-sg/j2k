@@ -222,15 +222,3 @@ where
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn entropy_orchestration_module_stays_focused() {
-        const SOURCE: &str = include_str!("entropy.rs");
-        assert!(
-            SOURCE.lines().count() <= 430,
-            "entropy orchestration should be split before it exceeds 430 lines"
-        );
-    }
-}

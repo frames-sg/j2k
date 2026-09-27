@@ -36,7 +36,7 @@ concurrency:
 jobs:
   run:
     name: Benchmarks
-    uses: frames-sg/j2k/.github/workflows/gpu-benchmarks-runner.yml@7307750c0e4ea4af071258a63962b0bfccf7973d
+    uses: frames-sg/j2k/.github/workflows/gpu-benchmarks-runner.yml@e12ff458a55d99c2689626578e7560d7adc75185
     with:
       lane: ${{ inputs.lane }}
       suite: ${{ inputs.suite }}

@@ -254,74 +254,72 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
 
 #[cfg(target_os = "macos")]
 #[test]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "bounded synthetic pixel expression is nonnegative"
-)]
 fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
     if !should_run_metal_runtime() {
         return;
     }
 
-    let first: Vec<u8> = (0..128 * 128 * 3)
-        .map(|i| ((i * 17 + i / 3) & 0xFF) as u8)
-        .collect();
-    let second: Vec<u8> = (0..128 * 128 * 3)
-        .map(|i| 255u8.wrapping_sub(((i * 23 + i / 5) & 0xFF) as u8))
-        .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
-        .expect("private benchmark input buffer");
-    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
-        .expect("private benchmark input buffer");
-    let tiles = [
-        super::super::MetalLosslessEncodeTile {
-            buffer: &first_buffer,
-            byte_offset: 0,
-            width: 128,
-            height: 128,
-            pitch_bytes: 128 * 3,
-            output_width: 128,
-            output_height: 128,
-            format: PixelFormat::Rgb8,
-        },
-        super::super::MetalLosslessEncodeTile {
-            buffer: &second_buffer,
-            byte_offset: 0,
-            width: 128,
-            height: 128,
-            pitch_bytes: 128 * 3,
-            output_width: 128,
-            output_height: 128,
-            format: PixelFormat::Rgb8,
-        },
-    ];
+    for (width, height) in [(128u32, 128u32), (65, 35)] {
+        let first: Vec<u8> = (0..width * height * 3)
+            .map(|i| ((i * 17 + i / 3) & 0xFF) as u8)
+            .collect();
+        let second: Vec<u8> = (0..width * height * 3)
+            .map(|i| 255u8.wrapping_sub(((i * 23 + i / 5) & 0xFF) as u8))
+            .collect();
+        let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+            .expect("private benchmark input buffer");
+        let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+            .expect("private benchmark input buffer");
+        let tiles = [
+            super::super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width,
+                height,
+                pitch_bytes: width as usize * 3,
+                output_width: width,
+                output_height: height,
+                format: PixelFormat::Rgb8,
+            },
+            super::super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width,
+                height,
+                pitch_bytes: width as usize * 3,
+                output_width: width,
+                output_height: height,
+                format: PixelFormat::Rgb8,
+            },
+        ];
 
-    let encoded = super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
-        &tiles,
-        &lossless_options! {
-            backend: EncodeBackendPreference::RequireDevice,
-            validation: J2kEncodeValidation::External,
-        },
-        &session,
-    )
-    .expect("Metal padded DWT buffer batch lossless encode to Metal buffers");
+        let encoded = super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles,
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+        )
+        .expect("Metal padded DWT buffer batch lossless encode to Metal buffers");
 
-    assert_eq!(encoded.len(), 2);
-    for (frame, expected) in encoded.iter().zip([first, second]) {
-        assert!(!frame.input_copy_used);
-        assert!(frame.resident.coefficient_prep_used);
-        assert!(frame.resident.packetization_used);
-        assert!(frame.resident.codestream_assembly_used);
-        let codestream = frame
-            .encoded
-            .codestream_bytes()
-            .expect("Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
-            .expect("codestream parses")
-            .decode_native()
-            .expect("codestream decodes");
-        assert_decoded_bytes_match(&decoded.data, &expected);
+        assert_eq!(encoded.len(), 2);
+        for (frame, expected) in encoded.iter().zip([first, second]) {
+            assert!(!frame.input_copy_used);
+            assert!(frame.resident.coefficient_prep_used);
+            assert!(frame.resident.packetization_used);
+            assert!(frame.resident.codestream_assembly_used);
+            let codestream = frame
+                .encoded
+                .codestream_bytes()
+                .expect("Metal codestream bytes are CPU-readable");
+            let decoded = Image::new(&codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+            assert_decoded_bytes_match(&decoded.data, &expected);
+        }
     }
 }
 

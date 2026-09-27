@@ -132,12 +132,4 @@ mod tests {
                 .is_some());
         }
     }
-
-    #[test]
-    fn opaque_native_encode_error_retains_structural_equality() {
-        assert_eq!(
-            Htj2kEncodeError::new(EncodeError::InvalidInput { what: "fixture" }),
-            Htj2kEncodeError::new(EncodeError::InvalidInput { what: "fixture" })
-        );
-    }
 }

@@ -575,68 +575,182 @@ kernel void j2k_idwt_irreversible97_horizontal_scale(
     out[gid.y * params.width + gid.x] = sample;
 }
 
-kernel void j2k_idwt_irreversible97_vertical_scale(
+// Fused 9/7 lifting. Each dispatch replaces four (horizontal) or five
+// (vertical scale + four lifts) full-plane passes. A threadgroup owns whole
+// rows (horizontal) or a strip of columns (vertical) and walks its tiles in
+// order: a tile is loaded with a four-sample halo, every step is applied in
+// threadgroup memory, and the tile is written back once. The halo before a
+// tile comes from a carry of the previous tile's pre-lift samples (its device
+// copy has already been overwritten); the halo after it is still unwritten.
+// Step s only updates positions within 3 - s samples of the tile, so each
+// neighbour it reads was produced by step s - 1 in the same buffer. Updates
+// use the original one-pass-per-step kernels' exact expressions and edge
+// mirroring (kept as the oracle in `irreversible/parity_tests.rs`), so results
+// are bit-identical to running one full pass per step.
+
+constant uint J2K_IDWT97_HALO = 4u;
+constant uint J2K_IDWT97_ROW_TILE = 128u;
+constant uint J2K_IDWT97_ROWS_PER_GROUP = 4u;
+constant uint J2K_IDWT97_ROW_THREADS = 64u;
+constant uint J2K_IDWT97_COL_TILE = 32u;
+constant uint J2K_IDWT97_COL_ROWS = 64u;
+constant uint J2K_IDWT97_COL_ROW_THREADS = 8u;
+
+struct J2kIdwt97LiftSteps {
+    float4 coefficients;
+    uint first_parity;
+    uint high_pass_bits;
+    uint reserved0;
+    uint reserved1;
+};
+
+inline uint idwt97_left(uint x) {
+    return periodic_symmetric_extension_left_u32(x, 1u);
+}
+
+inline uint idwt97_right(uint x, uint length) {
+    return periodic_symmetric_extension_right_u32(x, 1u, length);
+}
+
+inline uint idwt97_first_of_parity(uint lo, uint parity) {
+    return lo + ((lo & 1u) != parity ? 1u : 0u);
+}
+
+kernel void j2k_idwt_irreversible97_horizontal_lift_fused(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
-    constant float &high_pass [[buffer(2)]],
-    uint3 gid [[thread_position_in_grid]]
+    constant J2kIdwt97LiftSteps &steps [[buffer(2)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
 ) {
-    if (gid.x >= params.width || gid.y >= params.height) {
-        return;
-    }
+    threadgroup float rows[J2K_IDWT97_ROWS_PER_GROUP][J2K_IDWT97_ROW_TILE + 2u * J2K_IDWT97_HALO];
+    threadgroup float carry[J2K_IDWT97_ROWS_PER_GROUP][J2K_IDWT97_HALO];
+    const uint width = params.width;
+    const uint y = group.y * J2K_IDWT97_ROWS_PER_GROUP + local.y;
+    const bool row_active = y < params.height && width > 1u;
+    device float *row_ptr = out + ulong(group.z) * width * params.height + ulong(y) * width;
+    threadgroup float *row = rows[local.y];
 
-    out += ulong(gid.z) * params.width * params.height;
-    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
-    float sample = out[gid.y * params.width + gid.x];
+    for (uint tile_start = 0u; tile_start < width; tile_start += J2K_IDWT97_ROW_TILE) {
+        const uint tile_end = min(tile_start + J2K_IDWT97_ROW_TILE, width);
+        const uint load_start = tile_start > J2K_IDWT97_HALO ? tile_start - J2K_IDWT97_HALO : 0u;
+        const uint load_end = min(tile_end + J2K_IDWT97_HALO, width);
 
-    if (params.height == 1u) {
-        if (((params.y0 + params.output_y) & 1u) != 0u) {
-            sample *= 0.5f;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (row_active) {
+            for (uint x = tile_start + local.x; x < load_end; x += J2K_IDWT97_ROW_THREADS) {
+                row[x - load_start] = row_ptr[x];
+            }
+            for (uint x = load_start + local.x; x < tile_start; x += J2K_IDWT97_ROW_THREADS) {
+                row[x - load_start] = carry[local.y][x - (tile_start - J2K_IDWT97_HALO)];
+            }
         }
-    } else {
-        const uint first_even_y = (params.y0 + params.output_y) & 1u;
-        sample *= (gid.y & 1u) == first_even_y ? KAPPA : high_pass;
-    }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (row_active && tile_end < width && local.x < J2K_IDWT97_HALO) {
+            carry[local.y][local.x] = row[tile_end - J2K_IDWT97_HALO + local.x - load_start];
+        }
 
-    out[gid.y * params.width + gid.x] = sample;
+        for (uint step = 0u; step < 4u; ++step) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (!row_active) {
+                continue;
+            }
+            const uint reach = 3u - step;
+            const uint lo = tile_start > reach ? tile_start - reach : 0u;
+            const uint hi = min(tile_end + reach, width);
+            const uint first = idwt97_first_of_parity(lo, steps.first_parity ^ (step & 1u));
+            const float coefficient = steps.coefficients[step];
+            for (uint x = first + 2u * local.x; x < hi; x += 2u * J2K_IDWT97_ROW_THREADS) {
+                const uint i = x - load_start;
+                row[i] = fma(
+                    row[idwt97_left(x) - load_start] + row[idwt97_right(x, width) - load_start],
+                    coefficient,
+                    row[i]
+                );
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (row_active) {
+            for (uint x = tile_start + local.x; x < tile_end; x += J2K_IDWT97_ROW_THREADS) {
+                row_ptr[x] = row[x - load_start];
+            }
+        }
+    }
 }
 
-kernel void j2k_idwt_irreversible97_horizontal_step(
+kernel void j2k_idwt_irreversible97_vertical_fused(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
-    constant J2kIdwt97StepParams &step [[buffer(2)]],
-    uint3 gid [[thread_position_in_grid]]
+    constant J2kIdwt97LiftSteps &steps [[buffer(2)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
 ) {
-    const uint x = 2u * gid.x + step.parity;
-    if (x >= params.width || gid.y >= params.height || params.width <= 1u) {
-        return;
+    threadgroup float tile[J2K_IDWT97_COL_ROWS + 2u * J2K_IDWT97_HALO][J2K_IDWT97_COL_TILE];
+    threadgroup float carry[J2K_IDWT97_HALO][J2K_IDWT97_COL_TILE];
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint x = group.x * J2K_IDWT97_COL_TILE + local.x;
+    const bool column_active = x < width;
+    const bool lift = column_active && height > 1u;
+    device float *plane = out + ulong(group.z) * width * height;
+
+    // Vertical scale, exactly as the original full-plane vertical scale pass.
+    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+    const float high_pass = as_type<float>(steps.high_pass_bits);
+    const uint first_even_y = (params.y0 + params.output_y) & 1u;
+
+    for (uint tile_start = 0u; tile_start < height; tile_start += J2K_IDWT97_COL_ROWS) {
+        const uint tile_end = min(tile_start + J2K_IDWT97_COL_ROWS, height);
+        const uint load_start = tile_start > J2K_IDWT97_HALO ? tile_start - J2K_IDWT97_HALO : 0u;
+        const uint load_end = min(tile_end + J2K_IDWT97_HALO, height);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (column_active) {
+            for (uint y = tile_start + local.y; y < load_end; y += J2K_IDWT97_COL_ROW_THREADS) {
+                float sample = plane[y * width + x];
+                if (height == 1u) {
+                    if (first_even_y != 0u) {
+                        sample *= 0.5f;
+                    }
+                } else {
+                    sample *= (y & 1u) == first_even_y ? KAPPA : high_pass;
+                }
+                tile[y - load_start][local.x] = sample;
+            }
+            for (uint y = load_start + local.y; y < tile_start; y += J2K_IDWT97_COL_ROW_THREADS) {
+                tile[y - load_start][local.x] = carry[y - (tile_start - J2K_IDWT97_HALO)][local.x];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (column_active && tile_end < height && local.y < J2K_IDWT97_HALO) {
+            carry[local.y][local.x] = tile[tile_end - J2K_IDWT97_HALO + local.y - load_start][local.x];
+        }
+
+        for (uint step = 0u; step < 4u; ++step) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (!lift) {
+                continue;
+            }
+            const uint reach = 3u - step;
+            const uint lo = tile_start > reach ? tile_start - reach : 0u;
+            const uint hi = min(tile_end + reach, height);
+            const uint first = idwt97_first_of_parity(lo, steps.first_parity ^ (step & 1u));
+            const float coefficient = steps.coefficients[step];
+            for (uint y = first + 2u * local.y; y < hi; y += 2u * J2K_IDWT97_COL_ROW_THREADS) {
+                const uint i = y - load_start;
+                tile[i][local.x] = fma(
+                    tile[idwt97_left(y) - load_start][local.x] +
+                        tile[idwt97_right(y, height) - load_start][local.x],
+                    coefficient,
+                    tile[i][local.x]
+                );
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (column_active) {
+            for (uint y = tile_start + local.y; y < tile_end; y += J2K_IDWT97_COL_ROW_THREADS) {
+                plane[y * width + x] = tile[y - load_start][local.x];
+            }
+        }
     }
-
-    out += ulong(gid.z) * params.width * params.height;
-    const uint left = periodic_symmetric_extension_left_u32(x, 1u);
-    const uint right = periodic_symmetric_extension_right_u32(x, 1u, params.width);
-    const uint idx = gid.y * params.width + x;
-    out[idx] = fma(out[gid.y * params.width + left] + out[gid.y * params.width + right],
-                   step.coefficient,
-                   out[idx]);
-}
-
-kernel void j2k_idwt_irreversible97_vertical_step(
-    device float *out [[buffer(0)]],
-    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
-    constant J2kIdwt97StepParams &step [[buffer(2)]],
-    uint3 gid [[thread_position_in_grid]]
-) {
-    const uint y = 2u * gid.y + step.parity;
-    if (gid.x >= params.width || y >= params.height || params.height <= 1u) {
-        return;
-    }
-
-    out += ulong(gid.z) * params.width * params.height;
-    const uint above = periodic_symmetric_extension_left_u32(y, 1u);
-    const uint below = periodic_symmetric_extension_right_u32(y, 1u, params.height);
-    const uint idx = y * params.width + gid.x;
-    out[idx] = fma(out[above * params.width + gid.x] + out[below * params.width + gid.x],
-                   step.coefficient,
-                   out[idx]);
 }

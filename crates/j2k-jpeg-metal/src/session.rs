@@ -60,6 +60,13 @@ impl MetalBackendSession {
             .get_or_init_runtime(|device| compute::MetalRuntime::new_with_device(device.clone()))
     }
 
+    /// The runtime if it has been initialized, without initializing it.
+    pub(crate) fn initialized_runtime(
+        &self,
+    ) -> Option<&Result<compute::MetalRuntime, MetalSupportError>> {
+        self.runtime_session.runtime_result()
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_initialized_for_test(&self) -> bool {
         self.runtime_session.runtime_initialized()
@@ -497,7 +504,7 @@ impl SessionState {
     #[cfg(target_os = "macos")]
     pub(crate) fn backend_session(&mut self) -> Result<&MetalBackendSession, Error> {
         if self.backend_session.is_none() {
-            self.backend_session = Some(MetalBackendSession::system_default()?);
+            self.backend_session = Some(crate::compute::default_tile_backend_session()?);
         }
         self.backend_session.as_ref().ok_or_else(|| {
             j2k_jpeg::adapter::JpegPlanCacheError::Invariant(

@@ -491,6 +491,8 @@ mod external_batch;
 mod grayscale_external;
 #[path = "device/ht_roi.rs"]
 mod ht_roi;
+#[path = "device/irreversible_output_rounding.rs"]
+mod irreversible_output_rounding;
 #[path = "device/legacy_batch.rs"]
 mod legacy_batch;
 #[path = "device/multitile_color.rs"]

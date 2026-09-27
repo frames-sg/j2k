@@ -215,6 +215,13 @@ fn find_idwt_band(bands: &[DirectCpuBand], band_id: J2kDirectBandId) -> Result<J
     })
 }
 
+/// Whether a component's store rounds irreversible samples for integer
+/// output. RGB components under MCT are rounded by the inverse transform
+/// instead; every other component, including alpha, rounds at its store.
+pub(super) const fn rounds_at_store(mct: bool, component_index: usize) -> bool {
+    !(mct && component_index < 3)
+}
+
 pub(super) fn store_component(
     store: &J2kDirectStoreStep,
     bands: &[DirectCpuBand],

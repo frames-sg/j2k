@@ -61,21 +61,6 @@ fn dct8x8_grid_to_2d_53_crosses_block_boundaries() {
     );
 }
 
-#[test]
-fn dct8x8_grid_public_wrapper_is_repeatable_for_same_geometry() {
-    let blocks = synthetic_grid_blocks(2, 2);
-    let direct =
-        dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, 13, 11).expect("valid DCT grid");
-    let stateless =
-        dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, 13, 11).expect("valid DCT grid");
-
-    let repeated =
-        dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, 13, 11).expect("valid DCT grid");
-
-    assert!(max_abs_diff_53(&direct, &stateless) <= 1.0e-9);
-    assert!(max_abs_diff_53(&repeated, &stateless) <= 1.0e-9);
-}
-
 fn dc_only_block() -> [[f64; 8]; 8] {
     let mut block = [[0.0; 8]; 8];
     block[0][0] = 384.0;

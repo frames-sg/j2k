@@ -257,20 +257,16 @@ struct JpegEntropyCheckpoint {
     uint reserved_tail;
 };
 
-struct JpegHuffmanTable {
-    uchar bits[16];
-    ushort values_len;
-    ushort reserved;
-    uchar values[256];
-};
-
 struct PreparedHuffman {
     int min_code[17];
     int max_code[17];
     int val_offset[17];
     uchar values[256];
-    uchar fast_symbol[512];
-    uchar fast_len[512];
+    // (code length << 8) | symbol for codes of at most 9 bits; 0 otherwise.
+    ushort fast[512];
+    // (value << 8) | (run << 4) | total length when an AC code and its extra
+    // bits fit in the 9-bit lookahead; 0 otherwise.
+    short fast_ac[512];
     ushort values_len;
 };
 

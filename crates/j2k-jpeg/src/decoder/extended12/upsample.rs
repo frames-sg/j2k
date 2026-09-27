@@ -2,7 +2,6 @@
 
 //! Point sampling and fancy chroma upsampling for extended-precision planes.
 
-use super::super::lossless_helpers::upsample_h2v1_u16_at;
 use super::planes::Extended12Plane;
 
 pub(super) fn sample_extended12_plane_at(
@@ -23,18 +22,46 @@ pub(super) fn upsample_extended12_plane_h2v1_at(
 ) -> u16 {
     let height = plane.pixels.len() / plane.stride;
     let y = source_y.min(height - 1);
-    upsample_h2v1_u16_at(extended12_plane_row(plane, y), source_x)
+    upsample_extended12_h2v1_at(extended12_plane_row(plane, y), source_x)
 }
 
+/// Fancy 4:2:2 sample of a DCT-coded 12-bit row, rounded as libjpeg-turbo's
+/// `h2v1_fancy_upsample`: +1 toward the left neighbour, +2 toward the right.
+/// Lossless decoding keeps `upsample_h2v1_u16_at`.
+pub(super) fn upsample_extended12_h2v1_at(row: &[u16], output_x: usize) -> u16 {
+    debug_assert!(!row.is_empty());
+    let last = row.len() - 1;
+    let sample = (output_x / 2).min(last);
+    let near = 3 * u32::from(row[sample]);
+    let value = if output_x.is_multiple_of(2) {
+        if sample == 0 {
+            return row[0];
+        }
+        (near + u32::from(row[sample - 1]) + 1) >> 2
+    } else {
+        if sample == last {
+            return row[last];
+        }
+        (near + u32::from(row[sample + 1]) + 2) >> 2
+    };
+    u16::try_from(value).expect("weighted mean of 12-bit samples fits u16")
+}
+
+/// Fancy 4:2:0 sample at full-resolution (`source_x`, `source_y`).
+///
+/// `chroma_height` is the plane's real sample height, `ceil(image_height / 2)`.
+/// The plane itself is padded to whole MCUs; like libjpeg-turbo, the last real
+/// row is replicated instead of blending in that padding.
 pub(super) fn upsample_extended12_plane_h2v2_at(
     plane: &Extended12Plane,
+    chroma_height: usize,
     source_x: usize,
     source_y: usize,
 ) -> u16 {
-    let height = plane.pixels.len() / plane.stride;
-    let chroma_y = (source_y / 2).min(height - 1);
+    debug_assert!(chroma_height > 0 && chroma_height <= plane.pixels.len() / plane.stride);
+    let chroma_y = (source_y / 2).min(chroma_height - 1);
     let prev_y = chroma_y.saturating_sub(1);
-    let next_y = (chroma_y + 1).min(height - 1);
+    let next_y = (chroma_y + 1).min(chroma_height - 1);
     upsample_h2v2_u16_rows_at(
         extended12_plane_row(plane, prev_y),
         extended12_plane_row(plane, chroma_y),

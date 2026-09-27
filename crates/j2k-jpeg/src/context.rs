@@ -877,12 +877,13 @@ mod tests {
     #[test]
     fn decode_plan_cache_entry_boundary_bypasses_oversized_keys() {
         let plan = empty_plan(0);
+        let max_key_bytes = MAX_DECODE_PLAN_CACHE_BYTES - plan.retained_allocation_bytes().unwrap();
         assert_eq!(
-            decode_plan_entry_bytes(MAX_DECODE_PLAN_CACHE_BYTES, &plan).unwrap(),
+            decode_plan_entry_bytes(max_key_bytes, &plan).unwrap(),
             MAX_DECODE_PLAN_CACHE_BYTES
         );
         assert!(
-            decode_plan_entry_bytes(MAX_DECODE_PLAN_CACHE_BYTES + 1, &plan).unwrap()
+            decode_plan_entry_bytes(max_key_bytes + 1, &plan).unwrap()
                 > MAX_DECODE_PLAN_CACHE_BYTES
         );
     }

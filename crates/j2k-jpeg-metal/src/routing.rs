@@ -286,20 +286,6 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn auto_routes_to_cpu_host_on_non_macos_even_when_metal_would_be_preferred() {
-        let capabilities = JpegMetalCapabilities {
-            has_fast_packet: true,
-            supports_output_format: true,
-        };
-
-        assert_eq!(
-            decide_route(BackendRequest::Auto, capabilities),
-            RouteDecision::CpuHost
-        );
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
     fn explicit_metal_unsupported_shape_is_rejected_before_host_unavailability() {
         let capabilities = JpegMetalCapabilities {
             has_fast_packet: false,

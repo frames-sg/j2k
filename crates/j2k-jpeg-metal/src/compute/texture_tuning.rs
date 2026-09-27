@@ -19,6 +19,20 @@ pub(super) fn component_planes() -> Option<bool> {
     SETTINGS.get().1
 }
 
+/// Runs `run` with full-frame texture batches forced onto the component-plane
+/// route (`true`) or the direct texture kernels (`false`).
+pub(super) fn with_component_planes<T>(planes: bool, run: impl FnOnce() -> T) -> T {
+    struct Restore((Option<u64>, Option<bool>));
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SETTINGS.set(self.0);
+        }
+    }
+    let previous = SETTINGS.get();
+    let _restore = Restore(SETTINGS.replace((previous.0, Some(planes))));
+    run()
+}
+
 fn with_settings<T>(width: u64, planes: bool, run: impl FnOnce() -> T) -> T {
     struct Restore((Option<u64>, Option<bool>));
     impl Drop for Restore {

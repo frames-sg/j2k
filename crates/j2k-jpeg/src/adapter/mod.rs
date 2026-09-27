@@ -48,6 +48,11 @@ pub fn decoder_bytes<'a>(decoder: &'a Decoder<'a>) -> &'a [u8] {
 
 /// Return allocator-reported retained bytes for one prepared decoder graph.
 ///
+/// This counts only what the decoder owns. The shared
+/// [`DecoderContext`](crate::DecoderContext) that many decoders build through
+/// is not included, so summing this over a batch counts each decoder once and
+/// the context not at all; decode workspace planning charges the context.
+///
 /// # Errors
 ///
 /// Returns a typed JPEG invariant or allocation-size error.

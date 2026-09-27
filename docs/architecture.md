@@ -115,9 +115,9 @@ backend kind is not executable authority, and tests requesting a specialization
 must obtain the same runtime token as production. The `scalar-only` feature
 always selects `Scalar`.
 
-AArch64 entry kernels use the safe `fearless_simd 0.7` kernel boundary. x86-64
+AArch64 entry kernels use the safe `fearless_simd 1.0` kernel boundary. x86-64
 uses a project-private equivalent that enables exactly AVX2. This distinction
-is intentional: the `fearless_simd::Avx2` token in 0.7 represents the broader
+is intentional: the `fearless_simd::Avx2` token represents the broader
 x86-64-v3 feature set, including FMA, BMI, and other features. Requiring that
 token would silently remove acceleration from CPUs that satisfy the decoder's
 existing AVX2-plus-operating-system-state contract but not all of v3.

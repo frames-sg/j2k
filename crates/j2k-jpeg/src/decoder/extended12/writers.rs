@@ -2,13 +2,13 @@
 
 //! Scaling- and ROI-aware extended-precision output writers.
 
-use super::super::lossless_helpers::upsample_h2v1_u16_at;
 use super::super::{ColorSpace, DownscaleFactor, Rect};
 use super::planes::Extended12Plane;
 use super::sampling::Extended12ColorSampling;
 use super::upsample::{
-    extended12_plane_row, sample_extended12_plane_at, upsample_extended12_plane_h2v1_at,
-    upsample_extended12_plane_h2v2_at, upsample_h2v2_u16_rows_at,
+    extended12_plane_row, sample_extended12_plane_at, upsample_extended12_h2v1_at,
+    upsample_extended12_plane_h2v1_at, upsample_extended12_plane_h2v2_at,
+    upsample_h2v2_u16_rows_at,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -155,8 +155,8 @@ pub(super) fn write_extended12_color422_planes_region(
                 [chroma_y * planes[1].stride..chroma_y * planes[1].stride + planes[1].width];
             let cr_row = &planes[2].pixels
                 [chroma_y * planes[2].stride..chroma_y * planes[2].stride + planes[2].width];
-            let c1 = upsample_h2v1_u16_at(cb_row, source_x);
-            let c2 = upsample_h2v1_u16_at(cr_row, source_x);
+            let c1 = upsample_extended12_h2v1_at(cb_row, source_x);
+            let c2 = upsample_extended12_h2v1_at(cr_row, source_x);
             let (r, g, b) = match projection {
                 Extended12RgbProjection::Identity => (y, c1, c2),
                 Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(y, c1, c2),
@@ -181,13 +181,14 @@ pub(super) fn write_extended12_color420_planes_region(
     let (width, height) = region.dimensions;
     let denom = region.downscale.denominator();
     let output_rect = region.output_rect;
+    // Real chroma rows; the planes below them hold MCU padding.
+    let chroma_height = (height as usize).div_ceil(2);
     for output_y in output_rect.y..output_rect.y + output_rect.h {
         let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
         let dst_row = (output_y - output_rect.y) as usize;
         for output_x in output_rect.x..output_rect.x + output_rect.w {
             let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
             let y = planes[0].pixels[source_y * planes[0].stride + source_x];
-            let chroma_height = planes[1].pixels.len() / planes[1].stride;
             let chroma_y = (source_y / 2).min(chroma_height - 1);
             let prev_y = chroma_y.saturating_sub(1);
             let next_y = (chroma_y + 1).min(chroma_height - 1);
@@ -230,6 +231,8 @@ pub(super) fn write_extended12_four_component_planes_region(
     let (width, height) = region.dimensions;
     let denom = region.downscale.denominator();
     let output_rect = region.output_rect;
+    // Real 4:2:0 chroma rows; the planes below them hold MCU padding.
+    let chroma_height = (height as usize).div_ceil(2);
     for output_y in output_rect.y..output_rect.y + output_rect.h {
         let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
         let dst_row = (output_y - output_rect.y) as usize;
@@ -248,9 +251,24 @@ pub(super) fn write_extended12_four_component_planes_region(
                     upsample_extended12_plane_h2v1_at(&planes[3], source_x, source_y),
                 ),
                 Extended12ColorSampling::S420 => (
-                    upsample_extended12_plane_h2v2_at(&planes[1], source_x, source_y),
-                    upsample_extended12_plane_h2v2_at(&planes[2], source_x, source_y),
-                    upsample_extended12_plane_h2v2_at(&planes[3], source_x, source_y),
+                    upsample_extended12_plane_h2v2_at(
+                        &planes[1],
+                        chroma_height,
+                        source_x,
+                        source_y,
+                    ),
+                    upsample_extended12_plane_h2v2_at(
+                        &planes[2],
+                        chroma_height,
+                        source_x,
+                        source_y,
+                    ),
+                    upsample_extended12_plane_h2v2_at(
+                        &planes[3],
+                        chroma_height,
+                        source_x,
+                        source_y,
+                    ),
                 ),
             };
             let (r, g, b) = match color_space {

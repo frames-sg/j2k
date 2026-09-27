@@ -5,69 +5,45 @@ use j2k_core::{
 use crate::Error;
 
 use super::{
-    auto_repeated_decode_uses_metal, auto_scaled_decode_uses_metal, decide_route, decision_error,
-    rejection::ExplicitMetalRejection, RouteDecision,
+    auto_full_decode_uses_metal, auto_repeated_decode_uses_metal, auto_scaled_decode_uses_metal,
+    decide_route, decision_error, rejection::ExplicitMetalRejection, RouteDecision,
 };
 
 #[test]
-fn auto_repeated_decode_thresholds_match_verified_external_cells() {
+fn auto_repeated_decode_thresholds_match_verified_cells() {
     use CompressedPayloadKind::{Jpeg2000Codestream as Raw, JphFile as Jph};
     use CompressedTransferSyntax::{
         HtJpeg2000Lossless as HtLossless, HtJpeg2000Lossy as HtLossy,
         Jpeg2000Lossless as ClassicLossless, Jpeg2000Lossy as ClassicLossy,
     };
+    use PixelFormat::{Gray16, Gray8, Rgb8, Rgba8};
 
     for (dimensions, format, batch, transfer_syntax, payload_kind, expected) in [
-        ((512, 512), PixelFormat::Gray8, 16, ClassicLossy, Raw, false),
-        ((3323, 891), PixelFormat::Gray8, 16, ClassicLossy, Raw, true),
-        (
-            (3323, 891),
-            PixelFormat::Gray8,
-            16,
-            ClassicLossless,
-            Raw,
-            false,
-        ),
-        (
-            (3323, 891),
-            PixelFormat::Gray16,
-            16,
-            ClassicLossy,
-            Raw,
-            false,
-        ),
-        ((256, 149), PixelFormat::Rgb8, 16, ClassicLossy, Raw, false),
-        ((640, 480), PixelFormat::Rgb8, 16, ClassicLossy, Raw, true),
-        (
-            (640, 480),
-            PixelFormat::Rgb8,
-            16,
-            ClassicLossless,
-            Raw,
-            false,
-        ),
-        (
-            (2592, 1944),
-            PixelFormat::Rgb8,
-            16,
-            ClassicLossless,
-            Raw,
-            true,
-        ),
-        ((640, 480), PixelFormat::Rgba8, 16, ClassicLossy, Raw, false),
-        (
-            (2592, 1944),
-            PixelFormat::Rgb8,
-            15,
-            ClassicLossy,
-            Raw,
-            false,
-        ),
-        ((767, 512), PixelFormat::Rgb8, 16, HtLossless, Jph, false),
-        ((768, 512), PixelFormat::Rgb8, 16, HtLossless, Jph, true),
-        ((639, 480), PixelFormat::Rgb8, 16, HtLossy, Raw, false),
-        ((640, 480), PixelFormat::Rgb8, 16, HtLossy, Raw, true),
-        ((768, 512), PixelFormat::Gray8, 16, HtLossless, Jph, false),
+        ((255, 256), Rgb8, 16, HtLossless, Raw, false),
+        ((256, 256), Rgb8, 16, HtLossless, Raw, true),
+        ((639, 480), Rgb8, 16, HtLossless, Jph, false),
+        ((640, 480), Rgb8, 16, HtLossless, Jph, true),
+        ((640, 479), Gray8, 16, HtLossless, Raw, false),
+        ((640, 480), Gray8, 16, HtLossless, Raw, true),
+        ((639, 480), Rgb8, 16, ClassicLossless, Raw, false),
+        ((640, 480), Rgb8, 16, ClassicLossless, Raw, true),
+        ((2047, 2048), Gray8, 16, ClassicLossless, Raw, false),
+        ((2048, 2048), Gray8, 16, ClassicLossless, Raw, true),
+        ((640, 480), Rgb8, 15, ClassicLossless, Raw, false),
+        ((640, 480), Rgba8, 16, ClassicLossless, Raw, false),
+        ((2048, 2048), Gray16, 16, ClassicLossless, Raw, false),
+        ((255, 256), Rgb8, 16, HtLossy, Raw, false),
+        ((256, 256), Rgb8, 16, HtLossy, Raw, true),
+        // Part 1 lossy RGB8 measured slower at 640x480 and faster from 1024x1024.
+        ((640, 480), Rgb8, 16, ClassicLossy, Raw, false),
+        ((1023, 1024), Rgb8, 16, ClassicLossy, Raw, false),
+        ((1024, 1024), Rgb8, 16, ClassicLossy, Raw, true),
+        // Lossy Gray8 qualifies only from the measured 2048x2048 cells.
+        ((640, 480), Gray8, 16, HtLossy, Raw, false),
+        ((2047, 2048), Gray8, 16, HtLossy, Raw, false),
+        ((2048, 2048), Gray8, 16, HtLossy, Raw, true),
+        ((3323, 891), Gray8, 16, ClassicLossy, Raw, false),
+        ((2048, 2048), Gray8, 16, ClassicLossy, Raw, true),
     ] {
         assert_eq!(
                 auto_repeated_decode_uses_metal(
@@ -87,123 +63,89 @@ fn auto_repeated_decode_thresholds_match_verified_external_cells() {
 fn auto_repeated_decode_requires_the_measured_payload_kind() {
     use CompressedPayloadKind::{Jp2File as Jp2, Jpeg2000Codestream as Raw, JphFile as Jph};
     use CompressedTransferSyntax::{
-        HtJpeg2000Lossless as HtLossless, HtJpeg2000Lossy as HtLossy, Jpeg2000Lossy as ClassicLossy,
+        HtJpeg2000Lossless as HtLossless, Jpeg2000Lossless as ClassicLossless,
     };
 
-    assert!(auto_repeated_decode_uses_metal(
-        (640, 480),
-        PixelFormat::Rgb8,
-        16,
-        ClassicLossy,
-        Raw,
-    ));
-    assert!(!auto_repeated_decode_uses_metal(
-        (640, 480),
-        PixelFormat::Rgb8,
-        16,
-        ClassicLossy,
-        Jp2,
-    ));
-    assert!(auto_repeated_decode_uses_metal(
-        (640, 480),
-        PixelFormat::Rgb8,
-        16,
-        HtLossy,
-        Raw,
-    ));
-    assert!(!auto_repeated_decode_uses_metal(
-        (640, 480),
-        PixelFormat::Rgb8,
-        16,
-        HtLossy,
-        Jph,
-    ));
-    assert!(auto_repeated_decode_uses_metal(
-        (768, 512),
-        PixelFormat::Rgb8,
-        16,
-        HtLossless,
-        Jph,
-    ));
-    assert!(!auto_repeated_decode_uses_metal(
-        (768, 512),
-        PixelFormat::Rgb8,
-        16,
-        HtLossless,
-        Raw,
-    ));
+    for (dimensions, transfer_syntax, payload_kind, expected) in [
+        ((640, 480), ClassicLossless, Raw, true),
+        ((640, 480), ClassicLossless, Jp2, false),
+        ((256, 256), HtLossless, Raw, true),
+        ((256, 256), HtLossless, Jph, false),
+        ((640, 480), HtLossless, Jph, true),
+        ((640, 480), HtLossless, Jp2, false),
+    ] {
+        assert_eq!(
+            auto_repeated_decode_uses_metal(
+                dimensions,
+                PixelFormat::Rgb8,
+                16,
+                transfer_syntax,
+                payload_kind,
+            ),
+            expected,
+            "{dimensions:?}/{transfer_syntax:?}/{payload_kind:?}"
+        );
+    }
 }
 
 #[test]
-fn auto_scaled_decode_threshold_matches_only_the_verified_ht_cell() {
-    use CompressedPayloadKind::{Jpeg2000Codestream as Raw, JphFile as Jph};
+fn auto_full_decode_thresholds_match_verified_ht_cells() {
+    use CompressedPayloadKind::{Jp2File as Jp2, Jpeg2000Codestream as Raw, JphFile as Jph};
+    use CompressedTransferSyntax::{
+        HtJpeg2000Lossless as HtLossless, HtJpeg2000Lossy as HtLossy,
+        Jpeg2000Lossless as ClassicLossless, Jpeg2000Lossy as ClassicLossy,
+    };
+    use PixelFormat::{Gray8, Rgb8};
+
+    for (dimensions, components, format, transfer_syntax, payload_kind, expected) in [
+        ((639, 480), 3, Rgb8, HtLossless, Raw, false),
+        ((640, 480), 3, Rgb8, HtLossless, Raw, true),
+        ((640, 480), 3, Rgb8, HtLossless, Jph, true),
+        ((640, 480), 3, Rgb8, HtLossless, Jp2, false),
+        ((640, 480), 1, Gray8, HtLossless, Raw, true),
+        ((640, 479), 1, Gray8, HtLossless, Raw, false),
+        // Only the measured source/output pairings qualify.
+        ((640, 480), 3, Gray8, HtLossless, Raw, false),
+        ((640, 480), 1, Rgb8, HtLossless, Raw, false),
+        ((639, 480), 3, Rgb8, HtLossy, Raw, false),
+        ((640, 480), 3, Rgb8, HtLossy, Raw, true),
+        ((640, 479), 1, Gray8, HtLossy, Raw, false),
+        ((640, 480), 1, Gray8, HtLossy, Raw, true),
+        // Part 1 full decodes measured slower on Metal, lossless and lossy.
+        ((2048, 2048), 3, Rgb8, ClassicLossless, Raw, false),
+        ((2048, 2048), 3, Rgb8, ClassicLossy, Raw, false),
+    ] {
+        assert_eq!(
+            auto_full_decode_uses_metal(
+                dimensions,
+                components,
+                format,
+                transfer_syntax,
+                payload_kind
+            ),
+            expected,
+            "{dimensions:?}/{components}/{format:?}/{transfer_syntax:?}/{payload_kind:?}"
+        );
+    }
+}
+
+#[test]
+fn auto_scaled_decode_stays_on_cpu_without_a_verified_cell() {
+    use CompressedPayloadKind::Jpeg2000Codestream as Raw;
     use CompressedTransferSyntax::{HtJpeg2000Lossless as Lossless, HtJpeg2000Lossy as Lossy};
 
-    assert!(auto_scaled_decode_uses_metal(
-        (320, 240),
-        3,
-        PixelFormat::Rgb8,
-        Lossy,
-        Raw,
-        Downscale::Half,
-    ));
-    for (dimensions, components, fmt, transfer_syntax, payload_kind, scale) in [
-        (
-            (319, 240),
-            3,
-            PixelFormat::Rgb8,
-            Lossy,
-            Raw,
-            Downscale::Half,
-        ),
-        (
-            (320, 240),
-            1,
-            PixelFormat::Rgb8,
-            Lossy,
-            Raw,
-            Downscale::Half,
-        ),
-        (
-            (320, 240),
-            3,
-            PixelFormat::Gray8,
-            Lossy,
-            Raw,
-            Downscale::Half,
-        ),
-        (
-            (320, 240),
-            3,
-            PixelFormat::Rgb8,
-            Lossless,
-            Raw,
-            Downscale::Half,
-        ),
-        (
-            (320, 240),
-            3,
-            PixelFormat::Rgb8,
-            Lossy,
-            Jph,
-            Downscale::Half,
-        ),
-        (
-            (320, 240),
-            3,
-            PixelFormat::Rgb8,
-            Lossy,
-            Raw,
-            Downscale::Quarter,
-        ),
+    for (dimensions, transfer_syntax) in [
+        ((320, 240), Lossy),
+        ((1024, 1024), Lossy),
+        ((1024, 1024), Lossless),
     ] {
         assert!(!auto_scaled_decode_uses_metal(
             dimensions,
-            components,
-            fmt,
+            3,
+            PixelFormat::Rgb8,
             transfer_syntax,
-            payload_kind,
-            scale,
+            Raw,
+            Downscale::Half,
         ));
     }
 }

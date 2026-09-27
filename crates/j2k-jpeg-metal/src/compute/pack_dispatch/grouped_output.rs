@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::buffers::new_shared_buffer;
 use objc2::Message;
 use objc2_metal::{MTLBlitCommandEncoder, MTLCommandEncoder};
 
@@ -24,7 +23,7 @@ pub(in crate::compute) fn batch_output_buffer_or_new(
             .ok_or(BufferError::SizeOverflow {
                 what: "JPEG Metal batch output bytes",
             })?;
-        return new_shared_buffer(&runtime.device, byte_len);
+        return runtime.surface_output_buffer(byte_len);
     };
 
     if output.dimensions() != dimensions

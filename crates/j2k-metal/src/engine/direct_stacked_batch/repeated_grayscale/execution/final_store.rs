@@ -92,6 +92,7 @@ impl RepeatedGrayscaleExecution<'_> {
                     output_y: store.output_y,
                     addend: store.addend,
                     batch_count,
+                    round_centered: u32::from(self.round_centered_store),
                 },
             )?;
             self.retained_buffers.push(output.buffer.clone());
@@ -131,6 +132,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 output_x: store.output_x,
                 output_y: store.output_y,
                 addend: store.addend,
+                round_centered: u32::from(self.round_centered_store),
             };
             dispatch_store_component_buffer_in_command_buffer_with_offsets(
                 self.runtime,

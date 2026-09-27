@@ -49,6 +49,7 @@ const SHADER_SOURCES: &[&str] = &[
     PACKETIZATION_SOURCE,
     include_str!("../src/fdwt.metal"),
     include_str!("../src/ht_cleanup.metal"),
+    include_str!("../src/ht_cleanup_simd.metal"),
     include_str!("../src/idwt.metal"),
     include_str!("../src/mct.metal"),
     include_str!("../src/quantize.metal"),
@@ -126,7 +127,7 @@ fn cleanup_only_ht_pipelines_cannot_instantiate_refinement_state() {
     assert!(!common.contains("J2K_HT_MAX_PREV_ROW_SIG"));
 
     let cleanup = metal_function_body(SOURCE, "inline void decode_ht_cleanup_only_impl(");
-    assert!(cleanup.contains("decode_ht_cleanup_common("));
+    assert!(cleanup.contains("decode_ht_cleanup_common<true>("));
     assert!(!cleanup.contains("decode_ht_refinement_impl("));
     assert!(!cleanup.contains("sigma"));
     assert!(!cleanup.contains("prev_row_sig"));
@@ -136,6 +137,7 @@ fn cleanup_only_ht_pipelines_cannot_instantiate_refinement_state() {
     assert!(refinement.contains("thread ushort prev_row_sig[J2K_HT_MAX_PREV_ROW_SIG]"));
 
     for kernel in [
+        "kernel void j2k_decode_ht_cleanup_cleanup_only(",
         "kernel void j2k_decode_ht_cleanup_batched_cleanup_only(",
         "kernel void j2k_decode_ht_cleanup_repeated_batched_cleanup_only(",
     ] {

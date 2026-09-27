@@ -260,6 +260,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers(
                 src,
                 dst,
                 params,
+                params.current_width,
                 "J2K coefficient prep DWT 5/3 vertical",
             )?;
             active_is_input = !active_is_input;
@@ -272,6 +273,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers(
                 src,
                 dst,
                 params,
+                params.low_width,
                 "J2K coefficient prep DWT 5/3 horizontal",
             )?;
             active_is_input = !active_is_input;
@@ -348,6 +350,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_on_buffers(
                 inputs,
                 outputs,
                 params,
+                params.current_width,
                 "J2K coefficient prep DWT 5/3 vertical",
             )?;
             active_is_input = !active_is_input;
@@ -364,6 +367,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_on_buffers(
                 inputs,
                 outputs,
                 params,
+                params.low_width,
                 "J2K coefficient prep DWT 5/3 horizontal",
             )?;
             active_is_input = !active_is_input;
@@ -424,6 +428,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers_split_profile(
                 src,
                 dst,
                 params,
+                params.current_width,
                 "J2K coefficient prep DWT 5/3 vertical",
             )?;
             command_buffer.commit();
@@ -442,6 +447,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers_split_profile(
                 src,
                 dst,
                 params,
+                params.low_width,
                 "J2K coefficient prep DWT 5/3 horizontal",
             )?;
             command_buffer.commit();
@@ -514,6 +520,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_split_profile(
                 inputs,
                 outputs,
                 params,
+                params.current_width,
                 "J2K coefficient prep DWT 5/3 vertical",
             )?;
             command_buffer.commit();
@@ -536,6 +543,7 @@ pub(in crate::engine) fn dispatch_forward_dwt53_components_split_profile(
                 inputs,
                 outputs,
                 params,
+                params.low_width,
                 "J2K coefficient prep DWT 5/3 horizontal",
             )?;
             command_buffer.commit();

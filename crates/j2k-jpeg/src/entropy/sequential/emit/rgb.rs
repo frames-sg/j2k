@@ -2,11 +2,11 @@
 
 use super::{
     super::{is_ycbcr_420, scaled_dimensions, PreparedDecodePlan, RgbOutputScratch},
-    four_component::fill_four_component_rgb_row,
+    four_component::{fill_four_component_rgb_row, FourComponentRow},
     types::{StripeEmit, StripeNeighbors},
     upsample::{
-        component_row_triplet, upsample_component_row_stripe, StripeComponentUpsample,
-        StripeComponentUpsampleSpec,
+        component_row_triplet, upsample_component_row_stripe, valid_component_rows,
+        StripeComponentUpsample, StripeComponentUpsampleSpec,
     },
 };
 use crate::{
@@ -66,6 +66,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
             let RgbOutputScratch::YCbCr420 = output_scratch else {
                 unreachable!("4:2:0 YCbCr RGB output requires dedicated scratch");
             };
+            let chroma_valid_rows = valid_component_rows(stripe_rows, 2);
             let mut local_y = 0usize;
             while local_y < stripe_rows {
                 let y_top = &curr.row(0, local_y)[..width];
@@ -80,12 +81,14 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     curr.plane(1),
                     next.map(|stripe| stripe.plane(1)),
                     chroma_y,
+                    chroma_valid_rows,
                 );
                 let (prev_cr, curr_cr, next_cr) = component_row_triplet(
                     prev.map(|stripe| stripe.plane(2)),
                     curr.plane(2),
                     next.map(|stripe| stripe.plane(2)),
                     chroma_y,
+                    chroma_valid_rows,
                 );
 
                 writer.with_rgb_rows(
@@ -154,6 +157,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.cb_up,
@@ -167,6 +171,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.cr_up,
@@ -210,6 +215,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.r,
@@ -223,6 +229,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.g,
@@ -236,6 +243,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         max_h,
                         max_v,
                         local_y_out: local_y as u32,
+                        stripe_rows,
                         width,
                     },
                     out: &mut scratch.b,
@@ -253,11 +261,12 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
             for local_y in 0..stripe_rows {
                 fill_four_component_rgb_row(
                     plan,
-                    prev,
-                    curr,
-                    next,
-                    local_y as u32,
-                    width,
+                    neighbors,
+                    FourComponentRow {
+                        local_y: local_y as u32,
+                        stripe_rows,
+                        width,
+                    },
                     scratch,
                 )?;
                 writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {

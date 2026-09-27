@@ -64,6 +64,8 @@ mod region_scaled_plan;
 mod runtime;
 #[cfg(target_os = "macos")]
 mod scratch_pool;
+#[cfg(target_os = "macos")]
+mod surface_output_pool;
 #[cfg(all(target_os = "macos", test))]
 use self::pipeline_registry::SHADER_SOURCE;
 #[cfg(target_os = "macos")]
@@ -182,13 +184,16 @@ use self::command::{
     commit_and_wait_jpeg, new_blit_command_encoder, new_command_buffer,
     new_compute_command_encoder, wait_for_completion_jpeg,
 };
+pub use self::runtime::release_default_session_buffers;
+#[cfg(target_os = "macos")]
+pub(crate) use self::runtime::{
+    default_tile_backend_session, runtime_initialization_error, MetalRuntime,
+};
 #[cfg(target_os = "macos")]
 use self::runtime::{
     private_jpeg_tile_from_fast_rgb_buffer, with_runtime, with_runtime_for_session,
     FastRgbDecodeBuffer,
 };
-#[cfg(target_os = "macos")]
-pub(crate) use self::runtime::{runtime_initialization_error, MetalRuntime};
 
 #[cfg(target_os = "macos")]
 const REGION_SCALED_BATCH_CHUNK: usize = 8;

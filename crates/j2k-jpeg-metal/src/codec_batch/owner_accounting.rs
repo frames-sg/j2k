@@ -117,4 +117,88 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn decoder_owner_bytes_exclude_the_shared_context_reserve() {
+        // One `DecoderContext` reserve is charged once per decode budget, not
+        // once per prepared decoder, so 64-tile batches stay far below the cap.
+        let decoders = (0..64)
+            .map(|_| Decoder::new(BASELINE_420).expect("decoder"))
+            .collect::<Vec<_>>();
+        let decoder_refs = decoders.iter().collect::<Vec<_>>();
+        let one = distinct_decoder_retained_bytes(&decoder_refs[..1]).expect("one owner");
+        let all = distinct_decoder_retained_bytes(&decoder_refs).expect("64 owners");
+        assert!(one < 1024 * 1024, "one decoder retains {one} bytes");
+        assert_eq!(all, 64 * one);
+        assert!(all < DEFAULT_MAX_HOST_ALLOCATION_BYTES / 16);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resident_texture_batch_of_64_distinct_decoders_matches_cpu() {
+        use j2k_jpeg::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples, JpegSubsampling};
+
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let (width, height) = (64_u32, 64_u32);
+        let jpegs = (0..64_u8)
+            .map(|seed| {
+                let mut pixels = j2k_test_support::patterned_rgb8(width, height);
+                for sample in &mut pixels {
+                    *sample = sample.wrapping_add(seed.wrapping_mul(37));
+                }
+                encode_jpeg_baseline(
+                    JpegSamples::Rgb8 {
+                        data: &pixels,
+                        width,
+                        height,
+                    },
+                    JpegEncodeOptions {
+                        subsampling: JpegSubsampling::Ybr420,
+                        ..Default::default()
+                    },
+                )
+                .expect("encode tile")
+                .data
+            })
+            .collect::<Vec<_>>();
+        let decoders = jpegs
+            .iter()
+            .map(|jpeg| Decoder::new(jpeg).expect("Metal decoder"))
+            .collect::<Vec<_>>();
+        let decoder_refs = decoders.iter().collect::<Vec<_>>();
+        let mut output = crate::MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1)
+            .expect("texture output");
+
+        let tiles = crate::Codec::decode_rgb8_batch_into_textures_with_session(
+            crate::Rgb8MetalBatchRequest {
+                source: crate::Rgb8MetalBatchSource::Decoders(&decoder_refs),
+                op: crate::Rgb8MetalBatchOp::Full,
+            },
+            crate::MetalTextureBatchTarget::Resizable(&mut output),
+            &session,
+        )
+        .expect("64-decoder resident texture batch");
+
+        assert_eq!(tiles.len(), jpegs.len());
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            let actual = crate::tests::download_rgba8_texture(
+                &session,
+                tile.texture_trusted(),
+                (width, height),
+            );
+            let (rgb, _) = j2k_jpeg::Decoder::new(&jpegs[index])
+                .expect("CPU decoder")
+                .decode_request(j2k_jpeg::DecodeRequest::full(j2k_core::PixelFormat::Rgb8))
+                .expect("CPU decode");
+            assert_eq!(
+                actual,
+                crate::tests::rgb_to_rgba_opaque(&rgb),
+                "tile {index}"
+            );
+        }
+    }
 }

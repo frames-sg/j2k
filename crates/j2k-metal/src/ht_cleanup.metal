@@ -368,6 +368,18 @@ inline void decode_mag_sgn_sample_with_vn(
     value |= (v_n + 2u) << (p - 1u);
 }
 
+template<bool ConvertOnStore>
+inline uint ht_cleanup_output_bits(uint value, J2kHtCleanupParams params) {
+    if (ConvertOnStore) {
+        return coefficient_to_float_bits(
+            value, params.num_bitplanes + params.roi_shift,
+            params.dequantization_step, params.irreversible_midpoint, params.roi_shift
+        );
+    }
+    return value;
+}
+
+template<bool ConvertOnStore>
 inline void decode_ht_cleanup_common(
     device const uchar *coded_data,
     device uint *decoded_data,
@@ -608,13 +620,13 @@ inline void decode_ht_cleanup_common(
             uint value0 = 0u;
             uint ignored_vn = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 0u, uq, p, value0, ignored_vn);
-            decoded_data[dp] = value0;
+            decoded_data[dp] = ht_cleanup_output_bits<ConvertOnStore>(value0, params);
 
             uint value1 = 0u;
             uint v_n1 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 1u, uq, p, value1, v_n1);
             if (second_row_present) {
-                decoded_data[dp + stride] = value1;
+                decoded_data[dp + stride] = ht_cleanup_output_bits<ConvertOnStore>(value1, params);
             }
             v_n_scratch[vp] = prev_v_n | v_n1;
             prev_v_n = 0u;
@@ -628,13 +640,13 @@ inline void decode_ht_cleanup_common(
 
             uint value2 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 2u, uq, p, value2, ignored_vn);
-            decoded_data[dp] = value2;
+            decoded_data[dp] = ht_cleanup_output_bits<ConvertOnStore>(value2, params);
 
             uint value3 = 0u;
             uint v_n3 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 3u, uq, p, value3, v_n3);
             if (second_row_present) {
-                decoded_data[dp + stride] = value3;
+                decoded_data[dp + stride] = ht_cleanup_output_bits<ConvertOnStore>(value3, params);
             }
             prev_v_n = v_n3;
             dp += 1u;
@@ -670,13 +682,13 @@ inline void decode_ht_cleanup_common(
                 uint value0 = 0u;
                 uint ignored_vn = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 0u, uq, p, value0, ignored_vn);
-                decoded_data[local_dp] = value0;
+                decoded_data[local_dp] = ht_cleanup_output_bits<ConvertOnStore>(value0, params);
 
                 uint value1 = 0u;
                 uint v_n1 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 1u, uq, p, value1, v_n1);
                 if (local_second_row_present) {
-                    decoded_data[local_dp + stride] = value1;
+                    decoded_data[local_dp + stride] = ht_cleanup_output_bits<ConvertOnStore>(value1, params);
                 }
                 v_n_scratch[local_vp] = local_prev_v_n | v_n1;
                 local_prev_v_n = 0u;
@@ -690,13 +702,13 @@ inline void decode_ht_cleanup_common(
 
                 uint value2 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 2u, uq, p, value2, ignored_vn);
-                decoded_data[local_dp] = value2;
+                decoded_data[local_dp] = ht_cleanup_output_bits<ConvertOnStore>(value2, params);
 
                 uint value3 = 0u;
                 uint v_n3 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 3u, uq, p, value3, v_n3);
                 if (local_second_row_present) {
-                    decoded_data[local_dp + stride] = value3;
+                    decoded_data[local_dp + stride] = ht_cleanup_output_bits<ConvertOnStore>(value3, params);
                 }
                 local_prev_v_n = v_n3;
                 local_dp += 1u;
@@ -1051,14 +1063,12 @@ inline void decode_ht_cleanup_only_impl(
 ) {
     thread ushort scratch[J2K_HT_MAX_SCRATCH];
     thread uint v_n_scratch[J2K_HT_MAX_VN];
-    decode_ht_cleanup_common(
+    // Cleanup predictors use scratch state, so one-pass outputs can be final
+    // floats immediately. Refinement paths still need the packed integer words.
+    decode_ht_cleanup_common<true>(
         coded_data, decoded_data, params, vlc_table0, vlc_table1,
         uvlc_table0, uvlc_table1, status, scratch, v_n_scratch
     );
-    if (status->code != J2K_HT_STATUS_OK) {
-        return;
-    }
-    convert_ht_cleanup_coefficients(decoded_data, params);
 }
 
 inline void decode_ht_cleanup_impl(
@@ -1073,7 +1083,7 @@ inline void decode_ht_cleanup_impl(
 ) {
     thread ushort scratch[J2K_HT_MAX_SCRATCH];
     thread uint v_n_scratch[J2K_HT_MAX_VN];
-    decode_ht_cleanup_common(
+    decode_ht_cleanup_common<false>(
         coded_data, decoded_data, params, vlc_table0, vlc_table1,
         uvlc_table0, uvlc_table1, status, scratch, v_n_scratch
     );
@@ -1112,6 +1122,33 @@ kernel void j2k_decode_ht_cleanup(
     }
 
     decode_ht_cleanup_impl(
+        coded_data,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status
+    );
+}
+
+kernel void j2k_decode_ht_cleanup_cleanup_only(
+    device const uchar *coded_data [[buffer(0)]],
+    device uint *decoded_data [[buffer(1)]],
+    constant J2kHtCleanupParams &params [[buffer(2)]],
+    constant ushort *vlc_table0 [[buffer(3)]],
+    constant ushort *vlc_table1 [[buffer(4)]],
+    constant ushort *uvlc_table0 [[buffer(5)]],
+    constant ushort *uvlc_table1 [[buffer(6)]],
+    device J2kHtStatus *status [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0u) {
+        return;
+    }
+
+    decode_ht_cleanup_only_impl(
         coded_data,
         decoded_data,
         params,

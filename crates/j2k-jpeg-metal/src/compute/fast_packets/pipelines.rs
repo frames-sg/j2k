@@ -442,9 +442,6 @@ impl FastSubsampledMetal for JpegFast444PacketV1 {
     fn to_batched(&self) -> BatchedFastPacket<'_> {
         BatchedFastPacket::Fast444(self, PlaneMode::YCbCr)
     }
-    fn to_batched_with_texture_mode(&self, mode: PlaneMode) -> BatchedFastPacket<'_> {
-        BatchedFastPacket::Fast444(self, mode)
-    }
     fn texture_plane_mode_from_batched(packet: &BatchedFastPacket<'_>) -> Option<PlaneMode> {
         match packet {
             BatchedFastPacket::Fast444(_, mode) => Some(*mode),
@@ -489,7 +486,7 @@ impl FastSubsampledMetal for JpegFast444PacketV1 {
         &runtime.pipelines.pack_444_rgba_texture
     }
     fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pipelines.fast444_scaled_region_batch_decode
+        &runtime.pipelines.fast444_batch_decode
     }
     fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
         &runtime.pipelines.pack_444_rgb_batch

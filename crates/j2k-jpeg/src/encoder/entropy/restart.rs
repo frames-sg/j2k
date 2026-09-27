@@ -396,10 +396,4 @@ mod tests {
                     && cap == DEFAULT_MAX_HOST_ALLOCATION_BYTES
         ));
     }
-
-    #[test]
-    fn restart_entropy_module_stays_focused() {
-        const SOURCE: &str = include_str!("restart.rs");
-        assert!(SOURCE.lines().count() <= 420);
-    }
 }

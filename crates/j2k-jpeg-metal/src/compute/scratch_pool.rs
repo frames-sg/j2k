@@ -39,28 +39,59 @@ impl BatchScratchPool {
             if *availability {
                 return Err(poisoned());
             }
-            for slot in &self.slots {
-                match slot.try_lock() {
-                    Ok(mut entry) => {
-                        if let Some(scratch) = entry.take() {
-                            drop(entry);
-                            drop(availability);
-                            return Ok(BatchScratchLease {
-                                scratch: Some(scratch),
-                                slot,
-                                pool: self,
-                                panicking_on_acquire: std::thread::panicking(),
-                            });
-                        }
-                    }
-                    Err(TryLockError::WouldBlock) => {}
-                    Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
-                }
+            if let Some(lease) = self.take_available()? {
+                return Ok(lease);
             }
             // The availability mutex joins this check to release notifications,
             // so neither a free slot nor a wakeup can be missed between them.
             availability = self.released.wait(availability).map_err(|_| poisoned())?;
         }
+    }
+
+    pub(super) fn try_acquire(&self) -> Result<Option<BatchScratchLease<'_>>, Error> {
+        let availability = self.availability.lock().map_err(|_| poisoned())?;
+        if *availability {
+            return Err(poisoned());
+        }
+        self.take_available()
+    }
+
+    // Callers hold the availability gate until a slot has been taken.
+    fn take_available(&self) -> Result<Option<BatchScratchLease<'_>>, Error> {
+        for slot in &self.slots {
+            match slot.try_lock() {
+                Ok(mut entry) => {
+                    if let Some(scratch) = entry.take() {
+                        return Ok(Some(BatchScratchLease {
+                            scratch: Some(scratch),
+                            slot,
+                            pool: self,
+                            panicking_on_acquire: std::thread::panicking(),
+                        }));
+                    }
+                }
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Replaces idle scratch with empty scratch, dropping its buffers. Leased
+    /// or locked slots are left alone; their scratch returns intact.
+    pub(super) fn release_idle(&self) -> Result<(), Error> {
+        for slot in &self.slots {
+            match slot.try_lock() {
+                Ok(mut entry) => {
+                    if entry.is_some() {
+                        *entry = Some(MetalBatchScratch::default());
+                    }
+                }
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -140,6 +171,21 @@ mod tests {
             "slot mutex held by lease"
         );
         drop(first);
+        drop(second);
+        assert!(!pool.in_use());
+    }
+
+    #[test]
+    fn extra_scratch_acquisition_never_waits_while_both_slots_are_owned() {
+        let pool = BatchScratchPool::default();
+        let first = pool.acquire().expect("first lease");
+        let second = pool
+            .try_acquire()
+            .expect("try second slot")
+            .expect("second lease");
+        assert!(pool.try_acquire().expect("full pool").is_none());
+        drop(first);
+        assert!(pool.try_acquire().expect("released slot").is_some());
         drop(second);
         assert!(!pool.in_use());
     }

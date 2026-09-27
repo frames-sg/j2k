@@ -12,7 +12,7 @@ use crate::profile_env::{
 use super::abi::{
     J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus,
     J2kGrayStoreParams, J2kHtCleanupBatchJob, J2kHtRepeatedBatchParams, J2kHtStatus,
-    J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kInverseMctParams,
+    J2kIdwt97LiftSteps, J2kIdwtSingleDecompositionParams, J2kInverseMctParams,
     J2kRepeatedGrayStoreParams, J2kRepeatedIdwtSingleDecompositionParams, J2kRepeatedStoreParams,
     J2kStoreParams, J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
 };
