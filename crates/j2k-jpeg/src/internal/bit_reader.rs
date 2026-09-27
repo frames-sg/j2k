@@ -290,12 +290,48 @@ impl<'a> BitReader<'a> {
     }
 
     /// Combined peek + consume. Refills as needed.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement reads single bits per coefficient; an out-of-line call spills the reader"
+    )]
+    #[inline(always)]
     pub(crate) fn read_bits(&mut self, n: u8) -> Result<u32, JpegError> {
         self.ensure_bits(n)?;
         let v = self.peek_bits(n);
         self.consume_bits(n);
-        self.refill_to_threshold();
+        self.top_up_to_threshold();
         Ok(v)
+    }
+
+    /// Read one bit like `read_bits(1)` but without the trailing top-up.
+    ///
+    /// A top-up loads the fewest bytes that leave at least 56 buffered bits
+    /// (or stops at a marker), and it never unloads bytes, so the loaded
+    /// frontier after a top-up depends only on the bits consumed so far. A
+    /// run of deferred reads followed by one [`Self::finish_deferred_bits`]
+    /// therefore leaves the same observable reader state as the same run of
+    /// `read_bits(1)` calls. Callers must finish before any Huffman decode,
+    /// restart marker, or end-of-scan check.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement reads single bits per coefficient"
+    )]
+    #[inline(always)]
+    pub(crate) fn read_bit_deferred(&mut self) -> Result<bool, JpegError> {
+        self.ensure_bits(1)?;
+        let bit = self.peek_bits(1) != 0;
+        self.consume_bits(1);
+        Ok(bit)
+    }
+
+    /// Complete a run of [`Self::read_bit_deferred`] calls.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement tops up once per run of correction bits"
+    )]
+    #[inline(always)]
+    pub(crate) fn finish_deferred_bits(&mut self) {
+        self.top_up_to_threshold();
     }
 
     /// After consuming bits, top up the accumulator so the next Huffman peek
@@ -304,6 +340,27 @@ impl<'a> BitReader<'a> {
         if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
             while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
         }
+    }
+
+    /// [`Self::refill_to_threshold`] for hot loops that keep the reader in a
+    /// local: the bulk path is inline and the byte-at-a-time path takes the
+    /// reader by value, so the local never escapes.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
+    #[inline(always)]
+    fn top_up_to_threshold(&mut self) {
+        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
+            *self = self.clone().top_up_to_threshold_slow();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn top_up_to_threshold_slow(mut self) -> Self {
+        while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
+        self
     }
 
     /// Signed-value extension per T.81 §F.2.2.1 ("EXTEND" procedure). `ssss`

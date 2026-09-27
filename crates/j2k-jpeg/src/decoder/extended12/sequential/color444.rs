@@ -54,6 +54,7 @@ impl Decoder<'_> {
                     let output_index = component.output_index;
                     let component = self.plan.resolve_component(component)?;
                     decode_extended12_block_pixels(
+                        self.backend,
                         &mut br,
                         component,
                         &mut prev_dc[output_index],

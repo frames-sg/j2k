@@ -3,8 +3,8 @@
 //! Fixed-size `AArch64` NEON memory operations.
 
 use core::arch::aarch64::{
-    int16x8_t, uint8x16_t, uint8x16x3_t, uint8x8_t, uint8x8x3_t, vld1_u8, vld1q_s16, vld1q_u8,
-    vst1_u8, vst1q_u8, vst3_u8, vst3q_u8,
+    int16x8_t, uint16x8_t, uint8x16_t, uint8x16x3_t, uint8x8_t, uint8x8x3_t, vld1_u8, vld1q_s16,
+    vld1q_u8, vst1_u8, vst1q_u16, vst1q_u8, vst3_u8, vst3q_u8,
 };
 
 #[inline]
@@ -57,6 +57,18 @@ pub(crate) fn store_u8x8(dst: &mut [u8; 8], values: uint8x8_t) {
     // - Aliasing: the exclusive reference prevents overlapping live access.
     // - Initialization: the store initializes every output byte.
     unsafe { vst1_u8(dst.as_mut_ptr(), values) };
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+pub(crate) fn store_u16x8(dst: &mut [u16; 8], values: uint16x8_t) {
+    // SAFETY:
+    // - Feature availability: callers run inside a `Neon` token kernel.
+    // - Bounds: the array reference proves eight writable u16 samples.
+    // - Alignment: AArch64 `vst1q_u16` supports unaligned u16 addresses.
+    // - Aliasing: the exclusive reference prevents overlapping live access.
+    // - Initialization: the store initializes every output sample.
+    unsafe { vst1q_u16(dst.as_mut_ptr(), values) };
 }
 
 #[inline]

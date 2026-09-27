@@ -3,7 +3,7 @@
 //! Checked prepared-table resolution outside entropy hot loops.
 
 use super::{PreparedComponentPlan, PreparedDecodePlan};
-use crate::entropy::huffman::{AcHuffmanTable, DcHuffmanTable, PreparedHuffmanTableId};
+use crate::entropy::huffman::{AcHuffmanTable, DcHuffmanTable};
 use crate::error::JpegError;
 
 /// Borrowed component metadata with table IDs resolved once before entering an
@@ -24,13 +24,6 @@ impl PreparedDecodePlan {
             .get_dc(component.dc_table.ok_or(JpegError::InternalInvariant {
                 reason: "prepared component references a missing Huffman table",
             })?)
-    }
-
-    pub(crate) fn dc_table_by_id(
-        &self,
-        id: PreparedHuffmanTableId,
-    ) -> Result<DcHuffmanTable<'_>, JpegError> {
-        self.huffman_tables.get_dc(id)
     }
 
     pub(crate) fn ac_table(

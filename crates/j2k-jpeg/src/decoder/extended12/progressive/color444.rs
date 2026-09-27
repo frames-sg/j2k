@@ -80,10 +80,8 @@ impl Decoder<'_> {
                             dequant[output_index][0],
                         ));
                     } else {
-                        crate::idct::idct_islow_12bit(
-                            &dequant[output_index],
-                            &mut pixels[output_index],
-                        );
+                        self.backend
+                            .idct_12bit(&dequant[output_index], &mut pixels[output_index]);
                     }
                 }
                 write_extended12_rgb_block_region(

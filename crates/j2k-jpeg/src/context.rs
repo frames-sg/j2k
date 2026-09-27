@@ -213,13 +213,16 @@ impl DecoderContext {
         table
     }
 
+    /// The compiled table for `raw`, from the cache or compiled into it.
+    /// Returned by reference so a caller copies the ~24 KiB table at most
+    /// once, into its own arena.
     pub(crate) fn resolve_huffman_table_with_live_budget(
         &mut self,
         raw: &RawHuffmanTable,
         role: HuffmanTableRole,
         live_bytes: &mut usize,
         cap: usize,
-    ) -> Result<HuffmanTable, JpegError> {
+    ) -> Result<&HuffmanTable, JpegError> {
         let digest = digest_huffman_table(raw, role);
         self.resolve_huffman_table_with_digest_and_live_budget(raw, role, digest, live_bytes, cap)
     }
@@ -235,44 +238,46 @@ impl DecoderContext {
         digest: u64,
         live_bytes: &mut usize,
         cap: usize,
-    ) -> Result<HuffmanTable, JpegError> {
+    ) -> Result<&HuffmanTable, JpegError> {
         self.ensure_huffman_cache_slots(live_bytes, cap)?;
-        let start = (digest as usize) % self.huffman_tables.len();
-        for probe in 0..self.huffman_tables.len() {
-            let slot = (start + probe) % self.huffman_tables.len();
-            match &self.huffman_tables[slot] {
+        let slots = self.huffman_tables.len();
+        let start = (digest as usize) % slots;
+        // The first matching or free slot along the probe sequence; when
+        // every slot holds another table, `start` is evicted.
+        let (slot, hit) = (0..slots)
+            .map(|probe| (start + probe) % slots)
+            .find_map(|slot| match &self.huffman_tables[slot] {
                 Some(cached)
                     if cached.digest == digest && cached.role == role && &cached.raw == raw =>
                 {
-                    self.cache_hits = self.cache_hits.saturating_add(1);
-                    return Ok(cached.table.clone());
+                    Some((slot, true))
                 }
-                None => {
-                    let table = HuffmanTable::from_raw(raw, role)?;
-                    self.huffman_tables[slot] = Some(CachedHuffmanTable {
-                        digest,
-                        role,
-                        raw: raw.clone(),
-                        table: table.clone(),
-                    });
-                    self.cache_misses = self.cache_misses.saturating_add(1);
-                    return Ok(table);
-                }
-                Some(_) => {}
+                None => Some((slot, false)),
+                Some(_) => None,
+            })
+            .unwrap_or((start, false));
+        if hit {
+            self.cache_hits = self.cache_hits.saturating_add(1);
+        } else {
+            let evicting = self.huffman_tables[slot].is_some();
+            let table = HuffmanTable::from_raw(raw, role)?;
+            self.huffman_tables[slot] = Some(CachedHuffmanTable {
+                digest,
+                role,
+                raw: raw.clone(),
+                table,
+            });
+            self.cache_misses = self.cache_misses.saturating_add(1);
+            if evicting {
+                self.cache_evictions = self.cache_evictions.saturating_add(1);
             }
         }
-
-        let slot = start;
-        let table = HuffmanTable::from_raw(raw, role)?;
-        self.huffman_tables[slot] = Some(CachedHuffmanTable {
-            digest,
-            role,
-            raw: raw.clone(),
-            table: table.clone(),
-        });
-        self.cache_misses = self.cache_misses.saturating_add(1);
-        self.cache_evictions = self.cache_evictions.saturating_add(1);
-        Ok(table)
+        self.huffman_tables[slot]
+            .as_ref()
+            .map(|cached| &cached.table)
+            .ok_or(JpegError::InternalInvariant {
+                reason: "Huffman cache slot emptied while resolving a table",
+            })
     }
 
     fn ensure_huffman_cache_slots(
@@ -627,6 +632,7 @@ mod tests {
             &mut live_bytes,
             MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
         )
+        .cloned()
     }
 
     fn resolve_huffman_table_with_digest(
@@ -642,6 +648,7 @@ mod tests {
             &mut live_bytes,
             MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
         )
+        .cloned()
     }
 
     #[test]

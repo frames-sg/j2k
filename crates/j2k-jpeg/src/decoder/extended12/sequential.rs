@@ -217,6 +217,7 @@ impl Decoder<'_> {
                     prev_dc = 0;
                 }
                 decode_extended12_block_pixels(
+                    self.backend,
                     &mut br,
                     component,
                     &mut prev_dc,

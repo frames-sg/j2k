@@ -2,7 +2,7 @@
 
 use super::allocation::{checked_phase_capacity, validate_coefficient_workspace};
 use super::model::PreparedProgressiveComponentPlan;
-use super::scan::{decode_eob_run, refine_non_zeroes};
+use super::scan::{decode_eob_run, refine_band, refine_non_zeroes};
 use crate::allocation::checked_allocation_bytes;
 use crate::entropy::ZIGZAG;
 use crate::error::JpegError;
@@ -84,4 +84,78 @@ fn refine_non_zeroes_stops_at_requested_zero_run() {
     let index = refine_non_zeroes(&mut br, &mut block, 1, 4, 1, 2).unwrap();
 
     assert_eq!(index, 2);
+}
+
+fn xorshift(state: &mut u32) -> u32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    *state
+}
+
+/// Zigzag-order nonzero mask of a natural-order block's AC coefficients.
+fn nonzero_mask(block: &[i32; 64]) -> u64 {
+    (1..64)
+        .filter(|&k| block[usize::from(ZIGZAG[k])] != 0)
+        .fold(0, |mask, k| mask | 1 << k)
+}
+
+#[test]
+fn mask_driven_refinement_matches_the_coefficient_walk() {
+    let mut state = 0x2468_ace1;
+    for case in 0..20_000 {
+        let mut block = [0i32; 64];
+        let density = xorshift(&mut state) % 5;
+        for coefficient in block.iter_mut().skip(1) {
+            if xorshift(&mut state) % 5 < density {
+                let magnitude = i32::try_from(1 + xorshift(&mut state) % 40).expect("small");
+                *coefficient = if xorshift(&mut state) & 1 == 0 {
+                    magnitude
+                } else {
+                    -magnitude
+                };
+            }
+        }
+        let start = u8::try_from(1 + xorshift(&mut state) % 63).expect("band start");
+        let end = start + u8::try_from(xorshift(&mut state) % u32::from(64 - start)).expect("end");
+        let zero_run_length = if case % 7 == 0 {
+            64
+        } else {
+            usize::try_from(xorshift(&mut state) % 16).expect("run")
+        };
+        let bit = 1i32 << (xorshift(&mut state) % 3);
+        let bytes: Vec<u8> = (0..16)
+            .map(|_| u8::try_from(xorshift(&mut state) % 255).expect("byte"))
+            .collect();
+
+        let mut expected_block = block;
+        let mut expected_reader = BitReader::new(&bytes);
+        let expected = refine_non_zeroes(
+            &mut expected_reader,
+            &mut expected_block,
+            start,
+            end,
+            zero_run_length,
+            bit,
+        );
+        let mut actual_block = block;
+        let mut actual_reader = BitReader::new(&bytes);
+        let actual = refine_band(
+            &mut actual_reader,
+            &mut actual_block,
+            nonzero_mask(&block),
+            start,
+            end,
+            zero_run_length,
+            bit,
+        );
+        let context = format!("case {case}: band {start}..={end}, run {zero_run_length}");
+        assert_eq!(actual, expected, "{context}");
+        assert_eq!(actual_block, expected_block, "{context}");
+        assert_eq!(
+            actual_reader.read_bits(8).ok(),
+            expected_reader.read_bits(8).ok(),
+            "{context}: bits consumed"
+        );
+    }
 }

@@ -92,8 +92,9 @@ impl PreparedConstructionBudget {
                 reason: "prepared construction context bytes exceed its live-byte ledger",
             },
         )?;
-        let table =
-            ctx.resolve_huffman_table_with_live_budget(raw, role, &mut self.live_bytes, self.cap)?;
+        let table = ctx
+            .resolve_huffman_table_with_live_budget(raw, role, &mut self.live_bytes, self.cap)?
+            .clone();
         let context_bytes = ctx.retained_allocation_bytes();
         let expected = checked_add_under_cap(non_context_bytes, context_bytes, self.cap)?;
         if self.live_bytes != expected {

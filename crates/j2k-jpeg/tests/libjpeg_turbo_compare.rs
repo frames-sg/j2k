@@ -370,6 +370,9 @@ mod turbo_codec {
     const TJPARAM_QUALITY: c_int = 3;
     const TJPARAM_SUBSAMP: c_int = 4;
     const TJPARAM_PROGRESSIVE: c_int = 12;
+    const TJPARAM_LOSSLESS: c_int = 15;
+    const TJPARAM_LOSSLESSPSV: c_int = 16;
+    const TJPARAM_RESTARTROWS: c_int = 19;
     pub(crate) const TJPF_RGB: c_int = 0;
     pub(crate) const TJPF_GRAY: c_int = 6;
     pub(crate) const TJSAMP_444: c_int = 0;
@@ -412,6 +415,42 @@ mod turbo_codec {
             pitch: c_int,
             pixel_format: c_int,
         ) -> c_int;
+        fn tj3Compress16(
+            handle: *mut c_void,
+            src: *const u16,
+            width: c_int,
+            pitch: c_int,
+            height: c_int,
+            pixel_format: c_int,
+            jpeg: *mut *mut u8,
+            jpeg_size: *mut usize,
+        ) -> c_int;
+        fn tj3Decompress8(
+            handle: *mut c_void,
+            jpeg: *const u8,
+            jpeg_size: usize,
+            dst: *mut u8,
+            pitch: c_int,
+            pixel_format: c_int,
+        ) -> c_int;
+        fn tj3Decompress16(
+            handle: *mut c_void,
+            jpeg: *const u8,
+            jpeg_size: usize,
+            dst: *mut u16,
+            pitch: c_int,
+            pixel_format: c_int,
+        ) -> c_int;
+    }
+
+    /// Lossless (SOF3) encoding parameters for a generated fixture.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Lossless {
+        pub(crate) width: u32,
+        pub(crate) height: u32,
+        pub(crate) pixel_format: c_int,
+        pub(crate) predictor: c_int,
+        pub(crate) restart_rows: c_int,
     }
 
     /// Encoding parameters for a generated fixture.
@@ -449,6 +488,19 @@ mod turbo_codec {
                 (TJPARAM_QUALITY, spec.quality),
                 (TJPARAM_SUBSAMP, spec.subsampling),
                 (TJPARAM_PROGRESSIVE, c_int::from(spec.progressive)),
+            ] {
+                // SAFETY: the handle is live and the parameter ids are TurboJPEG 3's.
+                self.check(unsafe { tj3Set(self.0, param, value) }, "tj3Set");
+            }
+        }
+    }
+
+    impl Handle {
+        fn configure_lossless(&self, spec: Lossless) {
+            for (param, value) in [
+                (TJPARAM_LOSSLESS, 1),
+                (TJPARAM_LOSSLESSPSV, spec.predictor),
+                (TJPARAM_RESTARTROWS, spec.restart_rows),
             ] {
                 // SAFETY: the handle is live and the parameter ids are TurboJPEG 3's.
                 self.check(unsafe { tj3Set(self.0, param, value) }, "tj3Set");
@@ -529,6 +581,100 @@ mod turbo_codec {
         };
         handle.check(rc, "tj3Compress12");
         take_jpeg(jpeg, size)
+    }
+
+    pub(crate) fn compress_lossless8(pixels: &[u8], spec: Lossless) -> Vec<u8> {
+        let handle = Handle::new(TJINIT_COMPRESS);
+        handle.configure_lossless(spec);
+        let pitch = spec.width as usize * channels(spec.pixel_format);
+        assert_eq!(pixels.len(), pitch * spec.height as usize);
+        let (mut jpeg, mut size) = (std::ptr::null_mut(), 0usize);
+        // SAFETY: as for compress8.
+        let rc = unsafe {
+            tj3Compress8(
+                handle.0,
+                pixels.as_ptr(),
+                c(spec.width as usize),
+                c(pitch),
+                c(spec.height as usize),
+                spec.pixel_format,
+                &raw mut jpeg,
+                &raw mut size,
+            )
+        };
+        handle.check(rc, "tj3Compress8 lossless");
+        take_jpeg(jpeg, size)
+    }
+
+    pub(crate) fn compress_lossless16(samples: &[u16], spec: Lossless) -> Vec<u8> {
+        let handle = Handle::new(TJINIT_COMPRESS);
+        handle.configure_lossless(spec);
+        let pitch = spec.width as usize * channels(spec.pixel_format);
+        assert_eq!(samples.len(), pitch * spec.height as usize);
+        let (mut jpeg, mut size) = (std::ptr::null_mut(), 0usize);
+        // SAFETY: as for compress8, with 16-bit samples.
+        let rc = unsafe {
+            tj3Compress16(
+                handle.0,
+                samples.as_ptr(),
+                c(spec.width as usize),
+                c(pitch),
+                c(spec.height as usize),
+                spec.pixel_format,
+                &raw mut jpeg,
+                &raw mut size,
+            )
+        };
+        handle.check(rc, "tj3Compress16");
+        take_jpeg(jpeg, size)
+    }
+
+    pub(crate) fn decompress8(
+        jpeg: &[u8],
+        width: u32,
+        height: u32,
+        pixel_format: c_int,
+    ) -> Vec<u8> {
+        let handle = Handle::new(TJINIT_DECOMPRESS);
+        let pitch = width as usize * channels(pixel_format);
+        let mut out = vec![0u8; pitch * height as usize];
+        // SAFETY: `out` holds `height` rows of `pitch` samples.
+        let rc = unsafe {
+            tj3Decompress8(
+                handle.0,
+                jpeg.as_ptr(),
+                jpeg.len(),
+                out.as_mut_ptr(),
+                c(pitch),
+                pixel_format,
+            )
+        };
+        handle.check(rc, "tj3Decompress8");
+        out
+    }
+
+    pub(crate) fn decompress16(
+        jpeg: &[u8],
+        width: u32,
+        height: u32,
+        pixel_format: c_int,
+    ) -> Vec<u16> {
+        let handle = Handle::new(TJINIT_DECOMPRESS);
+        let pitch = width as usize * channels(pixel_format);
+        let mut out = vec![0u16; pitch * height as usize];
+        // SAFETY: `out` holds `height` rows of `pitch` samples.
+        let rc = unsafe {
+            tj3Decompress16(
+                handle.0,
+                jpeg.as_ptr(),
+                jpeg.len(),
+                out.as_mut_ptr(),
+                c(pitch),
+                pixel_format,
+            )
+        };
+        handle.check(rc, "tj3Decompress16");
+        out
     }
 
     /// Full-frame 12-bit decode with libjpeg-turbo's defaults (ISLOW IDCT,
@@ -672,6 +818,129 @@ fn extended12_decodes_match_turbo() {
                         actual[index], expected[index]
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Lossless streams from libjpeg-turbo's encoder, across predictors, restart
+/// intervals, and sample sizes, decode exactly as libjpeg-turbo decodes them.
+/// The 16-bit content jumps between extremes so differences wrap modulo 2^16
+/// and hit the 32768 (category 16) case.
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+#[test]
+fn lossless_decodes_match_turbo() {
+    use turbo_codec::{Lossless, TJPF_GRAY, TJPF_RGB};
+
+    if !turbo_available() {
+        return;
+    }
+    for (pixel_format, channels) in [(TJPF_GRAY, 1), (TJPF_RGB, 3)] {
+        for (width, height) in [(19, 7), (64, 16)] {
+            let smooth = textured_samples(width, height, channels, 65_535);
+            let wide = smooth
+                .iter()
+                .enumerate()
+                .map(|(index, &sample)| match index % 11 {
+                    3 => 0,
+                    4 => 65_535,
+                    5 => 32_768,
+                    _ => u16::try_from(sample).expect("16-bit sample"),
+                })
+                .collect::<Vec<_>>();
+            let narrow = smooth
+                .iter()
+                .map(|&sample| u8::try_from(sample >> 8).expect("8-bit sample"))
+                .collect::<Vec<_>>();
+            for predictor in 1..=7 {
+                for restart_rows in [0, 1, 3] {
+                    let spec = Lossless {
+                        width,
+                        height,
+                        pixel_format,
+                        predictor,
+                        restart_rows,
+                    };
+                    let jpeg = turbo_codec::compress_lossless8(&narrow, spec);
+                    let expected = turbo_codec::decompress8(&jpeg, width, height, pixel_format);
+                    let format = if channels == 1 {
+                        PixelFormat::Gray8
+                    } else {
+                        PixelFormat::Rgb8
+                    };
+                    let (actual, _) = Decoder::new(&jpeg)
+                        .expect("8-bit lossless decoder")
+                        .decode_request(DecodeRequest::full(format))
+                        .unwrap_or_else(|err| panic!("{spec:?}: 8-bit lossless decode: {err}"));
+                    assert!(actual == expected, "{spec:?}: 8-bit lossless mismatch");
+
+                    let jpeg = turbo_codec::compress_lossless16(&wide, spec);
+                    let expected = turbo_codec::decompress16(&jpeg, width, height, pixel_format);
+                    let format = if channels == 1 {
+                        PixelFormat::Gray16
+                    } else {
+                        PixelFormat::Rgb16
+                    };
+                    let (actual, _) = Decoder::new(&jpeg)
+                        .expect("16-bit lossless decoder")
+                        .decode_request(DecodeRequest::full(format))
+                        .unwrap_or_else(|err| panic!("{spec:?}: 16-bit lossless decode: {err}"));
+                    let actual = actual
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .collect::<Vec<_>>();
+                    assert!(actual == expected, "{spec:?}: 16-bit lossless mismatch");
+                }
+            }
+        }
+    }
+}
+
+/// Progressive streams from libjpeg-turbo's default script, which includes
+/// successive-approximation refinement scans, decode exactly as turbo
+/// decodes them across subsamplings, qualities, and non-MCU-aligned sizes.
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+#[test]
+fn progressive_decodes_match_turbo() {
+    use turbo_codec::{
+        Encode, TJPF_GRAY, TJPF_RGB, TJSAMP_420, TJSAMP_422, TJSAMP_444, TJSAMP_GRAY,
+    };
+
+    if !turbo_available() {
+        return;
+    }
+    for (pixel_format, subsampling) in [
+        (TJPF_GRAY, TJSAMP_GRAY),
+        (TJPF_RGB, TJSAMP_444),
+        (TJPF_RGB, TJSAMP_422),
+        (TJPF_RGB, TJSAMP_420),
+    ] {
+        let (channels, format) = if pixel_format == TJPF_GRAY {
+            (1, PixelFormat::Gray8)
+        } else {
+            (3, PixelFormat::Rgb8)
+        };
+        for (width, height) in [(64, 48), (67, 45), (250, 3)] {
+            for quality in [50, 90, 100] {
+                let pixels = textured_samples(width, height, channels, 255)
+                    .into_iter()
+                    .map(|sample| u8::try_from(sample).expect("8-bit sample"))
+                    .collect::<Vec<_>>();
+                let spec = Encode {
+                    width,
+                    height,
+                    pixel_format,
+                    subsampling,
+                    quality,
+                    progressive: true,
+                };
+                let jpeg = turbo_codec::compress8(&pixels, spec);
+                let expected = turbo_codec::decompress8(&jpeg, width, height, pixel_format);
+                let (actual, _) = Decoder::new(&jpeg)
+                    .expect("progressive decoder")
+                    .decode_request(DecodeRequest::full(format))
+                    .unwrap_or_else(|err| panic!("{spec:?}: progressive decode: {err}"));
+                assert!(actual == expected, "{spec:?}: progressive mismatch");
             }
         }
     }

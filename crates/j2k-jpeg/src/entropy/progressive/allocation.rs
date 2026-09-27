@@ -82,6 +82,36 @@ pub(super) fn coefficient_capacity_bytes(
     Ok(total)
 }
 
+/// Per-block nonzero masks for the scan phase, parallel to `coeffs` and
+/// charged on top of `initial_live_bytes`. Returns the masks and the live
+/// bytes after them.
+pub(super) fn allocate_nonzero_masks(
+    plan: &PreparedProgressivePlan,
+    coeffs: &[Vec<[i32; 64]>],
+    initial_live_bytes: usize,
+) -> Result<(Vec<Vec<u64>>, usize), JpegError> {
+    let mut live_bytes = initial_live_bytes;
+    let mut masks = Vec::new();
+    try_reserve_for_len_with_live_budget(
+        &mut masks,
+        coeffs.len(),
+        &mut live_bytes,
+        plan.scratch_bytes,
+    )?;
+    for component_coeffs in coeffs {
+        let mut component_masks = Vec::new();
+        try_reserve_for_len_with_live_budget(
+            &mut component_masks,
+            component_coeffs.len(),
+            &mut live_bytes,
+            plan.scratch_bytes,
+        )?;
+        component_masks.resize(component_coeffs.len(), 0u64);
+        masks.push(component_masks);
+    }
+    Ok((masks, live_bytes))
+}
+
 pub(super) fn checked_phase_capacity(
     initial: usize,
     additional: usize,

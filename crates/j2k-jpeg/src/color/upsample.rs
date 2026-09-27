@@ -179,10 +179,55 @@ pub(crate) fn upsample_h2v2_fancy_row(
 /// vertical weighting, then run the 3:1 horizontal blend and emit one
 /// upsampled luma row. `near` = chroma row above (for the top output) or
 /// below (for the bottom output) the current chroma row.
+///
+/// Equal to [`h2v2_fancy_sample_with_len`] at every visible column, but one
+/// pass over column-sum pairs: each pair of chroma samples `(a, b)` yields the
+/// odd output right of `a` and the even output left of `b`.
 fn emit_h2v2_row(near: &[u8], curr: &[u8], output_width: usize, out: &mut [u8]) {
+    emit_h2v2_row_with(near, curr, output_width, out, |_, _, _| 0);
+}
+
+/// [`emit_h2v2_row`] whose interior pairs may start with a SIMD prefix:
+/// `vector_pairs(curr, near, interior)` fills a leading run of pairs with
+/// the same arithmetic and returns its length.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "libjpeg-compatible weighted sums are shifted back into the u8 chroma range"
+)]
+pub(crate) fn emit_h2v2_row_with(
+    near: &[u8],
+    curr: &[u8],
+    output_width: usize,
+    out: &mut [u8],
+    vector_pairs: impl FnOnce(&[u8], &[u8], &mut [u8]) -> usize,
+) {
     let n = curr.len();
-    for (x, slot) in out.iter_mut().enumerate().take(output_width) {
-        *slot = h2v2_fancy_sample_with_len(near, curr, n, n * 2, x);
+    let visible_width = output_width.min(out.len());
+    let visible = &mut out[..visible_width];
+    if n <= 1 || visible.is_empty() {
+        for (x, slot) in visible.iter_mut().enumerate() {
+            *slot = h2v2_fancy_sample_with_len(near, curr, n, n * 2, x);
+        }
+        return;
+    }
+    let colsum = |i: usize| 3 * u16::from(curr[i]) + u16::from(near[i]);
+    visible[0] = ((4 * colsum(0) + 8) >> 4) as u8;
+    // Interior pairs, as an indexed loop over pre-sized slices so the
+    // compiler drops the bounds checks and vectorizes the interleaved stores.
+    let pairs = (visible_width - 1) / 2;
+    let (curr_band, near_band) = (&curr[..=pairs], &near[..=pairs]);
+    let interior = &mut visible[1..=2 * pairs];
+    let done = vector_pairs(curr_band, near_band, interior).min(pairs);
+    for i in done..pairs {
+        let left = 3 * u16::from(curr_band[i]) + u16::from(near_band[i]);
+        let right = 3 * u16::from(curr_band[i + 1]) + u16::from(near_band[i + 1]);
+        interior[2 * i] = ((3 * left + right + 7) >> 4) as u8;
+        interior[2 * i + 1] = ((3 * right + left + 8) >> 4) as u8;
+    }
+    if visible_width.is_multiple_of(2) {
+        // The last odd column of a full row, or an odd visible width.
+        visible[visible_width - 1] =
+            h2v2_fancy_sample_with_len(near, curr, n, n * 2, visible_width - 1);
     }
 }
 
