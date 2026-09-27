@@ -2190,6 +2190,7 @@ pub fn j2k_jpeg_metal::choose_viewport_surface_strategy(&j2k_jpeg_metal::Viewpor
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_batch_from_metal_buffers(&[j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::is_contiguous_viewport_workload(&j2k_jpeg_metal::ViewportWorkload) -> bool
+pub fn j2k_jpeg_metal::release_default_session_buffers() -> core::result::Result<(), j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::suggest_viewport_workload((u32, u32)) -> core::option::Option<j2k_jpeg_metal::ViewportWorkload>
 pub fn j2k_jpeg_metal::viewport_source_bounds(&j2k_jpeg_metal::ViewportWorkload) -> j2k_core::types::Rect
 pub j2k_jpeg_metal::Error::BatchInfrastructure(j2k_core::batch::BatchInfrastructureError)

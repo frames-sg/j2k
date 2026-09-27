@@ -10,6 +10,8 @@ evidence.
 
 ## Release status
 
+Version `0.11.2` is the next candidate. Its [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md) compares directly with published `v0.11.1`: ordinary stable APIs are additive, and the five new hidden native adapters preserve the existing decoder contracts. The dated changelog records the source freeze; publication still requires all exact-candidate gates below.
+
 | Version | Distribution state | Security support |
 | --- | --- | --- |
 | `0.11.1` | Published on [crates.io](https://crates.io/crates/j2k/0.11.1) from tag `v0.11.1`; dated notes are in the [changelog](../CHANGELOG.md). | Security-supported. |

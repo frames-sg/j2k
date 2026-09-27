@@ -83,21 +83,21 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "j2k-types",
 ]
 
 [[package]]
 name = "j2k-core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "fearless_simd",
  "j2k-codec-math",
@@ -118,11 +118,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.11.1"
+version = "0.11.2"
 
 [[package]]
 name = "j2k-types"
-version = "0.11.1"
+version = "0.11.2"
 
 [[package]]
 name = "jobserver"
