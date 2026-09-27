@@ -12,7 +12,7 @@ use super::row_pair::{normalize_simd_row_pair, normalize_ycbcr_row};
 use super::{scalar, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
 use crate::color::upsample::h2v2_fancy_sample_for_width;
 use crate::color::ycbcr::{ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200};
-use crate::simd::neon_memory;
+use crate::simd::neon_memory::{self, load_head_window, load_tail_window};
 
 pub(crate) fn fill_rgb_row_from_gray(neon: fearless_simd::Neon, gray_row: &[u8], dst: &mut [u8]) {
     let width = gray_row.len().min(dst.len() / 3);
@@ -1193,52 +1193,6 @@ fn fill_rgb_row_pair_from_420_tail_neon_top_only(
 }
 
 const TAIL_WINDOW: usize = LANES + 2;
-
-fn load_tail_window(src: &[u8], start: usize, len: usize) -> [u8; UPSAMPLED_LANES] {
-    debug_assert!(start < src.len());
-    debug_assert!(len > 0);
-    debug_assert!(len <= UPSAMPLED_LANES);
-    let mut out = [0u8; UPSAMPLED_LANES];
-    let available = src.len() - start;
-    let copy_len = available.min(len);
-    out[..copy_len].copy_from_slice(&src[start..start + copy_len]);
-    if copy_len < len {
-        let pad = out[copy_len - 1];
-        for value in &mut out[copy_len..len] {
-            *value = pad;
-        }
-    }
-    if len < UPSAMPLED_LANES {
-        let pad = out[len - 1];
-        for value in &mut out[len..UPSAMPLED_LANES] {
-            *value = pad;
-        }
-    }
-    out
-}
-
-fn load_head_window(src: &[u8], len: usize) -> [u8; UPSAMPLED_LANES] {
-    debug_assert!(!src.is_empty());
-    debug_assert!(len > 0);
-    debug_assert!(len <= UPSAMPLED_LANES);
-    let mut out = [0u8; UPSAMPLED_LANES];
-    let copy_len = src.len().min(len);
-    out[0] = src[0];
-    out[1..=copy_len].copy_from_slice(&src[..copy_len]);
-    if copy_len < len {
-        let pad = out[copy_len];
-        for value in &mut out[copy_len + 1..=len] {
-            *value = pad;
-        }
-    }
-    if len + 1 < UPSAMPLED_LANES {
-        let pad = out[len];
-        for value in &mut out[len + 1..UPSAMPLED_LANES] {
-            *value = pad;
-        }
-    }
-    out
-}
 
 fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: usize) -> bool {
     out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width

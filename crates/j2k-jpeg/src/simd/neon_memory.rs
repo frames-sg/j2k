@@ -123,3 +123,49 @@ pub(crate) fn store_rgb8x16(
     // - Initialization: the store initializes all forty-eight output bytes.
     unsafe { vst3q_u8(dst.as_mut_ptr(), uint8x16x3_t(red, green, blue)) };
 }
+
+pub(crate) fn load_tail_window(src: &[u8], start: usize, len: usize) -> [u8; 16] {
+    debug_assert!(start < src.len());
+    debug_assert!(len > 0);
+    debug_assert!(len <= 16);
+    let mut out = [0u8; 16];
+    let available = src.len() - start;
+    let copy_len = available.min(len);
+    out[..copy_len].copy_from_slice(&src[start..start + copy_len]);
+    if copy_len < len {
+        let pad = out[copy_len - 1];
+        for value in &mut out[copy_len..len] {
+            *value = pad;
+        }
+    }
+    if len < 16 {
+        let pad = out[len - 1];
+        for value in &mut out[len..16] {
+            *value = pad;
+        }
+    }
+    out
+}
+
+pub(crate) fn load_head_window(src: &[u8], len: usize) -> [u8; 16] {
+    debug_assert!(!src.is_empty());
+    debug_assert!(len > 0);
+    debug_assert!(len <= 16);
+    let mut out = [0u8; 16];
+    let copy_len = src.len().min(len);
+    out[0] = src[0];
+    out[1..=copy_len].copy_from_slice(&src[..copy_len]);
+    if copy_len < len {
+        let pad = out[copy_len];
+        for value in &mut out[copy_len + 1..=len] {
+            *value = pad;
+        }
+    }
+    if len + 1 < 16 {
+        let pad = out[len];
+        for value in &mut out[len + 1..16] {
+            *value = pad;
+        }
+    }
+    out
+}
