@@ -74,14 +74,15 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
         w: roi.w,
         h: roi.h,
     };
+    let chroma = P::scaled_chroma(packet.dimensions().0, (source_window.w, source_window.h), 0);
     let pack_params = fast_subsampled_windowed_pack_params_for_dims::<P>(
         (source_window.w, source_window.h),
+        chroma,
         fmt,
         local_roi,
     )?;
     let y_len = source_window.w as usize * source_window.h as usize;
-    let chroma_len =
-        source_window.w.div_ceil(2) as usize * P::chroma_height(source_window.h) as usize;
+    let chroma_len = chroma.plane_len();
     let y_plane = if let Some(scratch) = scratch.as_deref_mut() {
         scratch.private_buffer(&runtime.device, "single_decode_y", y_len)?
     } else {
@@ -291,6 +292,11 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
     };
 
     if let Some(out_buffer) = out_buffer.as_ref() {
+        let chroma = P::scaled_chroma(
+            packet.dimensions().0,
+            (params.scaled_width, params.scaled_height),
+            params.scale_shift,
+        );
         let pack_params = JpegFast420Params {
             width: params.scaled_width,
             height: params.scaled_height,
@@ -312,6 +318,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
             })?,
             origin_x: 0,
             origin_y: 0,
+            chroma_mode: chroma.mode,
         };
         let Some(pack_pipeline) = P::pack_pipeline_for_format(runtime, fmt) else {
             return Err(Error::MetalKernel {
@@ -442,14 +449,19 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
         w: scaled_roi.w,
         h: scaled_roi.h,
     };
+    let chroma = P::scaled_chroma(
+        packet.dimensions().0,
+        (source_window.w, source_window.h),
+        decode_params.scale_shift,
+    );
     let pack_params = fast_subsampled_windowed_pack_params_for_dims::<P>(
         (source_window.w, source_window.h),
+        chroma,
         fmt,
         local_roi,
     )?;
     let y_len = source_window.w as usize * source_window.h as usize;
-    let chroma_len =
-        source_window.w.div_ceil(2) as usize * P::chroma_height(source_window.h) as usize;
+    let chroma_len = chroma.plane_len();
     let y_plane = new_decode_plane_buffer(&runtime.device, y_len, false)?;
     let cb_plane = new_private_buffer(&runtime.device, chroma_len)?;
     let cr_plane = new_private_buffer(&runtime.device, chroma_len)?;

@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""Regenerate the libjpeg-turbo DCT-scaling reference matrix.
+
+Run manually (it is also invoked by generate.sh) and commit the output. CI does
+not run it; tests read the committed files.
+
+Every case is encoded with `cjpeg` and decoded with `djpeg -scale 1/N` for
+N = 1, 2, 4, 8 using default (fancy) upsampling and the accurate integer IDCT,
+which is how OpenSlide scale-decodes NDPI/VMS levels. The matrix covers the
+libjpeg-turbo behaviours j2k must reproduce:
+
+- chroma that libjpeg-turbo decodes with a larger reduced IDCT so it needs less
+  or no upsampling (4:2:0, 4:1:0 at 1/2, 1/4, 1/8);
+- box (replicating) upsampling at 1/8, where libjpeg-turbo disables smoothing;
+- box upsampling when a smoothed 2:1 component is at most 2 samples wide;
+- progressive and 12-bit reduced decodes.
+
+Output (in crates/j2k-test-support/fixtures/scaled_matrix/):
+
+- cases.tsv  one line per case: name, layout, coding, precision, width,
+             height, then offset:length of the JPEG and of each reference in
+             data.bin (full, 1/2, 1/4, 1/8).
+- data.bin   the JPEG inputs and headerless references, concatenated. 8-bit
+             references are interleaved RGB or gray bytes; 12-bit references
+             are big-endian 16-bit samples as djpeg writes them.
+
+Requires libjpeg-turbo 3.x `cjpeg` and `djpeg` on PATH.
+"""
+
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.join(
+    HERE, "..", "..", "crates", "j2k-test-support", "fixtures", "scaled_matrix"
+)
+
+# name -> cjpeg -sample argument (luma factors; chroma are 1x1), or None for
+# grayscale.
+LAYOUTS = [
+    ("gray", None),
+    ("444", "1x1"),
+    ("422", "2x1"),
+    ("440", "1x2"),
+    ("420", "2x2"),
+    ("411", "4x1"),
+    ("410", "4x2"),
+    ("1x4", "1x4"),
+]
+
+# 3 and 4 pixel wide images leave 2:1 chroma at most 2 samples wide at full
+# size; 9 does at 1/4; the larger sizes span several MCUs and partial edges.
+SIZES_8BIT = [(3, 3), (4, 4), (9, 9), (18, 14), (45, 31), (67, 45)]
+# Tall narrow images make the component planes dominate the scratch budget,
+# while full-size 2:1 chroma still takes the scaled (replicating) writer.
+SIZES_12BIT = [(4, 4), (9, 9), (45, 31), (4, 64)]
+
+CODINGS_8BIT = [
+    ("baseline", ["-baseline", "-optimize"]),
+    ("restart", ["-baseline", "-optimize", "-restart", "1B"]),
+    ("progressive", ["-progressive"]),
+]
+CODINGS_12BIT = [
+    ("extended", ["-optimize"]),
+    ("progressive", ["-progressive"]),
+]
+
+SCALES = [1, 2, 4, 8]
+
+
+def texture(width, height, precision):
+    """Deterministic integer-only texture with strong chroma detail."""
+    state = 20260927
+    maxval = (1 << precision) - 1
+    shift = precision - 8
+    pixels = []
+    for y in range(height):
+        for x in range(width):
+            rgb = [
+                28 + abs((x * 9 + y * 4) % 144 - 72) * 200 // 72,
+                40 + x * 180 // max(width - 1, 1),
+                200 - y * 150 // max(height - 1, 1) + abs((x + y) * 7 % 64 - 32) - 16,
+            ]
+            if (x + 2 * y) % 5 == 0:
+                rgb = [rgb[2], rgb[0], rgb[1]]
+            if y >= height // 2 and x >= width // 2:
+                state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+                rgb = [value + state % 121 - 60 for value in rgb]
+            # Saturated corner, kept off tiny images so they stay textured.
+            if width >= 9 and y < 3 and x < 3:
+                rgb = [255, 255, 0]
+            rgb = [min(max(value, 0), 255) for value in rgb]
+            if shift:
+                rgb = [(value << shift) | ((x * 5 + y * 3 + i) % (1 << shift)) for i, value in enumerate(rgb)]
+                rgb = [min(value, maxval) for value in rgb]
+            pixels.append(rgb)
+    return pixels
+
+
+def pnm(width, height, precision, gray):
+    maxval = (1 << precision) - 1
+    magic = "P5" if gray else "P6"
+    body = bytearray()
+    for rgb in texture(width, height, precision):
+        samples = [(rgb[0] * 77 + rgb[1] * 150 + rgb[2] * 29) >> 8] if gray else rgb
+        for value in samples:
+            if maxval > 255:
+                body += value.to_bytes(2, "big")
+            else:
+                body.append(value)
+    return f"{magic}\n{width} {height}\n{maxval}\n".encode() + bytes(body)
+
+
+def strip_pnm_header(data):
+    index = 0
+    for _ in range(3):
+        index = data.index(b"\n", index) + 1
+    return data[index:]
+
+
+def run(args, stdin):
+    return subprocess.run(args, input=stdin, capture_output=True, check=True).stdout
+
+
+def main():
+    probe = subprocess.run(["cjpeg", "-version"], capture_output=True, check=False)
+    version = (probe.stderr or probe.stdout).decode().strip().splitlines()[0]
+    if "libjpeg-turbo version 3." not in version:
+        sys.exit(f"error: need libjpeg-turbo 3.x cjpeg/djpeg, found {version!r}")
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    data = bytearray()
+    lines = [
+        f"# Generated by corpus/conformance/scaled_matrix.py with {version}",
+        "# name\tlayout\tcoding\tprecision\twidth\theight\tjpeg\tscale1\tscale2\tscale4\tscale8",
+    ]
+
+    def append(blob):
+        start = len(data)
+        data.extend(blob)
+        return f"{start}:{len(blob)}"
+
+    matrix = [(8, SIZES_8BIT, CODINGS_8BIT), (12, SIZES_12BIT, CODINGS_12BIT)]
+    for precision, sizes, codings in matrix:
+        for layout, sample in LAYOUTS:
+            gray = sample is None
+            for width, height in sizes:
+                for coding, coding_args in codings:
+                    args = ["cjpeg", "-quality", "90", "-precision", str(precision)]
+                    args += ["-grayscale"] if gray else ["-sample", f"{sample},1x1,1x1"]
+                    jpeg = run(args + coding_args, pnm(width, height, precision, gray))
+                    refs = []
+                    for denom in SCALES:
+                        out = ["djpeg", "-dct", "int", "-scale", f"1/{denom}"]
+                        out += ["-grayscale"] if gray else ["-rgb"]
+                        ref = strip_pnm_header(run(out, jpeg))
+                        channels = 1 if gray else 3
+                        bytes_per_sample = 2 if precision > 8 else 1
+                        expected = (
+                            -(-width // denom) * -(-height // denom) * channels * bytes_per_sample
+                        )
+                        if len(ref) != expected:
+                            sys.exit(f"error: {layout} {width}x{height} {coding} 1/{denom}: {len(ref)} != {expected}")
+                        refs.append(append(ref))
+                    name = f"{layout}_{width}x{height}_{coding}_{precision}bit"
+                    lines.append(
+                        "\t".join(
+                            [name, layout, coding, str(precision), str(width), str(height), append(jpeg)]
+                            + refs
+                        )
+                    )
+
+    with open(os.path.join(OUT_DIR, "data.bin"), "wb") as handle:
+        handle.write(data)
+    with open(os.path.join(OUT_DIR, "cases.tsv"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(f"wrote {len(lines) - 2} cases, {len(data)} bytes")
+
+
+if __name__ == "__main__":
+    main()

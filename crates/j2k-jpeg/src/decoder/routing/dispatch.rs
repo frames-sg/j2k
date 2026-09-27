@@ -3,10 +3,9 @@
 //! Output-format dispatch after routing has validated geometry and scratch.
 
 use super::super::{
-    decode_scan_fast_tile_rgb_region, decode_scan_fast_tile_rgb_region_scaled,
-    fast_tile_region_first_decode_mcu, merged_warnings, CroppedWriter, DecodeOutcome, Decoder,
-    DownscaleFactor, FastTileRegionScaledRequest, Gray8Writer, JpegError, OutputFormat, Rect,
-    Rgb8Writer, Rgba8Writer, ScratchPool, SofKind,
+    decode_scan_fast_tile_rgb_region, fast_tile_region_first_decode_mcu, merged_warnings,
+    CroppedWriter, DecodeOutcome, Decoder, DownscaleFactor, Gray8Writer, JpegError, OutputFormat,
+    Rect, Rgb8Writer, Rgba8Writer, ScratchPool, SofKind,
 };
 use crate::allocation::checked_add_allocation_bytes;
 
@@ -256,34 +255,8 @@ impl Decoder<'_> {
                 warnings: merged_warnings(&self.warnings, scan_warnings)?,
             });
         }
-        if matches!(fmt, OutputFormat::Rgb8Scaled { .. })
-            && self.progressive_plan.is_none()
-            && self.plan.matches_fast_tile_shape()
-        {
-            let mut writer = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
-            let scan_bytes = &self.bytes[self.plan.scan_offset..];
-            let checkpoint = self.checkpoint_for_mcu(
-                scan_bytes,
-                fast_tile_region_first_decode_mcu(&self.plan, output_rect, downscale),
-                checked_add_allocation_bytes(external_live_bytes, pool.retained_bytes())?,
-            )?;
-            let scan_warnings = decode_scan_fast_tile_rgb_region_scaled(
-                &self.plan,
-                self.backend,
-                scan_bytes,
-                pool,
-                &mut writer,
-                FastTileRegionScaledRequest {
-                    roi: output_rect,
-                    downscale,
-                    checkpoint: checkpoint.as_ref(),
-                },
-            )?;
-            return Ok(DecodeOutcome {
-                decoded: output_rect,
-                warnings: merged_warnings(&self.warnings, scan_warnings)?,
-            });
-        }
+        // Scaled 4:2:0 takes the generic route: libjpeg-turbo decodes its
+        // chroma with a larger reduced IDCT, so no 4:2:0 upsampling remains.
         let base = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
         let (source_x0, source_width) = self.source_window_for_output_rect(downscale, output_rect);
         let mut writer = CroppedWriter::new(base, output_rect, source_x0, source_width)?;

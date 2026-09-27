@@ -10,7 +10,7 @@ use super::{
     decode_scan_fast_rgb_444, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
     jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions, scaled_rect_covering,
     stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, Instant,
-    InterleavedRgbWriter, JpegError, OutputWriter, ProgressiveDownscaleWriter, Rect, ScratchPool,
+    InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
     CPU_ROI_CHECKPOINT_CADENCE_MCUS, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
@@ -143,26 +143,16 @@ impl Decoder<'_> {
         if let Some(plan) = &self.progressive_plan {
             let scan_start = profile_enabled.then(Instant::now);
             let detached_sink_bytes = pool.detached_sink_bytes();
-            let scan_warnings = if downscale == DownscaleFactor::Full {
-                let external_live_bytes =
-                    checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
-                decode_progressive(plan, self.backend, self.bytes, writer, external_live_bytes)?
-            } else {
-                let mut scaled =
-                    ProgressiveDownscaleWriter::new(writer, downscale, self.info.dimensions)?;
-                let external_live_bytes = checked_live_workspace_bytes(
-                    detached_sink_bytes,
-                    scaled.capacity_bytes()?,
-                    plan.scratch_bytes,
-                )?;
-                decode_progressive(
-                    plan,
-                    self.backend,
-                    self.bytes,
-                    &mut scaled,
-                    external_live_bytes,
-                )?
-            };
+            let external_live_bytes =
+                checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
+            let scan_warnings = decode_progressive(
+                plan,
+                self.backend,
+                self.bytes,
+                writer,
+                external_live_bytes,
+                downscale,
+            )?;
             if let Some(start) = scan_start {
                 emit_decode_scan_profile(
                     "progressive",
@@ -216,26 +206,16 @@ impl Decoder<'_> {
         if let Some(plan) = &self.progressive_plan {
             let scan_start = profile_enabled.then(Instant::now);
             let detached_sink_bytes = pool.detached_sink_bytes();
-            let scan_warnings = if downscale == DownscaleFactor::Full {
-                let external_live_bytes =
-                    checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
-                decode_progressive(plan, self.backend, self.bytes, writer, external_live_bytes)?
-            } else {
-                let mut scaled =
-                    ProgressiveDownscaleWriter::new(writer, downscale, self.info.dimensions)?;
-                let external_live_bytes = checked_live_workspace_bytes(
-                    detached_sink_bytes,
-                    scaled.capacity_bytes()?,
-                    plan.scratch_bytes,
-                )?;
-                decode_progressive(
-                    plan,
-                    self.backend,
-                    self.bytes,
-                    &mut scaled,
-                    external_live_bytes,
-                )?
-            };
+            let external_live_bytes =
+                checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
+            let scan_warnings = decode_progressive(
+                plan,
+                self.backend,
+                self.bytes,
+                writer,
+                external_live_bytes,
+                downscale,
+            )?;
             if let Some(start) = scan_start {
                 emit_decode_scan_profile(
                     "progressive_rgb",

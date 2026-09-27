@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables};
 use crate::info::{ColorSpace, SamplingFactors};
 use crate::output::Rgb8Writer;
@@ -422,13 +423,19 @@ fn emit_final_420_stripe(
     let block = downscale.output_block_size() as usize;
     let (scaled_width, scaled_height) = scaled_dimensions((13, height), downscale);
     let width = scaled_width as usize;
-    let real_chroma_rows = (scaled_height as usize - 2 * block).div_ceil(2);
-    let prev = synthetic_420_stripe(block, 5, None);
-    let curr = synthetic_420_stripe(block, 40, Some((real_chroma_rows, padding)));
+    let sampling = SamplingFactors::from_validated_components(&[(2, 2), (1, 1), (1, 1)]);
+    // Below full size the chroma is decoded at luma resolution (libjpeg-turbo
+    // enlarges its IDCT), so its planes match the luma plane.
+    let scaled = ScaledSampling::new(sampling, downscale, (13, height));
+    let chroma = scaled.component(1);
+    let chroma_block = chroma.idct_size as usize;
+    let real_chroma_rows = (scaled_height as usize - 2 * block).div_ceil(chroma.v_ratio as usize);
+    let prev = synthetic_420_stripe(block, chroma_block, 5, None);
+    let curr = synthetic_420_stripe(block, chroma_block, 40, Some((real_chroma_rows, padding)));
     let plan = PreparedDecodePlan {
         components: vec![],
         huffman_tables: PreparedHuffmanTables::try_with_capacity(0).expect("empty test arena"),
-        sampling: SamplingFactors::from_validated_components(&[(2, 2), (1, 1), (1, 1)]),
+        sampling,
         color_space,
         restart_interval: None,
         dimensions: (13, height),
@@ -447,6 +454,11 @@ fn emit_final_420_stripe(
         cr_top: vec![0; width],
         cr_bot: vec![0; width],
     };
+    let mut ycbcr_rows = crate::internal::scratch::YCbCrGenericRows {
+        cb_up: vec![0; width],
+        cr_up: vec![0; width],
+    };
+    let fancy_420 = scaled.is_fancy_420();
     let mut out = vec![0u8; width * scaled_height as usize * 3];
     let mut writer = Rgb8Writer::new(&mut out, width * 3, scaled_width);
     let emit = super::emit::StripeEmit {
@@ -456,13 +468,21 @@ fn emit_final_420_stripe(
         stripe_index: 1,
         source_width: width,
         downscale,
+        scaled: &scaled,
     };
     let result = match (rgb_emitter, color_space) {
-        (true, ColorSpace::YCbCr) => super::emit::emit_stripe_rgb(
+        (true, ColorSpace::YCbCr) if fancy_420 => super::emit::emit_stripe_rgb(
             &plan,
             Backend::detect(),
             &mut writer,
             &mut RgbOutputScratch::YCbCr420,
+            emit,
+        ),
+        (true, ColorSpace::YCbCr) => super::emit::emit_stripe_rgb(
+            &plan,
+            Backend::detect(),
+            &mut writer,
+            &mut RgbOutputScratch::YCbCrGeneric(&mut ycbcr_rows),
             emit,
         ),
         (true, _) => super::emit::emit_stripe_rgb(
@@ -472,10 +492,16 @@ fn emit_final_420_stripe(
             &mut RgbOutputScratch::RgbGeneric(&mut rgb_rows),
             emit,
         ),
-        (false, ColorSpace::YCbCr) => super::emit::emit_stripe(
+        (false, ColorSpace::YCbCr) if fancy_420 => super::emit::emit_stripe(
             &plan,
             &mut writer,
             &mut OutputScratch::YCbCr420(&mut ycbcr420_rows),
+            emit,
+        ),
+        (false, ColorSpace::YCbCr) => super::emit::emit_stripe(
+            &plan,
+            &mut writer,
+            &mut OutputScratch::YCbCrGeneric(&mut ycbcr_rows),
             emit,
         ),
         (false, _) => super::emit::emit_stripe(
@@ -489,16 +515,18 @@ fn emit_final_420_stripe(
     out.split_off(width * 2 * block * 3)
 }
 
-/// One-MCU-wide 4:2:0 stripe of patterned samples. With
-/// `Some((real_rows, padding))`, chroma rows from `real_rows` on hold
-/// `padding`, or repeat the last real row when `padding` is `None`.
+/// One-MCU-wide 4:2:0 stripe of patterned samples, with chroma decoded at
+/// `chroma_block` samples per block. With `Some((real_rows, padding))`, chroma
+/// rows from `real_rows` on hold `padding`, or repeat the last real row when
+/// `padding` is `None`.
 fn synthetic_420_stripe(
     block: usize,
+    chroma_block: usize,
     seed: usize,
     chroma_padding: Option<(usize, Option<u8>)>,
 ) -> StripeBuffer {
-    let strides = [2 * block, block, block];
-    let rows = [2 * block, block, block];
+    let strides = [2 * block, chroma_block, chroma_block];
+    let rows = [2 * block, chroma_block, chroma_block];
     let planes = (0..3)
         .map(|index| {
             (0..strides[index] * rows[index])

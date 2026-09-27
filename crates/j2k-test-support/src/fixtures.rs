@@ -22,6 +22,24 @@ pub const JPEG_BASELINE_420_RESTART_32X16: &[u8] =
 pub const JPEG_BASELINE_420_RESTART_32X16_RGB: &[u8] =
     include_bytes!("../fixtures/conformance/baseline_420_restart_32x16.rgb");
 
+/// Synthetic 67x45 4:4:4 baseline JPEG with a 3-MCU restart interval, the
+/// sampling and restart layout of Hamamatsu NDPI/VMS pyramids. The content mixes
+/// gradients, flat patches (DC-only blocks), noise, and a saturated corner.
+///
+/// `corpus/conformance/generate.sh` encodes it with libjpeg-turbo 3.1.4.1
+/// `cjpeg -quality 90 -sample 1x1,1x1,1x1 -baseline -optimize -restart 3B`. The
+/// `_HALF`, `_QUARTER`, and `_EIGHTH` references are `djpeg -rgb -scale 1/N`
+/// output from the same build (the reduced IDCTs `OpenSlide` uses for scaled
+/// levels), with the PPM header stripped.
+pub const JPEG_BASELINE_444_RESTART_67X45: &[u8] =
+    include_bytes!("../fixtures/conformance/baseline_444_restart_67x45.jpg");
+pub const JPEG_BASELINE_444_RESTART_67X45_HALF_RGB: &[u8] =
+    include_bytes!("../fixtures/conformance/baseline_444_restart_67x45_half.rgb");
+pub const JPEG_BASELINE_444_RESTART_67X45_QUARTER_RGB: &[u8] =
+    include_bytes!("../fixtures/conformance/baseline_444_restart_67x45_quarter.rgb");
+pub const JPEG_BASELINE_444_RESTART_67X45_EIGHTH_RGB: &[u8] =
+    include_bytes!("../fixtures/conformance/baseline_444_restart_67x45_eighth.rgb");
+
 /// `OpenJPEG` 2.5.4 irreversible 8x8 RGB codestream used for adapter parity tests.
 ///
 /// The source pixels are the deterministic `patterned_rgb8` formula. `OpenJPEG`

@@ -2,13 +2,7 @@
 
 use super::{ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
-use crate::entropy::block::{
-    decode_block_for_1x1_idct, decode_block_for_reduced_idct, BlockActivity, CoefficientBlock,
-    ReducedIdctCoefficients,
-};
-use crate::error::JpegError;
-use crate::idct::downscale;
-use crate::info::DownscaleFactor;
+use crate::entropy::block::{BlockActivity, CoefficientBlock};
 use crate::internal::bit_reader::BitReader;
 use core::ptr;
 
@@ -132,17 +126,6 @@ pub(super) fn deposit_block_1x1(plane: &mut [u8], stride: usize, x: u32, y: u32,
     plane[dst] = pixel;
 }
 
-pub(super) struct EntropyBlockState<'a, 'b> {
-    pub(super) br: &'a mut BitReader<'b>,
-    pub(super) prev_dc: &'a mut i32,
-    pub(super) coeff: &'a mut CoefficientBlock,
-}
-
-pub(super) struct ReducedIdctScratch<'a> {
-    pub(super) pixels_4x4: &'a mut [u8; 16],
-    pub(super) pixels_2x2: &'a mut [u8; 4],
-}
-
 pub(super) struct PlaneBlockTarget<'a> {
     pub(super) plane: &'a mut [u8],
     pub(super) stride: usize,
@@ -244,130 +227,4 @@ impl FastTile420Window {
     pub(super) fn local_mcu_x(self, mx: u32) -> u32 {
         mx - self.stripe_mcu_start
     }
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "entropy state, scratch, and plane target are compact borrowing descriptors consumed as one hot-path operation"
-)]
-pub(super) fn decode_scaled_block_to_plane(
-    comp: ResolvedPreparedComponentPlan<'_>,
-    downscale: DownscaleFactor,
-    state: EntropyBlockState<'_, '_>,
-    scratch: ReducedIdctScratch<'_>,
-    target: PlaneBlockTarget<'_>,
-) -> Result<(), JpegError> {
-    let keep = match downscale {
-        DownscaleFactor::Full => unreachable!("scaled block path excludes full-size decode"),
-        DownscaleFactor::Half => ReducedIdctCoefficients::Half,
-        DownscaleFactor::Quarter => ReducedIdctCoefficients::Quarter,
-        DownscaleFactor::Eighth => {
-            decode_block_for_1x1_idct(
-                state.br,
-                comp.dc_table,
-                comp.ac_table,
-                state.prev_dc,
-                comp.quant,
-                state.coeff,
-            )?;
-            let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());
-            deposit_block_1x1(target.plane, target.stride, target.x, target.y, pixel);
-            return Ok(());
-        }
-    };
-    let dc_only = decode_block_for_reduced_idct(
-        state.br,
-        comp.dc_table,
-        comp.ac_table,
-        state.prev_dc,
-        comp.quant,
-        state.coeff,
-        keep,
-    )?;
-    match downscale {
-        DownscaleFactor::Full => unreachable!("scaled block path excludes full-size decode"),
-        DownscaleFactor::Half => {
-            if dc_only {
-                downscale::idct_islow_4x4_dc_only(state.coeff.dc_coeff(), scratch.pixels_4x4);
-            } else {
-                downscale::idct_islow_4x4(state.coeff.coefficients(), scratch.pixels_4x4);
-            }
-            deposit_block_4x4(
-                target.plane,
-                target.stride,
-                target.x,
-                target.y,
-                scratch.pixels_4x4,
-            );
-        }
-        DownscaleFactor::Quarter => {
-            if dc_only {
-                downscale::idct_islow_2x2_dc_only(state.coeff.dc_coeff(), scratch.pixels_2x2);
-            } else {
-                downscale::idct_islow_2x2(state.coeff.coefficients(), scratch.pixels_2x2);
-            }
-            deposit_block_2x2(
-                target.plane,
-                target.stride,
-                target.x,
-                target.y,
-                *scratch.pixels_2x2,
-            );
-        }
-        DownscaleFactor::Eighth => {
-            let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());
-            deposit_block_1x1(target.plane, target.stride, target.x, target.y, pixel);
-        }
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
-)]
-pub(super) fn decode_quarter_block_to_plane(
-    comp: ResolvedPreparedComponentPlan<'_>,
-    pixels_2x2: &mut [u8; 4],
-    state: EntropyBlockState<'_, '_>,
-    target: PlaneBlockTarget<'_>,
-) -> Result<(), JpegError> {
-    let dc_only = decode_block_for_reduced_idct(
-        state.br,
-        comp.dc_table,
-        comp.ac_table,
-        state.prev_dc,
-        comp.quant,
-        state.coeff,
-        ReducedIdctCoefficients::Quarter,
-    )?;
-    if dc_only {
-        downscale::idct_islow_2x2_dc_only(state.coeff.dc_coeff(), pixels_2x2);
-    } else {
-        downscale::idct_islow_2x2(state.coeff.coefficients(), pixels_2x2);
-    }
-    deposit_block_2x2(target.plane, target.stride, target.x, target.y, *pixels_2x2);
-    Ok(())
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
-)]
-pub(super) fn decode_eighth_block_to_plane(
-    comp: ResolvedPreparedComponentPlan<'_>,
-    state: EntropyBlockState<'_, '_>,
-    target: PlaneBlockTarget<'_>,
-) -> Result<(), JpegError> {
-    decode_block_for_1x1_idct(
-        state.br,
-        comp.dc_table,
-        comp.ac_table,
-        state.prev_dc,
-        comp.quant,
-        state.coeff,
-    )?;
-    let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());
-    deposit_block_1x1(target.plane, target.stride, target.x, target.y, pixel);
-    Ok(())
 }

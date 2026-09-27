@@ -19,6 +19,7 @@ use crate::allocation::{
 };
 use crate::entropy::sequential::{PreparedDecodePlan, StripeBuffer, StripeLayout};
 use crate::error::JpegError;
+use crate::info::SamplingFactors;
 use alloc::vec::Vec;
 use j2k_core::ScratchPool as CoreScratchPool;
 
@@ -79,12 +80,13 @@ struct SequentialScratchLayout {
 impl SequentialScratchLayout {
     fn for_plan(
         plan: &PreparedDecodePlan,
+        sampling: SamplingFactors,
         mcus_per_row: u32,
         block_size: u32,
     ) -> Result<Self, JpegError> {
         Ok(Self {
-            stripe: StripeLayout::for_plan(plan, mcus_per_row, block_size)?,
-            component_count: plan.sampling.len(),
+            stripe: StripeLayout::for_sampling(sampling, mcus_per_row, block_size)?,
+            component_count: sampling.len(),
             row_width: plan.dimensions.0.div_ceil(8 / block_size.max(1)) as usize,
         })
     }
@@ -117,15 +119,18 @@ impl ScratchPool {
     }
 
     /// Grow every internal scratch buffer to the shape required by `plan`
-    /// and zero the predictor so each decode starts clean.
+    /// and zero the predictor so each decode starts clean. `sampling` sizes
+    /// the component planes: the coded factors, or the effective factors of a
+    /// DCT-scaled decode (see `ScaledSampling`).
     pub(crate) fn prepare_for(
         &mut self,
         plan: &PreparedDecodePlan,
+        sampling: SamplingFactors,
         mcus_per_row: u32,
         block_size: u32,
         max_bytes: usize,
     ) -> Result<(), JpegError> {
-        let layout = SequentialScratchLayout::for_plan(plan, mcus_per_row, block_size)?;
+        let layout = SequentialScratchLayout::for_plan(plan, sampling, mcus_per_row, block_size)?;
         let target_bytes = layout.minimum_bytes(self.detached_sink_bytes)?;
         ensure_request_bytes(target_bytes, max_bytes)?;
         if self.retained_bytes() > target_bytes

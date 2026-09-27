@@ -18,6 +18,7 @@ mod manifest;
 mod metal;
 mod metal_shader;
 mod pixels;
+mod scaled_matrix;
 
 pub use auto_routing::{
     append_auto_routing_output, auto_routing_operation_label, auto_routing_route_cell,
@@ -45,6 +46,8 @@ pub use fixtures::{
     OpenJphBatchFixture, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
     JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8,
     JPEG_BASELINE_422_16X8_RGB, JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB,
+    JPEG_BASELINE_444_RESTART_67X45, JPEG_BASELINE_444_RESTART_67X45_EIGHTH_RGB,
+    JPEG_BASELINE_444_RESTART_67X45_HALF_RGB, JPEG_BASELINE_444_RESTART_67X45_QUARTER_RGB,
     JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY, OPENJPEG_IRREVERSIBLE_RGB8_8X8,
 };
 #[cfg(feature = "j2k-native-fixtures")]
@@ -72,6 +75,7 @@ pub use pixels::{
     project_scaled_interleaved_u8, rgb16le_to_rgba16le, rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8,
     scaled_rect_covering, u16_samples_to_le_bytes, PixelRect,
 };
+pub use scaled_matrix::{scaled_matrix_cases, ScaledMatrixCase, SCALED_MATRIX_DENOMINATORS};
 
 /// Generates deterministic RGB8 pixels for tests and benches.
 pub fn patterned_rgb8(width: u32, height: u32) -> Vec<u8> {

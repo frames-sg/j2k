@@ -43,6 +43,24 @@ fn auto_region_scaled_surface_matches_host_decode() {
 }
 
 #[test]
+fn auto_scaled_surface_has_scaled_dimensions_and_matches_host_decode() {
+    let scale = Downscale::Quarter;
+    let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let surface = decoder
+        .decode_scaled_to_device(PixelFormat::Rgb8, scale, BackendRequest::Auto)
+        .expect("surface");
+    assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cpu);
+    // The 16x16 fixture at 1/4 is 4x4, not the source size.
+    assert_eq!(surface.dimensions(), (4, 4));
+
+    let (host, _) = j2k_jpeg::Decoder::new(BASELINE_420)
+        .expect("host decoder")
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
+        .expect("host decode");
+    assert_eq!(surface.as_host_bytes(), Some(host.as_slice()));
+}
+
+#[test]
 fn tile_batch_region_scaled_auto_surface_matches_host_decode() {
     let roi = Rect {
         x: 4,

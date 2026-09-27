@@ -10,6 +10,7 @@ use super::super::layout::{component_block_intersects_rect, ComponentBlockPositi
 use super::super::restart::{consume_restart_marker_if_due, McuPosition};
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use crate::backend::Backend;
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::block::{
     decode_block_with_activity, skip_block, BlockActivity, CoefficientBlock,
 };
@@ -22,6 +23,9 @@ pub(super) struct McuRowContext<'a> {
     pub(super) plan: &'a PreparedDecodePlan,
     pub(super) backend: Backend,
     pub(super) downscale: DownscaleFactor,
+    /// Per-component IDCT sizes; planes are laid out for its effective
+    /// sampling.
+    pub(super) scaled: &'a ScaledSampling,
     pub(super) output_rect: Rect,
     pub(super) full_output_rect: bool,
     pub(super) stripe_mcu_start: u32,
@@ -89,7 +93,6 @@ fn decode_mcu_row_local(
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
     let stripe_mcu_end = context.stripe_mcu_start + context.stripe_mcus_per_row;
-    let block_size = context.downscale.output_block_size();
     for comp in &context.plan.components {
         assert_stripe_deposit_capacity(
             stripe,
@@ -97,7 +100,7 @@ fn decode_mcu_row_local(
             u32::from(comp.h),
             u32::from(comp.v),
             context.stripe_mcus_per_row,
-            block_size,
+            context.scaled.component(comp.output_index).idct_size,
         );
     }
     let mut pixels_4x4 = [0u8; 16];
@@ -133,6 +136,9 @@ fn decode_mcu_row_local(
             let dc_table = tables.dc_table;
             let ac_table = tables.ac_table;
             let in_region = mx >= context.stripe_mcu_start && mx < stripe_mcu_end;
+            // libjpeg-turbo may decode a subsampled component with a larger
+            // reduced IDCT than the scale's own block size.
+            let block_size = context.scaled.component(plane_idx).idct_size;
             let local_mcu_x0_px =
                 mx.saturating_sub(context.stripe_mcu_start) * u32::from(comp.h) * block_size;
             for vy in 0..u32::from(comp.v) {
@@ -166,84 +172,51 @@ fn decode_mcu_row_local(
                     )?;
                     let block_x = local_mcu_x0_px + vx * block_size;
                     let block_y = vy * block_size;
-                    match context.downscale {
-                        DownscaleFactor::Full => {
-                            match activity {
-                                BlockActivity::DcOnly => {
-                                    crate::idct::idct_islow_dc_only(
-                                        state.coeff.dc_coeff(),
-                                        state.pixels,
-                                    );
-                                }
-                                BlockActivity::BottomHalfZero => {
-                                    context.backend.idct_bottom_half_zero(
-                                        state.coeff.coefficients(),
-                                        state.pixels,
-                                    );
-                                }
-                                BlockActivity::General => {
-                                    context
-                                        .backend
-                                        .idct(state.coeff.coefficients(), state.pixels);
-                                }
-                            }
-                            deposit_block(
-                                &mut stripe.planes[plane_idx],
-                                stripe.plane_strides[plane_idx],
-                                block_x,
-                                block_y,
-                                state.pixels,
-                            );
+                    let plane = &mut stripe.planes[plane_idx];
+                    let stride = stripe.plane_strides[plane_idx];
+                    match (block_size, activity) {
+                        (8, BlockActivity::DcOnly) => {
+                            crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
                         }
-                        DownscaleFactor::Half => {
-                            if activity == BlockActivity::DcOnly {
-                                downscale::idct_islow_4x4_dc_only(
-                                    state.coeff.dc_coeff(),
-                                    &mut pixels_4x4,
-                                );
-                            } else {
-                                downscale::idct_islow_4x4(
-                                    state.coeff.coefficients(),
-                                    &mut pixels_4x4,
-                                );
-                            }
-                            deposit_block_4x4(
-                                &mut stripe.planes[plane_idx],
-                                stripe.plane_strides[plane_idx],
-                                block_x,
-                                block_y,
-                                &pixels_4x4,
-                            );
+                        (8, BlockActivity::BottomHalfZero) => {
+                            context
+                                .backend
+                                .idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
                         }
-                        DownscaleFactor::Quarter => {
-                            if activity == BlockActivity::DcOnly {
-                                downscale::idct_islow_2x2_dc_only(
-                                    state.coeff.dc_coeff(),
-                                    &mut pixels_2x2,
-                                );
-                            } else {
-                                downscale::idct_islow_2x2(
-                                    state.coeff.coefficients(),
-                                    &mut pixels_2x2,
-                                );
-                            }
-                            deposit_block_2x2(
-                                &mut stripe.planes[plane_idx],
-                                stripe.plane_strides[plane_idx],
-                                block_x,
-                                block_y,
-                                pixels_2x2,
-                            );
+                        (8, BlockActivity::General) => {
+                            context
+                                .backend
+                                .idct(state.coeff.coefficients(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
                         }
-                        DownscaleFactor::Eighth => {
+                        (4, BlockActivity::DcOnly) => {
+                            downscale::idct_islow_4x4_dc_only(
+                                state.coeff.dc_coeff(),
+                                &mut pixels_4x4,
+                            );
+                            deposit_block_4x4(plane, stride, block_x, block_y, &pixels_4x4);
+                        }
+                        (4, _) => {
+                            downscale::idct_islow_4x4(state.coeff.coefficients(), &mut pixels_4x4);
+                            deposit_block_4x4(plane, stride, block_x, block_y, &pixels_4x4);
+                        }
+                        (2, BlockActivity::DcOnly) => {
+                            downscale::idct_islow_2x2_dc_only(
+                                state.coeff.dc_coeff(),
+                                &mut pixels_2x2,
+                            );
+                            deposit_block_2x2(plane, stride, block_x, block_y, pixels_2x2);
+                        }
+                        (2, _) => {
+                            downscale::idct_islow_2x2(state.coeff.coefficients(), &mut pixels_2x2);
+                            deposit_block_2x2(plane, stride, block_x, block_y, pixels_2x2);
+                        }
+                        _ => {
+                            debug_assert_eq!(block_size, 1, "IDCT sizes are 8, 4, 2 or 1");
                             let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());
-                            deposit_block_1x1(
-                                &mut stripe.planes[plane_idx],
-                                stripe.plane_strides[plane_idx],
-                                block_x,
-                                block_y,
-                                pixel,
-                            );
+                            deposit_block_1x1(plane, stride, block_x, block_y, pixel);
                         }
                     }
                 }

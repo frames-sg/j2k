@@ -464,11 +464,23 @@ fn full_block_rows(
     let rect = region.output_rect;
     let rows = block_output_span(rect.y, rect.h, 1, height, y0, (y0 + 8).min(height));
     let cols = block_output_span(rect.x, rect.w, 1, width, x0, (x0 + 8).min(width));
-    let (src_col, dst_col, len) = (
-        (cols.start - x0) as usize,
-        (cols.start - rect.x) as usize,
-        cols.len(),
-    );
+    // A block outside the output rectangle has an empty span clamped to the
+    // rectangle's edge, which may lie before the block: emit nothing rather
+    // than derive offsets from it.
+    let rows = if cols.is_empty() {
+        rows.start..rows.start
+    } else {
+        rows
+    };
+    let (src_col, dst_col, len) = if cols.is_empty() {
+        (0, 0, 0)
+    } else {
+        (
+            (cols.start - x0) as usize,
+            (cols.start - rect.x) as usize,
+            cols.len(),
+        )
+    };
     rows.map(move |output_y| {
         (
             (output_y - y0) as usize,

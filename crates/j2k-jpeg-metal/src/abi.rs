@@ -128,6 +128,15 @@ pub(crate) struct JpegBaselineEntropyEncodeBatchJob<'a> {
     pub(crate) entropy_capacity: usize,
 }
 
+/// Pack-kernel chroma modes (`CHROMA_*` in `shaders_shared.metal`), chosen as
+/// libjpeg-turbo chooses its upsampler for the decode scale.
+pub(crate) const CHROMA_FANCY: u32 = 0;
+/// Each chroma sample repeated: smoothing is off at 1/8 scale and for chroma
+/// at most two samples wide.
+pub(crate) const CHROMA_REPLICATE: u32 = 1;
+/// Chroma planes already at output resolution: 4:2:0 decoded below full size.
+pub(crate) const CHROMA_UNSAMPLED: u32 = 2;
+
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -147,6 +156,8 @@ pub(crate) struct JpegFast420Params {
     pub(crate) out_format: u32,
     pub(crate) origin_x: u32,
     pub(crate) origin_y: u32,
+    /// Chroma upsampling mode (`CHROMA_*` in the shaders).
+    pub(crate) chroma_mode: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -216,6 +227,8 @@ pub(crate) struct JpegFast420WindowedPackParams {
     pub(crate) out_stride: u32,
     pub(crate) alpha: u32,
     pub(crate) out_format: u32,
+    /// Chroma upsampling mode (`CHROMA_*` in the shaders).
+    pub(crate) chroma_mode: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -312,6 +325,8 @@ pub(crate) struct JpegWindowedPackBatchParams {
     pub(crate) alpha: u32,
     pub(crate) mode: u32,
     pub(crate) out_format: u32,
+    /// Chroma upsampling mode (`CHROMA_*` in the shaders).
+    pub(crate) chroma_mode: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -328,6 +343,8 @@ pub(crate) struct JpegWindowedTexturePackBatchParams {
     pub(crate) height: u32,
     pub(crate) tile_index: u32,
     pub(crate) alpha: u32,
+    /// Chroma upsampling mode (`CHROMA_*` in the shaders).
+    pub(crate) chroma_mode: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -598,6 +615,7 @@ impl_gpu_readback_abi!(
         out_format: u32,
         origin_x: u32,
         origin_y: u32,
+        chroma_mode: u32,
     },
     JpegFast420ScaledParams {
         scaled_width: u32,
@@ -651,6 +669,7 @@ impl_gpu_readback_abi!(
         out_stride: u32,
         alpha: u32,
         out_format: u32,
+        chroma_mode: u32,
     },
     JpegFast420BatchParams {
         width: u32,
@@ -712,6 +731,7 @@ impl_gpu_readback_abi!(
         alpha: u32,
         mode: u32,
         out_format: u32,
+        chroma_mode: u32,
     },
     JpegWindowedTexturePackBatchParams {
         src_width: u32,
@@ -724,6 +744,7 @@ impl_gpu_readback_abi!(
         height: u32,
         tile_index: u32,
         alpha: u32,
+        chroma_mode: u32,
     },
     JpegTexturePackBatchParams {
         width: u32,

@@ -6,7 +6,7 @@ use super::super::{
     JpegFast420WindowedPackParams, JpegFast444PacketV1, JpegFast444Params, JpegFast444ScaledParams,
     PixelFormat,
 };
-use super::descriptors::FastSubsampledPacket;
+use super::descriptors::{FastSubsampledPacket, ScaledChroma};
 use crate::buffers::{checked_copy_bytes_to_buffer_at, new_shared_buffer};
 use j2k_core::accelerator::GpuAbi;
 
@@ -21,11 +21,12 @@ pub(in crate::compute) fn fast_subsampled_params<P: FastSubsampledPacket>(
         ),
     })?;
     let out_stride = packet.dimensions().0 as usize * fmt.bytes_per_pixel();
+    let chroma = P::scaled_chroma(packet.dimensions().0, packet.dimensions(), 0);
     Ok(JpegFast420Params {
         width: packet.dimensions().0,
         height: packet.dimensions().1,
-        chroma_width: P::chroma_width(packet.dimensions().0),
-        chroma_height: P::chroma_height(packet.dimensions().1),
+        chroma_width: chroma.width,
+        chroma_height: chroma.height,
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
         restart_interval_mcus: packet.restart_interval_mcus(),
@@ -41,6 +42,7 @@ pub(in crate::compute) fn fast_subsampled_params<P: FastSubsampledPacket>(
         out_format,
         origin_x: 0,
         origin_y: 0,
+        chroma_mode: chroma.mode,
     })
 }
 
@@ -56,11 +58,12 @@ pub(in crate::compute) fn fast_subsampled_region_params<P: FastSubsampledPacket>
         ),
     })?;
     let out_stride = source_window.w as usize * fmt.bytes_per_pixel();
+    let chroma = P::scaled_chroma(packet.dimensions().0, (source_window.w, source_window.h), 0);
     Ok(JpegFast420Params {
         width: source_window.w,
         height: source_window.h,
-        chroma_width: P::chroma_width(source_window.w),
-        chroma_height: P::chroma_height(source_window.h),
+        chroma_width: chroma.width,
+        chroma_height: chroma.height,
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
         restart_interval_mcus: packet.restart_interval_mcus(),
@@ -76,6 +79,7 @@ pub(in crate::compute) fn fast_subsampled_region_params<P: FastSubsampledPacket>
         out_format,
         origin_x: source_window.x,
         origin_y: source_window.y,
+        chroma_mode: chroma.mode,
     })
 }
 
@@ -93,11 +97,16 @@ pub(in crate::compute) fn fast_subsampled_scaled_params<P: FastSubsampledPacket>
     let denom = 1u32 << scale_shift;
     let scaled_width = packet.dimensions().0.div_ceil(denom);
     let scaled_height = packet.dimensions().1.div_ceil(denom);
+    let chroma = P::scaled_chroma(
+        packet.dimensions().0,
+        (scaled_width, scaled_height),
+        scale_shift,
+    );
     Some(JpegFast420ScaledParams {
         scaled_width,
         scaled_height,
-        chroma_width: P::chroma_width(scaled_width),
-        chroma_height: P::chroma_height(scaled_height),
+        chroma_width: chroma.width,
+        chroma_height: chroma.height,
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
         restart_interval_mcus: packet.restart_interval_mcus(),
@@ -121,21 +130,49 @@ pub(in crate::compute) fn fast_subsampled_scaled_region_params<P: FastSubsampled
     source_window: j2k_jpeg::Rect,
 ) -> Option<JpegFast420ScaledParams> {
     let full = fast_subsampled_scaled_params(packet, scale)?;
+    let chroma = P::scaled_chroma(
+        packet.dimensions().0,
+        (source_window.w, source_window.h),
+        full.scale_shift,
+    );
     Some(JpegFast420ScaledParams {
         scaled_width: source_window.w,
         scaled_height: source_window.h,
-        chroma_width: P::chroma_width(source_window.w),
-        chroma_height: P::chroma_height(source_window.h),
+        chroma_width: chroma.width,
+        chroma_height: chroma.height,
         origin_x: source_window.x,
         origin_y: source_window.y,
         ..full
     })
 }
 
+/// `roi` grown by the one pixel of neighbouring chroma the 2:1 smoothing
+/// filters read on each side, so a window edge inside the image never stands
+/// in for the image edge. 4:4:4 needs no context.
+fn roi_with_chroma_context<P: FastSubsampledPacket>(
+    dims: (u32, u32),
+    roi: j2k_jpeg::Rect,
+) -> j2k_jpeg::Rect {
+    if !P::REGION_CHROMA_CONTEXT {
+        return roi;
+    }
+    let x0 = roi.x.saturating_sub(1);
+    let y0 = roi.y.saturating_sub(1);
+    let x1 = roi.x.saturating_add(roi.w).saturating_add(1).min(dims.0);
+    let y1 = roi.y.saturating_add(roi.h).saturating_add(1).min(dims.1);
+    j2k_jpeg::Rect {
+        x: x0,
+        y: y0,
+        w: x1.saturating_sub(x0),
+        h: y1.saturating_sub(y0),
+    }
+}
+
 pub(in crate::compute) fn fast_subsampled_full_mcu_window<P: FastSubsampledPacket>(
     dims: (u32, u32),
     roi: j2k_jpeg::Rect,
 ) -> j2k_jpeg::Rect {
+    let roi = roi_with_chroma_context::<P>(dims, roi);
     let x0 = (roi.x / P::MCU_WIDTH) * P::MCU_WIDTH;
     let y0 = (roi.y / P::MCU_HEIGHT) * P::MCU_HEIGHT;
     let x1 = (roi.x + roi.w).div_ceil(P::MCU_WIDTH) * P::MCU_WIDTH;
@@ -153,6 +190,7 @@ pub(in crate::compute) fn fast_subsampled_full_mcu_scaled_window<P: FastSubsampl
     roi: j2k_jpeg::Rect,
     scale_shift: u32,
 ) -> j2k_jpeg::Rect {
+    let roi = roi_with_chroma_context::<P>(scaled_dims, roi);
     let mcu_width = P::MCU_WIDTH >> scale_shift;
     let mcu_height = P::MCU_HEIGHT >> scale_shift;
     let x0 = (roi.x / mcu_width) * mcu_width;
@@ -252,8 +290,11 @@ pub(in crate::compute) fn fast444_scaled_region_params(
 }
 
 #[cfg(target_os = "macos")]
+/// Pack parameters for the `roi` of a decoded `dims` window whose chroma
+/// planes have the geometry `chroma`.
 pub(in crate::compute) fn fast_subsampled_windowed_pack_params_for_dims<P: FastSubsampledPacket>(
     dims: (u32, u32),
+    chroma: ScaledChroma,
     fmt: PixelFormat,
     roi: j2k_jpeg::Rect,
 ) -> Result<JpegFast420WindowedPackParams, Error> {
@@ -267,8 +308,8 @@ pub(in crate::compute) fn fast_subsampled_windowed_pack_params_for_dims<P: FastS
     Ok(JpegFast420WindowedPackParams {
         src_width: dims.0,
         src_height: dims.1,
-        chroma_width: P::chroma_width(dims.0),
-        chroma_height: P::chroma_height(dims.1),
+        chroma_width: chroma.width,
+        chroma_height: chroma.height,
         src_x: roi.x,
         src_y: roi.y,
         width: roi.w,
@@ -279,6 +320,7 @@ pub(in crate::compute) fn fast_subsampled_windowed_pack_params_for_dims<P: FastS
         )?,
         alpha: u32::from(u8::MAX),
         out_format,
+        chroma_mode: chroma.mode,
     })
 }
 

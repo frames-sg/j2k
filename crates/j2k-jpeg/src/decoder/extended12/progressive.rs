@@ -10,9 +10,11 @@ use super::planes::{dequantize_progressive12_block, ensure_progressive12_coeffic
 use super::sampling::{
     progressive_color_sampling, progressive_four_component_sampling, Extended12ColorSampling,
 };
+use super::scaled::{needs_scaled_extended12_route, Extended12Color};
 use super::writers::{
     write_extended12_block_region, Extended12Output, Extended12RgbProjection, Extended12WriteRegion,
 };
+use crate::color::scaled_sampling::ScaledSampling;
 
 mod color444;
 mod four_component;
@@ -82,10 +84,20 @@ impl Decoder<'_> {
                 height: self.info.dimensions.1,
             });
         }
+        let scaled_route = needs_scaled_extended12_route(
+            &ScaledSampling::new(plan.sampling, downscale, self.info.dimensions),
+            downscale,
+        );
         if matches!(output, Extended12Output::Rgb16) {
             match self.info.color_space {
                 ColorSpace::Rgb => {
                     let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
+                    if scaled_route {
+                        let color = Extended12Color::Rgb(Extended12RgbProjection::Identity);
+                        return self.decode_extended12_scaled_region_into(
+                            out, stride, roi, downscale, color,
+                        );
+                    }
                     return match sampling {
                         Extended12ColorSampling::S444 => self
                             .decode_progressive12_color444_region_into(
@@ -108,6 +120,12 @@ impl Decoder<'_> {
                 }
                 ColorSpace::YCbCr => {
                     let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
+                    if scaled_route {
+                        let color = Extended12Color::Rgb(Extended12RgbProjection::YCbCr);
+                        return self.decode_extended12_scaled_region_into(
+                            out, stride, roi, downscale, color,
+                        );
+                    }
                     return match sampling {
                         Extended12ColorSampling::S444 => self
                             .decode_progressive12_color444_region_into(
@@ -130,6 +148,12 @@ impl Decoder<'_> {
                 }
                 ColorSpace::Cmyk | ColorSpace::Ycck => {
                     let sampling = progressive_four_component_sampling(plan, self.info.sof_kind)?;
+                    if scaled_route {
+                        let color = Extended12Color::FourComponent(self.info.color_space);
+                        return self.decode_extended12_scaled_region_into(
+                            out, stride, roi, downscale, color,
+                        );
+                    }
                     return self.decode_progressive12_four_component_region_into(
                         out, stride, roi, downscale, sampling,
                     );
@@ -141,6 +165,15 @@ impl Decoder<'_> {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
+        }
+        if scaled_route {
+            return self.decode_extended12_scaled_region_into(
+                out,
+                stride,
+                roi,
+                downscale,
+                Extended12Color::Gray(output),
+            );
         }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;

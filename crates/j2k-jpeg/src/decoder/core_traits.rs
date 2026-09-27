@@ -2,14 +2,11 @@
 
 use super::{
     ComponentRowWriter, CompressedTransferSyntax, CoreDecodeOutcome, DecodeOutcome,
-    DecodeRowsError, Decoder, DecoderContext, Downscale, DownscaleFactor, ImageCodec, ImageDecode,
-    ImageDecodeRows, InterleavedRgbWriter, JpegCodec, JpegError, JpegView, OutputWriter,
-    PixelFormat, Rect, RowSink, ScratchPool, SofKind, TileBatchDecode, Vec, Warning,
+    DecodeRowsError, Decoder, DecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
+    InterleavedRgbWriter, JpegCodec, JpegError, JpegView, OutputWriter, PixelFormat, Rect, RowSink,
+    ScratchPool, SofKind, TileBatchDecode, Vec, Warning,
 };
-use crate::allocation::{
-    checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
-    try_reserve_for_len_with_live_budget, try_resize_filled,
-};
+use crate::allocation::{checked_allocation_len, try_reserve_for_len_with_live_budget};
 use j2k_core::TileRegionScaledDecodeJob;
 
 #[cfg(test)]
@@ -258,121 +255,6 @@ pub(super) struct CroppedWriter<W> {
     pub(super) rgb_rows_bytes: usize,
     pub(super) top_row: Vec<u8>,
     pub(super) bottom_row: Vec<u8>,
-}
-
-pub(super) struct ProgressiveDownscaleWriter<'a, W> {
-    pub(super) inner: &'a mut W,
-    pub(super) denom: u32,
-    pub(super) scaled_width: usize,
-    pub(super) r: Vec<u8>,
-    pub(super) g: Vec<u8>,
-    pub(super) b: Vec<u8>,
-}
-
-impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
-    pub(super) fn new(
-        inner: &'a mut W,
-        downscale: DownscaleFactor,
-        dimensions: (u32, u32),
-    ) -> Result<Self, JpegError> {
-        let denom = downscale.denominator();
-        let scaled_width = dimensions.0.div_ceil(denom) as usize;
-        let row_bytes = checked_allocation_len::<u8>(scaled_width, 3)?;
-        let mut live_bytes = 0;
-        let mut r = Vec::new();
-        try_reserve_for_len_with_live_budget(&mut r, scaled_width, &mut live_bytes, row_bytes)?;
-        r.resize(scaled_width, 0);
-        let mut g = Vec::new();
-        try_reserve_for_len_with_live_budget(&mut g, scaled_width, &mut live_bytes, row_bytes)?;
-        g.resize(scaled_width, 0);
-        let mut b = Vec::new();
-        try_reserve_for_len_with_live_budget(&mut b, scaled_width, &mut live_bytes, row_bytes)?;
-        b.resize(scaled_width, 0);
-        Ok(Self {
-            inner,
-            denom,
-            scaled_width,
-            r,
-            g,
-            b,
-        })
-    }
-
-    pub(super) fn capacity_bytes(&self) -> Result<usize, JpegError> {
-        let rg = checked_add_allocation_bytes(
-            checked_allocation_bytes::<u8>(self.r.capacity())?,
-            checked_allocation_bytes::<u8>(self.g.capacity())?,
-        )?;
-        checked_add_allocation_bytes(rg, checked_allocation_bytes::<u8>(self.b.capacity())?)
-    }
-
-    fn should_emit(&self, y: u32) -> bool {
-        y.is_multiple_of(self.denom)
-    }
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "validated JPEG output widths originate as u32 dimensions before slice indexing"
-    )]
-    fn sample_row(
-        src: &[u8],
-        denom: u32,
-        width: usize,
-        dst: &mut Vec<u8>,
-    ) -> Result<(), JpegError> {
-        try_resize_filled(dst, width, 0)?;
-        for (x, out) in dst.iter_mut().enumerate() {
-            let src_x = (x as u32)
-                .saturating_mul(denom)
-                .min(src.len().saturating_sub(1) as u32);
-            *out = src[src_x as usize];
-        }
-        Ok(())
-    }
-}
-
-impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
-    fn write_rgb_row(
-        &mut self,
-        y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(r_row, self.denom, self.scaled_width, &mut self.r)?;
-        Self::sample_row(g_row, self.denom, self.scaled_width, &mut self.g)?;
-        Self::sample_row(b_row, self.denom, self.scaled_width, &mut self.b)?;
-        self.inner
-            .write_rgb_row(y / self.denom, &self.r, &self.g, &self.b)
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(y_row, self.denom, self.scaled_width, &mut self.r)?;
-        Self::sample_row(cb_row, self.denom, self.scaled_width, &mut self.g)?;
-        Self::sample_row(cr_row, self.denom, self.scaled_width, &mut self.b)?;
-        self.inner
-            .write_ycbcr_row(y / self.denom, &self.r, &self.g, &self.b)
-    }
-
-    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(gray_row, self.denom, self.scaled_width, &mut self.r)?;
-        self.inner.write_gray_row(y / self.denom, &self.r)
-    }
 }
 
 impl<W: ComponentRowWriter + ?Sized> OutputWriter for &mut W {

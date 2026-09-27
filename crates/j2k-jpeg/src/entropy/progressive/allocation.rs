@@ -8,6 +8,7 @@ use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
     try_reserve_for_len_with_live_budget,
 };
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::error::JpegError;
 
 use super::model::{PreparedProgressiveComponentPlan, PreparedProgressivePlan};
@@ -129,11 +130,13 @@ pub(super) fn checked_phase_capacity(
     Ok(requested)
 }
 
+/// Component images at each component's reduced IDCT size.
 pub(super) fn allocate_component_images(
     plan: &PreparedProgressivePlan,
+    scaled: &ScaledSampling,
     initial_live_bytes: usize,
 ) -> Result<Vec<ComponentImage>, JpegError> {
-    let planned_bytes = validate_component_image_workspace(&plan.components)?;
+    let planned_bytes = validate_component_image_workspace(&plan.components, scaled)?;
     checked_phase_capacity(initial_live_bytes, planned_bytes, plan.scratch_bytes)?;
 
     let mut live_bytes = initial_live_bytes;
@@ -144,9 +147,8 @@ pub(super) fn allocate_component_images(
         &mut live_bytes,
         plan.scratch_bytes,
     )?;
-    for component in &plan.components {
-        let stride = checked_allocation_len::<u8>(component.block_cols as usize, 8)?;
-        let rows = checked_allocation_len::<u8>(component.block_rows as usize, 8)?;
+    for (index, component) in plan.components.iter().enumerate() {
+        let (stride, rows) = component_image_extent(component, scaled, index)?;
         let plane_len = checked_allocation_len::<u8>(stride, rows)?;
         let mut plane = Vec::new();
         try_reserve_for_len_with_live_budget(
@@ -161,13 +163,25 @@ pub(super) fn allocate_component_images(
     Ok(images)
 }
 
+fn component_image_extent(
+    component: &PreparedProgressiveComponentPlan,
+    scaled: &ScaledSampling,
+    index: usize,
+) -> Result<(usize, usize), JpegError> {
+    let idct_size = scaled.component(index).idct_size as usize;
+    Ok((
+        checked_allocation_len::<u8>(component.block_cols as usize, idct_size)?,
+        checked_allocation_len::<u8>(component.block_rows as usize, idct_size)?,
+    ))
+}
+
 fn validate_component_image_workspace(
     components: &[PreparedProgressiveComponentPlan],
+    scaled: &ScaledSampling,
 ) -> Result<usize, JpegError> {
     let mut total = checked_allocation_bytes::<ComponentImage>(components.len())?;
-    for component in components {
-        let stride = checked_allocation_len::<u8>(component.block_cols as usize, 8)?;
-        let rows = checked_allocation_len::<u8>(component.block_rows as usize, 8)?;
+    for (index, component) in components.iter().enumerate() {
+        let (stride, rows) = component_image_extent(component, scaled, index)?;
         let plane_len = checked_allocation_len::<u8>(stride, rows)?;
         total = checked_add_allocation_bytes(total, checked_allocation_bytes::<u8>(plane_len)?)?;
     }

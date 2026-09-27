@@ -21,13 +21,10 @@ pub(crate) use self::dct::{
 };
 #[cfg(feature = "bench-internals")]
 pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;
-pub(crate) use self::fast420::{
-    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
-    decode_scan_fast_tile_rgb_region_scaled, FastTileRegionScaledRequest,
-};
+pub(crate) use self::fast420::{decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region};
 pub(crate) use self::generic::{decode_scan_baseline, decode_scan_baseline_rgb};
 pub(crate) use self::layout::{fast_tile_region_first_decode_mcu, stripe_region_layout};
-use self::layout::{is_ycbcr_420, scaled_dimensions, Fast420RegionLayout};
+use self::layout::{scaled_dimensions, uses_fancy_420_emit, Fast420RegionLayout};
 use self::output_scratch::{OutputScratch, RgbOutputScratch};
 pub(crate) use self::plan::{
     PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,

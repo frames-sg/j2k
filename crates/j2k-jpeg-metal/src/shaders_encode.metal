@@ -586,13 +586,22 @@ inline bool block_intersects_rect(
     return block_x < rect_x1 && rect_x < block_x1 && block_y < rect_y1 && rect_y < block_y1;
 }
 
-inline int descale(int value, int shift) {
-    return value >> shift;
-}
-
+// Callers of descale_and_clamp add their own rounding term (the full islow IDCT
+// folds it into the DC path).
 inline uchar descale_and_clamp(int value, int shift) {
     const int shifted = value >> shift;
     return clamp_u8(shifted + 128);
+}
+
+// libjpeg DESCALE: arithmetic right shift that rounds half up. Every stage of
+// jidctred.c (and libjpeg-turbo's SIMD ports) rounds; a plain shift biases
+// DCT-scaled output low by up to one level per component.
+inline int descale_rounded(int value, int shift) {
+    return (value + (1 << (shift - 1))) >> shift;
+}
+
+inline uchar descale_rounded_and_clamp(int value, int shift) {
+    return clamp_u8(descale_rounded(value, shift) + 128);
 }
 
 // libjpeg islow column pass over four columns at once. There is no per-column
@@ -951,10 +960,10 @@ inline void idct_4x4_column(
         + p1 * FIX_2_562915447;
 
     const int shift = CONST_BITS - PASS1_BITS + 1;
-    work[col] = descale(tmp10 + tmp2, shift);
-    work[24 + col] = descale(tmp10 - tmp2, shift);
-    work[8 + col] = descale(tmp12 + tmp0, shift);
-    work[16 + col] = descale(tmp12 - tmp0, shift);
+    work[col] = descale_rounded(tmp10 + tmp2, shift);
+    work[24 + col] = descale_rounded(tmp10 - tmp2, shift);
+    work[8 + col] = descale_rounded(tmp12 + tmp0, shift);
+    work[16 + col] = descale_rounded(tmp12 - tmp0, shift);
 }
 
 inline void idct_4x4_row(
@@ -973,7 +982,7 @@ inline void idct_4x4_row(
 
     const uint out = row * 4;
     if (p1 == 0 && p2 == 0 && p3 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const uchar dc = descale_and_clamp(p0, PASS1_BITS + 3);
+        const uchar dc = descale_rounded_and_clamp(p0, PASS1_BITS + 3);
         output[out] = dc;
         output[out + 1] = dc;
         output[out + 2] = dc;
@@ -996,10 +1005,10 @@ inline void idct_4x4_row(
         + p1 * FIX_2_562915447;
 
     const int shift = CONST_BITS + PASS1_BITS + 3 + 1;
-    output[out] = descale_and_clamp(tmp10 + tmp2, shift);
-    output[out + 3] = descale_and_clamp(tmp10 - tmp2, shift);
-    output[out + 1] = descale_and_clamp(tmp12 + tmp0, shift);
-    output[out + 2] = descale_and_clamp(tmp12 - tmp0, shift);
+    output[out] = descale_rounded_and_clamp(tmp10 + tmp2, shift);
+    output[out + 3] = descale_rounded_and_clamp(tmp10 - tmp2, shift);
+    output[out + 1] = descale_rounded_and_clamp(tmp12 + tmp0, shift);
+    output[out + 2] = descale_rounded_and_clamp(tmp12 - tmp0, shift);
 }
 
 inline void idct_islow_4x4(
@@ -1043,8 +1052,8 @@ inline void idct_2x2_column(
         + p1 * FIX_3_624509785;
 
     const int shift = CONST_BITS - PASS1_BITS + 2;
-    work[col] = descale(tmp10 + tmp0, shift);
-    work[8 + col] = descale(tmp10 - tmp0, shift);
+    work[col] = descale_rounded(tmp10 + tmp0, shift);
+    work[8 + col] = descale_rounded(tmp10 - tmp0, shift);
 }
 
 inline void idct_2x2_row(
@@ -1060,7 +1069,7 @@ inline void idct_2x2_row(
     const int p7 = work[base + 7];
 
     if (p1 == 0 && p3 == 0 && p5 == 0 && p7 == 0) {
-        const uchar dc = descale_and_clamp(p0, PASS1_BITS + 3);
+        const uchar dc = descale_rounded_and_clamp(p0, PASS1_BITS + 3);
         const uint out = row * 2;
         output[out] = dc;
         output[out + 1] = dc;
@@ -1075,8 +1084,8 @@ inline void idct_2x2_row(
 
     const int shift = CONST_BITS + PASS1_BITS + 5;
     const uint out = row * 2;
-    output[out] = descale_and_clamp(tmp10 + tmp0, shift);
-    output[out + 1] = descale_and_clamp(tmp10 - tmp0, shift);
+    output[out] = descale_rounded_and_clamp(tmp10 + tmp0, shift);
+    output[out + 1] = descale_rounded_and_clamp(tmp10 - tmp0, shift);
 }
 
 inline void idct_islow_2x2(
@@ -1096,7 +1105,7 @@ inline void idct_islow_2x2(
 }
 
 inline uchar idct_islow_1x1(thread const short input[64]) {
-    return descale_and_clamp(int(input[0]), 3);
+    return descale_rounded_and_clamp(int(input[0]), 3);
 }
 
 inline void deposit_block_region(
@@ -1238,6 +1247,13 @@ inline void deposit_scaled_block(
     thread const short coeffs[64],
     bool dc_only
 ) {
+    if (scale_shift == 0u) {
+        // 4:2:0 chroma at 1/2 scale: libjpeg-turbo's full 8x8 IDCT.
+        thread uchar pixels8[64];
+        idct_block(coeffs, dc_only, pixels8);
+        deposit_block_region(plane, stride, width, height, 0u, 0u, x, y, pixels8);
+        return;
+    }
     if (scale_shift == 1u) {
         thread uchar pixels4[16];
         if (dc_only) {
@@ -1643,12 +1659,25 @@ inline void jpeg_sample_420_chroma(
     device const uchar *cr_plane,
     uint chroma_width,
     uint chroma_height,
+    uint chroma_mode,
     uint x,
     uint y,
     thread uchar &cb,
     thread uchar &cr
 ) {
+    if (chroma_mode == CHROMA_UNSAMPLED) {
+        const uint idx = min(y, chroma_height - 1u) * chroma_width + min(x, chroma_width - 1u);
+        cb = cb_plane[idx];
+        cr = cr_plane[idx];
+        return;
+    }
     const uint chroma_y = min(y / 2u, chroma_height - 1u);
+    if (chroma_mode == CHROMA_REPLICATE) {
+        const uint idx = chroma_y * chroma_width + min(x / 2u, chroma_width - 1u);
+        cb = cb_plane[idx];
+        cr = cr_plane[idx];
+        return;
+    }
     const uint near_y = (y & 1u) == 0u
         ? (chroma_y == 0u ? 0u : chroma_y - 1u)
         : min(chroma_y + 1u, chroma_height - 1u);
@@ -1666,6 +1695,7 @@ inline void jpeg_sample_422_chroma(
     device const uchar *cr_plane,
     uint chroma_width,
     uint chroma_height,
+    uint chroma_mode,
     uint x,
     uint y,
     thread uchar &cb,
@@ -1674,6 +1704,12 @@ inline void jpeg_sample_422_chroma(
     const uint chroma_y = min(y, chroma_height - 1u);
     device const uchar *curr_cb = cb_plane + chroma_y * chroma_width;
     device const uchar *curr_cr = cr_plane + chroma_y * chroma_width;
+    if (chroma_mode != CHROMA_FANCY) {
+        const uint chroma_x = min(chroma_mode == CHROMA_UNSAMPLED ? x : x / 2u, chroma_width - 1u);
+        cb = curr_cb[chroma_x];
+        cr = curr_cr[chroma_x];
+        return;
+    }
 
     cb = h2v1_sample(curr_cb, chroma_width, x);
     cr = h2v1_sample(curr_cr, chroma_width, x);

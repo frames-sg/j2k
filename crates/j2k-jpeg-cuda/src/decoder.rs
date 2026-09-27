@@ -143,16 +143,17 @@ impl<'a> Decoder<'a> {
                 ),
             ));
         }
-        let (bytes, outcome) = self
+        let (bytes, _) = self
             .inner
             .decode_request(DecodeRequest::scaled(fmt, scale))?;
-        wrap_surface(
-            bytes,
-            (outcome.decoded.w, outcome.decoded.h),
-            fmt,
-            backend,
-            session,
-        )
+        // `DecodeOutcome::decoded` is the source rectangle; the surface holds
+        // the scaled image.
+        let (width, height) = self.inner.info().dimensions;
+        let dims = (
+            width.div_ceil(scale.denominator()),
+            height.div_ceil(scale.denominator()),
+        );
+        wrap_surface(bytes, dims, fmt, backend, session)
     }
 
     fn decode_region_scaled_to_surface_impl(
@@ -171,16 +172,13 @@ impl<'a> Decoder<'a> {
                 ),
             ));
         }
-        let (bytes, outcome) =
+        let (bytes, _) =
             self.inner
                 .decode_request(DecodeRequest::region_scaled(fmt, roi.into(), scale))?;
-        wrap_surface(
-            bytes,
-            (outcome.decoded.w, outcome.decoded.h),
-            fmt,
-            backend,
-            session,
-        )
+        // `DecodeOutcome::decoded` is the source ROI; the surface holds its
+        // scaled covering rectangle.
+        let scaled = roi.scaled_covering(scale);
+        wrap_surface(bytes, (scaled.w, scaled.h), fmt, backend, session)
     }
 }
 

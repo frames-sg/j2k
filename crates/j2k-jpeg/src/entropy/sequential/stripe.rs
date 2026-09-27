@@ -11,8 +11,6 @@ use crate::allocation::{
 use crate::error::JpegError;
 use crate::info::SamplingFactors;
 
-use super::PreparedDecodePlan;
-
 #[derive(Debug, Default)]
 pub(crate) struct StripeBuffer {
     pub(crate) planes: Vec<Vec<u8>>,
@@ -29,14 +27,6 @@ pub(crate) struct StripeLayout {
 }
 
 impl StripeLayout {
-    pub(crate) fn for_plan(
-        plan: &PreparedDecodePlan,
-        mcus_per_row: u32,
-        block_size: u32,
-    ) -> Result<Self, JpegError> {
-        Self::for_sampling(plan.sampling, mcus_per_row, block_size)
-    }
-
     pub(crate) fn for_sampling(
         sampling: SamplingFactors,
         mcus_per_row: u32,

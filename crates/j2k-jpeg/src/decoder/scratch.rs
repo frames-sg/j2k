@@ -239,7 +239,16 @@ pub(super) fn compute_extended12_planes_scratch_bytes(
 ) -> Result<usize, JpegError> {
     let mcu_cols = width.div_ceil(u32::from(sampling.max_h) * 8) as usize;
     let mcu_rows = height.div_ceil(u32::from(sampling.max_v) * 8) as usize;
-    let mut total = 0usize;
+    // The scaled writer holds one u16 output row per component while the
+    // planes remain live. Full-resolution widths bound every decode scale.
+    let mut total = checked_usize_product(
+        &[
+            width as usize,
+            components.len(),
+            core::mem::size_of::<u16>(),
+        ],
+        cap,
+    )?;
     for component in components {
         let stride = checked_usize_product(&[mcu_cols, usize::from(component.h), 8], cap)?;
         let rows = checked_usize_product(&[mcu_rows, usize::from(component.v), 8], cap)?;

@@ -5,8 +5,8 @@
 use super::super::emit::StripeEmit;
 use super::super::layout::{
     decode_mcu_row_end_for_rect, expanded_output_rect, fast420_decode_mcu_row_end,
-    fast420_first_decode_mcu_row, first_decode_mcu_row_for_rect, is_ycbcr_420,
-    last_mcu_row_for_rect, mcu_row_intersects_rect, scaled_dimensions, stripe_region_layout,
+    fast420_first_decode_mcu_row, first_decode_mcu_row_for_rect, last_mcu_row_for_rect,
+    mcu_row_intersects_rect, scaled_dimensions, stripe_region_layout, uses_fancy_420_emit,
     StripeRegionLayout,
 };
 use super::super::restart::{
@@ -15,6 +15,7 @@ use super::super::restart::{
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use super::row::{decode_mcu_row, McuRowContext, McuRowState};
 use crate::backend::Backend;
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::block::CoefficientBlock;
 use crate::error::{JpegError, Warning};
 use crate::info::{DownscaleFactor, Rect};
@@ -30,6 +31,7 @@ pub(super) enum ScanOutputMode {
 
 #[derive(Clone, Copy)]
 pub(super) struct ScanSetup {
+    pub(super) scaled: ScaledSampling,
     block_size: u32,
     mcu_height_px: u32,
     mcus_per_row: u32,
@@ -52,6 +54,7 @@ impl ScanSetup {
         mode: ScanOutputMode,
     ) -> Self {
         let (width, height) = scaled_dimensions(plan.dimensions, downscale);
+        let scaled = ScaledSampling::new(plan.sampling, downscale, plan.dimensions);
         let block_size = downscale.output_block_size();
         let mcu_width_px = block_size * u32::from(plan.sampling.max_h);
         let mcu_height_px = block_size * u32::from(plan.sampling.max_v);
@@ -61,7 +64,7 @@ impl ScanSetup {
         let full_output_rect = expanded_rect == Rect::full((width, height));
         let use_420_context_window = matches!(mode, ScanOutputMode::InterleavedRgb)
             && !full_output_rect
-            && is_ycbcr_420(plan);
+            && uses_fancy_420_emit(plan, &scaled);
         let emit_rect = if use_420_context_window {
             output_rect
         } else {
@@ -79,6 +82,7 @@ impl ScanSetup {
         };
 
         Self {
+            scaled,
             block_size,
             mcu_height_px,
             mcus_per_row,
@@ -101,6 +105,7 @@ impl ScanSetup {
     ) -> Result<(), JpegError> {
         pool.prepare_for(
             plan,
+            self.scaled.effective,
             self.region.stripe_mcus_per_row,
             self.block_size,
             plan.scratch_bytes,
@@ -172,6 +177,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
         plan,
         backend,
         downscale,
+        scaled: &setup.scaled,
         output_rect: setup.expanded_rect,
         full_output_rect: setup.full_output_rect,
         stripe_mcu_start: setup.region.stripe_mcu_start,
@@ -210,6 +216,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
                     stripe_index: mcu_row - 1,
                     source_width: setup.region.source_width_usize(),
                     downscale,
+                    scaled: &setup.scaled,
                 })?;
             }
             core::mem::swap(&mut prev_stripe, &mut curr_stripe);
@@ -227,6 +234,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
             stripe_index: current_mcu_row,
             source_width: setup.region.source_width_usize(),
             downscale,
+            scaled: &setup.scaled,
         })?;
     }
     finish_scan(&mut br, setup.decode_mcu_row_end == setup.mcu_rows)

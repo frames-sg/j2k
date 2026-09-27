@@ -7,6 +7,7 @@ mod row;
 
 use self::driver::{decode_scan_rows, ScanBuffers, ScanOutputMode, ScanSetup, StripeEmitter};
 use super::emit::{emit_stripe, emit_stripe_rgb, StripeEmit};
+use super::layout::uses_fancy_420_emit;
 use super::{OutputScratch, PreparedDecodePlan, RgbOutputScratch};
 use crate::backend::Backend;
 use crate::error::{JpegError, Warning};
@@ -59,6 +60,7 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
 ) -> Result<Vec<Warning>, JpegError> {
     let setup = ScanSetup::new(plan, downscale, output_rect, ScanOutputMode::ComponentRows);
     setup.prepare_pool(plan, pool)?;
+    let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
     let ScratchPool {
         prev_dc,
         stripe_a,
@@ -71,7 +73,7 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
     } = pool;
     let scratch = match plan.color_space {
         ColorSpace::Grayscale => OutputScratch::Grayscale,
-        ColorSpace::YCbCr if super::is_ycbcr_420(plan) => OutputScratch::YCbCr420(ycbcr_420_rows),
+        ColorSpace::YCbCr if fancy_420 => OutputScratch::YCbCr420(ycbcr_420_rows),
         ColorSpace::YCbCr => OutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb | ColorSpace::Cmyk | ColorSpace::Ycck => {
             OutputScratch::RgbGeneric(rgb_generic_rows)
@@ -109,6 +111,7 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
 ) -> Result<Vec<Warning>, JpegError> {
     let setup = ScanSetup::new(plan, downscale, output_rect, ScanOutputMode::InterleavedRgb);
     setup.prepare_pool(plan, pool)?;
+    let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
     let ScratchPool {
         prev_dc,
         stripe_a,
@@ -120,7 +123,7 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
     } = pool;
     let scratch = match plan.color_space {
         ColorSpace::Grayscale => RgbOutputScratch::None,
-        ColorSpace::YCbCr if super::is_ycbcr_420(plan) => RgbOutputScratch::YCbCr420,
+        ColorSpace::YCbCr if fancy_420 => RgbOutputScratch::YCbCr420,
         ColorSpace::YCbCr => RgbOutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb | ColorSpace::Cmyk | ColorSpace::Ycck => {
             RgbOutputScratch::RgbGeneric(rgb_generic_rows)

@@ -64,8 +64,13 @@ impl PreparedDecodePlan {
         self.restart_interval.is_none() && self.matches_fast_420_device_shape()
     }
 
+    /// Coded 4:2:0 YCbCr whose full-size chroma libjpeg-turbo smooths with
+    /// `h2v2_fancy_upsample`, the only upsampler the fused 4:2:0 routes
+    /// implement. Chroma at most two samples wide (images at most four pixels
+    /// wide) is replicated instead and takes the generic route.
     pub(crate) fn matches_fast_420_device_shape(&self) -> bool {
-        is_ycbcr_420(self)
+        self.dimensions.0 > 4
+            && is_ycbcr_420(self)
             && self.components.len() == 3
             && self.components[0].output_index == 0
             && self.components[0].h == 2
@@ -92,8 +97,12 @@ impl PreparedDecodePlan {
             && self.components[2].v == 1
     }
 
+    /// Coded 4:2:2 YCbCr whose full-size chroma libjpeg-turbo smooths (more
+    /// than two chroma samples wide), the shape the device 4:2:2 kernels
+    /// implement.
     pub(crate) fn matches_fast_rgb422_shape(&self) -> bool {
-        self.color_space == ColorSpace::YCbCr
+        self.dimensions.0 > 4
+            && self.color_space == ColorSpace::YCbCr
             && self.components.len() == 3
             && self.components[0].output_index == 0
             && self.components[0].h == 2
