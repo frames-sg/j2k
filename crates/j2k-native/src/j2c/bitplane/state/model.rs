@@ -57,6 +57,11 @@ impl Coefficient {
         magnitude
     }
 
+    /// Sign in bit 63, magnitude in bits 0-62.
+    pub(crate) fn to_bits(self) -> u64 {
+        self.0
+    }
+
     pub(in crate::j2c::bitplane) fn set_sign(&mut self, sign: u8) {
         self.0 |= u64::from(sign) << 63;
     }

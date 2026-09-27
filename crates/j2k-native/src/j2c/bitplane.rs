@@ -4,8 +4,11 @@ mod arithmetic;
 mod bypass;
 mod context;
 mod facade;
+mod flag_passes;
+mod flags;
 mod observer;
 mod reconstruction;
+mod scan;
 mod schedule;
 mod state;
 

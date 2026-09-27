@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::arithmetic_decoder::ArithmeticDecoderContext;
-use super::arithmetic::cleanup_run_length_candidate;
 use super::context::{
     context_label_magnitude_refinement_coding_from_state, context_label_sign_coding_index,
     context_label_zero_coding_from_neighbors,
 };
+use super::scan::cleanup_run_length_candidate;
 use super::state::{
     BitPlaneDecodeContext, COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK,
     HAS_ZERO_CODING_MASK, SIGNIFICANCE_MASK,
@@ -82,7 +82,7 @@ impl SafeScalarTier1 {
                     let significant_idx = top_idx + first_significant * padded_width;
                     ctx.push_magnitude_bit_index(significant_idx, 1);
                     decode_sign_bit_bypass(significant_idx, significant_y, ctx, decoder)?;
-                    ctx.set_significant_index(significant_idx, padded_width);
+                    ctx.set_significant_index(significant_idx, significant_y, padded_width);
 
                     let mut idx = significant_idx + padded_width;
                     for y in significant_y + 1..y_end {
@@ -127,11 +127,11 @@ impl SafeScalarTier1 {
                             context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
                         let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label))?;
                         ctx.push_magnitude_bit_index(idx, bit);
-                        ctx.set_zero_coding_index(idx, padded_width);
+                        ctx.set_zero_coding_index(idx, y, padded_width);
 
                         if bit == 1 {
                             decode_sign_bit_bypass(idx, y, ctx, decoder)?;
-                            ctx.set_significant_index(idx, padded_width);
+                            ctx.set_significant_index(idx, y, padded_width);
                         }
                     }
 
@@ -214,7 +214,7 @@ fn cleanup_coefficient_bypass(
 
         if bit == 1 {
             decode_sign_bit_bypass(idx, y, ctx, decoder)?;
-            ctx.set_significant_index(idx, padded_width);
+            ctx.set_significant_index(idx, y, padded_width);
         }
     }
 

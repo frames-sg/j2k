@@ -10,6 +10,7 @@ use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::try_reserve_decode_elements;
 
 mod model;
+mod scan_masks;
 mod workspace;
 
 pub(crate) use model::{Coefficient, CoefficientState, BITPLANE_BIT_SIZE};
@@ -98,6 +99,13 @@ pub(crate) struct BitPlaneDecodeContext {
     pub(super) significant_scan_masks: Vec<u8>,
     /// One 4-bit mask per scan stripe column for zero-coded coefficients in this bitplane.
     pub(super) zero_coding_scan_masks: Vec<u8>,
+    /// Packed per-stripe-column state (see `flags.rs`) used instead of the
+    /// per-coefficient state, neighbor, and scan-mask arrays when
+    /// `packed_columns` is set. One padding column and stripe on each side.
+    pub(super) flags: Vec<u32>,
+    /// Whether this block decodes through the packed-column passes: normal
+    /// neighbor contexts and arithmetic coding throughout.
+    pub(super) packed_columns: bool,
     /// The neighbor significances for each coefficient.
     pub(super) neighbor_significances: Vec<NeighborSignificances>,
     /// The magnitude and signs of each coefficient that is successively built
@@ -137,6 +145,8 @@ impl BitPlaneDecodeContext {
             coefficient_states: Vec::new(),
             significant_scan_masks: Vec::new(),
             zero_coding_scan_masks: Vec::new(),
+            flags: Vec::new(),
+            packed_columns: false,
             coefficients: Vec::new(),
             neighbor_significances: Vec::new(),
             width: 0,
@@ -160,8 +170,11 @@ impl BitPlaneDecodeContext {
         }
     }
 
+    /// Allocate a workspace able to decode `width` x `height` blocks through
+    /// either pass family.
     pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
-        workspace::reset_decode_buffers(self, width, height).map(|_| ())
+        workspace::reset_decode_buffers(self, width, height, workspace::StateLayout::Both)
+            .map(|_| ())
     }
 
     pub(crate) fn allocated_bytes(&self) -> Result<usize> {
@@ -174,6 +187,7 @@ impl BitPlaneDecodeContext {
         include_capacity::<CoefficientState>(&mut bytes, self.coefficient_states.capacity())?;
         include_capacity::<u8>(&mut bytes, self.significant_scan_masks.capacity())?;
         include_capacity::<u8>(&mut bytes, self.zero_coding_scan_masks.capacity())?;
+        include_capacity::<u32>(&mut bytes, self.flags.capacity())?;
         Ok(bytes)
     }
 
@@ -192,8 +206,22 @@ impl BitPlaneDecodeContext {
         code_block_style: &CodeBlockStyle,
         total_bitplanes: u8,
         strict: bool,
+        all_segments_arithmetic: bool,
     ) -> Result<()> {
-        let padded_width = workspace::reset_decode_buffers(self, width, height)?;
+        // Packed and per-coefficient bookkeeping cannot be mixed in a block,
+        // so a raw (bypass) segment sends the whole block down the
+        // per-coefficient passes.
+        let packed_columns = all_segments_arithmetic
+            && !code_block_style.selective_arithmetic_coding_bypass
+            && !code_block_style.termination_on_each_pass
+            && !code_block_style.vertically_causal_context;
+        let layout = if packed_columns {
+            workspace::StateLayout::PackedColumns
+        } else {
+            workspace::StateLayout::PerCoefficient
+        };
+        let padded_width = workspace::reset_decode_buffers(self, width, height, layout)?;
+        self.packed_columns = packed_columns;
 
         self.width = width;
         self.padded_width = padded_width;
@@ -262,6 +290,9 @@ impl BitPlaneDecodeContext {
             code_block_style,
             total_bitplanes,
             strict,
+            // Codestream blocks take raw segments only under selective
+            // bypass, which already selects the per-coefficient passes.
+            true,
         )
     }
 
@@ -274,14 +305,13 @@ impl BitPlaneDecodeContext {
             .take(self.height as usize)
     }
 
-    pub(crate) fn reconstruct_irreversible_midpoint(
+    /// Midpoint reconstruction for this code block's decoded coefficients.
+    pub(crate) fn midpoint_reconstructor(
         &self,
-        coefficient: Coefficient,
         number_of_coding_passes: u8,
         roi_shift: u8,
-    ) -> f32 {
-        super::reconstruction::reconstruct_irreversible_midpoint(
-            coefficient,
+    ) -> super::reconstruction::MidpointReconstructor {
+        super::reconstruction::MidpointReconstructor::new(
             self.bitplanes,
             number_of_coding_passes,
             roi_shift,
@@ -339,12 +369,12 @@ impl BitPlaneDecodeContext {
 
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    pub(super) fn set_significant_index(&mut self, idx: usize, padded_width: usize) {
+    pub(super) fn set_significant_index(&mut self, idx: usize, y: usize, padded_width: usize) {
         let is_significant = self.coefficient_states[idx].is_significant();
 
         if !is_significant {
             self.coefficient_states[idx].set_significant();
-            self.set_significant_scan_mask(idx, padded_width);
+            self.set_significant_scan_mask(idx, y, padded_width);
 
             // Update all neighbors so they know this coefficient is significant
             // now.
@@ -361,83 +391,8 @@ impl BitPlaneDecodeContext {
 
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    pub(super) fn set_significant_index_for_path<const NORMAL_NEIGHBORS: bool>(
-        &mut self,
-        idx: usize,
-        padded_width: usize,
-    ) {
-        if NORMAL_NEIGHBORS {
-            self.set_significant_index_normal(idx, padded_width);
-        } else {
-            self.set_significant_index(idx, padded_width);
-        }
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn set_significant_index_normal(&mut self, idx: usize, padded_width: usize) {
-        if self.coefficient_states[idx].is_significant() {
-            return;
-        }
-
-        self.coefficient_states[idx].set_significant();
-        self.set_significant_scan_mask(idx, padded_width);
-
-        let top_start = idx - padded_width - 1;
-        let top = &mut self.neighbor_significances[top_start..top_start + 3];
-        top[0].set_bottom_right();
-        top[1].set_bottom();
-        top[2].set_bottom_left();
-
-        let middle_start = idx - 1;
-        let middle = &mut self.neighbor_significances[middle_start..middle_start + 3];
-        middle[0].set_right();
-        middle[2].set_left();
-
-        let bottom_start = idx + padded_width - 1;
-        let bottom = &mut self.neighbor_significances[bottom_start..bottom_start + 3];
-        bottom[0].set_top_right();
-        bottom[1].set_top();
-        bottom[2].set_top_left();
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
     pub(super) fn push_magnitude_bit_index(&mut self, idx: usize, bit: u32) {
         self.coefficients[idx].push_bit_at(bit, self.current_bit_position);
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn set_zero_coding_index(&mut self, idx: usize, padded_width: usize) {
-        self.coefficient_states[idx].0 |= HAS_ZERO_CODING_MASK;
-        let (scan_unit, bit) = self.scan_unit_mask_index(idx, padded_width);
-        self.zero_coding_scan_masks[scan_unit] |= bit;
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn set_significant_scan_mask(&mut self, idx: usize, padded_width: usize) {
-        let (scan_unit, bit) = self.scan_unit_mask_index(idx, padded_width);
-        self.significant_scan_masks[scan_unit] |= bit;
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn scan_unit_mask_index(&self, idx: usize, padded_width: usize) -> (usize, u8) {
-        let row = idx / padded_width;
-        let col = idx - row * padded_width;
-        let pad = COEFFICIENTS_PADDING as usize;
-        debug_assert!(row >= pad);
-        debug_assert!(col >= pad);
-
-        let y = row - pad;
-        let x = col - pad;
-        debug_assert!(y < self.height as usize);
-        debug_assert!(x < self.width as usize);
-
-        let scan_unit = (y >> 2) * self.width as usize + x;
-        (scan_unit, 1u8 << (y & 3))
     }
 
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
@@ -467,15 +422,7 @@ impl BitPlaneDecodeContext {
 
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    pub(super) fn normal_neighborhood_significance_states_index(&self, idx: usize) -> u8 {
-        self.neighbor_significances[idx].all()
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn uses_normal_arithmetic_neighbor_path(&self) -> bool {
-        !self.style.selective_arithmetic_coding_bypass
-            && !self.style.termination_on_each_pass
-            && !self.style.vertically_causal_context
+    pub(super) fn uses_packed_columns(&self) -> bool {
+        self.packed_columns
     }
 }

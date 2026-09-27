@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_native::{
-    encode_htj2k, encode_precomputed_htj2k_53, encode_typed_component_planes_53,
+    encode, encode_htj2k, encode_precomputed_htj2k_53, encode_typed_component_planes_53,
     inspect_htj2k_capabilities, DecodeError, DecodeSettings, EncodeOptions,
     EncodeTypedComponentPlane, Htj2kCapabilityMode, Image, J2kForwardDwt53Output, MarkerError,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
@@ -248,6 +248,59 @@ fn reserved_ht_mode_is_rejected_by_inspection_and_production_decode() {
             "CAP reserved HT mode"
         )))
     ));
+}
+
+#[test]
+fn cap_without_the_part15_rsiz_bit_still_decodes_as_htj2k() {
+    // Encoders before 2026-06-28 (including this crate's) wrote CAP with
+    // Pcap15 but left SIZ Rsiz at 0; DICOM pyramids made then are in use.
+    let conformant = encoded_fixture();
+    let mut legacy = conformant.clone();
+    rewrite_rsiz(&mut legacy, |value| value & !0x4000);
+    assert_ne!(legacy, conformant);
+
+    let capabilities = inspect_htj2k_capabilities(&legacy)
+        .expect("legacy codestream inspects")
+        .expect("CAP still advertises Part 15");
+    assert!(capabilities.default_ht_block_coding());
+    let decode = |bytes: &[u8]| {
+        Image::new(bytes, &DecodeSettings::default())
+            .and_then(|image| image.decode())
+            .expect("decode")
+    };
+    assert_eq!(decode(&legacy), decode(&conformant));
+}
+
+#[test]
+fn part15_rsiz_bit_without_cap_is_rejected() {
+    let mut codestream = encode(
+        &[0, 1, 2, 3],
+        2,
+        2,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 0,
+            ..Default::default()
+        },
+    )
+    .expect("encode classic fixture");
+    rewrite_rsiz(&mut codestream, |value| value | 0x4000);
+
+    assert!(inspect_htj2k_capabilities(&codestream).is_err());
+    assert!(matches!(
+        Image::new(&codestream, &DecodeSettings::default()),
+        Err(DecodeError::Marker(MarkerError::ParseFailure(
+            "SIZ advertises Part 15 without Pcap15"
+        )))
+    ));
+}
+
+fn rewrite_rsiz(codestream: &mut [u8], rewrite: impl FnOnce(u16) -> u16) {
+    let siz = marker_offset(codestream, 0x51);
+    let value = u16::from_be_bytes([codestream[siz + 4], codestream[siz + 5]]);
+    codestream[siz + 4..siz + 6].copy_from_slice(&rewrite(value).to_be_bytes());
 }
 
 fn rewrite_ccap15(codestream: &mut [u8], rewrite: impl FnOnce(u16) -> u16) {

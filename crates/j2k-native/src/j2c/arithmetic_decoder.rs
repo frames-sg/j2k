@@ -6,6 +6,10 @@
 
 use super::mq::PACKED_DECODER_STATES;
 
+/// Tier-1 passes copy the decoder into a local, decode, and write it back so
+/// the MQ registers stay in machine registers; `Clone` (not `Copy`) keeps
+/// those copies explicit.
+#[derive(Clone)]
 pub(crate) struct ArithmeticDecoder<'a> {
     /// The underlying encoded data.
     data: &'a [u8],
@@ -139,54 +143,52 @@ impl<'a> ArithmeticDecoder<'a> {
         let qe = state as u32 & 0xffff;
         let mps = u32::from((state >> 16) & 1 != 0);
 
-        self.a -= qe;
+        let a = self.a - qe;
 
-        // This is a faster version that reduces branching, which has shown
-        // itself to be the main limiting factor for better performance.
-        // We short-circuit the case where just the most probably symbol is
-        // returned, and otherwise use a code path that works for both,
-        // MPS_EXCHANGE and LPS_EXCHANGE.
-
-        if (self.c >> 16) < self.a && self.a & 0x8000 != 0 {
-            return mps;
-        }
-
-        // Unified branchless MPS_EXCHANGE / LPS_EXCHANGE. In the Annex C.3.2
-        // procedures, the only difference is that LPS flips the role of cond:
+        // Branchless: whether the symbol is the MPS and whether A needs
+        // renormalizing are data-dependent and poorly predicted, and the
+        // caller already branches on the decoded bit. The formulas below
+        // reduce to "return the MPS, change nothing" in the fast case.
+        //
+        // In the Annex C.3.2 procedures, the only difference between
+        // MPS_EXCHANGE and LPS_EXCHANGE is that LPS flips the role of cond:
         //   exchange_mps: d = mps ^ cond,       flip when cond,      index = cond*nlps + inv*nmps
         //   exchange_lps: d = mps ^ inv_cond,   flip when inv_cond,  index = cond*nmps + inv*nlps
-        //
-        // This is equivalent to XOR-ing cond with is_lps, so we can handle
-        // both paths with a single branchless computation.
-        //
-        // As can be seen above, renormalization is always performed.
-        let is_lps = u32::from((self.c >> 16) >= self.a);
+        // so both are handled by XOR-ing cond with is_lps.
+        let is_lps = u32::from((self.c >> 16) >= a);
+        // A probability-state transition happens exactly when A renormalizes:
+        // on every LPS, and on an MPS that leaves A below 0x8000.
+        let transition = is_lps | u32::from(a < 0x8000);
 
-        // LPS: C -= A << 16 (no-op when MPS).
-        let lps_mask = is_lps.wrapping_neg(); // 0xFFFF_FFFF if LPS, 0 if MPS
-        self.c -= (self.a << 16) & lps_mask;
+        // LPS: C -= A << 16 and A = Qe; MPS: A stays A - Qe.
+        let lps_mask = is_lps.wrapping_neg();
+        self.c -= (a << 16) & lps_mask;
+        self.a = (a & !lps_mask) | (qe & lps_mask);
 
-        // Same condition as in exchange_mps / exchange_lps.
-        let cond = u32::from(self.a < qe);
-
-        // LPS: a = qe (no-op when MPS, a stays as a - qe).
-        self.a = (self.a & !lps_mask) | (qe & lps_mask);
-
-        // exchange_mps: d = mps ^ cond       →  cond ^ 0
-        // exchange_lps: d = mps ^ inv_cond   →  cond ^ 1
-        // unified:      d = mps ^ (cond ^ is_lps)
+        // Same condition as in exchange_mps / exchange_lps. Without a
+        // transition, A >= 0x8000 > Qe, so this is zero and d is the MPS.
+        let cond = u32::from(a < qe);
         let pick_nlps = cond ^ is_lps;
         let d = mps ^ pick_nlps;
 
-        // exchange_mps: flip mps when cond & switch       →  (cond ^ 0) & switch
-        // exchange_lps: flip mps when inv_cond & switch   →  (cond ^ 1) & switch
-        // unified:      flip mps when (cond ^ is_lps) & switch
         let pick_mask = u8::from(pick_nlps != 0).wrapping_neg();
         let next_mps = (state >> 24) as u8;
         let next_lps = (state >> 32) as u8;
-        context.0 = next_mps ^ ((next_mps ^ next_lps) & pick_mask);
+        let next = next_mps ^ ((next_mps ^ next_lps) & pick_mask);
+        let keep_mask = u8::from(transition == 0).wrapping_neg();
+        context.0 = next ^ ((next ^ context.0) & keep_mask);
 
-        self.renormalize();
+        // Shift A back to at least 0x8000 in one step when the buffered bits
+        // suffice (zero shift in the fast case); otherwise take the byte-in
+        // loop.
+        let shifts_needed = self.a.leading_zeros() - 16;
+        if shifts_needed <= self.shift_count {
+            self.a <<= shifts_needed;
+            self.c <<= shifts_needed;
+            self.shift_count -= shifts_needed;
+        } else {
+            self.renormalize();
+        }
 
         d
     }

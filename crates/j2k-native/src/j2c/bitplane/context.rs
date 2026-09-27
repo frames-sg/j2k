@@ -45,48 +45,6 @@ pub(super) fn context_label_sign_coding_index(
     SIGN_CONTEXT_LOOKUP[merged_significances as usize]
 }
 
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
-)]
-#[inline(always)]
-pub(super) fn context_label_sign_coding_index_with_neighbors<const NORMAL_NEIGHBORS: bool>(
-    idx: usize,
-    y: usize,
-    ctx: &BitPlaneDecodeContext,
-) -> (u8, u8) {
-    if NORMAL_NEIGHBORS {
-        context_label_sign_coding_index_normal(idx, ctx)
-    } else {
-        context_label_sign_coding_index(idx, y, ctx)
-    }
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
-)]
-#[inline(always)]
-pub(super) fn context_label_sign_coding_index_normal(
-    idx: usize,
-    ctx: &BitPlaneDecodeContext,
-) -> (u8, u8) {
-    let significances = ctx.normal_neighborhood_significance_states_index(idx) & 0b0101_0101;
-    let padded_width = ctx.padded_width as usize;
-
-    let top_sign = ctx.sign_index(idx - padded_width);
-    let left_sign = ctx.sign_index(idx - 1);
-    let right_sign = ctx.sign_index(idx + 1);
-    let bottom_sign = ctx.sign_index(idx + padded_width);
-
-    let signs = (top_sign << 6) | (left_sign << 4) | (right_sign << 2) | bottom_sign;
-    let negative_significances = significances & signs;
-    let positive_significances = significances & !signs;
-    let merged_significances = (negative_significances << 1) | positive_significances;
-
-    SIGN_CONTEXT_LOOKUP[merged_significances as usize]
-}
-
 /// Return the context label for zero coding (Section D.3.1).
 #[expect(
     clippy::inline_always,
