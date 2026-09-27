@@ -189,13 +189,15 @@ pub(super) fn store<'a>(
 
         let (x_offset, y_offset) = output_grid_offset(&header.size_data);
 
-        // Otherwise, copy sample by sample.
-        for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
-            let relative_y = (y - component_tile.rect.y0) as usize;
+        // Coefficients use the reconstructed resolution grid, which may be
+        // reduced or clipped relative to the full component tile.
+        let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
+        for y in sample_rect.y0..sample_rect.y1 {
+            let relative_y = (y - idwt_output.rect.y0) as usize;
             let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
-            for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
-                let relative_x = (x - component_tile.rect.x0) as usize;
+            for x in sample_rect.x0..sample_rect.x1 {
+                let relative_x = (x - idwt_output.rect.x0) as usize;
                 let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
                 let sample = idwt_output.coefficients
@@ -327,12 +329,13 @@ fn store_i64<'a>(
 
         let (x_offset, y_offset) = output_grid_offset(&header.size_data);
 
-        for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
-            let relative_y = (y - component_tile.rect.y0) as usize;
+        let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
+        for y in sample_rect.y0..sample_rect.y1 {
+            let relative_y = (y - idwt_output.rect.y0) as usize;
             let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
-            for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
-                let relative_x = (x - component_tile.rect.x0) as usize;
+            for x in sample_rect.x0..sample_rect.x1 {
+                let relative_x = (x - idwt_output.rect.x0) as usize;
                 let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
                 let sample = idwt_output.coefficients_i64
@@ -516,12 +519,13 @@ fn store_region<'a>(
         round_irreversible_output,
     );
 
-    for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
-        let relative_y = (y - component_tile.rect.y0) as usize;
+    let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
+    for y in sample_rect.y0..sample_rect.y1 {
+        let relative_y = (y - idwt_output.rect.y0) as usize;
         let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
-        for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
-            let relative_x = (x - component_tile.rect.x0) as usize;
+        for x in sample_rect.x0..sample_rect.x1 {
+            let relative_x = (x - idwt_output.rect.x0) as usize;
             let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
             let sample = idwt_output.coefficients
