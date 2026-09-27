@@ -75,6 +75,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+      - name: Fetch approved GPU workflow definitions
+        # The approved immutable revision predates the rewritten public history.
+        run: git fetch --no-tags origin 7307750c0e4ea4af071258a63962b0bfccf7973d
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.96"
