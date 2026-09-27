@@ -399,14 +399,19 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
         w: scaled_roi.w,
         h: scaled_roi.h,
     };
+    let chroma = P::scaled_chroma(
+        packet.dimensions().0,
+        (source_window.w, source_window.h),
+        full_params.scale_shift,
+    );
     let pack_params = fast_subsampled_windowed_pack_params_for_dims::<P>(
         (source_window.w, source_window.h),
+        chroma,
         fmt,
         local_roi,
     )?;
     let y_len = source_window.w as usize * source_window.h as usize;
-    let chroma_len =
-        source_window.w.div_ceil(2) as usize * P::chroma_height(source_window.h) as usize;
+    let chroma_len = chroma.plane_len();
     let mut scratch = runtime.batch_scratch()?;
     let y_plane = scratch.private_buffer(&runtime.device, "single_decode_y", y_len)?;
     let cb_plane = scratch.private_buffer(&runtime.device, "single_decode_cb", chroma_len)?;

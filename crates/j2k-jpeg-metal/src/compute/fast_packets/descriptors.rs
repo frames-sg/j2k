@@ -6,6 +6,24 @@ use super::super::{
     JpegFast422PacketV1, JpegFast444PacketV1, JpegHuffmanTable, MetalRuntime, PixelFormat,
     PlaneMode,
 };
+use crate::abi::{CHROMA_FANCY, CHROMA_REPLICATE, CHROMA_UNSAMPLED};
+
+/// libjpeg-turbo's chroma geometry for a luma extent at one decode scale:
+/// the chroma plane extent the decode kernels write and the pack-kernel chroma
+/// mode that maps it onto output pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::compute) struct ScaledChroma {
+    pub(in crate::compute) width: u32,
+    pub(in crate::compute) height: u32,
+    /// `CHROMA_FANCY`, `CHROMA_REPLICATE` or `CHROMA_UNSAMPLED`.
+    pub(in crate::compute) mode: u32,
+}
+
+impl ScaledChroma {
+    pub(in crate::compute) fn plane_len(self) -> usize {
+        self.width as usize * self.height as usize
+    }
+}
 
 /// Chroma geometry for the subsampled families that share the
 /// `JpegFast420Params` kernel ABI (4:2:0 halves chroma rows, 4:2:2 keeps
@@ -19,6 +37,9 @@ pub(in crate::compute) trait FastSubsampledPacket {
     const MCU_HEIGHT: u32;
     /// Whether the full-RGB batch path may group restart-interval packets.
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool;
+    /// Whether region windows need a neighbouring pixel on each side for
+    /// chroma smoothing (the subsampled families).
+    const REGION_CHROMA_CONTEXT: bool;
     const ENTROPY_PAYLOAD_CTX: &'static str;
     const REGION_SCALED_BATCH_OUT_STRIDE_CTX: &'static str;
     const OUTPUT_STRIDE_CTX: &'static str;
@@ -54,6 +75,10 @@ pub(in crate::compute) trait FastSubsampledPacket {
 
     fn chroma_width(width: u32) -> u32;
     fn chroma_height(height: u32) -> u32;
+    /// Chroma geometry for the luma `extent` of an image `image_width` pixels
+    /// wide decoded at `scale_shift` (0 full size, 3 = 1/8), following
+    /// libjpeg-turbo's per-component IDCT size and upsampler choice.
+    fn scaled_chroma(image_width: u32, extent: (u32, u32), scale_shift: u32) -> ScaledChroma;
     /// Vertical dispatch extent for the full-frame pack kernels: 4:2:0 packs
     /// 2x2 pixel quads per thread, 4:2:2 packs 2x1 pairs (full-height rows).
     fn packed_height_extent(height: u32) -> u32;
@@ -134,6 +159,7 @@ macro_rules! impl_fast_subsampled_packet_accessors {
 
 impl FastSubsampledPacket for JpegFast420PacketV1 {
     const FAMILY_NAME: &'static str = "fast420";
+    const REGION_CHROMA_CONTEXT: bool = true;
     const MCU_WIDTH: u32 = 16;
     const MCU_HEIGHT: u32 = 16;
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = true;
@@ -153,6 +179,22 @@ impl FastSubsampledPacket for JpegFast420PacketV1 {
     fn chroma_height(height: u32) -> u32 {
         height.div_ceil(2)
     }
+    fn scaled_chroma(image_width: u32, extent: (u32, u32), scale_shift: u32) -> ScaledChroma {
+        if scale_shift > 0 {
+            // Below full size libjpeg-turbo decodes 4:2:0 chroma with the next
+            // larger IDCT, at luma resolution.
+            return ScaledChroma {
+                width: extent.0,
+                height: extent.1,
+                mode: CHROMA_UNSAMPLED,
+            };
+        }
+        ScaledChroma {
+            width: Self::chroma_width(extent.0),
+            height: Self::chroma_height(extent.1),
+            mode: subsampled_chroma_mode(image_width.div_ceil(2), true),
+        }
+    }
     fn packed_height_extent(height: u32) -> u32 {
         height.div_ceil(2).max(1)
     }
@@ -160,6 +202,7 @@ impl FastSubsampledPacket for JpegFast420PacketV1 {
 
 impl FastSubsampledPacket for JpegFast422PacketV1 {
     const FAMILY_NAME: &'static str = "fast422";
+    const REGION_CHROMA_CONTEXT: bool = true;
     const MCU_WIDTH: u32 = 16;
     const MCU_HEIGHT: u32 = 8;
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = false;
@@ -179,6 +222,15 @@ impl FastSubsampledPacket for JpegFast422PacketV1 {
     fn chroma_height(height: u32) -> u32 {
         height
     }
+    fn scaled_chroma(image_width: u32, extent: (u32, u32), scale_shift: u32) -> ScaledChroma {
+        // `downsampled_width` of 4:2:2 chroma: ceil(width * (8 >> shift) / 16).
+        let image_chroma_width = image_width.div_ceil(2 << scale_shift);
+        ScaledChroma {
+            width: Self::chroma_width(extent.0),
+            height: Self::chroma_height(extent.1),
+            mode: subsampled_chroma_mode(image_chroma_width, scale_shift < 3),
+        }
+    }
     fn packed_height_extent(height: u32) -> u32 {
         height
     }
@@ -186,6 +238,7 @@ impl FastSubsampledPacket for JpegFast422PacketV1 {
 
 impl FastSubsampledPacket for JpegFast444PacketV1 {
     const FAMILY_NAME: &'static str = "fast444";
+    const REGION_CHROMA_CONTEXT: bool = false;
     const MCU_WIDTH: u32 = 8;
     const MCU_HEIGHT: u32 = 8;
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = false;
@@ -205,11 +258,28 @@ impl FastSubsampledPacket for JpegFast444PacketV1 {
     fn chroma_height(height: u32) -> u32 {
         height
     }
+    fn scaled_chroma(_image_width: u32, extent: (u32, u32), _scale_shift: u32) -> ScaledChroma {
+        ScaledChroma {
+            width: extent.0,
+            height: extent.1,
+            mode: CHROMA_UNSAMPLED,
+        }
+    }
     fn packed_height_extent(height: u32) -> u32 {
         height
     }
     fn packed_width_extent(width: u32) -> u32 {
         width
+    }
+}
+
+/// `jdsample.c`: 2:1 chroma is smoothed only above 1/8 scale and when it is
+/// more than two samples wide; otherwise each sample is replicated.
+fn subsampled_chroma_mode(image_chroma_width: u32, smoothing_scale: bool) -> u32 {
+    if smoothing_scale && image_chroma_width > 2 {
+        CHROMA_FANCY
+    } else {
+        CHROMA_REPLICATE
     }
 }
 

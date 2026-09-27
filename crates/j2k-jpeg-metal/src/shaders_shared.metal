@@ -71,6 +71,7 @@ struct JpegFast420Params {
     uint out_format;
     uint origin_x;
     uint origin_y;
+    uint chroma_mode;
 };
 
 struct JpegFast420ScaledParams {
@@ -128,6 +129,7 @@ struct JpegFast420WindowedPackParams {
     uint out_stride;
     uint alpha;
     uint out_format;
+    uint chroma_mode;
 };
 
 struct JpegFast420BatchParams {
@@ -206,6 +208,7 @@ struct JpegWindowedPackBatchParams {
     uint alpha;
     uint mode;
     uint out_format;
+    uint chroma_mode;
 };
 
 struct JpegWindowedTexturePackBatchParams {
@@ -219,6 +222,7 @@ struct JpegWindowedTexturePackBatchParams {
     uint height;
     uint tile_index;
     uint alpha;
+    uint chroma_mode;
 };
 
 struct JpegTexturePackBatchParams {
@@ -279,6 +283,17 @@ struct BitReader {
 constant uint MODE_GRAY = 0;
 constant uint MODE_YCBCR = 1;
 constant uint MODE_RGB = 2;
+
+// How the pack kernels map subsampled chroma planes onto output pixels,
+// following libjpeg-turbo's upsampler choice for the decode scale.
+// CHROMA_FANCY: triangle-filter upsampling (h2v1/h2v2_fancy_upsample).
+// CHROMA_REPLICATE: each chroma sample repeated (smoothing off at 1/8 scale or
+//   for chroma at most two samples wide).
+// CHROMA_UNSAMPLED: chroma planes already at output resolution (4:2:0 decoded
+//   below full size with libjpeg-turbo's larger chroma IDCT).
+constant uint CHROMA_FANCY = 0;
+constant uint CHROMA_REPLICATE = 1;
+constant uint CHROMA_UNSAMPLED = 2;
 
 constant uint OUT_GRAY = 0;
 constant uint OUT_RGB = 1;

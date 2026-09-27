@@ -206,8 +206,106 @@ fn idct_2x2_row(work: &[Wrapping<i32>; 16], output: &mut [u8; 4], row: usize) {
     output[out + 1] = descale_and_clamp(tmp10 - tmp0, shift);
 }
 
+/// 12-bit `jidctred.c`: `BITS_IN_JSAMPLE == 12` keeps `PASS1_BITS = 1` for
+/// headroom and computes in 64-bit `JLONG`. The C code's zero-AC shortcuts give
+/// the same results as the full computation and are omitted, as in
+/// [`super::scalar::idct_islow_12bit`].
+const PASS1_BITS_12: usize = 1;
+
+/// Reduced 4x4 IDCT of a 12-bit block (`jpeg_idct_4x4`).
+pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
+    let fix = |value: Wrapping<i32>| i64::from(value.0);
+    let odd = |z1: i64, z2: i64, z3: i64, z4: i64| {
+        (
+            z1 * -fix(FIX_0_211164243)
+                + z2 * fix(FIX_1_451774981)
+                + z3 * -fix(FIX_2_172734803)
+                + z4 * fix(FIX_1_061594337),
+            z1 * -fix(FIX_0_509795579)
+                + z2 * -fix(FIX_0_601344887)
+                + z3 * fix(FIX_0_899976223)
+                + z4 * fix(FIX_2_562915447),
+        )
+    };
+    let even = |p0: i64, p2: i64, p6: i64| {
+        let tmp0 = p0 << (CONST_BITS + 1);
+        let tmp2 = p2 * fix(FIX_1_847759065) - p6 * fix(FIX_0_765366865);
+        (tmp0 + tmp2, tmp0 - tmp2)
+    };
+    let mut work = [0i64; 32];
+    for col in (0..8).filter(|&col| col != 4) {
+        let p = |row: usize| i64::from(input[row * 8 + col]);
+        let (tmp10, tmp12) = even(p(0), p(2), p(6));
+        let (tmp0, tmp2) = odd(p(7), p(5), p(3), p(1));
+        let shift = CONST_BITS - PASS1_BITS_12 + 1;
+        work[col] = descale_i64(tmp10 + tmp2, shift);
+        work[24 + col] = descale_i64(tmp10 - tmp2, shift);
+        work[8 + col] = descale_i64(tmp12 + tmp0, shift);
+        work[16 + col] = descale_i64(tmp12 - tmp0, shift);
+    }
+    for row in 0..4 {
+        let w = |col: usize| work[row * 8 + col];
+        let (tmp10, tmp12) = even(w(0), w(2), w(6));
+        let (tmp0, tmp2) = odd(w(7), w(5), w(3), w(1));
+        let shift = CONST_BITS + PASS1_BITS_12 + 3 + 1;
+        let out = &mut output[row * 4..row * 4 + 4];
+        out[0] = level_shift_12bit(descale_i64(tmp10 + tmp2, shift));
+        out[3] = level_shift_12bit(descale_i64(tmp10 - tmp2, shift));
+        out[1] = level_shift_12bit(descale_i64(tmp12 + tmp0, shift));
+        out[2] = level_shift_12bit(descale_i64(tmp12 - tmp0, shift));
+    }
+}
+
+/// Reduced 2x2 IDCT of a 12-bit block (`jpeg_idct_2x2`).
+pub(crate) fn idct_islow_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
+    let fix = |value: Wrapping<i32>| i64::from(value.0);
+    let odd = |p7: i64, p5: i64, p3: i64, p1: i64| {
+        p7 * -fix(FIX_0_720959822)
+            + p5 * fix(FIX_0_850430095)
+            + p3 * -fix(FIX_1_272758580)
+            + p1 * fix(FIX_3_624509785)
+    };
+    let mut work = [0i64; 16];
+    for col in [0, 1, 3, 5, 7] {
+        let p = |row: usize| i64::from(input[row * 8 + col]);
+        let tmp10 = p(0) << (CONST_BITS + 2);
+        let tmp0 = odd(p(7), p(5), p(3), p(1));
+        let shift = CONST_BITS - PASS1_BITS_12 + 2;
+        work[col] = descale_i64(tmp10 + tmp0, shift);
+        work[8 + col] = descale_i64(tmp10 - tmp0, shift);
+    }
+    for row in 0..2 {
+        let w = |col: usize| work[row * 8 + col];
+        let tmp10 = w(0) << (CONST_BITS + 2);
+        let tmp0 = odd(w(7), w(5), w(3), w(1));
+        let shift = CONST_BITS + PASS1_BITS_12 + 3 + 2;
+        output[row * 2] = level_shift_12bit(descale_i64(tmp10 + tmp0, shift));
+        output[row * 2 + 1] = level_shift_12bit(descale_i64(tmp10 - tmp0, shift));
+    }
+}
+
+/// Reduced 1x1 IDCT of a 12-bit block (`jpeg_idct_1x1`).
+pub(crate) fn idct_islow_12bit_1x1(input: &[i16; 64]) -> u16 {
+    level_shift_12bit(descale_i64(i64::from(input[0]), 3))
+}
+
+const fn descale_i64(value: i64, shift: usize) -> i64 {
+    (value + (1 << (shift - 1))) >> shift
+}
+
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "reduced 12-bit IDCT samples are clamped to 0..=4095 before conversion"
+)]
+fn level_shift_12bit(value: i64) -> u16 {
+    (value + 2048).clamp(0, 4095) as u16
+}
+
+/// libjpeg's `DESCALE`: arithmetic right shift that rounds half up. Every
+/// stage of `jidctred.c` (and libjpeg-turbo's NEON/SSE2 ports) rounds, so a
+/// plain shift biases scaled output low by up to one level per component.
 fn descale(value: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
-    Wrapping(value.0 >> shift)
+    Wrapping((value + Wrapping(1 << (shift - 1))).0 >> shift)
 }
 
 #[expect(
@@ -215,7 +313,7 @@ fn descale(value: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
     reason = "reduced IDCT samples are clamped to the u8 output range before conversion"
 )]
 fn descale_and_clamp(value: Wrapping<i32>, shift: usize) -> u8 {
-    let shifted = value.0 >> shift;
+    let shifted = descale(value, shift).0;
     let level_shifted = shifted.wrapping_add(128);
     level_shifted.clamp(0, 255) as u8
 }
@@ -253,6 +351,47 @@ mod tests {
 
             assert_eq!(actual4, expected4);
             assert_eq!(actual2, expected2);
+        }
+    }
+
+    #[test]
+    fn twelve_bit_reduced_idcts_of_dc_blocks_are_uniform_rounded_samples() {
+        // DESCALE(dc, 3) + 2048: the DC-only result every reduced size shares.
+        for (dc, expected) in [
+            (4i16, 2049u16),
+            (-4, 2048),
+            (12, 2050),
+            (-5, 2047),
+            (32767, 4095),
+        ] {
+            let mut input = [0i16; 64];
+            input[0] = dc;
+            let mut out4 = [0u16; 16];
+            let mut out2 = [0u16; 4];
+            idct_islow_12bit_4x4(&input, &mut out4);
+            idct_islow_12bit_2x2(&input, &mut out2);
+            assert_eq!(idct_islow_12bit_1x1(&input), expected, "1x1 dc={dc}");
+            assert!(out4.iter().all(|&px| px == expected), "4x4 dc={dc}");
+            assert!(out2.iter().all(|&px| px == expected), "2x2 dc={dc}");
+        }
+    }
+
+    #[test]
+    fn reduced_idcts_round_dc_half_up_like_libjpeg_descale() {
+        // jpeg_idct_1x1 and the DC-only paths of jpeg_idct_{4x4,2x2} compute
+        // DESCALE(dc, 3) = (dc + 4) >> 3. A plain shift gives 128, 127, 129 for
+        // the first three inputs.
+        for (dc, expected) in [(4i16, 129u8), (-4, 128), (12, 130), (-5, 127), (3, 128)] {
+            let mut input = [0i16; 64];
+            input[0] = dc;
+            let mut out4 = [0u8; 16];
+            let mut out2 = [0u8; 4];
+            idct_islow_4x4(&input, &mut out4);
+            idct_islow_2x2(&input, &mut out2);
+
+            assert_eq!(idct_islow_1x1(&input), expected, "1x1 dc={dc}");
+            assert!(out4.iter().all(|&px| px == expected), "4x4 dc={dc}");
+            assert!(out2.iter().all(|&px| px == expected), "2x2 dc={dc}");
         }
     }
 }

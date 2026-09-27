@@ -313,8 +313,7 @@ fn assert_rgb16_decode_case(case: &Rgb16DecodeCase) {
     let scaled_roi = scaled_rect_covering_for_test(case.roi, 2);
     let scaled_row_bytes = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel();
     let stride = scaled_row_bytes + 6;
-    let expected_scaled =
-        expected_scaled_rgb16_pixels(&case.expected, case.dimensions.0 as usize, case.roi, 2);
+    let expected_scaled = full_scaled_rgb16_crop(&decoder, case.roi, Downscale::Half);
     let mut region_scaled = vec![0xaa; stride * scaled_roi.h as usize];
     let outcome = decoder
         .decode_region_scaled_into(
@@ -934,7 +933,12 @@ fn decode_region_scaled_into_rgba16_projects_progressive12_color_samples() {
         let scaled_roi = scaled_rect_covering_for_test(roi, 2);
         let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
         let stride = row_bytes + 8;
-        let expected_rgb = expected_scaled_rgb16_pixels(&full, full_width, roi, 2);
+        assert_eq!(
+            full.len(),
+            full_width * dec.info().dimensions.1 as usize * 6,
+            "{label} reference geometry"
+        );
+        let expected_rgb = full_scaled_rgb16_crop(&dec, roi, Downscale::Half);
         let expected = rgb16_to_rgba16(&expected_rgb, u16::MAX);
         let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
 
@@ -1566,6 +1570,28 @@ fn jpeg_rect(rect: PixelRect) -> Rect {
     }
 }
 
+/// The region of a full-image scaled `Rgb16` decode that a region-scaled
+/// decode of `roi` must reproduce.
+///
+/// libjpeg-turbo parity of the scaled image itself is covered by
+/// `tests/scaled_matrix.rs`; the hand-built 12-bit 4:2:2 and 4:2:0 fixtures
+/// here use a Huffman table libjpeg-turbo rejects, so they check that region
+/// routes agree with the full-image route.
+fn full_scaled_rgb16_crop(decoder: &Decoder<'_>, roi: Rect, scale: Downscale) -> Vec<u8> {
+    let (full, _) = decoder
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb16, scale))
+        .expect("full-image scaled Rgb16 decode");
+    let width = decoder.info().dimensions.0.div_ceil(scale.denominator());
+    crop_rgb16_bytes(
+        &full,
+        width as usize,
+        scaled_rect_covering_for_test(roi, scale.denominator()),
+    )
+}
+
+/// Point samples of a full-size decode at the scaled grid. Equal to a DCT
+/// scaled decode only for fixtures whose blocks are uniform (DC-only with
+/// equal neighbours), which is what the remaining callers use.
 fn expected_scaled_rgb16_pixels(full: &[u8], full_width: usize, roi: Rect, denom: u32) -> Vec<u8> {
     let scaled = scaled_rect_covering_for_test(roi, denom);
     let mut expected = Vec::with_capacity(scaled.w as usize * scaled.h as usize * 6);

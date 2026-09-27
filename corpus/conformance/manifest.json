@@ -56,6 +56,45 @@
       "height": 8,
       "tolerance": "bit_exact",
       "sampling": "grayscale"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "990f70470210e6fe4e2ccd62ba2a936d52bd34557971083fc46860351acab097",
+      "reference": "baseline_444_restart_67x45_half.rgb",
+      "reference_sha256": "df178855cf57967e10210725ea8dd00a8b1000033c685ee48604f03b72b6cb16",
+      "format": "Rgb8",
+      "width": 34,
+      "height": 23,
+      "scale": "1/2",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "libjpeg-turbo version 3.1.4.1 (build 20260327)"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "990f70470210e6fe4e2ccd62ba2a936d52bd34557971083fc46860351acab097",
+      "reference": "baseline_444_restart_67x45_quarter.rgb",
+      "reference_sha256": "ae115fa11103c93f7c53d7a5b2c03b495319b229459d4cad9097bac038dee27d",
+      "format": "Rgb8",
+      "width": 17,
+      "height": 12,
+      "scale": "1/4",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "libjpeg-turbo version 3.1.4.1 (build 20260327)"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "990f70470210e6fe4e2ccd62ba2a936d52bd34557971083fc46860351acab097",
+      "reference": "baseline_444_restart_67x45_eighth.rgb",
+      "reference_sha256": "842c61a0aa8483ce96acc7cf44058b5f7967df39ec2b39cda77f6b12840d029d",
+      "format": "Rgb8",
+      "width": 9,
+      "height": 6,
+      "scale": "1/8",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "libjpeg-turbo version 3.1.4.1 (build 20260327)"
     }
   ]
 }

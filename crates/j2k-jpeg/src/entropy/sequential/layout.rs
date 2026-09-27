@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{PreparedComponentPlan, PreparedDecodePlan};
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::info::{ColorSpace, DownscaleFactor, Rect};
 
 #[derive(Clone, Copy)]
@@ -207,6 +208,13 @@ impl Fast420RegionLayout {
     pub(super) fn chroma_width(self) -> usize {
         self.row_width().div_ceil(2)
     }
+}
+
+/// Whether the dedicated 4:2:0 smoothing emitters produce this decode: coded
+/// 4:2:0 YCbCr at a scale where libjpeg-turbo still upsamples its chroma with
+/// `h2v2_fancy_upsample`.
+pub(super) fn uses_fancy_420_emit(plan: &PreparedDecodePlan, scaled: &ScaledSampling) -> bool {
+    is_ycbcr_420(plan) && scaled.is_fancy_420()
 }
 
 pub(super) fn is_ycbcr_420(plan: &PreparedDecodePlan) -> bool {

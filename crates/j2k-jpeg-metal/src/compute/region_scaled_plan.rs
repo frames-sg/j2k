@@ -37,6 +37,7 @@ pub(super) fn windowed_texture_pack_params(
         height: plan.pack_params.height,
         tile_index: 0,
         alpha: u32::from(u8::MAX),
+        chroma_mode: plan.pack_params.chroma_mode,
     }
 }
 
@@ -174,8 +175,14 @@ pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
         w: scaled_roi.w,
         h: scaled_roi.h,
     };
+    let chroma = P::scaled_chroma(
+        packet.dimensions().0,
+        (source_window.w, source_window.h),
+        full_params.scale_shift,
+    );
     let pack_params = fast_subsampled_windowed_pack_params_for_dims::<P>(
         (source_window.w, source_window.h),
+        chroma,
         PixelFormat::Rgb8,
         local_roi,
     )
@@ -209,10 +216,10 @@ pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
             alpha: u32::from(u8::MAX),
             mode: plane_mode_to_u32(mode),
             out_format: OUT_RGB,
+            chroma_mode: pack_params.chroma_mode,
         },
         y_len: source_window.w as usize * source_window.h as usize,
-        chroma_len: P::chroma_width(source_window.w) as usize
-            * P::chroma_height(source_window.h) as usize,
+        chroma_len: chroma.plane_len(),
         out_tile_len: out_stride * scaled_roi.h as usize,
         out_dims: (scaled_roi.w, scaled_roi.h),
     })

@@ -13,9 +13,8 @@ use crate::entropy::progressive::{
 };
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
-    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
-    decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
-    stripe_region_layout, FastTileRegionScaledRequest, PreparedComponentPlan, PreparedDecodePlan,
+    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region, fast_tile_region_first_decode_mcu,
+    finish_scan, stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
     ResolvedPreparedComponentPlan,
 };
 use crate::entropy::ZIGZAG;
@@ -82,7 +81,7 @@ use self::color_convert::{
 mod warning_ownership;
 use self::warning_ownership::{merged_warnings, try_clone_warnings};
 mod core_traits;
-use self::core_traits::{CroppedWriter, ProgressiveDownscaleWriter};
+use self::core_traits::CroppedWriter;
 mod lossless_region;
 use self::lossless_region::{LosslessRegionRequest, LosslessRgbRegionFallback, LosslessRgbaAlpha};
 mod scratch;

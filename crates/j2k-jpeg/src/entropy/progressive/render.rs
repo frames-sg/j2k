@@ -6,19 +6,24 @@ use alloc::vec::Vec;
 
 use crate::allocation::{checked_allocation_len, try_reserve_for_len_with_live_budget};
 use crate::backend::Backend;
+use crate::color::scaled_sampling::{ScaledComponent, ScaledSampling, Upsample};
 use crate::color::upsample::{upsample_h1v2_fancy_row, upsample_h2v1_fancy_row};
 use crate::entropy::block::clamp_i16;
 use crate::entropy::ZIGZAG;
 use crate::error::JpegError;
+use crate::idct::downscale;
 use crate::info::ColorSpace;
 use crate::output::OutputWriter;
 
 use super::allocation::{allocate_component_images, checked_phase_capacity, ComponentImage};
-use super::model::{PreparedProgressiveComponentPlan, PreparedProgressivePlan};
+use super::model::PreparedProgressivePlan;
 
+/// IDCTs every block into its component image at the component's reduced
+/// size (8, 4, 2 or 1 samples per block side, as libjpeg-turbo chooses).
 pub(super) fn render_component_images(
     plan: &PreparedProgressivePlan,
     backend: Backend,
+    scaled: &ScaledSampling,
     coeffs: &[Vec<[i32; 64]>],
     coefficient_live_bytes: usize,
 ) -> Result<Vec<ComponentImage>, JpegError> {
@@ -27,22 +32,50 @@ pub(super) fn render_component_images(
             reason: "progressive coefficient/component count mismatch",
         });
     }
-    let mut images = allocate_component_images(plan, coefficient_live_bytes)?;
-    for ((component, component_coeffs), image) in plan
+    let mut images = allocate_component_images(plan, scaled, coefficient_live_bytes)?;
+    for (((index, component), component_coeffs), image) in plan
         .components
         .iter()
+        .enumerate()
         .zip(coeffs.iter())
         .zip(images.iter_mut())
     {
+        let idct_size = scaled.component(index).idct_size as usize;
         let mut dequant = [0i16; 64];
         let mut pixels = [0u8; 64];
+        let mut pixels_4x4 = [0u8; 16];
+        let mut pixels_2x2 = [0u8; 4];
         let natural_quant = natural_order_quant(&component.quant);
         for by in 0..component.block_rows as usize {
             for bx in 0..component.block_cols as usize {
                 let block_index = by * component.block_cols as usize + bx;
                 dequantize_block(&component_coeffs[block_index], &natural_quant, &mut dequant);
-                backend.idct(&dequant, &mut pixels);
-                deposit_block(&mut image.plane, image.stride, bx * 8, by * 8, &pixels);
+                let block: &[u8] = match idct_size {
+                    8 => {
+                        backend.idct(&dequant, &mut pixels);
+                        &pixels
+                    }
+                    4 => {
+                        downscale::idct_islow_4x4(&dequant, &mut pixels_4x4);
+                        &pixels_4x4
+                    }
+                    2 => {
+                        downscale::idct_islow_2x2(&dequant, &mut pixels_2x2);
+                        &pixels_2x2
+                    }
+                    _ => {
+                        pixels[0] = downscale::idct_islow_1x1(&dequant);
+                        &pixels[..1]
+                    }
+                };
+                deposit_block(
+                    &mut image.plane,
+                    image.stride,
+                    bx * idct_size,
+                    by * idct_size,
+                    idct_size,
+                    block,
+                );
             }
         }
     }
@@ -67,22 +100,25 @@ fn dequantize_block(coeffs: &[i32; 64], natural_quant: &[u16; 64], out: &mut [i1
     }
 }
 
-fn deposit_block(plane: &mut [u8], stride: usize, x: usize, y: usize, block: &[u8; 64]) {
-    for row in 0..8 {
+fn deposit_block(plane: &mut [u8], stride: usize, x: usize, y: usize, size: usize, block: &[u8]) {
+    for row in 0..size {
         let dst = (y + row) * stride + x;
-        let src = row * 8;
-        plane[dst..dst + 8].copy_from_slice(&block[src..src + 8]);
+        let src = row * size;
+        plane[dst..dst + size].copy_from_slice(&block[src..src + size]);
     }
 }
 
+/// Upsamples the component images to the (scaled) output grid row by row.
 pub(super) fn emit_component_images<W: OutputWriter>(
     plan: &PreparedProgressivePlan,
     backend: Backend,
+    scaled: &ScaledSampling,
+    output_dimensions: (u32, u32),
     images: &[ComponentImage],
     image_live_bytes: usize,
     writer: &mut W,
 ) -> Result<(), JpegError> {
-    let (width, height) = plan.dimensions;
+    let (width, height) = output_dimensions;
     let width_usize = width as usize;
     if plan.components.len() == 1 {
         checked_phase_capacity(image_live_bytes, width_usize, plan.scratch_bytes)?;
@@ -99,7 +135,7 @@ pub(super) fn emit_component_images<W: OutputWriter>(
         )?;
         gray.resize(width_usize, 0u8);
         for y in 0..height {
-            upsample_component_row(plan, backend, 0, image, y, &mut gray);
+            upsample_component_row(backend, scaled.component(0), image, y, &mut gray);
             writer.write_gray_row(y, &gray)?;
         }
         return Ok(());
@@ -121,9 +157,15 @@ pub(super) fn emit_component_images<W: OutputWriter>(
     try_reserve_for_len_with_live_budget(&mut c, width_usize, &mut live_bytes, plan.scratch_bytes)?;
     c.resize(width_usize, 0u8);
     for y in 0..height {
-        upsample_component_row(plan, backend, first, &images[first], y, &mut a);
-        upsample_component_row(plan, backend, second, &images[second], y, &mut b);
-        upsample_component_row(plan, backend, third, &images[third], y, &mut c);
+        upsample_component_row(backend, scaled.component(first), &images[first], y, &mut a);
+        upsample_component_row(
+            backend,
+            scaled.component(second),
+            &images[second],
+            y,
+            &mut b,
+        );
+        upsample_component_row(backend, scaled.component(third), &images[third], y, &mut c);
         match plan.color_space {
             ColorSpace::YCbCr => writer.write_ycbcr_row(y, &a, &b, &c)?,
             ColorSpace::Rgb => writer.write_rgb_row(y, &a, &b, &c)?,
@@ -148,69 +190,52 @@ fn component_slot(plan: &PreparedProgressivePlan, output_index: usize) -> Result
         })
 }
 
+/// Emits output row `y` of one component with libjpeg-turbo's upsampler for
+/// it; rows past the component's last sample row replicate that row.
 fn upsample_component_row(
-    plan: &PreparedProgressivePlan,
     backend: Backend,
-    component_index: usize,
+    component: ScaledComponent,
     image: &ComponentImage,
     y: u32,
     out: &mut [u8],
 ) {
-    let component = &plan.components[component_index];
-    let h_ratio = plan.sampling.max_h / component.h;
-    let v_ratio = plan.sampling.max_v / component.v;
-    if h_ratio == 1 && v_ratio == 1 {
-        let sample_y = (y as usize).min(component.sample_height.saturating_sub(1) as usize);
-        let row = component_row(component, image, sample_y);
-        out.copy_from_slice(&row[..out.len()]);
-    } else if h_ratio == 2 && v_ratio == 1 {
-        let sample_y = (y as usize).min(component.sample_height.saturating_sub(1) as usize);
-        let row = component_row(component, image, sample_y);
-        upsample_h2v1_fancy_row(row, out.len(), out);
-    } else if h_ratio == 2 && v_ratio == 2 {
-        let sample_y = ((y / 2) as usize).min(component.sample_height.saturating_sub(1) as usize);
-        let prev_y = sample_y.saturating_sub(1);
-        let next_y = (sample_y + 1).min(component.sample_height.saturating_sub(1) as usize);
-        let prev = component_row(component, image, prev_y);
-        let curr = component_row(component, image, sample_y);
-        let next = component_row(component, image, next_y);
-        backend.upsample_h2v2_fancy_row([prev, curr, next], out.len(), y % 2 == 1, out);
-    } else if h_ratio == 1 && v_ratio == 2 {
-        let sample_y = ((y / 2) as usize).min(component.sample_height.saturating_sub(1) as usize);
-        let prev_y = sample_y.saturating_sub(1);
-        let next_y = (sample_y + 1).min(component.sample_height.saturating_sub(1) as usize);
-        let prev = component_row(component, image, prev_y);
-        let curr = component_row(component, image, sample_y);
-        let next = component_row(component, image, next_y);
-        upsample_h1v2_fancy_row(prev, curr, next, out.len(), y % 2 == 1, out);
-    } else {
-        upsample_nearest(plan, component, image, y, out);
+    let last_row = component.height.saturating_sub(1) as usize;
+    let row = |sample_y: usize| component_row(component, image, sample_y.min(last_row));
+    let y = y as usize;
+    match component.upsample {
+        Upsample::None => out.copy_from_slice(&row(y)[..out.len()]),
+        Upsample::FancyH2V1 => upsample_h2v1_fancy_row(row(y), out.len(), out),
+        Upsample::FancyH2V2 => {
+            let sample_y = y / 2;
+            let rows = [
+                row(sample_y.saturating_sub(1)),
+                row(sample_y),
+                row(sample_y + 1),
+            ];
+            backend.upsample_h2v2_fancy_row(rows, out.len(), y % 2 == 1, out);
+        }
+        Upsample::FancyH1V2 => {
+            let sample_y = y / 2;
+            upsample_h1v2_fancy_row(
+                row(sample_y.saturating_sub(1)),
+                row(sample_y),
+                row(sample_y + 1),
+                out.len(),
+                y % 2 == 1,
+                out,
+            );
+        }
+        Upsample::Replicate => {
+            let samples = row(y / component.v_ratio as usize);
+            let h_ratio = component.h_ratio as usize;
+            for (x, dst) in out.iter_mut().enumerate() {
+                *dst = samples[(x / h_ratio).min(samples.len() - 1)];
+            }
+        }
     }
 }
 
-fn component_row<'a>(
-    component: &PreparedProgressiveComponentPlan,
-    image: &'a ComponentImage,
-    y: usize,
-) -> &'a [u8] {
-    let width = component.sample_width as usize;
+fn component_row(component: ScaledComponent, image: &ComponentImage, y: usize) -> &[u8] {
     let row_start = y * image.stride;
-    &image.plane[row_start..row_start + width]
-}
-
-fn upsample_nearest(
-    plan: &PreparedProgressivePlan,
-    component: &PreparedProgressiveComponentPlan,
-    image: &ComponentImage,
-    y: u32,
-    out: &mut [u8],
-) {
-    let sample_y = ((y as usize) * usize::from(component.v) / usize::from(plan.sampling.max_v))
-        .min(component.sample_height.saturating_sub(1) as usize);
-    let row = component_row(component, image, sample_y);
-    for (x, dst) in out.iter_mut().enumerate() {
-        let sample_x = (x * usize::from(component.h) / usize::from(plan.sampling.max_h))
-            .min(row.len().saturating_sub(1));
-        *dst = row[sample_x];
-    }
+    &image.plane[row_start..row_start + component.width as usize]
 }

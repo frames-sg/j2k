@@ -29,9 +29,17 @@ pub(super) fn classify_color_fast_packet_info(info: &Info) -> Option<JpegFastPac
         return None;
     }
 
+    // libjpeg-turbo replicates full-size 2:1 chroma at most two samples wide
+    // (images at most four pixels wide) instead of smoothing it; the fused
+    // device kernels only smooth, so such images stay on the CPU decoder.
+    let smoothed_chroma = info.dimensions.0 > 4;
     match (info.color_space, info.sampling.components()) {
-        (ColorSpace::YCbCr, [(2, 2), (1, 1), (1, 1)]) => Some(JpegFastPacketFamily::Fast420),
-        (ColorSpace::YCbCr, [(2, 1), (1, 1), (1, 1)]) => Some(JpegFastPacketFamily::Fast422),
+        (ColorSpace::YCbCr, [(2, 2), (1, 1), (1, 1)]) if smoothed_chroma => {
+            Some(JpegFastPacketFamily::Fast420)
+        }
+        (ColorSpace::YCbCr, [(2, 1), (1, 1), (1, 1)]) if smoothed_chroma => {
+            Some(JpegFastPacketFamily::Fast422)
+        }
         (ColorSpace::YCbCr | ColorSpace::Rgb, [(1, 1), (1, 1), (1, 1)]) => {
             Some(JpegFastPacketFamily::Fast444)
         }

@@ -54,6 +54,48 @@ sys.stdout.buffer.write(header + body)
 PY
 }
 
+# Integer-only texture (no floating point or library RNG) so every host
+# produces the same pixels: triangle waves, two flat patches that code as
+# DC-only blocks, LCG noise, and a saturated corner.
+write_texture_ppm() {
+    local width="$1"
+    local height="$2"
+    python3 - "$width" "$height" <<'PY'
+import sys
+
+width = int(sys.argv[1])
+height = int(sys.argv[2])
+state = 20260927
+
+
+def noise():
+    global state
+    state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+    return state % 121 - 60
+
+
+header = f"P6\n{width} {height}\n255\n".encode()
+body = bytearray()
+for y in range(height):
+    for x in range(width):
+        rgb = [
+            28 + abs((x * 9 + y * 4) % 144 - 72) * 200 // 72,
+            40 + x * 180 // max(width - 1, 1),
+            200 - y * 150 // max(height - 1, 1) + abs((x + y) * 7 % 64 - 32) - 16,
+        ]
+        if y < 16 and 40 <= x < 56:
+            rgb = [201, 77, 143]
+        if 24 <= y < 40 and 8 <= x < 24:
+            rgb = [19, 233, 98]
+        if y >= 30 and x >= 40:
+            rgb = [value + noise() for value in rgb]
+        if y < 10 and x < 12:
+            rgb = [255, 255, 0]
+        body.extend(min(max(value, 0), 255) for value in rgb)
+sys.stdout.buffer.write(header + bytes(body))
+PY
+}
+
 strip_pnm_header() {
     python3 -c 'import sys
 data = sys.stdin.buffer.read()
@@ -112,6 +154,20 @@ write_gray_pgm 8 8 \
         -outfile grayscale_8x8.jpg
 djpeg -grayscale grayscale_8x8.jpg | strip_pnm_header > grayscale_8x8.gray
 assert_size grayscale_8x8.gray 64
+
+# DCT-scaled references: the reduced IDCTs behind OpenSlide's NDPI/VMS levels.
+write_texture_ppm 67 45 \
+    | cjpeg -quality 90 -sample 1x1,1x1,1x1 -baseline -optimize -restart 3B \
+        -outfile baseline_444_restart_67x45.jpg
+djpeg -rgb -scale 1/2 baseline_444_restart_67x45.jpg \
+    | strip_pnm_header > baseline_444_restart_67x45_half.rgb
+assert_size baseline_444_restart_67x45_half.rgb 2346
+djpeg -rgb -scale 1/4 baseline_444_restart_67x45.jpg \
+    | strip_pnm_header > baseline_444_restart_67x45_quarter.rgb
+assert_size baseline_444_restart_67x45_quarter.rgb 612
+djpeg -rgb -scale 1/8 baseline_444_restart_67x45.jpg \
+    | strip_pnm_header > baseline_444_restart_67x45_eighth.rgb
+assert_size baseline_444_restart_67x45_eighth.rgb 162
 
 cat > manifest.json <<EOF
 {
@@ -172,10 +228,53 @@ cat > manifest.json <<EOF
       "height": 8,
       "tolerance": "bit_exact",
       "sampling": "grayscale"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "$(sha256_file baseline_444_restart_67x45.jpg)",
+      "reference": "baseline_444_restart_67x45_half.rgb",
+      "reference_sha256": "$(sha256_file baseline_444_restart_67x45_half.rgb)",
+      "format": "Rgb8",
+      "width": 34,
+      "height": 23,
+      "scale": "1/2",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "$LJT_VERSION"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "$(sha256_file baseline_444_restart_67x45.jpg)",
+      "reference": "baseline_444_restart_67x45_quarter.rgb",
+      "reference_sha256": "$(sha256_file baseline_444_restart_67x45_quarter.rgb)",
+      "format": "Rgb8",
+      "width": 17,
+      "height": 12,
+      "scale": "1/4",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "$LJT_VERSION"
+    },
+    {
+      "input": "baseline_444_restart_67x45.jpg",
+      "input_sha256": "$(sha256_file baseline_444_restart_67x45.jpg)",
+      "reference": "baseline_444_restart_67x45_eighth.rgb",
+      "reference_sha256": "$(sha256_file baseline_444_restart_67x45_eighth.rgb)",
+      "format": "Rgb8",
+      "width": 9,
+      "height": 6,
+      "scale": "1/8",
+      "tolerance": "bit_exact",
+      "sampling": "4:4:4 restart-coded",
+      "generator": "$LJT_VERSION"
     }
   ]
 }
 EOF
+
+# DCT-scaling reference matrix (every chroma layout, progressive and 12-bit)
+# for the scaled-decode tests; written to j2k-test-support/fixtures.
+python3 scaled_matrix.py
 
 echo "Regenerated fixtures:"
 ls -la *.jpg *.rgb *.gray manifest.json

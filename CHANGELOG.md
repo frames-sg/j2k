@@ -13,6 +13,33 @@ and stale roadmap entries have been removed from the public documentation set.
 - Improves grouped JPEG Metal decode, pooled output reuse, HT cleanup,
   and inverse wavelet transform dispatch with regression coverage.
 
+- JPEG DCT-scaled decodes (1/2, 1/4, 1/8) now match libjpeg-turbo, and
+  therefore OpenSlide's NDPI/VMS levels, bit for bit. Checked against a
+  committed libjpeg-turbo 3.1.4.1 reference matrix covering every chroma
+  layout, restart intervals, progressive scans and 12-bit precision:
+  - Reduced IDCTs round like libjpeg's `DESCALE` instead of truncating.
+  - Each component gets libjpeg-turbo's IDCT size: 4:2:0 and 4:1:0 chroma is
+    decoded with a larger reduced IDCT, so 4:2:0 needs no upsampling below
+    full size.
+  - Chroma is replicated instead of smoothed at 1/8 scale, and at any scale
+    (including full size) when 2:1 chroma is at most two samples wide.
+  - Progressive images apply the reduced IDCT to their coefficients instead
+    of decimating a full-size decode.
+  - 12-bit images use 12-bit reduced IDCTs instead of decimating a full-size
+    decode. 12-bit 4:4:0, 4:1:1, 4:1:0 and 1x4 layouts still return
+    `NotImplemented`.
+- Fixes a panic in 12-bit region decodes when the region excluded image
+  blocks on its left or right.
+- Includes output rows in the 12-bit scratch budget so tall, narrow JPEGs
+  decode without false memory-cap failures.
+- `j2k-jpeg-cuda` CPU-backed scaled and region-scaled surfaces now have the
+  scaled dimensions; they were sized from the source rectangle.
+- JPEG Metal scaled decodes follow the same rules, and 4:2:0/4:2:2 region
+  decodes keep the neighbouring chroma their smoothing reads when a region
+  ends inside the image. JPEG images at most four pixels wide with 4:2:0 or
+  4:2:2 chroma are no longer Metal or CUDA fast shapes: explicit Metal
+  requests reject them and automatic routing decodes them on the CPU.
+
 - Upgrades `fearless_simd` to 1.0.0 for the `j2k-jpeg` AArch64 NEON kernels
   and the optional `j2k-native` `simd` feature. The dependency is private, so
   public APIs are unchanged. `j2k-jpeg` keeps its private exact-AVX2 token on

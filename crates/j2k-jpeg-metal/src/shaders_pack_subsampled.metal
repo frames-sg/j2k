@@ -23,6 +23,8 @@ kernel void jpeg_pack_420(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         gid.x,
         gid.y,
         cb,
@@ -56,6 +58,8 @@ kernel void jpeg_pack_420_rgb(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         gid.x,
         gid.y,
         cb,
@@ -157,6 +161,8 @@ kernel void jpeg_pack_420_rgba(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         gid.x,
         gid.y,
         cb,
@@ -266,6 +272,8 @@ kernel void jpeg_pack_422_rgb(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         gid.x,
         gid.y,
         cb,
@@ -380,6 +388,8 @@ kernel void jpeg_pack_422_rgba(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         gid.x,
         gid.y,
         cb,
@@ -421,6 +431,8 @@ kernel void jpeg_pack_422_windowed(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -460,6 +472,8 @@ kernel void jpeg_pack_422_windowed_rgb(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -502,6 +516,8 @@ kernel void jpeg_pack_422_windowed_rgb_batch(
         tile_cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -545,6 +561,8 @@ kernel void jpeg_pack_422_windowed_rgba_texture(
         tile_cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -579,6 +597,8 @@ kernel void jpeg_pack_422_windowed_rgba(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -620,6 +640,8 @@ kernel void jpeg_pack_420_windowed(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -659,6 +681,8 @@ kernel void jpeg_pack_420_windowed_rgb(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -701,6 +725,8 @@ kernel void jpeg_pack_420_windowed_rgb_batch(
         tile_cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -744,6 +770,8 @@ kernel void jpeg_pack_420_windowed_rgba_texture(
         tile_cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,
@@ -797,6 +825,8 @@ kernel void jpeg_pack_420_windowed_rgba(
         cr_plane,
         params.chroma_width,
         params.chroma_height,
+
+        params.chroma_mode,
         src_x,
         src_y,
         cb,

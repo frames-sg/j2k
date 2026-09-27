@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Fast 4:2:0 sequential scan drivers, ROI planning, and scaled routing.
+//! Fast 4:2:0 sequential scan drivers and ROI planning (full-size only; scaled
+//! 4:2:0 decodes chroma with a larger IDCT on the generic route).
 
 use super::deposit::{
     FastTile420Components, FastTile420DcState, FastTile420EntropyState, FastTile420Window,
-    ReducedIdctScratch,
 };
 use super::emit::{
     emit_stripe_rgb, emit_stripe_rgb_420_region, Fast420RegionStripe, StripeEmit, StripeNeighbors,
 };
 use super::layout::{
     fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, last_mcu_row_for_rect,
-    mcu_row_intersects_rect, scaled_dimensions, Fast420RegionLayout,
+    mcu_row_intersects_rect, uses_fancy_420_emit, Fast420RegionLayout,
 };
 use super::profile::{Fast420ScanProfiler, NoopFast420Profiler, NoopFast420ScanProfile};
 use super::restart::{finish_scan, reader_from_checkpoint};
@@ -19,6 +19,7 @@ use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, RgbOutputScratch,
 use crate::backend::Backend;
 #[cfg(feature = "bench-internals")]
 use crate::bench_support::BenchFast420Profile;
+use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::block::CoefficientBlock;
 use crate::error::{JpegError, Warning};
 use crate::info::{DownscaleFactor, Rect};
@@ -31,7 +32,7 @@ use alloc::vec::Vec;
 mod rows;
 
 pub(super) use self::rows::decode_mcu_row_fast_tile_420;
-use self::rows::{decode_mcu_row_fast_tile_420_scaled, skip_mcu_fast_tile_420};
+use self::rows::skip_mcu_fast_tile_420;
 
 fn fast_tile_components(
     plan: &PreparedDecodePlan,
@@ -90,10 +91,13 @@ where
 
     pool.prepare_for(
         plan,
+        plan.sampling,
         mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
         plan.scratch_bytes,
     )?;
+    let scaled = ScaledSampling::new(plan.sampling, DownscaleFactor::Full, plan.dimensions);
+    debug_assert!(uses_fancy_420_emit(plan, &scaled));
 
     let mut br = BitReader::new(scan_bytes);
     let mut coeff = CoefficientBlock::default();
@@ -179,6 +183,7 @@ where
                 stripe_index: my - 1,
                 source_width: width as usize,
                 downscale: DownscaleFactor::Full,
+                scaled: &scaled,
             },
         )?;
         profile.finish_rgb_emit(emit_timer);
@@ -200,6 +205,7 @@ where
             stripe_index: mcu_rows - 1,
             source_width: width as usize,
             downscale: DownscaleFactor::Full,
+            scaled: &scaled,
         },
     )?;
     profile.finish_rgb_emit(emit_timer);
@@ -256,6 +262,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
     )?;
     if let Err(error) = pool.prepare_for(
         plan,
+        plan.sampling,
         region_layout.stripe_mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
         plan.scratch_bytes,
@@ -380,198 +387,6 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
                     region_layout,
                     crop_rows: &mut crop_rows,
                     downscale: DownscaleFactor::Full,
-                },
-            )?;
-        }
-        finish_scan(&mut br, decode_mcu_row_end == mcu_rows)
-    })();
-    pool.restore_sink_rows(crop_rows);
-    result
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct FastTileRegionScaledRequest<'a> {
-    pub(crate) roi: Rect,
-    pub(crate) downscale: DownscaleFactor,
-    pub(crate) checkpoint: Option<&'a DeviceCheckpoint>,
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the fused scaled-region loop keeps ROI seek, reduced IDCT, restart, and writer state in decode order"
-)]
-pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + InterleavedRgbWriter>(
-    plan: &PreparedDecodePlan,
-    backend: Backend,
-    scan_bytes: &[u8],
-    pool: &mut ScratchPool,
-    writer: &mut W,
-    request: FastTileRegionScaledRequest<'_>,
-) -> Result<Vec<Warning>, JpegError> {
-    let FastTileRegionScaledRequest {
-        roi,
-        downscale,
-        checkpoint,
-    } = request;
-    debug_assert!(plan.matches_fast_tile_shape());
-    debug_assert!(downscale != DownscaleFactor::Full);
-
-    let (width, height) = scaled_dimensions(plan.dimensions, downscale);
-    let max_h = u32::from(plan.sampling.max_h);
-    let max_v = u32::from(plan.sampling.max_v);
-    let block_size = downscale.output_block_size();
-    let mcu_width_px = block_size * max_h;
-    let mcu_height_px = block_size * max_v;
-    let mcus_per_row = width.div_ceil(mcu_width_px);
-    let mcu_rows = height.div_ceil(mcu_height_px);
-    let first_decode_mcu_row = fast420_first_decode_mcu_row(roi, mcu_height_px);
-    let decode_mcu_row_end = fast420_decode_mcu_row_end(roi, mcu_height_px, mcu_rows);
-    let last_output_mcu_row = last_mcu_row_for_rect(roi, mcu_height_px, mcu_rows);
-
-    let region_layout = Fast420RegionLayout::new_for_mcu_width(width as usize, roi, mcu_width_px);
-
-    let mut crop_rows = pool.take_sink_rows(
-        region_layout.row_width().saturating_mul(3),
-        plan.scratch_bytes,
-    )?;
-    if let Err(error) = pool.prepare_for(
-        plan,
-        region_layout.stripe_mcus_per_row,
-        block_size,
-        plan.scratch_bytes,
-    ) {
-        pool.restore_sink_rows(crop_rows);
-        return Err(error);
-    }
-    let result = (|| {
-        let mut coeff = CoefficientBlock::default();
-        let ScratchPool {
-            prev_dc,
-            stripe_a,
-            stripe_b,
-            stripe_c,
-            ..
-        } = pool;
-        let mut pixels_4x4 = [0u8; 16];
-        let mut pixels_2x2 = [0u8; 4];
-        let (y_dc_slice, rest_dc) = prev_dc.split_at_mut(1);
-        let (cb_dc_slice, cr_dc_slice) = rest_dc.split_at_mut(1);
-        let y_dc = &mut y_dc_slice[0];
-        let cb_dc = &mut cb_dc_slice[0];
-        let cr_dc = &mut cr_dc_slice[0];
-        let target_mcu = first_decode_mcu_row * mcus_per_row;
-        let (mut br, checkpoint_dc, start_mcu) =
-            reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
-        *y_dc = checkpoint_dc[0];
-        *cb_dc = checkpoint_dc[1];
-        *cr_dc = checkpoint_dc[2];
-        let (y, cb, cr) = fast_tile_components(plan)?;
-        let components = FastTile420Components { y, cb, cr };
-        let window = FastTile420Window {
-            mcus_per_row,
-            stripe_mcu_start: region_layout.stripe_mcu_start,
-            stripe_mcus_per_row: region_layout.stripe_mcus_per_row,
-        };
-        for _ in start_mcu..target_mcu {
-            skip_mcu_fast_tile_420(
-                components.y,
-                components.cb,
-                components.cr,
-                &mut br,
-                &mut *y_dc,
-                &mut *cb_dc,
-                &mut *cr_dc,
-            )?;
-        }
-
-        let mut prev_stripe: &mut StripeBuffer = stripe_a;
-        let mut curr_stripe: &mut StripeBuffer = stripe_b;
-        let mut next_stripe: &mut StripeBuffer = stripe_c;
-
-        decode_mcu_row_fast_tile_420_scaled(
-            components,
-            &mut FastTile420EntropyState {
-                br: &mut br,
-                dc: FastTile420DcState {
-                    y: &mut *y_dc,
-                    cb: &mut *cb_dc,
-                    cr: &mut *cr_dc,
-                },
-                coeff: &mut coeff,
-            },
-            downscale,
-            ReducedIdctScratch {
-                pixels_4x4: &mut pixels_4x4,
-                pixels_2x2: &mut pixels_2x2,
-            },
-            window,
-            curr_stripe,
-        )?;
-
-        let mut has_prev = false;
-        for my in first_decode_mcu_row + 1..decode_mcu_row_end {
-            decode_mcu_row_fast_tile_420_scaled(
-                components,
-                &mut FastTile420EntropyState {
-                    br: &mut br,
-                    dc: FastTile420DcState {
-                        y: &mut *y_dc,
-                        cb: &mut *cb_dc,
-                        cr: &mut *cr_dc,
-                    },
-                    coeff: &mut coeff,
-                },
-                downscale,
-                ReducedIdctScratch {
-                    pixels_4x4: &mut pixels_4x4,
-                    pixels_2x2: &mut pixels_2x2,
-                },
-                window,
-                next_stripe,
-            )?;
-            if mcu_row_intersects_rect(my - 1, mcu_height_px, roi) {
-                emit_stripe_rgb_420_region(
-                    plan,
-                    backend,
-                    writer,
-                    Fast420RegionStripe {
-                        neighbors: StripeNeighbors {
-                            prev: has_prev.then_some(&*prev_stripe),
-                            curr: curr_stripe,
-                            next: Some(&*next_stripe),
-                        },
-                        stripe_index: my - 1,
-                        roi,
-                        region_layout,
-                        crop_rows: &mut crop_rows,
-                        downscale,
-                    },
-                )?;
-            }
-            core::mem::swap(&mut prev_stripe, &mut curr_stripe);
-            core::mem::swap(&mut curr_stripe, &mut next_stripe);
-            has_prev = true;
-        }
-
-        let curr_mcu_row = decode_mcu_row_end - 1;
-        if curr_mcu_row <= last_output_mcu_row
-            && mcu_row_intersects_rect(curr_mcu_row, mcu_height_px, roi)
-        {
-            emit_stripe_rgb_420_region(
-                plan,
-                backend,
-                writer,
-                Fast420RegionStripe {
-                    neighbors: StripeNeighbors {
-                        prev: has_prev.then_some(&*prev_stripe),
-                        curr: curr_stripe,
-                        next: None,
-                    },
-                    stripe_index: curr_mcu_row,
-                    roi,
-                    region_layout,
-                    crop_rows: &mut crop_rows,
-                    downscale,
                 },
             )?;
         }

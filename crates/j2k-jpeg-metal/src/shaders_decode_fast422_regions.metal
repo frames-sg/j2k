@@ -743,8 +743,12 @@ kernel void jpeg_decode_fast420_scaled(
     thread short coeffs[64];
 
     const uint y_block_size = 8u >> params.scale_shift;
-    const uint c_block_size = 8u >> params.scale_shift;
     const uint y_mcu_size = 16u >> params.scale_shift;
+    // Below full size libjpeg-turbo decodes 4:2:0 chroma with the next larger
+    // reduced IDCT, so each chroma block covers its whole MCU and the chroma
+    // planes are at output resolution (the pack kernels use CHROMA_UNSAMPLED).
+    const uint c_scale_shift = params.scale_shift == 0u ? 0u : params.scale_shift - 1u;
+    const uint c_block_size = 8u >> c_scale_shift;
 
     uint mx = 0u;
     uint my = 0u;
@@ -766,10 +770,10 @@ kernel void jpeg_decode_fast420_scaled(
         if (!jpeg_decode_deposit_scaled_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.scaled_width, params.scaled_width, params.scaled_height, y_x + y_block_size, y_y + y_block_size, params.scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, c_scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, c_scale_shift, coeffs)) {
             return;
         }
         advance_mcu_cursor(mx, my, params.mcus_per_row);
@@ -814,10 +818,14 @@ kernel void jpeg_decode_fast420_scaled_region(
     thread short coeffs[64];
 
     const uint y_block_size = 8u >> params.scale_shift;
-    const uint c_block_size = 8u >> params.scale_shift;
     const uint y_mcu_size = 16u >> params.scale_shift;
-    const uint chroma_origin_x = params.origin_x / 2u;
-    const uint chroma_origin_y = params.origin_y / 2u;
+    // Below full size libjpeg-turbo decodes 4:2:0 chroma with the next larger
+    // reduced IDCT: chroma blocks cover whole MCUs at output resolution.
+    const bool chroma_unsampled = params.scale_shift != 0u;
+    const uint c_scale_shift = chroma_unsampled ? params.scale_shift - 1u : 0u;
+    const uint c_block_size = 8u >> c_scale_shift;
+    const uint chroma_origin_x = chroma_unsampled ? params.origin_x : params.origin_x / 2u;
+    const uint chroma_origin_y = chroma_unsampled ? params.origin_y : params.origin_y / 2u;
 
     uint mx = 0u;
     uint my = 0u;
@@ -839,10 +847,10 @@ kernel void jpeg_decode_fast420_scaled_region(
         if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, y_plane, params.scaled_width, params.scaled_width, params.scaled_height, params.origin_x, params.origin_y, y_x + y_block_size, y_y + y_block_size, y_block_size, y_block_size, params.scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, c_scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, c_scale_shift, coeffs)) {
             return;
         }
         advance_mcu_cursor(mx, my, params.mcus_per_row);
@@ -895,10 +903,14 @@ kernel void jpeg_decode_fast420_scaled_region_batch(
     thread short coeffs[64];
 
     const uint y_block_size = 8u >> params.scale_shift;
-    const uint c_block_size = 8u >> params.scale_shift;
     const uint y_mcu_size = 16u >> params.scale_shift;
-    const uint chroma_origin_x = params.origin_x / 2u;
-    const uint chroma_origin_y = params.origin_y / 2u;
+    // Below full size libjpeg-turbo decodes 4:2:0 chroma with the next larger
+    // reduced IDCT: chroma blocks cover whole MCUs at output resolution.
+    const bool chroma_unsampled = params.scale_shift != 0u;
+    const uint c_scale_shift = chroma_unsampled ? params.scale_shift - 1u : 0u;
+    const uint c_block_size = 8u >> c_scale_shift;
+    const uint chroma_origin_x = chroma_unsampled ? params.origin_x : params.origin_x / 2u;
+    const uint chroma_origin_y = chroma_unsampled ? params.origin_y : params.origin_y / 2u;
 
     uint mx = 0u;
     uint my = 0u;
@@ -920,10 +932,10 @@ kernel void jpeg_decode_fast420_scaled_region_batch(
         if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, tile_y_plane, params.scaled_width, params.scaled_width, params.scaled_height, params.origin_x, params.origin_y, y_x + y_block_size, y_y + y_block_size, y_block_size, y_block_size, params.scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, tile_cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, tile_cb_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, c_scale_shift, coeffs)) {
             return;
         }
-        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, params.scale_shift, coeffs)) {
+        if (!jpeg_decode_deposit_scaled_region_block_or_skip(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, chroma_origin_x, chroma_origin_y, c_x, c_y, c_block_size, c_block_size, c_scale_shift, coeffs)) {
             return;
         }
         advance_mcu_cursor(mx, my, params.mcus_per_row);

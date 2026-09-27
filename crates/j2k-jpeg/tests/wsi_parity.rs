@@ -7,7 +7,9 @@ use j2k_test_support::{
     crop_interleaved_bytes, restart_coded_grayscale_jpeg, scaled_rect_covering, PixelRect,
     JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB, JPEG_BASELINE_420_RESTART_32X16,
     JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8, JPEG_BASELINE_422_16X8_RGB,
-    JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB, JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
+    JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB, JPEG_BASELINE_444_RESTART_67X45,
+    JPEG_BASELINE_444_RESTART_67X45_EIGHTH_RGB, JPEG_BASELINE_444_RESTART_67X45_HALF_RGB,
+    JPEG_BASELINE_444_RESTART_67X45_QUARTER_RGB, JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
 };
 
 const BASELINE_420_JPG: &[u8] = JPEG_BASELINE_420_16X16;
@@ -15,6 +17,21 @@ const BASELINE_420_RGB: &[u8] = JPEG_BASELINE_420_16X16_RGB;
 
 const GRAYSCALE_8X8_JPG: &[u8] = JPEG_GRAYSCALE_8X8;
 const GRAYSCALE_8X8_GRAY: &[u8] = JPEG_GRAYSCALE_8X8_GRAY;
+
+/// `djpeg -scale 1/N` references for the NDPI/VMS-shaped 4:4:4 restart fixture.
+const BASELINE_444_RESTART_SCALED: [(Downscale, u32, &[u8]); 3] = [
+    (Downscale::Half, 2, JPEG_BASELINE_444_RESTART_67X45_HALF_RGB),
+    (
+        Downscale::Quarter,
+        4,
+        JPEG_BASELINE_444_RESTART_67X45_QUARTER_RGB,
+    ),
+    (
+        Downscale::Eighth,
+        8,
+        JPEG_BASELINE_444_RESTART_67X45_EIGHTH_RGB,
+    ),
+];
 
 #[test]
 fn baseline_420_16x16_matches_libjpeg_turbo_bit_exact() {
@@ -123,6 +140,52 @@ fn baseline_422_roi_and_scaled_roi_match_full_route_projections() {
 }
 
 #[test]
+fn baseline_444_restart_scaled_decode_matches_libjpeg_turbo_reduced_idct() {
+    let decoder =
+        Decoder::new(JPEG_BASELINE_444_RESTART_67X45).expect("4:4:4 restart fixture must parse");
+    assert_eq!(decoder.info().dimensions, (67, 45));
+
+    for (factor, denominator, expected) in BASELINE_444_RESTART_SCALED {
+        let (actual, _) = decoder
+            .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, factor))
+            .expect("scaled 4:4:4 decode must succeed");
+        assert_eq!(
+            actual, expected,
+            "1/{denominator} output must match djpeg -scale 1/{denominator}"
+        );
+    }
+}
+
+#[test]
+fn baseline_444_restart_scaled_region_matches_libjpeg_turbo_crop() {
+    let decoder =
+        Decoder::new(JPEG_BASELINE_444_RESTART_67X45).expect("4:4:4 restart fixture must parse");
+    let roi = Rect {
+        x: 13,
+        y: 9,
+        w: 41,
+        h: 27,
+    };
+
+    for (factor, denominator, expected) in BASELINE_444_RESTART_SCALED {
+        let (region, outcome) = decoder
+            .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, factor))
+            .expect("scaled 4:4:4 ROI decode must succeed");
+        let scaled_width = 67u32.div_ceil(denominator) as usize;
+        assert_eq!(
+            region,
+            crop_rgb8(
+                expected,
+                scaled_width,
+                scaled_rect_covering_by(roi, denominator)
+            ),
+            "1/{denominator} ROI must match the djpeg -scale 1/{denominator} crop"
+        );
+        assert_eq!(outcome.decoded, roi);
+    }
+}
+
+#[test]
 fn grayscale_8x8_matches_libjpeg_turbo_bit_exact() {
     let dec = Decoder::new(GRAYSCALE_8X8_JPG).expect("grayscale fixture must parse");
     let (w, h) = dec.info().dimensions;
@@ -174,7 +237,7 @@ fn baseline_420_wsi_shaped_scaled_region_matches_full_decode_crop() {
         .expect("scaled region decode must succeed")
         .0;
 
-    let scaled_roi = scaled_rect_covering_half(roi);
+    let scaled_roi = scaled_rect_covering_by(roi, 2);
     assert_eq!(region, crop_rgb8(&full, 8, scaled_roi));
 }
 
@@ -235,8 +298,8 @@ fn crop_gray8(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
     crop_interleaved_bytes(full, width, 1, pixel_rect(roi))
 }
 
-fn scaled_rect_covering_half(roi: Rect) -> Rect {
-    let scaled = scaled_rect_covering(pixel_rect(roi), 2);
+fn scaled_rect_covering_by(roi: Rect, denominator: u32) -> Rect {
+    let scaled = scaled_rect_covering(pixel_rect(roi), denominator);
     Rect {
         x: scaled.x,
         y: scaled.y,

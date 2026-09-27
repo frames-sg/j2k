@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    super::{is_ycbcr_420, scaled_dimensions, PreparedDecodePlan, RgbOutputScratch},
+    super::{scaled_dimensions, uses_fancy_420_emit, PreparedDecodePlan, RgbOutputScratch},
     four_component::{fill_four_component_rgb_row, FourComponentRow},
-    types::{StripeEmit, StripeNeighbors},
+    types::{ensure_color_components, StripeEmit, StripeNeighbors},
     upsample::{
         component_row_triplet, upsample_component_row_stripe, valid_component_rows,
         StripeComponentUpsample, StripeComponentUpsampleSpec,
@@ -38,6 +38,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
         stripe_index,
         source_width,
         downscale,
+        scaled,
     } = emit;
     let max_v = u32::from(plan.sampling.max_v);
     let mcu_height_px = downscale.output_block_size() * max_v;
@@ -49,6 +50,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
     if stripe_rows == 0 {
         return Ok(());
     }
+    ensure_color_components(plan)?;
 
     let width = source_width;
     let neighbors = StripeNeighbors { prev, curr, next };
@@ -62,7 +64,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                 })?;
             }
         }
-        ColorSpace::YCbCr if is_ycbcr_420(plan) => {
+        ColorSpace::YCbCr if uses_fancy_420_emit(plan, scaled) => {
             let RgbOutputScratch::YCbCr420 = output_scratch else {
                 unreachable!("4:2:0 YCbCr RGB output requires dedicated scratch");
             };
@@ -119,21 +121,10 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
             let RgbOutputScratch::YCbCrGeneric(scratch) = output_scratch else {
                 unreachable!("generic YCbCr RGB output requires reusable row scratch");
             };
-            let (cb_h, cb_v) = plan
-                .sampling
-                .component(1)
-                .map(|(h, v)| (u32::from(h), u32::from(v)))
-                .ok_or(JpegError::UnsupportedComponentCount { count: 1 })?;
-            let (cr_h, cr_v) = plan
-                .sampling
-                .component(2)
-                .map(|(h, v)| (u32::from(h), u32::from(v)))
-                .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
 
-            let max_h = u32::from(plan.sampling.max_h);
-            let max_v = u32::from(plan.sampling.max_v);
-
-            if cb_h == 1 && cb_v == 1 && cr_h == 1 && cr_v == 1 && max_h == 1 && max_v == 1 {
+            // Every plane is at output resolution, including 4:2:0 chroma
+            // that a reduced scale decodes with a larger IDCT.
+            if scaled.is_unsampled() {
                 for local_y in 0..stripe_rows {
                     let y_row = &curr.row(0, local_y)[..width];
                     let cb_row = &curr.row(1, local_y)[..width];
@@ -152,10 +143,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     neighbors,
                     spec: StripeComponentUpsampleSpec {
                         plane_idx: 1,
-                        comp_h: cb_h,
-                        comp_v: cb_v,
-                        max_h,
-                        max_v,
+                        component: scaled.component(1),
                         local_y_out: local_y as u32,
                         stripe_rows,
                         width,
@@ -166,10 +154,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     neighbors,
                     spec: StripeComponentUpsampleSpec {
                         plane_idx: 2,
-                        comp_h: cr_h,
-                        comp_v: cr_v,
-                        max_h,
-                        max_v,
+                        component: scaled.component(2),
                         local_y_out: local_y as u32,
                         stripe_rows,
                         width,
@@ -186,34 +171,13 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
             let RgbOutputScratch::RgbGeneric(scratch) = output_scratch else {
                 unreachable!("RGB output requires reusable row scratch");
             };
-            let (r_h, r_v) = plan
-                .sampling
-                .component(0)
-                .map(|(h, v)| (u32::from(h), u32::from(v)))
-                .ok_or(JpegError::UnsupportedComponentCount { count: 0 })?;
-            let (g_h, g_v) = plan
-                .sampling
-                .component(1)
-                .map(|(h, v)| (u32::from(h), u32::from(v)))
-                .ok_or(JpegError::UnsupportedComponentCount { count: 1 })?;
-            let (b_h, b_v) = plan
-                .sampling
-                .component(2)
-                .map(|(h, v)| (u32::from(h), u32::from(v)))
-                .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
-
-            let max_h = u32::from(plan.sampling.max_h);
-            let max_v = u32::from(plan.sampling.max_v);
 
             for local_y in 0..stripe_rows {
                 upsample_component_row_stripe(StripeComponentUpsample {
                     neighbors,
                     spec: StripeComponentUpsampleSpec {
                         plane_idx: 0,
-                        comp_h: r_h,
-                        comp_v: r_v,
-                        max_h,
-                        max_v,
+                        component: scaled.component(0),
                         local_y_out: local_y as u32,
                         stripe_rows,
                         width,
@@ -224,10 +188,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     neighbors,
                     spec: StripeComponentUpsampleSpec {
                         plane_idx: 1,
-                        comp_h: g_h,
-                        comp_v: g_v,
-                        max_h,
-                        max_v,
+                        component: scaled.component(1),
                         local_y_out: local_y as u32,
                         stripe_rows,
                         width,
@@ -238,10 +199,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     neighbors,
                     spec: StripeComponentUpsampleSpec {
                         plane_idx: 2,
-                        comp_h: b_h,
-                        comp_v: b_v,
-                        max_h,
-                        max_v,
+                        component: scaled.component(2),
                         local_y_out: local_y as u32,
                         stripe_rows,
                         width,
@@ -261,6 +219,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
             for local_y in 0..stripe_rows {
                 fill_four_component_rgb_row(
                     plan,
+                    scaled,
                     neighbors,
                     FourComponentRow {
                         local_y: local_y as u32,
@@ -268,7 +227,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                         width,
                     },
                     scratch,
-                )?;
+                );
                 writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {
                     backend.fill_rgb_row_from_rgb(
                         &scratch.r[..width],

@@ -48,6 +48,7 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
 
     pool.prepare_for(
         plan,
+        plan.sampling,
         mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
         plan.scratch_bytes,

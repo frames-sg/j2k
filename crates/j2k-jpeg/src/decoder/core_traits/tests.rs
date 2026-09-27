@@ -4,9 +4,9 @@ use core::fmt;
 use j2k_core::{DecodeRowsError, ImageDecode, ImageDecodeRows, TileBatchDecode};
 
 use super::{
-    core_outcome, CroppedWriter, Decoder, DecoderContext, Downscale, DownscaleFactor,
-    InterleavedRgbWriter, JpegCodec, JpegError, OutputWriter, PixelFormat,
-    ProgressiveDownscaleWriter, Rect, RowSink, ScratchPool, TileRegionScaledDecodeJob, Warning,
+    core_outcome, CroppedWriter, Decoder, DecoderContext, Downscale, InterleavedRgbWriter,
+    JpegCodec, JpegError, OutputWriter, PixelFormat, Rect, RowSink, ScratchPool,
+    TileRegionScaledDecodeJob, Warning,
 };
 
 const JPEG: &[u8] = j2k_test_support::JPEG_BASELINE_420_16X16;
@@ -289,47 +289,6 @@ fn core_row_adapter_preserves_the_original_sink_error_type() {
             .expect_err("sink rejection must stop row decode");
 
     assert!(matches!(error, DecodeRowsError::Sink(SinkStopped)));
-}
-
-#[test]
-fn progressive_downscale_writer_samples_each_output_mode_and_skips_intermediate_rows() {
-    let mut rows = RecordedRows::default();
-    {
-        let mut writer = ProgressiveDownscaleWriter::new(&mut rows, DownscaleFactor::Half, (5, 4))
-            .expect("bounded progressive row scratch");
-        assert!(writer.capacity_bytes().expect("row capacity") >= 9);
-
-        writer
-            .write_rgb_row(1, &[1; 5], &[2; 5], &[3; 5])
-            .expect("skipped RGB row");
-        writer
-            .write_rgb_row(
-                2,
-                &[1, 2, 3, 4, 5],
-                &[6, 7, 8, 9, 10],
-                &[11, 12, 13, 14, 15],
-            )
-            .expect("sampled RGB row");
-        writer
-            .write_ycbcr_row(0, &[21, 22, 23, 24, 25], &[31; 5], &[41; 5])
-            .expect("sampled YCbCr row");
-        writer
-            .write_gray_row(1, &[51; 5])
-            .expect("skipped grayscale row");
-        writer
-            .write_gray_row(2, &[51, 52, 53, 54, 55])
-            .expect("sampled grayscale row");
-    }
-
-    assert_eq!(
-        rows.rgb,
-        vec![(1, vec![1, 3, 5], vec![6, 8, 10], vec![11, 13, 15])]
-    );
-    assert_eq!(
-        rows.ycbcr,
-        vec![(0, vec![21, 23, 25], vec![31; 3], vec![41; 3])]
-    );
-    assert_eq!(rows.gray, vec![(1, vec![51, 53, 55])]);
 }
 
 #[test]

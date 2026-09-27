@@ -9,6 +9,7 @@ mod planes;
 mod progressive;
 mod rgba;
 mod sampling;
+mod scaled;
 mod sequential;
 mod state;
 mod upsample;

@@ -3,5 +3,6 @@
 //! Color conversion + chroma upsampling. Scalar-only in M1b.
 
 pub(crate) mod cmyk;
+pub(crate) mod scaled_sampling;
 pub(crate) mod upsample;
 pub(crate) mod ycbcr;

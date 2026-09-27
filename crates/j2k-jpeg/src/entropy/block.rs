@@ -32,28 +32,6 @@ pub(crate) enum BlockActivity {
     General,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReducedIdctCoefficients {
-    Half,
-    Quarter,
-}
-
-impl ReducedIdctCoefficients {
-    #[expect(
-        clippy::inline_always,
-        reason = "measured entropy-block hot path requires cross-helper inlining"
-    )]
-    #[inline(always)]
-    fn keeps(self, natural_idx: usize) -> bool {
-        let row = natural_idx >> 3;
-        let col = natural_idx & 7;
-        match self {
-            Self::Half => row != 4 && col != 4,
-            Self::Quarter => !matches!(row, 2 | 4 | 6) && !matches!(col, 2 | 4 | 6),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CoefficientBlock {
     coeffs: [i16; 64],
@@ -302,65 +280,6 @@ pub(crate) fn decode_block_with_dc_status(
         Ok(())
     })?;
     Ok(dc_only)
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "measured entropy-block hot path requires cross-helper inlining"
-)]
-#[inline(always)]
-pub(crate) fn decode_block_for_reduced_idct(
-    br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
-    prev_dc: &mut i32,
-    quant: &[u16; 64],
-    block: &mut CoefficientBlock,
-    keep: ReducedIdctCoefficients,
-) -> Result<bool, JpegError> {
-    block.clear_touched();
-
-    let diff = dc_table.decode_fast_dc(br)?;
-    *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store_dc(clamp_i16(dc_dequant));
-
-    let mut dc_only_for_reduced_idct = true;
-    drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
-        let natural_idx = ZIGZAG[k] as usize;
-        if keep.keeps(natural_idx) {
-            let value = ac_decoded_value(ac);
-            let dequant = value.wrapping_mul(i32::from(quant[k]));
-            block.store(natural_idx, clamp_i16(dequant));
-            dc_only_for_reduced_idct = false;
-        }
-        Ok(())
-    })?;
-    Ok(dc_only_for_reduced_idct)
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "measured entropy-block hot path requires cross-helper inlining"
-)]
-#[inline(always)]
-pub(crate) fn decode_block_for_1x1_idct(
-    br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
-    prev_dc: &mut i32,
-    quant: &[u16; 64],
-    block: &mut CoefficientBlock,
-) -> Result<(), JpegError> {
-    block.clear_touched();
-
-    let diff = dc_table.decode_fast_dc(br)?;
-    *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
-    block.store_dc(clamp_i16(dc_dequant));
-
-    drive_ac_fast::<true, _>(br, ac_table, |_, _| Ok(()))?;
-    Ok(())
 }
 
 #[expect(
@@ -631,112 +550,6 @@ mod tests {
             activity_block.coefficients()
         );
         assert_eq!(dc_status_reader.snapshot(), activity_reader.snapshot());
-    }
-
-    #[test]
-    fn reduced_idct_decoder_keeps_only_coefficients_read_by_scale() {
-        let dc = trivial_dc_table();
-        let raw = RawHuffmanTable {
-            bits: [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            values: HuffmanValues::from_slice(&[0x41, 0x00]),
-        };
-        let ac = HuffmanTable::from_raw(&raw, HuffmanTableRole::Ac).unwrap();
-        let bytes = [0b0001_0100u8, 0, 0, 0];
-        let quant = [1u16; 64];
-        let ignored_by_quarter = ZIGZAG[5] as usize;
-        assert_eq!(ignored_by_quarter, 2);
-
-        let mut full_reader = BitReader::new(&bytes);
-        let mut quarter_reader = BitReader::new(&bytes);
-        let mut half_reader = BitReader::new(&bytes);
-        let mut full_prev_dc = 0i32;
-        let mut quarter_prev_dc = 0i32;
-        let mut half_prev_dc = 0i32;
-        let mut full_block = CoefficientBlock::default();
-        let mut quarter_block = CoefficientBlock::default();
-        let mut half_block = CoefficientBlock::default();
-
-        decode_block_with_activity(
-            &mut full_reader,
-            dc.dc().unwrap(),
-            ac.ac().unwrap(),
-            &mut full_prev_dc,
-            &quant,
-            &mut full_block,
-        )
-        .unwrap();
-        let quarter_dc_only = decode_block_for_reduced_idct(
-            &mut quarter_reader,
-            dc.dc().unwrap(),
-            ac.ac().unwrap(),
-            &mut quarter_prev_dc,
-            &quant,
-            &mut quarter_block,
-            ReducedIdctCoefficients::Quarter,
-        )
-        .unwrap();
-        let half_dc_only = decode_block_for_reduced_idct(
-            &mut half_reader,
-            dc.dc().unwrap(),
-            ac.ac().unwrap(),
-            &mut half_prev_dc,
-            &quant,
-            &mut half_block,
-            ReducedIdctCoefficients::Half,
-        )
-        .unwrap();
-
-        assert_eq!(quarter_prev_dc, full_prev_dc);
-        assert_eq!(half_prev_dc, full_prev_dc);
-        assert_eq!(quarter_reader.snapshot(), full_reader.snapshot());
-        assert_eq!(half_reader.snapshot(), full_reader.snapshot());
-        assert_eq!(full_block.coefficients()[ignored_by_quarter], 1);
-        assert_eq!(quarter_block.coefficients()[ignored_by_quarter], 0);
-        assert_eq!(half_block.coefficients()[ignored_by_quarter], 1);
-        assert!(quarter_dc_only);
-        assert!(!half_dc_only);
-    }
-
-    #[test]
-    fn one_by_one_idct_decoder_keeps_dc_and_skips_ac_values() {
-        let dc = trivial_dc_table();
-        let raw = RawHuffmanTable {
-            bits: [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            values: HuffmanValues::from_slice(&[0x01, 0x00]),
-        };
-        let ac = HuffmanTable::from_raw(&raw, HuffmanTableRole::Ac).unwrap();
-        let bytes = [0b0001_0100u8, 0, 0, 0];
-        let quant = [1u16; 64];
-        let mut full_reader = BitReader::new(&bytes);
-        let mut one_by_one_reader = BitReader::new(&bytes);
-        let mut full_prev_dc = 0i32;
-        let mut one_by_one_prev_dc = 0i32;
-        let mut full_block = CoefficientBlock::default();
-        let mut one_by_one_block = CoefficientBlock::default();
-
-        decode_block_with_activity(
-            &mut full_reader,
-            dc.dc().unwrap(),
-            ac.ac().unwrap(),
-            &mut full_prev_dc,
-            &quant,
-            &mut full_block,
-        )
-        .unwrap();
-        decode_block_for_1x1_idct(
-            &mut one_by_one_reader,
-            dc.dc().unwrap(),
-            ac.ac().unwrap(),
-            &mut one_by_one_prev_dc,
-            &quant,
-            &mut one_by_one_block,
-        )
-        .unwrap();
-
-        assert_eq!(one_by_one_prev_dc, full_prev_dc);
-        assert_eq!(one_by_one_reader.snapshot(), full_reader.snapshot());
-        assert_eq!(one_by_one_block.dc_coeff(), full_block.dc_coeff());
-        assert!(one_by_one_block.coefficients()[1..].iter().all(|&c| c == 0));
     }
 
     #[test]
