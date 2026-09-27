@@ -164,6 +164,11 @@ pub(super) fn compute_progressive_scratch_bytes(
         checked_usize_product(&[components.len(), COMPONENT_IMAGE_METADATA_BYTES], cap)?;
     let dc_predictors =
         checked_usize_product(&[components.len(), core::mem::size_of::<i32>()], cap)?;
+    // Scan-phase nonzero masks: one outer vector per component and one u64
+    // per block, live next to the DC predictors.
+    let mask_outer =
+        checked_usize_product(&[components.len(), core::mem::size_of::<Vec<u64>>()], cap)?;
+    let mut mask_payload = 0usize;
     let mut coefficient_payload = 0usize;
     let mut plane_samples = 0usize;
     for component in components {
@@ -173,6 +178,8 @@ pub(super) fn compute_progressive_scratch_bytes(
         )?;
         let coeffs = checked_usize_product(&[blocks, core::mem::size_of::<[i32; 64]>()], cap)?;
         coefficient_payload = checked_workspace_add(coefficient_payload, coeffs, cap)?;
+        let masks = checked_usize_product(&[blocks, core::mem::size_of::<u64>()], cap)?;
+        mask_payload = checked_workspace_add(mask_payload, masks, cap)?;
         let samples = checked_usize_product(
             &[
                 component.block_cols as usize,
@@ -199,7 +206,12 @@ pub(super) fn compute_progressive_scratch_bytes(
     } else {
         eight_bit_render
     };
-    let phase_peak = dc_predictors.max(render_phase);
+    let scan_phase = checked_workspace_add(
+        checked_workspace_add(mask_outer, mask_payload, cap)?,
+        dc_predictors,
+        cap,
+    )?;
+    let phase_peak = scan_phase.max(render_phase);
     checked_workspace_add(
         checked_workspace_add(coefficient_outer, coefficient_payload, cap)?,
         phase_peak,
@@ -342,7 +354,8 @@ mod tests {
     fn progressive_scratch_counts_every_simultaneous_outer_and_payload() {
         let expected = size_of::<Vec<[i32; 64]>>()
             + size_of::<[i32; 64]>()
-            + (COMPONENT_IMAGE_METADATA_BYTES + 64 + 8 * 7).max(size_of::<i32>());
+            + (COMPONENT_IMAGE_METADATA_BYTES + 64 + 8 * 7)
+                .max(size_of::<Vec<u64>>() + size_of::<u64>() + size_of::<i32>());
         assert_eq!(
             compute_progressive_scratch_bytes(
                 &[progressive_component()],

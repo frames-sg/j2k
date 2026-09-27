@@ -169,6 +169,59 @@ pub(super) struct FastTile420EntropyState<'a, 'b> {
     pub(super) coeff: &'a mut CoefficientBlock,
 }
 
+/// Register-friendly copy of a [`FastTile420EntropyState`]'s reader and DC
+/// predictors. Behind `&mut` fields the accumulator round-trips through
+/// memory on every Huffman symbol; decoding a row against this local (with
+/// the row kernel inlined, so it never escapes) lets LLVM keep it in
+/// registers. Callers restore it even when the row fails.
+pub(super) struct LocalEntropy<'b> {
+    br: BitReader<'b>,
+    dc: [i32; 3],
+}
+
+impl<'b> LocalEntropy<'b> {
+    #[expect(
+        clippy::inline_always,
+        reason = "must inline so the borrowed locals never escape the row frame"
+    )]
+    #[inline(always)]
+    pub(super) fn state<'a>(
+        &'a mut self,
+        coeff: &'a mut CoefficientBlock,
+    ) -> FastTile420EntropyState<'a, 'b> {
+        let [y, cb, cr] = &mut self.dc;
+        FastTile420EntropyState {
+            br: &mut self.br,
+            dc: FastTile420DcState { y, cb, cr },
+            coeff,
+        }
+    }
+}
+
+impl<'b> FastTile420EntropyState<'_, 'b> {
+    #[expect(
+        clippy::inline_always,
+        reason = "must inline so the copied reader stays register-resident"
+    )]
+    #[inline(always)]
+    pub(super) fn take_local(&self) -> LocalEntropy<'b> {
+        LocalEntropy {
+            br: self.br.clone(),
+            dc: [*self.dc.y, *self.dc.cb, *self.dc.cr],
+        }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "must inline so the copied reader stays register-resident"
+    )]
+    #[inline(always)]
+    pub(super) fn restore_local(&mut self, local: LocalEntropy<'b>) {
+        *self.br = local.br;
+        [*self.dc.y, *self.dc.cb, *self.dc.cr] = local.dc;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct FastTile420Window {
     pub(super) mcus_per_row: u32,

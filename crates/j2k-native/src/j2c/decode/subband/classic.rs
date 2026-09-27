@@ -262,24 +262,22 @@ pub(super) fn decode_sub_band_classic_blocks(
                 header.strict,
             )?;
             let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
+            let midpoint = tile_ctx.bit_plane_decode_context.midpoint_reconstructor(
+                code_block.number_of_coding_passes,
+                component_info.roi_shift,
+            );
             for coefficients in tile_ctx.bit_plane_decode_context.coefficient_rows() {
                 let out_row = &mut base_store[base_idx..];
-                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output = if irreversible_midpoint {
-                        tile_ctx
-                            .bit_plane_decode_context
-                            .reconstruct_irreversible_midpoint(
-                                coefficient,
-                                code_block.number_of_coding_passes,
-                                component_info.roi_shift,
-                            )
-                    } else {
-                        apply_roi_maxshift_inverse_i64(
+                if irreversible_midpoint {
+                    midpoint.dequantize_row(coefficients, out_row, dequantization_step);
+                } else {
+                    for (output, coefficient) in out_row.iter_mut().zip(coefficients) {
+                        *output = apply_roi_maxshift_inverse_i64(
                             coefficient.get_i64(),
                             component_info.roi_shift,
                         ) as f32
-                    };
-                    *output *= dequantization_step;
+                            * dequantization_step;
+                    }
                 }
                 base_idx += output_stride;
             }

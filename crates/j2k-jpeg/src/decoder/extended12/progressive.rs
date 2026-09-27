@@ -169,7 +169,7 @@ impl Decoder<'_> {
                 if dequant[1..].iter().all(|&coeff| coeff == 0) {
                     pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
                 } else {
-                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                    self.backend.idct_12bit(&dequant, &mut pixels);
                 }
                 write_extended12_block_region(
                     out,

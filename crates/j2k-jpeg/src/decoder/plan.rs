@@ -249,7 +249,6 @@ impl Decoder<'_> {
         ensure_prepared_construction_fits(header, prepared_bytes)?;
         let workspace_cap = decode_workspace_cap(header, prepared_bytes)?;
         let mut components = construction.try_vec(scan.components.len())?;
-        let mut first_dc_table = None;
         for scan_component in scan.components.iter().copied() {
             let component_index = find_component_index(&header.component_ids, scan_component.id)
                 .ok_or(JpegError::UnknownScanComponent {
@@ -274,7 +273,6 @@ impl Decoder<'_> {
                 class: 0,
                 id: scan_component.dc_table,
             })?;
-            first_dc_table.get_or_insert(dc_table);
             components.push(PreparedComponentPlan {
                 h,
                 v,
@@ -304,9 +302,7 @@ impl Decoder<'_> {
         let lossless = PreparedLosslessPlan {
             predictor: scan.ss,
             bit_depth: info.bit_depth,
-            dc_table: first_dc_table.ok_or(JpegError::MissingMarker {
-                marker: MarkerKind::Sos,
-            })?,
+            point_transform: scan.al,
             dimensions: info.dimensions,
             scan_offset: plan.scan_offset,
         };

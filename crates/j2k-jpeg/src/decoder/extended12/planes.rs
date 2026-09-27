@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 
 use super::super::{
-    finish_scan, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
+    finish_scan, Backend, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
     PreparedProgressivePlan, SofKind, Warning, ZIGZAG,
 };
 use super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
@@ -21,6 +21,7 @@ use self::allocation::{
 };
 
 pub(super) fn decode_extended12_color_planes(
+    backend: Backend,
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     sof: SofKind,
@@ -59,6 +60,7 @@ pub(super) fn decode_extended12_color_planes(
                 for by in 0..u32::from(component.v) {
                     for bx in 0..u32::from(component.h) {
                         decode_extended12_block_pixels(
+                            backend,
                             &mut br,
                             resolved,
                             &mut prev_dc[output_index],
@@ -83,6 +85,7 @@ pub(super) fn decode_extended12_color_planes(
 }
 
 pub(super) fn decode_extended12_four_component_planes(
+    backend: Backend,
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     sof: SofKind,
@@ -121,6 +124,7 @@ pub(super) fn decode_extended12_four_component_planes(
                 for by in 0..u32::from(component.v) {
                     for bx in 0..u32::from(component.h) {
                         decode_extended12_block_pixels(
+                            backend,
                             &mut br,
                             resolved,
                             &mut prev_dc[output_index],
@@ -145,6 +149,7 @@ pub(super) fn decode_extended12_four_component_planes(
 }
 
 pub(super) fn render_progressive12_color_planes(
+    backend: Backend,
     plan: &PreparedProgressivePlan,
     dct_blocks: &ProgressiveDctBlocks,
 ) -> Result<[Extended12Plane; 3], JpegError> {
@@ -171,7 +176,7 @@ pub(super) fn render_progressive12_color_planes(
                 if dequant[1..].iter().all(|&coeff| coeff == 0) {
                     pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
                 } else {
-                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                    backend.idct_12bit(&dequant, &mut pixels);
                 }
                 deposit_extended12_block(&mut planes[output_index], bx * 8, by * 8, &pixels);
             }
@@ -182,6 +187,7 @@ pub(super) fn render_progressive12_color_planes(
 }
 
 pub(super) fn render_progressive12_four_component_planes(
+    backend: Backend,
     plan: &PreparedProgressivePlan,
     dct_blocks: &ProgressiveDctBlocks,
 ) -> Result<[Extended12Plane; 4], JpegError> {
@@ -208,7 +214,7 @@ pub(super) fn render_progressive12_four_component_planes(
                 if dequant[1..].iter().all(|&coeff| coeff == 0) {
                     pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
                 } else {
-                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                    backend.idct_12bit(&dequant, &mut pixels);
                 }
                 deposit_extended12_block(&mut planes[output_index], bx * 8, by * 8, &pixels);
             }

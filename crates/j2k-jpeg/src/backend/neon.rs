@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use core::arch::aarch64::{
-    int32x4_t, uint16x8_t, uint8x16_t, uint8x8_t, vaddq_s32, vaddq_u16, vcombine_u16, vcombine_u8,
-    vdupq_n_s32, vdupq_n_u16, vget_high_u16, vget_low_u16, vmovl_u16, vmovl_u8, vmulq_n_s32,
-    vqmovn_u16, vqmovun_s32, vreinterpretq_s32_u32, vshrq_n_s32, vshrq_n_u16, vsubq_s32, vzip_u8,
-    vzipq_u16,
+    int16x8_t, int32x4_t, uint16x8_t, uint8x16_t, uint8x8_t, vaddq_s16, vaddq_u16, vcombine_s16,
+    vcombine_u8, vdup_n_u8, vdupq_n_s16, vdupq_n_u16, vdupq_n_u8, vget_low_s16, vget_low_u8,
+    vmlal_high_n_s16, vmlal_n_s16, vmovl_high_u8, vmovl_u8, vmull_high_n_s16, vmull_n_s16,
+    vqmovn_u16, vqmovun_high_s16, vqmovun_s16, vreinterpretq_s16_u16, vrshrn_n_s32, vshrq_n_u16,
+    vsubl_high_u8, vsubl_u8, vsubq_s16, vzip_u8, vzipq_u16,
 };
 
 use super::row_pair::{normalize_simd_row_pair, normalize_ycbcr_row};
 use super::{scalar, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
 use crate::color::upsample::h2v2_fancy_sample_for_width;
-use crate::color::ycbcr::{
-    ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND,
-};
-use crate::simd::neon_memory;
+use crate::color::ycbcr::{ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200};
+use crate::simd::neon_memory::{self, load_head_window, load_tail_window};
 
 pub(crate) fn fill_rgb_row_from_gray(neon: fearless_simd::Neon, gray_row: &[u8], dst: &mut [u8]) {
     let width = gray_row.len().min(dst.len() / 3);
@@ -1195,52 +1194,6 @@ fn fill_rgb_row_pair_from_420_tail_neon_top_only(
 
 const TAIL_WINDOW: usize = LANES + 2;
 
-fn load_tail_window(src: &[u8], start: usize, len: usize) -> [u8; UPSAMPLED_LANES] {
-    debug_assert!(start < src.len());
-    debug_assert!(len > 0);
-    debug_assert!(len <= UPSAMPLED_LANES);
-    let mut out = [0u8; UPSAMPLED_LANES];
-    let available = src.len() - start;
-    let copy_len = available.min(len);
-    out[..copy_len].copy_from_slice(&src[start..start + copy_len]);
-    if copy_len < len {
-        let pad = out[copy_len - 1];
-        for value in &mut out[copy_len..len] {
-            *value = pad;
-        }
-    }
-    if len < UPSAMPLED_LANES {
-        let pad = out[len - 1];
-        for value in &mut out[len..UPSAMPLED_LANES] {
-            *value = pad;
-        }
-    }
-    out
-}
-
-fn load_head_window(src: &[u8], len: usize) -> [u8; UPSAMPLED_LANES] {
-    debug_assert!(!src.is_empty());
-    debug_assert!(len > 0);
-    debug_assert!(len <= UPSAMPLED_LANES);
-    let mut out = [0u8; UPSAMPLED_LANES];
-    let copy_len = src.len().min(len);
-    out[0] = src[0];
-    out[1..=copy_len].copy_from_slice(&src[..copy_len]);
-    if copy_len < len {
-        let pad = out[copy_len];
-        for value in &mut out[copy_len + 1..=len] {
-            *value = pad;
-        }
-    }
-    if len + 1 < UPSAMPLED_LANES {
-        let pad = out[len];
-        for value in &mut out[len + 1..UPSAMPLED_LANES] {
-            *value = pad;
-        }
-    }
-    out
-}
-
 fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: usize) -> bool {
     out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width
 }
@@ -1384,30 +1337,85 @@ fn fill_chunk_from_vectors(y: uint8x8_t, cb: uint8x8_t, cr: uint8x8_t, dst_chunk
     fill_chunk_from_vectors_u16(y, cb16, cr16, dst_chunk);
 }
 
+// The libjpeg chroma multipliers exceed `i16`, so each is split into a
+// multiple of 65536 plus a remainder that fits a 16-bit lane. For integer `k`,
+// `(65536·k·x + p + ROUND) >> 16 == k·x + ((p + ROUND) >> 16)` exactly, so the
+// split keeps `ycbcr_to_rgb`'s rounding bit for bit while every multiply stays
+// a 16→32-bit widening one and the rest of the math runs eight lanes wide.
+const R_CR_REMAINDER: i16 = narrow_multiplier(FIX_1_40200 - 65_536);
+const G_CB: i16 = narrow_multiplier(FIX_0_34414);
+const G_CR_REMAINDER: i16 = narrow_multiplier(FIX_0_71414 - 65_536);
+const B_CB_REMAINDER: i16 = narrow_multiplier(FIX_1_77200 - 2 * 65_536);
+
+const fn narrow_multiplier(value: i32) -> i16 {
+    assert!(value >= i16::MIN as i32 && value <= i16::MAX as i32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the range is asserted at compile time"
+    )]
+    let narrowed = value as i16;
+    narrowed
+}
+
+#[target_feature(enable = "neon")]
+fn rounded_high_half(low: int32x4_t, high: int32x4_t) -> int16x8_t {
+    // `vrshrn` computes `(x + ROUND) >> 16` without intermediate overflow.
+    vcombine_s16(vrshrn_n_s32::<16>(low), vrshrn_n_s32::<16>(high))
+}
+
+/// Convert eight pixels whose chroma lanes hold 8-bit sample values.
 #[target_feature(enable = "neon")]
 fn fill_chunk_from_vectors_u16(y: uint8x8_t, cb: uint16x8_t, cr: uint16x8_t, dst_chunk: &mut [u8]) {
     let Some(dst) = dst_chunk.first_chunk_mut::<{ LANES * 3 }>() else {
         return;
     };
-    let y16 = vmovl_u8(y);
-
-    let y_lo = widen_low(y16);
-    let y_hi = widen_high(y16);
-    let cb_lo = subtract_bias(widen_low(cb));
-    let cb_hi = subtract_bias(widen_high(cb));
-    let cr_lo = subtract_bias(widen_low(cr));
-    let cr_hi = subtract_bias(widen_high(cr));
-
-    let (r_lo, g_lo, b_lo) = convert_half(y_lo, cb_lo, cr_lo);
-    let (r_hi, g_hi, b_hi) = convert_half(y_hi, cb_hi, cr_hi);
-
-    let r_bytes = pack_eight_u8(r_lo, r_hi);
-    let g_bytes = pack_eight_u8(g_lo, g_hi);
-    let b_bytes = pack_eight_u8(b_lo, b_hi);
-
-    neon_memory::store_rgb8(dst, r_bytes, g_bytes, b_bytes);
+    let bias = vdupq_n_s16(128);
+    let (r, g, b) = ycbcr_lanes_to_rgb(
+        vreinterpretq_s16_u16(vmovl_u8(y)),
+        vsubq_s16(vreinterpretq_s16_u16(cb), bias),
+        vsubq_s16(vreinterpretq_s16_u16(cr), bias),
+    );
+    neon_memory::store_rgb8(dst, vqmovun_s16(r), vqmovun_s16(g), vqmovun_s16(b));
 }
 
+/// `ycbcr_to_rgb` on eight lanes of luma and centered chroma, before the
+/// final unsigned saturation.
+#[target_feature(enable = "neon")]
+fn ycbcr_lanes_to_rgb(
+    y: int16x8_t,
+    cb: int16x8_t,
+    cr: int16x8_t,
+) -> (int16x8_t, int16x8_t, int16x8_t) {
+    // R = Y + Cr + ((26345·Cr + ROUND) >> 16)
+    let r_fraction = rounded_high_half(
+        vmull_n_s16(vget_low_s16(cr), R_CR_REMAINDER),
+        vmull_high_n_s16(cr, R_CR_REMAINDER),
+    );
+    let r = vaddq_s16(vaddq_s16(y, cr), r_fraction);
+
+    // G = Y - Cr - ((22554·Cb - 18734·Cr + ROUND) >> 16)
+    let g_fraction = rounded_high_half(
+        vmlal_n_s16(
+            vmull_n_s16(vget_low_s16(cb), G_CB),
+            vget_low_s16(cr),
+            G_CR_REMAINDER,
+        ),
+        vmlal_high_n_s16(vmull_high_n_s16(cb, G_CB), cr, G_CR_REMAINDER),
+    );
+    let g = vsubq_s16(vsubq_s16(y, cr), g_fraction);
+
+    // B = Y + 2·Cb + ((-14942·Cb + ROUND) >> 16)
+    let b_fraction = rounded_high_half(
+        vmull_n_s16(vget_low_s16(cb), B_CB_REMAINDER),
+        vmull_high_n_s16(cb, B_CB_REMAINDER),
+    );
+    let b = vaddq_s16(vaddq_s16(y, vaddq_s16(cb, cb)), b_fraction);
+    (r, g, b)
+}
+
+/// Sixteen pixels per iteration so loads and the interleaving `st3` store use
+/// full 128-bit registers; two 8-pixel halves would issue twice the
+/// multi-structure store µops.
 #[target_feature(enable = "neon")]
 fn fill_rgb_row_from_ycbcr_chunk16_neon(
     y: &[u8; UPSAMPLED_LANES],
@@ -1415,14 +1423,28 @@ fn fill_rgb_row_from_ycbcr_chunk16_neon(
     cr: &[u8; UPSAMPLED_LANES],
     dst: &mut [u8; UPSAMPLED_LANES * 3],
 ) {
-    let (y, y_remainder) = y.as_chunks::<LANES>();
-    let (cb, cb_remainder) = cb.as_chunks::<LANES>();
-    let (cr, cr_remainder) = cr.as_chunks::<LANES>();
-    let (dst, dst_remainder) = dst.as_chunks_mut::<{ LANES * 3 }>();
-    let _ = (y_remainder, cb_remainder, cr_remainder, dst_remainder);
-
-    fill_chunk(&y[0], &cb[0], &cr[0], &mut dst[0]);
-    fill_chunk(&y[1], &cb[1], &cr[1], &mut dst[1]);
+    let y = neon_memory::load_u8x16(y);
+    let cb = neon_memory::load_u8x16(cb);
+    let cr = neon_memory::load_u8x16(cr);
+    let bias = vdup_n_u8(128);
+    // Widening subtraction wraps in `u16`; reinterpreting as `i16` yields the
+    // exact centered chroma for 8-bit samples.
+    let (r_lo, g_lo, b_lo) = ycbcr_lanes_to_rgb(
+        vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(y))),
+        vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(cb), bias)),
+        vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(cr), bias)),
+    );
+    let (r_hi, g_hi, b_hi) = ycbcr_lanes_to_rgb(
+        vreinterpretq_s16_u16(vmovl_high_u8(y)),
+        vreinterpretq_s16_u16(vsubl_high_u8(cb, vdupq_n_u8(128))),
+        vreinterpretq_s16_u16(vsubl_high_u8(cr, vdupq_n_u8(128))),
+    );
+    neon_memory::store_rgb8x16(
+        dst,
+        vqmovun_high_s16(vqmovun_s16(r_lo), r_hi),
+        vqmovun_high_s16(vqmovun_s16(g_lo), g_hi),
+        vqmovun_high_s16(vqmovun_s16(b_lo), b_hi),
+    );
 }
 
 #[target_feature(enable = "neon")]
@@ -1432,52 +1454,6 @@ fn load_eight(src: &[u8], offset: usize) -> uint8x8_t {
         return neon_memory::load_u8x8(&[0; LANES]);
     };
     neon_memory::load_u8x8(chunk)
-}
-
-#[target_feature(enable = "neon")]
-fn widen_low(values: core::arch::aarch64::uint16x8_t) -> int32x4_t {
-    vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(values)))
-}
-
-#[target_feature(enable = "neon")]
-fn widen_high(values: core::arch::aarch64::uint16x8_t) -> int32x4_t {
-    vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(values)))
-}
-
-#[target_feature(enable = "neon")]
-fn subtract_bias(values: int32x4_t) -> int32x4_t {
-    vsubq_s32(values, vdupq_n_s32(128))
-}
-
-#[target_feature(enable = "neon")]
-fn fixed_mul_shift(values: int32x4_t, coefficient: i32) -> int32x4_t {
-    vshrq_n_s32(
-        vaddq_s32(vmulq_n_s32(values, coefficient), vdupq_n_s32(ROUND)),
-        16,
-    )
-}
-
-#[target_feature(enable = "neon")]
-fn convert_half(y: int32x4_t, cb: int32x4_t, cr: int32x4_t) -> (int32x4_t, int32x4_t, int32x4_t) {
-    let r = vaddq_s32(y, fixed_mul_shift(cr, FIX_1_40200));
-    let g = vsubq_s32(
-        y,
-        vshrq_n_s32(
-            vaddq_s32(
-                vaddq_s32(vmulq_n_s32(cb, FIX_0_34414), vmulq_n_s32(cr, FIX_0_71414)),
-                vdupq_n_s32(ROUND),
-            ),
-            16,
-        ),
-    );
-    let b = vaddq_s32(y, fixed_mul_shift(cb, FIX_1_77200));
-    (r, g, b)
-}
-
-#[target_feature(enable = "neon")]
-fn pack_eight_u8(low: int32x4_t, high: int32x4_t) -> uint8x8_t {
-    let words = vcombine_u16(vqmovun_s32(low), vqmovun_s32(high));
-    vqmovn_u16(words)
 }
 
 #[target_feature(enable = "neon")]

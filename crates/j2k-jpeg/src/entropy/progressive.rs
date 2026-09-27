@@ -46,7 +46,7 @@ pub(crate) fn decode_progressive<W: OutputWriter>(
         component_image_capacity_bytes(images.capacity(), &images)?,
         plan.scratch_bytes,
     )?;
-    emit_component_images(plan, &images, image_live_bytes, writer)?;
+    emit_component_images(plan, backend, &images, image_live_bytes, writer)?;
     Ok(Vec::new())
 }
 

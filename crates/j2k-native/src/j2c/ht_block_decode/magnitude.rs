@@ -10,8 +10,10 @@ fn sample_mask(bit: u32) -> u32 {
 
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "the widened rounding expression is bounded to the 31-bit decoded magnitude field"
+    clippy::inline_always,
+    reason = "31-bit decoded magnitudes; inlined so the `&mut` MagSgn reader stays in registers"
 )]
+#[inline(always)]
 fn decode_mag_sgn_sample_with_vn(
     magsgn: &mut ForwardBitReader<0xFF>,
     inf: u32,
@@ -69,9 +71,7 @@ pub(super) fn decode_magnitude_sign_phase(
         return None;
     }
     v_n_scratch[..v_n_width].fill(0);
-
     let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
-
     decode_magnitude_sign_first_row_from_cleanup(
         &mut magsgn,
         scratch,

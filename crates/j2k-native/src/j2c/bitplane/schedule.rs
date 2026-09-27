@@ -4,10 +4,13 @@ use super::super::arithmetic_decoder::ArithmeticDecoder;
 use super::super::build::CodeBlock;
 use super::super::decode::DecompositionStorage;
 use super::arithmetic::{
-    cleanup_pass_arithmetic_with_neighbors, magnitude_refinement_pass_arithmetic_with_neighbors,
-    significance_propagation_pass_arithmetic_with_neighbors,
+    cleanup_pass_arithmetic, magnitude_refinement_pass_arithmetic,
+    significance_propagation_pass_arithmetic,
 };
 use super::bypass::{BitDecoder, BypassDecoder, SafeScalarTier1};
+use super::flag_passes::{
+    cleanup_pass_flags, magnitude_refinement_pass_flags, significance_propagation_pass_flags,
+};
 use super::observer::{J2kDecodeObserver, NoJ2kDecodeStats};
 use super::state::{
     extend_preallocated, push_preallocated, BitPlaneDecodeBuffers, BitPlaneDecodeContext,
@@ -81,8 +84,8 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
         let end = code_block
             .number_of_coding_passes
             .min(ctx.max_coding_passes);
-        if ctx.uses_normal_arithmetic_neighbor_path() {
-            handle_normal_arithmetic_coding_passes(0, end, ctx, &mut decoder, observer)?;
+        if ctx.uses_packed_columns() {
+            handle_packed_arithmetic_coding_passes(0, end, ctx, &mut decoder, observer)?;
         } else {
             handle_arithmetic_coding_passes(0, end, ctx, &mut decoder, observer)?;
         }
@@ -136,27 +139,29 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     Some(())
 }
 
-fn handle_arithmetic_coding_passes(
+pub(super) fn handle_arithmetic_coding_passes(
     start: u8,
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
     observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
-    handle_arithmetic_coding_passes_with_neighbors::<false>(start, end, ctx, decoder, observer)
+    run_arithmetic_coding_passes::<false>(start, end, ctx, decoder, observer)
 }
 
-fn handle_normal_arithmetic_coding_passes(
+pub(super) fn handle_packed_arithmetic_coding_passes(
     start: u8,
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
     observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
-    handle_arithmetic_coding_passes_with_neighbors::<true>(start, end, ctx, decoder, observer)
+    run_arithmetic_coding_passes::<true>(start, end, ctx, decoder, observer)
 }
 
-fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
+/// Arithmetic passes over the packed column words (`PACKED_COLUMNS`) or the
+/// per-coefficient arrays; decisions and contexts are identical.
+fn run_arithmetic_coding_passes<const PACKED_COLUMNS: bool>(
     start: u8,
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
@@ -172,7 +177,11 @@ fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
         match coding_pass % 3 {
             0 => {
                 let phase_start = observer.phase_start();
-                cleanup_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(ctx, decoder);
+                if PACKED_COLUMNS {
+                    cleanup_pass_flags(ctx, decoder);
+                } else {
+                    cleanup_pass_arithmetic(ctx, decoder);
+                }
 
                 if ctx.style.segmentation_symbols {
                     let b0 = decoder.read_bit(ctx.arithmetic_decoder_context(18));
@@ -190,16 +199,20 @@ fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
             }
             1 => {
                 let phase_start = observer.phase_start();
-                significance_propagation_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                    ctx, decoder,
-                );
+                if PACKED_COLUMNS {
+                    significance_propagation_pass_flags(ctx, decoder);
+                } else {
+                    significance_propagation_pass_arithmetic(ctx, decoder);
+                }
                 observer.add_sigprop_us(phase_start);
             }
             2 => {
                 let phase_start = observer.phase_start();
-                magnitude_refinement_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                    ctx, decoder,
-                );
+                if PACKED_COLUMNS {
+                    magnitude_refinement_pass_flags(ctx, decoder);
+                } else {
+                    magnitude_refinement_pass_arithmetic(ctx, decoder);
+                }
                 observer.add_magref_us(phase_start);
             }
             _ => unreachable!(),
@@ -286,8 +299,8 @@ pub(super) fn decode_code_block_segments_inner(
 
         if segment.use_arithmetic {
             let mut decoder = ArithmeticDecoder::new(segment_data);
-            if ctx.uses_normal_arithmetic_neighbor_path() {
-                handle_normal_arithmetic_coding_passes(
+            if ctx.uses_packed_columns() {
+                handle_packed_arithmetic_coding_passes(
                     start_coding_pass,
                     end_coding_pass,
                     ctx,

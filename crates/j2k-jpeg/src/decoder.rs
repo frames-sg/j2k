@@ -27,7 +27,7 @@ use crate::info::{
 use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::{checkpoint_before_mcu, CpuCheckpointCache, DeviceCheckpoint};
 use crate::internal::scratch::ScratchPool;
-use crate::lossless::{lossless_predict, LosslessSample};
+use crate::lossless::LosslessSample;
 use crate::output::{
     validate_buffer, Gray8Writer, InterleavedRgbWriter, OutputWriter, Rgb8Writer, Rgba8Writer,
 };
@@ -69,12 +69,9 @@ use self::extended12::{lossless_color_sampling, upsample_h2v1_sample_at, upsampl
 mod lossless_helpers;
 pub(crate) use self::lossless_helpers::restart_index_allocation_bytes;
 use self::lossless_helpers::{
-    decode_lossless_color_sample, decode_lossless_sampled_color_mcu, emit_decode_scan_profile,
-    lossless_predictor_gray_rows, lossless_predictor_value, lossless_predictor_value_u16,
-    resolve_lossless_color_components, restart_index_for_stream, validate_lossless_color_plan,
-    write_lossless_color16_sampled_output, write_lossless_color8_sampled_output,
-    LosslessColorIntoSample, LosslessColorPlanes, LosslessColorRowSample, LosslessRestartTracker,
-    LosslessSampledColorPlanesMut, LosslessSampledMcu,
+    emit_decode_scan_profile, lossless_output_order, restart_index_for_stream,
+    validate_lossless_color_plan, write_lossless_color16_sampled_output,
+    write_lossless_color8_sampled_output, LosslessColorPlanes,
 };
 mod color_convert;
 use self::color_convert::{
@@ -317,7 +314,7 @@ struct PreparedDecoderMetadata {
 struct PreparedLosslessPlan {
     predictor: u8,
     bit_depth: u8,
-    dc_table: PreparedHuffmanTableId,
+    point_transform: u8,
     dimensions: (u32, u32),
     scan_offset: usize,
 }

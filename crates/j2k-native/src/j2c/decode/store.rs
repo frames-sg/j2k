@@ -8,6 +8,8 @@ use super::{
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
 use crate::math::round_ties_even_then_add;
 
+mod upsample;
+
 pub(super) fn apply_sign_shift_after_mct(
     tile_ctx: &mut TileDecodeContext,
     component_infos: &[ComponentInfo],
@@ -192,6 +194,23 @@ pub(super) fn store<'a>(
         // Coefficients use the reconstructed resolution grid, which may be
         // reduced or clipped relative to the full component tile.
         let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
+        if x_shrink_factor == 1 && y_shrink_factor == 1 {
+            upsample::place_subsampled(
+                &upsample::SubsampledPlacement {
+                    input: &idwt_output.coefficients,
+                    input_stride: idwt_output.rect.width() as usize,
+                    component_origin: (idwt_output.rect.x0, idwt_output.rect.y0),
+                    columns: sample_rect.x0..sample_rect.x1,
+                    rows: sample_rect.y0..sample_rect.y1,
+                    scale: (u32::from(scale_x), u32::from(scale_y)),
+                    image_size: (image_width, image_height),
+                    image_offset: (x_offset, y_offset),
+                },
+                &mut channel_data.container,
+            );
+            return Ok(());
+        }
+
         for y in sample_rect.y0..sample_rect.y1 {
             let relative_y = (y - idwt_output.rect.y0) as usize;
             let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;

@@ -1926,6 +1926,8 @@ fn lossless_rgb_entropy_with_restarts(
                 let sample = samples[pixel * 3 + component];
                 let predicted = if segment_offset == 0 {
                     128
+                } else if y == segment_start / width {
+                    i32::from(samples[(pixel - 1) * 3 + component])
                 } else {
                     lossless_predicted_rgb_value(samples, width, x, y, component, predictor)
                 };
@@ -1966,6 +1968,8 @@ fn lossless_entropy_with_restarts(
             let y = idx / width;
             let predicted = if segment_offset == 0 {
                 128
+            } else if y == segment_start / width {
+                i32::from(samples[idx - 1])
             } else {
                 lossless_predicted_value(samples, width, x, y, predictor)
             };
@@ -2035,17 +2039,26 @@ fn lossless_422_entropy_8bit_with_restarts(
             let y = mcu / chroma_width;
             let mcu_x = mcu % chroma_width;
             let x0 = mcu_x * 2;
+            let restart = RestartPosition {
+                first_sample: segment_offset == 0,
+                first_row: Some(segment_start / chroma_width),
+            };
             encode_lossless_component_sample_8bit_with_restart(
-                &mut bits,
-                c0,
-                width,
-                x0,
-                y,
-                predictor,
-                segment_offset == 0,
+                &mut bits, c0, width, x0, y, predictor, restart,
             );
             if x0 + 1 < width {
-                encode_lossless_component_sample_8bit(&mut bits, c0, width, x0 + 1, y, predictor);
+                encode_lossless_component_sample_8bit_with_restart(
+                    &mut bits,
+                    c0,
+                    width,
+                    x0 + 1,
+                    y,
+                    predictor,
+                    RestartPosition {
+                        first_sample: false,
+                        ..restart
+                    },
+                );
             }
             encode_lossless_component_sample_8bit_with_restart(
                 &mut bits,
@@ -2054,7 +2067,7 @@ fn lossless_422_entropy_8bit_with_restarts(
                 mcu_x,
                 y,
                 predictor,
-                segment_offset == 0,
+                restart,
             );
             encode_lossless_component_sample_8bit_with_restart(
                 &mut bits,
@@ -2063,7 +2076,7 @@ fn lossless_422_entropy_8bit_with_restarts(
                 mcu_x,
                 y,
                 predictor,
-                segment_offset == 0,
+                restart,
             );
         }
         out.extend(pack_entropy_bits(bits));
@@ -2099,6 +2112,7 @@ fn lossless_420_entropy_8bit(
                     mcu_x,
                     mcu_y,
                     restart_first_mcu: false,
+                    restart_first_mcu_row: None,
                 },
             );
         }
@@ -2139,6 +2153,7 @@ fn lossless_420_entropy_8bit_with_restarts(
                     mcu_x,
                     mcu_y,
                     restart_first_mcu: segment_offset == 0,
+                    restart_first_mcu_row: Some(segment_start / chroma_width),
                 },
             );
         }
@@ -2232,17 +2247,26 @@ fn lossless_422_entropy_16bit_with_restarts(
             let y = mcu / chroma_width;
             let mcu_x = mcu % chroma_width;
             let x0 = mcu_x * 2;
+            let restart = RestartPosition {
+                first_sample: segment_offset == 0,
+                first_row: Some(segment_start / chroma_width),
+            };
             encode_lossless_component_sample_16bit_with_restart(
-                &mut bits,
-                c0,
-                width,
-                x0,
-                y,
-                predictor,
-                segment_offset == 0,
+                &mut bits, c0, width, x0, y, predictor, restart,
             );
             if x0 + 1 < width {
-                encode_lossless_component_sample_16bit(&mut bits, c0, width, x0 + 1, y, predictor);
+                encode_lossless_component_sample_16bit_with_restart(
+                    &mut bits,
+                    c0,
+                    width,
+                    x0 + 1,
+                    y,
+                    predictor,
+                    RestartPosition {
+                        first_sample: false,
+                        ..restart
+                    },
+                );
             }
             encode_lossless_component_sample_16bit_with_restart(
                 &mut bits,
@@ -2251,7 +2275,7 @@ fn lossless_422_entropy_16bit_with_restarts(
                 mcu_x,
                 y,
                 predictor,
-                segment_offset == 0,
+                restart,
             );
             encode_lossless_component_sample_16bit_with_restart(
                 &mut bits,
@@ -2260,7 +2284,7 @@ fn lossless_422_entropy_16bit_with_restarts(
                 mcu_x,
                 y,
                 predictor,
-                segment_offset == 0,
+                restart,
             );
         }
         out.extend(pack_entropy_bits(bits));
@@ -2296,6 +2320,7 @@ fn lossless_420_entropy_16bit(
                     mcu_x,
                     mcu_y,
                     restart_first_mcu: false,
+                    restart_first_mcu_row: None,
                 },
             );
         }
@@ -2336,6 +2361,7 @@ fn lossless_420_entropy_16bit_with_restarts(
                     mcu_x,
                     mcu_y,
                     restart_first_mcu: segment_offset == 0,
+                    restart_first_mcu_row: Some(segment_start / chroma_width),
                 },
             );
         }
@@ -2356,6 +2382,8 @@ struct Lossless420Mcu {
     mcu_x: usize,
     mcu_y: usize,
     restart_first_mcu: bool,
+    /// First MCU row of the current restart interval, if restarts are on.
+    restart_first_mcu_row: Option<usize>,
 }
 
 fn encode_lossless_420_mcu_8bit(
@@ -2378,7 +2406,10 @@ fn encode_lossless_420_mcu_8bit(
                     x,
                     y,
                     predictor,
-                    mcu.restart_first_mcu && local_x == 0 && local_y == 0,
+                    RestartPosition {
+                        first_sample: mcu.restart_first_mcu && local_x == 0 && local_y == 0,
+                        first_row: mcu.restart_first_mcu_row.map(|row| row * 2),
+                    },
                 );
             }
         }
@@ -2390,7 +2421,10 @@ fn encode_lossless_420_mcu_8bit(
         mcu.mcu_x,
         mcu.mcu_y,
         predictor,
-        mcu.restart_first_mcu,
+        RestartPosition {
+            first_sample: mcu.restart_first_mcu,
+            first_row: mcu.restart_first_mcu_row,
+        },
     );
     encode_lossless_component_sample_8bit_with_restart(
         bits,
@@ -2399,7 +2433,10 @@ fn encode_lossless_420_mcu_8bit(
         mcu.mcu_x,
         mcu.mcu_y,
         predictor,
-        mcu.restart_first_mcu,
+        RestartPosition {
+            first_sample: mcu.restart_first_mcu,
+            first_row: mcu.restart_first_mcu_row,
+        },
     );
 }
 
@@ -2412,8 +2449,30 @@ fn encode_lossless_component_sample_8bit(
     predictor: u8,
 ) {
     encode_lossless_component_sample_8bit_with_restart(
-        bits, samples, width, x, y, predictor, false,
+        bits,
+        samples,
+        width,
+        x,
+        y,
+        predictor,
+        RestartPosition::NONE,
     );
+}
+
+/// Where a sample sits in its restart interval. T.81 H.1.2.1 predicts the
+/// interval's first sample from 2^(P-1) and the rest of its first component
+/// row from Ra alone, exactly like the first row of the scan.
+#[derive(Clone, Copy)]
+struct RestartPosition {
+    first_sample: bool,
+    first_row: Option<usize>,
+}
+
+impl RestartPosition {
+    const NONE: Self = Self {
+        first_sample: false,
+        first_row: None,
+    };
 }
 
 fn encode_lossless_component_sample_8bit_with_restart(
@@ -2423,11 +2482,13 @@ fn encode_lossless_component_sample_8bit_with_restart(
     x: usize,
     y: usize,
     predictor: u8,
-    restart_first_sample: bool,
+    restart: RestartPosition,
 ) {
     let sample = samples[y * width + x];
-    let predicted = if restart_first_sample {
+    let predicted = if restart.first_sample {
         128
+    } else if restart.first_row == Some(y) {
+        i32::from(samples[y * width + x - 1])
     } else {
         lossless_predicted_value(samples, width, x, y, predictor)
     };
@@ -2459,7 +2520,10 @@ fn encode_lossless_420_mcu_16bit(
                     x,
                     y,
                     predictor,
-                    mcu.restart_first_mcu && local_x == 0 && local_y == 0,
+                    RestartPosition {
+                        first_sample: mcu.restart_first_mcu && local_x == 0 && local_y == 0,
+                        first_row: mcu.restart_first_mcu_row.map(|row| row * 2),
+                    },
                 );
             }
         }
@@ -2471,7 +2535,10 @@ fn encode_lossless_420_mcu_16bit(
         mcu.mcu_x,
         mcu.mcu_y,
         predictor,
-        mcu.restart_first_mcu,
+        RestartPosition {
+            first_sample: mcu.restart_first_mcu,
+            first_row: mcu.restart_first_mcu_row,
+        },
     );
     encode_lossless_component_sample_16bit_with_restart(
         bits,
@@ -2480,7 +2547,10 @@ fn encode_lossless_420_mcu_16bit(
         mcu.mcu_x,
         mcu.mcu_y,
         predictor,
-        mcu.restart_first_mcu,
+        RestartPosition {
+            first_sample: mcu.restart_first_mcu,
+            first_row: mcu.restart_first_mcu_row,
+        },
     );
 }
 
@@ -2493,7 +2563,13 @@ fn encode_lossless_component_sample_16bit(
     predictor: u8,
 ) {
     encode_lossless_component_sample_16bit_with_restart(
-        bits, samples, width, x, y, predictor, false,
+        bits,
+        samples,
+        width,
+        x,
+        y,
+        predictor,
+        RestartPosition::NONE,
     );
 }
 
@@ -2504,11 +2580,13 @@ fn encode_lossless_component_sample_16bit_with_restart(
     x: usize,
     y: usize,
     predictor: u8,
-    restart_first_sample: bool,
+    restart: RestartPosition,
 ) {
     let sample = samples[y * width + x];
-    let predicted = if restart_first_sample {
+    let predicted = if restart.first_sample {
         32768
+    } else if restart.first_row == Some(y) {
+        i32::from(samples[y * width + x - 1])
     } else {
         lossless_predicted_value_16bit(samples, width, x, y, predictor)
     };
@@ -2540,6 +2618,8 @@ fn lossless_entropy_16bit_with_restarts(
             let y = idx / width;
             let predicted = if segment_offset == 0 {
                 32768
+            } else if y == segment_start / width {
+                i32::from(samples[idx - 1])
             } else {
                 lossless_predicted_value_16bit(samples, width, x, y, predictor)
             };
@@ -2602,6 +2682,8 @@ fn lossless_rgb_entropy_16bit_with_restarts(
                 let sample = samples[pixel * 3 + component];
                 let predicted = if segment_offset == 0 {
                     32768
+                } else if y == segment_start / width {
+                    i32::from(samples[(pixel - 1) * 3 + component])
                 } else {
                     lossless_predicted_rgb_value_16bit(samples, width, x, y, component, predictor)
                 };

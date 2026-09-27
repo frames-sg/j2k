@@ -15,6 +15,19 @@ struct ClassicWorkspaceLayout {
     padded_width: u32,
     coefficient_count: usize,
     scan_units: usize,
+    flag_words: usize,
+}
+
+/// Which bookkeeping arrays a decode sizes and zeroes; the other set is
+/// truncated, keeping its capacity.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StateLayout {
+    /// Per-coefficient state bytes, neighbor bytes, and scan masks.
+    PerCoefficient,
+    /// Packed per-stripe-column words.
+    PackedColumns,
+    /// Both, to size a workspace up front.
+    Both,
 }
 
 fn workspace_layout(width: u32, height: u32) -> Result<ClassicWorkspaceLayout> {
@@ -30,10 +43,14 @@ fn workspace_layout(width: u32, height: u32) -> Result<ClassicWorkspaceLayout> {
     let coefficient_count =
         checked_decode_usize_product2(padded_width as usize, padded_height as usize)?;
     let scan_units = checked_decode_usize_product2(width as usize, height.div_ceil(4) as usize)?;
+    // One padding stripe above and below, one padding column on each side.
+    let flag_words =
+        checked_decode_usize_product2(padded_width as usize, height.div_ceil(4) as usize + 2)?;
     Ok(ClassicWorkspaceLayout {
         padded_width,
         coefficient_count,
         scan_units,
+        flag_words,
     })
 }
 
@@ -45,6 +62,7 @@ pub(crate) fn classic_decode_workspace_bytes(width: u32, height: u32) -> Result<
     include_elements::<CoefficientState>(&mut bytes, layout.coefficient_count)?;
     include_elements::<u8>(&mut bytes, layout.scan_units)?;
     include_elements::<u8>(&mut bytes, layout.scan_units)?;
+    include_elements::<u32>(&mut bytes, layout.flag_words)?;
     Ok(bytes)
 }
 
@@ -65,6 +83,7 @@ pub(super) fn reset_decode_buffers(
     context: &mut BitPlaneDecodeContext,
     width: u32,
     height: u32,
+    state_layout: StateLayout,
 ) -> Result<u32> {
     let layout = workspace_layout(width, height)?;
 
@@ -74,22 +93,29 @@ pub(super) fn reset_decode_buffers(
         layout.coefficient_count,
         Coefficient::default(),
     )?;
+    context.flags.clear();
+    if state_layout != StateLayout::PerCoefficient {
+        try_resize_decode_elements(&mut context.flags, layout.flag_words, 0)?;
+    }
     context.neighbor_significances.clear();
+    context.coefficient_states.clear();
+    context.significant_scan_masks.clear();
+    context.zero_coding_scan_masks.clear();
+    if state_layout == StateLayout::PackedColumns {
+        return Ok(layout.padded_width);
+    }
     try_resize_decode_elements(
         &mut context.neighbor_significances,
         layout.coefficient_count,
         NeighborSignificances::default(),
     )?;
-    context.coefficient_states.clear();
     try_resize_decode_elements(
         &mut context.coefficient_states,
         layout.coefficient_count,
         CoefficientState::default(),
     )?;
 
-    context.significant_scan_masks.clear();
     try_resize_decode_elements(&mut context.significant_scan_masks, layout.scan_units, 0)?;
-    context.zero_coding_scan_masks.clear();
     try_resize_decode_elements(&mut context.zero_coding_scan_masks, layout.scan_units, 0)?;
     Ok(layout.padded_width)
 }

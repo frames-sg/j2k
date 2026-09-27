@@ -209,11 +209,39 @@ pub(super) fn decode_mcu_row_fast_tile_420_scaled(
     Ok(())
 }
 
+pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
+    components: FastTile420Components<'_>,
+    backend: Backend,
+    state: &mut FastTile420EntropyState<'_, '_>,
+    pixels: &mut [u8; 64],
+    window: FastTile420Window,
+    stripe: &mut StripeBuffer,
+    profiler: &mut impl Fast420Profiler,
+) -> Result<(), JpegError> {
+    let mut local = state.take_local();
+    let result = decode_mcu_row_fast_tile_420_local(
+        components,
+        backend,
+        &mut local.state(&mut *state.coeff),
+        pixels,
+        window,
+        stripe,
+        profiler,
+    );
+    state.restore_local(local);
+    result
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the MCU-row kernel keeps six block decodes and plane deposits in JPEG sampling order"
 )]
-pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
+#[expect(
+    clippy::inline_always,
+    reason = "inlining into the row wrapper is what keeps the local reader out of memory"
+)]
+#[inline(always)]
+fn decode_mcu_row_fast_tile_420_local(
     components: FastTile420Components<'_>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,

@@ -2,101 +2,84 @@
 
 //! Shared lossless JPEG decode helpers.
 
-use crate::error::{HuffmanFailure, JpegError};
+pub(crate) mod scan;
 
-pub(crate) trait LosslessSample: Copy + Default + Into<i32> {
-    const RESTART_PREDICTOR: i32;
+/// Output container for reconstructed lossless samples: `u8` for 8-bit and
+/// `u16` (little-endian) for 16-bit images.
+pub(crate) trait LosslessSample: Copy + Default {
     const BIT_DEPTH: u8;
     const BYTES: usize;
 
-    fn from_i32(value: i32) -> Result<Self, JpegError>;
-
-    fn read_le(src: &[u8]) -> i32;
+    /// Narrow a reconstructed sample. [`scan::LosslessScan`] has already
+    /// rejected values wider than the image precision.
+    fn from_sample(sample: u16) -> Self;
 
     fn write_le(self, dst: &mut [u8]);
+
+    /// Store one component row, shifted left by the point transform.
+    fn store_row(samples: &[u16], shift: u8, dst: &mut [u8]) {
+        for (dst, &sample) in dst.chunks_exact_mut(Self::BYTES).zip(samples) {
+            Self::from_sample(sample << shift).write_le(dst);
+        }
+    }
+
+    /// Interleave three component rows into one pixel row.
+    fn store_interleaved(rows: [&[u16]; 3], shift: u8, dst: &mut [u8]) {
+        let [c0, c1, c2] = rows;
+        for (pixel, ((&s0, &s1), &s2)) in dst
+            .chunks_exact_mut(3 * Self::BYTES)
+            .zip(c0.iter().zip(c1).zip(c2))
+        {
+            let (first, rest) = pixel.split_at_mut(Self::BYTES);
+            let (second, third) = rest.split_at_mut(Self::BYTES);
+            Self::from_sample(s0 << shift).write_le(first);
+            Self::from_sample(s1 << shift).write_le(second);
+            Self::from_sample(s2 << shift).write_le(third);
+        }
+    }
 }
 
 impl LosslessSample for u8 {
-    const RESTART_PREDICTOR: i32 = 128;
     const BIT_DEPTH: u8 = 8;
     const BYTES: usize = 1;
 
-    fn from_i32(value: i32) -> Result<Self, JpegError> {
-        u8::try_from(value).map_err(|_| invalid_lossless_symbol())
-    }
-
-    fn read_le(src: &[u8]) -> i32 {
-        i32::from(src[0])
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "8-bit lossless samples are range-checked to 0..=255 during reconstruction"
+    )]
+    fn from_sample(sample: u16) -> Self {
+        sample as u8
     }
 
     fn write_le(self, dst: &mut [u8]) {
         dst[0] = self;
     }
+
+    fn store_row(samples: &[u16], shift: u8, dst: &mut [u8]) {
+        for (dst, &sample) in dst.iter_mut().zip(samples) {
+            *dst = Self::from_sample(sample << shift);
+        }
+    }
+
+    fn store_interleaved(rows: [&[u16]; 3], shift: u8, dst: &mut [u8]) {
+        let [c0, c1, c2] = rows;
+        for (pixel, ((&s0, &s1), &s2)) in dst.chunks_exact_mut(3).zip(c0.iter().zip(c1).zip(c2)) {
+            pixel[0] = Self::from_sample(s0 << shift);
+            pixel[1] = Self::from_sample(s1 << shift);
+            pixel[2] = Self::from_sample(s2 << shift);
+        }
+    }
 }
 
 impl LosslessSample for u16 {
-    const RESTART_PREDICTOR: i32 = 32_768;
     const BIT_DEPTH: u8 = 16;
     const BYTES: usize = 2;
 
-    fn from_i32(value: i32) -> Result<Self, JpegError> {
-        u16::try_from(value).map_err(|_| invalid_lossless_symbol())
-    }
-
-    fn read_le(src: &[u8]) -> i32 {
-        i32::from(u16::from_le_bytes([src[0], src[1]]))
+    fn from_sample(sample: u16) -> Self {
+        sample
     }
 
     fn write_le(self, dst: &mut [u8]) {
         dst[..2].copy_from_slice(&self.to_le_bytes());
-    }
-}
-
-fn invalid_lossless_symbol() -> JpegError {
-    JpegError::HuffmanDecode {
-        mcu: 0,
-        reason: HuffmanFailure::InvalidSymbol,
-    }
-}
-
-/// Spec predictor (ITU-T T.81 H.1.2.1) over a sample accessor.
-///
-/// Edge rules: the first sample predicts `bias` (1 << (P - 1)); the first row
-/// predicts Ra; the first column predicts Rb. `at(x, y)` must return the
-/// reconstructed sample at the given coordinates; only `(x-1, y)`, `(x, y-1)`
-/// and `(x-1, y-1)` are ever requested.
-#[expect(
-    clippy::inline_always,
-    reason = "per-sample predictor hot path keeps the accessor closure monomorphized"
-)]
-#[inline(always)]
-pub(crate) fn lossless_predict(
-    predictor: u8,
-    bias: i32,
-    x: usize,
-    y: usize,
-    at: impl Fn(usize, usize) -> i32,
-) -> i32 {
-    if x == 0 && y == 0 {
-        return bias;
-    }
-    if y == 0 {
-        return at(x - 1, 0);
-    }
-    if x == 0 {
-        return at(0, y - 1);
-    }
-    let ra = at(x - 1, y);
-    let rb = at(x, y - 1);
-    let rc = at(x - 1, y - 1);
-    match predictor {
-        1 => ra,
-        2 => rb,
-        3 => rc,
-        4 => ra + rb - rc,
-        5 => ra + ((rb - rc) >> 1),
-        6 => rb + ((ra - rc) >> 1),
-        7 => (ra + rb) >> 1,
-        _ => bias,
     }
 }

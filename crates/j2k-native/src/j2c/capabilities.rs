@@ -197,15 +197,15 @@ impl<'a> CapabilityMarkerState<'a> {
     }
 
     pub(crate) fn validate_rsiz(&self, rsiz: u16) -> Result<(), CapabilityMarkerError> {
-        match (rsiz & HTJ2K_RSIZ_MASK != 0, self.htj2k.is_some()) {
-            (true, false) => Err(CapabilityMarkerError::Cap(
+        // Pcap15 without the Rsiz bit is accepted: CAP and the COD/COC block
+        // style fully describe HT decoding, and encoders before mid-2026
+        // (this crate's included) omitted the bit. Rsiz without CAP leaves
+        // Ccap15 undefined, so that stays an error.
+        if rsiz & HTJ2K_RSIZ_MASK != 0 && self.htj2k.is_none() {
+            return Err(CapabilityMarkerError::Cap(
                 "SIZ advertises Part 15 without Pcap15",
-            )),
-            (false, true) => Err(CapabilityMarkerError::Cap(
-                "Pcap15 is present without the Part 15 SIZ capability",
-            )),
-            _ => Ok(()),
-        }?;
+            ));
+        }
         if self.cpf_payload.is_some() && self.htj2k.is_none() {
             return Err(CapabilityMarkerError::Cpf(
                 "CPF is present without Part 15 capabilities",

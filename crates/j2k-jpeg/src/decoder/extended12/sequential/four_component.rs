@@ -57,6 +57,7 @@ impl Decoder<'_> {
                     let output_index = component.output_index;
                     let component = self.plan.resolve_component(component)?;
                     decode_extended12_block_pixels(
+                        self.backend,
                         &mut br,
                         component,
                         &mut prev_dc[output_index],
@@ -103,8 +104,12 @@ impl Decoder<'_> {
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let (planes, scan_warnings) =
-            decode_extended12_four_component_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
+        let (planes, scan_warnings) = decode_extended12_four_component_planes(
+            self.backend,
+            &self.plan,
+            scan_bytes,
+            self.info.sof_kind,
+        )?;
         write_extended12_four_component_planes_region(
             out,
             stride,

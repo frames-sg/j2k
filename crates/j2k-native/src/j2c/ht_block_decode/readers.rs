@@ -98,6 +98,8 @@ impl<'a> MelDecoder<'a> {
     }
 }
 
+/// `Clone` (not `Copy`) keeps the by-value refill hand-offs explicit.
+#[derive(Clone)]
 pub(super) struct ForwardBitReader<'a, const PAD: u8> {
     data: &'a [u8],
     pos: usize,
@@ -117,7 +119,33 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
         }
     }
 
+    /// Top the reservoir up to at least 33 bits, as the byte loop does. A byte
+    /// after `0xFF` carries seven bits, so four bytes with no `0xFF` before
+    /// or among their first three are added as one word; stuffing, an empty
+    /// reservoir, and the padded tail take the byte loop.
+    #[expect(clippy::inline_always, reason = "per-sample refill check")]
+    #[inline(always)]
     fn fill(&mut self) {
+        if !self.unstuff && self.bits > 0 {
+            if let Some(&[b0, b1, b2, b3]) = self.data.get(self.pos..self.pos + 4) {
+                let word = u32::from_le_bytes([b0, b1, b2, b3]);
+                if b0 != 0xFF && b1 != 0xFF && b2 != 0xFF {
+                    self.tmp |= u64::from(word) << self.bits;
+                    self.bits += 32;
+                    self.pos += 4;
+                    self.unstuff = b3 == 0xFF;
+                    return;
+                }
+            }
+        }
+        *self = self.clone().fill_bytes();
+    }
+
+    /// Taking and returning the reader by value keeps the caller's local
+    /// reader out of memory across this cold call.
+    #[cold]
+    #[inline(never)]
+    fn fill_bytes(mut self) -> Self {
         while self.bits <= 32 {
             let byte = if self.pos < self.data.len() {
                 let byte = self.data[self.pos];
@@ -134,6 +162,7 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
             self.bits += valid_bits;
             self.unstuff = next_unstuff;
         }
+        self
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
@@ -152,6 +181,8 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
     }
 }
 
+/// `Clone` (not `Copy`) keeps the by-value refill hand-offs explicit.
+#[derive(Clone)]
 pub(super) struct ReverseBitReader<'a> {
     data: &'a [u8],
     pos: isize,
@@ -190,8 +221,46 @@ impl<'a> ReverseBitReader<'a> {
         }
     }
 
-    #[expect(clippy::cast_sign_loss, reason = "nonnegative live cursor")]
+    /// Top the reservoir up to at least 33 bits, as the byte loop does. Read
+    /// backward, a byte is stuffed when it ends in seven ones after a byte
+    /// above 0x8F; four bytes with no such pair are added as one word, and
+    /// stuffing, an empty reservoir, and the padded tail take the byte loop.
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::inline_always,
+        reason = "nonnegative live cursor; per-quad refill check"
+    )]
+    #[inline(always)]
     fn fill(&mut self) {
+        if self.bits > 0 && self.remaining >= 4 && self.pos >= 3 {
+            let last = self.pos as usize;
+            if let Some(&[b3, b2, b1, b0]) = self.data.get(last - 3..=last) {
+                // `b0` is consumed first, so it lands in the low byte. Each
+                // per-byte flag below sits in that byte's bit 7.
+                let word = u32::from_le_bytes([b0, b1, b2, b3]);
+                // Above 0x8F: bit 7 set and bits 4-6 nonzero.
+                let above_8f = word & 0x8080_8080 & ((word & 0x7070_7070) + 0x7070_7070);
+                // Low seven bits all ones.
+                let low_ones = ((word & 0x7F7F_7F7F) + 0x0101_0101) & 0x8080_8080;
+                let after_above_8f = (above_8f << 8) | (u32::from(self.unstuff) << 7);
+                if after_above_8f & low_ones == 0 {
+                    self.tmp |= u64::from(word) << self.bits;
+                    self.bits += 32;
+                    self.pos -= 4;
+                    self.remaining -= 4;
+                    self.unstuff = above_8f >> 31 != 0;
+                    return;
+                }
+            }
+        }
+        *self = self.clone().fill_bytes();
+    }
+
+    /// By value for the same reason as [`ForwardBitReader::fill_bytes`].
+    #[expect(clippy::cast_sign_loss, reason = "nonnegative live cursor")]
+    #[cold]
+    #[inline(never)]
+    fn fill_bytes(mut self) -> Self {
         while self.bits <= 32 {
             let byte = if self.remaining > 0 {
                 let byte = self.data[self.pos as usize];
@@ -210,6 +279,7 @@ impl<'a> ReverseBitReader<'a> {
             self.bits += d_bits;
             self.unstuff = next_unstuff;
         }
+        self
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
@@ -237,66 +307,4 @@ pub(super) fn read_u32_pair(values: &[u16], index: usize) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{ForwardBitReader, MelDecoder, ReverseBitReader};
-
-    #[test]
-    fn reader_state_and_bit_consumption_match_pre_split_goldens() {
-        let data = [0xAA, 0xFF, 0x01, 0x7F, 0x80];
-        let mut forward = ForwardBitReader::<0xFF>::new(&data);
-        assert_eq!(forward.fetch(), 0x3F81_FFAA);
-        forward.advance(5);
-        assert_eq!(forward.fetch(), 0x01FC_0FFD);
-        forward.advance(19);
-        assert_eq!(forward.fetch(), 0xFFFF_C03F);
-        assert_eq!(
-            (forward.pos, forward.bits, forward.tmp, forward.unstuff),
-            (5, 37, 0x0000_001F_FFFF_C03F, true)
-        );
-
-        let mut reverse = ReverseBitReader::new_mrp(&data);
-        assert_eq!(reverse.fetch(), 0xFF01_7F80);
-        assert_eq!(reverse.advance(7), 0x55FE_02FF);
-        assert_eq!(reverse.fetch(), 0x55FE_02FF);
-        assert_eq!(
-            (
-                reverse.pos,
-                reverse.remaining,
-                reverse.bits,
-                reverse.tmp,
-                reverse.unstuff,
-            ),
-            (-1, 0, 33, 0x0000_0001_55FE_02FF, true)
-        );
-
-        let mel_data = [0x12, 0x34, 0x56, 0x78];
-        let mut mel = MelDecoder::new(&mel_data, mel_data.len(), 2);
-        let mut runs = [0i32; 8];
-        for run in &mut runs {
-            *run = mel.get_run().expect("MEL run");
-        }
-        assert_eq!(runs, [1, 0, 1, 0, 0, 0, 2, 2]);
-        assert_eq!(
-            (
-                mel.pos,
-                mel.remaining,
-                mel.bits_left,
-                mel.k,
-                mel.num_runs,
-                mel.runs,
-                mel.unstuff,
-            ),
-            (3, 0, 0, 5, 0, 0, false)
-        );
-
-        let vlc_data = [0x12, 0x34, 0x56, 0x78, 0x9A];
-        let mut vlc = ReverseBitReader::new_vlc(&vlc_data, vlc_data.len(), 3);
-        assert_eq!(vlc.fetch(), 0x0000_02B7);
-        assert_eq!(vlc.advance(9), 0x0000_0001);
-        assert_eq!(vlc.fetch(), 0x0000_0001);
-        assert_eq!(
-            (vlc.pos, vlc.remaining, vlc.bits, vlc.tmp, vlc.unstuff),
-            (1, 0, 34, 1, false)
-        );
-    }
-}
+mod tests;

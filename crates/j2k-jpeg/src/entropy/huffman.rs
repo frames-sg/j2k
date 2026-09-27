@@ -361,8 +361,46 @@ impl DcHuffmanTable<'_> {
         self.0.decode_fast_dc(br)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive DC scans decode one symbol per block; an out-of-line call spills the reader"
+    )]
+    #[inline(always)]
     pub(crate) fn decode(self, br: &mut BitReader<'_>) -> Result<u8, JpegError> {
         self.0.decode(br)
+    }
+
+    /// Decode one lossless (SOF3) difference, T.81 H.1.2.2, modulo 2^16.
+    ///
+    /// Categories 0..=15 extend like DC differences. Category 16 carries no
+    /// extra bits and always means 32768. Reconstruction is modulo 2^16
+    /// (T.81 H.2.1), so the wrapped `u16` is the exact difference.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured Huffman lookup hot path requires cross-helper inlining"
+    )]
+    #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "lossless differences are defined modulo 2^16, so wrapping into u16 is exact"
+    )]
+    pub(crate) fn decode_lossless_diff(self, br: &mut BitReader<'_>) -> Result<u16, JpegError> {
+        br.ensure_bits_padded(FAST_BITS)?;
+        let peek = br.peek_bits(FAST_BITS) as usize;
+        let packed = self.0.packed[peek];
+        if packed != 0 {
+            br.consume_bits((packed & DC_FAST_LEN_MASK) as u8);
+            return Ok((packed >> DC_FAST_VALUE_SHIFT) as u16);
+        }
+        match self.0.decode(br)? {
+            16 => Ok(0x8000),
+            ssss @ 0..=15 => Ok(br.receive_extend(ssss)? as u16),
+            _ => Err(JpegError::HuffmanDecode {
+                mcu: 0,
+                reason: HuffmanFailure::InvalidSymbol,
+            }),
+        }
     }
 }
 
@@ -385,6 +423,11 @@ impl AcHuffmanTable<'_> {
         self.0.skip_fast_ac(br)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive AC scans decode every symbol through this; an out-of-line call spills the reader"
+    )]
+    #[inline(always)]
     pub(crate) fn decode(self, br: &mut BitReader<'_>) -> Result<u8, JpegError> {
         self.0.decode(br)
     }

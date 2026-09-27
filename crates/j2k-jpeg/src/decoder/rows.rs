@@ -86,7 +86,6 @@ impl Decoder<'_> {
                     pool.prepare_lossless_rows(predictor_len, sink_len, scratch_bytes)?;
                 let result = self.decode_lossless_gray8_rows(
                     sink,
-                    &mut pool.lossless_prev_row,
                     &mut pool.lossless_curr_row,
                     &mut rows.top_row,
                 );
@@ -96,18 +95,13 @@ impl Decoder<'_> {
             (ColorSpace::Grayscale, 16) => {
                 let predictor_len = checked_scratch_len(&[width, 2])?;
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
-                self.decode_lossless_gray16_rows(
-                    sink,
-                    &mut pool.lossless_prev_row,
-                    &mut pool.lossless_curr_row,
-                )
+                self.decode_lossless_gray16_rows(sink, &mut pool.lossless_curr_row)
             }
             (ColorSpace::Rgb, 8) => {
                 let predictor_len = checked_scratch_len(&[width, 3])?;
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
                 self.decode_lossless_color8_rows(
                     sink,
-                    &mut pool.lossless_prev_row,
                     &mut pool.lossless_curr_row,
                     None,
                     ColorSpace::Rgb,
@@ -118,7 +112,6 @@ impl Decoder<'_> {
                 let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color8_rows(
                     sink,
-                    &mut pool.lossless_prev_row,
                     &mut pool.lossless_curr_row,
                     Some(&mut rows.top_row),
                     ColorSpace::YCbCr,
@@ -131,7 +124,6 @@ impl Decoder<'_> {
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
                 self.decode_lossless_color16_rows(
                     sink,
-                    &mut pool.lossless_prev_row,
                     &mut pool.lossless_curr_row,
                     None,
                     ColorSpace::Rgb,
@@ -142,7 +134,6 @@ impl Decoder<'_> {
                 let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color16_rows(
                     sink,
-                    &mut pool.lossless_prev_row,
                     &mut pool.lossless_curr_row,
                     Some(&mut rows.top_row),
                     ColorSpace::YCbCr,

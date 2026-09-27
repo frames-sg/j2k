@@ -146,6 +146,8 @@ fn write_j2k_code_block_output(
     output: &mut [f32],
     irreversible_midpoint: bool,
 ) {
+    let midpoint =
+        decode_context.midpoint_reconstructor(job.number_of_coding_passes, job.roi_shift);
     for (row_idx, coeff_row) in decode_context
         .coefficient_rows()
         .enumerate()
@@ -153,17 +155,13 @@ fn write_j2k_code_block_output(
     {
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + layout.stride];
+        if irreversible_midpoint {
+            midpoint.dequantize_row(coeff_row, output_row, job.dequantization_step);
+            continue;
+        }
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            let coefficient = if irreversible_midpoint {
-                decode_context.reconstruct_irreversible_midpoint(
-                    *coefficient,
-                    job.number_of_coding_passes,
-                    job.roi_shift,
-                )
-            } else {
-                apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift) as f32
-            };
-            *sample = coefficient * job.dequantization_step;
+            *sample = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift) as f32
+                * job.dequantization_step;
         }
     }
 }

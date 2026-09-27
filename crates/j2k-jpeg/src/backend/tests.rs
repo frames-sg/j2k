@@ -362,6 +362,26 @@ fn gray_rows_expand_to_equal_rgb_channels() {
     assert_eq!(dst, vec![10, 10, 10, 40, 40, 40, 90, 90, 90, 200, 200, 200]);
 }
 
+/// The SIMD converters restructure the fixed-point arithmetic, so check them
+/// against the scalar reference for every (Cb, Cr) pair, with luma swept
+/// across the range so both saturation edges are exercised.
+#[test]
+fn detected_backend_ycbcr_matches_scalar_for_every_chroma_pair() {
+    let backend = super::Backend::detect();
+    let cb: Vec<u8> = (0..=255u8).collect();
+    let mut expected = vec![0u8; 256 * 3];
+    let mut actual = vec![0u8; 256 * 3];
+    for cr_value in 0..=255u8 {
+        let cr = vec![cr_value; 256];
+        for y_value in (0..=255u8).step_by(15).chain([1, 128, 254, 255]) {
+            let y = vec![y_value; 256];
+            scalar::fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut expected);
+            backend.fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut actual);
+            assert_eq!(actual, expected, "y={y_value} cr={cr_value}");
+        }
+    }
+}
+
 #[test]
 fn ycbcr_rows_match_per_pixel_reference() {
     let y = [16u8, 40, 90, 200];
@@ -1174,4 +1194,90 @@ fn neon_420_cropped_row_pair_matches_scalar_reference_across_chunks() {
         crop_start,
         crop_width,
     );
+}
+
+#[test]
+fn every_backend_matches_the_64_bit_scalar_12bit_idct() {
+    // Includes blocks beyond the NEON 32-bit guard, which must fall back.
+    let blocks = [
+        [0i16; 64],
+        core::array::from_fn(|i| if i == 0 { i16::MAX } else { 0 }),
+        core::array::from_fn(|i| if i % 3 == 0 { i16::MIN } else { 1_000 }),
+        core::array::from_fn(|i| i16::try_from(i * 37 % 211).expect("small") - 100),
+        core::array::from_fn(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN }),
+    ];
+    let kinds = [
+        super::BackendKind::Scalar,
+        #[cfg(target_arch = "aarch64")]
+        super::BackendKind::Neon,
+        #[cfg(target_arch = "x86_64")]
+        super::BackendKind::Avx2,
+    ];
+    for kind in kinds {
+        let Some(backend) = super::Backend::for_test_kind(kind) else {
+            continue;
+        };
+        for (index, block) in blocks.iter().enumerate() {
+            let mut expected = [0u16; 64];
+            crate::idct::scalar::idct_islow_12bit(block, &mut expected);
+            let mut actual = [0u16; 64];
+            backend.idct_12bit(block, &mut actual);
+            assert_eq!(actual, expected, "{kind:?} block {index}");
+        }
+    }
+}
+
+#[test]
+fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
+    let kinds = [
+        super::BackendKind::Scalar,
+        #[cfg(target_arch = "aarch64")]
+        super::BackendKind::Neon,
+        #[cfg(target_arch = "x86_64")]
+        super::BackendKind::Avx2,
+    ];
+    let mut state = 0x1357_9bdf_u32;
+    let mut row = |len: usize| -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                u8::try_from(state >> 24).expect("byte")
+            })
+            .collect()
+    };
+    for chroma_width in 1..=70usize {
+        let (prev, curr, next) = (row(chroma_width), row(chroma_width), row(chroma_width));
+        for output_width in [2 * chroma_width, 2 * chroma_width - 1, chroma_width] {
+            for bottom in [false, true] {
+                let near = if bottom { &next } else { &prev };
+                let expected: Vec<u8> = (0..output_width)
+                    .map(|x| crate::color::upsample::h2v2_fancy_sample(near, &curr, x))
+                    .collect();
+                for kind in kinds {
+                    let Some(backend) = super::Backend::for_test_kind(kind) else {
+                        continue;
+                    };
+                    let mut actual = vec![0xAA; output_width + 3];
+                    backend.upsample_h2v2_fancy_row(
+                        [&prev, &curr, &next],
+                        output_width,
+                        bottom,
+                        &mut actual,
+                    );
+                    assert_eq!(
+                        &actual[..output_width],
+                        &expected[..],
+                        "{kind:?} chroma {chroma_width} width {output_width} bottom {bottom}"
+                    );
+                    assert_eq!(
+                        &actual[output_width..],
+                        &[0xAA; 3],
+                        "{kind:?} wrote past width"
+                    );
+                }
+            }
+        }
+    }
 }

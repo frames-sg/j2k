@@ -5,9 +5,7 @@ use alloc::vec;
 use crate::{ColorSpace, Decoder, JpegError, MarkerKind};
 
 use super::{
-    lossless_predictor_color_into, lossless_predictor_color_rows, lossless_predictor_gray_rows,
-    lossless_predictor_plane, lossless_predictor_value, lossless_predictor_value_u16,
-    read_gray16_sample, restart_index_allocation_bytes, restart_index_for_stream,
+    lossless_output_order, restart_index_allocation_bytes, restart_index_for_stream,
     restart_segment_capacity, upsample_h2v1_u16_at, upsample_h2v1_u8_at, upsample_h2v2_u16_at,
     upsample_h2v2_u8_at, write_lossless_color16_sampled_output,
     write_lossless_color8_sampled_output, LosslessColorPlanes, LosslessColorSampling,
@@ -128,41 +126,20 @@ fn restart_index_rejects_more_markers_than_geometry_allows() {
 }
 
 #[test]
-fn predictors_read_interleaved_rows_and_planes_consistently() {
-    let gray = [10, 20, 30, 40];
-    assert_eq!(lossless_predictor_value(1, &gray, 2, 1, 1), 30);
-    assert_eq!(
-        lossless_predictor_gray_rows::<u8>(2, &[30, 40], &[10, 20], 1, 1),
-        20
-    );
-
-    let color = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    assert_eq!(
-        lossless_predictor_color_into::<u8>(1, &color, 6, 1, 1, 2),
-        9
-    );
-    assert_eq!(
-        lossless_predictor_color_rows::<u8>(
-            2,
-            &[7, 8, 9, 10, 11, 12],
-            &[1, 2, 3, 4, 5, 6],
-            1,
-            1,
-            1
-        ),
-        5
-    );
-    assert_eq!(
-        lossless_predictor_plane(7, &[10u8, 20, 30, 40], 2, 1, 1),
-        25
-    );
-}
-
-#[test]
-fn gray16_helpers_use_little_endian_samples() {
-    let samples = [0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde];
-    assert_eq!(read_gray16_sample(&samples, 2), 0x5678);
-    assert_eq!(lossless_predictor_value_u16(1, &samples, 4, 1, 1), 0x9abc);
+fn output_order_follows_frame_component_order() {
+    for bytes in [
+        j2k_test_support::lossless_predictor_rgb_3x3_jpeg(1),
+        j2k_test_support::lossless_predictor_ycbcr_3x3_jpeg(1),
+    ] {
+        let decoder = Decoder::new(&bytes).expect("lossless color fixture");
+        assert_eq!(lossless_output_order(&decoder.plan), Ok([0, 1, 2]));
+    }
+    let gray_bytes = j2k_test_support::lossless_predictor_grayscale_3x3_jpeg(1);
+    let gray = Decoder::new(&gray_bytes).expect("lossless gray fixture");
+    assert!(matches!(
+        lossless_output_order(&gray.plan),
+        Err(JpegError::UnsupportedComponentCount { count: 1 })
+    ));
 }
 
 #[test]

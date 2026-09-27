@@ -148,6 +148,11 @@ pub(super) struct McuPosition {
     pub(super) total: u32,
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the due check runs once per MCU and must inline so callers' local readers stay in registers"
+)]
+#[inline(always)]
 pub(super) fn consume_restart_marker_if_due(
     br: &mut BitReader<'_>,
     restart: u16,
@@ -159,7 +164,11 @@ pub(super) fn consume_restart_marker_if_due(
         return Ok(false);
     }
 
-    *expected_rst = br.consume_restart_marker(*expected_rst, position.current, position.total)?;
+    let (restarted, next_rst) =
+        br.clone()
+            .restarted(*expected_rst, position.current, position.total)?;
+    *br = restarted;
+    *expected_rst = next_rst;
     Ok(true)
 }
 

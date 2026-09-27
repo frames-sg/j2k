@@ -12,9 +12,11 @@
 //! between passes even on adversarial coefficients.
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, vaddq_s32, vcombine_s16, vcombine_s32, vdupq_n_s32, vget_high_s16,
-    vget_high_s32, vget_low_s16, vget_low_s32, vgetq_lane_u64, vmovl_s16, vmulq_n_s32, vorrq_u64,
-    vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32, vsubq_s32, vtrnq_s32,
+    int16x8_t, int32x4_t, vaddq_s32, vaddvq_s32, vcombine_s16, vcombine_s32, vcombine_u16,
+    vdupq_n_s32, vdupq_n_u16, vget_high_s16, vget_high_s32, vget_low_s16, vget_low_s32,
+    vgetq_lane_u64, vminq_u16, vmovl_s16, vmulq_n_s32, vorrq_u64, vpadalq_s16, vqabsq_s16,
+    vqmovn_s32, vqmovun_s16, vqmovun_s32, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32,
+    vsubq_s32, vtrnq_s32,
 };
 use j2k_codec_math::jpeg::idct;
 
@@ -92,68 +94,8 @@ fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
     let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
 
-    // Transpose to pass-2 input. We need `q_c[l] = (row l, col c)`, meaning
-    // 8 int32x4_t pairs where lane = row. Split into four independent 4×4
-    // i32 transposes because `cw_lo` covers cols 0..3 and `cw_hi` covers
-    // cols 4..7, each across two row halves.
-    //
-    // q_c_lo: 4 low rows (0..3) of col c.
-    // q_c_hi: 4 high rows (4..7) of col c.
-    let [q0l, q1l, q2l, q3l] = transpose_4x4_i32(cw_lo[0], cw_lo[1], cw_lo[2], cw_lo[3]);
-    let [q4l, q5l, q6l, q7l] = transpose_4x4_i32(cw_hi[0], cw_hi[1], cw_hi[2], cw_hi[3]);
-    let [q0h, q1h, q2h, q3h] = transpose_4x4_i32(cw_lo[4], cw_lo[5], cw_lo[6], cw_lo[7]);
-    let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
-
-    // Pass 2: row IDCT.
-    let round2 = vdupq_n_s32(1 << (PASS2_SHIFT - 1));
-
-    let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
-    let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
-
-    // `rw_lo[k]` lane `l` = (row l, col k) for rows 0..3; `rw_hi[k]` for
-    // rows 4..7. Transpose back to row-major, applying the +128 level
-    // shift, then pack to u8.
-    let bias = vdupq_n_s32(128);
-
-    // Transpose rw_lo (cols 0..7 × rows 0..3) into row-major low (cols 0..3).
-    let [fll0, fll1, fll2, fll3] = transpose_4x4_i32(
-        vaddq_s32(rw_lo[0], bias),
-        vaddq_s32(rw_lo[1], bias),
-        vaddq_s32(rw_lo[2], bias),
-        vaddq_s32(rw_lo[3], bias),
-    );
-    let [flh0, flh1, flh2, flh3] = transpose_4x4_i32(
-        vaddq_s32(rw_lo[4], bias),
-        vaddq_s32(rw_lo[5], bias),
-        vaddq_s32(rw_lo[6], bias),
-        vaddq_s32(rw_lo[7], bias),
-    );
-    let [fhl0, fhl1, fhl2, fhl3] = transpose_4x4_i32(
-        vaddq_s32(rw_hi[0], bias),
-        vaddq_s32(rw_hi[1], bias),
-        vaddq_s32(rw_hi[2], bias),
-        vaddq_s32(rw_hi[3], bias),
-    );
-    let [fhh0, fhh1, fhh2, fhh3] = transpose_4x4_i32(
-        vaddq_s32(rw_hi[4], bias),
-        vaddq_s32(rw_hi[5], bias),
-        vaddq_s32(rw_hi[6], bias),
-        vaddq_s32(rw_hi[7], bias),
-    );
-
-    // `fll_r` = row r (0..3), cols 0..3 as i32x4.
-    // `flh_r` = row r (0..3), cols 4..7.
-    // `fhl_r` = row r (4..7), cols 0..3.
-    // `fhh_r` = row r (4..7), cols 4..7.
-    let (rows, _) = output.as_chunks_mut::<8>();
-    store_row(&mut rows[0], fll0, flh0);
-    store_row(&mut rows[1], fll1, flh1);
-    store_row(&mut rows[2], fll2, flh2);
-    store_row(&mut rows[3], fll3, flh3);
-    store_row(&mut rows[4], fhl0, fhh0);
-    store_row(&mut rows[5], fhl1, fhh1);
-    store_row(&mut rows[6], fhl2, fhh2);
-    store_row(&mut rows[7], fhl3, fhh3);
+    let (q_lo, q_hi) = transpose_pass1(cw_lo, cw_hi);
+    store_rows_u8(output, pass2_row_major::<PASS2_SHIFT>(q_lo, q_hi, 128));
 }
 
 fearless_simd::kernel! {
@@ -198,50 +140,8 @@ fn idct_islow_bottom_half_zero_rows(
     let cw_lo = idct_1d_x4_bottom_half_zero::<PASS1_SHIFT>(r0l, r1l, r2l, r3l, round1);
     let cw_hi = idct_1d_x4_bottom_half_zero::<PASS1_SHIFT>(r0h, r1h, r2h, r3h, round1);
 
-    let [q0l, q1l, q2l, q3l] = transpose_4x4_i32(cw_lo[0], cw_lo[1], cw_lo[2], cw_lo[3]);
-    let [q4l, q5l, q6l, q7l] = transpose_4x4_i32(cw_hi[0], cw_hi[1], cw_hi[2], cw_hi[3]);
-    let [q0h, q1h, q2h, q3h] = transpose_4x4_i32(cw_lo[4], cw_lo[5], cw_lo[6], cw_lo[7]);
-    let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
-
-    let round2 = vdupq_n_s32(1 << (PASS2_SHIFT - 1));
-    let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
-    let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
-
-    let bias = vdupq_n_s32(128);
-    let [fll0, fll1, fll2, fll3] = transpose_4x4_i32(
-        vaddq_s32(rw_lo[0], bias),
-        vaddq_s32(rw_lo[1], bias),
-        vaddq_s32(rw_lo[2], bias),
-        vaddq_s32(rw_lo[3], bias),
-    );
-    let [flh0, flh1, flh2, flh3] = transpose_4x4_i32(
-        vaddq_s32(rw_lo[4], bias),
-        vaddq_s32(rw_lo[5], bias),
-        vaddq_s32(rw_lo[6], bias),
-        vaddq_s32(rw_lo[7], bias),
-    );
-    let [fhl0, fhl1, fhl2, fhl3] = transpose_4x4_i32(
-        vaddq_s32(rw_hi[0], bias),
-        vaddq_s32(rw_hi[1], bias),
-        vaddq_s32(rw_hi[2], bias),
-        vaddq_s32(rw_hi[3], bias),
-    );
-    let [fhh0, fhh1, fhh2, fhh3] = transpose_4x4_i32(
-        vaddq_s32(rw_hi[4], bias),
-        vaddq_s32(rw_hi[5], bias),
-        vaddq_s32(rw_hi[6], bias),
-        vaddq_s32(rw_hi[7], bias),
-    );
-
-    let (rows, _) = output.as_chunks_mut::<8>();
-    store_row(&mut rows[0], fll0, flh0);
-    store_row(&mut rows[1], fll1, flh1);
-    store_row(&mut rows[2], fll2, flh2);
-    store_row(&mut rows[3], fll3, flh3);
-    store_row(&mut rows[4], fhl0, fhh0);
-    store_row(&mut rows[5], fhl1, fhh1);
-    store_row(&mut rows[6], fhl2, fhh2);
-    store_row(&mut rows[7], fhl3, fhh3);
+    let (q_lo, q_hi) = transpose_pass1(cw_lo, cw_hi);
+    store_rows_u8(output, pass2_row_major::<PASS2_SHIFT>(q_lo, q_hi, 128));
 }
 
 fearless_simd::kernel! {
@@ -271,6 +171,154 @@ fn bottom_half_rows_are_zero(
         vorrq_u64(vreinterpretq_u64_s16(row6), vreinterpretq_u64_s16(row7)),
     );
     vgetq_lane_u64::<0>(bottom) == 0 && vgetq_lane_u64::<1>(bottom) == 0
+}
+
+/// Transpose pass-1 column output into pass-2 row input. `cw_lo`/`cw_hi`
+/// hold columns 0..3/4..7 with one row per vector; the result holds rows
+/// 0..3/4..7 with one column per vector, so lane `l` of `lo[c]` is
+/// (row l, col c).
+#[inline]
+#[target_feature(enable = "neon")]
+fn transpose_pass1(
+    cw_lo: [int32x4_t; 8],
+    cw_hi: [int32x4_t; 8],
+) -> ([int32x4_t; 8], [int32x4_t; 8]) {
+    let [q0l, q1l, q2l, q3l] = transpose_4x4_i32(cw_lo[0], cw_lo[1], cw_lo[2], cw_lo[3]);
+    let [q4l, q5l, q6l, q7l] = transpose_4x4_i32(cw_hi[0], cw_hi[1], cw_hi[2], cw_hi[3]);
+    let [q0h, q1h, q2h, q3h] = transpose_4x4_i32(cw_lo[4], cw_lo[5], cw_lo[6], cw_lo[7]);
+    let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
+    (
+        [q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l],
+        [q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h],
+    )
+}
+
+/// Pass 2 (row IDCT) on transposed input, then transpose back to row-major
+/// and add the level shift `bias`. Returns `rows[r] = (cols 0..3, cols 4..7)`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn pass2_row_major<const SHIFT: i32>(
+    q_lo: [int32x4_t; 8],
+    q_hi: [int32x4_t; 8],
+    bias: i32,
+) -> [(int32x4_t, int32x4_t); 8] {
+    let round2 = vdupq_n_s32(1 << (SHIFT - 1));
+    let rw_lo = idct_1d_x4::<SHIFT>(q_lo, round2);
+    let rw_hi = idct_1d_x4::<SHIFT>(q_hi, round2);
+    // `rw_lo[k]` lane `l` = (row l, col k) for rows 0..3; `rw_hi[k]` for
+    // rows 4..7.
+    let bias = vdupq_n_s32(bias);
+    let [fll0, fll1, fll2, fll3] = transpose_4x4_i32(
+        vaddq_s32(rw_lo[0], bias),
+        vaddq_s32(rw_lo[1], bias),
+        vaddq_s32(rw_lo[2], bias),
+        vaddq_s32(rw_lo[3], bias),
+    );
+    let [flh0, flh1, flh2, flh3] = transpose_4x4_i32(
+        vaddq_s32(rw_lo[4], bias),
+        vaddq_s32(rw_lo[5], bias),
+        vaddq_s32(rw_lo[6], bias),
+        vaddq_s32(rw_lo[7], bias),
+    );
+    let [fhl0, fhl1, fhl2, fhl3] = transpose_4x4_i32(
+        vaddq_s32(rw_hi[0], bias),
+        vaddq_s32(rw_hi[1], bias),
+        vaddq_s32(rw_hi[2], bias),
+        vaddq_s32(rw_hi[3], bias),
+    );
+    let [fhh0, fhh1, fhh2, fhh3] = transpose_4x4_i32(
+        vaddq_s32(rw_hi[4], bias),
+        vaddq_s32(rw_hi[5], bias),
+        vaddq_s32(rw_hi[6], bias),
+        vaddq_s32(rw_hi[7], bias),
+    );
+    [
+        (fll0, flh0),
+        (fll1, flh1),
+        (fll2, flh2),
+        (fll3, flh3),
+        (fhl0, fhh0),
+        (fhl1, fhh1),
+        (fhl2, fhh2),
+        (fhl3, fhh3),
+    ]
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+fn store_rows_u8(output: &mut [u8; 64], rows: [(int32x4_t, int32x4_t); 8]) {
+    let (dst, _) = output.as_chunks_mut::<8>();
+    for (dst, (lo, hi)) in dst.iter_mut().zip(rows) {
+        store_row(dst, lo, hi);
+    }
+}
+
+/// Pass-1 precision bits of the 12-bit ISLOW transform (`jidctint.c`).
+const PASS1_BITS_12: i32 = 1;
+
+/// Largest `sum(|coefficient|)` for which every 12-bit ISLOW intermediate fits
+/// in `i32`. Pass 1 cannot overflow for any `i16` input (its largest L1 gain
+/// is 61,214, and 61,214 * 32,768 < 2^31). A pass-2 intermediate is a linear
+/// form of the 64 coefficients whose largest single-coefficient gain is
+/// 58,244, plus at most 30,607 of pass-1 rounding and the 2^16 descale
+/// rounding, so `58,244 * sum + 96,143 < 2^31` holds up to a sum of 36,869.
+/// The margin below that absorbs `vqabsq_s16` reporting 32,767 for -32,768.
+const IDCT12_I32_SAFE_ABS_SUM: i32 = 36_800;
+
+fearless_simd::kernel! {
+    /// 12-bit ISLOW IDCT of one block into samples level-shifted by +2048 and
+    /// clamped to `[0, 4095]`, bit-exact with the 64-bit
+    /// [`super::scalar::idct_islow_12bit`]. Returns `false`, leaving `output`
+    /// untouched, when the coefficients are large enough that 32-bit lanes
+    /// could overflow; the caller then runs the 64-bit scalar transform.
+    pub(crate) fn idct_islow_12bit(neon: Neon, input: &[i16; 64], output: &mut [u16; 64]) -> bool {
+        idct_islow_12bit_kernel(input, output)
+    }
+}
+
+#[target_feature(enable = "neon")]
+fn idct_islow_12bit_kernel(input: &[i16; 64], output: &mut [u16; 64]) -> bool {
+    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS_12;
+    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS_12 + 3;
+    let (rows, _) = input.as_chunks::<8>();
+    let row0 = neon_memory::load_i16x8(&rows[0]);
+    let row1 = neon_memory::load_i16x8(&rows[1]);
+    let row2 = neon_memory::load_i16x8(&rows[2]);
+    let row3 = neon_memory::load_i16x8(&rows[3]);
+    let row4 = neon_memory::load_i16x8(&rows[4]);
+    let row5 = neon_memory::load_i16x8(&rows[5]);
+    let row6 = neon_memory::load_i16x8(&rows[6]);
+    let row7 = neon_memory::load_i16x8(&rows[7]);
+    let mut magnitude = vdupq_n_s32(0);
+    for row in [row0, row1, row2, row3, row4, row5, row6, row7] {
+        magnitude = vpadalq_s16(magnitude, vqabsq_s16(row));
+    }
+    if vaddvq_s32(magnitude) > IDCT12_I32_SAFE_ABS_SUM {
+        return false;
+    }
+
+    let (r0l, r0h) = widen(row0);
+    let (r1l, r1h) = widen(row1);
+    let (r2l, r2h) = widen(row2);
+    let (r3l, r3h) = widen(row3);
+    let (r4l, r4h) = widen(row4);
+    let (r5l, r5h) = widen(row5);
+    let (r6l, r6h) = widen(row6);
+    let (r7l, r7h) = widen(row7);
+    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
+    let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
+    let (q_lo, q_hi) = transpose_pass1(cw_lo, cw_hi);
+    let rows = pass2_row_major::<PASS2_SHIFT>(q_lo, q_hi, 2048);
+
+    let max_sample = vdupq_n_u16(4095);
+    let (dst, _) = output.as_chunks_mut::<8>();
+    for (dst, (lo, hi)) in dst.iter_mut().zip(rows) {
+        // Saturating narrows clamp below at 0; the min clamps above at 4095.
+        let packed = vcombine_u16(vqmovun_s32(lo), vqmovun_s32(hi));
+        neon_memory::store_u16x8(dst, vminq_u16(packed, max_sample));
+    }
+    true
 }
 
 /// Saturating-narrow an (i32x4, i32x4) pair to u8x8 and store at `dst`.
@@ -482,6 +530,92 @@ mod tests {
             .expect("AArch64 test host must provide NEON");
         idct_islow_bottom_half_zero(neon, &input, &mut neon_out);
         assert_eq!(scalar_out, neon_out);
+    }
+
+    fn neon_token() -> fearless_simd::Neon {
+        fearless_simd::Level::new()
+            .as_neon()
+            .expect("AArch64 test host must provide NEON")
+    }
+
+    fn assert_12bit_matches_scalar(input: &[i16; 64], label: &str) {
+        let mut expected = [0u16; 64];
+        crate::idct::scalar::idct_islow_12bit(input, &mut expected);
+        let mut actual = [0xffffu16; 64];
+        assert!(
+            idct_islow_12bit(neon_token(), input, &mut actual),
+            "{label}: guard declined a block within the 32-bit bound"
+        );
+        assert_eq!(actual, expected, "{label}");
+    }
+
+    fn xorshift(state: &mut u32) -> u32 {
+        *state ^= *state << 13;
+        *state ^= *state >> 17;
+        *state ^= *state << 5;
+        *state
+    }
+
+    fn abs_sum(input: &[i16; 64]) -> i32 {
+        input.iter().map(|&c| i32::from(c).abs()).sum()
+    }
+
+    #[test]
+    fn neon_12bit_matches_scalar_on_random_blocks() {
+        let mut state = 0x1234_5678;
+        for case in 0..4_000 {
+            let mut input = [0i16; 64];
+            let magnitude = [64, 512, 4_096, 32_767][case % 4];
+            let density = [2, 8, 64][case % 3];
+            for coefficient in input.iter_mut().take(density) {
+                let raw = xorshift(&mut state) % (2 * magnitude + 1);
+                *coefficient = i16::try_from(i64::from(raw) - i64::from(magnitude))
+                    .expect("coefficient range");
+            }
+            if abs_sum(&input) > IDCT12_I32_SAFE_ABS_SUM {
+                continue;
+            }
+            assert_12bit_matches_scalar(&input, &format!("case {case}"));
+        }
+    }
+
+    #[test]
+    fn neon_12bit_matches_scalar_on_extreme_blocks_under_the_guard() {
+        // Whole guard budget on one coefficient: the largest single gains.
+        for index in 0..64 {
+            for value in [i16::MAX, i16::MIN] {
+                let mut input = [0i16; 64];
+                input[index] = value;
+                assert_12bit_matches_scalar(&input, &format!("index {index} = {value}"));
+            }
+        }
+        // The budget spread across every coefficient with varied signs.
+        let mut state = 0x9e37_79b9;
+        for case in 0..2_000 {
+            let each = i16::try_from(IDCT12_I32_SAFE_ABS_SUM / 64).expect("share fits i16");
+            let mut input = [0i16; 64];
+            for coefficient in &mut input {
+                *coefficient = if xorshift(&mut state) & 1 == 0 {
+                    each
+                } else {
+                    -each
+                };
+            }
+            assert_12bit_matches_scalar(&input, &format!("spread case {case}"));
+        }
+    }
+
+    #[test]
+    fn neon_12bit_declines_blocks_that_could_overflow_32_bits() {
+        let mut input = [0i16; 64];
+        input[0] = i16::MAX;
+        input[9] = 5_000;
+        let mut output = [7u16; 64];
+        assert!(!idct_islow_12bit(neon_token(), &input, &mut output));
+        assert_eq!(
+            output, [7u16; 64],
+            "a declined block leaves the output untouched"
+        );
     }
 
     #[test]

@@ -427,12 +427,15 @@ fn strict_metadata_and_segment_failures_keep_exact_error_classes() {
 #[test]
 fn bitplane_modules_remain_focused_without_suppression_shortcuts() {
     const ROOT: &str = include_str!("../bitplane.rs");
-    const MODULES: [(&str, &str, usize); 8] = [
+    const MODULES: [(&str, &str, usize); 11] = [
         ("arithmetic", include_str!("arithmetic.rs"), 320),
         ("bypass", include_str!("bypass.rs"), 280),
         ("context", include_str!("context.rs"), 210),
         ("facade", include_str!("facade.rs"), 170),
+        ("flag_passes", include_str!("flag_passes.rs"), 250),
+        ("flags", include_str!("flags.rs"), 170),
         ("observer", include_str!("observer.rs"), 100),
+        ("scan", include_str!("scan.rs"), 80),
         ("schedule", include_str!("schedule.rs"), 350),
         ("state", include_str!("state.rs"), 500),
         ("state/model", include_str!("state/model.rs"), 150),

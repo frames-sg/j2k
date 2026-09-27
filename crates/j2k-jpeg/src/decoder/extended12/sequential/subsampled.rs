@@ -34,8 +34,12 @@ impl Decoder<'_> {
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let (planes, scan_warnings) =
-            decode_extended12_color_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
+        let (planes, scan_warnings) = decode_extended12_color_planes(
+            self.backend,
+            &self.plan,
+            scan_bytes,
+            self.info.sof_kind,
+        )?;
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: self.info.dimensions,

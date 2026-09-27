@@ -34,18 +34,27 @@ pub(crate) struct BitReaderSnapshot {
     pub(crate) bits: u8,
 }
 
+/// Hot loops copy the reader into a local, decode, and write it back so the
+/// accumulator stays in registers; `Clone` (not `Copy`) keeps those copies
+/// explicit.
+#[derive(Clone)]
 pub(crate) struct BitReader<'a> {
     bytes: &'a [u8],
     /// Cursor into `bytes`. Always either (a) past the last consumed byte, or
     /// (b) pointing at the leading `0xFF` of a marker the refill paused at.
     pos: usize,
     /// MSB-first bit accumulator. The `bits` most-significant bits contain
-    /// the next coded bits; lower (`64 - bits`) bits are zero.
+    /// the next coded bits. The lower (`64 - bits`) bits are either zero or a
+    /// prefix of the not-yet-counted byte at `pos`, preloaded by the bulk
+    /// refill; every later refill ORs identical values into those positions.
     acc: u64,
     /// Number of valid bits in `acc`, 0..=64.
     bits: u8,
-    /// Synthetic trailing one bits appended only for terminal Huffman lookahead.
-    synthetic_bits: u8,
+    /// Synthetic one bits appended for terminal Huffman lookahead since the
+    /// last reset. Real bits are always consumed before synthetic ones, so
+    /// the unread synthetic count is `min(synthetic_pushed, bits)`. Deriving
+    /// it keeps this bookkeeping out of `consume_bits`.
+    synthetic_pushed: u8,
     /// Set when refill stopped at a marker. Cleared by [`Self::take_marker`].
     marker: Option<u8>,
     /// Cursor immediately after the observed marker code, including FF fill.
@@ -68,7 +77,7 @@ impl<'a> BitReader<'a> {
             pos: 0,
             acc: 0,
             bits: 0,
-            synthetic_bits: 0,
+            synthetic_pushed: 0,
             marker: None,
             marker_end: 0,
             allow_eof_padding,
@@ -83,18 +92,56 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits(&mut self, n: u8) -> Result<(), JpegError> {
+        if self.bits >= n || self.try_refill_bulk() {
+            return Ok(());
+        }
+        *self = self.clone().ensure_bits_slow(n)?;
+        Ok(())
+    }
+
+    /// Byte-at-a-time refill for windows holding `0xFF`, markers, or the
+    /// input tail. Taking and returning the reader by value keeps callers'
+    /// local readers from escaping, so their accumulators stay in registers.
+    #[cold]
+    #[inline(never)]
+    fn ensure_bits_slow(mut self, n: u8) -> Result<Self, JpegError> {
         while self.bits < n {
             if !self.refill_one_byte() {
-                if self.bits >= n {
-                    return Ok(());
-                }
                 return Err(JpegError::HuffmanDecode {
                     mcu: 0,
                     reason: HuffmanFailure::TableExhausted,
                 });
             }
         }
-        Ok(())
+        Ok(self)
+    }
+
+    /// Branch-light refill: when the next eight input bytes contain no `0xFF`
+    /// (no stuffing and no marker), OR them in with one big-endian load and
+    /// count every whole byte that fits, leaving `bits` in `56..=63`. Returns
+    /// `false`, changing nothing, when the window is short or holds `0xFF`.
+    #[inline(always)]
+    fn try_refill_bulk(&mut self) -> bool {
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGHS: u64 = 0x8080_8080_8080_8080;
+        let Some(window) = self
+            .bytes
+            .get(self.pos..)
+            .and_then(|tail| tail.first_chunk::<8>())
+        else {
+            return false;
+        };
+        let word = u64::from_be_bytes(*window);
+        // A byte of `word` is 0xFF exactly when that byte of `!word` is zero.
+        let inverted = !word;
+        if inverted.wrapping_sub(ONES) & word & HIGHS != 0 {
+            return false;
+        }
+        self.acc |= word >> self.bits;
+        let whole_bytes = (ACC_BITS - 1 - self.bits) >> 3;
+        self.pos += usize::from(whole_bytes);
+        self.bits += whole_bytes << 3;
+        true
     }
 
     /// Fill the accumulator to at least `n` bits, padding with `1` bits when
@@ -114,6 +161,16 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits_padded(&mut self, n: u8) -> Result<(), JpegError> {
+        if self.bits >= n || self.try_refill_bulk() {
+            return Ok(());
+        }
+        *self = self.clone().ensure_bits_padded_slow(n)?;
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn ensure_bits_padded_slow(mut self, n: u8) -> Result<Self, JpegError> {
         let mut refilled = false;
         while self.bits < n {
             if !self.refill_one_byte() {
@@ -128,16 +185,16 @@ impl<'a> BitReader<'a> {
                 while self.bits < n {
                     self.acc |= 1u64 << (ACC_BITS - 1 - self.bits);
                     self.bits += 1;
-                    self.synthetic_bits += 1;
+                    self.synthetic_pushed = self.synthetic_pushed.saturating_add(1);
                 }
-                return Ok(());
+                return Ok(self);
             }
             refilled = true;
         }
         if refilled {
             self.refill_to_threshold();
         }
-        Ok(())
+        Ok(self)
     }
 
     /// Refill one byte of data into the accumulator. Returns `true` if a
@@ -228,27 +285,82 @@ impl<'a> BitReader<'a> {
             "consume_bits({n}) with only {} buffered",
             self.bits
         );
-        let real_bits = self.bits - self.synthetic_bits;
-        if n > real_bits {
-            self.synthetic_bits -= n - real_bits;
-        }
         self.acc <<= n;
         self.bits -= n;
     }
 
     /// Combined peek + consume. Refills as needed.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement reads single bits per coefficient; an out-of-line call spills the reader"
+    )]
+    #[inline(always)]
     pub(crate) fn read_bits(&mut self, n: u8) -> Result<u32, JpegError> {
         self.ensure_bits(n)?;
         let v = self.peek_bits(n);
         self.consume_bits(n);
-        self.refill_to_threshold();
+        self.top_up_to_threshold();
         Ok(v)
+    }
+
+    /// Read one bit like `read_bits(1)` but without the trailing top-up.
+    ///
+    /// A top-up loads the fewest bytes that leave at least 56 buffered bits
+    /// (or stops at a marker), and it never unloads bytes, so the loaded
+    /// frontier after a top-up depends only on the bits consumed so far. A
+    /// run of deferred reads followed by one [`Self::finish_deferred_bits`]
+    /// therefore leaves the same observable reader state as the same run of
+    /// `read_bits(1)` calls. Callers must finish before any Huffman decode,
+    /// restart marker, or end-of-scan check.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement reads single bits per coefficient"
+    )]
+    #[inline(always)]
+    pub(crate) fn read_bit_deferred(&mut self) -> Result<bool, JpegError> {
+        self.ensure_bits(1)?;
+        let bit = self.peek_bits(1) != 0;
+        self.consume_bits(1);
+        Ok(bit)
+    }
+
+    /// Complete a run of [`Self::read_bit_deferred`] calls.
+    #[expect(
+        clippy::inline_always,
+        reason = "progressive refinement tops up once per run of correction bits"
+    )]
+    #[inline(always)]
+    pub(crate) fn finish_deferred_bits(&mut self) {
+        self.top_up_to_threshold();
     }
 
     /// After consuming bits, top up the accumulator so the next Huffman peek
     /// can always examine 16 bits without further refill.
     fn refill_to_threshold(&mut self) {
+        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
+            while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
+        }
+    }
+
+    /// [`Self::refill_to_threshold`] for hot loops that keep the reader in a
+    /// local: the bulk path is inline and the byte-at-a-time path takes the
+    /// reader by value, so the local never escapes.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
+    #[inline(always)]
+    fn top_up_to_threshold(&mut self) {
+        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
+            *self = self.clone().top_up_to_threshold_slow();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn top_up_to_threshold_slow(mut self) -> Self {
         while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
+        self
     }
 
     /// Signed-value extension per T.81 §F.2.2.1 ("EXTEND" procedure). `ssss`
@@ -286,6 +398,21 @@ impl<'a> BitReader<'a> {
         self.pos = self.marker_end;
         self.marker_end = 0;
         Some(m)
+    }
+
+    /// By-value [`Self::consume_restart_marker`] for hot loops that keep the
+    /// reader in a local: passing `&mut` to an out-of-line call would force
+    /// the whole reader into memory for the entire loop.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn restarted(
+        mut self,
+        expected_rst: u8,
+        mcu_at: u32,
+        mcu_total: u32,
+    ) -> Result<(Self, u8), JpegError> {
+        let next_rst = self.consume_restart_marker(expected_rst, mcu_at, mcu_total)?;
+        Ok((self, next_rst))
     }
 
     /// Consume the next restart marker and return the following RST index.
@@ -327,7 +454,7 @@ impl<'a> BitReader<'a> {
     }
 
     pub(crate) fn snapshot(&self) -> BitReaderSnapshot {
-        let real_bits = self.bits.saturating_sub(self.synthetic_bits);
+        let real_bits = self.unread_real_bits();
         let acc = if real_bits == 0 {
             0
         } else {
@@ -345,7 +472,7 @@ impl<'a> BitReader<'a> {
     pub(crate) fn reset_at_restart(&mut self) {
         self.acc = 0;
         self.bits = 0;
-        self.synthetic_bits = 0;
+        self.synthetic_pushed = 0;
     }
 
     pub(crate) fn from_snapshot(bytes: &'a [u8], snapshot: BitReaderSnapshot) -> Self {
@@ -354,7 +481,7 @@ impl<'a> BitReader<'a> {
             pos: snapshot.pos,
             acc: snapshot.acc,
             bits: snapshot.bits,
-            synthetic_bits: 0,
+            synthetic_pushed: 0,
             marker: None,
             marker_end: 0,
             allow_eof_padding: false,
@@ -593,5 +720,96 @@ mod tests {
 
         assert_eq!(br.consume_restart_marker(0, 1, 2).unwrap(), 1);
         assert_eq!(br.snapshot().bits, 0);
+    }
+
+    /// Deterministic xorshift so failures reproduce from the printed seed.
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// Byte-stuffs `payload` (every data `0xFF` becomes `0xFF 0x00`) and
+    /// terminates it with `marker`, like an entropy segment.
+    fn stuffed_segment(payload: &[u8], marker: u8) -> Vec<u8> {
+        let mut segment = Vec::with_capacity(payload.len() * 2 + 2);
+        for &byte in payload {
+            segment.push(byte);
+            if byte == 0xff {
+                segment.push(0x00);
+            }
+        }
+        segment.extend_from_slice(&[0xff, marker]);
+        segment
+    }
+
+    fn reference_bits(payload: &[u8], bit_pos: usize, n: u8) -> u32 {
+        (0..usize::from(n)).fold(0u32, |value, i| {
+            let bit = payload
+                .get((bit_pos + i) / 8)
+                .map_or(1, |byte| (byte >> (7 - (bit_pos + i) % 8)) & 1);
+            (value << 1) | u32::from(bit)
+        })
+    }
+
+    #[test]
+    fn bulk_refill_matches_bitwise_reference_across_stuffing_and_markers() {
+        for seed in 1..=400u64 {
+            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let len = (next_random(&mut rng) % 48) as usize;
+            // Dense 0xFF so stuffing lands at every offset of the 8-byte window.
+            let payload: Vec<u8> = (0..len)
+                .map(|_| match next_random(&mut rng) % 4 {
+                    0 => 0xff,
+                    _ => next_random(&mut rng).to_le_bytes()[0],
+                })
+                .collect();
+            let marker = if seed % 2 == 0 { 0xd9 } else { 0xd0 };
+            let segment = stuffed_segment(&payload, marker);
+            let mut br = BitReader::new(&segment);
+
+            let total_bits = payload.len() * 8;
+            let mut bit_pos = 0usize;
+            while bit_pos < total_bits + 24 {
+                let n = 1 + (next_random(&mut rng) % 16) as u8;
+                br.ensure_bits_padded(n)
+                    .unwrap_or_else(|err| panic!("seed {seed}: padded ensure failed: {err:?}"));
+                assert_eq!(
+                    br.peek_bits(n),
+                    reference_bits(&payload, bit_pos, n),
+                    "seed {seed}: {n} bits at bit {bit_pos}"
+                );
+                br.consume_bits(n);
+                bit_pos += usize::from(n);
+                assert_eq!(
+                    usize::from(br.unread_real_bits()),
+                    usize::from(br.bits).min(total_bits.saturating_sub(bit_pos)),
+                    "seed {seed}: real-bit accounting at bit {bit_pos}"
+                );
+            }
+            assert_eq!(br.take_marker(), Some(marker), "seed {seed}");
+            assert_eq!(br.position(), segment.len(), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn bulk_refill_snapshot_restores_only_counted_bits() {
+        let payload: Vec<u8> = (0u8..=40).map(|i| i.wrapping_mul(37)).collect();
+        let segment = stuffed_segment(&payload, 0xd9);
+        let mut br = BitReader::new(&segment);
+        for n in [3u8, 11, 7, 16, 1, 9, 13] {
+            br.ensure_bits_padded(n).unwrap();
+            br.consume_bits(n);
+            let snapshot = br.snapshot();
+            let mut original = br.clone();
+            let mut restored = BitReader::from_snapshot(&segment, snapshot);
+            for width in [5u8, 12, 16, 2] {
+                assert_eq!(
+                    restored.read_bits(width).unwrap(),
+                    original.read_bits(width).unwrap()
+                );
+            }
+        }
     }
 }

@@ -149,6 +149,7 @@ pub(super) fn decode_code_block_segments_validated_with_observer<O: J2kDecodeObs
         code_block_style,
         total_bitplanes,
         strict,
+        segments.iter().all(|segment| segment.use_arithmetic),
     )?;
 
     if number_of_coding_passes == 0 || ctx.bitplanes == 0 {

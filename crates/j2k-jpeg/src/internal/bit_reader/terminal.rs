@@ -16,7 +16,7 @@ impl BitReader<'_> {
     }
 
     pub(crate) fn unread_real_bits(&self) -> u8 {
-        self.bits - self.synthetic_bits
+        self.bits.saturating_sub(self.synthetic_pushed)
     }
 
     pub(crate) fn unread_real_bits_are_ones(&self) -> bool {

@@ -15,6 +15,9 @@ mod x86;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 
+#[cfg(target_arch = "aarch64")]
+mod neon_upsample;
+
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod row_pair;
 
@@ -307,6 +310,41 @@ impl Backend {
         }
     }
 
+    /// One visible row of fancy 4:2:0 chroma upsampling; bit-exact with
+    /// [`crate::color::upsample::upsample_h2v2_fancy_row`].
+    pub(crate) fn upsample_h2v2_fancy_row(
+        self,
+        rows: [&[u8]; 3],
+        output_width: usize,
+        output_is_bottom: bool,
+        out: &mut [u8],
+    ) {
+        let [prev, curr, next] = rows;
+        match self {
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => {
+                let near = if output_is_bottom { next } else { prev };
+                crate::color::upsample::emit_h2v2_row_with(
+                    near,
+                    curr,
+                    output_width,
+                    out,
+                    |curr, near, interior| {
+                        neon_upsample::h2v2_fancy_pairs(neon, curr, near, interior)
+                    },
+                );
+            }
+            _ => crate::color::upsample::upsample_h2v2_fancy_row(
+                prev,
+                curr,
+                next,
+                output_width,
+                output_is_bottom,
+                out,
+            ),
+        }
+    }
+
     /// 8×8 inverse DCT of a dequantized coefficient block. Output is
     /// level-shifted by +128 and clamped to `[0, 255]` — bit-exact with
     /// [`idct::scalar::idct_islow`] on every legal JPEG input.
@@ -317,6 +355,19 @@ impl Backend {
             Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow(neon, input, output),
+        }
+    }
+
+    /// 8×8 inverse DCT of a dequantized 12-bit coefficient block, level-shifted
+    /// by +2048 and clamped to `[0, 4095]`; bit-exact with
+    /// [`idct::scalar::idct_islow_12bit`] on every input.
+    pub(crate) fn idct_12bit(self, input: &[i16; 64], output: &mut [u16; 64]) {
+        match self {
+            // The NEON transform declines blocks that could overflow its
+            // 32-bit lanes; those fall through to the 64-bit scalar one.
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) if idct::neon::idct_islow_12bit(neon, input, output) => {}
+            _ => idct::scalar::idct_islow_12bit(input, output),
         }
     }
 

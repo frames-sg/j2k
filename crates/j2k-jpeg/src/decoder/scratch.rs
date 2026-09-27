@@ -7,6 +7,7 @@ use super::{
 };
 use crate::entropy::sequential::StripeLayout;
 use crate::info::{ColorSpace, Info, SamplingFactors};
+use crate::lossless::scan::lossless_scan_allocation_bytes;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct LosslessSampledPlaneLayout {
@@ -137,11 +138,27 @@ pub(super) fn additional_decode_scratch_bytes(
     Ok(additional)
 }
 
+/// Largest lossless workspace: the scan's own row buffers plus either the
+/// sampled color planes or the streaming row buffers.
 pub(super) fn compute_lossless_scratch_bytes(info: &Info, cap: usize) -> Result<usize, JpegError> {
     let sampled_planes =
         lossless_sampled_plane_layout(info, cap)?.map_or(0, |layout| layout.total_bytes);
     let row_scratch = compute_lossless_row_scratch_bytes(info, cap)?;
-    Ok(sampled_planes.max(row_scratch))
+    let scan_rows = lossless_scan_allocation_bytes(info.dimensions, info.sampling.components())?;
+    let total = sampled_planes
+        .max(row_scratch)
+        .checked_add(scan_rows)
+        .ok_or(JpegError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap,
+        })?;
+    if total > cap {
+        return Err(JpegError::MemoryCapExceeded {
+            requested: total,
+            cap,
+        });
+    }
+    Ok(total)
 }
 
 pub(super) fn lossless_sampled_plane_layout(

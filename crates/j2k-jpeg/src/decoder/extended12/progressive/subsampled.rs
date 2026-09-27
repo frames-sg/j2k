@@ -41,7 +41,7 @@ impl Decoder<'_> {
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes, 0)?;
-        let planes = render_progressive12_color_planes(plan, &dct_blocks)?;
+        let planes = render_progressive12_color_planes(self.backend, plan, &dct_blocks)?;
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: self.info.dimensions,

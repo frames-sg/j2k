@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    downscale_profile_name, emit_jpeg_profile_fields, lossless_predict, upsample_h2v1_sample_at,
+    downscale_profile_name, emit_jpeg_profile_fields, upsample_h2v1_sample_at,
     upsample_h2v2_rows_at, BitReader, ColorSpace, DownscaleFactor, Duration, Info, JpegError,
     LosslessColorSampling, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField, Rect,
     RestartIndex, RestartSegment, SofKind,
 };
 use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
-use crate::entropy::huffman::DcHuffmanTable;
 use crate::entropy::sequential::PreparedDecodePlan;
 
 pub(crate) fn restart_index_allocation_bytes(
@@ -171,51 +170,6 @@ pub(super) fn emit_decode_scan_profile(
     });
 }
 
-pub(super) fn consume_lossless_restart(
-    br: &mut BitReader<'_>,
-    sample_index: u32,
-    total_samples: u32,
-    expected_rst: &mut u8,
-) -> Result<(), JpegError> {
-    br.reset_at_restart();
-    *expected_rst = br.consume_restart_marker(*expected_rst, sample_index, total_samples)?;
-    Ok(())
-}
-
-pub(super) struct LosslessRestartTracker {
-    restart_interval: u32,
-    total_units: u32,
-    units_since_restart: u32,
-    expected_rst: u8,
-}
-
-impl LosslessRestartTracker {
-    pub(super) fn new(restart_interval: Option<u16>, total_units: u32) -> Self {
-        Self {
-            restart_interval: u32::from(restart_interval.unwrap_or(0)),
-            total_units,
-            units_since_restart: 0,
-            expected_rst: 0,
-        }
-    }
-
-    pub(super) fn begin_unit(
-        &mut self,
-        br: &mut BitReader<'_>,
-        unit_index: u32,
-    ) -> Result<bool, JpegError> {
-        if self.restart_interval > 0 && self.units_since_restart == self.restart_interval {
-            consume_lossless_restart(br, unit_index, self.total_units, &mut self.expected_rst)?;
-            self.units_since_restart = 0;
-        }
-        Ok(self.restart_interval > 0 && self.units_since_restart == 0)
-    }
-
-    pub(super) fn finish_unit(&mut self) {
-        self.units_since_restart += 1;
-    }
-}
-
 pub(super) fn consume_extended12_restart(
     br: &mut BitReader<'_>,
     mcu_index: u32,
@@ -262,172 +216,27 @@ impl Extended12RestartTracker {
     }
 }
 
-pub(super) fn lossless_predictor_value(
-    predictor: u8,
-    out: &[u8],
-    stride: usize,
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, 128, x, y, |sx, sy| {
-        i32::from(out[sy * stride + sx])
-    })
-}
-
-pub(super) fn lossless_predictor_color_into<P: LosslessSample>(
-    predictor: u8,
-    out: &[u8],
-    stride: usize,
-    x: usize,
-    y: usize,
-    component: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        P::read_le(&out[sy * stride + (sx * 3 + component) * P::BYTES..])
-    })
-}
-
-pub(super) fn lossless_predictor_gray_rows<P: LosslessSample>(
-    predictor: u8,
-    curr_row: &[u8],
-    prev_row: &[u8],
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        let row = if sy == y { curr_row } else { prev_row };
-        P::read_le(&row[sx * P::BYTES..])
-    })
-}
-
-pub(super) fn lossless_predictor_color_rows<P: LosslessSample>(
-    predictor: u8,
-    curr_row: &[u8],
-    prev_row: &[u8],
-    x: usize,
-    y: usize,
-    component: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        let row = if sy == y { curr_row } else { prev_row };
-        P::read_le(&row[(sx * 3 + component) * P::BYTES..])
-    })
-}
-
-pub(super) trait LosslessColorSampleTarget<P: LosslessSample> {
-    fn predict(&self, predictor: u8, component: usize) -> i32;
-    fn write(&mut self, component: usize, sample: P);
-}
-
-pub(super) struct LosslessColorIntoSample<'a> {
-    pub(super) out: &'a mut [u8],
-    pub(super) stride: usize,
-    pub(super) x: usize,
-    pub(super) y: usize,
-}
-
-impl<P: LosslessSample> LosslessColorSampleTarget<P> for LosslessColorIntoSample<'_> {
-    fn predict(&self, predictor: u8, component: usize) -> i32 {
-        lossless_predictor_color_into::<P>(
-            predictor,
-            self.out,
-            self.stride,
-            self.x,
-            self.y,
-            component,
-        )
-    }
-
-    fn write(&mut self, component: usize, sample: P) {
-        let offset = self.y * self.stride + (self.x * 3 + component) * P::BYTES;
-        sample.write_le(&mut self.out[offset..]);
-    }
-}
-
-pub(super) struct LosslessColorRowSample<'a> {
-    pub(super) curr_row: &'a mut [u8],
-    pub(super) prev_row: &'a [u8],
-    pub(super) x: usize,
-    pub(super) y: usize,
-}
-
-impl<P: LosslessSample> LosslessColorSampleTarget<P> for LosslessColorRowSample<'_> {
-    fn predict(&self, predictor: u8, component: usize) -> i32 {
-        lossless_predictor_color_rows::<P>(
-            predictor,
-            self.curr_row,
-            self.prev_row,
-            self.x,
-            self.y,
-            component,
-        )
-    }
-
-    fn write(&mut self, component: usize, sample: P) {
-        let offset = (self.x * 3 + component) * P::BYTES;
-        sample.write_le(&mut self.curr_row[offset..]);
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "component indices are validated against the JPEG maximum component count"
-)]
-pub(super) fn resolve_lossless_color_components(
+/// Scan-component index feeding each of the three output channels.
+pub(super) fn lossless_output_order(
     decode_plan: &PreparedDecodePlan,
-) -> Result<[ResolvedLosslessColorComponent<'_>; 3], JpegError> {
-    if decode_plan.components.len() != 3 {
-        return Err(JpegError::UnsupportedComponentCount {
-            count: decode_plan.components.len() as u8,
-        });
-    }
-    let resolve = |index: usize| {
-        let component = &decode_plan.components[index];
-        if component.output_index >= 3 {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: decode_plan.components.len() as u8,
-            });
-        }
-        Ok(ResolvedLosslessColorComponent {
-            h: usize::from(component.h),
-            v: usize::from(component.v),
-            output_index: component.output_index,
-            dc_table: decode_plan.dc_table(component)?,
-        })
+) -> Result<[usize; 3], JpegError> {
+    let unsupported = || JpegError::UnsupportedComponentCount {
+        count: u8::try_from(decode_plan.components.len()).unwrap_or(u8::MAX),
     };
-    Ok([resolve(0)?, resolve(1)?, resolve(2)?])
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ResolvedLosslessColorComponent<'a> {
-    h: usize,
-    v: usize,
-    output_index: usize,
-    dc_table: DcHuffmanTable<'a>,
-}
-
-pub(super) fn decode_lossless_color_sample<P, T>(
-    br: &mut BitReader<'_>,
-    components: &[ResolvedLosslessColorComponent<'_>; 3],
-    predictor: u8,
-    restart_first_sample: bool,
-    target: &mut T,
-) -> Result<(), JpegError>
-where
-    P: LosslessSample,
-    T: LosslessColorSampleTarget<P>,
-{
-    for component in components {
-        let predicted = if restart_first_sample {
-            P::RESTART_PREDICTOR
-        } else {
-            target.predict(predictor, component.output_index)
-        };
-        let diff = component.dc_table.decode_fast_dc(br)?;
-        let sample = P::from_i32(predicted + diff)?;
-        target.write(component.output_index, sample);
+    if decode_plan.components.len() != 3 {
+        return Err(unsupported());
     }
-    Ok(())
+    let mut order = [usize::MAX; 3];
+    for (index, component) in decode_plan.components.iter().enumerate() {
+        let slot = order
+            .get_mut(component.output_index)
+            .ok_or_else(unsupported)?;
+        if *slot != usize::MAX {
+            return Err(unsupported());
+        }
+        *slot = index;
+    }
+    Ok(order)
 }
 
 #[expect(
@@ -459,124 +268,6 @@ pub(super) fn validate_lossless_color_plan<P: LosslessSample>(
         });
     }
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct LosslessPlaneSample {
-    pub(super) x: usize,
-    pub(super) y: usize,
-    pub(super) restart_first_sample: bool,
-}
-
-pub(super) fn decode_lossless_plane_sample<P: LosslessSample>(
-    br: &mut BitReader<'_>,
-    table: DcHuffmanTable<'_>,
-    predictor: u8,
-    plane: &mut [P],
-    width: usize,
-    sample: LosslessPlaneSample,
-) -> Result<(), JpegError> {
-    let predicted = if sample.restart_first_sample {
-        P::RESTART_PREDICTOR
-    } else {
-        lossless_predictor_plane(predictor, plane, width, sample.x, sample.y)
-    };
-    let diff = table.decode_fast_dc(br)?;
-    plane[sample.y * width + sample.x] = P::from_i32(predicted + diff)?;
-    Ok(())
-}
-
-pub(super) struct LosslessSampledColorPlanesMut<'a, P> {
-    pub(super) c0: &'a mut [P],
-    pub(super) c1: &'a mut [P],
-    pub(super) c2: &'a mut [P],
-    pub(super) dimensions: (usize, usize),
-    pub(super) chroma_dimensions: (usize, usize),
-}
-
-impl<P> LosslessSampledColorPlanesMut<'_, P> {
-    fn component_plane(&mut self, output_index: usize) -> Option<(&mut [P], usize, usize)> {
-        match output_index {
-            0 => Some((&mut *self.c0, self.dimensions.0, self.dimensions.1)),
-            1 => Some((
-                &mut *self.c1,
-                self.chroma_dimensions.0,
-                self.chroma_dimensions.1,
-            )),
-            2 => Some((
-                &mut *self.c2,
-                self.chroma_dimensions.0,
-                self.chroma_dimensions.1,
-            )),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct LosslessSampledMcu {
-    pub(super) x: usize,
-    pub(super) y: usize,
-    pub(super) restart_first_mcu: bool,
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "component indices are validated against the JPEG maximum component count"
-)]
-pub(super) fn decode_lossless_sampled_color_mcu<P>(
-    br: &mut BitReader<'_>,
-    components: &[ResolvedLosslessColorComponent<'_>; 3],
-    predictor: u8,
-    mcu: LosslessSampledMcu,
-    planes: &mut LosslessSampledColorPlanesMut<'_, P>,
-) -> Result<(), JpegError>
-where
-    P: LosslessSample,
-{
-    for component in components {
-        let Some((plane, plane_width, plane_height)) =
-            planes.component_plane(component.output_index)
-        else {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: components.len() as u8,
-            });
-        };
-        for local_y in 0..component.v {
-            for local_x in 0..component.h {
-                let x = mcu.x * component.h + local_x;
-                let y = mcu.y * component.v + local_y;
-                if x >= plane_width || y >= plane_height {
-                    continue;
-                }
-                decode_lossless_plane_sample(
-                    br,
-                    component.dc_table,
-                    predictor,
-                    plane,
-                    plane_width,
-                    LosslessPlaneSample {
-                        x,
-                        y,
-                        restart_first_sample: mcu.restart_first_mcu && local_x == 0 && local_y == 0,
-                    },
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn lossless_predictor_plane<P: LosslessSample>(
-    predictor: u8,
-    plane: &[P],
-    width: usize,
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        plane[sy * width + sx].into()
-    })
 }
 
 pub(super) struct LosslessColorPlanes<'a, P> {
@@ -755,22 +446,6 @@ pub(super) fn upsample_h2v2_u16_at(
 
 pub(super) fn upsample_h2v1_u16_at(row: &[u16], output_x: usize) -> u16 {
     upsample_h2v1_sample_at(row, output_x)
-}
-
-pub(super) fn lossless_predictor_value_u16(
-    predictor: u8,
-    out: &[u8],
-    stride: usize,
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, 32768, x, y, |sx, sy| {
-        i32::from(read_gray16_sample(out, sy * stride + sx * 2))
-    })
-}
-
-pub(super) fn read_gray16_sample(out: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([out[offset], out[offset + 1]])
 }
 
 #[cfg(test)]

@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Per-coefficient arithmetic-coded passes, used when a code block cannot take
+//! the packed-column passes in `flag_passes.rs`: vertically causal contexts,
+//! or segments that mix in raw (bypass) coding.
+
 use super::super::arithmetic_decoder::ArithmeticDecoder;
 use super::context::{
-    context_label_magnitude_refinement_coding_from_state_lazy,
-    context_label_sign_coding_index_with_neighbors, context_label_zero_coding_from_neighbors,
+    context_label_magnitude_refinement_coding_from_state_lazy, context_label_sign_coding_index,
+    context_label_zero_coding_from_neighbors,
+};
+use super::scan::{
+    cleanup_candidate_scan_mask, cleanup_run_length_candidate, scan_unit_valid_mask,
 };
 use super::state::{
-    BitPlaneDecodeContext, COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK,
-    HAS_ZERO_CODING_MASK, SIGNIFICANCE_MASK,
+    BitPlaneDecodeContext, COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK, SIGNIFICANCE_MASK,
 };
 
 #[expect(
@@ -15,22 +21,25 @@ use super::state::{
     reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
 )]
 #[inline(always)]
-fn decode_sign_bit_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
+fn decode_sign_bit_arithmetic(
     idx: usize,
     y: usize,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
 ) {
-    let (ctx_label, xor_bit) =
-        context_label_sign_coding_index_with_neighbors::<NORMAL_NEIGHBORS>(idx, y, ctx);
+    let (ctx_label, xor_bit) = context_label_sign_coding_index(idx, y, ctx);
     let sign_bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label)) ^ u32::from(xor_bit);
     ctx.set_sign_index(idx, u8::from(sign_bit != 0));
 }
 
-pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
+pub(super) fn cleanup_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
-    decoder: &mut ArithmeticDecoder<'_>,
+    shared_decoder: &mut ArithmeticDecoder<'_>,
 ) {
+    // Decode against a local copy: behind the `&mut` the MQ registers were
+    // stored and reloaded on every symbol. Written back after the pass.
+    let mut local_decoder = shared_decoder.clone();
+    let decoder = &mut local_decoder;
     let width = ctx.width as usize;
     let height = ctx.height as usize;
     let padded_width = ctx.padded_width as usize;
@@ -54,12 +63,7 @@ pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: boo
 
             if candidate_mask == valid_mask
                 && stripe_height == 4
-                && cleanup_run_length_candidate_with_neighbors::<NORMAL_NEIGHBORS>(
-                    ctx,
-                    top_idx,
-                    padded_width,
-                    base_y,
-                )
+                && cleanup_run_length_candidate(ctx, top_idx, padded_width, base_y)
             {
                 // The four contiguous samples are all cleanup candidates
                 // with zero context, so Annex D permits the RLC context.
@@ -74,26 +78,12 @@ pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: boo
                 let significant_y = base_y + first_significant;
                 let significant_idx = top_idx + first_significant * padded_width;
                 ctx.push_magnitude_bit_index(significant_idx, 1);
-                decode_sign_bit_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                    significant_idx,
-                    significant_y,
-                    ctx,
-                    decoder,
-                );
-                ctx.set_significant_index_for_path::<NORMAL_NEIGHBORS>(
-                    significant_idx,
-                    padded_width,
-                );
+                decode_sign_bit_arithmetic(significant_idx, significant_y, ctx, decoder);
+                ctx.set_significant_index(significant_idx, significant_y, padded_width);
 
                 let mut idx = significant_idx + padded_width;
                 for y in significant_y + 1..y_end {
-                    cleanup_coefficient_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                        ctx,
-                        decoder,
-                        idx,
-                        y,
-                        padded_width,
-                    );
+                    cleanup_coefficient_arithmetic(ctx, decoder, idx, y, padded_width);
                     idx += padded_width;
                 }
                 continue;
@@ -105,47 +95,20 @@ pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: boo
                 mask &= mask - 1;
                 let y = base_y + bit_y;
                 let idx = top_idx + bit_y * padded_width;
-                cleanup_coefficient_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                    ctx,
-                    decoder,
-                    idx,
-                    y,
-                    padded_width,
-                );
+                cleanup_coefficient_arithmetic(ctx, decoder, idx, y, padded_width);
             }
         }
     }
+    *shared_decoder = local_decoder;
 }
 
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
-)]
-#[inline(always)]
-pub(super) fn cleanup_candidate_scan_mask(
-    ctx: &BitPlaneDecodeContext,
-    scan_unit: usize,
-    stripe_height: usize,
-) -> u8 {
-    scan_unit_valid_mask(stripe_height)
-        & !(ctx.significant_scan_masks[scan_unit] | ctx.zero_coding_scan_masks[scan_unit])
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
-)]
-#[inline(always)]
-fn scan_unit_valid_mask(stripe_height: usize) -> u8 {
-    (1u8 << stripe_height) - 1
-}
-
-pub(super) fn significance_propagation_pass_arithmetic_with_neighbors<
-    const NORMAL_NEIGHBORS: bool,
->(
+pub(super) fn significance_propagation_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
-    decoder: &mut ArithmeticDecoder<'_>,
+    shared_decoder: &mut ArithmeticDecoder<'_>,
 ) {
+    // Local MQ copy, as in the cleanup pass.
+    let mut local_decoder = shared_decoder.clone();
+    let decoder = &mut local_decoder;
     let width = ctx.width as usize;
     let height = ctx.height as usize;
     let padded_width = ctx.padded_width as usize;
@@ -159,8 +122,7 @@ pub(super) fn significance_propagation_pass_arithmetic_with_neighbors<
 
             for y in base_y..y_end {
                 let state = ctx.coefficient_states[idx].0;
-                let neighbors =
-                    neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y);
+                let neighbors = ctx.neighborhood_significance_states_index(idx, y);
 
                 // "The significance propagation pass only includes bits of coefficients
                 // that were insignificant (the significance state has yet to be set)
@@ -170,17 +132,15 @@ pub(super) fn significance_propagation_pass_arithmetic_with_neighbors<
                         context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
                     let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
                     ctx.push_magnitude_bit_index(idx, bit);
-                    ctx.set_zero_coding_index(idx, padded_width);
+                    ctx.set_zero_coding_index(idx, y, padded_width);
 
                     // "If the value of this bit is 1 then the significance
                     // state is set to 1 and the immediate next bit to be decoded is
                     // the sign bit for the coefficient. Otherwise, the significance
                     // state remains 0."
                     if bit == 1 {
-                        decode_sign_bit_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
-                            idx, y, ctx, decoder,
-                        );
-                        ctx.set_significant_index_for_path::<NORMAL_NEIGHBORS>(idx, padded_width);
+                        decode_sign_bit_arithmetic(idx, y, ctx, decoder);
+                        ctx.set_significant_index(idx, y, padded_width);
                     }
                 }
 
@@ -188,12 +148,16 @@ pub(super) fn significance_propagation_pass_arithmetic_with_neighbors<
             }
         }
     }
+    *shared_decoder = local_decoder;
 }
 
-pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
+pub(super) fn magnitude_refinement_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
-    decoder: &mut ArithmeticDecoder<'_>,
+    shared_decoder: &mut ArithmeticDecoder<'_>,
 ) {
+    // Local MQ copy, as in the cleanup pass.
+    let mut local_decoder = shared_decoder.clone();
+    let decoder = &mut local_decoder;
     let width = ctx.width as usize;
     let height = ctx.height as usize;
     let padded_width = ctx.padded_width as usize;
@@ -228,7 +192,7 @@ pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_N
 
                 let ctx_label =
                     context_label_magnitude_refinement_coding_from_state_lazy(state, || {
-                        neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y)
+                        ctx.neighborhood_significance_states_index(idx, y)
                     });
                 let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
                 ctx.push_magnitude_bit_index(idx, bit);
@@ -236,6 +200,7 @@ pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_N
             }
         }
     }
+    *shared_decoder = local_decoder;
 }
 
 #[expect(
@@ -243,73 +208,20 @@ pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_N
     reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
 )]
 #[inline(always)]
-fn neighborhood_significance_states_for_path<const NORMAL_NEIGHBORS: bool>(
-    ctx: &BitPlaneDecodeContext,
-    idx: usize,
-    y: usize,
-) -> u8 {
-    if NORMAL_NEIGHBORS {
-        ctx.normal_neighborhood_significance_states_index(idx)
-    } else {
-        ctx.neighborhood_significance_states_index(idx, y)
-    }
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
-)]
-#[inline(always)]
-fn cleanup_run_length_candidate_with_neighbors<const NORMAL_NEIGHBORS: bool>(
-    ctx: &BitPlaneDecodeContext,
-    top_idx: usize,
-    padded_width: usize,
-    base_y: usize,
-) -> bool {
-    let mut idx = top_idx;
-    for y in base_y..base_y + 4 {
-        if ctx.coefficient_states[idx].0 & (SIGNIFICANCE_MASK | HAS_ZERO_CODING_MASK) != 0
-            || neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y) != 0
-        {
-            return false;
-        }
-        idx += padded_width;
-    }
-    true
-}
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
-)]
-#[inline(always)]
-fn cleanup_coefficient_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
+fn cleanup_coefficient_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
     idx: usize,
     y: usize,
     padded_width: usize,
 ) {
-    let neighbors = neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y);
+    let neighbors = ctx.neighborhood_significance_states_index(idx, y);
     let ctx_label = context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
     let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
     ctx.push_magnitude_bit_index(idx, bit);
 
     if bit == 1 {
-        decode_sign_bit_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(idx, y, ctx, decoder);
-        ctx.set_significant_index_for_path::<NORMAL_NEIGHBORS>(idx, padded_width);
+        decode_sign_bit_arithmetic(idx, y, ctx, decoder);
+        ctx.set_significant_index(idx, y, padded_width);
     }
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
-)]
-#[inline(always)]
-pub(super) fn cleanup_run_length_candidate(
-    ctx: &BitPlaneDecodeContext,
-    top_idx: usize,
-    padded_width: usize,
-    base_y: usize,
-) -> bool {
-    cleanup_run_length_candidate_with_neighbors::<false>(ctx, top_idx, padded_width, base_y)
 }
