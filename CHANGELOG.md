@@ -3,7 +3,15 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.11.2] - 2026-09-27
+
+- Fixes subsampled JPEG 2000 decoding with nonzero image origins at reduced
+  resolutions and for cropped regions, including the wsi-rs fuzz reproducer.
+- Improves JPEG entropy decoding, extended and lossless sample output,
+  progressive scan handling, and AArch64 NEON conversion and IDCT.
+- Improves native bitplane scanning and full-resolution subsampled placement.
+- Improves grouped JPEG Metal decode, pooled output reuse, HT cleanup,
+  and inverse wavelet transform dispatch with regression coverage.
 
 - Upgrades `fearless_simd` to 1.0.0 for the `j2k-jpeg` AArch64 NEON kernels
   and the optional `j2k-native` `simd` feature. The dependency is private, so
