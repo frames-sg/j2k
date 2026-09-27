@@ -866,3 +866,32 @@ fn classic_reversible_i64_decode_native_region_crops_29_bit_bytes() {
     assert_eq!(components.planes()[0].bit_depth(), 29);
     assert_eq!(components.planes()[0].data(), expected);
 }
+
+#[test]
+fn subsampled_nonzero_origin_decodes_full_and_reduced_regions() {
+    // Minimized wsi-rs open_jp2k_codestream_bytes fuzz regression: XOsiz=2,
+    // and component 1 has vertical sampling 47 with two decomposition levels.
+    let bytes = include_bytes!("../fixtures/subsampled-origin.j2c");
+    for reduction in 0..=2 {
+        let image = Image::new_with_reduction(bytes, &DecodeSettings::strict(), reduction)
+            .expect("parse subsampled nonzero-origin codestream");
+        let region = image
+            .decode_region((0, 0, image.width(), image.height()))
+            .expect("decode full image region without coordinate underflow");
+        let full = image.decode().expect("decode full subsampled image");
+        assert_eq!(region.data, full, "reduction {reduction}");
+
+        let width = image.width() as usize;
+        let height = image.height() as usize;
+        let cropped = image
+            .decode_region((1, 1, image.width() - 2, image.height() - 2))
+            .expect("decode clipped subsampled region");
+        let expected: Vec<u8> = full
+            .chunks_exact(width * 3)
+            .skip(1)
+            .take(height - 2)
+            .flat_map(|row| row[3..(width - 1) * 3].iter().copied())
+            .collect();
+        assert_eq!(cropped.data, expected, "cropped reduction {reduction}");
+    }
+}
