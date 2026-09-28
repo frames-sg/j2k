@@ -68,7 +68,15 @@ impl TagNode {
 
 impl TagNode {
     fn build(width: u32, height: u32, level: u16, nodes: &mut Vec<Self>) -> Self {
+        #[cfg(test)]
+        tests::BUILD_VISITS.with(|visits| visits.set(visits.get() + 1));
         let mut tag = Self::new(width, height, level);
+
+        // Empty quadrants have no descendants. Expanding them to leaf depth
+        // would make a narrow tree cost as much as its enclosing square.
+        if width == 0 || height == 0 {
+            return tag;
+        }
 
         if level == 0 {
             // We reached the leaf node.
@@ -231,5 +239,51 @@ impl TagTree {
         debug_assert!(x < self.width && y < self.height);
 
         read_tag_node(self.root, x, y, reader, 0, max_val, nodes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{DecodeError, DecodeSettings, DecoderContext, DecodingError, Image};
+    use core::cell::Cell;
+
+    std::thread_local! {
+        pub(super) static BUILD_VISITS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn truncated_tall_codestream_bounds_tag_tree_work() {
+        let data = [
+            255, 79, 255, 81, 0, 47, 0, 0, 0, 0, 0, 16, 0, 0, 90, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 16, 32, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 7, 1, 1, 7, 1, 1, 7, 1, 1, 255, 82,
+            0, 12, 0, 0, 0, 4, 0, 2, 0, 0, 38, 1, 255, 92, 0, 17, 66, 32, 82, 80, 5, 80, 5, 80, 71,
+            87, 211, 87, 211, 87, 98, 255, 100, 0, 37, 0, 1, 67, 114, 101, 97, 68, 101, 100, 32,
+            98, 121, 32, 79, 10, 101, 111, 110, 32, 50, 46, 53, 46, 52, 255, 144, 0, 10, 80, 32,
+            101, 46, 53, 46, 52, 255, 144, 0, 10, 0, 0, 0, 0, 0, 41, 0, 1, 255, 147, 139, 186, 199,
+            233, 198, 8, 40, 97, 69, 24, 38, 53, 12, 80, 199, 10, 0, 0, 0, 0, 0, 0, 0, 18, 0, 133,
+            128, 255, 217,
+        ];
+        for reduction in 0..=2 {
+            let image = Image::new_with_reduction(&data, &DecodeSettings::default(), reduction)
+                .expect("valid header");
+
+            let mut context = DecoderContext::default();
+            BUILD_VISITS.with(|visits| visits.set(0));
+            let result = image.decode_region_components_for_integer_output_with_context(
+                (0, 0, 1, 1),
+                &mut context,
+            );
+            assert!(matches!(
+                result,
+                Err(DecodeError::Decoding(DecodingError::PacketParseFailure(_)))
+            ));
+            // Even a full tile should require only linear tree construction work,
+            // independent of the enclosing square of its highly skewed grid.
+            let visits = BUILD_VISITS.with(Cell::get);
+            assert!(
+                visits < 1_000_000,
+                "excessive tag-tree work at reduction {reduction}: {visits} visits"
+            );
+        }
     }
 }
