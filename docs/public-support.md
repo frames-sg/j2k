@@ -1,6 +1,6 @@
 # Public J2K/HTJ2K Support Matrix
 
-This document is the handoff point for the implemented JPEG 2000 Part 1 and
+This document records the implemented JPEG 2000 Part 1 and
 HTJ2K Part 15 feature boundary. It is not a standards-conformance claim. Keep
 it synchronized with `corpus/j2k-conformance/support-inventory.tsv`, repo-local
 self-checks, and adoption benchmark publication gates. Release-scoped and

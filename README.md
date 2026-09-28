@@ -8,7 +8,7 @@
 
 **Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
-**Release status:** `0.11.1` is published and security-supported. See the
+**Release status:** `0.11.2` is published and security-supported. See the
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
@@ -41,7 +41,7 @@ Other measured 512 x 512 and Gray8 1024 x 1024 cells remain CPU-routed. The
 performance scope is the measured Apple M4 Pro; exact results and qualifications
 are in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
-Release `0.11.0` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
+Release `0.11.2` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
 **Profile-1 Cclass-1**, **Profile-1 Cclass-1HF**, and **Annex G JP2 reader**
 compliance for the CPU IUT. The same published release evidence covers these
 selected HTJ2K Part 15 points:
@@ -59,8 +59,8 @@ Production-owned dispatch counters, not capability-table predictions,
 substantiate every stage label.
 
 All five reports identify exact release SHA
-`09d746a7b040258eb5dd505b44384eec0152a8b9` and are attached to the
-[v0.11.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0). CPU
+`75a3e0618e1963d8403e4edad0fa95ee1c217ec1` and are attached to the
+[v0.11.2 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). CPU
 encoder evidence passes 56/56 cases; CUDA and Metal each pass 35/35. Encoder
 results are informative Annex D/F evidence, not formal decoder conformance.
 The exact scope and report rules are in

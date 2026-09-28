@@ -46,12 +46,13 @@ report compares its ordinary inventory with 0.7.5, and the 0.8.1 report
 compares that release directly with published 0.8.0. The 0.9.0 report compares
 the published release directly with published 0.8.1, the 0.10.0
 report compares that release directly with published 0.9.0, and the 0.11.0
-report compares against published 0.10.0. All reports also
-record each package's complete hidden-inventory count and fingerprint.
+report compares against published 0.10.0. The 0.11.1 and 0.11.2 reports compare
+against 0.11.0 and 0.11.1 respectively. All reports also record each package's
+complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed companions, and
 requires exact ordinary added/removed fingerprints plus the hidden
 count/fingerprint in
-`docs/release-evidence/public-api/public-api-review-0.11.0.yml`.
+`docs/release-evidence/public-api/public-api-review-0.11.2.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 
 The 0.8.0 review file contains the reviewed 0.7.5-to-0.8.0 break ledger. The
@@ -95,7 +96,11 @@ with its human review in
 The completed 0.11.0 comparison and its reviewed experimental MPSGraph removals
 are in the generated [API report](release-evidence/public-api/reviewed-public-api-diff-0.11.0.md)
 and [review configuration](release-evidence/public-api/public-api-review-0.11.0.yml).
-Its exact-SHA release gates passed.
+Its exact-SHA release gates passed. The published 0.11.2 comparison is recorded
+in the [0.11.2 API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md)
+and [review configuration](release-evidence/public-api/public-api-review-0.11.2.yml).
+Its stable API changes are additive; the hidden native adapters are reviewed
+in the same inventory. The CPU, CUDA, and Metal release gates passed.
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 
@@ -158,12 +163,10 @@ exception applied only to `0.7.5`.
 The completed historical transition locks were intentionally narrow: `0.8.0`
 was the only candidate permitted to compare against `v0.7.5`, and `0.9.0` was
 the only candidate permitted to compare against `v0.8.1`, as intentional
-pre-1.0 breaks. The currently configured semver baseline is published
-`v0.9.0` at peeled commit
-`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The staged `0.10.0` pre-1.0
-minor candidate compares directly against that baseline under a one-time
-intentional-break transition. Its ledger records every generated removal and
-direct migration; the allowance must be disabled after publication.
+pre-1.0 breaks. Published `0.10.0` compared directly with `v0.9.0` under a
+one-time architecture-transition allowance; that allowance is now disabled.
+The currently configured semver baseline is published `v0.11.1`, and the
+`0.11.2` review has no intentional-break ledger entries.
 
 Before `1.0`, a minor release may intentionally change the contract only under
 the same generated evidence, explicit break-ledger, and migration requirements.

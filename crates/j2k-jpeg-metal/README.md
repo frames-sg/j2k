@@ -21,7 +21,13 @@ Explicit `BackendRequest::Metal` decode accepts only JPEG inputs that can build 
 fast 4:2:0, 4:2:2, or 4:4:4 baseline packet and only `Gray8`, `Rgb8`, or
 `Rgba8` output. Unsupported sampling families, unsupported color spaces, and
 unsupported output formats return `UnsupportedMetalRequest` instead of silently
-falling back.
+falling back. 4:2:0 and 4:2:2 images at most four pixels wide are also
+excluded from the fast shapes: explicit Metal requests reject them, while
+`Auto` uses the CPU.
+
+Supported scaled and region-scaled Metal decodes use the CPU decoder's
+component-specific IDCT sizes and chroma interpolation rules. Cropped regions
+retain the neighboring chroma samples required for smoothing.
 
 `BackendRequest::Auto` keeps single-image decode on the CPU. Full RGB batches
 can use Metal for at least 16 compatible non-restart 4:2:0 or 4:2:2 tiles of at

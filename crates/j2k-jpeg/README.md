@@ -17,6 +17,17 @@ and replacement without putting color management policy inside the codec.
 Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 `j2k-transcode` for JPEG-to-HTJ2K coefficient-domain transcode paths.
 
+## Scaled decoding
+
+Sequential and progressive DCT JPEGs use reduced IDCTs at 1/2, 1/4, and 1/8
+scale. Component-specific IDCT sizes and chroma interpolation follow
+libjpeg-turbo, including subsampled color, small chroma planes, and cropped
+regions. The committed libjpeg-turbo 3.1.4.1 reference matrix covers these paths,
+restart intervals, progressive scans, and supported 12-bit inputs.
+
+12-bit 4:4:0, 4:1:1, 4:1:0, and 1x4 sampling layouts remain unsupported and
+return `NotImplemented`. Unsupported sampling is not converted silently.
+
 ## Links
 
 - API docs: <https://docs.rs/j2k-jpeg>

@@ -19,6 +19,10 @@ other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`
 on CUDA validation and benchmark hosts to fail the build when PTX is missing.
 Runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.
 
+CPU-backed scaled and region-scaled decode surfaces follow the CPU JPEG
+sampling rules and report the scaled output dimensions. These convenience
+paths do not establish device execution for scaled JPEG decoding.
+
 ## Links
 
 - API docs: <https://docs.rs/j2k-jpeg-cuda>
