@@ -25,11 +25,11 @@ use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
 const SEMVER_TOOLCHAIN: &str = "1.96";
-const SEMVER_BASELINE_VERSION: &str = "0.11.1";
-const SEMVER_BASELINE_TAG: &str = "v0.11.1";
-const SEMVER_BASELINE_COMMIT: &str = "c1f094cfb3ec93360d6f2c434ec9bc96fad169b0";
-const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.11.2.md";
-const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.11.2.yml";
+const SEMVER_BASELINE_VERSION: &str = "0.11.2";
+const SEMVER_BASELINE_TAG: &str = "v0.11.2";
+const SEMVER_BASELINE_COMMIT: &str = "75a3e0618e1963d8403e4edad0fa95ee1c217ec1";
+const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.11.3.md";
+const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.11.3.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {

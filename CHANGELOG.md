@@ -3,7 +3,11 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.11.3] - 2026-09-28
+
+- Bounds native JPEG 2000 tag-tree construction to populated branches. Tall,
+  narrow code-block grids no longer expand empty quadrants, preventing the
+  truncated raw-codestream timeout found by the wsi-rs release fuzz campaign.
 
 - 12-bit extended and progressive JPEG decodes 4:4:0, 4:1:1, 4:1:0 and 1x4
   color layouts, and any other layout whose component factors divide the

@@ -10,6 +10,12 @@ evidence.
 
 ## Release status
 
+Version `0.11.3` is the release candidate described in the dated changelog. Its
+[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
+compares against published `v0.11.2` with no public signature changes. Publication
+requires a clean candidate and new exact-source hosted, CUDA, and Metal release
+validation.
+
 Version `0.11.2` is published. Its [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md)
 compares directly with published `v0.11.1`: ordinary stable APIs are additive,
 and the five new hidden native adapters preserve the existing decoder contracts.
