@@ -12,8 +12,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use j2k_jpeg::{
     decode_tiles_region_scaled_into, decode_tiles_scaled_into, DecodeOutcome, DecodeRequest,
-    Decoder, Downscale, JpegError, PixelFormat, Rect, TileBatchOptions, TileRegionScaledDecodeJob,
-    TileScaledDecodeJob,
+    Decoder, Downscale, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp, JpegError,
+    PixelFormat, Rect, TileBatchOptions, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use j2k_test_support::{
     crop_interleaved_bytes, scaled_matrix_cases, scaled_rect_covering, PixelRect, ScaledMatrixCase,
@@ -63,12 +63,6 @@ fn output_samples(case: &ScaledMatrixCase, bytes: &[u8]) -> Vec<u16> {
     }
 }
 
-/// 12-bit layouts the decoder has never implemented at any scale. Their
-/// references stay in the matrix so enabling them is checked the same way.
-fn is_unimplemented_12bit_layout(case: &ScaledMatrixCase) -> bool {
-    case.precision > 8 && matches!(case.layout, "440" | "411" | "410" | "1x4")
-}
-
 /// Decodes `request`, turning a panic into a reported failure so one bad case
 /// cannot hide the rest of the matrix.
 fn decode(decoder: &Decoder<'_>, request: DecodeRequest) -> Result<Vec<u8>, String> {
@@ -87,22 +81,6 @@ fn decode(decoder: &Decoder<'_>, request: DecodeRequest) -> Result<Vec<u8>, Stri
     outcome
         .map(|(bytes, _)| bytes)
         .map_err(|err| format!("decode failed: {err}"))
-}
-
-fn expect_not_implemented(
-    decoder: &Decoder<'_>,
-    request: DecodeRequest,
-    label: &str,
-    failures: &mut Vec<String>,
-) {
-    match catch_unwind(AssertUnwindSafe(|| decoder.decode_request(request))) {
-        Ok(Err(JpegError::NotImplemented { .. })) => {}
-        Ok(Err(err)) => failures.push(format!("{label}: expected NotImplemented, got {err}")),
-        Ok(Ok(_)) => failures.push(format!(
-            "{label}: now decodes; remove it from is_unimplemented_12bit_layout"
-        )),
-        Err(_) => failures.push(format!("{label}: decode panicked")),
-    }
 }
 
 fn describe_mismatch(expected: &[u16], actual: &[u16]) -> Option<String> {
@@ -159,10 +137,6 @@ fn scaled_decodes_match_libjpeg_turbo() {
         for denominator in SCALED_MATRIX_DENOMINATORS {
             let request = DecodeRequest::scaled(pixel_format(&case), downscale(denominator));
             let label = format!("{} 1/{denominator}", case.name);
-            if is_unimplemented_12bit_layout(&case) {
-                expect_not_implemented(&decoder, request, &label, &mut failures);
-                continue;
-            }
             match decode(&decoder, request) {
                 Ok(bytes) => {
                     let expected = reference_samples(&case, denominator);
@@ -212,6 +186,52 @@ fn scaled_rgba_decodes_match_libjpeg_turbo() {
     assert_no_failures(&failures);
 }
 
+/// Every 12-bit color layout, including those only the component-plane
+/// pipeline renders, is CPU-eligible and decodes to opaque `Rgba16`.
+#[test]
+fn twelve_bit_color_layouts_are_cpu_eligible_and_decode_rgba16() {
+    let mut failures = Vec::new();
+    for case in scaled_matrix_cases()
+        .into_iter()
+        .filter(|case| !case.is_gray() && case.precision > 8)
+    {
+        let report = JpegCapabilityReport::inspect(
+            case.jpeg,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb16,
+            },
+        )
+        .expect("matrix JPEG capability report");
+        if !report.cpu.eligible {
+            failures.push(format!("{}: CPU rejected Rgb16", case.name));
+        }
+        let decoder = Decoder::new(case.jpeg).expect("matrix JPEG parses");
+        for denominator in SCALED_MATRIX_DENOMINATORS {
+            let request = DecodeRequest::scaled(PixelFormat::Rgba16, downscale(denominator));
+            let label = format!("{} rgba16 1/{denominator}", case.name);
+            match decode(&decoder, request) {
+                Ok(bytes) => {
+                    let samples = output_samples(&case, &bytes);
+                    let rgb: Vec<u16> = samples
+                        .chunks_exact(4)
+                        .flat_map(|px| px[..3].to_vec())
+                        .collect();
+                    if let Some(message) =
+                        describe_mismatch(&reference_samples(&case, denominator), &rgb)
+                    {
+                        failures.push(format!("{label}: {message}"));
+                    } else if !samples.chunks_exact(4).all(|px| px[3] == u16::MAX) {
+                        failures.push(format!("{label}: alpha is not opaque"));
+                    }
+                }
+                Err(err) => failures.push(format!("{label}: {err}")),
+            }
+        }
+    }
+    assert_no_failures(&failures);
+}
+
 /// Scaled regions are crops of the scaled image, wherever the region starts.
 #[test]
 fn scaled_region_decodes_match_libjpeg_turbo_crops() {
@@ -243,10 +263,6 @@ fn scaled_region_decodes_match_libjpeg_turbo_crops() {
                     "{} roi {},{} {}x{} 1/{denominator}",
                     case.name, roi.x, roi.y, roi.w, roi.h
                 );
-                if is_unimplemented_12bit_layout(&case) {
-                    expect_not_implemented(&decoder, request, &label, &mut failures);
-                    continue;
-                }
                 let scaled = scaled_rect_covering(
                     PixelRect {
                         x: roi.x,
@@ -450,7 +466,7 @@ fn scaled_region_edge_sweep_matches_libjpeg_turbo_crops() {
     let mut failures = Vec::new();
     for case in scaled_matrix_cases()
         .into_iter()
-        .filter(|case| case.width == 45 && !is_unimplemented_12bit_layout(case))
+        .filter(|case| case.width == 45)
     {
         let decoder = Decoder::new(case.jpeg).expect("matrix JPEG parses");
         for denominator in SCALED_MATRIX_DENOMINATORS {

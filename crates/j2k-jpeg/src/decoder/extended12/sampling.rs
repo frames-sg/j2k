@@ -5,12 +5,25 @@
 use super::super::{
     Info, JpegError, LosslessColorSampling, PreparedDecodePlan, PreparedProgressivePlan, SofKind,
 };
+use crate::info::SamplingFactors;
 
+/// Three-component layouts the full-size direct writers handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Extended12ColorSampling {
     S444,
     S422,
     S420,
+}
+
+/// How a 12-bit three-component layout is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Extended12Layout {
+    /// 4:4:4, 4:2:2 or 4:2:0: the direct writers handle full-size decodes.
+    Direct(Extended12ColorSampling),
+    /// Any other layout whose factors divide the maximum factors, such as
+    /// 4:4:0, 4:1:1, 4:1:0 or 1x4. Only the component-plane pipeline renders
+    /// it, at every scale.
+    Planes,
 }
 
 pub(in crate::decoder) fn lossless_color_sampling(info: &Info) -> Option<LosslessColorSampling> {
@@ -83,6 +96,17 @@ pub(super) fn extended12_color_sampling(
     color_sampling_from_components(plan.sampling.max_h, plan.sampling.max_v, components, sof)
 }
 
+pub(super) fn extended12_color_layout(
+    plan: &PreparedDecodePlan,
+    sof: SofKind,
+) -> Result<Extended12Layout, JpegError> {
+    if plan.components.len() != 3 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    let components = color_component_sampling_from_sequential(plan, sof)?;
+    color_layout_from_components(plan.sampling, components, sof)
+}
+
 pub(super) fn extended12_four_component_sampling(
     plan: &PreparedDecodePlan,
     sof: SofKind,
@@ -146,6 +170,17 @@ pub(super) fn progressive_color_sampling(
     }
     let components = color_component_sampling_from_progressive(plan, sof)?;
     color_sampling_from_components(plan.sampling.max_h, plan.sampling.max_v, components, sof)
+}
+
+pub(super) fn progressive_color_layout(
+    plan: &PreparedProgressivePlan,
+    sof: SofKind,
+) -> Result<Extended12Layout, JpegError> {
+    if plan.components.len() != 3 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    let components = color_component_sampling_from_progressive(plan, sof)?;
+    color_layout_from_components(plan.sampling, components, sof)
 }
 
 pub(super) fn progressive_four_component_sampling(
@@ -213,6 +248,23 @@ pub(super) fn color_sampling_from_components(
         (2, 1, [(2, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S422),
         (2, 2, [(2, 2), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S420),
         _ => Err(JpegError::NotImplemented { sof }),
+    }
+}
+
+fn color_layout_from_components(
+    sampling: SamplingFactors,
+    components: [(u8, u8); 3],
+    sof: SofKind,
+) -> Result<Extended12Layout, JpegError> {
+    if let Ok(direct) =
+        color_sampling_from_components(sampling.max_h, sampling.max_v, components, sof)
+    {
+        return Ok(Extended12Layout::Direct(direct));
+    }
+    if sampling.has_integral_ratios() {
+        Ok(Extended12Layout::Planes)
+    } else {
+        Err(JpegError::NotImplemented { sof })
     }
 }
 

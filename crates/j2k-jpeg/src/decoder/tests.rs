@@ -295,19 +295,18 @@ fn lossless_gray16_region_scaled_with_huge_dimensions_errors_before_allocating()
 }
 
 #[test]
-fn decode_into_rejects_unsupported_extended12_ycbcr_sampling_with_not_implemented() {
+fn decoder_new_rejects_fractional_extended12_ycbcr_sampling_with_not_implemented() {
     let mut bytes = minimal_baseline_jpeg();
     let p = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     bytes[p + 1] = 0xC1;
     bytes[p + 4] = 12;
-    bytes[p + 11] = (1 << 4) | 2;
-    let dec = Decoder::new(&bytes).expect("unsupported Extended12 YCbCr sampling should parse");
-    let stride = dec.info().dimensions.0 as usize * PixelFormat::Rgb16.bytes_per_pixel();
-    let mut out = vec![0u8; stride * dec.info().dimensions.1 as usize];
+    // Every whole-ratio 12-bit layout, 4:4:0 included, decodes. A 2x1
+    // component under a 3x1 maximum needs a fractional ratio, which
+    // libjpeg-turbo rejects too.
+    bytes[p + 11] = (3 << 4) | 1;
+    bytes[p + 14] = (2 << 4) | 1;
 
-    let err = dec
-        .decode_into(&mut out, stride, PixelFormat::Rgb16)
-        .unwrap_err();
+    let err = Decoder::new(&bytes).unwrap_err();
 
     assert!(err.is_not_implemented());
 }

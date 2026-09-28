@@ -155,6 +155,14 @@ impl SamplingFactors {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
         self.components().iter().copied()
     }
+
+    /// Whether every component's factors divide the maximum factors, so each
+    /// component upsamples by whole-number ratios. libjpeg-turbo rejects any
+    /// other layout (`JERR_FRACT_SAMPLE_NOTIMPL`).
+    pub(crate) fn has_integral_ratios(&self) -> bool {
+        self.iter()
+            .all(|(h, v)| self.max_h.is_multiple_of(h) && self.max_v.is_multiple_of(v))
+    }
 }
 
 /// Minimum coded unit geometry derived from SOF sampling factors.

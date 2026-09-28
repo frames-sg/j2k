@@ -3,6 +3,16 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- 12-bit extended and progressive JPEG decodes 4:4:0, 4:1:1, 4:1:0 and 1x4
+  color layouts, and any other layout whose component factors divide the
+  maximum factors, to `Rgb16`/`Rgba16` at full size and at every DCT scale.
+  These layouts render through the 12-bit component-plane pipeline and match
+  the libjpeg-turbo 3.1.4.1 reference matrix bit for bit. CPU capability
+  reports mark them eligible. 12-bit CMYK/YCCK still supports 4:4:4, 4:2:2
+  and 4:2:0 only.
+
 ## [0.11.2] - 2026-09-27
 
 - Fixes subsampled JPEG 2000 decoding with nonzero image origins at reduced

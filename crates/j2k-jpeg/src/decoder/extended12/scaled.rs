@@ -5,9 +5,11 @@
 //! Each component is inverse-transformed with the reduced IDCT libjpeg-turbo
 //! picks for it ([`ScaledSampling`]) into a plane at its scaled resolution;
 //! output rows then upsample every plane with libjpeg-turbo's upsampler for
-//! that component and convert the color. Full-size decodes take this route
-//! only when libjpeg-turbo replicates a narrow 2:1 component instead of
-//! smoothing it; every other full-size decode keeps the direct writers.
+//! that component and convert the color. Full-size 4:4:4, 4:2:2 and 4:2:0
+//! decodes take this route only when libjpeg-turbo replicates a narrow 2:1
+//! component instead of smoothing it, and otherwise keep the direct writers.
+//! Every other whole-ratio color layout (4:4:0, 4:1:1, 4:1:0, 1x4, ...)
+//! always takes this route.
 
 use alloc::vec::Vec;
 

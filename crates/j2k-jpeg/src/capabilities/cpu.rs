@@ -95,15 +95,15 @@ enum TwelveBitSof {
 impl TwelveBitSof {
     const fn ycbcr_sampling_reason(self) -> &'static str {
         match self {
-            Self::Extended => "JPEG CPU 12-bit extended YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
-            Self::Progressive => "JPEG CPU 12-bit progressive YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
+            Self::Extended => "JPEG CPU 12-bit extended YCbCr decode currently supports sampling whose component factors divide the maximum factors only",
+            Self::Progressive => "JPEG CPU 12-bit progressive YCbCr decode currently supports sampling whose component factors divide the maximum factors only",
         }
     }
 
     const fn rgb_sampling_reason(self) -> &'static str {
         match self {
-            Self::Extended => "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
-            Self::Progressive => "JPEG CPU 12-bit progressive RGB decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
+            Self::Extended => "JPEG CPU 12-bit extended RGB decode currently supports sampling whose component factors divide the maximum factors only",
+            Self::Progressive => "JPEG CPU 12-bit progressive RGB decode currently supports sampling whose component factors divide the maximum factors only",
         }
     }
 
@@ -116,8 +116,8 @@ impl TwelveBitSof {
 
     const fn output_reason(self) -> &'static str {
         match self {
-            Self::Extended => "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, or CMYK/YCCK 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
-            Self::Progressive => "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, or CMYK/YCCK 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
+            Self::Extended => "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB or YCbCr Rgb16/Rgba16 whose component factors divide the maximum factors, or CMYK/YCCK 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
+            Self::Progressive => "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB or YCbCr Rgb16/Rgba16 whose component factors divide the maximum factors, or CMYK/YCCK 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
         }
     }
 }
@@ -175,18 +175,10 @@ fn is_supported_extended12_four_component_sampling(info: &Info) -> bool {
         )
 }
 
+/// 4:4:4, 4:2:2 and 4:2:0 use the direct writers; every other whole-ratio
+/// layout (4:4:0, 4:1:1, 4:1:0, 1x4, ...) renders through component planes.
 fn is_supported_12bit_three_component_sampling(info: &Info) -> bool {
-    info.sampling.len() == 3
-        && matches!(
-            (
-                info.sampling.max_h,
-                info.sampling.max_v,
-                info.sampling.components()
-            ),
-            (1, 1, [(1, 1), (1, 1), (1, 1)])
-                | (2, 1, [(2, 1), (1, 1), (1, 1)])
-                | (2, 2, [(2, 2), (1, 1), (1, 1)])
-        )
+    info.sampling.len() == 3 && info.sampling.has_integral_ratios()
 }
 
 fn is_supported_lossless_color_sampling(info: &Info) -> bool {

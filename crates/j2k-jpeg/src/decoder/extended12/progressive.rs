@@ -8,7 +8,8 @@ use super::super::{
 };
 use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
 use super::sampling::{
-    progressive_color_sampling, progressive_four_component_sampling, Extended12ColorSampling,
+    progressive_color_layout, progressive_four_component_sampling, Extended12ColorSampling,
+    Extended12Layout,
 };
 use super::scaled::{needs_scaled_extended12_route, Extended12Color};
 use super::writers::{
@@ -90,59 +91,34 @@ impl Decoder<'_> {
         );
         if matches!(output, Extended12Output::Rgb16) {
             match self.info.color_space {
-                ColorSpace::Rgb => {
-                    let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
-                    if scaled_route {
-                        let color = Extended12Color::Rgb(Extended12RgbProjection::Identity);
-                        return self.decode_extended12_scaled_region_into(
-                            out, stride, roi, downscale, color,
-                        );
-                    }
-                    return match sampling {
-                        Extended12ColorSampling::S444 => self
-                            .decode_progressive12_color444_region_into(
-                                out,
-                                stride,
-                                roi,
-                                downscale,
-                                Extended12RgbProjection::Identity,
-                            ),
-                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
-                            .decode_progressive12_color_subsampled_region_into(
-                                out,
-                                stride,
-                                roi,
-                                downscale,
-                                sampling,
-                                Extended12RgbProjection::Identity,
-                            ),
+                ColorSpace::Rgb | ColorSpace::YCbCr => {
+                    let projection = if self.info.color_space == ColorSpace::Rgb {
+                        Extended12RgbProjection::Identity
+                    } else {
+                        Extended12RgbProjection::YCbCr
                     };
-                }
-                ColorSpace::YCbCr => {
-                    let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
-                    if scaled_route {
-                        let color = Extended12Color::Rgb(Extended12RgbProjection::YCbCr);
-                        return self.decode_extended12_scaled_region_into(
-                            out, stride, roi, downscale, color,
-                        );
-                    }
-                    return match sampling {
-                        Extended12ColorSampling::S444 => self
-                            .decode_progressive12_color444_region_into(
-                                out,
-                                stride,
-                                roi,
-                                downscale,
-                                Extended12RgbProjection::YCbCr,
-                            ),
-                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                    let layout = progressive_color_layout(plan, self.info.sof_kind)?;
+                    return match layout {
+                        Extended12Layout::Direct(Extended12ColorSampling::S444)
+                            if !scaled_route =>
+                        {
+                            self.decode_progressive12_color444_region_into(
+                                out, stride, roi, downscale, projection,
+                            )
+                        }
+                        Extended12Layout::Direct(sampling) if !scaled_route => self
                             .decode_progressive12_color_subsampled_region_into(
+                                out, stride, roi, downscale, sampling, projection,
+                            ),
+                        // Reduced scales, narrow replicated chroma, and layouts
+                        // outside 4:4:4/4:2:2/4:2:0 render through planes.
+                        Extended12Layout::Direct(_) | Extended12Layout::Planes => self
+                            .decode_extended12_scaled_region_into(
                                 out,
                                 stride,
                                 roi,
                                 downscale,
-                                sampling,
-                                Extended12RgbProjection::YCbCr,
+                                Extended12Color::Rgb(projection),
                             ),
                     };
                 }
