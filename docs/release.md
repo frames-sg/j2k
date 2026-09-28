@@ -1,7 +1,7 @@
 # Release Policy
 
-The `j2k` 0.11.2 public crate release is published and security-supported.
-The published 0.11.2 line carries the release-scoped Part 1 and selected
+The `j2k` 0.11.3 public crate release is published and security-supported.
+The published 0.11.3 line carries the release-scoped Part 1 and selected
 Part 15 T.803 decoder evidence described in
 [`T.803 conformance`](t803-conformance.md).
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
@@ -10,11 +10,15 @@ evidence.
 
 ## Release status
 
-Version `0.11.3` is the release candidate described in the dated changelog. Its
+Version `0.11.3` is published. Its
 [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
-compares against published `v0.11.2` with no public signature changes. Publication
-requires a clean candidate and new exact-source hosted, CUDA, and Metal release
-validation.
+compares against published `v0.11.2` with no public signature changes. The
+[hosted checks](https://github.com/frames-sg/j2k/actions/runs/36392470784) and
+[full CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/36396634283)
+passed for the tagged source. The release verifier checked all five T.803 reports,
+and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/36402630060)
+published all 25 crates. The reports are attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3).
 
 Version `0.11.2` is published. Its [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md)
 compares directly with published `v0.11.1`: ordinary stable APIs are additive,
@@ -28,6 +32,7 @@ published all 25 crates. The reports are attached to the
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.11.3` | Published on [crates.io](https://crates.io/crates/j2k/0.11.3) from annotated tag `v0.11.3`, with CPU, CUDA, and Metal reports attached to the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Security-supported. |
 | `0.11.2` | Published on [crates.io](https://crates.io/crates/j2k/0.11.2) from annotated tag `v0.11.2`, with CPU, CUDA, and Metal reports attached to the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). | Security-supported. |
 | `0.11.1` | Published on [crates.io](https://crates.io/crates/j2k/0.11.1) from tag `v0.11.1`; dated notes are in the [changelog](../CHANGELOG.md). | Security-supported. |
 | `0.11.0` | Published release line. Distribution is recorded in the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0) and [crate registry](https://crates.io/crates/j2k/0.11.0) after the required gates passed. | Security-supported. |
