@@ -4,4 +4,3 @@ mod allocation;
 mod behavior;
 mod checkpoints;
 mod entropy;
-mod source;

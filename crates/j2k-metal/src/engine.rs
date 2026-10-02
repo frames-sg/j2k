@@ -244,10 +244,6 @@ pub(crate) use j2k_metal_support::MetalSupportError;
 
 #[cfg(target_os = "macos")]
 mod direct_plan_types;
-#[cfg(all(target_os = "macos", test))]
-mod ht_forward_reader_tests;
-#[cfg(all(target_os = "macos", test))]
-mod ht_sigprop_context_tests;
 #[cfg(target_os = "macos")]
 use self::direct_plan_types::{
     PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember,

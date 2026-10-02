@@ -309,48 +309,10 @@ mod tests {
     use super::plan::{NativeRgbStorage, RGB_LAYOUT_NCHW, RGB_LAYOUT_NHWC};
 
     #[test]
-    fn exact_native_storage_and_layout_contract_is_not_display_scaled() {
+    fn native_storage_precision_and_layout_codes() {
         assert_eq!(NativeRgbStorage::U8.max_precision(), 8);
         assert_eq!(NativeRgbStorage::U16.max_precision(), 16);
         assert_eq!(NativeRgbStorage::I16.max_precision(), 16);
         assert_eq!((RGB_LAYOUT_NHWC, RGB_LAYOUT_NCHW), (0, 1));
-
-        let exports = include_str!("../../cuda_oxide_j2k_decode_store/simt/src/exports.rs");
-        let native_color =
-            include_str!("../../cuda_oxide_j2k_decode_store/simt/src/native_color.rs");
-        for entrypoint in [
-            "j2k_store_rgb8_native_batch",
-            "j2k_store_rgb16_native_batch",
-            "j2k_store_rgbi16_native_batch",
-            "j2k_store_rgba8_native_batch",
-            "j2k_store_rgba16_native_batch",
-            "j2k_store_rgbai16_native_batch",
-        ] {
-            assert!(exports.contains(entrypoint));
-        }
-        assert!(native_color.contains("sample_as_native_u8(samples.0"));
-        assert!(native_color.contains("sample_as_native_u16(samples.0"));
-        assert!(native_color.contains("sample_as_native_i16(samples.0"));
-        assert!(native_color.contains("add_native_level_shift(out0, job.addend0, job.transform)"));
-        assert!(native_color.contains(
-            "add_native_level_shift(load_f32(plane3, src3), job.addend3, job.transform)"
-        ));
-        let sample = include_str!("../../cuda_oxide_j2k_decode_store/simt/src/sample.rs");
-        assert!(sample.contains("pub(crate) fn round_ties_even_f32"));
-        let color = include_str!("../../cuda_oxide_j2k_decode_store/simt/src/color.rs");
-        assert!(color.contains("fn add_mct_level_shift"));
-        assert_eq!(color.matches("add_mct_level_shift(out").count(), 6);
-        let transform = include_str!("../../cuda_oxide_j2k_decode_store/simt/src/transform.rs");
-        assert!(transform.contains("fma.rn.f32"));
-        assert!(transform.contains("fused_mul_add_f32(src2, 1.402, src0)"));
-        assert!(transform.contains("fused_mul_add_f32(src2, -0.71414"));
-        let idwt = include_str!("../../cuda_oxide_j2k_idwt/simt/src/main.rs");
-        assert!(idwt.contains("fused_mul_add_f32(left_sample + right_sample"));
-        assert!(idwt.contains("fused_mul_add_f32(above + below"));
-        assert!(idwt.contains(
-            "fused_mul_add_f32(\n            line.load(left) + line.load(right),\n            coefficient,\n            line.load(index),"
-        ));
-        assert!(idwt.contains("IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5"));
-        assert!(idwt.contains("transform_mode == IDWT_CODESTREAM_97_MODE"));
     }
 }

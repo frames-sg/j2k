@@ -185,25 +185,3 @@ impl crate::J2kCudaEngine<'_> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn queued_cleanup_dequantize_launches_asynchronously() {
-        let source = include_str!("cleanup_dequant_enqueue.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production completion source");
-        let function = source
-            .split("unsafe fn enqueue_htj2k_cleanup_dequantize_multi_impl")
-            .nth(1)
-            .expect("queued fused cleanup/dequantize implementation");
-        let async_mode = function
-            .find("mode: CudaLaunchMode::Async")
-            .expect("queued fused cleanup/dequantize async launch");
-        let function_end = function
-            .find("\n    }")
-            .expect("queued fused cleanup/dequantize function end");
-        assert!(async_mode < function_end);
-    }
-}

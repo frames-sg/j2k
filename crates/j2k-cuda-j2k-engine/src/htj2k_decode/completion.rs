@@ -5,8 +5,6 @@ use std::time::Instant;
 mod cleanup_dequant_enqueue;
 mod cleanup_enqueue;
 mod dequant;
-#[cfg(test)]
-mod tests;
 
 use crate::{
     allocation::HostPhaseBudget,

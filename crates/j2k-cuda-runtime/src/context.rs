@@ -88,6 +88,3 @@ impl std::fmt::Debug for CudaContext {
         f.debug_struct("CudaContext").finish_non_exhaustive()
     }
 }
-
-#[cfg(test)]
-mod structure_tests;

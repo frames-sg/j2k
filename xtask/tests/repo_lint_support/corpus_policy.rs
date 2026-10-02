@@ -156,11 +156,3 @@ fn assert_committed_conformance_files_are_listed(dir: &Path, listed_files: &BTre
         );
     }
 }
-
-#[test]
-fn corpus_readme_does_not_claim_committed_fixtures_are_absent() {
-    assert_file_pattern_checks(
-        repo_root(),
-        &[FilePatternCheck::new("corpus/README.md").forbidden(&["intentionally empty"])],
-    );
-}

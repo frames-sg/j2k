@@ -62,6 +62,3 @@ const _: [(); 32] = [(); core::mem::size_of::<CudaJpegEntropyChunkParams>()];
 pub(crate) fn jpeg_entropy_overflow_count(subsequence_count: usize) -> usize {
     subsequence_count.saturating_sub(1)
 }
-
-#[cfg(test)]
-mod structure_tests;

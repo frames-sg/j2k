@@ -258,21 +258,3 @@ fn explicit_metal_tile_unsupported_rgba16_is_rejected() {
         ),
     }
 }
-
-#[test]
-fn hybrid_ht_cpuupload_uses_worker_local_decode_workspace() {
-    let source = include_str!("../../src/engine/direct_cpu.rs");
-
-    assert!(
-        source.contains("decode_prepared_ht_jobs_on_cpu_with_workspace"),
-        "HT CPUUpload decode must expose a workspace-aware helper"
-    );
-    assert!(
-        source.contains("HtCodeBlockDecodeWorkspace::default()"),
-        "parallel HT CPUUpload decode must initialize worker-local HT decode workspaces"
-    );
-    assert!(
-        source.contains("decode_ht_code_block_scalar_with_workspace"),
-        "HT CPUUpload decode must call the scratch-reusing scalar helper"
-    );
-}

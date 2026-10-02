@@ -28,7 +28,7 @@ pub(crate) enum CudaKernel {
 
 impl CudaKernel {
     #[cfg_attr(
-        all(not(j2k_cuda_oxide_enabled), not(test)),
+        not(j2k_cuda_oxide_enabled),
         expect(
             dead_code,
             reason = "entrypoint lookup is used only when CUDA Oxide modules are built"

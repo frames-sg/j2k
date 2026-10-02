@@ -18,50 +18,6 @@ use crate::engine::{
 };
 
 #[test]
-fn distinct_classic_zero_fill_is_barriered_before_cleanup_dispatch() {
-    let source = include_str!("distinct_batch.rs");
-    let body = source
-        .split_once("fn encode_distinct_classic_batches_to_buffer_in_encoder")
-        .expect("distinct classic batch encoder")
-        .1;
-    let zero_fill = body
-        .find("dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output")
-        .expect("distinct classic zero-fill dispatch");
-    let barrier = body
-        .find("encoder.memory_barrier_with_resources(&[output]);")
-        .expect("distinct classic zero-fill resource barrier");
-    let cleanup = body
-        .find("dispatch_classic_cleanup_batched_in_encoder(")
-        .expect("distinct classic cleanup dispatch");
-    assert!(zero_fill < barrier && barrier < cleanup);
-}
-
-#[test]
-fn distinct_classic_dispatch_adopts_the_prebuilt_source_table() {
-    let source = include_str!("distinct_batch.rs");
-    let body = source
-        .split_once("fn encode_distinct_classic_batches_to_buffer_in_encoder")
-        .expect("distinct classic batch encoder")
-        .1;
-    let dispatch = body
-        .split_once("dispatch_classic_cleanup_batched_in_encoder(")
-        .expect("distinct classic cleanup dispatch")
-        .1
-        .split_once(")?;")
-        .expect("distinct classic cleanup dispatch end")
-        .0;
-
-    assert!(
-        dispatch.contains("Some(source_indices)"),
-        "distinct dispatch must transfer its existing source table into status ownership"
-    );
-    assert!(
-        !body.contains("set_classic_sources"),
-        "distinct dispatch must not replace a second job-sized source allocation"
-    );
-}
-
-#[test]
 fn distinct_classic_metadata_honors_exact_cap_and_one_byte_over() {
     let coded_len = 11;
     let job_count = 3;

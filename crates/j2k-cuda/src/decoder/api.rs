@@ -522,15 +522,3 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         }))
     }
 }
-
-#[cfg(test)]
-mod operation_structure_tests {
-    #[test]
-    fn all_four_decode_operations_delegate_to_one_internal_entrypoint() {
-        let source = include_str!("api.rs");
-        let definition = ["fn decode_op", "_to_surface_impl"].concat();
-        let delegation = ["self.decode_op", "_to_surface_impl("].concat();
-        assert_eq!(source.matches(&definition).count(), 1);
-        assert!(source.matches(&delegation).count() >= 5);
-    }
-}

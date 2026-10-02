@@ -65,13 +65,11 @@ mod runtime;
 #[cfg(target_os = "macos")]
 mod scratch_pool;
 #[cfg(target_os = "macos")]
-mod surface_output_pool;
-#[cfg(all(target_os = "macos", test))]
-use self::pipeline_registry::SHADER_SOURCE;
-#[cfg(target_os = "macos")]
 pub(crate) mod single_decode;
 #[cfg(target_os = "macos")]
 mod status;
+#[cfg(target_os = "macos")]
+mod surface_output_pool;
 #[cfg(all(target_os = "macos", test))]
 mod texture_tuning;
 mod viewport_cache;

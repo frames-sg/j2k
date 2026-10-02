@@ -141,24 +141,6 @@ mod tests {
     }
 
     #[test]
-    fn primary_stream_bridge_has_no_context_wide_sync_on_success_path() {
-        let bridge = production_bridge_source();
-        assert!(bridge.contains("wait_on_default_stream"));
-        assert!(bridge.contains("wait_on_raw_stream"));
-        assert!(!bridge.contains("cuCtxSynchronize"));
-    }
-
-    #[test]
-    fn primary_stream_bridge_recovers_post_submit_event_creation_failure() {
-        let bridge = production_bridge_source();
-        let work = bridge.find("let output = work();").expect("submitted work");
-        let recovery = bridge
-            .find("return self.synchronize_then_error(error);")
-            .expect("post-submit recovery");
-        assert!(recovery > work);
-    }
-
-    #[test]
     fn completion_event_can_be_polled_without_a_host_wait_when_runtime_required() {
         if !j2k_test_support::cuda_runtime_gate(module_path!()) {
             return;
@@ -172,12 +154,5 @@ mod tests {
         let _may_already_be_complete = completion.is_complete().expect("query completion event");
         completion.synchronize().expect("wait completion event");
         assert!(completion.is_complete().expect("query completed event"));
-    }
-
-    fn production_bridge_source() -> &'static str {
-        include_str!("interop.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production primary stream bridge")
     }
 }

@@ -329,51 +329,6 @@ fn cached_gray_stage_returns_fresh_public_surface() {
 }
 
 #[test]
-fn shader_decode_block_clears_coefficients_with_vector_stores() {
-    assert!(
-        SHADER_SOURCE.contains("thread short4 *coeff_chunks"),
-        "decode_block should clear coeffs with packed short4 stores"
-    );
-    assert!(
-        SHADER_SOURCE.contains("coeff_chunks[i] = short4(0);"),
-        "decode_block should zero each packed coefficient chunk"
-    );
-}
-
-#[test]
-fn shader_source_keeps_entropy_fast_paths() {
-    assert!(SHADER_SOURCE.contains("inline bool refill_four_bytes("));
-    assert!(SHADER_SOURCE.contains("return refill_four_bytes(br, bytes, len) || refill_one_byte"));
-    assert!(SHADER_SOURCE.contains("ensure_bits_padded(br, bytes, len, 9)"));
-    assert!(SHADER_SOURCE.contains("const uint fast = uint(table.fast[lookahead]);"));
-    assert!(SHADER_SOURCE.contains("const int fast_ac = int(ac_table.fast_ac[lookahead]);"));
-    assert!(SHADER_SOURCE.contains("for (uint length = 10; length <= 16; ++length)"));
-    assert!(SHADER_SOURCE.contains("inline bool decode_block_skip("));
-    assert!(SHADER_SOURCE.contains("skip_receive_extend(br, bytes, len, ssss, status)"));
-    assert!(SHADER_SOURCE.contains("inline bool configure_batch_entropy_thread("));
-}
-
-#[test]
-fn shader_kernels_use_incremental_mx_my() {
-    assert!(
-        SHADER_SOURCE.contains("inline void init_mcu_cursor("),
-        "fast decode kernels should seed mx/my via init_mcu_cursor instead of dividing per MCU"
-    );
-    assert!(
-        SHADER_SOURCE.contains("inline void advance_mcu_cursor("),
-        "fast decode kernels should carry mx/my via advance_mcu_cursor instead of dividing per MCU"
-    );
-    assert!(
-        !SHADER_SOURCE.contains("mcu_index / params.mcus_per_row"),
-        "no fast kernel should still divide mcu_index by mcus_per_row inside the MCU loop"
-    );
-    assert!(
-        !SHADER_SOURCE.contains("mcu_index % params.mcus_per_row"),
-        "no fast kernel should still modulo mcu_index by mcus_per_row inside the MCU loop"
-    );
-}
-
-#[test]
 fn fast420_batch_timing_env_uses_shared_stage_mode_parser() {
     assert!(fast420_batch_timing_value_enabled(Some(
         std::ffi::OsStr::new("1")

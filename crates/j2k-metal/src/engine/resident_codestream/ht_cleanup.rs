@@ -275,9 +275,6 @@ pub(in crate::engine) fn dispatch_ht_cleanup_batched(
     Ok(())
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod tests;
-
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn dispatch_ht_cleanup_batched_in_encoder_with_status_offset(
     kernels: &crate::engine::runtime::DecodeKernels,

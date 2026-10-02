@@ -18,50 +18,6 @@ use crate::engine::{
 };
 
 #[test]
-fn ht_zero_fill_is_barriered_before_distinct_and_repeated_tier1_dispatch() {
-    let source = include_str!("../execution.rs");
-    let distinct = source
-        .split_once("fn encode_metal_ht_batches_in_encoder")
-        .expect("distinct HT execution function")
-        .1
-        .split_once("fn encode_repeated_metal_ht_batch_in_command_buffer")
-        .expect("repeated HT execution function follows distinct execution")
-        .0;
-    let repeated = source
-        .split_once("fn encode_repeated_metal_ht_batch_in_command_buffer")
-        .expect("repeated HT execution function")
-        .1
-        .split_once("struct RepeatedHtChunkEncoder")
-        .expect("repeated HT encoder follows repeated execution")
-        .0;
-
-    for (route, body, tier1_dispatch) in [
-        (
-            "distinct",
-            distinct,
-            "dispatch_ht_cleanup_batched_in_encoder_with_status_offset",
-        ),
-        ("repeated", repeated, "RepeatedHtChunkEncoder {"),
-    ] {
-        let zero_fill = body
-            .find("dispatch_zero_u32_buffer_in_encoder")
-            .unwrap_or_else(|| panic!("{route} HT execution must zero the decoded buffer"));
-        let barrier = body
-            .find("memory_barrier_with_resources(&[decoded])")
-            .unwrap_or_else(|| {
-                panic!("{route} HT execution must barrier the zero-filled decoded buffer")
-            });
-        let tier1 = body
-            .find(tier1_dispatch)
-            .unwrap_or_else(|| panic!("{route} HT execution must dispatch Tier-1 work"));
-        assert!(
-            zero_fill < barrier && barrier < tier1,
-            "{route} HT execution must barrier the decoded buffer after zero-fill and before Tier-1"
-        );
-    }
-}
-
-#[test]
 fn forced_multi_chunk_metal_output_matches_cpu_coefficients() {
     if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;

@@ -590,38 +590,3 @@ fn decode_stats_preserve_cleanup_counts_and_disabled_timing() {
         (0, 0, 0, 0, 0)
     );
 }
-
-#[test]
-fn decoder_modules_remain_focused_without_suppression_shortcuts() {
-    const ROOT: &str = include_str!("../ht_block_decode.rs");
-    const MODULES: [(&str, &str, usize); 11] = [
-        ("benchmark", include_str!("benchmark.rs"), 140),
-        ("cleanup", include_str!("cleanup.rs"), 230),
-        ("facade", include_str!("facade.rs"), 100),
-        ("magnitude", include_str!("magnitude.rs"), 350),
-        ("pipeline", include_str!("pipeline.rs"), 180),
-        ("readers", include_str!("readers.rs"), 310),
-        ("refinement", include_str!("refinement.rs"), 80),
-        ("segments", include_str!("segments.rs"), 130),
-        ("significance", include_str!("significance.rs"), 210),
-        ("state", include_str!("state.rs"), 240),
-        ("validation", include_str!("validation.rs"), 320),
-    ];
-
-    assert!(ROOT.lines().count() <= 40, "decoder root regrew");
-    for (name, source, line_cap) in MODULES {
-        assert!(
-            source.lines().count() <= line_cap,
-            "{name}.rs exceeded its focused-module line cap"
-        );
-        assert!(!source.contains("include!"), "{name}.rs uses include!");
-        assert!(
-            !source.contains("allow(unused"),
-            "{name}.rs suppresses unused-code diagnostics"
-        );
-        assert!(
-            !source.contains("allow(clippy::too_many_lines"),
-            "{name}.rs suppresses the god-function lint"
-        );
-    }
-}

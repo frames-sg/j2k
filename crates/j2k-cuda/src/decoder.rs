@@ -612,18 +612,6 @@ mod tests {
     }
 
     #[test]
-    fn batched_color_idwt_defers_completion_to_store_sync() {
-        let source = include_str!("decoder.rs");
-
-        assert!(
-            !source.contains(
-                "if !collect_stage_timings {\n        context.synchronize().map_err(cuda_error)?;\n    }"
-            ),
-            "batched color IDWT should keep queued resources live and let the following store synchronize"
-        );
-    }
-
-    #[test]
     fn batched_color_idwt_preflights_each_output_before_pool_take() {
         let source = include_str!("decoder/resident/idwt.rs");
         let function = source

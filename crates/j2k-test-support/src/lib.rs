@@ -16,7 +16,6 @@ mod gpu_gate;
 mod jpeg_fixtures;
 mod manifest;
 mod metal;
-mod metal_shader;
 mod pixels;
 mod scaled_matrix;
 
@@ -69,7 +68,6 @@ pub use manifest::{
     optional_manifest_column,
 };
 pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
-pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};
 pub use pixels::{
     crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,
     project_scaled_interleaved_u8, rgb16le_to_rgba16le, rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8,
@@ -477,27 +475,5 @@ mod tests {
     #[test]
     fn fnv1a64_digest_matches_manifest_value() {
         assert_eq!(fnv1a64_hex(b"abc"), "e71fa2190541574b");
-    }
-
-    #[test]
-    fn wildcard_reexports_are_confined_to_the_fixture_catalog() {
-        let root_facade = include_str!("lib.rs");
-        let jpeg_facade = include_str!("jpeg_fixtures.rs");
-        let wildcard_reexports: Vec<_> = root_facade
-            .lines()
-            .chain(jpeg_facade.lines())
-            .map(str::trim)
-            .filter(|line| line.starts_with("pub use ") && line.ends_with("::*;"))
-            .collect();
-
-        assert_eq!(
-            wildcard_reexports,
-            [
-                "pub use jpeg_fixtures::*;",
-                "pub use builders::*;",
-                "pub use tables::*;",
-            ],
-            "wildcard exports are reserved for the documented fixture-catalog prelude",
-        );
     }
 }

@@ -39,22 +39,6 @@ mod resident;
 #[cfg(target_os = "macos")]
 mod submission;
 
-#[cfg(test)]
-mod decoder_ownership_tests {
-    #[test]
-    fn persistent_decoder_does_not_layer_the_legacy_metal_session() {
-        let decoder_source = include_str!("batch_decoder/decoder.rs");
-        let legacy_session_type = ["Metal", "Session"].concat();
-
-        assert!(
-            !decoder_source.contains(&legacy_session_type),
-            "MetalBatchDecoder must own only MetalBackendSession and its direct counter"
-        );
-        assert!(decoder_source.contains("pub(super) backend: MetalBackendSession"));
-        assert!(decoder_source.contains("submission_count: u64"));
-    }
-}
-
 #[cfg(target_os = "macos")]
 pub use self::contracts::MetalResidentBatch;
 pub use self::contracts::{

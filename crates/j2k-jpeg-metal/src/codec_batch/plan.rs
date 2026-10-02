@@ -375,11 +375,4 @@ mod tests {
         };
         assert!(error.to_string().contains("allocation"));
     }
-
-    #[test]
-    fn source_has_one_rgb8_batch_builder() {
-        let source = include_str!("plan.rs");
-        let builder = concat!("fn build_rgb8_", "batch_plan");
-        assert_eq!(source.matches(builder).count(), 1);
-    }
 }

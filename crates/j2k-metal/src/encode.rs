@@ -202,6 +202,4 @@ pub use self::unavailable::{
 };
 
 #[cfg(test)]
-mod structure_tests;
-#[cfg(test)]
 mod tests;

@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(test)]
-mod abi_tests;
 mod dwt;
 mod launch;
 mod preprocess;
 mod quantization;
 mod readback;
-#[cfg(test)]
-mod structure_tests;
 mod types;
 mod validation;
 #[cfg(test)]

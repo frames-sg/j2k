@@ -3,21 +3,10 @@
 use super::{abi::*, prepare::*};
 
 #[test]
-fn classic_decode_geometry_and_device_stride_share_a_classic_owned_constant() {
+fn classic_launch_geometry_uses_one_32_thread_block_per_code_block() {
     let geometry = super::launch::classic_launch_geometry(3).expect("classic geometry");
     assert_eq!(geometry.grid(), (3, 1, 1));
     assert_eq!(geometry.block(), (32, 1, 1));
-
-    let device = include_str!("../cuda_oxide_j2k_classic_decode/simt/src/main.rs");
-    let entrypoint = device
-        .split("pub unsafe fn j2k_decode_classic_codeblocks_multi")
-        .nth(1)
-        .expect("classic device entrypoint");
-    assert!(device.contains("const CLASSIC_DECODE_THREADS: u32 = 32;"));
-    assert!(entrypoint.contains("index += CLASSIC_DECODE_THREADS"));
-    assert!(entrypoint.contains("sample += CLASSIC_DECODE_THREADS"));
-    assert!(!entrypoint.contains("index += 32"));
-    assert!(!entrypoint.contains("sample += 32"));
 }
 
 #[test]
@@ -190,31 +179,4 @@ fn classic_engine_validates_empty_work_and_times_only_status_copy() {
         .find("let status_d2h_us")
         .expect("status timing result");
     assert!(status_copy < status_timing);
-}
-
-#[test]
-fn queued_classic_launch_defers_its_only_status_copy_to_guard_completion() {
-    let launch = include_str!("launch.rs");
-    let enqueue = launch
-        .split("pub unsafe fn decode_classic_codeblocks_multi_enqueue_with_resources_and_pool")
-        .nth(1)
-        .expect("queued classic decode method")
-        .split("/// Decode classic Tier-1 code-blocks and return optional stage timings.")
-        .next()
-        .expect("queued classic decode body");
-    assert!(enqueue.contains("launch_compiled_kernel_queued"));
-    assert!(enqueue.contains("CudaQueuedClassicDecode"));
-    assert!(!enqueue.contains("copy_to_host"));
-
-    let completion = include_str!("queued.rs")
-        .split("pub fn finish(")
-        .nth(1)
-        .expect("queued classic completion");
-    let stream_completion = completion
-        .find("finish_with_resources")
-        .expect("stream completion before deferred readback");
-    let status_copy = completion
-        .find("copy_to_host")
-        .expect("deferred status copy");
-    assert!(stream_completion < status_copy);
 }

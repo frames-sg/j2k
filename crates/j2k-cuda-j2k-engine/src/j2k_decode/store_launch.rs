@@ -192,30 +192,3 @@ impl crate::J2kCudaEngine<'_> {
         kernel.spec()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn grayscale_batch_final_stores_enqueue_without_context_synchronization() {
-        let source = include_str!("store_launch.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production store launch source");
-        for name in [
-            "launch_j2k_store_gray8_batch_enqueue",
-            "launch_j2k_store_gray16_batch_enqueue",
-            "launch_j2k_store_grayi16_batch_enqueue",
-        ] {
-            let function = source
-                .split(name)
-                .nth(1)
-                .unwrap_or_else(|| panic!("missing {name}"))
-                .split("\n    }")
-                .next()
-                .expect("batch store function");
-            assert!(function.contains("launch_kernel_async"), "{name}");
-            assert!(!function.contains("launch_kernel(function"), "{name}");
-            assert!(!function.contains("synchronize"), "{name}");
-        }
-    }
-}

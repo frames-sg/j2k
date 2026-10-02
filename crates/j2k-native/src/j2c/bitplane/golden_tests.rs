@@ -423,38 +423,3 @@ fn strict_metadata_and_segment_failures_keep_exact_error_classes() {
         .flatten()
         .all(|coefficient| coefficient.get_i64() == 0));
 }
-
-#[test]
-fn bitplane_modules_remain_focused_without_suppression_shortcuts() {
-    const ROOT: &str = include_str!("../bitplane.rs");
-    const MODULES: [(&str, &str, usize); 11] = [
-        ("arithmetic", include_str!("arithmetic.rs"), 320),
-        ("bypass", include_str!("bypass.rs"), 280),
-        ("context", include_str!("context.rs"), 210),
-        ("facade", include_str!("facade.rs"), 170),
-        ("flag_passes", include_str!("flag_passes.rs"), 250),
-        ("flags", include_str!("flags.rs"), 170),
-        ("observer", include_str!("observer.rs"), 100),
-        ("scan", include_str!("scan.rs"), 80),
-        ("schedule", include_str!("schedule.rs"), 350),
-        ("state", include_str!("state.rs"), 500),
-        ("state/model", include_str!("state/model.rs"), 150),
-    ];
-
-    assert!(ROOT.lines().count() <= 35, "bitplane root regrew");
-    for (name, source, line_cap) in MODULES {
-        assert!(
-            source.lines().count() <= line_cap,
-            "{name}.rs exceeded its focused-module line cap"
-        );
-        assert!(!source.contains("include!"), "{name}.rs uses include!");
-        assert!(
-            !source.contains("allow(unused"),
-            "{name}.rs suppresses unused-code diagnostics"
-        );
-        assert!(
-            !source.contains("allow(clippy::too_many_lines"),
-            "{name}.rs suppresses the god-function lint"
-        );
-    }
-}

@@ -442,6 +442,3 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_group_to_buffer_in_enc
     }
     Ok((retained_buffers, status_check))
 }
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests;

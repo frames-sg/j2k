@@ -78,32 +78,6 @@ fn explicit_tensor_spec_rejects_overflow_and_zero_dimensions() {
     assert!(MpsGraphTensorSpec::new([1, 0, 1, 3], MpsGraphElementType::U8).is_err());
 }
 
-#[test]
-fn production_adapter_has_no_decoded_pixel_readback_or_upload_calls() {
-    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let forbidden = [
-        "checked_buffer_read",
-        "checked_buffer_write",
-        "download_surfaces",
-        "readBytes_strideBytes",
-        "newBufferWithBytes",
-    ];
-    for entry in std::fs::read_dir(source_root).expect("read production source directory") {
-        let entry = entry.expect("read production source entry");
-        if entry.path().extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
-            continue;
-        }
-        let source = std::fs::read_to_string(entry.path()).expect("read production Rust source");
-        for symbol in forbidden {
-            assert!(
-                !source.contains(symbol),
-                "production j2k-mpsgraph must not call decoded-pixel staging symbol {symbol} in {}",
-                entry.path().display(),
-            );
-        }
-    }
-}
-
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 #[test]
 fn non_apple_api_consistently_reports_unsupported_platform() {

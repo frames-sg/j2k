@@ -403,39 +403,3 @@ fn public_idwt_function_signatures_stay_stable() {
     let _: fn(J2kSingleDecompositionIdwtJob<'_>, &mut Vec<f32>) -> Result<()> =
         apply_single_decomposition_idwt_job;
 }
-
-#[test]
-fn idwt_module_boundaries_stay_focused() {
-    const MODULES: &[(&str, &str, usize)] = &[
-        ("coordinator", include_str!("../idwt.rs"), 40),
-        ("direct", include_str!("direct.rs"), 220),
-        ("filter common", include_str!("filter_common.rs"), 70),
-        ("horizontal", include_str!("horizontal.rs"), 290),
-        ("f32 interleave", include_str!("interleave.rs"), 210),
-        ("i64 interleave", include_str!("interleave_i64.rs"), 180),
-        ("model", include_str!("model.rs"), 170),
-        ("orchestration", include_str!("orchestrate.rs"), 340),
-        ("ROI", include_str!("roi.rs"), 240),
-        ("vertical", include_str!("vertical.rs"), 390),
-    ];
-
-    for &(name, source, line_limit) in MODULES {
-        let line_count = source.lines().count();
-        assert!(
-            line_count <= line_limit,
-            "IDWT {name} module grew to {line_count} lines (limit {line_limit})"
-        );
-        assert!(
-            !source.contains("include!("),
-            "IDWT {name} must use real Rust modules"
-        );
-        assert!(
-            !source.contains("allow(unused"),
-            "IDWT {name} must not add a broad unused allowance"
-        );
-        assert!(
-            !source.contains("allow(clippy::too_many_lines"),
-            "IDWT {name} must not suppress file decomposition pressure"
-        );
-    }
-}

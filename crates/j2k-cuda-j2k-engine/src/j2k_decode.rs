@@ -57,6 +57,3 @@ pub(crate) use self::{
         active_dwt53_buffers, append_j2k_idwt_multi_kernel_jobs, j2k_idwt_multi_kernel_jobs,
     },
 };
-
-#[cfg(test)]
-mod structure_tests;
