@@ -1,160 +1,124 @@
 # Release Policy
 
 The `j2k` 0.11.3 public crate release is published and security-supported.
-The published 0.11.3 line carries the release-scoped Part 1 and selected
-Part 15 T.803 decoder evidence described in
-[`T.803 conformance`](t803-conformance.md).
-Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
-while supported device paths are selected only with validation and benchmark
-evidence.
+Its T.803 decoder conformance results are in
+[`T.803 conformance`](t803-conformance.md). The
+default backend is `Auto`: the CPU path is always available, and a GPU path is
+used only for shapes where it was tested and measured faster.
 
 ## Release status
 
 Version `0.11.3` is published. Its
-[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
-compares against published `v0.11.2` with no public signature changes. The
+[API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
+compares against `v0.11.2` and shows no public signature changes. The
 [hosted checks](https://github.com/frames-sg/j2k/actions/runs/36392470784) and
 [full CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/36396634283)
-passed for the tagged source. The release verifier checked all five T.803 reports,
-and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/36402630060)
+passed for the tagged commit, the release verifier checked all five T.803
+reports, and the
+[publish workflow](https://github.com/frames-sg/j2k/actions/runs/36402630060)
 published all 25 crates. The reports are attached to the
 [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3).
 
-Version `0.11.2` is published. Its [reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md)
-compares directly with published `v0.11.1`: ordinary stable APIs are additive,
-and the five new hidden native adapters preserve the existing decoder contracts.
-The [hosted checks](https://github.com/frames-sg/j2k/actions/runs/36353712175)
+Version `0.11.2` is published. Its
+[API report](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md)
+compares with `v0.11.1`: the stable APIs only gained items, and the five new
+hidden native adapters do not change existing decoder behavior. The
+[hosted checks](https://github.com/frames-sg/j2k/actions/runs/36353712175)
 and [full CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/36355267186)
-passed for the tagged source. The release verifier checked all five T.803 reports,
-and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/36358652009)
+passed for the tagged commit, the release verifier checked all five T.803
+reports, and the
+[publish workflow](https://github.com/frames-sg/j2k/actions/runs/36358652009)
 published all 25 crates. The reports are attached to the
 [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2).
 
-| Version | Distribution state | Security support |
+| Version | Distribution | Security support |
 | --- | --- | --- |
-| `0.11.3` | Published on [crates.io](https://crates.io/crates/j2k/0.11.3) from annotated tag `v0.11.3`, with CPU, CUDA, and Metal reports attached to the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Security-supported. |
-| `0.11.2` | Published on [crates.io](https://crates.io/crates/j2k/0.11.2) from annotated tag `v0.11.2`, with CPU, CUDA, and Metal reports attached to the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). | Security-supported. |
-| `0.11.1` | Published on [crates.io](https://crates.io/crates/j2k/0.11.1) from tag `v0.11.1`; dated notes are in the [changelog](../CHANGELOG.md). | Security-supported. |
-| `0.11.0` | Published release line. Distribution is recorded in the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0) and [crate registry](https://crates.io/crates/j2k/0.11.0) after the required gates passed. | Security-supported. |
-| `0.10.0` | Published on crates.io from annotated tag `v0.10.0`, with reviewed architecture-transition API evidence. | Supported. |
-| `0.9.0` | Published on crates.io from annotated tag `v0.9.0`, with reviewed `objc2-metal` API-break evidence. | Supported. |
-| `0.8.1` | Previous crates.io release from annotated tag `v0.8.1`. | Supported. |
-| `0.8.0` | Previous crates.io release from annotated tag `v0.8.0`. | Supported. |
-| `0.7.5` | Previous crates.io release. Its `j2k-ml` CPU feature works, but its CUDA and Metal features have the clean-consumer defect described below. | Supported, with the stated `j2k-ml` accelerator exception. |
-| `0.7.3` | Previous published release line. | Supported. |
-| `0.7.2` | Previous published release line. | Supported. |
-| `0.7.1` | Previous published release line. | Supported. |
-| `0.7.0` | Previous published release line. | Supported. |
-| `0.6.x` | Previous published release line. | Supported for security fixes during the pre-1.0 transition. |
-| `<0.6` | Historical releases. | Unsupported. |
+| `0.11.3` | [crates.io](https://crates.io/crates/j2k/0.11.3), annotated tag `v0.11.3`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Yes |
+| `0.11.2` | [crates.io](https://crates.io/crates/j2k/0.11.2), annotated tag `v0.11.2`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). | Yes |
+| `0.11.1` | [crates.io](https://crates.io/crates/j2k/0.11.1), tag `v0.11.1`; notes in the [changelog](../CHANGELOG.md). | Yes |
+| `0.11.0` | [crates.io](https://crates.io/crates/j2k/0.11.0); [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0). | Yes |
+| `0.10.0` | crates.io, annotated tag `v0.10.0`. | Yes |
+| `0.9.0` | crates.io, annotated tag `v0.9.0`. | Yes |
+| `0.8.1` | crates.io, annotated tag `v0.8.1`. | Yes |
+| `0.8.0` | crates.io, annotated tag `v0.8.0`. | Yes |
+| `0.7.5` | crates.io. The `j2k-ml` `cuda` and `metal` features are broken (see below). | Yes, except those `j2k-ml` features |
+| `0.7.0`–`0.7.3` | crates.io. | Yes |
+| `0.6.x` | crates.io. | Security fixes only, until 1.0 |
+| `<0.6` | Old releases. | No |
 
-Version `0.9.0` was published from annotated tag `v0.9.0`, which peels to
-commit `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. The
-[hosted validation](https://github.com/frames-sg/j2k/actions/runs/31427966052)
-and [CUDA/Metal full validation](https://github.com/frames-sg/j2k/actions/runs/31427977279)
-produced the exact-SHA evidence attached to the
-[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.9.0). The
-[tag-triggered publish workflow](https://github.com/frames-sg/j2k/actions/runs/31434104062)
-verified all five T.803 reports and published all 19 crates to crates.io.
+### Earlier releases
 
-Version `0.8.1` was published from annotated tag `v0.8.1`, which peels to
-commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`. The
-[CPU validation](https://github.com/frames-sg/j2k/actions/runs/31140212203)
-and [CUDA/Metal adapter validation](https://github.com/frames-sg/j2k/actions/runs/31141587695)
-produced the exact-SHA evidence attached to the
-[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.8.1). The
-tag-triggered workflow verified all five T.803 reports before publishing the
-crates.
+- `0.11.0` compares against `v0.10.0`
+  ([API report](release-evidence/public-api/reviewed-public-api-diff-0.11.0.md),
+  [review](release-evidence/public-api/public-api-review-0.11.0.yml)). It added
+  the graph-submission support crate, JPEG classification and ICC APIs, and
+  lossy HT quality-factor options. The experimental MPSGraph adapter dropped
+  four demonstration helpers; build graphs with `MpsGraphProgram::new` and keep
+  reference calculations in your own tests. CPU, CUDA, and Metal release checks
+  passed, and the five conformance reports on the
+  [0.11.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.0)
+  identify the tagged commit.
+- `0.10.0` compares against `v0.9.0` (commit
+  `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`)
+  ([API report](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md),
+  [review](release-evidence/public-api/public-api-review-0.10.0.yml)). It split
+  the crates. Most removals in the report are changed defining paths whose root
+  re-exports still exist. It also moved `transcode_kernels_built` from the CUDA
+  runtime to the CUDA transcode engine and generalized the Metal resident
+  codestream handoff to `DeviceCodestream`.
+- `0.9.0` was published from annotated tag `v0.9.0` (commit
+  `b197f01ab4b9271f1cbc36921755a5b9d588bd5a`) after
+  [hosted validation](https://github.com/frames-sg/j2k/actions/runs/31427966052)
+  and [CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/31427977279);
+  the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/31434104062)
+  checked all five T.803 reports and published 19 crates. It compares against
+  `v0.8.1` ([API report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md),
+  [review](release-evidence/public-api/public-api-review-0.9.0.yml)) and breaks
+  the expert Metal APIs on purpose: `metal-rs` device, queue, buffer, texture,
+  descriptor, size, and pixel-format types became retained or borrowed
+  `objc2-metal` objects. Texture descriptors are now built directly, and the
+  old helper and unreachable raw-message-send errors were removed. The review
+  file lists every removed item in the four Metal crates.
+- `0.8.1` was published from annotated tag `v0.8.1` (commit
+  `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`) after
+  [CPU validation](https://github.com/frames-sg/j2k/actions/runs/31140212203)
+  and [CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/31141587695).
+  It compares against `v0.8.0`
+  ([API report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md),
+  [review](release-evidence/public-api/public-api-review-0.8.1.yml)) and only
+  adds items: exact-resolution and sRGB/ICC decode APIs, encode-stage context,
+  and the shared irreversible midpoint calculation.
+- `0.8.0` was published from annotated tag `v0.8.0` (commit
+  `53e0ad3d4f75f492af55413e0dab5a5834bd09c6`) by the
+  [publish workflow](https://github.com/frames-sg/j2k/actions/runs/30425822681),
+  which checked all 19 crates. It is not source or behavior compatible with
+  `0.7.5`: decoding is strict by default, lenient mode covers only the
+  documented JP2/JPH metadata recoveries, warnings report recoveries that
+  actually happened, and `J2kDecodeWarning::LenientDecodeMode` became
+  `J2kDecodeWarning::LenientMetadataRecovery`. See the
+  [API report][v0.8.0-api-report] and [review file][v0.8.0-api-review].
+- `0.7.5` broke the patch-release rule once, on purpose, to remove
+  pass-through wrappers. Migrations are under its heading in the
+  [`CHANGELOG`](../CHANGELOG.md); its API report compares against `v0.7.3`.
+  Its `j2k-ml` `cuda` and `metal` features do not compile for registry users
+  because they call CubeCL and wgpu interop methods missing from the released
+  versions of those crates; the `cpu` feature works. Since `0.8.0` the adapters
+  decode on the GPU, copy pixels to host memory, and upload with Burn's public
+  API. Do not use the 0.7.5 GPU features.
+- The `0.7.x` releases removed parts of the `0.6.2` API and are not source
+  compatible with `0.6.x`. The [`CHANGELOG`](../CHANGELOG.md) has migration
+  notes and the [API report][v0.7.3-api-report] lists the changes.
 
-Version `0.8.0` was published from annotated tag `v0.8.0`, which peels to commit
-`53e0ad3d4f75f492af55413e0dab5a5834bd09c6`. The
-[tag-triggered publish workflow](https://github.com/frames-sg/j2k/actions/runs/30425822681)
-validated all 19 registry targets and published the release to crates.io.
-GitHub Pages is served directly from `main/docs`.
-
-Version `0.7.5` is an explicitly reviewed source-compatibility exception to
-the normal patch policy. Its wrapper-removal migrations are recorded under
-the dated `0.7.5` heading in the [`CHANGELOG`](../CHANGELOG.md), and its reviewed
-API evidence is compared directly with the published `v0.7.3` baseline.
-
-The previous `j2k-ml 0.7.5` `cuda` and `metal` features do not compile for a
-clean registry consumer because they reference CubeCL and wgpu interop methods
-that are absent from the selected registry releases. The `cpu` feature is
-unaffected. The published `0.8.0` adapters instead perform accelerator codec
-decode, explicit decoded-pixel readback, and ordinary Burn tensor upload using
-released public APIs. Do not recommend the defective 0.7.5 accelerator
-features.
-
-Version `0.8.0` was intentionally source- and behavior-incompatible
-with `0.7.5`: decode entry points become strict by default, explicit leniency
-is limited to the documented JP2/JPH metadata recoveries, warnings report
-actual recovery rather than lenient configuration, and
-`J2kDecodeWarning::LenientDecodeMode` becomes
-`J2kDecodeWarning::LenientMetadataRecovery`. The [reviewed API
-report][v0.8.0-api-report] records the release's generated signature diff, and
-the adjacent [review configuration][v0.8.0-api-review] contains the exact
-source- and behavior-break ledger with migrations.
-
-Version `0.8.1` compares directly with published `v0.8.0`. Its [reviewed API
-report](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md) and
-[review configuration](release-evidence/public-api/public-api-review-0.8.1.yml)
-record an additive-only public surface: exact-resolution and sRGB/ICC decode
-APIs, encode-stage context, and the shared irreversible midpoint calculation.
-The one-time `0.7.5` to `0.8.0` transition allowance has been removed.
-
-Version `0.9.0` compares directly with published `v0.8.1`. Its [reviewed API
-report](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md) and
-[review configuration](release-evidence/public-api/public-api-review-0.9.0.yml)
-record the intentional expert Metal API break: `metal-rs` device, queue,
-buffer, texture, descriptor, size, and pixel-format types become retained or
-borrowed `objc2-metal` objects and values. Callers construct texture descriptors
-directly; the obsolete helper and unreachable raw-message-send errors are
-removed. The break ledger enumerates every removed item in the four affected
-Metal crates. The one-time transition was consumed by `0.9.0`.
-
-The published `0.10.0` pre-1.0 minor release compares directly with published
-`v0.9.0` at peeled commit
-`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`. Its
-[reviewed API report](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md)
-and [review configuration](release-evidence/public-api/public-api-review-0.10.0.yml)
-record the intentional architecture transition. Most generated removals are
-canonical defining-path changes whose supported root re-exports remain. The
-break ledger also records moving `transcode_kernels_built` from the low-level
-CUDA runtime to the CUDA transcode engine and generalizing the Metal resident
-codestream handoff to `DeviceCodestream`. This one-time transition applies only
-to the `0.10.0` release and is now disabled.
-
-Version `0.11.0` compares against published `v0.10.0`. Its
-[API report](release-evidence/public-api/reviewed-public-api-diff-0.11.0.md) and
-[review configuration](release-evidence/public-api/public-api-review-0.11.0.yml)
-cover the new graph-submission support crate, JPEG classification and ICC APIs,
-and lossy HT quality-factor options. The experimental MPSGraph adapter removes
-four demonstration/reference helpers; applications construct their graphs with
-`MpsGraphProgram::new` and keep reference calculations in their own test code.
-The pre-1.0 minor-version increment reflects that source-compatibility change.
-Its exact-candidate CPU, CUDA, and Metal gates passed. The five conformance
-reports attached to [release 0.11.0](https://github.com/frames-sg/j2k/releases/tag/v0.11.0)
-identify the tagged source; the older reports remain historical evidence.
-
-Version `0.7.3` retained the API contract introduced by `0.7.1`, which
-intentionally contracted parts of the published pre-1.0 `0.6.2` API. It does
-not claim source compatibility with `0.6.x`. The
-[`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the [reviewed API
-report][v0.7.3-api-report] records the additions, removals, and changed
-signatures. That report was regenerated, independently reviewed, and verified
-for the published tag. Any report prepared for a future release remains
-provisional until it is regenerated and verified after that release's final
-source freeze.
+GitHub Pages is served from `main/docs`.
 
 [v0.7.3-api-report]: https://github.com/frames-sg/j2k/blob/v0.7.3/engineering/reviewed-public-api-diff-0.7.3.md
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
 [v0.8.0-api-review]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/public-api-review-0.8.0.yml
 
-## Candidate freeze and exact-SHA evidence
+## Freezing a release candidate
 
-Finish source, generated artifacts, documentation, changelog, and package
-metadata before freezing a candidate. The freeze starts only from a clean
-worktree:
+Finish code, generated files, docs, changelog, and package metadata first.
+Then freeze from a clean worktree:
 
 ```bash
 test -z "$(git status --porcelain)"
@@ -163,88 +127,70 @@ cargo xtask release-integrity --publish
 cargo xtask package
 ```
 
-Both offline candidate gates run from that clean commit. A failure or any
-tracked correction invalidates `RC_SHA`; commit the correction, choose a new
-candidate SHA, and rerun the local and exact-SHA evidence.
+If either command fails, or anything tracked changes, commit the fix, take a
+new `RC_SHA`, and rerun everything.
 
-ISO/IEC 15444-4:2024 / ITU-T T.803 v3 claim eligibility is scoped independently.
-CPU wording requires exact-SHA reports from Linux x86-64, macOS arm64, and
-Windows x86-64. CUDA and Metal adapter wording each requires that adapter's own
-exact-SHA real-hardware report. Every report in the selected scope must contain
-all selected cases with no skips. An unavailable adapter blocks only its own
-claim; it does not invalidate or suppress a complete CPU result. The optional
-`--scope all` verifier is a coordinated-release convenience, not the definition
-of CPU compliance. Current status is recorded in
-[`docs/t803-conformance.md`](t803-conformance.md).
+T.803 conformance is reported per backend. A CPU conformance statement needs
+reports for the exact commit from Linux x86-64, macOS arm64, and Windows
+x86-64. A CUDA or Metal statement needs that backend's own report from real
+hardware. Every report must contain all selected cases with no skips. A missing
+GPU report only blocks the statement for that GPU; it does not affect the CPU
+result. `--scope all` is a convenience for checking everything at once. Current
+results are in [`docs/t803-conformance.md`](t803-conformance.md).
 
-During release preparation, the changelog keeps a real `## [Unreleased]`
-heading and a structured staged-version line. As the final release-preparation
-edit before candidate freeze, replace that heading with
-`## [<workspace-version>] - YYYY-MM-DD` using the actual intended tag date and
-update every staged-document reference that still says the notes are under
-`Unreleased`. Do not guess the date early. Any later date or note change creates
-a new candidate and requires the exact-SHA gates again.
+While preparing a release, the changelog has an `## [Unreleased]` heading and a
+staged-version line. As the last edit before freezing, replace the heading with
+`## [<workspace-version>] - YYYY-MM-DD` using the real tag date, and update any
+docs that still point at `Unreleased`. Changing the date or notes later means a
+new candidate.
 
-Move the intended protected `origin/main` tip to exactly `RC_SHA` through the
-repository's normal reviewed push/merge workflow. Let `full-validation.yml`
-finish for that push, then dispatch one `gpu-validation.yml` run with
-`target=all` and `mode=full` for that exact commit. CUDA and Metal execute in
-parallel within that run. Verify the evidence only after all three release jobs
-have completed:
+Move protected `origin/main` to exactly `RC_SHA` through the normal reviewed
+merge. Wait for `full-validation.yml` on that push, then dispatch one
+`gpu-validation.yml` run with `target=all` and `mode=full` for that commit
+(CUDA and Metal run in parallel). When all three jobs finish:
 
 ```bash
 test "$(git rev-parse origin/main)" = "$RC_SHA"
 cargo xtask release-status --sha "$RC_SHA" --scope all
 ```
 
-Any tracked edit creates a new candidate: commit it, choose a new `RC_SHA`, and
-rerun all exact-SHA evidence. Only after the verifier succeeds may the release
-maintainer create an annotated `v<workspace-version>` tag that peels to
-`RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
-release tag, or treat a GitHub Pages deployment as release evidence.
+Only after this passes, create an annotated `v<workspace-version>` tag on
+`RC_SHA` and push it by name. Do not use `--follow-tags`, move an existing
+release tag, or count a GitHub Pages deploy as a release check.
 
-Before final candidate freeze, complete both structured fields in every
-`[patch.crates-io]` path override's `PATCH_PROVENANCE.md` record with the
-actual reviewer identity and review date. The publish-integrity command
-discovers these records from the workspace manifest and fails if any one is
-missing or unapproved. The date must be a calendar-valid `YYYY-MM-DD`; never
-infer either value from commit metadata. This generic validation remains in
-force even when the current workspace has no repository-local path patches.
-Also have a repository administrator enable GitHub private vulnerability
-reporting under **Security** settings before exact-SHA candidate verification.
-The authenticated candidate verifier reads that repository setting and fails
-closed unless it reports enabled; the later tag verifier reuses the same
-prerequisite.
+Before freezing, fill in the reviewer and review date in the
+`PATCH_PROVENANCE.md` of every `[patch.crates-io]` path override. The integrity
+command finds these from the workspace manifest and fails if any is missing or
+unapproved. The date must be a real `YYYY-MM-DD` date and must not be taken
+from commit metadata. The check runs even when there are no path patches. A
+repository admin must also enable GitHub private vulnerability reporting
+(**Security** settings); the candidate and tag verifiers fail if it is off.
 
 ## Versions and publish order
 
-[`release-crates.json`](../release-crates.json) is the ordered release manifest
-and source of truth for release-integrity, package construction, registry
-recovery, API tiers, documentation coverage, semver scope, and publication.
-Schema 2 records only ordered crate names and one of `stable`, `experimental`,
-`implementation`, or `binary` as each crate's `api_contract`. Release scripts
-must not publish from stale hard-coded crate/version pairs or maintain a second
-authored list of registry-independent crates.
+[`release-crates.json`](../release-crates.json) is the single ordered list of
+release crates. Release integrity, packaging, registry recovery, API tiers,
+docs coverage, semver checks, and publishing all read it. Schema 2 stores each
+crate's name and its `api_contract` tier (`stable`, `experimental`,
+`implementation`, or `binary`). Release scripts must not keep their own
+crate/version lists.
 
-The manifest must contain every crates.io-eligible workspace member exactly
-once; a member restricted to another registry is not crates.io eligible.
-Library tiers require a library target, while the binary tier requires a binary
-target and no library target. Every path dependency between release crates,
-including dev-dependencies, must use the exact
-`=<workspace.package.version>` requirement and resolve to that workspace
-crate—not to a same-named registry or Git dependency. Normal and build
-dependencies, including optional and target-specific edges, determine publish
-ordering. Dev-dependencies do not.
+Every crates.io-publishable workspace member appears exactly once (a member
+restricted to another registry is not publishable). Library tiers need a
+library target; the binary tier needs a binary target and no library. Every
+path dependency between release crates, including dev-dependencies, uses the
+exact `=<workspace.package.version>` requirement and resolves to the workspace
+crate, not a registry or Git crate of the same name. Normal and build
+dependencies (including optional and target-specific ones) set the publish
+order; dev-dependencies do not.
 
-Real publishes must run from tag `v<workspace.package.version>`. All
-publishable crates must share that workspace version. If a crate version is
-already on crates.io, the publish script fails by default; set
-`CRATES_IO_ALLOW_PUBLISHED_RERUN=true` only for an intentional idempotent
-rerun. A valid partial retry may contain only an already-published prefix of
-the dependency-ordered list below, and every published `.crate` SHA-256 must
-match the archive packaged locally from the exact tag. A published crate after
-an available crate, or any checksum mismatch, is inconsistent state and fails
-closed.
+Real publishes run from tag `v<workspace.package.version>`, and all crates
+share that version. If a version is already on crates.io the publish script
+fails, unless `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` is set for a deliberate
+rerun. A retry may only skip an already-published prefix of the list below,
+and each published `.crate` SHA-256 must match the archive built locally from
+the tag. A published crate after an unpublished one, or a checksum mismatch,
+stops the publish.
 
 Publish in this order:
 
@@ -274,15 +220,13 @@ Publish in this order:
 24. `j2k-mpsgraph`
 25. `j2k-cli`
 
-Publish preflight must account for staged unpublished workspace dependencies.
-Use the repo-owned package gate from a clean worktree:
+Run the package check from a clean worktree:
 
 ```bash
 cargo xtask package
 ```
 
-That gate applies package listing and dry-run checks according to dependency
-availability:
+It runs these as each crate's dependencies allow:
 
 ```bash
 cargo package --list
@@ -290,56 +234,51 @@ cargo package --no-verify
 cargo publish --dry-run
 ```
 
-The gate lists every release package's contents. It derives dependency closure and
-registry independence from locked Cargo metadata, then constructs `.crate`
-archives with `cargo package --no-verify` for staged packages whose
-workspace dependencies are not yet available from crates.io. Derived
-registry-independent packages run
-`cargo publish --dry-run`, including Cargo's package verification build. Manual
-publish-workflow runs remain dry-run-only: they validate the manifest and
-construct every local archive without receiving the crates.io token.
+It lists every crate's contents, works out from locked Cargo metadata which
+crates depend on unpublished workspace crates, builds `.crate` archives for
+those with `cargo package --no-verify`, and runs `cargo publish --dry-run`
+(with Cargo's verification build) for the rest. A manually triggered publish
+workflow is always a dry run and never receives the crates.io token.
 
-After constructing `j2k-ml`, the gate creates a consumer outside the workspace
-and compiles the packaged source against registry CubeCL and wgpu crates. Linux
-checks `cpu`, `cuda`, and `cpu,cuda`; macOS checks `cpu`, `metal`, and
-`cpu,metal`, and the combined host feature set also builds documentation. The
-consumer imports and instantiates the corresponding public decoder APIs.
-Temporary `[patch.crates-io]` entries cover only unpublished J2K workspace
-crates; third-party overrides are forbidden. Run the focused form with:
+After building `j2k-ml`, the check creates a project outside the workspace and
+compiles the packaged crate against the registry CubeCL and wgpu crates: `cpu`,
+`cuda`, and `cpu,cuda` on Linux, and `cpu`, `metal`, and `cpu,metal` on macOS
+(the combined set also builds docs). The project creates the public decoders.
+Temporary `[patch.crates-io]` entries are allowed only for unpublished J2K
+crates. To run just this check:
 
 ```bash
 cargo xtask j2k-ml-package-smoke
 ```
 
-The Metal package-consumer lane also builds `j2k-mpsgraph` from its staged
-crate archive and staged workspace dependencies:
+The Metal check also builds `j2k-mpsgraph` from its packaged archive:
 
 ```bash
 cargo xtask package-consumer-smoke --target metal
 ```
 
-An accelerator failure in this consumer is a distribution blocker even when
-the same feature builds inside the repository through a workspace-root patch.
+A GPU feature that fails in this outside project blocks the release, even if it
+builds inside the workspace.
 
-Before publication, the hosted preflight verifies that the checkout `origin` is
-the exact workflow repository, no draft, prerelease, or published GitHub
-Release exists for the tag, every target crate version has a determinate
-crates.io state, and all archives package locally. Only an exact HTTP 404 means
-a version is available; authentication errors, authorization failures,
-malformed responses, and checksum mismatches stop publication. On an
-intentional partial retry, `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits only
-the checksum-matched already-published prefix without moving the tag.
+Before publishing, the hosted preflight checks that `origin` is the workflow's
+repository, that no GitHub Release (draft, prerelease, or published) exists for
+the tag, that every crate version's crates.io status is known, and that all
+archives package. Only an exact HTTP 404 means a version is unpublished;
+authentication errors, authorization failures, malformed responses, and
+checksum mismatches stop the publish. For a deliberate partial retry,
+`CRATES_IO_ALLOW_PUBLISHED_RERUN=true` allows skipping the checksum-matched
+already-published prefix without moving the tag.
 
-After `crates-io-publish` environment approval, one runner repeats the canonical
-tag and prefix proof, packages all release archives, and publishes the remaining
-manifest entries sequentially with `cargo publish --locked -p <crate>`. Cargo's
-verification build stays enabled. There are no unconditional registry sleeps;
-only retryable transport, HTTP 429, or server failures are retried with bounded
-5, 15, and 30 second delays. The publisher re-queries and checksum-validates the
-entire prefix before each retry. Authentication, authorization, package
-verification, manifest, version, and checksum failures are never retried.
+After the `crates-io-publish` environment is approved, one runner rechecks the
+tag and published prefix, packages every archive, and publishes the remaining
+crates in order with `cargo publish --locked -p <crate>`, with Cargo's
+verification build on. There are no fixed waits. Only transport errors, HTTP
+429, and server errors are retried, after 5, 15, and 30 seconds, and the
+published prefix is rechecked before each retry. Authentication,
+authorization, package verification, manifest, version, and checksum errors are
+not retried.
 
-Run this before publishing:
+Run these before publishing:
 
 ```bash
 cargo xtask codec-math-codegen
@@ -348,139 +287,126 @@ cargo xtask release-integrity --publish
 cargo xtask public-support --final
 ```
 
-The codec-math codegen gate verifies generated Rust and Metal fragments against
-the Rust source of truth. The integrity gate parses lockfile-strict cargo
-metadata with `cargo metadata --locked --no-deps`, `release-crates.json`,
-manifests, `.github/workflows/publish.yml`, and this release document. It fails if a
-crates.io-eligible workspace crate is missing from the dependency-ordered
-manifest, docs.rs metadata, published-library semver/doc gates, or release
-docs; if an API tier does not match its Cargo targets; if an internal
-requirement is not exact; or if dependency order is invalid.
+`codec-math-codegen` checks that the generated Rust and Metal fragments match
+their Rust source. `release-integrity` reads `cargo metadata --locked
+--no-deps`, `release-crates.json`, the manifests,
+`.github/workflows/publish.yml`, and this page. It fails if a publishable crate
+is missing from the manifest, docs.rs metadata, semver/doc checks, or this
+page; if a tier does not match the crate's targets; if an internal dependency
+is not pinned exactly; or if the order is wrong.
 
-The ordinary integrity mode is an offline pre-candidate check. It accepts the
-structured `Unreleased` state before a candidate, the frozen dated state used
-while validating a release commit, and a fresh `Unreleased` section above the
-dated release after publication. `--publish` remains offline but requires
-exactly one dated heading for the workspace version, rejects the provisional
-changelog markers, and requires completed patch-review approval fields. The tag
-workflow separately uses the authenticated GitHub verifier to
-confirm private vulnerability reporting, the annotated tag, and exact-SHA
-hosted/GPU evidence. A direct real invocation of `scripts/publish-crate.sh`
-independently requires the expected annotated Git tag to exist and peel exactly
-to `HEAD`, treats `GITHUB_REF_NAME` only as an additional consistency check,
-and rejects tracked or untracked worktree changes. It derives the canonical
-repository identity from `[workspace.package].repository`, normalizes secure
-HTTPS, scp-style SSH, and `ssh://` checkout URLs, and requires the checkout
-`origin` to match that identity. It then queries `origin` directly and requires
-the exact remote tag object and its peeled commit to match the verified local
-annotated tag and `HEAD`. Any Git URL rewrite must still resolve to the same
-canonical identity. Origin and remote-tag failures stop before Cargo or any
-registry operation, and diagnostics do not print remote URLs or transport errors
-that could contain credentials. Finally, the script reruns the strict offline
-integrity mode so it cannot bypass those source and metadata checks.
+Plain `release-integrity` runs offline before a candidate. It accepts the
+`Unreleased` changelog state before a candidate, the dated state while checking
+a release commit, and a new `Unreleased` section above the dated release after
+publishing. `--publish` is also offline but requires exactly one dated heading
+for the workspace version, no provisional changelog markers, and completed
+patch-review fields. The tag workflow then uses the authenticated GitHub
+verifier to check private vulnerability reporting, the annotated tag, and the
+hosted and GPU results for the exact commit.
 
-The public-support gate verifies that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
-JPH, known-limitation, and publication-gate rows remain synchronized with tests
-and their support inventory. That implementation boundary does not substitute
-for the T.803 exact-reference gate or authorize a conformance claim.
+Running `scripts/publish-crate.sh` directly also requires the annotated tag to
+exist and point at `HEAD` (`GITHUB_REF_NAME` is only an extra consistency
+check) and refuses to run with tracked or untracked changes. It takes the
+repository identity from `[workspace.package].repository`, normalizes HTTPS,
+scp-style SSH, and `ssh://` URLs, requires `origin` to match, and checks that
+the remote tag object and commit match the local tag and `HEAD`. Git URL
+rewrites must still resolve to the same repository. These checks run before any
+Cargo or registry call, and errors never print remote URLs or transport
+messages that could contain credentials. The script then reruns the strict
+offline integrity check.
 
-## Required gates
+`public-support --final` checks that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
+JPH, known-limitation, and benchmark rows in `docs/public-support.md` match the
+tests and the support inventory. It is not a T.803 conformance check.
 
-After the candidate is frozen and committed, hosted CI must pass for exactly
-`RC_SHA` before release authorization:
+## Required checks
+
+Hosted CI must pass for exactly `RC_SHA` before release:
 
 - formatting
 - tests
 - clippy
-- authoritative strict Clippy via `cargo xtask clippy-strict`
-- panic-surface ratchet via `cargo xtask panic-surface`
-- codec math fragment freshness via `cargo xtask codec-math-codegen`
+- strict clippy via `cargo xtask clippy-strict`
+- panic count via `cargo xtask panic-surface`
+- codec-math fragment freshness via `cargo xtask codec-math-codegen`
 - release integrity
-- package validation
-- semver checks for stable packages
-- docs and stable API inventory
-- benchmark target compilation
+- package checks
+- semver checks for the stable packages
+- docs and the stable API snapshot
+- benchmark targets compile
 - unsafe audit
-- bounded fuzz run
+- a bounded fuzz run
 - coverage via `cargo xtask coverage`
-- hosted macOS Metal compilation and pure tests via `cargo xtask metal-compile`
-- exact-reference T.803 CPU reports on Linux x86-64, macOS arm64, and Windows
-  x86-64 when the release declares CPU Profile/Cclass wording, with all selected
-  cases present and passing
-- an exact-reference CUDA or Metal adapter-IUT report from real hardware when
-  the release declares wording for that adapter, with CPU/device/hybrid stages
-  disclosed per case; compilation alone is never adapter conformance evidence
-- packaged clean-consumer checks for `j2k`, `j2k-cuda`, and `j2k-metal`
-- route-parity tests for every fixed `Auto` decision; any newly promoted hybrid
-  threshold additionally requires verified external Criterion evidence and its
-  artifact hash
+- macOS Metal compilation and pure tests via `cargo xtask metal-compile`
+- T.803 CPU reports on Linux x86-64, macOS arm64, and Windows x86-64 for the
+  exact commit, with every selected case present and passing, if the release
+  states CPU conformance
+- a CUDA or Metal T.803 report from real hardware, with the CPU/GPU split shown
+  per case, if the release states conformance for that backend; compiling is
+  not enough
+- packaged-crate checks for `j2k`, `j2k-cuda`, and `j2k-metal`
+- route-parity tests for every fixed `Auto` decision, plus external Criterion
+  results and their artifact hash for any new GPU threshold
 
-Changed-line coverage records production Rust across CPU and accelerator
-crates. The host lane enforces 80% across all changed production Rust and an
-independent 80% release-critical gate. Accelerator lanes report raw host-Rust
-coverage as audit evidence and enforce 80% for release-critical routing,
-validation, allocation, ownership, public-API, parser, security, and error
-boundaries. Broad accelerator implementation correctness is enforced by exact
-CPU/backend output parity and fail-closed hardware suites, not by tests written
-only to execute lines. GPU-heavy changes therefore require self-hosted
-`gpu-validation` evidence. The Metal job delegates to
-`cargo xtask release-metal`, which requires macOS, forces the strict runtime
-gate, rejects GPU skip markers, checks named runtime sentinels and count floors,
-and runs the exact declared ignored hardware-test inventory.
+Changed-line coverage covers production Rust in the CPU and GPU crates. The
+host lane requires 80% of changed production lines and, separately, 80% of
+changed release-critical lines. The GPU lanes report raw host-Rust coverage
+and require 80% for routing, validation, allocation, ownership, public API,
+parser, security, and error-handling code. GPU kernel correctness is checked by
+exact CPU/GPU output comparison on real hardware, not by line coverage, so
+GPU-heavy changes need a self-hosted `gpu-validation` run. The Metal job calls
+`cargo xtask release-metal`, which requires macOS, forces the runtime tests on,
+fails on GPU skip markers, checks named runtime tests and minimum counts, and
+runs the exact list of ignored hardware tests.
 
-Benchmark compilation is a release build-health gate, not a performance
-regression threshold. A release may claim performance only when the relevant
-CPU, Metal, or CUDA benchmark artifacts are recorded in
-[`docs/benchmark-evidence.md`](benchmark-evidence.md) or an attached run
-bundle. `cargo xtask j2k-perf-guard --lane host` is available for explicit CPU Criterion
-median regression signoff, but it is not part of the default release gate until
-the release checklist supplies a baseline ref and artifact retention policy.
-GPU performance signoff remains hardware-runner evidence, not hosted CI.
+Compiling the benchmarks only checks that they build; it is not a performance
+check. Performance numbers in a release must come from CPU, Metal, or CUDA
+results recorded in [`docs/benchmark-evidence.md`](benchmark-evidence.md) or an
+attached run bundle. `cargo xtask j2k-perf-guard --lane host` can compare CPU
+Criterion medians against a baseline, but it is not a default release check
+until the checklist names a baseline ref and how long artifacts are kept. GPU
+performance comes from hardware runners, not hosted CI.
 
-Hosted macOS runs `metal-compile` and does not claim hardware validation. A
-release requires `release-metal` on a self-hosted Apple Silicon Metal runner;
-missing devices, zero selected tests, skipped runtime paths, and inventory drift
-are failures. These checks retain the per-backend minimum test count floors and
-named runtime sentinels for every Metal-facing package. J2K Metal Criterion
-bench signoff is reset until new narrow profiling benches are added.
+Hosted macOS only runs `metal-compile`. A release also needs `release-metal` on
+a self-hosted Apple Silicon runner; a missing device, zero selected tests,
+skipped runtime paths, or a changed test list fails the job. Each Metal package
+keeps its minimum test count and named runtime tests. J2K Metal Criterion
+sign-off is paused until new profiling benches are added.
 
-Version 0.9.0 replaces the deprecated `metal-rs` host binding with the pinned
-`objc2`, `objc2-foundation`, and `objc2-metal` stack. The workspace and
-published Metal adapters no longer require a top-level crates.io patch or the
-unmaintained `block 0.1.6` crate. Release review must keep the objc2 versions
-unified and run the dependency-tree proof plus the normal Metal build and
-runtime gates.
+Since 0.9.0 the Metal crates use the pinned `objc2`, `objc2-foundation`, and
+`objc2-metal` crates instead of `metal-rs`, so they no longer need a crates.io
+patch or the unmaintained `block 0.1.6` crate. Release review checks that the
+objc2 versions are unified, runs the dependency-tree check, and runs the normal
+Metal build and runtime checks.
 
-CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
+CUDA validation needs a self-hosted CUDA machine for runtime tests and
+performance numbers. The CUDA paths use J2K's own kernels and CUDA device
+memory for supported shapes.
 
-Whole accelerator crates are not coverage exclusions. The changed-line
-denominator covers executable production and required build-script Rust.
-Syntax-level `#[cfg(test)]` code, Cargo test targets, and example/bench/fuzz
-targets are reported as separate non-production source dispositions rather than
-being mislabeled as uncovered production.
+No GPU crate is excluded from coverage. The changed-line count includes
+production code and required build scripts. `#[cfg(test)]` code, test targets,
+and example/bench/fuzz targets are reported separately instead of as
+uncovered production code.
 
-Reviewed non-host-instrumentable exclusions are exact and named: CUDA SIMT
-device Rust, generated cuda-oxide host scaffolds, the shared SIMT prelude,
-CUDA/NVTX FFI declaration spans, the embedded MSL string body, the generated
-codec-math DWT fragment. Every generated line must match its named freshness,
-integrity, or runtime-parity evidence. Metal and CUDA lanes publish separate
-LCOV and summary artifacts and remain required before release.
+Only these are excluded because they cannot be instrumented on the host: CUDA
+SIMT device code, generated cuda-oxide host scaffolds, the shared SIMT prelude,
+CUDA/NVTX FFI declarations, the embedded MSL string, and the generated
+codec-math DWT fragment. Each is covered by a freshness, integrity, or
+runtime-parity check instead. The Metal and CUDA lanes publish separate LCOV
+and summary files and must pass before release.
 
-Each coverage lane forces `CARGO_LLVM_COV_TARGET_DIR` and
-`CARGO_LLVM_COV_BUILD_DIR` to the same unique empty directory and uses only
-build-script outputs captured from that invocation for custom `cfg`
-classification. This makes byte-identical build-script reruns valid current
-evidence without admitting retained scopes from an earlier run. Every selected
-package with a Cargo custom-build target must have current output; missing or
-conflicting package evidence fails the gate. A custom cfg value not established
-by current evidence remains unknown, so both it and its negation stay in the
-changed-source denominator rather than disappearing as inactive.
+Each coverage lane points `CARGO_LLVM_COV_TARGET_DIR` and
+`CARGO_LLVM_COV_BUILD_DIR` at the same new empty directory and only uses
+build-script output from that run to decide which custom `cfg`s are active, so
+results from an earlier run cannot leak in. Every package with a build script
+must produce current output; missing or conflicting output fails the lane. A
+custom `cfg` whose value is unknown keeps both branches in the changed-line
+count.
 
 ## Published and unpublished crates
 
-Published crates must declare package README files and docs.rs metadata.
-Unpublished tooling and oracle helpers remain local even when versioned with the
-workspace.
+Published crates must have a package README and docs.rs metadata. Tooling and
+test helpers are not published, even though they share the workspace version.
 
-`j2k-test-support` is an unpublished dev helper. Comparator crates and
-automation-only tooling are not runtime API.
+`j2k-test-support` is an unpublished dev helper. The comparator crates and
+automation tools are not runtime API.

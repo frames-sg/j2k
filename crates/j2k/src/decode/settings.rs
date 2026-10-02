@@ -26,7 +26,7 @@ impl DecodeSettings {
         Self { strict: false }
     }
 
-    /// Fail-closed validation for malformed codec and container metadata.
+    /// Reject malformed codec and container metadata.
     #[must_use]
     pub const fn strict() -> Self {
         Self { strict: true }

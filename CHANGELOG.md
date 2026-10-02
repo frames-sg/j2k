@@ -79,13 +79,12 @@ and stale roadmap entries have been removed from the public documentation set.
   length-delimited `JPEGTables` EOI markers, and TIFF-defined DRI/DAC handling.
 - Adds progressive, general lossless, and DICOM lossless-SV1 JPEG passthrough
   syntax classification plus ordered APP2 ICC profile extraction, insertion,
-  and fail-closed replacement helpers.
+  and replacement helpers that reject malformed input.
 - Hardens `j2k-mpsgraph` completed-buffer handoff with same-device validation,
   adds automated F32 graph parity against a higher-precision CPU oracle, and
-  makes direct-handoff benchmark paths prepared-input-equivalent, warmed,
-  interleaved, and correctness-checked before any speed qualification. Its
-  runnable example now constructs a caller-owned graph through the public
-  `MpsGraphProgram::new` boundary. Breaking: removes the repository-specific
+  makes the direct-handoff benchmark paths use the same prepared input, warm
+  up, interleave, and check correctness before timing. Its example now builds
+  its own graph and passes it to `MpsGraphProgram::new`. Breaking: removes the repository-specific
   identity, RGB8 reference-graph, and CPU-oracle convenience APIs from the
   experimental production surface; equivalent fixtures remain dev-only.
 
@@ -95,7 +94,7 @@ and stale roadmap entries have been removed from the public documentation set.
   Completed resident batches and pipelined direct decode feed static rank-four
   MPSGraph programs without decoded-pixel readback/re-upload; blocking,
   nonblocking, reference-oracle, benchmark, package, and release validation
-  paths are included. No zero-copy or speed claim is made.
+  paths are included. It is not zero-copy and no speedup has been measured.
 
 - Breaking: narrows `j2k-cuda-runtime` to codec-neutral CUDA allocation,
   launch, completion, and diagnostics. CUDA JPEG 2000, JPEG, and transcode
@@ -115,9 +114,9 @@ and stale roadmap entries have been removed from the public documentation set.
   owners. Native produces typed plans consumed by CPU, CUDA, and Metal; the
   adapters no longer downcast erased plans or duplicate resource policy.
 - Decomposes the native color, Metal JPEG/JPEG 2000, CUDA, and transcode
-  orchestration roots by pipeline ownership, with repository policies enforcing
-  dependency direction, source boundaries, unsafe inventory, clone ceilings,
-  benchmark registration, and generated routing evidence.
+  orchestration roots by pipeline stage, with repository checks for dependency
+  direction, unsafe inventory, clone limits, benchmark registration, and
+  generated routing tables.
 - Adds bounded HTJ2K lossy candidate generation with two consecutive HT sets,
   exact cleanup/SigProp/MagRef byte boundaries, per-pass distortion scoring,
   and dependency-aware slope allocation. CUDA and Metal can produce the exact
@@ -186,40 +185,41 @@ and stale roadmap entries have been removed from the public documentation set.
   and availability errors.
 
 - Extends the shared ISO/IEC 15444-4:2024 / ITU-T T.803 v3 framework with
-  unversioned HTJ2K Part 15 development evidence. The CPU IUT passes all 160
+  HTJ2K Part 15 development results. The CPU decoder passes all 160
   selected Part 1 and Part 15 cases with zero skips on macOS arm64, Linux
   x86-64, and native Windows x86-64/MSVC, including DS1-HM Cclass-1h at MMAGB
   15, Cclass-1HFh at MMAGB 20, and Annex G JPH at MMAGB 15.
-- Extends the CUDA and Metal adapter-IUT reports to the same selected Part 15
-  points. Each combined Part 1/Part 15 headline is 0/160 device-native, 81/160
-  hybrid, and 79/160 CPU-routed; production-owned counters disclose execution
-  per stage. Exact-clean-SHA Part 15 release evidence remains pending.
+- Extends the CUDA and Metal reports to the same Part 15 points. Of the 160
+  Part 1/Part 15 cases, 81 use the GPU for some stages and 79 run on the CPU;
+  none runs entirely on the GPU. Dispatch counters record where each stage ran.
+  Part 15 results for a clean release commit were still to come.
 - Fixes HTJ2K decoder defects in irreversible midpoint reconstruction, ROI,
   packet/header parsing, HT cleanup/refinement, progression, tile parts, and
   JPH validation without vector-specific exceptions or relaxed tolerances.
 - Versions the Annex D/F encoder ICS matrix for classic and HT modes. CPU passes
   55/56 cases through the pinned T.804 OpenJPEG decoder; OpenJPEG 2.5.3 rejects
   HT+RGN, so the mandatory 56th capability case passes through the independently
-  pinned OpenHTJ2K decoder as explicitly supplemental interoperability evidence.
-  The CUDA and Metal matrices pass 35/35 through OpenJPEG. All encoder results
-  are informative evidence, not formal decoder conformance.
-- Adds HTJ2K/JPH routing workloads and promotes only cells with identical
-  output, at least 10% median improvement, and non-overlapping Criterion 95%
-  confidence intervals. The production Metal HTJ2K host-output route now uses
+  pinned OpenHTJ2K decoder instead, as an interoperability check.
+  The CUDA and Metal matrices pass 35/35 through OpenJPEG. Encoder results are
+  informative, not formal decoder conformance.
+- Adds HTJ2K/JPH routing workloads and routes a cell to the GPU only when it
+  gives identical output, at least 10% median improvement, and non-overlapping
+  Criterion 95% confidence intervals. The production Metal HTJ2K host-output route now uses
   Metal coefficient preparation and HT Tier-1 with CPU packetization for the
   verified RGB8 1,024 x 1,024 and Gray8/RGB8 2,048 x 2,048 cells; measured
-  smaller cells stay on CPU. Explicit CUDA and Metal requests remain strict.
+  smaller cells stay on CPU. Explicit CUDA and Metal requests still never fall
+  back to the CPU.
 
 ## [0.8.1] - 2026-08-06
 
-- Adds release-scoped ISO/IEC 15444-4:2024 / ITU-T T.803 v3 decoder evidence.
-  The CPU IUT is Profile-1 Cclass-1 compliant, Profile-1 Cclass-1HF compliant,
+- Adds ISO/IEC 15444-4:2024 / ITU-T T.803 v3 decoder conformance results for
+  this release. The CPU decoder is Profile-1 Cclass-1 compliant, Profile-1 Cclass-1HF compliant,
   and Annex G JP2 reader compliant across all 90 selected cases with zero skips
   on macOS arm64, Linux x86-64, and Windows x86-64.
-- Publishes separate CUDA and Metal adapter-IUT results for the same selected
-  codestream classes. Each headline is 0/90 device-native, 48/90 hybrid, and
-  42/90 CPU-routed; reports disclose parsing, Tier-1, dequantization, IDWT,
-  MCT, color/output, and transfer execution per case.
+- Publishes separate CUDA and Metal results for the same codestream classes. Of
+  the 90 cases, 48 use the GPU for some stages and 42 run on the CPU; none runs
+  entirely on the GPU. The reports show where parsing, Tier-1, dequantization,
+  IDWT, MCT, color/output, and transfers ran for each case.
 - Adds exact codestream-resolution decoding through
   `decode_native_components_at_reduction` and explicit Annex G normalization
   through `decode_srgb8`, including Gray/RGB/RGBA layouts, component mapping,
@@ -231,13 +231,13 @@ and stale roadmap entries have been removed from the public documentation set.
   vector-specific exceptions or relaxed tolerances.
 - Adds deterministic Annex D/F encoder ICS matrices. The CPU matrix passes
   28/28 cases and the CUDA and Metal matrices pass 25/25 through the pinned
-  T.804 OpenJPEG decoder; this is informative encoder evidence, not the formal
-  decoder claim.
+  T.804 OpenJPEG decoder. Encoder results are informative, not formal decoder
+  conformance.
 - Independently verifies `p0_13.j2k` before harness normalization: the
   production decoder and OpenJPEG match all 257 native components exactly.
-- Promotes only benchmark-qualified fixed `Auto` hybrid cells after identical
-  output, at least 10% median improvement, and non-overlapping Criterion 95%
-  confidence intervals. Explicit CUDA and Metal requests remain strict.
+- `Auto` routes a cell to the GPU only when benchmarks show identical output, at
+  least 10% median improvement, and non-overlapping Criterion 95% confidence
+  intervals. Explicit CUDA and Metal requests still never fall back to the CPU.
 - Makes tag publication verify all three CPU reports plus the CUDA and Metal
   reports for the exact release SHA, and rotates the public API compatibility
   baseline to the published `v0.8.0` release.
@@ -262,8 +262,8 @@ and stale roadmap entries have been removed from the public documentation set.
 - Routes 25–38-bit `Auto` lossless encode requests to the supported CPU path
   while preserving `RequireDevice` failure semantics.
 - Defines stable, experimental, implementation, and binary API tiers in the
-  ordered release manifest, and makes the `0.7.5`→`0.8.0` semver transition
-  fail closed with an exact source- and behavior-break ledger. A later `0.8.x`
+  ordered release manifest, and makes the `0.7.5`→`0.8.0` semver check fail
+  unless every source and behavior break is listed. A later `0.8.x`
   candidate must use a published `v0.8.0` baseline.
 - Fixes the published `j2k-ml 0.7.5` `cuda` and `metal` clean-consumer
   failures. The adapters now use accelerator codec decode, explicit
@@ -284,8 +284,8 @@ and stale roadmap entries have been removed from the public documentation set.
   staged accelerator decode, decoded-pixel readback, and ordinary Burn tensor
   upload using released public APIs.
 - Compatibility exception: this release is an explicitly source-incompatible
-  `0.7.x` patch against the published `0.7.3` API. The reviewed compatibility
-  evidence and migration notes cover the complete contracted surface.
+  `0.7.x` patch against the published `0.7.3` API. The API diff and migration
+  notes cover every removed item.
 - Adds persistent, high-throughput owned batch decoding for JPEG 2000 and
   HTJ2K, including prepared-input reuse, homogeneous exact-integer output
   groups, CPU decode, and resident/external-destination CUDA and Metal paths.
@@ -353,7 +353,7 @@ and stale roadmap entries have been removed from the public documentation set.
   JPEG sequential scan drivers with one typed, monomorphized geometry,
   restart-seek, rolling-stripe, and finish-order owner. Output emitters remain
   explicit and the hot MCU-row kernel remains a focused module.
-- Internal: makes release-integrity Cargo-metadata parsing fail closed on
+- Internal: makes release-integrity Cargo-metadata parsing fail on
   malformed, duplicate, or unmatched workspace package records and malformed
   unpublished-dependency fields instead of silently dropping them.
 - Internal: removes the last blanket string-to-error conversions. CUDA HTJ2K
@@ -549,8 +549,8 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ### Breaking API Changes
 
-Version `0.7.0` intentionally contracts the published pre-1.0 `0.6.2` API. It
-does not claim source compatibility with `0.6.x`; the frozen-candidate reviewed
+Version `0.7.0` removes parts of the published pre-1.0 `0.6.2` API and is not
+source compatible with `0.6.x`; the frozen-candidate reviewed
 API diff must enumerate every removed or changed item, while the migration notes
 below identify supported replacements and changes with no compatibility shim.
 
@@ -976,7 +976,7 @@ below identify supported replacements and changes with no compatibility shim.
   EOI-terminated entropy is borrowed, destuffing stops at the first EOI, and
   required staging uses the shared host-allocation cap rather than infallible
   caller-sized vectors.
-- Makes tag publication fail closed on a real dated changelog heading,
+- Makes tag publication fail without a real dated changelog heading,
   structured patch-review approval, an enabled private vulnerability-reporting
   setting, an annotated tag that peels to the exact candidate, and a clean
   publish worktree.
@@ -993,11 +993,11 @@ below identify supported replacements and changes with no compatibility shim.
   including accelerator-host routing. The gate reports non-production source
   roles separately and rejects missing executable coverage, changed functions
   without covered bodies, opaque changed macros, unreachable or untracked Rust,
-  and stale or conflicting build-script cfg evidence.
+  and stale or conflicting build-script cfg output.
 
 ## [0.6.2] - 2026-06-28
 
-- Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2
+- Defines the supported formats as JPEG 2000 Part 1 codestreams, JP2
   still-image wrapping, HTJ2K Part 15 support, and JPH wrapping, with
   JPX / JPEG 2000 Part 2 extensions explicitly out of scope.
 - Adds the public support matrix and `cargo xtask public-support` gate covering
@@ -1011,14 +1011,14 @@ below identify supported replacements and changes with no compatibility shim.
   codestream branding, color boxes, palettes/component mapping, channel
   definitions, BPCC, and ICC preservation paths.
 - Completes repo-local HTJ2K cleanup/refinement, multi-layer/rate, JPH, and
-  recode self-checks while keeping external OpenJPH/Kakadu evidence as a
-  publication gate.
+  recode tests; OpenJPH/Kakadu comparisons remain required before publishing
+  results.
 - Removes the cuda-oxide transcode IDCT per-thread local-memory table
   materialization, reducing the self-hosted RTX 4070 SUPER cuda-oxide
   JPEG-to-HTJ2K transcode profile from `40.813 MP/s` before the fix to
   `380.411 MP/s` in the `v0.6.2` validation run.
 - Keeps cuda-oxide transcode opt-in and records the CUDA C vs cuda-oxide
-  benchmark evidence in the public benchmark documentation.
+  benchmark results in the benchmark documentation.
 - Adds `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53` to the
   CLI as the first conservative JPEG-to-HTJ2K smoke-test command.
 - Refreshes adoption-facing docs with a shorter quickstart, support matrix, and
@@ -1039,6 +1039,6 @@ below identify supported replacements and changes with no compatibility shim.
 - Adds resident Metal and CUDA device memory surfaces for supported adapter
   paths through cuda-runtime integration.
 - Uses J2K-owned CUDA kernels for supported CUDA codec stages.
-- Requires recorded benchmark evidence before NVIDIA performance claims.
+- NVIDIA performance numbers must come from recorded benchmark runs.
 - Consolidates shared J2K encode-stage, CUDA submit, Metal runtime, tilecodec,
   JPEG output, and test-support helpers.

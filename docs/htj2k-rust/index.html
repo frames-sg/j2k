@@ -81,7 +81,7 @@
       <div class="wrap grid three">
         <article class="card">
           <h2>Part 15 block coding</h2>
-          <p>HT cleanup, significance-propagation refinement, magnitude-refinement, packet length signaling, quality-layer contributions, and strict decode coverage are tracked by repo-local tests.</p>
+          <p>HT cleanup, significance-propagation refinement, magnitude-refinement, packet length signaling, quality-layer contributions, and strict decoding are covered by tests in the repository.</p>
         </article>
         <article class="card">
           <h2>JPH files</h2>
@@ -89,7 +89,7 @@
         </article>
         <article class="card">
           <h2>Limits</h2>
-          <p>HTJ2K requests above the Part 15 coded-bitplane limit reject explicitly. External OpenJPH/Kakadu parity remains publication evidence, not a silent runtime fallback.</p>
+          <p>HTJ2K requests above the Part 15 coded-bitplane limit return an error. OpenJPH and Kakadu are used only for benchmark comparisons, never as a runtime fallback.</p>
         </article>
       </div>
     </section>

@@ -1,33 +1,33 @@
 # Benchmark Corpora
 
-Adoption-facing benchmark reports should not rely only on generated fixtures.
-Use a mix of standards conformance vectors, independent implementation test
-data, natural-image datasets encoded into J2K/HTJ2K with documented settings,
-and domain tiles.
+Published benchmark results should not rely only on generated fixtures. Use a
+mix of standards conformance files, other implementations' test data,
+natural-image datasets encoded to J2K/HTJ2K with recorded settings, and domain
+tiles.
 
-The tables below are an evidence plan, not a standing claim that every named
-dataset was present in a local run. A run may claim only the corpora present in
-its pinned manifest and summarized by the `adoption-report` subcommand.
+The table lists the corpora to use, not ones that were in every run. A report
+covers only the corpora in its pinned manifest, as summarized by
+`adoption-report`.
 
-## Required Mix
+## Corpora
 
 | Corpus | Use | Source | Repo handling |
 | --- | --- | --- | --- |
-| ISO JPEG 2000 conformance files | Exact-reference evidence for the selected JPEG 2000 Part 1 decoder classes and Annex G JP2 reader. | ISO/IEC 15444-4:2024 / ITU-T T.803 v3 electronic attachment. | Copyrighted external input. Never commit or upload the corpus. The official URL, archive digest, and exact selected-file inventory are pinned in `corpus/j2k-conformance/t803-v3.toml`. |
+| ISO JPEG 2000 conformance files | Reference outputs for the selected JPEG 2000 Part 1 decoder classes and the Annex G JP2 reader. | ISO/IEC 15444-4:2024 / ITU-T T.803 v3 electronic attachment. | Copyrighted external input. Never commit or upload the corpus. The official URL, archive digest, and exact selected-file inventory are pinned in `corpus/j2k-conformance/t803-v3.toml`. |
 | OpenJPEG test data | Regression and interoperability corpus with real JP2/J2K edge cases. | `https://github.com/uclouvain/openjpeg-data` | User-supplied clone path. |
 | OpenJPH / HTJ2K fixtures | HTJ2K-specific interoperability and JPH/J2K variants. | `https://github.com/aous72/OpenJPH` and released OpenJPH test assets. | User-supplied clone/path; small license-compatible fixtures may be committed with notices. |
 | jpylyzer test files | JP2 parser/metadata robustness, including valid and invalid files. | `https://github.com/openpreserve/jpylyzer-test-files` | User-supplied clone/path. Invalid files should be used for robustness tests, not throughput comparisons. |
 | Kodak | Classic natural-image compression benchmark. | Kodak PhotoCD image set mirrors. | User-supplied source images. Encode to J2K/HTJ2K with recorded command/options before decode benchmarking. |
 | Tecnick / TESTIMAGES | Larger natural-image benchmark set. | TESTIMAGES / Tecnick archives. | User-supplied because of dataset license terms. Encode to J2K/HTJ2K with recorded command/options. |
 | CLIC | Modern high-resolution photographic compression benchmark. | `https://www.compression.cc/` | User-supplied dataset. Encode to J2K/HTJ2K with recorded command/options. |
-| Domain WSI/DICOM/medical tiles | Most relevant adoption workload for this project. | Internal, partner, public TCIA/IDC-style exports, or scanner-derived tiles. | User-supplied. Do not commit protected health information or restricted datasets. |
+| Domain WSI/DICOM/medical tiles | The workload most users of this project care about. | Internal, partner, public TCIA/IDC-style exports, or scanner-derived tiles. | User-supplied. Do not commit protected health information or restricted datasets. |
 
-## Starter Acquisition Recipes
+## Downloading corpora
 
 Keep downloaded corpora under `target/` or another ignored/vendor directory
 unless the dataset license explicitly permits committing the files.
 
-Kodak is a small RGB smoke-to-adoption starter set:
+Kodak is a small RGB set, useful from smoke tests up:
 
 ```bash
 mkdir -p target/j2k-public-corpora/kodak
@@ -149,8 +149,8 @@ git -C target/j2k-public-corpora/codec-corpus sparse-checkout set clic2025 gb82 
 Use the `adoption-manifest` subcommand to create the decode and encode TSVs before
 running the adoption bundle. The generator walks each configured directory
 recursively, writes canonical absolute paths, infers common corpus categories
-from directory names, emits fixture hashes, and requires source/license fields
-so publication blockers are explicit instead of hidden in local notes:
+from directory names, writes fixture hashes, and requires source and license
+fields so missing information shows up as a blocker in the report:
 
 ```bash
 cargo run -p xtask --features adoption -- adoption-manifest \
@@ -164,8 +164,8 @@ cargo run -p xtask --features adoption -- adoption-manifest \
 
 Run it per corpus when license status or source commands differ materially, or
 edit the generated TSVs before publication. Unknown directory names are labeled
-`external-unspecified`, which remains useful for local runs but should be
-replaced by a real corpus category before adoption-facing reporting.
+`external-unspecified`, which is fine for local runs but should be replaced
+with a real corpus category before publishing.
 
 Before publishing a bundle or rendered report, scrub or relativize `path`,
 `input_source`, and manifest path fields to corpus labels or repo-relative
@@ -217,10 +217,10 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 ```
 
 Add `--require-cuda` and `--require-metal` on hardware runners. Those flags are
-also report gates: the `adoption-report` subcommand requires the CUDA/Metal steps
-to have run, requires manifest-backed external rows, requires generated
-hardware host-input rows to be disabled, and rejects missing Criterion/Metal
-evidence before a hardware claim can be publishable. The
+also checked by `adoption-report`: it requires the CUDA/Metal steps to have
+run, requires manifest-backed external rows and generated hardware host-input
+rows to be off, and rejects missing Criterion or Metal results before hardware
+numbers can be published. The
 materializer requires images at least 128x128 so the downstream CPU encoder
 comparator can enforce the shared three-resolution profile. Use
 `adoption-manifest` directly for externally supplied native J2K/JP2/JPH files,
@@ -229,7 +229,7 @@ fixtures that should not be re-encoded by this repo.
 
 ## Auto-routing workload manifest
 
-Hybrid promotion uses a smaller, strict JSON manifest rather than the adoption
+`Auto` routing decisions use a smaller JSON manifest instead of the adoption
 TSVs. Schema version 1 contains a corpus label, an HTTPS provenance URL, and a
 non-empty `cases` array. Each case has a unique safe `id`, a relative `path`, a
 `kind` of `decode` or `encode`, a `pixel_format` of `gray8` or `rgb8`, and the
@@ -264,13 +264,13 @@ The loader rejects absolute or escaping paths, symlinks, duplicates, hash
 drift, malformed PNM, oversized cases, and incomplete inventories. A
 representative release manifest should cover more than one favorable image and
 span small/large, gray/RGB, lossless/lossy, full, ROI, scaled, and batch work.
-The manifest and inputs remain external; the verified report records the exact
-manifest hash and every exercised workload ID.
+The manifest and inputs are not committed; the verified report records the
+manifest hash and every workload ID it ran.
 
 On a self-hosted runner, dispatch `GPU benchmarks` with `suite=routing` and set
 the repository variables `J2K_AUTO_ROUTING_MANIFEST` and
 `J2K_AUTO_ROUTING_ROOT` to the manifest and corpus root available on that host.
-The workflow fails closed when either is absent.
+The workflow fails if either is unset.
 
 ## Running All Available Corpora
 
@@ -309,8 +309,8 @@ cargo run -p j2k-compare --release --bin jp2k_encode_compare -- --openjph-matrix
 
 Lossless rows fail unless both decoders reproduce the source exactly;
 irreversible rows fail when the decoders differ by more than one sample value.
-The timing rows compare an in-process encoder with a CLI process and are
-supporting context, not a standalone throughput claim.
+The timing rows compare an in-process encoder with a CLI process, so they are
+not a fair throughput comparison on their own.
 
 Place or symlink each decoded corpus of J2K/JP2/JPH files into separate
 directories, then pass a platform path-list. The harness walks configured
@@ -343,26 +343,26 @@ cargo run -p xtask --features adoption -- adoption-benchmark \
 cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
-With `--require-cuda`, the report checks CUDA decode and encode evidence: same
+With `--require-cuda`, the report checks the CUDA decode and encode results: same
 pinned fixture/source manifests, external case counts, generated CUDA inputs
 disabled, CUDA decode device-resident output policy, CUDA encode host-input
 timing policy, and Criterion estimates. With `--require-metal`, it checks the
 Metal auto-routing run: same pinned staged PNM manifest, external case counts,
 generated Metal host inputs disabled, no skipped auto rows, no probe errors, and
 the Metal timing policy. Omit the `--require-*` flag when the hardware rows are
-diagnostic context rather than part of the adoption claim.
+only for diagnosis and will not be published.
 
 On a self-hosted GPU runner, dispatch `GPU benchmarks` with `suite=adoption`
 and the required CUDA or Metal lane. Set repository variables
 `J2K_ADOPTION_FIXTURES`, `J2K_ADOPTION_MANIFEST`,
 `J2K_ADOPTION_ENCODE_FIXTURES`, and `J2K_ADOPTION_ENCODE_MANIFEST` to the
-pinned corpus paths available on that runner. The workflow fails closed when
-any variable is absent; it does not synthesize or download a fallback corpus.
+pinned corpus paths on that runner. The workflow fails if any variable is
+unset; it never generates or downloads a substitute corpus.
 It runs `adoption-benchmark` with `--require-cuda` or `--require-metal` and
 uploads the lane-specific bundle together with device and suite metadata.
 
-Use `--quick --include-generated` only for local smoke checks. A smoke bundle is
-not publication evidence. Full external `adoption-benchmark` runs fail after
+Use `--quick --include-generated` only for local smoke checks; a smoke bundle
+cannot be published. Full external `adoption-benchmark` runs fail after
 writing artifacts if either CPU comparator reports non-publishable metadata.
 Pass `--openjph` to add optional OpenJPH context rows for HTJ2K/JPH-compatible
 full/scaled fixtures, or `--require-openjph` when absence of `ojph_expand`
@@ -377,16 +377,15 @@ when absence of `kdu_expand`/`kdu_compress` should fail the run. Set
 These rows are proprietary CLI/file-output context rows and should be reported
 separately from the default in-process/publication matrix.
 
-The adoption bundle currently contains these classes of evidence:
+The adoption bundle contains these result sets:
 
 - `cpu-fixture-compare`: same external J2K/JP2/JPH/JHC fixture bytes decoded by
   J2K, OpenJPEG, and Grok; this is the publishable head-to-head matrix when
   `publication_eligible=true`.
   Optional OpenJPH rows are disabled by default and limited to HTJ2K/JPH-
   compatible full/scaled operations that `ojph_expand` can decode to PGM/PPM
-  files. They are useful interoperability context, not default publishable
-  evidence against the in-process decoder rows unless the report clearly labels
-  the CLI/file-output method.
+  files. They show interoperability but are not comparable with the in-process
+  decoder rows unless the report labels them as CLI/file-output.
   Optional Kakadu rows are disabled by default, labeled as
   `kakadu-cli-process-output-pnm`, and currently limited to full/scaled decode
   operations unless native ROI invocation is verified and added.
@@ -405,24 +404,23 @@ The adoption bundle currently contains these classes of evidence:
   cleanup-only and cleanup/SigProp/MagRef encode rows. Run the focused local
   diagnostic with
   `cargo bench -p j2k-native --bench tier1_bitplane -- 'htj2k_cleanup_encode/encode_64x64_'`.
-  The result is a component microbenchmark, not an end-to-end or external-codec
-  claim; record CPU, OS, revision, Criterion sample policy, and both generated
-  seeds when using it as optimization evidence.
+  It is a component microbenchmark, not an end-to-end or cross-codec
+  comparison; record the CPU, OS, revision, Criterion sample settings, and
+  both generated seeds when citing it.
 - `cuda-htj2k-decode`: Criterion CPU-vs-CUDA HTJ2K decode rows. When
   `--fixtures` and `--manifest` are supplied, the adoption runner passes the
   same pinned external fixture manifest through `J2K_CUDA_DECODE_INPUT_DIRS`
   and `J2K_CUDA_DECODE_MANIFEST`; the CUDA bench measures the supported HTJ2K
   subset and reports scanned/skipped fixture counts for classic J2K,
   unsupported-shape, and disabled-format fixtures.
-  Use `--cuda-decode-batch-sizes 1,16,256,1024` for large-batch adoption
-  evidence in mixed external batch rows; the selected list is emitted as
+  Use `--cuda-decode-batch-sizes 1,16,256,1024` for large mixed external
+  batches; the selected list is emitted as
   `j2k_cuda_decode_batch_sizes` and `j2k_cuda_decode_mixed_batch_sizes`.
   Per-fixture batch rows use `j2k_cuda_decode_case_batch_sizes` so the harness
   still touches every fixture without multiplying every large image by every
   huge batch size.
   The CUDA decode bench emits `j2k_cuda_decode_sample_size` because external
-  adoption runs intentionally use a bounded Criterion sample count across all
-  CPU and CUDA rows.
+  runs use a limited Criterion sample count for all CPU and CUDA rows.
   Mixed batch rows use the full external corpus up to batch 16 and then switch
   to tile-sized external cases for larger batches; the emitted
   `j2k_cuda_decode_mixed_large_batch_policy` and
@@ -449,22 +447,22 @@ The adoption bundle currently contains these classes of evidence:
   Metal encode emits `j2k_metal_encode_io_policy` with the same no-filesystem-
   I/O timing distinction.
 
-Do not claim OpenJPEG/Grok encoder speed from Criterion rows. Use
-`cpu-encode-compare` rows, and only when its publication gate is clean.
+Do not compare against OpenJPEG/Grok encoder speed using Criterion rows. Use
+the `cpu-encode-compare` rows, and only when they have no publication blockers.
 
-The default `J2K_FIXTURE_COMPARE_MODE=portable-native` is the publishable
-head-to-head mode. It includes only native operations that are comparable
+The default `J2K_FIXTURE_COMPARE_MODE=portable-native` is the mode for published
+head-to-head numbers. It includes only native operations that are comparable
 across J2K, OpenJPEG, and Grok. Use `portable-emulated` only for
 task-equivalent analysis with `decode_method` labels, and use `capability` only
 for feature coverage with explicit skip rows.
 
 The harness also runs generated fixtures by default, labeled
-`corpus_category=generated-dev`. Generated-only output is for smoke/development
-checks, not adoption-facing evidence. External fixture rows use the source path
+`corpus_category=generated-dev`. Generated-only output is for smoke and
+development checks and cannot be published. External fixture rows use the source path
 in `input_source`, include a `corpus_category`, and report input byte size and
 FNV-1a digest for reproducibility. Generated-only output reports
-`publication_eligible=false`; adoption-facing reports need external cases and
-strict comparator gates. External-corpus publication runs should set
+`publication_eligible=false`; published reports need external cases and all
+required comparators. External-corpus publication runs should set
 `J2K_FIXTURE_COMPARE_INCLUDE_GENERATED=0` so generated smoke fixtures do not
 hide mode exclusions or dilute corpus counts.
 
@@ -532,12 +530,11 @@ native compressed codec-coverage gate by themselves. External license
 statuses must be explicit publishable terms such as `public-domain`, `cc0`,
 `cc-by-4.0`, `mit`, `bsd-3-clause`, `apache-2.0`, `permissive`,
 `redistributable`, or `redistributable-with-attribution`; values such as
-`unknown`, `restricted`, or `no-redistribution` block adoption-facing
-publication.
-Treat `publication_blockers` as the reason a run is not marketing-ready.
-The `adoption-report` subcommand refuses to render a publishable report from a
-blocked bundle unless `--allow-nonpublishable` is explicitly passed. Reports
-created with that override are labeled diagnostic-only.
+`unknown`, `restricted`, or `no-redistribution` block publication.
+`publication_blockers` lists why a run cannot be published. `adoption-report`
+will not render a publishable report from a blocked bundle unless
+`--allow-nonpublishable` is passed, and such reports are labeled
+diagnostic-only.
 
 Decoder batch rows use
 `batch_input_policy=rotating-owned-copies-built-outside-timed-loop` and
@@ -554,8 +551,8 @@ External runs also emit `external_mixed_*` rows with method-specific
 fixtures by pixel format and operation kind, then cycle the same ordered fixture
 sequence through each eligible decoder. The default publication shape measures
 per-fixture detail rows at batch `1` and mixed decode throughput rows at
-`1,16,256,1024`; use the mixed rows for huge batch adoption claims, and use the
-per-fixture rows to diagnose fixture-level behavior. The publication gate also
+`1,16,256,1024`; use the mixed rows for large-batch numbers and the per-fixture
+rows to look at individual fixtures. The publication gate also
 requires at least two independent source inputs in each gray/RGB full-image
 mixed decode group and in ROI-scaled mixed groups that remain in the selected
 comparable mode. The report includes a dedicated CPU decode mixed-batch section
@@ -571,7 +568,7 @@ reversible 5/3, three resolution levels, 64x64 code blocks, no precinct
 overrides, no SOP/EPH markers, and classic block coding. The default
 publication shape measures per-source detail rows at batch `1` and mixed-source
 encode throughput rows at `1,16,256`; use the mixed rows and MiB/s columns, not
-only images/sec or tiles/sec, for mixed-dimension huge batch claims. The encode
+only images/sec or tiles/sec, for large batches of mixed sizes. The encode
 publication gate requires separate gray/RGB mixed groups with at least two
 independent inputs, and the report includes a dedicated CPU encode mixed-batch
 section.
@@ -593,15 +590,14 @@ A 128-lane coefficient-analysis prototype was rejected and removed after an
 RTX 4070 SUPER A/B run (20 Criterion samples, 500 ms warmup, one-second target)
 found no statistically detectable gain. The three-pass point estimates changed
 by +0.16% for host-staged input and +0.62% for resident input (`p=0.99` and
-`p=0.95`); both confidence intervals crossed zero broadly. CUDA entropy writing
-therefore remains serial within each code block, and no CUDA HT encode
-throughput improvement is claimed.
+`p=0.95`), with both confidence intervals well across zero. CUDA entropy
+writing is therefore still serial within each code block.
 
 Metal auto-routing encode rows use the same staged source convention through
 `J2K_METAL_ENCODE_INPUT_DIRS` and `J2K_METAL_ENCODE_MANIFEST` when `--metal` is
 requested. External Metal rows are emitted as `mode=lossless_external` in
 `j2k_metal_encode_auto_bench`; generated stage rows remain component
-microbenchmarks and should not be described as external corpus evidence.
+microbenchmarks, not external corpus results.
 
 OpenJPEG native HTJ2K ROI+scaled rows are not part of `portable-native`
 because the in-process OpenJPEG comparator currently returns non-matching
@@ -611,13 +607,13 @@ the fixture matrix with
 `portable-emulated` mode OpenJPEG is measured as
 `decode_method=emulated-full-scaled-crop`, not as a native ROI+scaled decode.
 Do not publish those rows as native OpenJPEG numbers. `portable-native` reports
-excluded cases in metadata but does not treat those intentionally excluded rows
-as a publication blocker.
+excluded cases in its metadata but does not count them as publication
+blockers.
 
 ## Comparator Signoff Versions
 
-Comparator parity is required before publishing J2K or JPEG comparator benchmark
-claims. CI installs OpenJPEG, Grok, and libjpeg-turbo from the active Ubuntu
+Comparator parity tests must pass before publishing J2K or JPEG comparisons
+against other codecs. CI installs OpenJPEG, Grok, and libjpeg-turbo from the active Ubuntu
 runner packages and runs:
 
 ```bash
@@ -625,7 +621,7 @@ J2K_REQUIRE_OPENJPEG=1 J2K_REQUIRE_GROK=1 J2K_REQUIRE_LIBJPEG_TURBO=1 \
   cargo xtask j2k-bench-signoff
 ```
 
-Accepted evidence must record:
+Signoff records:
 
 - OpenJPEG CLI versions from `opj_compress` and `opj_decompress`, plus the
   in-process OpenJPEG library version reported by `j2k-compare`.
@@ -634,9 +630,8 @@ Accepted evidence must record:
   `J2K_GROK_ROOT`.
 - libjpeg-turbo from `pkg-config --modversion libturbojpeg`.
 
-The signoff command is fail-closed: required comparator tests must execute at
-least the expected parity-test count for each comparator, so missing tools or
-all-skipped test binaries cannot produce green benchmark evidence.
+Signoff fails unless each comparator runs at least the expected number of
+parity tests, so a missing tool or an all-skipped test binary cannot pass.
 
 External fixtures that inspect successfully but are outside the benchmark
 surface, for example unsupported component counts or bit depths, fail the run
@@ -659,7 +654,7 @@ A report must include:
 - `publication_blockers`; publishable head-to-head reports require `none`
 - corpus source, license status, and whether inputs were generated or external
 - fixture manifest path plus manifest coverage counts
-  and encode manifest path plus manifest coverage counts for encoder claims
+  and encode manifest path plus manifest coverage counts for encoder results
 - git revision, dirty state including untracked files, build profile, and debug assertion status
 - `generated_case_count`, `external_case_count`, and
   `external_unique_input_count`
@@ -679,6 +674,5 @@ A report must include:
 - `correctness_preflight` and `benchmark_complete` rows from the harness output;
   `correctness_preflight` applies to non-skipped comparator rows
 
-Do not claim standards compliance from speed benchmarks. Compliance claims must
-come from ISO/IEC 15444-4 / ITU-T T.803 conformance vectors and the repo's
-conformance test results.
+Speed benchmarks say nothing about standards conformance; that comes from the
+ISO/IEC 15444-4 / ITU-T T.803 conformance tests.

@@ -186,8 +186,8 @@ impl BackendCapabilities {
 
     /// Resolve a backend request to the concrete backend that should run.
     ///
-    /// `Auto` resolves to CPU here. Workload-aware device promotion belongs in
-    /// codec-specific route planners that have benchmark evidence for the
+    /// `Auto` resolves to CPU here. Choosing a device for a workload is left to
+    /// the codec-specific route planners, which use benchmark results for the
     /// requested operation.
     #[must_use]
     pub fn resolve(self, request: BackendRequest) -> Option<BackendKind> {

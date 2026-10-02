@@ -1,76 +1,69 @@
 # j2k-metal
 
-Metal adapter for JPEG 2000 / HTJ2K decode and encode-stage paths on macOS.
+Metal adapter for JPEG 2000 / HTJ2K decode and encode stages on macOS.
 
-The crate provides resident Metal decode and encode-stage integration for
-supported workloads. It uses `j2k-metal-support` for runtime setup while
-keeping codec-specific kernels local.
+The crate decodes into Metal buffers and runs encode stages on Metal for the
+supported workloads. Runtime setup comes from `j2k-metal-support`; the codec
+kernels live in this crate.
 
-In version 0.9, expert constructors and raw resident handoffs use
-`objc2-metal` protocol objects directly. Pass retained protocol objects for
-owned devices, queues, command buffers, and buffers, and borrowed protocol
-references where the API does not take ownership. The previous `metal-rs`
-types are intentionally source-incompatible.
+Since version 0.9, the expert constructors and raw buffer handoffs take
+`objc2-metal` protocol objects. Pass retained protocol objects for devices,
+queues, command buffers, and buffers that J2K should own, and borrowed
+references otherwise. The older `metal-rs` types are no longer accepted.
 
-Encode support is stage-oriented unless a documented resident path accepts the
-shape. For lossless HTJ2K host-output, fixed `Auto` cells use Metal coefficient
-preparation and HT Tier-1 followed by CPU packetization: RGB8 at 1,024 x 1,024
-and Gray8/RGB8 at 2,048 x 2,048. The measured 512 x 512 cells and Gray8 at
-1,024 x 1,024 stay on CPU. These thresholds apply to supported Metal devices;
-the performance evidence is scoped to the measured Apple M4 Pro.
+Encoding runs stage by stage on Metal unless one of the resident paths below
+accepts the shape. For lossless HTJ2K encode to host memory, `Auto` runs
+coefficient preparation and HT Tier-1 on Metal and packetizes on the CPU for
+RGB8 at 1,024 x 1,024 and Gray8/RGB8 at 2,048 x 2,048. The 512 x 512 cells and
+Gray8 at 1,024 x 1,024 stay on the CPU. These thresholds were measured on an
+Apple M4 Pro.
 
-Full resident host-output packetization/assembly is a separate batch path:
-batched Gray8 can use it at the 512 x 512 stage gate, while batched RGB8
-requires 1,024 x 1,024 or larger resident input. Explicit Metal requests are
-strict: supported shapes dispatch, and unsupported direct Metal requests
-return `UnsupportedMetalRequest` instead of silently changing backend.
+Fully resident packetization and codestream assembly is a separate batch
+path: batched Gray8 can use it from 512 x 512, and batched RGB8 from
+1,024 x 1,024. Explicit Metal requests run on Metal when the shape is
+supported and otherwise return `UnsupportedMetalRequest`; they never switch to
+another backend.
 
-Metal routing is deliberately selective. `Auto` may decline small tiles,
-irregular packet shapes, or stages where host/device transfer and dispatch
-overhead dominate. Stage-by-stage host-output `Auto` can use deinterleave,
-forward RCT/ICT, forward 5/3 and 9/7 DWT, subband quantization, and HT Tier-1
-for the qualified cells above. Classic Tier-1, packetization, and codestream
-assembly stay CPU for that route unless a documented resident path supports
-the shape with parity and benchmark evidence.
+`Auto` skips Metal for small tiles, irregular packets, and stages where
+transfer and dispatch cost more than they save. In the host-output encode
+cells listed above, `Auto` can run deinterleave, forward RCT/ICT, forward 5/3
+and 9/7 DWT, subband quantization, and HT Tier-1 on Metal. Classic Tier-1,
+packetization, and codestream assembly stay on the CPU for that path.
 
-## Full Resident Encode Path
+## Fully resident encode
 
-Use `submit_lossless_batch_to_metal` when the output should remain a
-Metal-backed codestream buffer. This is the full resident contract: coefficient
-prep, packetization, and codestream assembly must all report `true` in
-`MetalLosslessEncodeResidency` before the row is described as a full resident
-encode path.
+Use `submit_lossless_batch_to_metal` when the encoded codestream should stay in
+a Metal buffer. An encode counts as fully resident only when
+`MetalLosslessEncodeResidency` reports `true` for coefficient prep,
+packetization, and codestream assembly.
 
-The resident path expects `MetalLosslessEncodeTile` inputs with
-`MetalEncodeInputStaging::AlreadyPaddedContiguous` for no-copy Metal-buffer
-workflows. For supported host-visible outputs, call
-`submit_lossless_batch(...).wait()` to resolve the submission to
-`Vec<EncodedJ2k>`. The hidden `encode_lossless_batch_with_report` helper is for
-internal benchmarking and diagnostics, not the normal application contract.
-When collecting benchmark diagnostics, report host readback separately from
-resident buffer timing.
+For no-copy input from Metal buffers, pass `MetalLosslessEncodeTile` inputs
+with `MetalEncodeInputStaging::AlreadyPaddedContiguous`. To get host output,
+call `submit_lossless_batch(...).wait()`, which returns `Vec<EncodedJ2k>`. The
+hidden `encode_lossless_batch_with_report` helper is for internal benchmarks
+and diagnostics. When benchmarking, time host readback separately from the
+resident buffer work.
 
-Keep benchmark claims scoped: compare `resident_host_ms` against CPU only when
-`packetization_used=true`, `codestream_assembly_used=true`, and `batch_size > 1`.
-Treat `resident_buffer_ms` as device-pipeline context unless the consumer can
-keep the codestream buffer resident.
+Compare `resident_host_ms` with the CPU only when `packetization_used=true`,
+`codestream_assembly_used=true`, and `batch_size > 1`. `resident_buffer_ms` is
+only meaningful if the consumer keeps the codestream in GPU memory.
 
-Run the decode route-report example to inspect Auto CPU fallback and strict
-Metal behavior:
+See which backend `Auto` picks for decoding, and how explicit Metal requests
+behave:
 
 ```bash
 cargo run -p j2k-metal --example decode_route_report
 ```
 
-Run the Auto HTJ2K encode report example to inspect final backend selection and
-per-stage Metal dispatch counts:
+See the final backend and per-stage Metal dispatch counts for `Auto` HTJ2K
+encoding:
 
 ```bash
 cargo run -p j2k-metal --example htj2k_encode_auto_report
 ```
 
-Run the resident encode example on macOS to produce a Metal-backed HTJ2K
-codestream buffer and validate it through the CPU decoder:
+Encode an HTJ2K codestream into a Metal buffer and check it with the CPU
+decoder:
 
 ```bash
 cargo run -p j2k-metal --example resident_encode_buffer

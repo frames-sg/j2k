@@ -7,7 +7,7 @@ without each crate reimplementing environment parsing or summary formatting.
 
 ## Bounded, fallible ownership
 
-Owned fields, parsed rows, summaries, and formatted output enforce explicit
+Owned fields, parsed rows, summaries, and formatted output are limited by
 `ProfileLimits`. Convenience entry points use the default limits and return
 `ProfileResult`; callers with tighter service limits can use the corresponding
 `*_with_limits` functions or constructors.

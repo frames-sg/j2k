@@ -3,20 +3,20 @@
 The current batch execution design, ownership rules, measured comparisons, and
 reproduction commands are in [Decode architecture](decode-architecture.md).
 
-JPEG Metal decode should stay selective. The current Metal paths are for fast
-baseline/checkpointed packets, coalesced batches, and resident outputs. They are
-not a claim of full JPEG entropy decode coverage.
+Metal JPEG decode covers a subset of JPEG on purpose: fast baseline and
+checkpointed packets, coalesced batches, and GPU-resident outputs. It does not
+decode every kind of JPEG entropy stream.
 
-## Routing Contract
+## Routing rules
 
-Explicit `BackendRequest::Metal` is strict:
+Explicit `BackendRequest::Metal` requests:
 
 - Accept candidates: fast baseline 4:2:0, 4:2:2, or 4:4:4 packets produced by
   the `j2k-jpeg` fast packet builders.
 - Output formats: `Gray8`, `Rgb8`, and `Rgba8`.
 - Rejections: unsupported packet shape, unsupported output format, unsupported
-  backend, or unavailable Metal runtime. Unsupported explicit Metal requests
-  must return a structured error before launching kernels.
+  backend, or unavailable Metal runtime. These return an error before any
+  kernel is launched.
 
 `BackendRequest::Auto` is deliberately narrower:
 
@@ -55,7 +55,7 @@ Use these groups to decide where Metal makes sense:
 - `wsi_tile_batch_region_scaled_coalesced_rgb_q4`: coalesced region+scaled batch
   candidate where Metal can amortize setup.
 - `wsi_tile_batch_region_scaled_distinct_rgb_q4`: low-coalescing control case.
-  Treat Metal wins here as evidence, not an assumption.
+  Only route these to Metal if this benchmark shows a win.
 - `wsi_tile_batch_rgba_textures`: resident texture batches that avoid host
   downloads.
 - `viewer_region_scaled_composite_rgb` and
@@ -76,19 +76,3 @@ Use these groups to decide where Metal makes sense:
 The benchmark surface intentionally includes both likely wins and likely losses.
 Do not broaden Auto routing unless the relevant group shows repeatable wins for
 the workload class being changed.
-
-## Applied Rust Guidance
-
-- Rust API Guidelines: the routing contract keeps errors meaningful and
-  documented, validates request shape before dispatch, and links the benchmark
-  evidence to the public crate docs.
-  <https://rust-lang.github.io/api-guidelines/checklist.html>
-- Clippy docs: this crate keeps the existing targeted `pedantic` setup and does
-  not enable broad `restriction` or `nursery` groups for benchmark-only code.
-  <https://doc.rust-lang.org/clippy/lints.html>
-- Cargo features: Metal availability is target-gated to macOS, so feature
-  unification does not widen JPEG Metal behavior accidentally.
-  <https://doc.rust-lang.org/cargo/reference/features.html>
-- Unsafe Code Guidelines: routing and benchmark layers use the existing runtime
-  wrappers and tests around resident surfaces rather than adding unsafe code.
-  <https://rust-lang.github.io/unsafe-code-guidelines/introduction.html>

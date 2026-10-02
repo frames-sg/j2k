@@ -2,9 +2,9 @@
 
 Tile decompression helpers for J2K.
 
-Supported codecs include Deflate, Zstd, LZW, and uncompressed copy paths.
-Shared bounded-read and scratch-pool helpers keep errors explicit and avoid
-unbounded temporary allocation.
+Supports Deflate, Zstd, LZW, and uncompressed tiles. Reads are bounded and
+scratch buffers are pooled, so a malformed tile returns an error instead of
+allocating without limit.
 
 ## Links
 

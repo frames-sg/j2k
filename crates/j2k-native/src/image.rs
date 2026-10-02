@@ -76,7 +76,7 @@ impl DecodeSettings {
         }
     }
 
-    /// Strict decode settings for fail-closed validation.
+    /// Strict decode settings: malformed metadata is an error.
     #[must_use]
     pub const fn strict() -> Self {
         Self {

@@ -20,7 +20,7 @@ pub fn gpu_test_gate(required: bool, gate: &'static str, context: &str) -> bool 
 /// Handles a missing GPU device/runtime for a test that already attempted setup.
 ///
 /// Returns true when the caller should skip. Panics when the matching require
-/// gate is set, making self-hosted validation fail closed.
+/// gate is set, so self-hosted validation fails instead of skipping.
 ///
 /// # Panics
 ///

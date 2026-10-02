@@ -134,13 +134,13 @@
             <span class="card-number" aria-hidden="true">02</span>
             <p class="card-kicker">Routing</p>
             <h3>GPU-accelerated backends</h3>
-            <p>Applications keep a portable CPU path while routing supported workloads to CUDA or Apple Metal under explicit backend policy.</p>
+            <p>Applications keep a portable CPU path and can send supported workloads to CUDA or Apple Metal.</p>
           </article>
           <article class="card feature-card">
             <span class="card-number" aria-hidden="true">03</span>
-            <p class="card-kicker">Evidence</p>
+            <p class="card-kicker">Benchmarks</p>
             <h3>Permissive integration</h3>
-            <p>The workspace is dual-licensed MIT or Apache-2.0, with benchmark claims gated by reproducible evidence instead of broad speed marketing.</p>
+            <p>The workspace is dual-licensed MIT or Apache-2.0. Published speed numbers come with the commands, hardware, and inputs needed to reproduce them.</p>
           </article>
         </div>
       </div>
@@ -153,14 +153,14 @@
             <p class="section-label">02 / Architecture</p>
             <h2>Architecture</h2>
           </div>
-          <p>Still-image J2K/JP2 and HTJ2K/JPH surfaces meet in one public crate. CPU stays the portable correctness baseline; CUDA and Metal accelerate supported shapes under explicit policy.</p>
+          <p>J2K/JP2 and HTJ2K/JPH still images are handled by one crate. The CPU path is the reference implementation; CUDA and Metal speed up the shapes they support.</p>
         </div>
         <figure class="pipeline">
           <div class="pipeline-frame">
             <div class="frame-label">System map / static topology</div>
             <img class="diagram" src="assets/j2k-gpu-pipeline.svg?v=4" alt="J2K pipeline: JPEG 2000, HTJ2K, and JPEG inputs flow through the j2k crate, which routes to CPU baseline, CUDA, and Metal backends.">
           </div>
-          <figcaption>Automatic routing may return CPU output when a device path is unavailable, unsupported, or not benchmarked for the requested shape. Explicit CUDA and Metal requests are strict.</figcaption>
+          <figcaption><code>Auto</code> returns CPU output when no GPU path is available, supported, or measured faster for the shape. Explicit CUDA and Metal requests never fall back.</figcaption>
         </figure>
       </div>
     </section>
@@ -169,8 +169,8 @@
       <div class="wrap">
         <div class="section-heading split-heading">
           <div>
-            <p class="section-label">03 / Support boundary</p>
-            <h2>Support boundary</h2>
+            <p class="section-label">03 / Supported formats</p>
+            <h2>Supported formats</h2>
           </div>
           <p>Exact coverage is maintained in the public support matrix.</p>
         </div>
@@ -186,12 +186,12 @@
             <p>HT cleanup and refinement decode/encode, quality layers, rate behavior, raw HT codestreams, and JPH still-image wrapping are in scope.</p>
           </article>
           <article class="card support-card boundary-card">
-            <span class="scope-tag">Boundary</span>
+            <span class="scope-tag">Limits</span>
             <h3>Wrappers <em>and limits</em></h3>
-            <p>JP2 and JPH still-image metadata paths are covered. JPX / JPEG 2000 Part 2 extensions and public speed claims require separate evidence.</p>
+            <p>JP2 and JPH still-image metadata is supported. JPX / JPEG 2000 Part 2 extensions are not.</p>
           </article>
         </div>
-        <p class="evidence-line">Exact row-by-row support status lives in <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a>. Published benchmark notes live in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; broader adoption reports require pinned external corpora and comparator evidence.</p>
+        <p class="evidence-line">The full support table is in <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a>. Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; comparisons with other codecs use pinned external corpora.</p>
       </div>
     </section>
 
@@ -253,18 +253,18 @@
           </div>
           <ul class="link-list">
             <li><a href="rust-jpeg2000-codec/"><b>01</b><span><strong>Pure-Rust JPEG 2000 Codec</strong><small>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</small></span><i aria-hidden="true">↗</i></a></li>
-            <li><a href="gpu-jpeg2000-rust/"><b>02</b><span><strong>GPU Backends</strong><small>CPU fallback, CUDA, Metal, and strict device requests.</small></span><i aria-hidden="true">↗</i></a></li>
+            <li><a href="gpu-jpeg2000-rust/"><b>02</b><span><strong>GPU Backends</strong><small>CPU, CUDA, and Metal backends and how they are chosen.</small></span><i aria-hidden="true">↗</i></a></li>
             <li><a href="cuda-jpeg2000-rust/"><b>03</b><span><strong>CUDA JPEG2000 Rust</strong><small>NVIDIA CUDA backends and runtime feature boundaries.</small></span><i aria-hidden="true">↗</i></a></li>
             <li><a href="metal-jpeg2000-rust/"><b>04</b><span><strong>Metal JPEG2000 Rust</strong><small>Apple Metal backends for macOS GPU paths.</small></span><i aria-hidden="true">↗</i></a></li>
             <li><a href="htj2k-rust/"><b>05</b><span><strong>HTJ2K Rust</strong><small>Part 15 HT block coding, JPH wrapping, recode, and transcode routes.</small></span><i aria-hidden="true">↗</i></a></li>
           </ul>
         </div>
         <aside class="backend-panel copy">
-          <p class="panel-index">AUTO / STRICT</p>
+          <p class="panel-index">AUTO / EXPLICIT</p>
           <h2>Backend behavior</h2>
           <p>CPU output is the correctness baseline. <code>BackendRequest::Auto</code> may return CPU output when a device path is unavailable, unsupported, or not benchmarked for the requested shape.</p>
-          <p>Explicit CUDA and Metal requests are strict. Unsupported shapes return errors instead of silently changing backend.</p>
-          <p class="note">Benchmark claims should cite host hardware, operating system, input source, exact command, comparator availability, and comparator versions.</p>
+          <p>Explicit CUDA and Metal requests return an error for unsupported shapes instead of switching backend.</p>
+          <p class="note">Benchmark results list the hardware, operating system, inputs, exact command, and comparator versions.</p>
         </aside>
       </div>
     </section>

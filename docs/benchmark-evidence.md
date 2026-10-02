@@ -1,32 +1,23 @@
-# Benchmark Evidence
+# Benchmark Results
 
-This document records published benchmark commands, measurements, and
-environment details. JSON and CSV artifacts remain the source of truth when
-they are produced by a benchmark harness.
+This page records benchmark commands, results, and the machines they ran on.
+When a harness writes JSON or CSV output, that output is authoritative. Other
+docs link here instead of copying numbers. Older results are in Git history.
 
-This is the narrative owner for current benchmark hosts, commands, results, and
-performance qualifications. The workspace README, architecture, and integration
-guides link here instead of copying mutable measurements. Superseded diagnostics
-remain in Git history rather than accumulating in this page.
+## Scope
 
-## Publication Status
+What the codec supports is listed separately in
+[`docs/public-support.md`](public-support.md).
 
-The codec support boundary is tracked separately in
-[`docs/public-support.md`](public-support.md): JPEG 2000 Part 1 codestreams,
-JP2 still-image files, HTJ2K Part 15 codestreams, and JPH still-image files.
-That repo-local support gate is separate from performance reporting.
-
-This page is the current public benchmark evidence note. Broader adoption-facing
-speed reports require an external adoption benchmark bundle:
+Speed comparisons against other codecs need an external benchmark bundle:
 
 ```bash
 cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
-The `adoption-report` subcommand must require a completed
-external bundle and identify any missing evidence. Generated repo-local
-fixtures and passing codec self-checks remain implementation evidence; use
-manifest-backed external rows for adoption-facing speed reports.
+`adoption-report` refuses an incomplete bundle and lists what is missing.
+Speed comparisons must use the manifest-backed external rows, not the
+generated in-repo fixtures.
 
 ## CPU JPEG safe-SIMD development run - 2026-08-12
 
@@ -64,11 +55,10 @@ Generated-code inspection traced those to per-chunk bounds checks and a lost
 4:2:0 helper inline. Safe array chunking plus a fixed ten-byte overlapping-load
 leaf restored the code shape; safe dispatch was not reverted.
 
-This is dirty-tree development evidence, not an exact-release-SHA publication
-run. The uniform gains in some unrelated microbenchmarks also make the exact
-improvement magnitudes susceptible to host-state and code-layout bias; the
-supported conclusion is that the final AArch64 run cleared the stated
-regression thresholds. Native x86-64 evidence is recorded below.
+These runs were on an uncommitted working tree, not a release commit. Some
+unrelated microbenchmarks also got faster, so the size of each improvement is
+partly host state and code layout; what the run shows is that AArch64 had no
+regression beyond the threshold. Native x86-64 results follow.
 
 ### Native Windows AVX2 validation
 
@@ -101,12 +91,10 @@ better for full, tail, and unaligned YCbCr rows.
 An additional unchanged reduced 2x2 scalar-IDCT diagnostic measured a
 confirmed +5.119% to +5.971% shift at an absolute candidate time of
 11.780–11.859 ns. Baseline and candidate source and generated x86-64 function
-bodies are identical (235 instructions), so this is attributed to whole-binary
-placement/cache effects rather than more algorithmic work. It is outside the
-CPU SIMD change and its predeclared affected-microbenchmark criterion; the
-end-to-end decode matrix above contains no confirmed regression. As with the
-AArch64 measurements, these are dirty-tree development results rather than an
-exact release-SHA publication run.
+bodies are identical (235 instructions), so the shift comes from code placement
+and caching, not extra work. That function is not part of the SIMD change, and
+the end-to-end decode results above show no regression. Like the AArch64 runs,
+these were on an uncommitted working tree.
 
 ### `fearless_simd` 0.7 upgrade validation - 2026-08-13
 
@@ -120,40 +108,36 @@ version-isolation control from one otherwise unchanged intermediate source
 tree on Windows, changing only the workspace requirement and lockfile between
 0.5.0 and 0.7.0 caused Cargo to reuse the exact benchmark executable (SHA-256
 `2e37a5ffa851964a5e3ca4fafb6f819372071ba8f033e94bb83dda297d51ea80`).
-An adjacent 20-second 4:4:4 control nevertheless moved by -1.916% to -1.069%,
-demonstrating that the earlier apparent x86 dependency-version regressions
-were run-to-run host variation rather than changed executable code.
+A 20-second 4:4:4 rerun of that identical binary still moved by -1.916% to
+-1.069%, so the earlier apparent x86 regressions were run-to-run noise.
 
 On AArch64, normalized inspection of the unstripped release-benchmark output
 found identical instruction bodies for the compared JPEG NEON IDCT, row
 conversion, and 4:2:0 kernels under 0.5.0 and 0.7.0; relocation targets,
 constant-pool offsets, and whole-binary placement were excluded from that
-comparison. The host was not idle enough for an acceptance-quality direct
-0.7.0 timing rerun: repeated Criterion attempts contained severe scheduling
-outliers while WindowServer and other interactive processes remained busy.
-The 0.5.0 safe-SIMD timing above therefore remains historical refactor
-evidence, and a quiet same-host 0.7.0 Criterion rerun is still required before
-claiming direct measured AArch64 no-regression evidence for the dependency
-upgrade.
+comparison. The host was too busy (WindowServer and other interactive processes) for a
+clean 0.7.0 timing run; repeated Criterion attempts had large scheduling
+outliers. The 0.5.0 timings above are still the latest AArch64 numbers, and a
+quiet rerun on the same host is needed before saying the 0.7.0 upgrade has no
+AArch64 regression.
 
-## Fixed Auto-routing promotion evidence
+## How `Auto` routing thresholds are chosen
 
-`BackendRequest::Auto` uses generated, checked-in promotion tables; it does not
-calibrate on a user's machine. A hybrid workload cell may be promoted only after CPU, hybrid,
-and any supported strict-device route produce identical bytes on the same
-manifest-pinned external input. Its end-to-end median must be at least 10%
-faster than every competitor and its Criterion 95% confidence interval must not
-overlap any competing interval.
+`BackendRequest::Auto` uses generated routing tables checked into the
+repository; it does not calibrate on the user's machine. A workload cell is
+sent to the GPU only if the CPU, hybrid, and any GPU-only route all produce
+identical bytes on the same pinned external input, the hybrid median is at
+least 10% faster than every alternative, and its Criterion 95% confidence
+interval does not overlap theirs.
 
 CUDA and Metal collect all six required operations with their production APIs:
 full decode, ROI decode, scaled decode, batch decode, lossless encode, and lossy
-encode. Route evidence records the exact candidate SHA, manifest SHA-256,
-hardware and driver identity, execution label, output SHA-256, and Criterion ID.
-These adapters currently disclose CPU-assisted routes as `hybrid`; they do not
-claim a strict device-native route when parsing, entropy decode, output, or
-codestream assembly still runs on CPU.
+encode. Each result records the commit SHA, manifest SHA-256, hardware and
+driver, route label, output SHA-256, and Criterion ID. Routes where parsing,
+entropy decoding, output, or codestream assembly still run on the CPU are
+labelled `hybrid`.
 
-After a hardware run, verify the raw evidence against the exact manifest and
+After a hardware run, check the raw results against the manifest and the
 Criterion estimates:
 
 ```bash
@@ -164,22 +148,22 @@ cargo xtask auto-routing verify \
   --out target/gpu-benchmark/auto-routing/verified.json
 ```
 
-The verifier derives each promotion decision; benchmark input cannot request a
-promotion. It rejects missing operations or external cases, route/output
-mismatches, unsafe Criterion paths, unsupported confidence levels, changed
-estimate files, and candidate/platform inconsistencies. The verified artifact
-hash covers the raw evidence, manifest, and every referenced estimate.
+The verifier makes every routing decision itself; benchmark input cannot ask
+for one. It rejects missing operations or cases, route or output mismatches,
+unsafe Criterion paths, unsupported confidence levels, changed estimate files,
+and commit or platform mismatches. The output hash covers the raw results, the
+manifest, and every estimate used.
 
-Accepted development artifacts and their exact promoted workload identities
-are recorded in `docs/routing-promotion-evidence.json`. Regenerate the
-production Rust tables with `cargo xtask promotion-codegen`; CI and local
-validation use `cargo xtask promotion-codegen --check` to reject stale output.
-The generator validates the manifest schema, backend ownership, SHA-256 values,
-six-operation evidence coverage, workload identity, boundaries, and duplicate
-cells. Auto routes without a verifier-accepted artifact stay on CPU.
+Accepted results and the workloads they route to the GPU are listed in
+`docs/routing-promotion-evidence.json`. Regenerate the Rust routing tables with
+`cargo xtask promotion-codegen`; CI runs `cargo xtask promotion-codegen
+--check` to catch stale tables. The generator checks the manifest schema,
+backend, SHA-256 values, that all six operations were measured, workload
+identity, limits, and duplicates. A route with no accepted result stays on the
+CPU.
 
 A local two-input Metal smoke on August 4, 2026 exercised the pipeline but was
-not a representative external release corpus. It promoted zero cells: the
+not a representative corpus. No cells were routed to the GPU: the
 decode routes were slower, and the measured lossless and lossy encode medians
 were only about 4.2% and 7.8% faster than CPU. No `Auto` threshold was changed
 from that diagnostic.
@@ -197,15 +181,15 @@ manifest SHA-256
 `217d700a9f882c4cd63b76aed250de92124d74a0bf476d33855dbbe857d6befe`.
 The run used `release-bench`, candidate `c1cc3ff1` with a dirty tree, and an
 Apple M4 Pro (16 GPU cores) on macOS 27.0. The verifier accepted all 76 cells
-and promoted 33. The verified artifact SHA-256 is
+and routed 33 to the GPU. The verified artifact SHA-256 is
 `69987ce1cee902e4ef664964250059021ef15b59e0828802098fbe84d192df77`.
 
 Lossy inputs were excluded from this run. `tests/auto_routing_parity.rs` found
 that Metal 9/7 decode differed from the CPU by one code value in roughly 10
 samples per million on every third-party 9/7 file, while every 5/3 file matched.
-Because promotion requires identical bytes, the earlier 9/7 Metal cells
+Because GPU routing requires identical bytes, the earlier 9/7 Metal cells
 (`metal_part1` lossy repeated, `metal_part15` lossy repeated and half-scale)
-were withdrawn. The cause was found and fixed the same day; see "Local Metal
+were removed. The cause was found and fixed the same day; see "Local Metal
 routing run with lossy inputs" below.
 
 The resulting Metal cells cover lossless inputs only. Repeated batches of 16 run
@@ -214,7 +198,7 @@ on Metal for HTJ2K RGB8 from 256x256 (JPH from 640x480), HTJ2K Gray8 from
 Single full-image decodes run on Metal for HTJ2K from 640x480, for RGB8 and
 Gray8 and for codestreams and JPH, when the source components match the output
 format. Part 1 single-image decodes stay on the CPU because Metal measured 105%
-to 1400% slower. ROI and half-scale decodes promoted only HTJ2K Gray8 at 2048x2048;
+to 1400% slower. ROI and half-scale decodes qualified only for HTJ2K Gray8 at 2048x2048;
 Metal Auto does not route those operations for gray sources, so they stay on the CPU.
 The lossy RGB8 encode threshold is now 2048x2048 pixels, where HTJ2K and Part 1
 lossy encode measured 54% and 38% faster; at 640x480 they were within 4% of the CPU.
@@ -232,8 +216,8 @@ exactly `k + 0.5`. The fix makes Metal integer output round before the shift and
 compute the inverse ICT with the CPU's fused expressions. Three CPU paths
 disagreed with the CPU full decode in the same way (region decode, row
 streaming, and `CpuBatchDecoder`, which built integer output from unrounded
-component planes), as did the CPU inverse ICT's non-SIMD tail. They now follow
-the same contract, so a CPU region decode equals the crop of the full decode.
+component planes), as did the CPU inverse ICT's non-SIMD tail. They now round
+the same way, so a CPU region decode equals the crop of the full decode.
 
 The first run of this corpus also exposed an unrelated Metal bug: the repeated
 Part 1 batch path decoded into a recycled scratch buffer without zero-filling
@@ -251,7 +235,7 @@ manifest SHA-256
 decode, and the bench's own parity check passed for every CPU, Metal, and Auto
 route. The run used `release-bench`, candidate `c1cc3ff1` with a dirty tree,
 and the same Apple M4 Pro on macOS 27.0. The verifier accepted all 124 cells and
-promoted 49. The verified artifact SHA-256 is
+routed 49 to the GPU. The verified artifact SHA-256 is
 `66f9d83f932efb7df6cab2de0048849f09343da00915e22794b0056b29f2aa5f`; its cells
 are recorded under the `metal_local_combined` source.
 
@@ -267,8 +251,8 @@ new lossy cells are:
 
 Part 1 lossy single-image decodes stay on the CPU (66% to 2400% slower on
 Metal). No half-scale cell qualified: HTJ2K lossy RGB8 half-scale measured 3%
-to 176% slower, so the earlier `metal_part15` half-scale cell stays withdrawn.
-ROI and half-scale promoted only for HTJ2K Gray8, which Metal Auto does not
+to 176% slower, so the earlier `metal_part15` half-scale cell stays removed.
+ROI and half-scale qualified only for HTJ2K Gray8, which Metal Auto does not
 route. The lossy RGB8 encode threshold stays at 2048x2048 pixels (Part 1 and
 HTJ2K 36% and 57% faster there).
 
@@ -283,37 +267,34 @@ intervals, ten samples, a one-second warm-up, and a three-second target on an
 AMD Ryzen 7 5800X3D with an NVIDIA GeForce RTX 4070 SUPER, driver 596.49,
 Linux x86-64, and CUDA 13.2.
 
-The verifier accepted every cell and promoted 18 decode cells. The fixed
-policy uses the measured output-work thresholds. RGB8 reversible promotes full
-output at 256 x 149, ROI output at 128 x 74, and half-scale output at 1296 x
-972. RGB8 irreversible promotes full output at 640 x 480 and ROI or half-scale
-output at 320 x 240. Gray8 reversible promotes only full output at 640 x 480.
-Gray8 irreversible promotes full output at 3323 x 891, ROI output at 1661 x
-445, and half-scale output at 1662 x 446. Qualified repeated-input batches use
-the measured full-image thresholds at count 16.
+The verifier accepted every cell and routed 18 decode cells to the GPU, using
+the measured output sizes as thresholds. RGB8 reversible uses CUDA for full
+output from 256 x 149, ROI output from 128 x 74, and half-scale output from
+1296 x 972. RGB8 irreversible uses CUDA for full output from 640 x 480 and ROI
+or half-scale output from 320 x 240. Gray8 reversible uses CUDA only for full
+output from 640 x 480. Gray8 irreversible uses CUDA for full output from
+3323 x 891, ROI output from 1661 x 445, and half-scale output from
+1662 x 446. Repeated-input batches of 16 use the full-image thresholds.
 
-The policy applies only to raw Part 1 codestreams with the measured source
-component/output-format pair. It does not extrapolate to JP2 color
-normalization, other scale factors, HTJ2K, higher depths, RGBA, distinct-input
+These thresholds apply only to raw Part 1 codestreams with the measured source
+component/output-format pair. They do not cover JP2 color normalization, other scale factors, HTJ2K, higher depths, RGBA, distinct-input
 batches, unmeasured operations, smaller output work, or shapes below either
 measured dimension. All 12 encode cells stayed on CPU because CUDA-assisted
 encode was slower than CPU in this end-to-end matrix.
 
 The verified artifact's internal SHA-256, recorded beside the thresholds, is
 `ded1eb045f9673e5bbe64dc873be3ba227ecb61ec11b6c9ad53653dbcc993f44`.
-The raw evidence file SHA-256 is
+The raw results file SHA-256 is
 `ad0b434dbd64f669d58054f4a25f9272f741bf2a689f6f70816d98fe87c02e61`;
 the serialized verified file SHA-256 is
 `a565d47f81ed32588e551167a91c0df68daff3d7ebd6ff8588fbe4d8ab27ac79`.
-Every compared route produced the same output SHA-256 before timing results
-were considered. No strict device-native route exists for these public
-surfaces, so the competitive comparison was CPU versus the truthfully labelled
-hybrid route.
+Every route produced the same output SHA-256 before timings were compared.
+None of these APIs has a GPU-only route, so the comparison is CPU against
+hybrid.
 
-This was a dirty-tree development run whose recorded candidate SHA is the base
-`6400fcd4c9f8cf9708563d62411eadf158f94282`. It supports the fixed policy but
-is not exact-release-SHA evidence; the complete matrix must be rerun after
-candidate freeze before publication.
+The run was on an uncommitted working tree based on commit
+`6400fcd4c9f8cf9708563d62411eadf158f94282`. The full matrix must be rerun on
+the release commit before these numbers are published as release results.
 
 ### External Metal routing development run - 2026-08-04
 
@@ -326,9 +307,9 @@ samples, a one-second warm-up, and a three-second target measurement on an
 Apple M4 Pro with a 16-core GPU and 48 GB RAM, macOS 26.5.2 build `25F84`, and
 Metal compiler `32023.883`.
 
-The verifier accepted all 36 workload cells and promoted four. Times below are
-Criterion medians; each promoted hybrid interval was wholly below the CPU
-interval.
+The verifier accepted all 36 workload cells and routed four to the GPU. Times
+below are Criterion medians; each selected hybrid interval was entirely below
+the CPU interval.
 
 | Cell | CPU median | Hybrid median | Speedup |
 | --- | ---: | ---: | ---: |
@@ -339,26 +320,23 @@ interval.
 
 The verified artifact's internal SHA-256 is
 `162a47f7a96b2be88abebc100aab672513af04895532863fa1a293660546f879`.
-The raw evidence file SHA-256 is
+The raw results file SHA-256 is
 `3b2ffad6fe3ebb42e2182612946a5c87ebf0b267e25c38bfb5c9d07c11aa6e7d`.
-These hashes are the evidence anchors recorded beside the fixed thresholds in
-the routing code.
+These hashes are recorded next to the thresholds in the routing code.
 
-The batch rows intentionally reuse one encoded input 16 times. They establish
-decode-once/repeated-output routing only; they are not distinct-image batch
-throughput claims. `Auto` therefore promotes only repeated Part 1 Gray8/RGB8
-requests in the measured reversible/irreversible classes and size ranges.
+The batch rows reuse one encoded input 16 times, so they measure repeated
+decoding of the same image, not batches of different images. `Auto` therefore
+uses the GPU only for repeated Part 1 Gray8/RGB8 requests in the measured
+reversible/irreversible classes and sizes.
 In this Part 1 matrix, single-image, ROI, scaled, HTJ2K, higher-depth, signed,
 RGBA, and unmeasured lossless/lossy cells stayed on CPU. Lossless encode and
 Gray8 lossy encode also stayed on CPU; the latter measured only a 6.8%
-improvement in the canonical profile. The later Part 15 matrix below qualifies
-only its explicitly listed HTJ2K/JPH cells.
+improvement. The Part 15 matrix below adds only the HTJ2K/JPH cells it lists.
 
-This was a dirty-tree development run whose recorded candidate SHA is the base
-`6400fcd4c9f8cf9708563d62411eadf158f94282`, not an exact release candidate.
-It supports implementation of the pending fixed policy, but it is not formal
-release evidence. The complete matrix must be rerun and reverified from the
-exact clean candidate SHA before publication.
+The run was on an uncommitted working tree based on commit
+`6400fcd4c9f8cf9708563d62411eadf158f94282`. The full matrix must be rerun and
+reverified on the release commit before these numbers are published as release
+results.
 
 ### Official Part 15 routing development runs - 2026-08-07
 
@@ -368,38 +346,36 @@ source. The schema-2 manifest SHA-256 is
 `422f40e4086b53e43f2338f97b468c869257cc23ec4899432cf019585782d48e`.
 Each backend ran ten end-to-end cells covering full, ROI, scaled, and repeated
 batch decode plus lossless and lossy encode. Every CPU/hybrid pair produced an
-identical output hash. Neither public surface has a strict device-only route,
-so these are hybrid product-path measurements, not device-native claims.
+identical output hash. Neither API has a GPU-only route, so these measure the
+hybrid routes.
 
-| Backend and measured host | Qualified fixed `Auto` cells | Hybrid speedup versus CPU | Verified artifact SHA-256 |
+| Backend and measured host | Cells `Auto` routes to the GPU | Hybrid speedup versus CPU | Verified artifact SHA-256 |
 | --- | --- | --- | --- |
 | CUDA, RTX 4070 SUPER, driver 596.49, WSL2 Linux 5.15.153.1 | Raw HT and JPH full, ROI, half-scale, and repeated batch decode (8/10) | 70.39% to 91.41% | `77370c83710ebf578139ad0bfa2608ffad989d83faec8d5eee213691290c0088` |
 | Metal, M4 Pro 16-core GPU, macOS 26.5.2 build `25F84` | Raw HT half-scale, raw HT repeated batch, and JPH repeated batch decode (3/10) | 23.42% to 76.91% | `cfa66686d053bb3e2d4c8756abaf84aab65d8505a635795cefd38de53573c1f5` |
 
 CUDA lossless and lossy encode were respectively 528.23% and 305.10% slower
 than CPU. Metal lossless and lossy encode were respectively 240.00% and 58.54%
-slower. Those four cells remain CPU-routed. Metal raw/JPH full and ROI decode
-and JPH half-scale decode also remain CPU-routed because they did not meet the
-promotion rule. Fixed thresholds apply only to the measured codec, container,
-format, dimensions, operation, and repeated-count cells; they do not
-extrapolate to other HTJ2K/JPH workloads.
+slower. Those four cells stay on the CPU. Metal raw/JPH full and ROI decode and
+JPH half-scale decode also stay on the CPU because they did not meet the
+routing rule. The thresholds apply only to the measured codec, container,
+format, dimensions, operation, and repeat count, not to other HTJ2K/JPH
+workloads.
 
 The CUDA raw/serialized-report SHA-256 values are `0b4ac7a08e4adba0e9ed9a7983a4fb3cd9ae0cc81a2ab1162e604f13a785065a`
 and `faacdfa190d0c18acdf9c24a584e285606c37af8dcd15cc649dd6eac2eaa8a10`.
 The corresponding Metal values are `5a66373022b8df18decb3e60d255464f76e6bee3195e90489b61c8366fdec459`
 and `ffe6697176de2c2ac716615f5b96476d610c04715fdad339857c716fb960ef06`.
 
-Both reports record base commit
-`f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`, but they include uncommitted
-candidate changes. They justify the development policy and demonstrate real
-GPU-assisted wins, but are not exact-clean-SHA release evidence. The full
-matrix must be rerun after candidate freeze before publication.
+Both reports record base commit `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b`
+plus uncommitted changes. The full matrix must be rerun on the release commit
+before these numbers are published as release results.
 
 ### Metal HTJ2K host-output encode matrix - 2026-08-08
 
-The production-equivalent host-output route was measured separately because
-the official Part 15 anchor above does not represent the image sizes where
-resident coefficient preparation and HT Tier-1 can amortize Metal setup. The
+The host-output encode route was measured separately because the Part 15
+inputs above are too small for GPU coefficient preparation and HT Tier-1 to pay
+for Metal setup. The
 schema-2 manifest SHA-256 is
 `452080d2b0611f67246450f58479354803469cc0c13d10df4a4ac866e03f90c3`.
 It contains deterministic `j2k-test-support` Gray8 and RGB8 PNM inputs at
@@ -409,9 +385,9 @@ and HT Tier-1 with CPU packetization and final host codestream output.
 
 Before timing, every hybrid and `Auto` codestream matched the CPU codestream
 byte for byte, and each lossless codestream decoded exactly to its source PNM.
-The batch-16 rows repeat the same production-equivalent host-output operation
-16 times while reusing the accelerator. They are throughput observations for
-that route, not the fully resident Metal-buffer batch API.
+The batch-16 rows run the same host-output encode 16 times on one Metal
+session. They measure that route, not the fully resident Metal-buffer batch
+API.
 
 | Format and size | Single CPU | Single hybrid | Single speedup | Batch-16 CPU | Batch-16 hybrid | Batch speedup | Fixed `Auto` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -423,19 +399,18 @@ that route, not the fully resident Metal-buffer batch API.
 | RGB8 2,048 x 2,048 | 120.778 ms | 20.623 ms | 82.93% | 1,980.952 ms | 351.347 ms | 82.26% | hybrid |
 
 These are Criterion medians from ten samples, a one-second warm-up, a
-three-second target measurement, and 95% confidence intervals. The verifier
-promoted a shape only when both its single and batch-16 observations exceeded
-the 10% threshold and the hybrid interval did not overlap the CPU interval.
-No strict-device host-output route is available, so this comparison is CPU
-versus the truthfully labelled hybrid product route. The fixed policy does not
-extrapolate beyond the six measured shape/format combinations.
+three-second target measurement, and 95% confidence intervals. A shape was
+routed to Metal only when both its single and batch-16 results were more than
+10% faster and the hybrid interval did not overlap the CPU interval. There is
+no GPU-only host-output route, so the comparison is CPU against hybrid. The
+thresholds cover only the six measured shape/format combinations.
 
-The pre-policy decision artifact SHA-256 recorded beside the routing cells is
+The SHA-256 of the decision artifact recorded next to the routing cells is
 `c8defb820b55a99e94acdd5849b4597bce0a1718fd7e0d2bc0aa926bc0e130d4`.
-After enabling only the qualified cells, the complete 26-cell matrix reran
-without an `Auto` parity failure; its verified artifact SHA-256 is
+After enabling only the qualifying cells, the full 26-cell matrix reran with
+no `Auto` output mismatch; its verified artifact SHA-256 is
 `c98f11c0b2a2a96853953ceee7ea672e0e5044bdb8abbd397c8c36eb82fe53b8`.
-The post-policy raw evidence and serialized verified report SHA-256 values are
+The raw results and serialized verified report SHA-256 values are
 `19c1793e3647db44e01903cd619a4da0d70ab5a2b55ab53b3227c67544112090`
 and `a1f898a545bfc3c29e4fbbf5197b602b59920e1c27d50c2cd85af44e168de370`.
 
@@ -443,14 +418,11 @@ This run used an Apple M4 Pro with a 16-core GPU and 48 GB RAM, macOS 26.5.2
 build `25F84`, and Metal compiler `32023.883`. It records base commit
 `f92646d0e6f0d0ef6c1e60b60beaad29da1afd3b` and dirty-worktree identity
 `a84f4107ab943540a0951abefc670065b29b9809430074d5255d8bec1cf2b021`
-across 2,748 tracked and untracked source paths. This is current-tree
-development evidence, not exact-clean-SHA release evidence. The matrix must be
-rerun after candidate freeze before publication.
+across 2,748 tracked and untracked source paths. The matrix must be rerun on
+the release commit before these numbers are published as release results.
 
-## Historical diagnostics
+## Older results
 
-Historical local regression runs, implementation-migration comparisons,
-rejected experiments, and dirty-tree throughput probes remain available in Git
-history.
-They are not current publication evidence and must not be reused as release or
-adoption claims.
+Older regression runs, migration comparisons, abandoned experiments, and
+uncommitted-tree probes are in Git history. They are out of date and should
+not be quoted.

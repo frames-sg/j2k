@@ -31,18 +31,17 @@ suspected vulnerabilities through the corresponding
 [GitHub private reporting form](https://github.com/frames-sg/j2k/security/advisories/new).
 If that button is unavailable, do not put vulnerability details in a public
 issue. Open a [minimal issue](https://github.com/frames-sg/j2k/issues/new)
-asking the maintainers to provide a private contact, without naming the
-affected code or including proof-of-concept details. A
-verified direct private channel must be published before any future release is
-approved.
+asking the maintainers for a private contact, without naming the affected code
+or including proof-of-concept details. Future releases require a published,
+verified private channel.
 
-The tag-publish preflight authenticates to GitHub and reads the repository's
-private-vulnerability-reporting setting. Publication fails closed unless that
-setting reports `enabled: true`; API authorization failures and malformed
-responses also block publication. Before creating the release tag, a repository
-administrator must enable **Security > Private vulnerability reporting** and
-confirm that **Report a vulnerability** is visible. Ordinary offline repository
-lint does not make this network request.
+The tag-publish preflight checks the repository's private vulnerability
+reporting setting through the GitHub API and stops the publish unless it is
+`enabled: true`; API authorization failures and malformed responses also stop
+it. Before creating a release tag, a repository admin must enable
+**Security > Private vulnerability reporting** and confirm that **Report a
+vulnerability** is visible. The offline repository checks do not make this
+request.
 
 Response expectations:
 
@@ -54,8 +53,9 @@ Response expectations:
 
 ## Baseline expectations
 
-- Unsupported input must fail explicitly.
-- Error responses must avoid sensitive internal details.
-- Device backends must not silently substitute a different explicit backend.
-- Unsafe Rust inventory is tracked in `docs/unsafe-audit.md`.
-- Fuzzing and malformed-input tests are part of release hardening.
+- Unsupported input returns an error.
+- Error messages do not expose internal details.
+- An explicitly requested GPU backend never silently switches to another
+  backend.
+- Every file with `unsafe` Rust is listed in `docs/unsafe-audit.md`.
+- Fuzzing and malformed-input tests run before each release.

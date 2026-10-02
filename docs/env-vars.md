@@ -1,27 +1,15 @@
 # Environment Variables
 
-This is the supported `J2K_*` environment-variable surface for the
-workspace. Variables not listed here are internal symbols, generated metadata,
-or test-only implementation details and must not be treated as user controls.
+Environment variables read by the J2K workspace. Anything not listed here is
+internal and can change without notice.
 
 Stability values:
 
 - Stable: supported for the published v0.11.x contract.
-- Experimental: accepted for diagnostics or adapter tuning, but may change
-  before 1.0.
-- Test/CI: supported only for repository tests, CI, and release validation.
-- Benchmark: supported only for benchmark harnesses and benchmark signoff.
-- Generated: emitted by a build script for version reporting; do not set by
-  hand unless reproducing the build-script contract.
-
-The xtask identifier `J2K_METAL_REQUIRED_IGNORED_TESTS` is not an environment
-variable. It is the compile-time inventory of ignored Metal runtime tests that
-`cargo xtask release-metal` must execute exactly; operators cannot set or
-override it.
-
-| Internal identifier | Meaning | Operator default | Stability |
-| --- | --- | --- | --- |
-| `J2K_METAL_REQUIRED_IGNORED_TESTS` | Compile-time xtask inventory used to reject missing, unexpected, skipped, or partially executed ignored Metal runtime tests. This is not read from the environment. | Fixed in xtask source | Internal validation |
+- Experimental: diagnostics and adapter tuning; may change before 1.0.
+- Test/CI: repository tests, CI, and release validation only.
+- Benchmark: benchmark harnesses only.
+- Generated: set by a build script; do not set by hand.
 
 ## Library Runtime And Profiling
 
@@ -30,17 +18,9 @@ override it.
 | `J2K_GPU_ROUTE_PROFILE` | Emits facade/adapter GPU route decisions. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
 | `J2K_JPEG_PROFILE_STAGES` | Emits JPEG CPU profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
 | `J2K_PROFILE_STAGES` | Emits native/CUDA J2K profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
-| `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to an operator-supplied path. Existing files are not overwritten, and parent directories are not created. | No trace file | Experimental |
+| `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to this path. The file must not exist and its parent directory must. | No trace file | Experimental |
 | `J2K_CUDA_IDWT_TRACE` | Enables CUDA IDWT trace/profile output. | Disabled | Experimental |
-| `J2K_CUDA_IDWT_WIDE_TILED` | Historical P14 switch; it has no effect after the tiled cooperative candidate was rejected. | No effect | Historical |
-| `J2K_CUDA_DISABLE_SHARED_FDWT97` | Historical P15 split-process benchmark switch; it has no effect after the shared-staging candidate was rejected. | No effect | Historical |
-| `J2K_CUDA_FDWT97_TRACE` | Historical P15 launch-mode trace control; it has no effect after the shared-staging candidate was rejected. | No effect | Historical |
-| `J2K_CUDA_P17_PROFILE` | Restricts the CUDA HTJ2K decode benchmark to the P17 pre-prototype final-IDWT/store attribution matrix. It does not select a production route. | Disabled | Benchmark |
-| `J2K_CUDA_DISABLE_FUSED_INPUT_MCT` | Historical P16 split-process benchmark switch; it has no effect after the input-fusion candidate was rejected. | No effect | Historical |
-| `J2K_CUDA_JPEG_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 split-process A/B control; it has no effect after staged baseline encode promotion and serial fallback removal. | No effect | Historical |
-| `J2K_CUDA_JPEG_DISABLE_PACKED_CHECKPOINTS` | Historical P19 split-process A/B control; it has no effect after adaptive checkpoint launch promotion and removal of the all-serial fallback branch. | No effect | Historical |
-| `J2K_CUDA_JPEG_DISABLE_COEFFICIENT_IDCT_SPLIT` | Historical P19 split-process A/B control; it has no effect after the coefficient/IDCT split candidate was rejected and removed. | No effect | Historical |
-| `J2K_CUDA_HT_ENCODE_BLOCK_THREADS` | Historical P26 split-process control for 1/32/128-thread HT encode blocks. Removed after the smaller-block candidates were rejected. | No effect | Historical |
+| `J2K_CUDA_FINAL_STORE_PROFILE` | Restricts the CUDA HTJ2K decode benchmark to the final-IDWT/store timing matrix. Requires `J2K_REQUIRE_CUDA_BENCH=1`. | Disabled | Benchmark |
 | `J2K_CUDA_DISABLE_STAGE_TIMINGS` | Disables CUDA stage timing collection for benchmark runs. | Timings enabled | Experimental |
 | `J2K_CUDA_DISABLE_COMPACT_PREENCODED` | Forces the CUDA transcode adapter to decline compact preencoded resident HT encode support. | Compact resident support enabled when supported | Experimental |
 | `J2K_JPEG_METAL_FAST420_BATCH_TIMING` | Emits JPEG Metal fast 4:2:0 batch timing profiles. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
@@ -57,21 +37,6 @@ override it.
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT` | Emits classic Tier-1 token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT` | Emits classic Tier-1 split-token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK` | Emits classic Tier-1 token-pack profiling and also enables token-emission profiling. | Disabled | Experimental |
-| `J2K_METAL_DISABLE_FUSED_IDWT97` | Historical P2 same-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_METAL_DISABLE_FUSED_IDWT53_INTERLEAVE_HORIZONTAL` | Historical P1 same-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_METAL_DISABLE_FUSED_FDWT97` | Historical P3 same-process benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_METAL_DISABLE_COOPERATIVE_PACKETIZATION` | Historical P11 same-process benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_TRANSCODE_METAL_DISABLE_FUSED_COLUMN_QUANTIZE` | Historical P12 same-host benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE` | Historical P13 split-process benchmark switch recorded in the validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_JPEG_METAL_DISABLE_SPLIT_COEFF_IDCT` | Historical P19 same-host benchmark switch recorded in validated rejection evidence; no production route currently reads it. | No effect after rejected prototype cleanup | Benchmark record |
-| `J2K_JPEG_METAL_DISABLE_STAGED_BASELINE_ENCODE` | Historical P18 same-host A/B switch recorded in validated promotion evidence; the promoted staged route has no runtime switch and production code no longer reads this variable. | No effect | Historical experiment control |
-| `J2K_METAL_DISABLE_FUSED_INPUT_MCT` | Historical P5 A/B switch retained in experiment records. The promoted route is now limited to the measured unsigned RGB8 512x512 geometry, and production code no longer reads this variable. | No effect | Historical experiment control |
-| `J2K_METAL_DISABLE_BATCHED_IDWT97` | Historical P20 A/B control for per-image versus bounded batched 9/7 reconstruction. Removed after promotion; production code no longer reads it. | No effect | Historical experiment control |
-| `J2K_METAL_DISABLE_IDWT97_CHUNKS` | Historical P27 A/B control for 16 MiB chunks above the existing batched reconstruction limit. Removed with the rejected candidate. | No effect | Historical experiment control |
-| `J2K_METAL_DISABLE_RESIDENT_LOSSY` | Historical P28 A/B control for staged versus resident transform-through-HT lossy encoding. Removed after promotion. | No effect | Historical experiment control |
-| `J2K_METAL_FORCE_SPLIT_ENCODE` | Historical P21 A/B control for HT command-buffer coalescing. Removed with the rejected candidate. | No effect | Historical experiment control |
-| `J2K_METAL_DISABLE_SMALL_HT_STATE` | Historical P21/P22 A/B control for width-specialized HT context arrays. Removed with the rejected candidate. | No effect | Historical experiment control |
-| `J2K_METAL_IDWT97_SMALL_GROUPS` | Historical P25 A/B control for 128-thread inverse-transform groups. Removed with the rejected candidate. | No effect | Historical experiment control |
 | `J2K_TRANSCODE_METAL_PROFILE_STAGES` | Enables transcode Metal profiling in the DCT 5/3 and 9/7 benchmark harness. Use `1` for rows or `summary` for aggregate rows. | Disabled | Benchmark |
 
 ## Experimental Backend Routing
@@ -180,7 +145,7 @@ override it.
 | `J2K_FIXTURE_COMPARE_THREADS` | Worker count for `jp2k_fixture_compare`. | Tool default | Benchmark |
 | `J2K_FIXTURE_COMPARE_INPUT_DIRS` | Optional path-list of directories recursively scanned for external `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in `jp2k_fixture_compare`. | Not set | Benchmark |
 | `J2K_FIXTURE_COMPARE_INPUT_DIR` | Backward-compatible single external fixture directory recursively scanned when `J2K_FIXTURE_COMPARE_INPUT_DIRS` is unset. | Not set | Benchmark |
-| `J2K_FIXTURE_COMPARE_MANIFEST` | Optional TSV manifest for external fixtures. Requires `path` and `corpus_category`; supports `corpus_name`, `license_status`, `encode_command`, `input_fnv1a64`, `source_fnv1a64`, `codec`, and `container` (`raw-codestream`, `j2k`, `j2c`, `jp2`, `jph`, or `jhc`). Publication runs require fixture hash, codec, and container pins; materialized raw/boxed variants should include `source_fnv1a64` so source diversity is not inflated by container wrappers. For native compressed corpora, `source_fnv1a64` normally equals `input_fnv1a64`; publishable decode claims require independent native compressed classic J2K and HTJ2K coverage, not only repo-materialized codestreams. | Not set | Benchmark |
+| `J2K_FIXTURE_COMPARE_MANIFEST` | Optional TSV manifest for external fixtures. Requires `path` and `corpus_category`; supports `corpus_name`, `license_status`, `encode_command`, `input_fnv1a64`, `source_fnv1a64`, `codec`, and `container` (`raw-codestream`, `j2k`, `j2c`, `jp2`, `jph`, or `jhc`). Publication runs require the hash, codec, and container fields. Give raw/boxed variants of one source the same `source_fnv1a64` so they count as one source. | Not set | Benchmark |
 | `J2K_FIXTURE_COMPARE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated smoke fixtures from `jp2k_fixture_compare` external-corpus publication runs. | Generated fixtures included | Benchmark |
 | `J2K_INCLUDE_OPENJPH` | Adds optional OpenJPH `ojph_expand` rows to `jp2k_fixture_compare`. Rows are HTJ2K/JPH-compatible full/scaled CLI/file-output context rows labeled `decode_method=openjph-cli-process-output-pnm`; unsupported fixtures are skipped explicitly. | Disabled | Benchmark |
 | `J2K_INCLUDE_KAKADU` | Adds optional Kakadu `kdu_expand` fixture rows and `kdu_compress` encoder rows. Rows are proprietary CLI/file-output context rows labeled separately from the default J2K/OpenJPEG/Grok matrix. | Disabled | Benchmark |
@@ -211,24 +176,24 @@ override it.
 | `J2K_CUDA_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit the generated CUDA host-input encode row when external staged PNM sources are provided. Code-block/device-input microbenchmarks remain generated component rows. | Generated CUDA host-input row included | Benchmark |
 | `J2K_CUDA_ENCODE_SAMPLE_SIZE` | Criterion sample size for CUDA HTJ2K encode benchmark rows. Must be at least 10. | 10 | Benchmark |
 | `J2K_SAMPLED_CORPUS` | Directory containing `level0-tile0.j2k` through `level2-tile7.j2k` for the opt-in sampled-color Metal characterization test. Requires an optimized build and Metal hardware. | Not set | Benchmark |
-| `J2K_METAL_DECODE_INPUT_DIRS` | Optional path-list of external `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the Metal decode benchmark. Wrapper containers are emitted as structured skips until wrapper-specific strict Metal parity is claimed. | Not set | Benchmark |
+| `J2K_METAL_DECODE_INPUT_DIRS` | Optional path-list of external `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the Metal decode benchmark. JP2/JPH wrapper files are reported as skipped. | Not set | Benchmark |
 | `J2K_METAL_DECODE_MANIFEST` | Optional TSV manifest for Metal decode external fixtures. Uses pinned `path` and `input_fnv1a64`; optional `codec` and `container` labels are recorded in benchmark rows. | Not set | Benchmark |
-| `J2K_METAL_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal decode smoke fixtures when external fixtures are provided. Publication gates require this to be false for Metal decode speed claims. | Generated Metal decode fixtures included | Benchmark |
+| `J2K_METAL_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal decode smoke fixtures when external fixtures are provided. Published Metal decode numbers are measured with this off. | Generated Metal decode fixtures included | Benchmark |
 | `J2K_METAL_CAPTURE_PATH` | Absolute, nonexistent `.gputrace` output path for the ignored Metal GPU-capture diagnostic. Requires `MTL_CAPTURE_ENABLED=1`; captured timings are diagnostic only. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INPUT_DIRS` | Optional path-list of staged external `.pgm`, `.ppm`, or `.pnm` source images included in the Metal auto-routing encode benchmark. Use the same canonical PNM source assets as `J2K_ENCODE_COMPARE_INPUT_DIRS` after staging. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_MANIFEST` | Optional TSV manifest for Metal encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal host-input auto-routing rows when external staged PNM sources are provided. Stage microbenchmarks remain generated component rows. | Generated Metal host-input rows included | Benchmark |
-| `J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES` | Maximum raw-byte estimate allowed for a Metal resident host-output encode benchmark row before the row is emitted as a structured memory-budget skip. This protects huge batches from materializing multi-gigabyte host codestream outputs in one benchmark process. | `2147483648` | Benchmark |
-| `J2K_ADOPTION_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture directory path-list passed to `cargo run -p xtask --features adoption -- adoption-benchmark --fixtures`. | None; adoption runs fail closed when unset | Benchmark/CI |
-| `J2K_ADOPTION_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture manifest passed to `--manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
-| `J2K_ADOPTION_ENCODE_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | None; adoption runs fail closed when unset | Benchmark/CI |
-| `J2K_ADOPTION_ENCODE_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode manifest passed to `--encode-manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_MANIFEST` | Path to the hash-pinned schema-v1 JSON workload manifest used by the CUDA and Metal Auto-routing Criterion benches. | None; routing runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_ROOT` | Corpus root against which every relative path in `J2K_AUTO_ROUTING_MANIFEST` is resolved and hash-checked. | None; routing runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_EVIDENCE` | Output path for raw route-parity evidence written beside Criterion estimates. | None; routing runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_CANDIDATE_SHA` | Exact lowercase 40-hex commit identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_HARDWARE` | Non-empty accelerator hardware identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
-| `J2K_AUTO_ROUTING_DRIVER` | Non-empty driver/toolchain identity recorded in route evidence. | None; routing runs fail closed when unset | Benchmark/CI |
+| `J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES` | Largest estimated output size for a Metal resident host-output encode benchmark row. Larger rows are skipped so huge batches do not allocate multi-gigabyte outputs. | `2147483648` | Benchmark |
+| `J2K_ADOPTION_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture directory path-list passed to `cargo run -p xtask --features adoption -- adoption-benchmark --fixtures`. | None; adoption runs fail when unset | Benchmark/CI |
+| `J2K_ADOPTION_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture manifest passed to `--manifest`. | None; adoption runs fail when unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | None; adoption runs fail when unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode manifest passed to `--encode-manifest`. | None; adoption runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_MANIFEST` | Path to the hash-pinned schema-v1 JSON workload manifest used by the CUDA and Metal Auto-routing Criterion benches. | None; routing runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_ROOT` | Corpus root against which every relative path in `J2K_AUTO_ROUTING_MANIFEST` is resolved and hash-checked. | None; routing runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_EVIDENCE` | Output path for raw route-parity results written beside Criterion estimates. | None; routing runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_CANDIDATE_SHA` | Lowercase 40-hex commit SHA recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_HARDWARE` | Accelerator hardware name recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
+| `J2K_AUTO_ROUTING_DRIVER` | Driver/toolchain version recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
 | `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 
@@ -236,7 +201,7 @@ override it.
 
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
-| `J2K_COVERAGE_BASE` | Git revision used by `cargo xtask coverage` to compute changed executable Rust lines. CI pins this to the pull-request base SHA, the pre-push SHA, or the v0.6.2 release baseline for accelerator release evidence. | `HEAD^` only for local or scheduled fallback runs | Test/CI |
+| `J2K_COVERAGE_BASE` | Git revision used by `cargo xtask coverage` to compute changed executable Rust lines. CI pins this to the pull-request base SHA, the pre-push SHA, or the v0.6.2 release baseline for accelerator release runs. | `HEAD^` only for local or scheduled fallback runs | Test/CI |
 | `J2K_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `J2K_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
 | `J2K_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |

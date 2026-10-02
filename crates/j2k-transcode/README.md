@@ -2,14 +2,13 @@
 
 JPEG-to-HTJ2K coefficient-domain transcode crate for J2K.
 
-The crate owns the CPU transcode pipeline and shared accelerator hooks. CUDA
-and Metal adapters can accelerate supported stages, but the public transcode
-entry points assemble HTJ2K codestreams. Unsupported source classes and modes
-return explicit errors.
+The crate contains the CPU transcode pipeline and the hooks the CUDA and Metal
+adapters use to accelerate stages; the HTJ2K codestream is always assembled
+here. Unsupported JPEG types and modes return an error.
 
-Resident handoff descriptors such as `ResidentJpegDctGrid`,
-`ResidentDwtSubband`, and `ResidentCodestreamBuffer` provide validated metadata
-contracts for backend adapters that keep transcode stages in device memory.
+`ResidentJpegDctGrid`, `ResidentDwtSubband`, and `ResidentCodestreamBuffer`
+describe GPU buffers for adapters that keep transcode stages in device memory;
+their constructors check the metadata.
 
 ## Links
 

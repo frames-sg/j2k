@@ -99,8 +99,8 @@ pub fn idct8_then_dwt53_float(coefficients: [f64; 8]) -> Dwt53OneLevel<f64> {
 /// Map adjacent 8-point DCT blocks directly into a linearized one-level 5/3
 /// wavelet row.
 ///
-/// This keeps the production direction honest: output coefficients are
-/// projected from the DCT basis without first creating a row of spatial samples.
+/// Like the production path, output coefficients are projected from the DCT
+/// basis without first creating a row of spatial samples.
 #[must_use]
 pub fn dct8_blocks_to_dwt53_float_linear(blocks: &[[f64; 8]]) -> Dwt53Row<f64> {
     dct8_blocks_to_dwt53_float_linear_with_len(blocks, blocks.len() * 8)

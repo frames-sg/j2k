@@ -222,8 +222,7 @@ impl MetalEncodeStageAccelerator {
 
     /// Create the host-output hybrid route without applying the Auto size gate.
     ///
-    /// This is intended for reproducible route benchmarks and adapter-IUT
-    /// conformance evidence. For supported lossless HT inputs it runs Metal
+    /// This is for reproducible route benchmarks and T.803 conformance runs. For supported lossless HT inputs it runs Metal
     /// coefficient preparation and HT Tier-1 with CPU packetization, matching
     /// the production host-output route without applying its size gate. It does
     /// not change the public Auto policy.

@@ -12,112 +12,80 @@
 [release notes](CHANGELOG.md), [release policy](docs/release.md), and
 [security policy](SECURITY.md).
 
-**A general-purpose, GPU-accelerated JPEG 2000 and HTJ2K codec with safe Rust
-APIs, a portable CPU baseline, and production CUDA and Metal paths.**
+**A JPEG 2000 and HTJ2K codec written in Rust, with a portable CPU
+implementation and CUDA and Metal acceleration.**
 
-J2K provides JPEG 2000 / HTJ2K decode, encode, recode, and
-JPEG-to-HTJ2K coefficient-domain transcoding. Its public APIs cover whole-image,
-region, reduced-resolution, tile, batch, host-output, and resident-device
-workflows without coupling the codec to a particular application domain. The
-workspace is dual-licensed under MIT/Apache-2.0.
+J2K decodes, encodes, and recodes JPEG 2000 and HTJ2K, and transcodes baseline
+JPEG to HTJ2K in the coefficient domain. It can decode whole images, regions,
+reduced resolutions, single tiles, and batches, to host memory or to GPU
+memory. Region and reduced-resolution decoding skip work outside the requested
+area, which matters for large tiled images such as whole-slide scans. The
+workspace is dual-licensed under MIT and Apache-2.0.
 
-Region and reduced-resolution decoding plus retained tiled batch plans avoid
-whole-image work for slide-scale and other large-image readers; those are codec
-capabilities, not domain-specific APIs.
+## GPU acceleration
 
-Measured product GPU decode paths keep parsing on CPU while moving supported
-Tier-1, dequantization, IDWT, MCT, output, and transfer work to CUDA or Metal.
-On the current external HTJ2K/JPH routing matrix, fixed `Auto` policy qualifies
-8 of 10 CUDA cells and 3 of 10 Metal cells; every promoted cell produced the
-same bytes as CPU, exceeded the required 10% median speedup, and had a
-non-overlapping 95% confidence interval. A **formal device-native** route would
-require every reported stage to execute on the device; the current public
-pipelines make no such claim.
+On the GPU paths, parsing stays on the CPU and Tier-1 decoding,
+dequantization, inverse wavelet transform, color transform, and output are done
+on CUDA or Metal. No pipeline runs every stage on the GPU.
 
-Current-tree Metal host-output encode evidence additionally qualifies lossless
-HTJ2K RGB8 at 1024 x 1024 and Gray8/RGB8 at 2048 x 2048. Those hybrid routes
-run coefficient preparation and HT Tier-1 on Metal, then packetize on CPU.
-Other measured 512 x 512 and Gray8 1024 x 1024 cells remain CPU-routed. The
-performance scope is the measured Apple M4 Pro; exact results and qualifications
-are in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+`BackendRequest::Auto` uses the GPU only for image shapes where it was measured
+to be faster. On the external HTJ2K/JPH routing benchmark, `Auto` uses the GPU
+for 8 of 10 CUDA cells and 3 of 10 Metal cells. In each of those cells the GPU
+output matched the CPU output byte for byte, and the median time was at least
+10% faster with non-overlapping 95% confidence intervals.
 
-Release `0.11.2` formally claims ISO/IEC 15444-4:2024 / ITU-T T.803 v3
-**Profile-1 Cclass-1**, **Profile-1 Cclass-1HF**, and **Annex G JP2 reader**
-compliance for the CPU IUT. The same published release evidence covers these
-selected HTJ2K Part 15 points:
+For lossless HTJ2K encode to host memory, Metal is used for RGB8 at
+1024 x 1024 and for Gray8 and RGB8 at 2048 x 2048. Those paths run coefficient
+preparation and HT Tier-1 on Metal and packetize on the CPU. The 512 x 512
+cells and Gray8 at 1024 x 1024 stay on the CPU. These measurements are from an
+Apple M4 Pro; full results are in
+[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
-- HTJ2K Part 15: **DS1-HM Cclass-1h, MMAGB 15**, including DS1-HT, DS0-HM,
-  and DS0-HT subset evidence; **Cclass-1HFh, MMAGB 20**; and **Annex G JPH
-  reader at MMAGB 15**.
+## Conformance
 
-The exact-SHA macOS arm64, Linux x86-64, and Windows x86-64 CPU reports each
-pass all 160 selected cases—90 Part 1 and 70 Part 15—with zero skips. The CUDA
-and Metal adapter-IUT reports pass the same 160 cases on real hardware with the
-truthful combined headline **0/160 device-native, 81/160 hybrid, 79/160
-CPU-routed** for each backend. The Part 15 split is 33 hybrid and 37 CPU-routed.
-Production-owned dispatch counters, not capability-table predictions,
-substantiate every stage label.
+The CPU decoder in release `0.11.2` conforms to ISO/IEC 15444-4:2024 / ITU-T
+T.803 v3 **Profile-1 Cclass-1**, **Profile-1 Cclass-1HF**, and the **Annex G
+JP2 reader**. For HTJ2K (Part 15) it conforms to **DS1-HM Cclass-1h, MMAGB 15**
+(including the DS1-HT, DS0-HM, and DS0-HT subsets), **Cclass-1HFh, MMAGB 20**,
+and the **Annex G JPH reader at MMAGB 15**.
 
-All five reports identify exact release SHA
-`75a3e0618e1963d8403e4edad0fa95ee1c217ec1` and are attached to the
-[v0.11.2 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). CPU
-encoder evidence passes 56/56 cases; CUDA and Metal each pass 35/35. Encoder
-results are informative Annex D/F evidence, not formal decoder conformance.
-The exact scope and report rules are in
-[docs/t803-conformance.md](docs/t803-conformance.md). T.803 does not establish
-robustness, security, adoption, or performance.
+The CPU runs on macOS arm64, Linux x86-64, and Windows x86-64 each pass all 160
+selected cases (90 Part 1, 70 Part 15) with no skips. The CUDA and Metal runs
+pass the same 160 cases: 81 use the GPU for some stages and 79 run on the CPU
+(Part 15: 33 and 37). The per-stage CPU/GPU labels come from dispatch counters
+recorded during the run.
 
-Speed matters, but it is not the reason this project exists. The strategic
-gap is a memory-safety-oriented Rust codec with a portable CPU baseline,
-multi-vendor GPU adapters, explicit support boundaries, and reproducible
-benchmark gates. The public crate release centers on `j2k`, with lower-level
-crates for native codec internals, device adapters, JPEG input, and transcode
-pipelines.
+All five reports are for commit `75a3e0618e1963d8403e4edad0fa95ee1c217ec1` and
+are attached to the [v0.11.2 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2).
+The encoder passes 56/56 cases on the CPU and 35/35 on CUDA and on Metal; these
+encoder results are informative (Annex D/F), not formal decoder conformance.
+Scope and rules are in [docs/t803-conformance.md](docs/t803-conformance.md).
+T.803 does not test robustness, security, or performance.
 
-The codec support boundary is intentionally scoped and explicit: JPEG 2000
-Part 1 still-image codestream features, JP2 wrapping, HTJ2K Part 15
-codestreams, and JPH wrapping. JPX / JPEG 2000 Part 2 extensions are outside
-this boundary unless a feature is required for standard JP2/JPH still-image
-correctness. The implementation matrix is
-[docs/public-support.md](docs/public-support.md).
+## Why J2K
 
-The APIs expose codec operations rather than application-specific workflow
-abstractions. Medical imaging, geospatial systems, digital preservation,
-servers, desktop applications, and large tiled-image readers can use the same
-decoder, encoder, and transcode surfaces. Domain containers, indexing,
-application metadata, and workflow validation remain outside the codec layer.
+JPEG 2000 is common in medical imaging, geospatial imagery, digital
+preservation, and large tiled-image systems. The existing implementations each
+have a drawback for some users:
 
-## Why J2K exists
-
-JPEG 2000 is still common in medical imaging, geospatial imagery, digital
-preservation, and large tiled-image systems, but the implementation landscape
-forces awkward tradeoffs:
-
-| Option | Tradeoff J2K avoids |
+| Option | Drawback |
 | --- | --- |
-| NVIDIA CUDA JPEG 2000 runtime | CUDA/NVIDIA GPU stacks are a good fit for NVIDIA-only deployments, but not for portable Rust applications that also need Metal or CPU-first operation. |
-| [OpenJPEG](https://github.com/uclouvain/openjpeg) | Mature C implementation and useful comparator, but C codecs keep memory-safety risk on the adopter. |
-| [Grok](https://github.com/GrokImageCompression/grok) | Capable C++ JPEG 2000 / HTJ2K implementation, but AGPL licensing is not usable for every commercial or embedded integration. |
+| NVIDIA CUDA JPEG 2000 runtime | NVIDIA-only; no Metal or CPU-only deployment. |
+| [OpenJPEG](https://github.com/uclouvain/openjpeg) | Mature, but written in C, so memory-safety bugs are the adopter's risk. |
+| [Grok](https://github.com/GrokImageCompression/grok) | Capable C++ JPEG 2000 / HTJ2K implementation, but AGPL-licensed. |
 
-J2K's intended position is different: a safe Rust public API, isolated
-unsafe boundaries for FFI/GPU work, no active runtime dependency on NVIDIA's
-JPEG 2000 runtime, strict errors for unsupported device routes, and dual
-MIT/Apache-2.0 licensing.
+J2K has a safe Rust public API, keeps `unsafe` code to FFI, GPU, and SIMD
+boundaries, does not depend on NVIDIA's JPEG 2000 runtime, returns an error
+instead of silently falling back when a requested GPU path is unsupported, and
+is MIT/Apache-2.0 licensed.
 
-## Memory Safety Posture
+## Memory safety
 
-J2K is designed for safe Rust integration with untrusted image inputs. The
-public codec API is safe Rust.
-Unsafe code is isolated at audited FFI, GPU integration, architecture-specific
-SIMD/intrinsic, allocation, and bounded pointer/buffer boundaries, where inputs
-are validated and unsupported shapes fail with errors. The exhaustive inventory
-is maintained in [docs/unsafe-audit.md](docs/unsafe-audit.md).
-
-This is an engineering posture backed by an explicit unsafe inventory, tests,
-fuzzing, and review—not a formal proof that all implementation defects are
-impossible. It is also not a claim that every malformed codestream is accepted
-or that every device path is faster than CPU. CPU remains the portable
-correctness baseline; GPU acceleration is promoted only for measured paths.
+The public API is safe Rust and is meant to accept untrusted images. `unsafe`
+code is limited to FFI, GPU integration, SIMD intrinsics, allocation, and
+bounds-checked buffer access, and every such file is listed with its invariants
+in [docs/unsafe-audit.md](docs/unsafe-audit.md). The decoders are fuzzed and
+tested against malformed input. None of this proves the code is free of bugs.
 
 ## Quickstart
 
@@ -163,86 +131,77 @@ Runnable repository examples:
 - `cargo run -p j2k-tilecodec --example decompress`
   ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
 
-JPEG 2000 callers that need reduced regions below the shared
-`Downscale::Eighth` ceiling can use
-`J2kDecoder::decode_region_scaled_pow2_into`. The level is an exact count of
-power-of-two halvings; requests beyond any component's codestream resolution
-ladder return an unsupported error instead of silently decoding at another
-scale.
+To decode a region at a reduction finer than `Downscale::Eighth`, use
+`J2kDecoder::decode_region_scaled_pow2_into`. The level is the number of
+power-of-two halvings. A level beyond a component's resolution count returns
+an unsupported error rather than decoding at a different scale.
 
-Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
-and Metal or CUDA paths are selected only for supported shapes with validation
-and benchmark evidence. Lossless HTJ2K host-output encode uses the qualified
-Metal hybrid cells above and stays CPU for other measured shapes. Full-resident
-Metal-buffer encode remains a separate batch API and evidence class. Explicit
-device requests are strict. Unsupported device shapes return errors instead of
-silently changing the requested backend. `Auto` is an optimization policy, not
-a promise to use a device whenever one is available.
+## Backend selection
 
-A new fixed hybrid threshold is eligible for `Auto` only when identical-output
-external-corpus Criterion evidence shows a median at least 10% faster than CPU
-and any supported strict-device route, with non-overlapping 95% confidence
-intervals. The policy never calibrates at runtime. Explicit `Cuda` and `Metal`
-requests remain strict, and an accelerator failure after `Auto` selects a device
-is an error rather than a silent CPU retry.
+The default backend is `Auto`. The CPU path is always available; Metal or
+CUDA is used only for shapes where it was benchmarked to be faster. Lossless
+HTJ2K host-output encode uses Metal for the cells listed above and the CPU for
+everything else. Encoding into Metal buffers is a separate batch API.
 
-CUDA paths use J2K-owned CUDA Oxide device kernels through `cuda-runtime`.
-NVIDIA performance claims require self-hosted benchmark evidence; hosted CI is
-not treated as NVIDIA performance evidence.
+`BackendRequest::Cuda` and `BackendRequest::Metal` return an error for shapes
+the device path does not support; they never switch to the CPU. If `Auto`
+picks a GPU and the GPU then fails, that is also an error, not a CPU retry.
+`Auto` does not promise to use a GPU just because one is present.
 
-## High-throughput owned batches
+A new GPU threshold is added to `Auto` only when it produces identical output
+on the external benchmark corpus and its median time is at least 10% faster
+than the CPU and any other device route, with non-overlapping 95% confidence
+intervals. Thresholds are fixed at build time; nothing is calibrated at
+runtime.
 
-The additive owned-batch API accepts `EncodedImage` values containing an
-`Arc<[u8]>` and one of `Full`, `Region`, `Reduced`, or `RegionReduced`. It
-prepares inputs concurrently, keeps unlike output shapes in separate groups
-without padding, and returns source indices, indexed preparation failures, and
-homogeneous group execution failures. Representable Gray, RGB, and RGBA groups
-use exact native `U8`, `U16`, or `I16` storage in NCHW or NHWC order; float
-conversion and normalization are deliberately not codec operations.
+CUDA support uses J2K's own CUDA Oxide kernels, enabled with the
+`cuda-runtime` feature. NVIDIA performance numbers come from self-hosted
+benchmark runs; hosted CI does not measure GPU performance.
 
-Preparation can retain either a `PreparedHtj2kPlan` or a
-`PreparedClassicPlan` with per-tile packet, code-block, and destination
-geometry. Both plans reference compressed payload ranges inside the original
-`Arc<[u8]>`; neither duplicates the codestream. `CpuBatchDecoder` consumes
-single- and multi-tile plans without reparsing. Inputs outside the retained-plan
-boundary can remain metadata-only and use the broader CPU codec when that path
-supports them.
+## Batch decoding
 
-`j2k-cuda` and `j2k-metal` own persistent accelerator sessions, resident
-output, and validated caller-owned destinations. Their direct final stores
-produce the requested native dtype and layout in the destination allocation,
-so decoded pixels do not make a GPU-to-CPU-to-GPU round trip. The codec-wide
-support boundary is maintained in
-[docs/public-support.md](docs/public-support.md); the exact experimental Burn
-adapter boundary is maintained in [docs/j2k-ml.md](docs/j2k-ml.md). Dated
-hardware validation and performance results live only in
+The owned-batch API takes `EncodedImage` values (an `Arc<[u8]>` plus one of
+`Full`, `Region`, `Reduced`, or `RegionReduced`). It prepares inputs in
+parallel, groups outputs by shape without padding, and reports the source
+index of every result and failure. Gray, RGB, and RGBA groups are returned as
+`U8`, `U16`, or `I16` in NCHW or NHWC order. Conversion to float and
+normalization are left to the caller.
+
+Preparation can keep a `PreparedHtj2kPlan` or a `PreparedClassicPlan` with
+per-tile packet, code-block, and destination geometry. Plans point into the
+original `Arc<[u8]>` instead of copying the codestream, and `CpuBatchDecoder`
+decodes single- and multi-tile plans without parsing again. Inputs that a plan
+cannot describe fall back to the general CPU decoder.
+
+`j2k-cuda` and `j2k-metal` provide persistent GPU sessions, GPU-resident
+output, and decoding into caller-owned GPU buffers. Their final store writes
+the requested data type and layout directly into the destination, so decoded
+pixels never round-trip through host memory. The codec support matrix is in
+[docs/public-support.md](docs/public-support.md), the Burn adapter's scope is
+in [docs/j2k-ml.md](docs/j2k-ml.md), and hardware results are in
 [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
 
-`j2k-ml` stages completed codec output through host memory and creates ordinary
-Burn tensors with public APIs. Its `CudaUploadBurnDecoder` and
-`MetalUploadBurnDecoder` still execute decoding on the named accelerator, but
-they do not claim a direct Burn destination or zero-copy handoff. Readers such
-as `wsi-rs` remain responsible for finding and supplying encoded image bytes.
-Codec support and correctness do not by themselves constitute a speedup claim.
+`j2k-ml` copies decoded output through host memory and builds ordinary Burn
+tensors with Burn's public API. `CudaUploadBurnDecoder` and
+`MetalUploadBurnDecoder` decode on the GPU but still copy through the host
+before creating the tensor. Container readers such as `wsi-rs` are responsible
+for locating the encoded bytes.
 
-`j2k-mpsgraph` is the Apple Silicon direct path. It aliases completed resident
-batches or queues decode and MPSGraph on one Metal command queue without an
-application-level decoded-pixel GPU→CPU→GPU round trip. It does not claim
-framework-internal zero-copy or a speedup; see
+`j2k-mpsgraph` is the Apple Silicon path into MPSGraph. It either aliases
+completed GPU-resident batches or queues decoding and the MPSGraph work on one
+Metal command queue, so decoded pixels stay on the GPU. See
 [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
 
 ## Which crate should I use?
 
-Use `cargo add j2k` for JPEG 2000 / HTJ2K application code. Lower-level
-`j2k-*` crates remain public implementation and integration crates.
-
-Use lower-level crates only when you need a specific integration point:
+Use `cargo add j2k` for JPEG 2000 / HTJ2K application code. The lower-level
+`j2k-*` crates are public but exist for specific integration points:
 
 | Need | Crate |
 | --- | --- |
 | JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
 | Shared traits and backend types | `j2k-core` |
-| Shared encode-stage contracts | `j2k-types` |
+| Shared encode-stage types | `j2k-types` |
 | Shared codec constants and pure helper algorithms | `j2k-codec-math` |
 | JPEG inspect/decode and portable baseline encode | `j2k-jpeg` |
 | Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
@@ -254,119 +213,92 @@ Use lower-level crates only when you need a specific integration point:
 | Tile compression codecs | `j2k-tilecodec` |
 | Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
-## Support and evidence
+`j2k-ml 0.7.5` shipped broken accelerator features; see the
+[release policy](docs/release.md) for details. The current CUDA and Metal
+adapters are tested as packaged crates before each release.
 
-The living codec support matrix is
-[docs/public-support.md](docs/public-support.md). The Burn batch
-adapter has a narrower, explicit boundary in
-[docs/j2k-ml.md](docs/j2k-ml.md). Hardware measurements and their publication
-qualifications are recorded separately in
-[docs/benchmark-evidence.md](docs/benchmark-evidence.md). Release-scoped Part 1
-and development Part 15 decoder conformance evidence is tracked separately in
-[docs/t803-conformance.md](docs/t803-conformance.md).
+## Backend notes
 
-The previous `j2k-ml 0.7.5` accelerator features were defective. That release
-history is retained in the [release policy](docs/release.md); current CUDA and
-Metal adapters use released dependency APIs and are validated as clean
-packaged consumers before publication.
+The CPU path is the reference implementation. `BackendRequest::Auto` returns
+CPU output when no GPU path exists for the shape or it was not measured to be
+faster.
 
-## Current backend posture
+GPU routing is selective on purpose. A shape goes to Metal or CUDA only if it is
+supported, matches the CPU output, is large or regular enough to pay for
+dispatch and transfer, and measured faster. Small tiles, irregular packets,
+entropy-heavy stages, and codestream assembly stay on the CPU unless a
+GPU-resident path measures faster.
 
-CPU is the correctness baseline. `BackendRequest::Auto` may return CPU-backed
-outputs when a device path is unavailable, unsupported, or not benchmarked for
-the requested shape.
+The Metal adapters are macOS-only and experimental. Explicit Metal requests
+return GPU-resident surfaces or encode-stage dispatches for the supported
+paths and return an error for everything else; not every encode route has a
+Metal implementation.
 
-GPU routing is intentionally selective. A Metal or CUDA path should be enabled
-automatically only when the shape is supported, parity-covered, large or
-regular enough to amortize dispatch and transfer costs, and backed by benchmark
-evidence. Small tiles, irregular packet shapes, entropy-heavy stages, and
-codestream assembly should remain CPU unless a measured resident path shows a
-net win.
+The CUDA adapters require a CUDA driver. Supported paths return CUDA device
+memory; unsupported explicit CUDA requests return an error.
 
-Metal adapters are macOS-only and experimental. Explicit Metal requests return
-resident Metal surfaces or encode-stage dispatches only for supported adapter
-paths. Metal encode support is not a blanket end-to-end guarantee for every
-public encode route; unsupported explicit Metal shapes fail clearly.
-
-CUDA adapters require a CUDA driver and adapter support. CUDA device memory
-surfaces are available for supported paths; unsupported explicit CUDA requests
-fail clearly. J2K-owned CUDA kernels are used for CUDA codec stages. NVIDIA
-performance claims require recorded self-hosted benchmark output.
-
-Lossy HTJ2K encoding can opt into the OpenHTJ2K-compatible visual Qfactor
-profile with `J2kLossyEncodeOptions::with_qfactor(Some(quality))`, where
-`quality` is `1..=100`. This profile is intentionally separate from byte,
-bits-per-pixel, PSNR, quality-layer-target, and ROI controls.
+Lossy HTJ2K encoding can use the OpenHTJ2K-compatible visual Qfactor profile
+with `J2kLossyEncodeOptions::with_qfactor(Some(quality))`, where `quality` is
+`1..=100`. Qfactor cannot be combined with byte, bits-per-pixel, PSNR,
+quality-layer, or ROI targets.
 
 ## Public API and support policy
 
-Stable APIs are `j2k`, `j2k-core` traits and value types, `j2k-jpeg`,
-and `j2k-tilecodec`. Experimental APIs are the Metal adapters, CUDA adapters,
-transcode crates, and backend encode-stage adapter SPI.
+The stable APIs are `j2k`, the `j2k-core` traits and value types, `j2k-jpeg`,
+and `j2k-tilecodec`. The Metal and CUDA adapters, the transcode crates, and
+the backend encode-stage interface are experimental.
 
-Codec contracts include `ImageDecode`, `decode_region_scaled_into`,
-`decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and
-the concrete `J2kContext` and `j2k_jpeg::DecoderContext` types.
-Bounded JPEG 2000/HTJ2K row decode through 24-bit component precision retains
-one parsed tile graph for the operation and reuses it across stripes; stripe
-output scratch remains bounded by `J2kRowDecodeOptions`. Higher-precision exact
-integer output keeps the existing full-decode/crop compatibility path.
-`BackendRequest::Auto` may return CPU output.
-`BackendRequest::Metal` and `BackendRequest::Cuda` are strict and fail for
-unsupported shapes.
+The main codec interfaces are `ImageDecode`, `decode_region_scaled_into`,
+`decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and the
+`J2kContext` and `j2k_jpeg::DecoderContext` types. Row decoding of JPEG 2000 /
+HTJ2K up to 24-bit component precision parses the tile once and reuses it for
+every stripe, with stripe scratch limited by `J2kRowDecodeOptions`. Higher
+precisions decode the full image and crop.
 
-Container and storage integrations should pass compatible compressed payloads
-through when the payload kind, dimensions, component count, bit depth,
-signedness, and color interpretation already match the destination
-requirements. Decode and re-encode only when passthrough is invalid and the
-source codec path is supported.
+Container and storage code should copy compressed payloads through unchanged
+when the payload type, dimensions, component count, bit depth, signedness, and
+color interpretation already match the destination. Decode and re-encode only
+when that is not possible.
 
-Unsupported input must fail explicitly. Error messages must avoid sensitive
-internal details. Unsafe Rust inventory is tracked in
-[docs/unsafe-audit.md](docs/unsafe-audit.md). Fuzzing and malformed-input tests
-are part of release hardening. MSRV is declared in the root manifest.
+Unsupported input returns an error, and error messages do not expose internal
+details. Fuzzing and malformed-input tests run before each release. The MSRV
+is set in the root `Cargo.toml`.
 
-Reference files:
+Reference documents:
 
-- [docs/architecture.md](docs/architecture.md) - workspace layer rules and crate
+- [docs/architecture.md](docs/architecture.md) - workspace layers and crate
   dependency graph
-- [docs/benchmark-evidence.md](docs/benchmark-evidence.md) - reproducible
-  benchmark commands and current CUDA/Metal evidence
-- [docs/benchmark-corpora.md](docs/benchmark-corpora.md) - external corpus and
-  adoption-benchmark manifest policy
-- [docs/env-vars.md](docs/env-vars.md) - supported `J2K_*`
-  environment variables
-- [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
-  HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
-- [docs/t803-conformance.md](docs/t803-conformance.md) - release-scoped and
-  development T.803 v3
-  decoder claims, encoder procedure, blockers, and release evidence rules
-- [docs/j2k-ml.md](docs/j2k-ml.md) - Burn native integer batch groups,
-  prepared reuse, and explicit accelerator decode/upload adapters
-- [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md) - direct Apple Silicon
-  completed-buffer, pipelined, and nonblocking MPSGraph integration
-- [docs/release.md](docs/release.md) - release and package validation policy
-- [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
-- [CHANGELOG.md](CHANGELOG.md) - current release notes
+- [docs/benchmark-evidence.md](docs/benchmark-evidence.md) - benchmark
+  commands and current CUDA/Metal results
+- [docs/benchmark-corpora.md](docs/benchmark-corpora.md) - external benchmark
+  corpora and manifest format
+- [docs/env-vars.md](docs/env-vars.md) - `J2K_*` environment variables
+- [docs/public-support.md](docs/public-support.md) - supported JPEG 2000 Part
+  1, HTJ2K Part 15, and JP2/JPH features, and what is out of scope
+- [docs/t803-conformance.md](docs/t803-conformance.md) - T.803 v3 decoder
+  conformance results and encoder procedure
+- [docs/j2k-ml.md](docs/j2k-ml.md) - Burn integer batch groups, plan reuse,
+  and GPU decode/upload adapters
+- [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md) - Apple Silicon MPSGraph
+  integration
+- [docs/release.md](docs/release.md) - release and packaging process
+- [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot
+- [CHANGELOG.md](CHANGELOG.md) - release notes
 
-## Benchmark and parity policy
+## Benchmarks
 
-Benchmark publication requirements are maintained in
-[docs/benchmark-corpora.md](docs/benchmark-corpora.md), with current run
-evidence in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
-Use `cargo run -p xtask --features adoption -- adoption-benchmark` for
-publication bundles and
+Benchmark rules are in [docs/benchmark-corpora.md](docs/benchmark-corpora.md)
+and current results in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+Run `cargo run -p xtask --features adoption -- adoption-benchmark` to produce
+a benchmark bundle and
 `cargo run -p xtask --features adoption -- adoption-report --run-dir <run-dir>`
-for the guarded report.
-OpenJPEG/Grok/CUDA/Metal/Kakadu/OpenJPH claims must use the required comparator
-or hardware gates described in the benchmark docs; skipped rows and emulated
-rows are diagnostic evidence only.
+to build the report. Comparisons with OpenJPEG, Grok, Kakadu, OpenJPH, CUDA,
+or Metal require the comparator or hardware described in the benchmark docs;
+skipped and emulated rows are for diagnosis only.
 
 ## Security
 
-Report vulnerabilities according to [SECURITY.md](SECURITY.md). Codec errors
-should be explicit, non-sensitive, and should not silently treat unsupported
-input as successful decode.
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

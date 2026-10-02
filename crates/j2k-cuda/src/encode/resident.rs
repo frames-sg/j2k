@@ -138,8 +138,8 @@ impl CudaEncodedJ2kMetadata {
 /// The final codestream is assembled in host memory today, copied to this
 /// device buffer, and then released from host memory before this value is
 /// returned. `CudaEncodedJ2k` therefore does not retain a duplicate host
-/// codestream. This is a device-resident output contract, not a claim that
-/// final codestream assembly itself ran on CUDA.
+/// codestream. The output lives on the device, but final codestream assembly
+/// ran on the CPU.
 #[derive(Debug)]
 pub struct CudaEncodedJ2k {
     /// Host-visible encode metadata without codestream bytes.

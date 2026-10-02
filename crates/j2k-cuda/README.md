@@ -1,34 +1,31 @@
 # j2k-cuda
 
-CUDA adapter for JPEG 2000 / HTJ2K decode, resident encode, and shared
-encode-stage paths.
+CUDA adapter for JPEG 2000 / HTJ2K decode, GPU-resident encode, and the shared
+encode stages.
 
-CPU and Auto surface requests may return host-backed surfaces. Strict
-CUDA-resident decode and CUDA-buffer encode use J2K-owned kernels and currently
-support HTJ2K codestreams: classic J2K subband plans and classic block coding
-are rejected by those resident paths. Separately, the shared encode-stage
-adapter can accelerate supported stages without widening the strict resident
-codec contract. Unsupported explicit CUDA requests return structured errors.
+CPU and `Auto` surface requests may return host-memory surfaces. Explicit CUDA
+decode to GPU memory and encode from CUDA buffers use J2K's own kernels and
+currently support HTJ2K only; classic J2K code blocks are rejected on those
+paths. The shared encode-stage adapter can still accelerate individual stages
+for other inputs. Unsupported explicit CUDA requests return an error.
 
-Host-backed fallbacks and the shared adapter/session types compile in default
-builds. Enable `cuda-runtime` for CUDA Driver API dispatch, constructible
-CUDA-resident surface and buffer types, and the CUDA-buffer encode APIs. Without
-that feature, strict CUDA requests cannot dispatch and return `CudaUnavailable`
-or the corresponding structured unsupported-request error.
+The host-memory paths and the session types build by default. Enable the
+`cuda-runtime` feature for CUDA Driver API dispatch, CUDA-resident surface and
+buffer types, and the CUDA-buffer encode APIs. Without it, explicit CUDA
+requests return `CudaUnavailable` or an unsupported-request error.
 
 ## Host-input lossless encode routing
 
-`CudaLosslessEncoder::encode` honors the `EncodeBackendPreference` stored in
-each job's options. `CpuOnly` never probes CUDA. `Auto` may use supported CUDA
-stages and returns a CPU result when the runtime/device is unavailable or CUDA
-does not cover every required stage. `RequireDevice` fails unless CUDA satisfies
-the complete route. A CUDA execution error is never hidden by retrying the job
-on the CPU.
+`CudaLosslessEncoder::encode` follows the `EncodeBackendPreference` in each
+job's options. `CpuOnly` never touches CUDA. `Auto` uses CUDA for the stages it
+supports and returns a CPU result when no device is available or CUDA cannot
+run every stage. `RequireDevice` fails unless CUDA runs the whole encode. A
+CUDA error is never hidden by retrying on the CPU.
 
-The opaque result reports the requested preference, the backend that satisfied
-the complete encode contract, any Auto fallback reason, and per-stage CUDA
-dispatches. A CPU backend with nonzero CUDA dispatches means CUDA completed some
-stages but the CPU satisfied the overall contract.
+The result reports the requested preference, the backend that completed the
+encode, the reason for any `Auto` fallback, and the number of CUDA dispatches
+per stage. A CPU backend with nonzero CUDA dispatches means CUDA ran some
+stages and the CPU finished the encode.
 
 ```rust
 use j2k::{
@@ -49,19 +46,19 @@ assert_eq!(result.requested_backend(), EncodeBackendPreference::Auto);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`CudaLosslessEncoder::encode_strict_cuda` and the compatibility
-`encode_j2k_lossless_with_cuda` free function deliberately override the stored
-preference with `RequireDevice`. The encoder can be moved between threads, but
-is not shareable by reference: each call takes exclusive mutable access.
-Input/route/runtime errors clear cached accelerator state before the next job.
+`CudaLosslessEncoder::encode_strict_cuda` and the older
+`encode_j2k_lossless_with_cuda` function always use `RequireDevice`, whatever
+the options say. The encoder can be moved between threads but not shared: each
+call takes `&mut self`. Input, routing, and runtime errors clear the cached GPU
+state before the next job.
 
-`cuda-runtime` is not proof that every CUDA Oxide kernel was built on the local
-host. Product PTX is generated only on supported Linux cuda-oxide build hosts;
-other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`
-on CUDA validation and benchmark hosts to fail the build when PTX is missing.
-Runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.
+Enabling `cuda-runtime` does not guarantee that the CUDA Oxide kernels were
+built. PTX is only generated on Linux hosts with the cuda-oxide toolchain;
+other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
+CUDA test and benchmark hosts to make missing PTX a build error. Calling a
+placeholder kernel returns an error saying the PTX was not built.
 
-NVIDIA performance claims require self-hosted benchmark evidence.
+NVIDIA performance numbers come from self-hosted benchmark runs.
 
 ## Links
 

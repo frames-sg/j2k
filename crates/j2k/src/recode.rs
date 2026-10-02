@@ -126,8 +126,8 @@ pub struct ReencodedHtj2k {
 /// This is a JPEG 2000-family coefficient-domain recode. For supported classic
 /// lossless 5/3 sources it preserves decoded quantized wavelet coefficients and
 /// changes only the block coding and packetized codestream representation. It
-/// is not a DCT JPEG transcode and does not claim byte preservation except when
-/// [`J2kToHtj2kMode::Passthrough`] is reported.
+/// is not a DCT JPEG transcode, and the output bytes differ from the input
+/// unless [`J2kToHtj2kMode::Passthrough`] is reported.
 pub fn recode_j2k_to_htj2k_lossless(
     bytes: &[u8],
     options: J2kToHtj2kOptions,

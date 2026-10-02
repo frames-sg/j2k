@@ -6,9 +6,9 @@ This crate owns codestream parsing, native encode/decode helpers, packetization
 support, JP2/JPH still-image wrapper handling, HTJ2K cleanup/refinement table
 helpers, and header inspection helpers used by higher-level crates.
 
-The support boundary follows the public facade: raw J2K/J2C codestreams, JP2
-still-image files, raw HTJ2K codestreams, and JPH still-image files. JPX /
-JPEG 2000 Part 2 extension support is outside this engine's current claim.
+It supports the same inputs as `j2k`: raw J2K/J2C codestreams, JP2 files, raw
+HTJ2K codestreams, and JPH files. JPX (JPEG 2000 Part 2) extensions are not
+supported.
 
 Most application code should use `j2k` instead.
 

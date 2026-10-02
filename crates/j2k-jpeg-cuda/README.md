@@ -2,26 +2,24 @@
 
 CUDA adapter for J2K baseline JPEG decode and encode surfaces.
 
-Supported CUDA paths use J2K-owned CUDA kernels and CUDA device memory
-decode outputs. Baseline encode accepts Gray8 or Rgb8 CUDA input buffers and
-returns host `EncodedJpeg` output, for both single images and batches. Explicit
-CUDA requests are strict; unsupported JPEG shapes return structured errors
-instead of silently falling back to CPU.
+The CUDA paths use J2K's own kernels and decode into CUDA device memory.
+Baseline encode takes Gray8 or Rgb8 CUDA buffers and returns host
+`EncodedJpeg` output, for single images and batches. Explicit CUDA requests
+return an error for unsupported JPEGs; they do not fall back to the CPU.
 
-Adapter, session, error, and runtime-free stub types compile in default builds.
-Enable `cuda-runtime` for CUDA Driver API dispatch, constructible CUDA-buffer
-and output-tile types, and actual decode or encode execution. Without that
-feature, strict CUDA operations return `CudaUnavailable`.
+The adapter, session, and error types build by default. Enable `cuda-runtime`
+for CUDA Driver API dispatch, the CUDA buffer and output-tile types, and actual
+decode or encode. Without it, explicit CUDA operations return `CudaUnavailable`.
 
-`cuda-runtime` is not proof that every CUDA Oxide kernel was built on the local
-host. Product PTX is generated only on supported Linux cuda-oxide build hosts;
-other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`
-on CUDA validation and benchmark hosts to fail the build when PTX is missing.
-Runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.
+Enabling `cuda-runtime` does not guarantee that the CUDA Oxide kernels were
+built. PTX is only generated on Linux hosts with the cuda-oxide toolchain;
+other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
+CUDA test and benchmark hosts to make missing PTX a build error. Calling a
+placeholder kernel returns an error saying the PTX was not built.
 
-CPU-backed scaled and region-scaled decode surfaces follow the CPU JPEG
-sampling rules and report the scaled output dimensions. These convenience
-paths do not establish device execution for scaled JPEG decoding.
+Scaled and region-scaled decodes run on the CPU, follow the CPU JPEG sampling
+rules, and report the scaled output dimensions. Scaled JPEG decoding does not
+run on the GPU.
 
 ## Links
 

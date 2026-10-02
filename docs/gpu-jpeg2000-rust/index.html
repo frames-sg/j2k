@@ -67,20 +67,20 @@
         </article>
         <article class="card">
           <h2>CUDA</h2>
-          <p><code>j2k-cuda</code>, <code>j2k-jpeg-cuda</code>, and <code>j2k-transcode-cuda</code> integrate J2K-owned kernels, CUDA device surfaces, and strict route policy for supported shapes.</p>
+          <p><code>j2k-cuda</code>, <code>j2k-jpeg-cuda</code>, and <code>j2k-transcode-cuda</code> provide J2K's own CUDA kernels and CUDA device surfaces for supported shapes.</p>
         </article>
         <article class="card">
           <h2>Metal</h2>
-          <p><code>j2k-metal</code>, <code>j2k-jpeg-metal</code>, and <code>j2k-transcode-metal</code> integrate Apple Metal-backed paths on macOS under the same support boundary.</p>
+          <p><code>j2k-metal</code>, <code>j2k-jpeg-metal</code>, and <code>j2k-transcode-metal</code> provide Apple Metal paths on macOS for the same formats.</p>
         </article>
       </div>
     </section>
     <section class="section alt">
       <div class="wrap copy">
-        <h2>Strict backend behavior</h2>
-        <p><code>BackendRequest::Auto</code> may choose CPU for unsupported or unbenchmarked shapes. Explicit CUDA or Metal requests are strict and report unsupported paths clearly.</p>
-        <p>The codec support boundary is the same as the CPU baseline: JPEG 2000 Part 1 codestreams, JP2 still-image files, HTJ2K Part 15 codestreams, and JPH still-image files. GPU backends accelerate selected shapes inside that boundary; they are not a separate promise of full-device coverage.</p>
-        <p class="note">Use <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a> for codec support. Current public benchmark evidence is in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; adoption-facing speed claims require a completed external bundle with <code>publication_eligible=true</code>.</p>
+        <h2>Backend selection</h2>
+        <p><code>BackendRequest::Auto</code> uses the CPU for shapes the GPU does not support or was not measured to speed up. Explicit CUDA or Metal requests return an error for unsupported shapes.</p>
+        <p>The GPU backends support the same formats as the CPU path: JPEG 2000 Part 1 codestreams, JP2 files, HTJ2K Part 15 codestreams, and JPH files. They speed up selected shapes within those formats; not every stage or shape runs on the GPU.</p>
+        <p class="note">Use <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a> for codec support. Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; published comparisons need an external benchmark bundle with <code>publication_eligible=true</code>.</p>
       </div>
     </section>
   </main>

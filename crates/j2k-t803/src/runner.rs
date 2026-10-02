@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Fail-closed external-corpus and IUT runner support.
+//! External-corpus and implementation-under-test runner support. Any
+//! validation failure stops the run.
 
 mod archive;
 mod cache;

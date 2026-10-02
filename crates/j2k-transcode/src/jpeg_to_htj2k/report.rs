@@ -558,8 +558,8 @@ pub struct TranscodeTimingReport {
 }
 
 impl TranscodeTimingReport {
-    /// Returns true when the report contains evidence that accelerator-backed
-    /// work executed for the transcode transform path.
+    /// Returns true when the report shows that accelerator work ran for the
+    /// transcode transform path.
     pub fn accelerator_work_observed(&self) -> bool {
         self.accelerator_dispatches > 0
             || self.dwt97_batch_pack_upload_transfers > 0

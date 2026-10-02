@@ -1,19 +1,17 @@
 # Public J2K/HTJ2K Support Matrix
 
-This document records the implemented JPEG 2000 Part 1 and
-HTJ2K Part 15 feature boundary. It is not a standards-conformance claim. Keep
-it synchronized with `corpus/j2k-conformance/support-inventory.tsv`, repo-local
-self-checks, and adoption benchmark publication gates. Release-scoped and
-development ISO/IEC 15444-4 evidence and its exact-SHA release gates are tracked
-in
-[`docs/t803-conformance.md`](t803-conformance.md). Run:
+Which JPEG 2000 Part 1 and HTJ2K Part 15 features are implemented. This is
+not a conformance statement; ISO/IEC 15444-4 conformance results are in
+[`docs/t803-conformance.md`](t803-conformance.md). Keep this page in sync with
+`corpus/j2k-conformance/support-inventory.tsv`, the tests it names, and the
+benchmark rules. Check it with:
 
 ```bash
 cargo xtask public-support
 ```
 
-Final support requires the implementation rows below to move to `Done` or to a
-documented non-Part-1/non-Part-15 `Out of scope` status.
+For `--final`, every row must be `Done` or `Out of scope` (for features outside
+Part 1 and Part 15).
 
 | ID | Status | Existing subsystem to extend | Reused helpers/APIs | Self-check test | Comparator/publication gate | Remaining limitation |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -34,18 +32,17 @@ documented non-Part-1/non-Part-15 `Out of scope` status.
 | bounded-row-decode | Done | `j2k-native::PreparedRegionDecoder`, `j2k::J2kDecoder` row facade | Scoped parsed-tile ownership, reusable decoder context, bounded packed-row scratch | `prepared_region_decoder_parses_tile_graph_once_across_regions`; `prepared_region_decoder_reuses_one_htj2k_tile_graph`; `decode_rows_u8_matches_full_rgb8_decode`; `decode_rows_u16_matches_full_gray16_decode`; `decode_rows_u16_matches_full_decode_for_signed_samples`; `decode_rows_u16_preserves_exact_high_bit_fallback`; `decode_rows_u8_matches_full_gray8_decode_for_htj2k`; one-row-at-a-time RGBA8/RGBA16 parity | CPU classic and HTJ2K row parity | Through the exact `f32` component-plane ceiling, one bounded row operation parses the tile graph once and reuses it across stripes for classic JPEG 2000 and HTJ2K. Parsed metadata remains in every stripe's aggregate allocation baseline; component, Tier-1, and IDWT owners remain reusable without retaining graphs across unrelated images. Above 24-bit precision, row decode preserves the existing exact-integer full-decode/crop fallback until the prepared session can borrow integer sidecar planes. |
 | jpx_part2_deferred | Out of scope | N/A | N/A | N/A | N/A | JPX/Part 2 is explicitly Out of scope for the Part 1 plus Part 15 support claim unless required for standard JP2/JPH still-image correctness. |
 
-## Owned batch codec boundary
+## Owned batch decoding
 
-The additive owned-batch codec accepts full, region, reduced, and
-region-plus-reduced requests and groups representable Gray, RGB, or RGBA output
-without padding. Its dense output types are exact `U8`, `U16`, or `I16` samples
-in NCHW or NHWC layout. Broader component counts, mixed component metadata,
-subsampled planes, and precision above 16 bits remain on the component-plane
-APIs. Explicit GPU routes fail with structured errors when an input is outside
-their retained-plan boundary; they do not stage decoded pixels through CPU as a
-fallback. Preparation failures remain indexed per input. Device codec-status
-errors that identify a job can name its original source, while
-command-buffer failures remain group-level and discard the affected dense group.
+The owned-batch decoder accepts full, region, reduced, and region-plus-reduced
+requests and groups Gray, RGB, or RGBA output by shape without padding. Output
+is `U8`, `U16`, or `I16` samples in NCHW or NHWC layout. Other component
+counts, mixed component metadata, subsampled planes, and precision above 16
+bits use the component-plane APIs. Explicit GPU requests return an error for
+inputs their plans cannot describe; they do not fall back to the CPU.
+Preparation failures are reported per input. A GPU decode error tied to a
+specific job names that job's source; a command-buffer failure fails the whole
+group.
 
 Separately, the legacy Metal full-image/tile-batch display APIs can decode
 unsigned origin-zero single-tile sampled RGB codestreams without MCT using
@@ -53,21 +50,19 @@ resident component plans and GPU sample replication. This covers full 4:2:2 and
 4:2:0 display tiles without changing the dense owned-batch boundary above.
 `sampled_color_batch_keeps_one_resident_submission` checks exact reversible
 pixels, odd dimensions, RGB8/RGBA8/RGB16 output, and one submission per batch.
-Other component-grid geometry retains the existing fallback. See
-[the architecture rationale](architecture.md#metal-sampled-component-decode).
+Other component-grid layouts use the existing CPU path. See
+[the architecture notes](architecture.md#metal-sampled-component-decode).
 
-The framework-specific contract and focused accelerator validation boundary are
-maintained in [`docs/j2k-ml.md`](j2k-ml.md). Dated hardware and throughput
-evidence is maintained separately in
-[`docs/benchmark-evidence.md`](benchmark-evidence.md).
+The Burn adapter is described in [`docs/j2k-ml.md`](j2k-ml.md), and hardware
+and throughput results in [`docs/benchmark-evidence.md`](benchmark-evidence.md).
 
-The experimental Apple Silicon direct MPSGraph boundary is maintained in
-[`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md). It supports static rank-four native
-integer groups and does not broaden the codec support matrix.
+The experimental Apple Silicon MPSGraph integration is described in
+[`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md). It handles static rank-four integer
+groups and adds no codec features beyond this table.
 
-## Required Local Gates
+## Local checks
 
-Run the narrow gates while moving individual rows:
+Run these while changing individual rows:
 
 ```bash
 cargo test -p j2k-native
@@ -78,8 +73,8 @@ cargo xtask stable-api
 cargo xtask public-support
 ```
 
-Final support-matrix evidence also requires these support/publication gates.
-Full release gating remains in [`docs/release.md`](release.md):
+Before marking the matrix final, also run these (the full release checklist
+is in [`docs/release.md`](release.md)):
 
 ```bash
 cargo xtask public-support --final
@@ -89,10 +84,10 @@ cargo xtask bench-build
 cargo run -p xtask --features adoption -- adoption-report
 ```
 
-The feature-disabled alias form `cargo xtask adoption-report` must not be used;
-invoke `cargo run -p xtask --features adoption -- adoption-report` instead. The
-`adoption-report` subcommand must continue to reject reports that do not include
-the required external corpora and comparator evidence.
+Use `cargo run -p xtask --features adoption -- adoption-report`, not
+`cargo xtask adoption-report` (which is built without the feature).
+`adoption-report` rejects reports that lack the required external corpora and
+comparator results.
 
 ## Conformance Manifest Row Mapping
 

@@ -282,7 +282,7 @@ pub fn load_auto_routing_pnm(workload: &AutoRoutingWorkload) -> Result<AutoRouti
     })
 }
 
-/// Build one CPU-versus-hybrid evidence cell with no device-native claim.
+/// Build one CPU-versus-hybrid route cell with no GPU-only measurement.
 #[must_use]
 pub fn auto_routing_route_cell(
     workload: &str,

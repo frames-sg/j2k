@@ -1,14 +1,11 @@
 # j2k-types
 
-Shared JPEG 2000 and HTJ2K encode-stage contracts and helpers for the j2k
-workspace.
+Encode-stage types and helpers shared by the J2K crates.
 
-This crate is the neutral public contract between the `j2k` facade, the
-`j2k-native` codec engine, and device adapters. It defines encode-stage jobs,
-outputs, and dispatch reports, plus progression-order encoding and packet
-descriptor sorting. It also owns the shared encode-stage accelerator trait and
-its default CPU-only implementation, so participating crates do not mirror
-those contracts.
+The `j2k` crate, the `j2k-native` engine, and the GPU adapters all use these
+types. The crate defines encode-stage jobs, outputs, and dispatch reports,
+progression-order encoding, and packet descriptor sorting, plus the
+encode-stage accelerator trait and its default CPU-only implementation.
 
 ## Links
 

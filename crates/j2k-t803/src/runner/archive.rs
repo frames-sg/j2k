@@ -35,7 +35,7 @@ impl Default for ArchiveLimits {
     }
 }
 
-/// Error returned by fail-closed corpus acquisition and validation.
+/// Error returned when corpus download or validation fails.
 #[derive(Debug, Error)]
 pub enum RunnerError {
     /// Filesystem operation failed.

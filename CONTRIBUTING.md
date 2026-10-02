@@ -17,8 +17,8 @@ cargo xtask test
 cargo xtask doc
 ```
 
-Comparator benchmarks may need optional system libraries. The workspace README
-defines benchmark publication and no-silent-skip behavior.
+Comparator benchmarks may need optional system libraries. Benchmark rules are
+in [`docs/benchmark-corpora.md`](docs/benchmark-corpora.md).
 
 ## Pull Requests
 
@@ -27,16 +27,16 @@ defines benchmark publication and no-silent-skip behavior.
 - Add or update behavior-focused tests for decode, API, or data-flow changes.
 - Do not remove passing regression tests as cleanup.
 - Avoid hardcoded secrets, credentials, or local machine paths.
-- Surface unsupported inputs and backend failures explicitly; do not add silent
-  fallback paths.
-- Run the narrowest relevant tests before opening a PR, then run the workspace
-  checks above before release-facing changes.
+- Return an error for unsupported inputs and backend failures; do not add
+  silent fallbacks.
+- Run the relevant tests before opening a PR, and the workspace checks above
+  before changes that affect a release.
 
 ## GPU Validation
 
-The GPU validation workflow is intentionally `workflow_dispatch` only. It does
-not run automatically on `pull_request` or `push` because it uses
-cost-sensitive self-hosted CUDA and Metal runners.
+The GPU validation workflow only runs on `workflow_dispatch`, not on
+`pull_request` or `push`, because it uses paid self-hosted CUDA and Metal
+runners.
 
 Pull requests that touch CUDA, Metal, shared GPU-profile paths, or
 `.github/workflows/gpu-validation.yml` must record a successful manual
@@ -47,23 +47,22 @@ fails until the required quick backend job names have succeeded:
 - `CUDA quick validation` for CUDA or shared GPU changes.
 - `Metal quick validation` for Metal or shared GPU changes.
 
-Release candidates require one exact-SHA `target=all`, `mode=full` dispatch in
-which `CUDA full release validation` and `Metal full release validation` both
-succeed. Manual performance and profiling work belongs in the separate
-`gpu-benchmarks.yml` workflow so it cannot contend with validation implicitly.
+A release candidate needs one `target=all`, `mode=full` dispatch for its exact
+commit in which `CUDA full release validation` and `Metal full release
+validation` both succeed. Performance and profiling runs go in the separate
+`gpu-benchmarks.yml` workflow so they do not compete with validation.
 
-Hosted macOS CI runs `cargo xtask metal-compile`; that is a compile and pure-test
-gate, not Metal hardware evidence. The self-hosted Metal job runs
+Hosted macOS CI runs `cargo xtask metal-compile`, which only compiles and runs
+the tests that need no GPU. The self-hosted Metal job runs
 `cargo xtask release-metal` with either `--mode quick` or `--mode full`. It
 fails on skipped runtime tests or a missing Metal device.
 
-Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without an
-explicit policy decision.
+Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without
+agreeing on it first.
 
 ## Public API Changes
 
-Public decode APIs are part of the general codec integration surface. Changes to
-ROI, scaled decode, tile-batch, row-streaming, context, scratch-pool, or device
+Changes to ROI, scaled decode, tile-batch, row-streaming, context, scratch-pool, or device
 surface behavior should update:
 
 - README quick-start or examples when user-facing behavior changes
@@ -71,9 +70,8 @@ surface behavior should update:
 - integration tests covering caller-visible behavior
 - the README benchmark policy when benchmark methodology changes
 - `docs/stable-api-1.0.public-api.txt` and
-  `docs/stable-api-1.0.implementation-public-api.txt` transactionally via
-  `cargo xtask stable-api --write`
-  when semver-visible public items change
-- `docs/public-support.md` plus `cargo xtask public-support` when codec support
-  claims change
-- `cargo xtask semver` for stable published library surfaces
+  `docs/stable-api-1.0.implementation-public-api.txt`, regenerated together
+  with `cargo xtask stable-api --write`, when public items change
+- `docs/public-support.md`, checked with `cargo xtask public-support`, when
+  codec support changes
+- `cargo xtask semver` for the stable published libraries

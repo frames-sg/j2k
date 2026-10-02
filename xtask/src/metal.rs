@@ -26,7 +26,7 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k",
 ];
 
-const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
+const METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
     "engine::tests::classic::irreversible_hybrid_cpu_tier1_matches_native_decode_exactly",
     "engine::tests::classic::prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt",
     "engine::tests::classic::prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload",
@@ -326,7 +326,7 @@ fn validate_required_ignored_inventory(mode: ValidationMode) -> Result<(), Strin
         "list required ignored J2K Metal runtime tests",
     )?;
     let actual = listed_rust_tests(&output);
-    let expected = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let expected = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .chain(METAL_OPTIONAL_IGNORED_TESTS)
         .map(|name| (*name).to_string())
@@ -403,15 +403,15 @@ fn validate_exact_ignored_run(output: &str) -> Result<(), String> {
     let label = "required ignored J2K Metal runtime inventory";
     reject_skip_markers(output, label)?;
     let passed = passed_test_count(output);
-    if passed != J2K_METAL_REQUIRED_IGNORED_TESTS.len() {
+    if passed != METAL_REQUIRED_IGNORED_TESTS.len() {
         return Err(format!(
             "{label} passed {passed} tests, expected exactly {}",
-            J2K_METAL_REQUIRED_IGNORED_TESTS.len()
+            METAL_REQUIRED_IGNORED_TESTS.len()
         ));
     }
 
     let actual = passed_rust_tests(output);
-    let expected = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let expected = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .map(|name| (*name).to_string())
         .collect::<BTreeSet<_>>();

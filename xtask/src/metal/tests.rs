@@ -6,23 +6,23 @@ use crate::test_command::RecordingProgram;
 use super::{
     listed_rust_tests, metal_compile, passed_rust_tests, reject_skip_markers, release_metal,
     run_metal_compile, run_release_metal, runtime_suite_args, validate_exact_ignored_run,
-    J2K_METAL_REQUIRED_IGNORED_TESTS, METAL_OPTIONAL_IGNORED_TESTS,
+    METAL_OPTIONAL_IGNORED_TESTS, METAL_REQUIRED_IGNORED_TESTS,
 };
 use crate::gpu_validation::ValidationMode;
 
 fn recording_metal_cargo() -> RecordingProgram {
-    let listed = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let listed = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .chain(METAL_OPTIONAL_IGNORED_TESTS)
         .map(|name| format!("printf '%s\\n' '{name}: test'"))
         .collect::<Vec<_>>()
         .join("\n");
-    let passed = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let passed = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .map(|name| format!("printf '%s\\n' 'test {name} ... ok'"))
         .collect::<Vec<_>>()
         .join("\n");
-    let passed_count = J2K_METAL_REQUIRED_IGNORED_TESTS.len();
+    let passed_count = METAL_REQUIRED_IGNORED_TESTS.len();
     let script = format!(
         r#"case " $* " in
 *" --list "*)
@@ -171,7 +171,7 @@ fn exact_ignored_validation_rejects_zero_tests() {
 
 #[test]
 fn ignored_inventory_is_unique_and_has_expected_size() {
-    let required = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let required = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
@@ -194,14 +194,14 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
     ));
     assert!(optional.contains("engine::tests::decode_stage_profile::batched_idwt_route_profile"));
     assert!(optional.contains("engine::tests::decode_stage_profile::decode_stage_profile"));
-    assert_eq!(required.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
+    assert_eq!(required.len(), METAL_REQUIRED_IGNORED_TESTS.len());
     assert_eq!(optional.len(), METAL_OPTIONAL_IGNORED_TESTS.len());
     assert!(required.is_disjoint(&optional));
 }
 
 #[test]
 fn ignored_engine_inventory_tracks_the_current_module_path() {
-    let engine_tests = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let engine_tests = METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .filter(|name| {
             name.starts_with("engine::tests::classic::")
@@ -210,7 +210,7 @@ fn ignored_engine_inventory_tracks_the_current_module_path() {
         })
         .count();
     assert_eq!(engine_tests, 13);
-    assert!(J2K_METAL_REQUIRED_IGNORED_TESTS
+    assert!(METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .all(|name| !name.starts_with("compute::tests::")));
 }

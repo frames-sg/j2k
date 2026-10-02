@@ -151,8 +151,8 @@ impl CudaLosslessEncoder {
     ///
     /// This method ignores the job's stored backend preference and behaves as
     /// [`EncodeBackendPreference::RequireDevice`]. It exists alongside
-    /// [`Self::encode`] so CUDA-specific callers can opt into fail-closed routing
-    /// without changing reusable per-job option templates.
+    /// [`Self::encode`] so CUDA-specific callers can require CUDA (with no CPU
+    /// fallback) without changing reusable per-job option templates.
     pub fn encode_strict_cuda(
         &mut self,
         samples: J2kLosslessSamples<'_>,

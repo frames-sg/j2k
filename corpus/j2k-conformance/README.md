@@ -18,18 +18,18 @@ The deterministic encoder procedure is described by:
 - `encoder-matrix-v2.toml`
 
 Those Annex D/F results are informative under T.803 and are not decoder
-conformance claims. Supported cases use the vendored OpenJPEG 2.5.3 T.804
+conformance results. Supported cases use the vendored OpenJPEG 2.5.3 T.804
 decoder. OpenJPEG rejects HT code-blocks carrying RGN before decoding, so the
-retained HT+RGN capability case uses a clean, pinned OpenHTJ2K 0.19.0
-executable for explicitly labelled Part 15 interoperability evidence. Run
-`scripts/prepare-openhtj2k-reference.sh` before the CPU matrix; the report pins
-the OpenHTJ2K source revision and platform-specific executable hash and states
-that this supplemental result is not T.804 evidence.
+HT+RGN capability case is decoded by a clean, pinned OpenHTJ2K 0.19.0
+executable instead, as a labelled Part 15 interoperability check. Run
+`scripts/prepare-openhtj2k-reference.sh` before the CPU matrix; the report
+records the OpenHTJ2K source revision and executable hash and marks this case as
+not a T.804 result.
 
 `support-inventory.tsv` is the feature-support ledger used by `cargo xtask
 public-support`; it contains no corpus paths, is not consumed by the T.803
-runner, and must not be cited as exact-reference evidence.
+runner, and is not a conformance result.
 
-Generated JSON and Markdown reports, not narrative summaries, are the release
-evidence. The claim policy and current blocker are documented in
+The generated JSON and Markdown reports are the release results, not any
+summary of them. What is stated and why is in
 [`docs/t803-conformance.md`](../../docs/t803-conformance.md).
