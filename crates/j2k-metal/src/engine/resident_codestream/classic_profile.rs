@@ -125,7 +125,6 @@ pub(super) fn dispatch_classic_tier1_profiles(
         gpu_stage_command_buffers,
         classic_command_buffer_commit_duration,
     } = request;
-    let split_command_buffers = true;
     let ClassicProfileStages {
         enabled:
             [profile_classic_tier1_raw_pack, profile_classic_tier1_arithmetic_pack, profile_classic_tier1_pass_plan, profile_classic_tier1_symbol_plan, profile_classic_tier1_token_emit, profile_classic_tier1_split_token_emit],
@@ -139,7 +138,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_job_buffer,
             tier1_jobs,
         )?;
-        if readback.is_some() && split_command_buffers {
+        if readback.is_some() {
             let next_label = next_enabled_classic_stage_label(&[
                 (profile_classic_tier1_raw_pack, CLASSIC_TIER1_RAW_PACK_LABEL),
                 (
@@ -182,7 +181,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_jobs,
             tier1_output_capacity_total,
         )?;
-        if buffer.is_some() && split_command_buffers {
+        if buffer.is_some() {
             let next_label = next_enabled_classic_stage_label(&[
                 (
                     profile_classic_tier1_arithmetic_pack,
@@ -224,7 +223,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_jobs,
             tier1_output_capacity_total,
         )?;
-        if buffer.is_some() && split_command_buffers {
+        if buffer.is_some() {
             let next_label = next_enabled_classic_stage_label(&[
                 (
                     profile_classic_tier1_symbol_plan,
@@ -261,7 +260,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_job_buffer,
             tier1_jobs,
         )?;
-        if readback.is_some() && split_command_buffers {
+        if readback.is_some() {
             let next_label = next_enabled_classic_stage_label(&[
                 (
                     profile_classic_tier1_pass_plan,
@@ -298,7 +297,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_job_buffer,
             tier1_jobs,
         )?;
-        if readback.is_some() && split_command_buffers {
+        if readback.is_some() {
             let next_label = next_enabled_classic_stage_label(&[
                 (
                     profile_classic_tier1_token_emit,
@@ -333,7 +332,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_job_buffer,
             tier1_jobs,
         )?;
-        if readback.is_some() && split_command_buffers {
+        if readback.is_some() {
             let next_label = next_enabled_classic_stage_label(&[(
                 profile_classic_tier1_split_token_emit,
                 CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
@@ -360,7 +359,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
             tier1_job_buffer,
             tier1_jobs,
         )?;
-        if readback.is_some() && split_command_buffers {
+        if readback.is_some() {
             command_buffer = finish_resident_encode_split_command_buffer_timed(
                 command_buffer,
                 runtime,

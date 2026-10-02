@@ -421,11 +421,6 @@ pub(in crate::engine) fn finish_completed_resident_lossless_codestream_batch(
         stage_stats.packet_payload_copy_active_stripe_count_total = stage_stats
             .packet_payload_copy_active_stripe_count_total
             .saturating_add(packet_payload_copy_active_stripes);
-        if pending.codestream_payload_copy_dispatched {
-            stage_stats.codestream_payload_copy_bytes_total = stage_stats
-                .codestream_payload_copy_bytes_total
-                .saturating_add(packet_output_used);
-        }
         codestreams.push(J2kResidentLosslessCodestream {
             buffer: pending.buffer.clone(),
             byte_offset: pending.byte_offsets[index],

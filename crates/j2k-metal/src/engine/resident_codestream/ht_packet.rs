@@ -16,9 +16,9 @@ use super::{
     Buffer, Duration, Error, HtTier1Prepared, Instant, J2kBatchedPacketPayloadCopyDispatch,
     J2kCodestreamAssemblyStatus, J2kHtPacketOutputCapacityMode, J2kPacketBlock,
     J2kPacketEncodeStatus, J2kPacketPayloadCopyJob, J2kPendingResidentLosslessCodestreamBatch,
-    J2kResidentBatchEncodeItem, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer,
-    J2kResidentEncodeStageStats, J2kResidentPacketBlockParams, MetalRuntime,
-    ResidentBatchPacketPlan, ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
+    J2kResidentBatchEncodeItem, J2kResidentEncodeGpuStage, J2kResidentEncodeStageStats,
+    J2kResidentPacketBlockParams, MetalRuntime, ResidentBatchPacketPlan,
+    ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
     PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE,
@@ -37,7 +37,6 @@ struct HtBatchSubmission {
     tier1_status_readback: Option<J2kResidentTier1StatusReadback>,
     packet_buffers: HtPacketBuffers,
     stage_stats: J2kResidentEncodeStageStats,
-    codestream_payload_copy_dispatched: bool,
 }
 
 struct HtPacketBuffers {
@@ -82,7 +81,6 @@ fn submit_ht_packet_stages(
     packet_capacity_mode: J2kHtPacketOutputCapacityMode,
     profile_stages: bool,
 ) -> Result<HtBatchSubmission, Error> {
-    let split_profile_commands = true;
     let mut packet_block_prep_duration = Duration::ZERO;
     let mut packetization_duration = Duration::ZERO;
     let mut codestream_assembly_duration = Duration::ZERO;
@@ -235,7 +233,9 @@ fn submit_ht_packet_stages(
     let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "HTJ2K Metal batch tile count exceeds u64".to_string(),
     })?;
-    if !resident_blocks.is_empty() {
+    if resident_blocks.is_empty() {
+        label_command_buffer(&command_buffer, "j2k htj2k resident packetization");
+    } else {
         let command_encode_started = profile_stages.then(Instant::now);
         let signpost =
             hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE);
@@ -265,17 +265,13 @@ fn submit_ht_packet_stages(
             packet_block_prep_duration =
                 packet_block_prep_duration.saturating_add(started.elapsed());
         }
-        if split_profile_commands {
-            command_buffer = finish_resident_encode_split_command_buffer(
-                command_buffer,
-                runtime,
-                J2kResidentEncodeGpuStage::PacketBlockPrep,
-                "j2k htj2k resident packetization",
-                &mut gpu_stage_command_buffers,
-            )?;
-        }
-    } else if split_profile_commands {
-        label_command_buffer(&command_buffer, "j2k htj2k resident packetization");
+        command_buffer = finish_resident_encode_split_command_buffer(
+            command_buffer,
+            runtime,
+            J2kResidentEncodeGpuStage::PacketBlockPrep,
+            "j2k htj2k resident packetization",
+            &mut gpu_stage_command_buffers,
+        )?;
     }
     let command_encode_started = profile_stages.then(Instant::now);
     let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE);
@@ -311,15 +307,13 @@ fn submit_ht_packet_stages(
     if let Some(started) = command_encode_started {
         packetization_duration = packetization_duration.saturating_add(started.elapsed());
     }
-    if split_profile_commands {
-        command_buffer = finish_resident_encode_split_command_buffer(
-            command_buffer,
-            runtime,
-            J2kResidentEncodeGpuStage::Packetization,
-            "j2k htj2k resident packet payload copy",
-            &mut gpu_stage_command_buffers,
-        )?;
-    }
+    command_buffer = finish_resident_encode_split_command_buffer(
+        command_buffer,
+        runtime,
+        J2kResidentEncodeGpuStage::Packetization,
+        "j2k htj2k resident packet payload copy",
+        &mut gpu_stage_command_buffers,
+    )?;
     let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
         runtime,
         &command_buffer,
@@ -335,18 +329,16 @@ fn submit_ht_packet_stages(
             signpost_name: SIGNPOST_ENCODE_HYBRID_HT_PAYLOAD_COPY_COMMAND_ENCODE,
         },
     )?;
-    if split_profile_commands {
-        if packet_payload_copy_dispatched {
-            command_buffer = finish_resident_encode_split_command_buffer(
-                command_buffer,
-                runtime,
-                J2kResidentEncodeGpuStage::PacketPayloadCopy,
-                "j2k htj2k resident codestream assembly",
-                &mut gpu_stage_command_buffers,
-            )?;
-        } else {
-            label_command_buffer(&command_buffer, "j2k htj2k resident codestream assembly");
-        }
+    if packet_payload_copy_dispatched {
+        command_buffer = finish_resident_encode_split_command_buffer(
+            command_buffer,
+            runtime,
+            J2kResidentEncodeGpuStage::PacketPayloadCopy,
+            "j2k htj2k resident codestream assembly",
+            &mut gpu_stage_command_buffers,
+        )?;
+    } else {
+        label_command_buffer(&command_buffer, "j2k htj2k resident codestream assembly");
     }
 
     let command_encode_started = profile_stages.then(Instant::now);
@@ -383,16 +375,13 @@ fn submit_ht_packet_stages(
         usize::try_from(max_packet_output_capacity).map_err(|_| Error::MetalKernel {
             message: "HTJ2K Metal batch max packet output capacity exceeds usize".to_string(),
         })?;
-    if split_profile_commands {
-        command_buffer = finish_resident_encode_split_command_buffer(
-            command_buffer,
-            runtime,
-            J2kResidentEncodeGpuStage::CodestreamAssembly,
-            "j2k htj2k resident result readback",
-            &mut gpu_stage_command_buffers,
-        )?;
-    }
-    let codestream_payload_copy_dispatched = false;
+    command_buffer = finish_resident_encode_split_command_buffer(
+        command_buffer,
+        runtime,
+        J2kResidentEncodeGpuStage::CodestreamAssembly,
+        "j2k htj2k resident result readback",
+        &mut gpu_stage_command_buffers,
+    )?;
     if let Some(started) = command_encode_started {
         codestream_assembly_duration =
             codestream_assembly_duration.saturating_add(started.elapsed());
@@ -407,12 +396,6 @@ fn submit_ht_packet_stages(
         ),
     )?;
     command_buffer.commit();
-    if split_profile_commands && codestream_payload_copy_dispatched {
-        gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
-            stage: J2kResidentEncodeGpuStage::CodestreamPayloadCopy,
-            command_buffer: command_buffer.clone(),
-        });
-    }
 
     let packet_job_count = packet_jobs.len();
     let packet_buffers = HtPacketBuffers {
@@ -480,7 +463,6 @@ fn submit_ht_packet_stages(
         tier1_status_readback,
         packet_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
     })
 }
 
@@ -501,7 +483,6 @@ fn finish_ht_batch(
         tier1_status_readback,
         packet_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
     } = submitted;
     let HtTier1Prepared {
         command_buffer,
@@ -553,7 +534,6 @@ fn finish_ht_batch(
         recyclable_shared_buffers,
         gpu_stage_command_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
         status_stage: "HTJ2K batched codestream assembly",
         length_error: "HTJ2K Metal batched codestream output length exceeds usize",
         capacity_error: "HTJ2K Metal batched codestream output length exceeds buffer",

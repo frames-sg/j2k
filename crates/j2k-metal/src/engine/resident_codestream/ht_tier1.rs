@@ -51,7 +51,6 @@ pub(super) fn prepare_ht_tier1(
     let mut ht_block_encode_duration = Duration::ZERO;
     let mut ht_table_build_started = profile_stages.then(Instant::now);
     let ht_tier1_setup_signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP);
-    let split_profile_commands = true;
     let mut gpu_stage_command_buffers = Vec::new();
     let mut recyclable_private_buffers = Vec::new();
     let recyclable_shared_buffers = Vec::new();
@@ -66,12 +65,10 @@ pub(super) fn prepare_ht_tier1(
             .then(|| first.coefficient_buffer.clone())
     });
     let needs_coefficient_copy = shared_coefficient_buffer.is_none();
-    let initial_command_buffer_label = if split_profile_commands && needs_coefficient_copy {
+    let initial_command_buffer_label = if needs_coefficient_copy {
         "j2k htj2k resident coefficient copy"
-    } else if split_profile_commands {
-        "j2k htj2k resident tier1 encode"
     } else {
-        "j2k htj2k resident encode batch"
+        "j2k htj2k resident tier1 encode"
     };
     let mut command_buffer =
         new_resident_encode_command_buffer(runtime, initial_command_buffer_label)?;
@@ -130,15 +127,13 @@ pub(super) fn prepare_ht_tier1(
                 }
             }
             blit.endEncoding();
-            if split_profile_commands {
-                command_buffer = finish_resident_encode_split_command_buffer(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::CoefficientCopy,
-                    "j2k htj2k resident tier1 encode",
-                    &mut gpu_stage_command_buffers,
-                )?;
-            }
+            command_buffer = finish_resident_encode_split_command_buffer(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::CoefficientCopy,
+                "j2k htj2k resident tier1 encode",
+                &mut gpu_stage_command_buffers,
+            )?;
             (coefficient_buffer, coefficient_offsets)
         };
 
@@ -242,16 +237,14 @@ pub(super) fn prepare_ht_tier1(
         if let Some(started) = command_encode_started {
             ht_block_encode_duration = ht_block_encode_duration.saturating_add(started.elapsed());
         }
-        if split_profile_commands {
-            command_buffer = finish_resident_encode_split_command_buffer(
-                command_buffer,
-                runtime,
-                J2kResidentEncodeGpuStage::HtBlock,
-                "j2k htj2k resident packetization",
-                &mut gpu_stage_command_buffers,
-            )?;
-        }
-    } else if split_profile_commands {
+        command_buffer = finish_resident_encode_split_command_buffer(
+            command_buffer,
+            runtime,
+            J2kResidentEncodeGpuStage::HtBlock,
+            "j2k htj2k resident packetization",
+            &mut gpu_stage_command_buffers,
+        )?;
+    } else {
         label_command_buffer(&command_buffer, "j2k htj2k resident packetization");
     }
 

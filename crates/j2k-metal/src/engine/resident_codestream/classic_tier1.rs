@@ -224,7 +224,6 @@ fn prepare_classic_coefficients(
     gpu_stage_command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     classic_command_buffer_commit_duration: &mut Duration,
 ) -> Result<ClassicCoefficientPreparation, Error> {
-    let split_command_buffers = true;
     let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
         let ptr = objc2::rc::Retained::as_ptr(&first.coefficient_buffer);
         prepared_tiles
@@ -236,12 +235,10 @@ fn prepare_classic_coefficients(
             .then(|| first.coefficient_buffer.clone())
     });
     let needs_coefficient_copy = shared_coefficient_buffer.is_none();
-    let initial_command_buffer_label = if split_command_buffers && needs_coefficient_copy {
+    let initial_command_buffer_label = if needs_coefficient_copy {
         "j2k classic resident coefficient copy"
-    } else if split_command_buffers {
-        "j2k classic resident Tier-1 encode"
     } else {
-        "j2k classic resident encode batch"
+        "j2k classic resident Tier-1 encode"
     };
     let mut command_buffer =
         new_resident_encode_command_buffer(runtime, initial_command_buffer_label)?;
@@ -295,17 +292,15 @@ fn prepare_classic_coefficients(
                 }
             }
             blit.endEncoding();
-            if split_command_buffers {
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::CoefficientCopy,
-                    "j2k classic resident Tier-1 encode",
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::CoefficientCopy,
+                "j2k classic resident Tier-1 encode",
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
             (coefficient_buffer, coefficient_offsets)
         };
 
@@ -638,7 +633,6 @@ fn dispatch_classic_tier1(
         classic_block_encode_duration,
         classic_command_buffer_commit_duration,
     } = request;
-    let split_command_buffers = true;
     let mut classic_gpu_token_pack_readback = None;
     if tier1_job_count > 0 {
         let command_encode_started = profile_stages.then(Instant::now);
@@ -653,17 +647,15 @@ fn dispatch_classic_tier1(
                 &mut *recyclable_private_buffers,
                 use_classic_split_mq_byte_gpu_token_pack,
             )?;
-            if split_command_buffers {
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::ClassicTier1SplitTokenEmit,
-                    "j2k classic resident Tier-1 split token pack",
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::ClassicTier1SplitTokenEmit,
+                "j2k classic resident Tier-1 split token pack",
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
             dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
                 runtime,
                 &command_buffer,
@@ -678,18 +670,16 @@ fn dispatch_classic_tier1(
                 *classic_block_encode_duration =
                     classic_block_encode_duration.saturating_add(started.elapsed());
             }
-            if split_command_buffers {
-                let next_label = classic_token_pack_next_label;
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
-                    next_label,
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            let next_label = classic_token_pack_next_label;
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
+                next_label,
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
         } else if use_classic_gpu_token_pack {
             let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
                 runtime,
@@ -699,17 +689,15 @@ fn dispatch_classic_tier1(
                 tier1_jobs,
                 &mut *recyclable_private_buffers,
             )?;
-            if split_command_buffers {
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::ClassicTier1TokenEmit,
-                    "j2k classic resident Tier-1 token pack",
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::ClassicTier1TokenEmit,
+                "j2k classic resident Tier-1 token pack",
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
             dispatch_classic_tier1_token_pack_from_gpu_tokens(
                 runtime,
                 &command_buffer,
@@ -730,18 +718,16 @@ fn dispatch_classic_tier1(
                 *classic_block_encode_duration =
                     classic_block_encode_duration.saturating_add(started.elapsed());
             }
-            if split_command_buffers {
-                let next_label = classic_token_pack_next_label;
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
-                    next_label,
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            let next_label = classic_token_pack_next_label;
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
+                next_label,
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
         } else {
             let encoder = new_compute_command_encoder(&command_buffer)?;
             label_compute_encoder(&encoder, "J2K Tier-1 encode");
@@ -765,20 +751,18 @@ fn dispatch_classic_tier1(
                 *classic_block_encode_duration =
                     classic_block_encode_duration.saturating_add(started.elapsed());
             }
-            if split_command_buffers {
-                let next_label = classic_token_pack_next_label;
-                command_buffer = finish_resident_encode_split_command_buffer_timed(
-                    command_buffer,
-                    runtime,
-                    J2kResidentEncodeGpuStage::ClassicBlock,
-                    next_label,
-                    &mut *gpu_stage_command_buffers,
-                    profile_stages,
-                    &mut *classic_command_buffer_commit_duration,
-                )?;
-            }
+            let next_label = classic_token_pack_next_label;
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::ClassicBlock,
+                next_label,
+                &mut *gpu_stage_command_buffers,
+                profile_stages,
+                &mut *classic_command_buffer_commit_duration,
+            )?;
         }
-    } else if split_command_buffers {
+    } else {
         label_command_buffer(&command_buffer, "j2k classic resident packetization");
     }
 

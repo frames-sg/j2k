@@ -42,7 +42,6 @@ pub(super) enum J2kResidentEncodeGpuStage {
     Packetization,
     PacketPayloadCopy,
     CodestreamAssembly,
-    CodestreamPayloadCopy,
 }
 
 pub(super) fn duration_share(duration: Duration, count: usize) -> Duration {
@@ -181,11 +180,6 @@ pub(super) fn record_completed_resident_encode_gpu_stages(
             J2kResidentEncodeGpuStage::CodestreamAssembly => {
                 stats.codestream_assembly_gpu_duration = stats
                     .codestream_assembly_gpu_duration
-                    .saturating_add(duration);
-            }
-            J2kResidentEncodeGpuStage::CodestreamPayloadCopy => {
-                stats.codestream_payload_copy_gpu_duration = stats
-                    .codestream_payload_copy_gpu_duration
                     .saturating_add(duration);
             }
         }

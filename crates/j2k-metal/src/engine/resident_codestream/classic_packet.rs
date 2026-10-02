@@ -17,10 +17,9 @@ use super::{
     Error, Instant, J2kBatchedPacketPayloadCopyDispatch, J2kClassicEncodeOutputCapacityMode,
     J2kCodestreamAssemblyStatus, J2kPacketEncodeStatus, J2kPacketPayloadCopyJob,
     J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
-    J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentPacketBlockParams, MetalRuntime, ResidentBatchPacketPlan,
-    ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
-    PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+    J2kResidentEncodeGpuStage, J2kResidentEncodeStageStats, J2kResidentPacketBlockParams,
+    MetalRuntime, ResidentBatchPacketPlan, ResidentBatchPacketPlanParams,
+    ResidentTier1StatusReadbackRequest, PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP, SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN,
@@ -37,7 +36,6 @@ struct ClassicBatchSubmission {
     tier1_status_readback: Option<J2kResidentTier1StatusReadback>,
     packet_buffers: ClassicPacketBuffers,
     stage_stats: J2kResidentEncodeStageStats,
-    codestream_payload_copy_dispatched: bool,
 }
 
 struct ClassicPacketBuffers {
@@ -80,9 +78,6 @@ fn submit_classic_packet_stages(
     output_capacity_mode: J2kClassicEncodeOutputCapacityMode,
     profile_stages: bool,
 ) -> Result<ClassicBatchSubmission, Error> {
-    // Commit classic stages independently so the long Tier-1 kernel can run
-    // while CPU packet metadata for the following stages is built.
-    let split_command_buffers = true;
     let mut classic_packet_plan_duration = Duration::ZERO;
     let mut classic_packet_buffer_setup_duration = Duration::ZERO;
     let packet_block_prep_duration = Duration::ZERO;
@@ -259,17 +254,17 @@ fn submit_classic_packet_stages(
     if let Some(started) = command_encode_started {
         packetization_duration = packetization_duration.saturating_add(started.elapsed());
     }
-    if split_command_buffers {
-        command_buffer = finish_resident_encode_split_command_buffer_timed(
-            command_buffer,
-            runtime,
-            J2kResidentEncodeGpuStage::Packetization,
-            "j2k classic resident packet payload copy",
-            &mut gpu_stage_command_buffers,
-            profile_stages,
-            &mut classic_command_buffer_commit_duration,
-        )?;
-    }
+    // Commit each classic stage separately so the long Tier-1 kernel runs
+    // while CPU packet metadata for the following stages is built.
+    command_buffer = finish_resident_encode_split_command_buffer_timed(
+        command_buffer,
+        runtime,
+        J2kResidentEncodeGpuStage::Packetization,
+        "j2k classic resident packet payload copy",
+        &mut gpu_stage_command_buffers,
+        profile_stages,
+        &mut classic_command_buffer_commit_duration,
+    )?;
     let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
         runtime,
         &command_buffer,
@@ -285,20 +280,18 @@ fn submit_classic_packet_stages(
             signpost_name: SIGNPOST_ENCODE_HYBRID_CLASSIC_PAYLOAD_COPY_COMMAND_ENCODE,
         },
     )?;
-    if split_command_buffers {
-        if packet_payload_copy_dispatched {
-            command_buffer = finish_resident_encode_split_command_buffer_timed(
-                command_buffer,
-                runtime,
-                J2kResidentEncodeGpuStage::PacketPayloadCopy,
-                "j2k classic resident codestream assembly",
-                &mut gpu_stage_command_buffers,
-                profile_stages,
-                &mut classic_command_buffer_commit_duration,
-            )?;
-        } else {
-            label_command_buffer(&command_buffer, "j2k classic resident codestream assembly");
-        }
+    if packet_payload_copy_dispatched {
+        command_buffer = finish_resident_encode_split_command_buffer_timed(
+            command_buffer,
+            runtime,
+            J2kResidentEncodeGpuStage::PacketPayloadCopy,
+            "j2k classic resident codestream assembly",
+            &mut gpu_stage_command_buffers,
+            profile_stages,
+            &mut classic_command_buffer_commit_duration,
+        )?;
+    } else {
+        label_command_buffer(&command_buffer, "j2k classic resident codestream assembly");
     }
 
     let max_packet_output_capacity = packet_jobs
@@ -335,18 +328,15 @@ fn submit_classic_packet_stages(
     );
     encoder.endEncoding();
     drop(signpost);
-    if split_command_buffers {
-        command_buffer = finish_resident_encode_split_command_buffer_timed(
-            command_buffer,
-            runtime,
-            J2kResidentEncodeGpuStage::CodestreamAssembly,
-            "j2k classic resident result readback",
-            &mut gpu_stage_command_buffers,
-            profile_stages,
-            &mut classic_command_buffer_commit_duration,
-        )?;
-    }
-    let codestream_payload_copy_dispatched = false;
+    command_buffer = finish_resident_encode_split_command_buffer_timed(
+        command_buffer,
+        runtime,
+        J2kResidentEncodeGpuStage::CodestreamAssembly,
+        "j2k classic resident result readback",
+        &mut gpu_stage_command_buffers,
+        profile_stages,
+        &mut classic_command_buffer_commit_duration,
+    )?;
     if let Some(started) = command_encode_started {
         codestream_assembly_duration =
             codestream_assembly_duration.saturating_add(started.elapsed());
@@ -365,12 +355,6 @@ fn submit_classic_packet_stages(
     if let Some(started) = final_commit_started {
         classic_command_buffer_commit_duration =
             classic_command_buffer_commit_duration.saturating_add(started.elapsed());
-    }
-    if split_command_buffers && codestream_payload_copy_dispatched {
-        gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
-            stage: J2kResidentEncodeGpuStage::CodestreamPayloadCopy,
-            command_buffer: command_buffer.clone(),
-        });
     }
 
     let packet_job_count = packet_jobs.len();
@@ -455,7 +439,6 @@ fn submit_classic_packet_stages(
         tier1_status_readback,
         packet_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
     })
 }
 
@@ -476,7 +459,6 @@ fn finish_classic_batch(
         tier1_status_readback,
         packet_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
     } = submitted;
     let ClassicTier1Prepared {
         command_buffer,
@@ -548,7 +530,6 @@ fn finish_classic_batch(
         recyclable_shared_buffers,
         gpu_stage_command_buffers,
         stage_stats,
-        codestream_payload_copy_dispatched,
         status_stage: "J2K batched codestream assembly",
         length_error: "J2K Metal batched codestream output length exceeds usize",
         capacity_error: "J2K Metal batched codestream output length exceeds buffer",

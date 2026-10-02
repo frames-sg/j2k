@@ -358,7 +358,6 @@ pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
     pub(in crate::engine) recyclable_shared_buffers: Vec<crate::buffer_pool::PooledBuffer>,
     pub(in crate::engine) gpu_stage_command_buffers: Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     pub(in crate::engine) stage_stats: J2kResidentEncodeStageStats,
-    pub(in crate::engine) codestream_payload_copy_dispatched: bool,
     pub(in crate::engine) status_stage: &'static str,
     pub(in crate::engine) length_error: &'static str,
     pub(in crate::engine) capacity_error: &'static str,
