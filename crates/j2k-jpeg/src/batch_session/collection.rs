@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use j2k_core::{try_collect_ordered_batch_results_with_limits, BatchInfrastructureError};
 
 use super::allocation::{
-    ensure_live_domains, ensure_metadata_bytes, try_vec_with_capacity, vec_capacity_bytes,
-    JPEG_BATCH_HOST_CAP_BYTES, JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
+    checked_add, ensure_live_domains, ensure_metadata_bytes, try_vec_with_capacity,
+    vec_capacity_bytes, JPEG_BATCH_HOST_CAP_BYTES, JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 use super::scheduler::lock_worker;
 use super::worker::WorkerSlot;
@@ -87,7 +87,7 @@ pub(super) fn retained_live_bytes<T>(
     )?;
     let mut codec = 0usize;
     for worker in workers {
-        codec = checked_batch_live_add(
+        codec = checked_add(
             codec,
             lock_worker(worker)?.retained_bytes(),
             "JPEG retained worker codec claims",
@@ -148,20 +148,6 @@ fn allocation_bytes<T>(
             what,
             requested: usize::MAX,
             cap: JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
-        })
-}
-
-fn checked_batch_live_add(
-    left: usize,
-    right: usize,
-    what: &'static str,
-    cap: usize,
-) -> Result<usize, BatchInfrastructureError> {
-    left.checked_add(right)
-        .ok_or(BatchInfrastructureError::AllocationTooLarge {
-            what,
-            requested: usize::MAX,
-            cap,
         })
 }
 

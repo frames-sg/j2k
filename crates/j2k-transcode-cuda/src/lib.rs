@@ -220,37 +220,19 @@ impl CudaDctToWaveletStageAccelerator {
     }
 }
 
-fn reversible_batch_total_samples(jobs: &[DctGridToReversibleDwt53Job<'_>]) -> usize {
-    jobs.iter().fold(0usize, |total, job| {
-        total.saturating_add(job.width.saturating_mul(job.height))
-    })
-}
-
-fn dwt97_batch_total_samples(jobs: &[DctGridToDwt97Job<'_>]) -> usize {
-    jobs.iter().fold(0usize, |total, job| {
-        total.saturating_add(job.width.saturating_mul(job.height))
-    })
-}
-
-fn htj2k97_codeblock_batch_total_samples(jobs: &[DctGridToHtj2k97CodeBlockJob<'_>]) -> usize {
-    jobs.iter().fold(0usize, |total, job| {
-        total.saturating_add(job.width.saturating_mul(job.height))
-    })
-}
-
-fn htj2k97_i16_codeblock_batch_total_samples(
-    jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
-) -> usize {
-    jobs.iter().fold(0usize, |total, job| {
-        total.saturating_add(job.width.saturating_mul(job.height))
-    })
+fn total_samples<'a, J: 'a>(jobs: &'a [J], dimensions: impl Fn(&'a J) -> (usize, usize)) -> usize {
+    jobs.iter()
+        .map(dimensions)
+        .fold(0usize, |total, (width, height)| {
+            total.saturating_add(width.saturating_mul(height))
+        })
 }
 
 fn htj2k97_i16_codeblock_batch_group_total_samples(
     groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
 ) -> usize {
     groups.iter().fold(0usize, |total, group| {
-        total.saturating_add(htj2k97_i16_codeblock_batch_total_samples(group.jobs))
+        total.saturating_add(total_samples(group.jobs, |job| (job.width, job.height)))
     })
 }
 
@@ -323,7 +305,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_reversible_batch_jobs
-                || reversible_batch_total_samples(jobs) < self.min_auto_reversible_batch_samples)
+                || total_samples(jobs, |job| (job.width, job.height))
+                    < self.min_auto_reversible_batch_samples)
         {
             return Ok(None);
         }
@@ -415,7 +398,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
-                || dwt97_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
+                || total_samples(jobs, |job| (job.width, job.height))
+                    < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);
         }
@@ -456,7 +440,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
-                || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
+                || total_samples(jobs, |job| (job.width, job.height))
+                    < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);
         }
@@ -502,7 +487,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
-                || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
+                || total_samples(jobs, |job| (job.width, job.height))
+                    < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);
         }
@@ -549,7 +535,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
-                || htj2k97_i16_codeblock_batch_total_samples(jobs)
+                || total_samples(jobs, |job| (job.width, job.height))
                     < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);
@@ -600,7 +586,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         }
         if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
-                || htj2k97_i16_codeblock_batch_total_samples(jobs)
+                || total_samples(jobs, |job| (job.width, job.height))
                     < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);

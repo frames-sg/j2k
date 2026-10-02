@@ -370,7 +370,7 @@ fn ensure_within(
     Ok(())
 }
 
-fn checked_add(
+pub(super) fn checked_add(
     left: usize,
     right: usize,
     what: &'static str,

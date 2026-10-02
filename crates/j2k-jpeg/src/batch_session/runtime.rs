@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use j2k_core::{tile_batch_worker_count, BatchInfrastructureError};
 
 use super::allocation::{
-    ensure_live_domains, ensure_metadata_bytes, ensure_planning_phase, select_batch_plan,
-    try_vec_with_capacity, vec_capacity_bytes, BatchMetadataLayout, BatchPlan, PlannedJob,
-    JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
+    checked_add, ensure_live_domains, ensure_metadata_bytes, ensure_planning_phase,
+    select_batch_plan, try_vec_with_capacity, vec_capacity_bytes, BatchMetadataLayout, BatchPlan,
+    PlannedJob, JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 use super::worker::WorkerSlot;
 use super::{
@@ -222,13 +222,13 @@ impl JpegBatchSession {
         plan_capacity_bytes: usize,
         summary_capacity_bytes: usize,
     ) -> Result<(usize, usize), BatchInfrastructureError> {
-        let mut metadata_bytes = checked_runtime_add(
+        let mut metadata_bytes = checked_add(
             plan_capacity_bytes,
             vec_capacity_bytes(&self.workers)?,
             "JPEG batch planning metadata",
             JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
         )?;
-        metadata_bytes = checked_runtime_add(
+        metadata_bytes = checked_add(
             metadata_bytes,
             summary_capacity_bytes,
             "JPEG batch planning metadata",
@@ -236,7 +236,7 @@ impl JpegBatchSession {
         )?;
         let mut codec_bytes = 0usize;
         for slot in &mut self.workers {
-            codec_bytes = checked_runtime_add(
+            codec_bytes = checked_add(
                 codec_bytes,
                 slot.get_mut()
                     .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?
@@ -284,18 +284,4 @@ impl JpegBatchSession {
         }
         Ok(())
     }
-}
-
-fn checked_runtime_add(
-    left: usize,
-    right: usize,
-    what: &'static str,
-    cap: usize,
-) -> Result<usize, BatchInfrastructureError> {
-    left.checked_add(right)
-        .ok_or(BatchInfrastructureError::AllocationTooLarge {
-            what,
-            requested: usize::MAX,
-            cap,
-        })
 }
