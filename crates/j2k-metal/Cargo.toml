@@ -44,7 +44,6 @@ rayon = { workspace = true }
 criterion = { workspace = true }
 rayon = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
-syn = { workspace = true, features = ["full"] }
 
 [build-dependencies]
 cc = { workspace = true }

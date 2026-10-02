@@ -2695,7 +2695,6 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "rayon",
- "syn",
  "thiserror 2.0.18",
 ]
 
