@@ -148,7 +148,7 @@ fn bench_batch_encode(
         let mcus = dim.div_ceil(16) as usize * dim.div_ceil(8) as usize;
         let coefficient_scratch_bytes = mcus * 4 * 64 * std::mem::size_of::<i32>() * batch_size;
         eprintln!(
-            "jpeg_metal_p18_probe path=staged dimensions={dim}x{dim} batch={batch_size} coefficient_scratch_bytes={coefficient_scratch_bytes} input_sha256={:x} output_sha256={:x}",
+            "jpeg_metal_staged_encode_probe path=staged dimensions={dim}x{dim} batch={batch_size} coefficient_scratch_bytes={coefficient_scratch_bytes} input_sha256={:x} output_sha256={:x}",
             Sha256::digest(rgb),
             hasher.finalize(),
         );

@@ -397,8 +397,8 @@ pub(crate) fn end_direct_destination_capture_for_test() -> Vec<crate::metal_type
         .with(|buffers| buffers.borrow_mut().take().unwrap_or_default())
 }
 
-/// Forces the per-image 9/7 IDWT route for batches, the pre-P36 behaviour
-/// above 20 MiB, for same-process A/B probes.
+/// Forces the per-image 9/7 IDWT route for batches, for same-process A/B
+/// probes.
 static PER_IMAGE_IDWT_FORCED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 

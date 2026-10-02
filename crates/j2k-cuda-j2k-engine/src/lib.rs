@@ -2,8 +2,8 @@
 
 //! CUDA JPEG 2000 and HTJ2K codec-engine boundary.
 //!
-//! The borrowed engine preserves the stable low-level CUDA context identity
-//! while C1 moves J2K, HTJ2K, and ML domain ownership out of the runtime.
+//! The borrowed engine runs J2K, HTJ2K, and ML kernels on a low-level CUDA
+//! context owned by `j2k-cuda-runtime`.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

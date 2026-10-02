@@ -614,12 +614,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Evidence for the P33 record: input and output SHA-256 of the
+/// Prints input and output SHA-256 of the
 /// `wsi_tile_batch_rgba_textures` 4:4:4 benchmark workloads through the
 /// component-plane route and the direct texture kernels, plus the CPU oracle.
 #[test]
-#[ignore = "P33 evidence; run explicitly with --include-ignored --nocapture"]
-fn p33_fast444_texture_route_output_hashes() {
+#[ignore = "hash probe; run explicitly with --include-ignored --nocapture"]
+fn fast444_texture_route_output_hashes() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -761,14 +761,14 @@ fn texture_batch16(session: &crate::MetalBackendSession, bytes: &[u8]) -> Vec<u8
     textures
 }
 
-/// Evidence for the P32 record: input and output SHA-256 of the generated
+/// Prints input and output SHA-256 of the generated
 /// 256x256 `wsi_tile_batch_rgb` workloads (64 tiles; three batches on one
 /// session, as in the one-shot and retained-session rows) and the batch-16
 /// `wsi_tile_batch_rgba_textures` workloads, each checked against the CPU
-/// decoder. The P32 A/B runs it once per arm.
+/// decoder. A/B comparisons run it once per arm.
 #[test]
-#[ignore = "P32 evidence; run explicitly with --include-ignored --nocapture"]
-fn p32_tile_and_texture_batch_output_hashes() {
+#[ignore = "hash probe; run explicitly with --include-ignored --nocapture"]
+fn tile_and_texture_batch_output_hashes() {
     use jpeg_encoder::SamplingFactor;
 
     if !should_run_metal_runtime() {

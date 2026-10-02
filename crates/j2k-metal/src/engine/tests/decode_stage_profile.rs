@@ -136,8 +136,8 @@ fn decode_stage_profile() {
     }
 }
 
-/// IDWT and full GPU time with the per-image 9/7 IDWT route forced (the
-/// pre-P36 behaviour above 20 MiB) and with the batched route, round-robin.
+/// IDWT and full GPU time with the per-image 9/7 IDWT route forced and with
+/// the batched route, round-robin.
 #[test]
 #[ignore = "GPU A/B probe; run explicitly with --include-ignored --nocapture"]
 fn batched_idwt_route_profile() {

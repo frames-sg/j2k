@@ -468,7 +468,7 @@ mod resource_profile_tests {
 
     #[test]
     fn key_tier1_pipeline_static_resources_are_queryable() {
-        let device = system_default_device().expect("P6 resource test requires Metal");
+        let device = system_default_device().expect("resource test requires Metal");
         let runtime = MetalRuntime::new_with_device(&device).expect("create Metal runtime");
         let pipelines = [
             (

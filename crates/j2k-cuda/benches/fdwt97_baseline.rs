@@ -321,10 +321,10 @@ fn encode_product_batch(
     for _ in 0..PRODUCT_BATCH {
         let samples =
             J2kLossySamples::new(pixels, PRODUCT_DIMENSION, PRODUCT_DIMENSION, 3, 8, false)
-                .expect("valid P15 RGB8 product samples");
+                .expect("valid RGB8 product samples");
         let encoded =
             encode_j2k_lossy_with_accelerator(samples, options, BackendKind::Cuda, accelerator)
-                .expect("P15 CUDA product encode");
+                .expect("CUDA product encode");
         assert_eq!(encoded.backend, BackendKind::Cuda);
         codestreams.push(encoded.codestream);
     }
@@ -332,16 +332,16 @@ fn encode_product_batch(
         .dispatch_report()
         .saturating_delta(before)
         .forward_dwt97;
-    assert!(dispatches > 0, "P15 product must dispatch CUDA FDWT97");
+    assert!(dispatches > 0, "product must dispatch CUDA FDWT97");
     (codestreams, dispatches)
 }
 
 fn validate_product_codestreams(codestreams: &[Vec<u8>]) {
     for codestream in codestreams {
         let decoded = Image::new(codestream, &DecodeSettings::strict())
-            .expect("P15 product codestream parses")
+            .expect("product codestream parses")
             .decode_native()
-            .expect("P15 product codestream decodes");
+            .expect("product codestream decodes");
         assert_eq!(decoded.width, PRODUCT_DIMENSION);
         assert_eq!(decoded.height, PRODUCT_DIMENSION);
         assert_eq!(decoded.num_components, 3);
@@ -406,7 +406,7 @@ fn bench_product_encode(criterion: &mut Criterion) {
     let options = product_options();
     emit_product_probe(&pixels, &options);
 
-    let mut group = criterion.benchmark_group("j2k_cuda_p15_product_encode");
+    let mut group = criterion.benchmark_group("j2k_cuda_fdwt97_product_encode");
     group.throughput(Throughput::Elements(
         u64::from(PRODUCT_DIMENSION) * u64::from(PRODUCT_DIMENSION) * PRODUCT_BATCH as u64,
     ));
@@ -421,7 +421,7 @@ fn bench_product_encode(criterion: &mut Criterion) {
     group.finish();
 }
 
-fn p15_criterion() -> Criterion {
+fn fdwt97_criterion() -> Criterion {
     Criterion::default()
         .sample_size(SAMPLE_SIZE)
         .warm_up_time(WARM_UP)
@@ -431,7 +431,7 @@ fn p15_criterion() -> Criterion {
 
 criterion_group! {
     name = benches;
-    config = p15_criterion();
+    config = fdwt97_criterion();
     targets = bench_fdwt97_stage, bench_product_encode
 }
 criterion_main!(benches);

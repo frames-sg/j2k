@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! Proptest-driven bit-exact parity between the scalar ISLOW IDCT and every
-//! SIMD backend variant. Any divergence here is a merge-blocker for Phase 1.
+//! SIMD backend variant.
 //!
 //! The test only exercises the SIMD variant the host CPU can actually run —
 //! we do not cross-compile to the other arch. CI runs on both aarch64 and

@@ -518,7 +518,7 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
                         }
                         (Err(cuda_err), Ok(_)) => {
                             // CUDA must dispatch for every in-scope cell, including
-                            // 4-component (resident MCT lands in P1-T7).
+                            // 4-component input.
                             failures.push(format!(
                                 "cell={cell:?}: CUDA encode failed but CPU succeeded: \
                                  {cuda_err}"

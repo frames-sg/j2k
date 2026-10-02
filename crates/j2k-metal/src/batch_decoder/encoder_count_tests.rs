@@ -278,9 +278,8 @@ fn irreversible_groups_batch_transform_stages_without_changing_pixels() {
 
 #[test]
 fn large_irreversible_groups_batch_every_level_without_changing_pixels() {
-    // P36: with P31's fused lifting, batches reconstruct every level in one
-    // batched sequence per component, including stages above 20 MiB (P20/P27
-    // had fallen back to per-image reconstruction there).
+    // With fused lifting, batches reconstruct every level in one batched
+    // sequence per component, including stages above 20 MiB.
     for (dimensions, count) in [((1024, 1024), 6), ((1024, 1024), 9), ((1025, 513), 11)] {
         if assert_external_group_uses_one_command_buffer_and_encoder(
             FixtureRoute::Ht97,

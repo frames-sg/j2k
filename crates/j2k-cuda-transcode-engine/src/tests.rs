@@ -364,7 +364,7 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
     );
     assert!(
         wide_i16_timings.column_lift_us > 0,
-        "wide i16 path must retain the staged column lift after P13 rejection"
+        "wide i16 path must retain the staged column lift"
     );
     assert!(wide_i16_timings.quantize_codeblock_us > 0);
 

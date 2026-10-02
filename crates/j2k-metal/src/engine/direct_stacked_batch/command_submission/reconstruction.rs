@@ -185,10 +185,9 @@ impl SubmissionContext<'_, '_, '_> {
         )?;
         let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
         let encode_started = self.profile_stages.then(Instant::now);
-        // Batches reconstruct every instance in one dispatch per level. P20
-        // bounded this at 20 MiB when the per-step kernels regressed at
-        // 16 x 1024x1024; with the fused lifting (P31) the batched route is
-        // 11% faster there in GPU time (P36).
+        // Batches reconstruct every instance in one dispatch per level. With
+        // fused lifting this is about 11% faster in GPU time than per-image
+        // reconstruction at 16 x 1024x1024.
         let use_single = self.count == 1;
         #[cfg(test)]
         let use_single = use_single || crate::engine::test_counters::per_image_idwt_forced();

@@ -11,13 +11,13 @@ use j2k_jpeg_cuda::{
 };
 use sha2::{Digest, Sha256};
 
-const P18_RESTART_INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-JPEG-RESTART16-INPUTS\0";
-const P18_RESTART_OUTPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-JPEG-RESTART16-OUTPUTS\0";
-const P18_EXACT_MATRIX_INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-INPUTS\0";
-const P18_EXACT_MATRIX_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-MATRIX\0";
-const P18_EXACT_MATRIX_INPUT_SHA256: &str =
+const RESTART_INPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-RESTART16-INPUTS\0";
+const RESTART_OUTPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-RESTART16-OUTPUTS\0";
+const EXACT_MATRIX_INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-INPUTS\0";
+const EXACT_MATRIX_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-MATRIX\0";
+const EXACT_MATRIX_INPUT_SHA256: &str =
     "5fbd44a6890bfe562d66709eda023f0b5b8f942f0e113824399cfd39f06fe570";
-const P18_EXACT_MATRIX_OUTPUT_SHA256: &str =
+const EXACT_MATRIX_OUTPUT_SHA256: &str =
     "99b76d5a103ed958e4a4cdef80fb8e48cd8f2c6e28ababbf4ff787fea67ab314";
 
 #[test]
@@ -28,25 +28,22 @@ fn rtx_cuda_promoted_staged_baseline_encode_is_exact_across_matrix_when_required
 
     let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
     let mut input_hasher = Sha256::new();
-    input_hasher.update(P18_EXACT_MATRIX_INPUT_HASH_DOMAIN);
+    input_hasher.update(EXACT_MATRIX_INPUT_HASH_DOMAIN);
     let mut frames = assert_rgb_matrix(&context, &mut input_hasher);
     frames.extend(assert_gray_matrix(&context, &mut input_hasher));
-    assert_eq!(frames.len(), 16, "P18 staged matrix remains complete");
+    assert_eq!(frames.len(), 16, "staged matrix remains complete");
     let input_sha256 = format!("{:x}", input_hasher.finalize());
-    let output_sha256 = framed_sha256(
-        P18_EXACT_MATRIX_HASH_DOMAIN,
-        frames.iter().map(Vec::as_slice),
-    );
+    let output_sha256 = framed_sha256(EXACT_MATRIX_HASH_DOMAIN, frames.iter().map(Vec::as_slice));
     eprintln!(
-        "p18_cuda_staged_exact_matrix frames=16 input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true repository_decode=true independent_decode=true"
+        "cuda_staged_exact_matrix frames=16 input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true repository_decode=true independent_decode=true"
     );
     assert_eq!(
-        input_sha256, P18_EXACT_MATRIX_INPUT_SHA256,
-        "P18 promoted staged exact-matrix input digest changed"
+        input_sha256, EXACT_MATRIX_INPUT_SHA256,
+        "staged exact-matrix input digest changed"
     );
     assert_eq!(
-        output_sha256, P18_EXACT_MATRIX_OUTPUT_SHA256,
-        "P18 promoted staged exact-matrix digest changed"
+        output_sha256, EXACT_MATRIX_OUTPUT_SHA256,
+        "staged exact-matrix output digest changed"
     );
 }
 
@@ -70,13 +67,8 @@ fn assert_large_restart16_batch(context: &j2k_cuda_runtime::CudaContext, batch_s
 
     let tile_bytes = DIMENSION as usize * DIMENSION as usize * 3;
     let pixels = j2k_test_support::patterned_rgb8_tiles(DIMENSION, DIMENSION, batch_size);
-    let input_sha256 = framed_sha256(
-        P18_RESTART_INPUT_HASH_DOMAIN,
-        pixels.chunks_exact(tile_bytes),
-    );
-    let buffer = context
-        .upload(&pixels)
-        .expect("upload P18 large restart input");
+    let input_sha256 = framed_sha256(RESTART_INPUT_HASH_DOMAIN, pixels.chunks_exact(tile_bytes));
+    let buffer = context.upload(&pixels).expect("upload large restart input");
     let tiles = (0..batch_size)
         .map(|index| JpegBaselineCudaEncodeTile {
             buffer: &buffer,
@@ -97,19 +89,19 @@ fn assert_large_restart16_batch(context: &j2k_cuda_runtime::CudaContext, batch_s
     };
     let mut session = CudaSession::default();
     let frames = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-        .expect("P18 large restart serial encode");
+        .expect("large restart serial encode");
     let repeat = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-        .expect("repeat P18 large restart serial encode");
+        .expect("repeat large restart serial encode");
     assert_eq!(
         frames, repeat,
-        "P18 large restart serial output must be exact for batch {batch_size}"
+        "large restart serial output must be exact for batch {batch_size}"
     );
     let output_sha256 = framed_sha256(
-        P18_RESTART_OUTPUT_HASH_DOMAIN,
+        RESTART_OUTPUT_HASH_DOMAIN,
         frames.iter().map(|frame| frame.data.as_slice()),
     );
     eprintln!(
-        "p18_cuda_restart16_probe dimensions=512x512 sampling=4:2:2 quality=90 restart_interval=16 batch={batch_size} input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true expected_restart_markers={EXPECTED_RESTART_MARKERS} planned_entropy_capacity={PLANNED_ENTROPY_CAPACITY}"
+        "cuda_restart16_probe dimensions=512x512 sampling=4:2:2 quality=90 restart_interval=16 batch={batch_size} input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true expected_restart_markers={EXPECTED_RESTART_MARKERS} planned_entropy_capacity={PLANNED_ENTROPY_CAPACITY}"
     );
 
     for (index, frame) in frames.iter().enumerate() {
@@ -117,7 +109,7 @@ fn assert_large_restart16_batch(context: &j2k_cuda_runtime::CudaContext, batch_s
         assert_independent_decoder_accepts_rgb8(&frame.data, DIMENSION, DIMENSION);
         assert_repository_decoder_accepts_rgb8(&frame.data, DIMENSION, DIMENSION);
         eprintln!(
-            "p18_cuda_restart16_frame batch={batch_size} index={index} entropy_len={entropy_len} frame_len={} frame_capacity={}",
+            "cuda_restart16_frame batch={batch_size} index={index} entropy_len={entropy_len} frame_len={} frame_capacity={}",
             frame.data.len(),
             frame.data.capacity(),
         );
@@ -212,7 +204,7 @@ fn assert_rgb_matrix(
     let batch_size = 2usize;
     let tile_bytes = width as usize * height as usize * 3;
     let pixels = j2k_test_support::patterned_rgb8_tiles(width, height, batch_size);
-    let buffer = context.upload(&pixels).expect("upload P18 RGB matrix");
+    let buffer = context.upload(&pixels).expect("upload RGB matrix");
     let tiles = (0..batch_size)
         .map(|index| JpegBaselineCudaEncodeTile {
             buffer: &buffer,
@@ -244,9 +236,9 @@ fn assert_rgb_matrix(
         };
         let mut session = CudaSession::default();
         let frames = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("P18 RGB serial matrix encode");
+            .expect("RGB serial matrix encode");
         let repeat = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("repeat P18 RGB serial matrix encode");
+            .expect("repeat RGB serial matrix encode");
         assert_eq!(
             frames, repeat,
             "serial RGB route must be exact for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
@@ -278,12 +270,12 @@ fn assert_gray_matrix(
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(tile_bytes * batch_size)
-        .expect("allocate P18 grayscale matrix");
+        .expect("allocate grayscale matrix");
     for salt in 0..batch_size {
         let salt = u8::try_from(salt).expect("grayscale salt fits u8");
         pixels.extend(base.iter().map(|sample| sample.wrapping_add(salt)));
     }
-    let buffer = context.upload(&pixels).expect("upload P18 gray matrix");
+    let buffer = context.upload(&pixels).expect("upload gray matrix");
     let tiles = (0..batch_size)
         .map(|index| JpegBaselineCudaEncodeTile {
             buffer: &buffer,
@@ -308,9 +300,9 @@ fn assert_gray_matrix(
         };
         let mut session = CudaSession::default();
         let frames = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("P18 grayscale serial matrix encode");
+            .expect("grayscale serial matrix encode");
         let repeat = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("repeat P18 grayscale serial matrix encode");
+            .expect("repeat grayscale serial matrix encode");
         assert_eq!(
             frames, repeat,
             "serial grayscale route must be exact for restart={restart_interval:?}, quality={quality}"

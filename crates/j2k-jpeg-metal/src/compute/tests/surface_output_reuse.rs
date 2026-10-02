@@ -143,12 +143,12 @@ fn small_outputs_are_allocated_per_call() {
     assert_matches_cpu(&second, &small, "small batch");
 }
 
-/// Evidence for the P34 record: input and output SHA-256 of the retained-session
+/// Prints input and output SHA-256 of the retained-session
 /// `wsi_tile_batch_rgb` workloads over three consecutive 64-tile batches, so
 /// later batches write a reused pooled buffer, against the CPU decoder.
 #[test]
-#[ignore = "P34 evidence; run explicitly with --include-ignored --nocapture"]
-fn p34_retained_session_output_hashes() {
+#[ignore = "hash probe; run explicitly with --include-ignored --nocapture"]
+fn retained_session_output_hashes() {
     use j2k_core::{DeviceSubmission as _, TileBatchDecodeSubmit as _};
     use sha2::{Digest, Sha256};
 

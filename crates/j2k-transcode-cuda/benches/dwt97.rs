@@ -153,7 +153,7 @@ fn encoded_batch_sha256(batch: &EncodedTranscodeBatch) -> String {
     for tile in &batch.tiles {
         let codestream = &tile
             .as_ref()
-            .expect("P13 product probe tile succeeds")
+            .expect("product probe tile succeeds")
             .codestream;
         update_hash_len(&mut hash, codestream.len());
         hash.update(codestream);
@@ -343,26 +343,26 @@ fn encoded_product_fixture() -> Vec<u8> {
             backend: JpegBackend::Cpu,
         },
     )
-    .expect("encode P13 product fixture")
+    .expect("encode product fixture")
     .data
 }
 
 #[cfg(feature = "cuda-runtime")]
 fn assert_successful_product(batch: &EncodedTranscodeBatch) {
-    assert_eq!(batch.report.failed_tiles, 0, "P13 product tiles succeed");
+    assert_eq!(batch.report.failed_tiles, 0, "product tiles succeed");
     assert_eq!(
         batch.report.successful_tiles, batch.report.tile_count,
-        "P13 product tile count"
+        "product tile count"
     );
     let timing = &batch.report.timings;
     assert!(
         timing.accelerator_work_observed(),
-        "P13 product must execute CUDA work"
+        "product must execute CUDA work"
     );
-    assert_eq!(timing.cpu_fallback_jobs, 0, "P13 product has no fallback");
+    assert_eq!(timing.cpu_fallback_jobs, 0, "product has no fallback");
     assert!(
         timing.dwt97_batch_resident_dwt_handoff_count > 0,
-        "P13 product must use the resident i16 handoff"
+        "product must use the resident i16 handoff"
     );
     assert!(
         timing.dwt97_batch_column_lift_us > 0,
@@ -370,7 +370,7 @@ fn assert_successful_product(batch: &EncodedTranscodeBatch) {
     );
     assert!(
         timing.dwt97_batch_quantize_codeblock_us > 0,
-        "P13 product reports column/quantization work"
+        "product reports column/quantization work"
     );
 }
 
@@ -383,18 +383,18 @@ fn bench_jpeg_to_htj2k_product(criterion: &mut Criterion) {
     let mut probe_accelerator = CudaDctToWaveletStageAccelerator::new_explicit_resident_ht_encode();
     let probe = probe_transcoder
         .transcode_batch_with_accelerator(&inputs, &options, &mut probe_accelerator)
-        .expect("P13 product probe succeeds");
+        .expect("product probe succeeds");
     assert_successful_product(&probe);
     let expected_dimensions = (
         u32::try_from(DIMENSION).expect("fixture width fits u32"),
         u32::try_from(DIMENSION).expect("fixture height fits u32"),
     );
     for tile in &probe.tiles {
-        let tile = tile.as_ref().expect("P13 product tile succeeds");
+        let tile = tile.as_ref().expect("product tile succeeds");
         let decoded = Image::new(&tile.codestream, &DecodeSettings::default())
-            .expect("P13 product tile codestream parses")
+            .expect("product tile codestream parses")
             .decode_native()
-            .expect("P13 product tile codestream decodes");
+            .expect("product tile codestream decodes");
         assert_eq!((decoded.width, decoded.height), expected_dimensions);
     }
     let chroma_dimension = DIMENSION.div_ceil(2);
@@ -439,7 +439,7 @@ fn bench_jpeg_to_htj2k_product(criterion: &mut Criterion) {
                     &options,
                     &mut accelerator,
                 )
-                .expect("P13 product benchmark succeeds");
+                .expect("product benchmark succeeds");
             assert_successful_product(&batch);
             std::hint::black_box(batch);
         });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Reusing a `ScratchPool` across many decodes must produce byte-identical
-//! output on every iteration. Regression guard for Phase 3.
+//! output on every iteration.
 
 use j2k_jpeg::{Decoder, Downscale, PixelFormat, Rect, ScratchPool};
 use j2k_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};

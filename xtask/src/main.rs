@@ -23,7 +23,6 @@ mod codegen_commands;
 mod command_support;
 mod coverage;
 mod cuda;
-mod gpu_experiment;
 mod gpu_validation;
 #[cfg(feature = "adoption")]
 mod markdown;
@@ -111,7 +110,6 @@ fn run() -> Result<(), String> {
         "codec-math-codegen" => codec_math_codegen(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
-        "gpu-experiment" => gpu_experiment::gpu_experiment(env::args().skip(2)),
         "stable-api" => stable_api(env::args().skip(2)),
         "semver" => {
             let packages = published_library_packages()?;
@@ -171,7 +169,6 @@ fn print_help() {
           codec-math-codegen check generated codec-math Rust and Metal fragments\n\
            fuzz-build    compile fuzz harnesses\n\
           fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
-          gpu-experiment validate a complete GPU performance experiment record\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
            semver        verify computed release types and reviewed API diff [--write-report]\n\
            miri          run selected CPU/no_std crates under Miri\n\

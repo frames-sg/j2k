@@ -60,8 +60,8 @@ struct ExternalDecodeCases {
 }
 
 fn bench_htj2k_decode(c: &mut Criterion) {
-    if std::env::var_os("J2K_CUDA_P17_PROFILE").is_some() {
-        bench_p17_final_store_profile(c);
+    if std::env::var_os("J2K_CUDA_FINAL_STORE_PROFILE").is_some() {
+        bench_final_store_profile(c);
         return;
     }
     let corpus = all_decode_cases();
@@ -81,30 +81,30 @@ fn bench_htj2k_decode(c: &mut Criterion) {
     bench_mixed_external_tile_batch(c, &corpus.cases);
 }
 
-struct P17ProfileCase {
+struct FinalStoreProfileCase {
     label: &'static str,
     fixture: Vec<u8>,
 }
 
-fn bench_p17_final_store_profile(c: &mut Criterion) {
+fn bench_final_store_profile(c: &mut Criterion) {
     assert!(
         std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_some(),
-        "J2K_CUDA_P17_PROFILE requires J2K_REQUIRE_CUDA_BENCH=1"
+        "J2K_CUDA_FINAL_STORE_PROFILE requires J2K_REQUIRE_CUDA_BENCH=1"
     );
-    let cases = p17_profile_cases();
-    let mut group = c.benchmark_group("j2k_cuda_p17_final_store_profile");
+    let cases = final_store_profile_cases();
+    let mut group = c.benchmark_group("j2k_cuda_final_store_profile");
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(5));
     for case in &cases {
         for &batch_size in P17_BATCH_SIZES {
-            bench_p17_profile_cell(&mut group, case, batch_size);
+            bench_final_store_profile_cell(&mut group, case, batch_size);
         }
     }
     group.finish();
 }
 
-fn p17_profile_cases() -> Vec<P17ProfileCase> {
+fn final_store_profile_cases() -> Vec<FinalStoreProfileCase> {
     [
         ("classic_reversible53", false, true),
         ("classic_irreversible97", false, false),
@@ -112,24 +112,26 @@ fn p17_profile_cases() -> Vec<P17ProfileCase> {
         ("ht_irreversible97", true, false),
     ]
     .into_iter()
-    .map(|(label, high_throughput, reversible)| P17ProfileCase {
-        label,
-        fixture: p17_rgb8_fixture(high_throughput, reversible),
-    })
+    .map(
+        |(label, high_throughput, reversible)| FinalStoreProfileCase {
+            label,
+            fixture: final_store_rgb8_fixture(high_throughput, reversible),
+        },
+    )
     .collect()
 }
 
-fn bench_p17_profile_cell(
+fn bench_final_store_profile_cell(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    case: &P17ProfileCase,
+    case: &FinalStoreProfileCase,
     batch_size: usize,
 ) {
     let mut inputs = Vec::new();
     inputs
         .try_reserve_exact(batch_size)
-        .expect("P17 input-reference allocation");
+        .expect("input-reference allocation");
     inputs.resize(batch_size, case.fixture.as_slice());
-    let cpu_reference = p17_cpu_reference(&case.fixture);
+    let cpu_reference = final_store_cpu_reference(&case.fixture);
     let expected = cpu_reference.repeat(batch_size);
     let mut session = warm_cuda_session(|_| {});
     let (first_surfaces, report) = J2kDecoder::decode_batch_to_device_with_session_and_profile(
@@ -137,48 +139,45 @@ fn bench_p17_profile_cell(
         PixelFormat::Rgb8,
         &mut session,
     )
-    .expect("P17 profiled CUDA decode probe");
+    .expect("profiled CUDA decode probe");
     assert_cuda_resident_batch_decode(&first_surfaces);
     let first_output = j2k_cuda::Surface::download_batch_tight(&first_surfaces)
-        .expect("P17 profiled CUDA output readback");
-    assert_eq!(first_output, expected, "P17 CPU/CUDA exact output parity");
+        .expect("profiled CUDA output readback");
+    assert_eq!(first_output, expected, "CPU/CUDA exact output parity");
     let (second_surfaces, _second_report) =
         J2kDecoder::decode_batch_to_device_with_session_and_profile(
             &inputs,
             PixelFormat::Rgb8,
             &mut session,
         )
-        .expect("P17 deterministic CUDA decode probe");
+        .expect("deterministic CUDA decode probe");
     let second_output = j2k_cuda::Surface::download_batch_tight(&second_surfaces)
-        .expect("P17 deterministic CUDA output readback");
-    assert_eq!(first_output, second_output, "P17 deterministic CUDA output");
-    assert!(report.idwt_us > 0, "P17 aggregate IDWT timing is required");
+        .expect("deterministic CUDA output readback");
+    assert_eq!(first_output, second_output, "deterministic CUDA output");
+    assert!(report.idwt_us > 0, "aggregate IDWT timing is required");
     assert!(
         report.detail.idwt_final_interleave_horizontal_us > 0,
-        "P17 final interleave/horizontal timing is required"
+        "final interleave/horizontal timing is required"
     );
     assert!(
         report.detail.idwt_final_vertical_us > 0,
-        "P17 final vertical timing is required"
+        "final vertical timing is required"
     );
-    assert!(
-        report.store_us > 0,
-        "P17 fused MCT/store timing is required"
-    );
+    assert!(report.store_us > 0, "fused MCT/store timing is required");
     assert_eq!(
         report.mct_us, 0,
-        "P17 eligible MCT must remain fused into store"
+        "eligible MCT must remain fused into store"
     );
     assert!(
         report.detail.wall_total_us > 0,
-        "P17 resident decode wall timing is required"
+        "resident decode wall timing is required"
     );
     assert_eq!(report.detail.store_dispatch_count, 1);
     assert_eq!(report.detail.idwt_dispatch_count, 2);
-    let input_sha256 = p17_sha256(&case.fixture);
-    let output_sha256 = p17_sha256(&first_output);
+    let input_sha256 = final_store_sha256(&case.fixture);
+    let output_sha256 = final_store_sha256(&first_output);
     println!(
-        "j2k_cuda_p17_probe case={} batch={} width=512 height=512 components=3 sampling=4:4:4 output=rgb8 operation=full \
+        "j2k_cuda_final_store_probe case={} batch={} width=512 height=512 components=3 sampling=4:4:4 output=rgb8 operation=full \
          fixture=generated_deterministic_v1 \
          input_sha256={} output_sha256={} exact_parity=true deterministic=true idwt_us={} \
          idwt_final_interleave_horizontal_us={} idwt_final_vertical_us={} \
@@ -207,37 +206,37 @@ fn bench_p17_profile_cell(
                     PixelFormat::Rgb8,
                     &mut session,
                 )
-                .expect("P17 timed profiled CUDA decode");
+                .expect("timed profiled CUDA decode");
                 std::hint::black_box(output)
             });
         },
     );
 }
 
-fn p17_cpu_reference(fixture: &[u8]) -> Vec<u8> {
-    let mut decoder = J2kDecoder::new(fixture).expect("P17 CPU reference decoder");
+fn final_store_cpu_reference(fixture: &[u8]) -> Vec<u8> {
+    let mut decoder = J2kDecoder::new(fixture).expect("CPU reference decoder");
     let output_len = TILE_DIM as usize * TILE_DIM as usize * 3;
     let mut output = Vec::new();
     output
         .try_reserve_exact(output_len)
-        .expect("P17 CPU reference output allocation");
+        .expect("CPU reference output allocation");
     output.resize(output_len, 0);
     decoder
         .decode_into(&mut output, TILE_DIM as usize * 3, PixelFormat::Rgb8)
-        .expect("P17 CPU reference decode");
+        .expect("CPU reference decode");
     output
 }
 
-fn p17_sha256(bytes: &[u8]) -> String {
+fn final_store_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn p17_rgb8_fixture(high_throughput: bool, reversible: bool) -> Vec<u8> {
+fn final_store_rgb8_fixture(high_throughput: bool, reversible: bool) -> Vec<u8> {
     let pixel_len = TILE_DIM as usize * TILE_DIM as usize * 3;
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(pixel_len)
-        .expect("P17 fixture pixel allocation");
+        .expect("fixture pixel allocation");
     for index in 0..TILE_DIM * TILE_DIM {
         pixels.push(((index * 17 + index / 3) & 0xff) as u8);
         pixels.push(((index * 29 + 7) & 0xff) as u8);
@@ -250,11 +249,9 @@ fn p17_rgb8_fixture(high_throughput: bool, reversible: bool) -> Vec<u8> {
         ..EncodeOptions::default()
     };
     if high_throughput {
-        encode_htj2k(&pixels, TILE_DIM, TILE_DIM, 3, 8, false, &options)
-            .expect("encode P17 HT fixture")
+        encode_htj2k(&pixels, TILE_DIM, TILE_DIM, 3, 8, false, &options).expect("encode HT fixture")
     } else {
-        encode(&pixels, TILE_DIM, TILE_DIM, 3, 8, false, &options)
-            .expect("encode P17 Classic fixture")
+        encode(&pixels, TILE_DIM, TILE_DIM, 3, 8, false, &options).expect("encode Classic fixture")
     }
 }
 

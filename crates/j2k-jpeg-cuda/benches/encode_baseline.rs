@@ -13,8 +13,8 @@ use j2k_jpeg_cuda::{
 };
 use sha2::{Digest, Sha256};
 
-const INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-JPEG-ENCODE-INPUTS\0";
-const OUTPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-JPEG-ENCODE-OUTPUTS\0";
+const INPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-STAGED-ENCODE-INPUTS\0";
+const OUTPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-STAGED-ENCODE-OUTPUTS\0";
 
 #[derive(Clone, Copy)]
 struct BenchCase {
@@ -68,7 +68,7 @@ fn bench_cuda_staged_encode(criterion: &mut Criterion) {
             return;
         }
     };
-    let mut group = criterion.benchmark_group("j2k_cuda_p18_staged_encode");
+    let mut group = criterion.benchmark_group("j2k_cuda_jpeg_staged_encode");
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
     group.measurement_time(Duration::from_secs(3));
@@ -78,7 +78,7 @@ fn bench_cuda_staged_encode(criterion: &mut Criterion) {
         let input = patterned_rgb8_tiles(case.dimension, case.batch_size);
         let input_frames = input.chunks_exact(tile_bytes).collect::<Vec<_>>();
         let input_sha256 = framed_sha256(INPUT_HASH_DOMAIN, input_frames.iter().copied());
-        let buffer = context.upload(&input).expect("upload P18 CUDA JPEG input");
+        let buffer = context.upload(&input).expect("upload CUDA JPEG input");
         let tiles = (0..case.batch_size)
             .map(|tile_index| JpegBaselineCudaEncodeTile {
                 buffer: &buffer,
@@ -98,17 +98,14 @@ fn bench_cuda_staged_encode(criterion: &mut Criterion) {
             backend: JpegBackend::Cuda,
         };
         let mut session = CudaSession::default();
-        let before = context.diagnostics().expect("P18 diagnostics before probe");
+        let before = context.diagnostics().expect("diagnostics before probe");
         let first = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("first P18 CUDA JPEG staged probe");
-        let after = context.diagnostics().expect("P18 diagnostics after probe");
+            .expect("first CUDA JPEG staged probe");
+        let after = context.diagnostics().expect("diagnostics after probe");
         let repeat = encode_jpeg_baseline_batch_from_cuda_buffers(&tiles, options, &mut session)
-            .expect("repeat P18 CUDA JPEG staged probe");
+            .expect("repeat CUDA JPEG staged probe");
 
-        assert_eq!(
-            first, repeat,
-            "P18 staged codestreams must be deterministic"
-        );
+        assert_eq!(first, repeat, "staged codestreams must be deterministic");
         validate_frames(&first, case.dimension, case.batch_size);
         validate_frames(&repeat, case.dimension, case.batch_size);
         let output_sha256 = framed_sha256(
@@ -118,7 +115,7 @@ fn bench_cuda_staged_encode(criterion: &mut Criterion) {
         let diagnostics = DiagnosticsDelta::new(before, after);
         assert_eq!(
             diagnostics.kernel_dispatches, 2,
-            "promoted P18 route must preserve its two physical dispatches"
+            "staged route must preserve its two physical dispatches"
         );
         diagnostics.emit(case, &input_sha256, &output_sha256);
 
@@ -130,7 +127,7 @@ fn bench_cuda_staged_encode(criterion: &mut Criterion) {
                     options,
                     &mut session,
                 )
-                .expect("P18 CUDA JPEG staged encode")
+                .expect("CUDA JPEG staged encode")
             });
         });
     }
@@ -144,10 +141,10 @@ fn validate_frames(frames: &[j2k_jpeg::EncodedJpeg], dimension: u32, batch_size:
         assert!(frame.data.starts_with(&[0xff, 0xd8]), "missing JPEG SOI");
         assert!(frame.data.ends_with(&[0xff, 0xd9]), "missing JPEG EOI");
 
-        let decoder = Decoder::new(&frame.data).expect("repository parser accepts P18 frame");
+        let decoder = Decoder::new(&frame.data).expect("repository parser accepts frame");
         let (pixels, outcome) = decoder
             .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
-            .expect("repository decoder accepts P18 frame");
+            .expect("repository decoder accepts frame");
         assert_eq!(
             (outcome.decoded.w, outcome.decoded.h),
             (dimension, dimension)
@@ -157,7 +154,7 @@ fn validate_frames(frames: &[j2k_jpeg::EncodedJpeg], dimension: u32, batch_size:
         let mut independent = jpeg_decoder::Decoder::new(std::io::Cursor::new(&frame.data));
         let pixels = independent
             .decode()
-            .expect("independent jpeg-decoder accepts P18 frame");
+            .expect("independent jpeg-decoder accepts frame");
         let info = independent.info().expect("independent decoder frame info");
         assert_eq!(
             (u32::from(info.width), u32::from(info.height)),
@@ -172,13 +169,13 @@ fn patterned_rgb8_tiles(dimension: u32, batch_size: usize) -> Vec<u8> {
     let tile_bytes = tile_bytes(dimension);
     let capacity = tile_bytes
         .checked_mul(batch_size)
-        .expect("P18 input byte count fits usize");
+        .expect("input byte count fits usize");
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(capacity)
-        .expect("allocate P18 benchmark inputs");
+        .expect("allocate benchmark inputs");
     for tile in 0..batch_size {
-        let tile = u32::try_from(tile).expect("P18 batch index fits u32");
+        let tile = u32::try_from(tile).expect("batch index fits u32");
         for y in 0..dimension {
             for x in 0..dimension {
                 pixels.push(((x * 29 + y * 3 + tile * 31 + 11) & 0xff) as u8);
@@ -271,7 +268,7 @@ impl DiagnosticsDelta {
         let coefficient_scratch_bytes =
             mcus_per_row * mcu_rows * 4 * 64 * std::mem::size_of::<i32>() * case.batch_size;
         eprintln!(
-            "p18_cuda_jpeg_encode_probe cell={} dimensions={}x{} batch={} quality=90 sampling=4:2:2 restart_interval={} route=staged coefficient_scratch_bytes={} input_sha256={} output_sha256={} exact_codestreams=true deterministic=true repository_decode=true independent_decode=true kernel_dispatches={} host_to_device_transfers={} host_to_device_bytes={} device_to_host_transfers={} device_to_host_bytes={} status_transfers={} status_bytes={} device_allocations={} device_allocation_bytes={} event_allocations={} event_reuses={} host_synchronizations={}",
+            "cuda_jpeg_staged_encode_probe cell={} dimensions={}x{} batch={} quality=90 sampling=4:2:2 restart_interval={} route=staged coefficient_scratch_bytes={} input_sha256={} output_sha256={} exact_codestreams=true deterministic=true repository_decode=true independent_decode=true kernel_dispatches={} host_to_device_transfers={} host_to_device_bytes={} device_to_host_transfers={} device_to_host_bytes={} status_transfers={} status_bytes={} device_allocations={} device_allocation_bytes={} event_allocations={} event_reuses={} host_synchronizations={}",
             case.id,
             case.dimension,
             case.dimension,
@@ -300,13 +297,13 @@ const fn delta(before: u64, after: u64) -> u64 {
     after.saturating_sub(before)
 }
 
-fn p18_criterion() -> Criterion {
+fn staged_encode_criterion() -> Criterion {
     Criterion::default().confidence_level(0.95)
 }
 
 criterion_group! {
     name = benches;
-    config = p18_criterion();
+    config = staged_encode_criterion();
     targets = bench_cuda_staged_encode
 }
 criterion_main!(benches);

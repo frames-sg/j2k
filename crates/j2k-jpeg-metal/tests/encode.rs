@@ -424,7 +424,7 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
 }
 
 #[cfg(target_os = "macos")]
-fn update_p18_rgb_matrix_digest(
+fn update_staged_rgb_matrix_digest(
     session: &j2k_jpeg_metal::MetalBackendSession,
     digest: &mut sha2::Sha256,
 ) {
@@ -440,7 +440,7 @@ fn update_p18_rgb_matrix_digest(
     let rgb_tile_bytes = rgb_size.0 as usize * rgb_size.1 as usize * 3;
     let rgb = j2k_test_support::patterned_rgb8_tiles(rgb_size.0, rgb_size.1, rgb_tile_count);
     let rgb_buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
-        .expect("upload P18 RGB differential matrix");
+        .expect("upload RGB differential matrix");
     let rgb_tiles = (0..rgb_tile_count)
         .map(|tile| {
             // SAFETY: each descriptor names an initialized, disjoint immutable tile range
@@ -472,13 +472,13 @@ fn update_p18_rgb_matrix_digest(
             backend: JpegBackend::Metal,
         };
         let frames = encode_jpeg_baseline_batch_from_metal_buffers(&rgb_tiles, options, session)
-            .expect("P18 RGB differential matrix encode");
+            .expect("RGB differential matrix encode");
         let repeat = encode_jpeg_baseline_batch_from_metal_buffers(&rgb_tiles, options, session)
-            .expect("repeat P18 RGB differential matrix encode");
+            .expect("repeat RGB differential matrix encode");
         assert_eq!(
             frames.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
             repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
-            "P18 RGB route must be deterministic for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
+            "RGB route must be deterministic for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
         );
         for frame in frames {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
@@ -495,7 +495,7 @@ fn update_p18_rgb_matrix_digest(
 }
 
 #[cfg(target_os = "macos")]
-fn update_p18_gray_matrix_digest(
+fn update_staged_gray_matrix_digest(
     session: &j2k_jpeg_metal::MetalBackendSession,
     digest: &mut sha2::Sha256,
 ) {
@@ -512,7 +512,7 @@ fn update_p18_gray_matrix_digest(
     let gray_tile_bytes = gray_input.0 as usize * gray_input.1 as usize;
     let mut gray = Vec::new();
     for salt in 0..gray_tile_count {
-        let salt = u8::try_from(salt).expect("P18 grayscale tile salt fits u8");
+        let salt = u8::try_from(salt).expect("grayscale tile salt fits u8");
         gray.extend(
             j2k_test_support::patterned_gray8(gray_input.0, gray_input.1)
                 .into_iter()
@@ -520,7 +520,7 @@ fn update_p18_gray_matrix_digest(
         );
     }
     let gray_buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &gray)
-        .expect("upload P18 grayscale differential matrix");
+        .expect("upload grayscale differential matrix");
     let gray_tiles = (0..gray_tile_count)
         .map(|tile| {
             // SAFETY: each descriptor names an initialized, disjoint immutable tile range
@@ -545,13 +545,13 @@ fn update_p18_gray_matrix_digest(
             backend: JpegBackend::Metal,
         };
         let frames = encode_jpeg_baseline_batch_from_metal_buffers(&gray_tiles, options, session)
-            .expect("P18 grayscale differential matrix encode");
+            .expect("grayscale differential matrix encode");
         let repeat = encode_jpeg_baseline_batch_from_metal_buffers(&gray_tiles, options, session)
-            .expect("repeat P18 grayscale differential matrix encode");
+            .expect("repeat grayscale differential matrix encode");
         assert_eq!(
             frames.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
             repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
-            "P18 grayscale route must be deterministic for restart={restart_interval:?}, quality={quality}"
+            "grayscale route must be deterministic for restart={restart_interval:?}, quality={quality}"
         );
         for frame in frames {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
@@ -568,27 +568,27 @@ fn update_p18_gray_matrix_digest(
 }
 
 #[cfg(target_os = "macos")]
-fn p18_promoted_route_matrix_digest() -> String {
+fn staged_route_matrix_digest() -> String {
     use sha2::{Digest, Sha256};
 
     let session =
         j2k_jpeg_metal::MetalBackendSession::system_default().expect("Metal backend session");
     let mut digest = Sha256::new();
-    update_p18_rgb_matrix_digest(&session, &mut digest);
-    update_p18_gray_matrix_digest(&session, &mut digest);
+    update_staged_rgb_matrix_digest(&session, &mut digest);
+    update_staged_gray_matrix_digest(&session, &mut digest);
 
     format!("{:x}", digest.finalize())
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn promoted_staged_metal_encoder_matches_reviewed_p18_matrix_hash() {
+fn staged_metal_encoder_matches_pinned_matrix_hash() {
     if !should_run_metal_runtime() {
         return;
     }
     assert_eq!(
-        p18_promoted_route_matrix_digest(),
+        staged_route_matrix_digest(),
         "b9af03a1a522926f3bee386fd554f146db773cf8287cef91d9001335c88c3a26",
-        "promoted staged route must match the reviewed fused/staged P18 matrix hash"
+        "staged route must match the pinned fused/staged matrix hash"
     );
 }

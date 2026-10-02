@@ -119,14 +119,14 @@ fn run_product(
         ProductCell::RctLossless => {
             let samples =
                 J2kLosslessSamples::new(pixels, DIMENSION_U32, DIMENSION_U32, 3, 8, false)
-                    .expect("valid P16 lossless RGB8 product samples");
+                    .expect("valid lossless RGB8 product samples");
             let encoded = encode_j2k_lossless_with_accelerator(
                 samples,
                 &options.lossless,
                 BackendKind::Cuda,
                 accelerator,
             )
-            .expect("P16 lossless CUDA HTJ2K product encode");
+            .expect("lossless CUDA HTJ2K product encode");
             assert_eq!(encoded.backend, BackendKind::Cuda);
             ProductRun {
                 codestream: encoded.codestream,
@@ -135,14 +135,14 @@ fn run_product(
         }
         ProductCell::IctLossy => {
             let samples = J2kLossySamples::new(pixels, DIMENSION_U32, DIMENSION_U32, 3, 8, false)
-                .expect("valid P16 lossy RGB8 product samples");
+                .expect("valid lossy RGB8 product samples");
             let encoded = encode_j2k_lossy_with_accelerator(
                 samples,
                 &options.lossy,
                 BackendKind::Cuda,
                 accelerator,
             )
-            .expect("P16 lossy CUDA HTJ2K product encode");
+            .expect("lossy CUDA HTJ2K product encode");
             assert_eq!(encoded.backend, BackendKind::Cuda);
             ProductRun {
                 codestream: encoded.codestream,
@@ -156,18 +156,18 @@ fn product_route_counters(
     dispatch: J2kEncodeDispatchReport,
     cell: ProductCell,
 ) -> ProductRouteCounters {
-    assert_eq!(dispatch.deinterleave, 1, "P16 product deinterleave route");
+    assert_eq!(dispatch.deinterleave, 1, "product deinterleave route");
     let mct = match cell {
         ProductCell::RctLossless => {
-            assert_eq!(dispatch.forward_ict, 0, "P16 lossless ICT dispatches");
+            assert_eq!(dispatch.forward_ict, 0, "lossless ICT dispatches");
             dispatch.forward_rct
         }
         ProductCell::IctLossy => {
-            assert_eq!(dispatch.forward_rct, 0, "P16 lossy RCT dispatches");
+            assert_eq!(dispatch.forward_rct, 0, "lossy RCT dispatches");
             dispatch.forward_ict
         }
     };
-    assert_eq!(mct, 1, "P16 product MCT route");
+    assert_eq!(mct, 1, "product MCT route");
     ProductRouteCounters {
         deinterleave: dispatch.deinterleave,
         mct,
@@ -178,9 +178,9 @@ fn product_route_counters(
 
 fn decode_product(codestream: &[u8], pixels: &[u8], cell: ProductCell) -> (String, f64) {
     let decoded = Image::new(codestream, &DecodeSettings::strict())
-        .expect("P16 product codestream parses")
+        .expect("product codestream parses")
         .decode_native()
-        .expect("P16 product codestream decodes");
+        .expect("product codestream decodes");
     assert_eq!(decoded.width, DIMENSION_U32);
     assert_eq!(decoded.height, DIMENSION_U32);
     assert_eq!(decoded.num_components, 3);
@@ -190,7 +190,7 @@ fn decode_product(codestream: &[u8], pixels: &[u8], cell: ProductCell) -> (Strin
 
     let psnr_db = match cell {
         ProductCell::RctLossless => {
-            assert_eq!(decoded.data, pixels, "P16 lossless product decoded pixels");
+            assert_eq!(decoded.data, pixels, "lossless product decoded pixels");
             f64::INFINITY
         }
         ProductCell::IctLossy => {
@@ -204,12 +204,12 @@ fn decode_product(codestream: &[u8], pixels: &[u8], cell: ProductCell) -> (Strin
                 })
                 .sum::<f64>();
             let sample_count =
-                u32::try_from(pixels.len()).expect("P16 RGB8 product sample count fits u32");
+                u32::try_from(pixels.len()).expect("RGB8 product sample count fits u32");
             let mse = squared_error / f64::from(sample_count);
             let psnr_db = 10.0 * (255.0_f64 * 255.0 / mse).log10();
             assert!(
                 psnr_db.is_finite() && psnr_db > 0.0,
-                "P16 lossy product PSNR must be finite and positive, got {psnr_db}"
+                "lossy product PSNR must be finite and positive, got {psnr_db}"
             );
             psnr_db
         }
@@ -235,10 +235,7 @@ fn emit_product_probe(pixels: &[u8], cell: ProductCell, options: &ProductOptions
     );
     let first_validation = decode_product(&first.codestream, pixels, cell);
     let second_validation = decode_product(&second.codestream, pixels, cell);
-    assert_eq!(
-        first.codestream, second.codestream,
-        "P16 product determinism"
-    );
+    assert_eq!(first.codestream, second.codestream, "product determinism");
     assert_eq!(first_validation.0, second_validation.0);
     assert_eq!(first_validation.1.to_bits(), second_validation.1.to_bits());
 
@@ -257,7 +254,7 @@ fn emit_product_probe(pixels: &[u8], cell: ProductCell, options: &ProductOptions
             second_counters.physical_input,
             second_counters.total,
         ),
-        "P16 repeated product route contract"
+        "repeated product route contract"
     );
 
     let rate_target = match cell {
@@ -293,7 +290,7 @@ fn bench_cuda_input_fusion_product(c: &mut Criterion) {
     emit_product_probe(&pixels, ProductCell::RctLossless, &options);
     emit_product_probe(&pixels, ProductCell::IctLossy, &options);
 
-    let mut group = c.benchmark_group("j2k_cuda_p16_product_encode");
+    let mut group = c.benchmark_group("j2k_cuda_input_fusion_product_encode");
     group.throughput(Throughput::Elements(
         u64::from(DIMENSION_U32) * u64::from(DIMENSION_U32),
     ));
@@ -333,7 +330,7 @@ fn bench_cuda_input_fusion_product(c: &mut Criterion) {
 fn probe_route(context: &CudaContext, pixels: &[u8], reversible: bool) {
     let first = run_input_route(context, pixels, reversible);
     let second = run_input_route(context, pixels, reversible);
-    assert_components_exact(&first.components, &second.components, "P16 determinism");
+    assert_components_exact(&first.components, &second.components, "determinism");
 
     let separate = try_deinterleave_reference(pixels, DIMENSION * DIMENSION, 3, 8, false)
         .expect("native RGB8 deinterleave reference");
@@ -342,7 +339,7 @@ fn probe_route(context: &CudaContext, pixels: &[u8], reversible: bool) {
     } else {
         forward_ict_reference(separate)
     };
-    assert_components_exact(&first.components, &expected, "P16 exact parity");
+    assert_components_exact(&first.components, &expected, "exact parity");
 
     let expected_counts = (1, 1, 2);
     assert_eq!(
@@ -352,7 +349,7 @@ fn probe_route(context: &CudaContext, pixels: &[u8], reversible: bool) {
             first.physical_dispatches(),
         ),
         expected_counts,
-        "P16 route dispatch contract"
+        "route dispatch contract"
     );
     assert_eq!(
         (
@@ -361,7 +358,7 @@ fn probe_route(context: &CudaContext, pixels: &[u8], reversible: bool) {
             second.physical_dispatches(),
         ),
         expected_counts,
-        "P16 repeated route dispatch contract"
+        "repeated route dispatch contract"
     );
 
     let input_sha256 = input_sha256(pixels);
@@ -369,7 +366,7 @@ fn probe_route(context: &CudaContext, pixels: &[u8], reversible: bool) {
     assert_eq!(output_digest, output_sha256(&second.components));
     let transform = if reversible { "rct" } else { "ict" };
     eprintln!(
-        "p16_input_fusion_probe route=separate_baseline transform={transform} width=512 height=512 bit_depth=8 signed=false hash_framing=le64_length_prefixed input_sha256={input_sha256} output_sha256={output_digest} exact_parity=true deterministic=true deinterleave_dispatches={} mct_dispatches={} physical_dispatches={}",
+        "cuda_input_fusion_probe route=separate_baseline transform={transform} width=512 height=512 bit_depth=8 signed=false hash_framing=le64_length_prefixed input_sha256={input_sha256} output_sha256={output_digest} exact_parity=true deterministic=true deinterleave_dispatches={} mct_dispatches={} physical_dispatches={}",
         first.deinterleave_dispatches,
         first.mct_dispatches,
         first.physical_dispatches(),
@@ -380,7 +377,7 @@ fn run_input_route(context: &CudaContext, pixels: &[u8], reversible: bool) -> Ro
     let engine = J2kCudaEngine::new(context);
     let output = engine
         .j2k_deinterleave_to_f32(pixels, DIMENSION * DIMENSION, 3, 8, false)
-        .expect("CUDA P16 separate deinterleave");
+        .expect("CUDA separate deinterleave");
     let deinterleave_dispatches = output.execution().kernel_dispatches();
     let mut components = output.into_components();
     let (plane0, rest) = components.split_at_mut(1);
@@ -390,7 +387,7 @@ fn run_input_route(context: &CudaContext, pixels: &[u8], reversible: bool) -> Ro
     } else {
         engine.j2k_forward_ict(&mut plane0[0], &mut plane1[0], &mut plane2[0])
     }
-    .expect("CUDA P16 separate MCT");
+    .expect("CUDA separate MCT");
     RouteRun {
         components,
         deinterleave_dispatches,
@@ -405,10 +402,10 @@ fn cuda_context() -> Option<CudaContext> {
             panic!("J2K_REQUIRE_CUDA_BENCH is set but CUDA initialization failed: {error}")
         }
         Err(error) if error.is_unavailable() => {
-            eprintln!("skipping CUDA P16 benchmark: CUDA runtime is unavailable");
+            eprintln!("skipping CUDA input-fusion benchmark: CUDA runtime is unavailable");
             None
         }
-        Err(error) => panic!("CUDA P16 benchmark initialization failed: {error}"),
+        Err(error) => panic!("CUDA input-fusion benchmark initialization failed: {error}"),
     }
 }
 
@@ -466,16 +463,16 @@ fn update_frame(hasher: &mut Sha256, bytes: &[u8]) {
 }
 
 fn usize_u64(value: usize) -> u64 {
-    u64::try_from(value).expect("P16 framed hash length fits u64")
+    u64::try_from(value).expect("framed hash length fits u64")
 }
 
 fn digest_hex(digest: impl AsRef<[u8]>) -> String {
     let mut output = String::new();
     output
         .try_reserve_exact(digest.as_ref().len() * 2)
-        .expect("allocate P16 SHA-256 hex");
+        .expect("allocate SHA-256 hex");
     for byte in digest.as_ref() {
-        write!(&mut output, "{byte:02x}").expect("write P16 SHA-256 hex");
+        write!(&mut output, "{byte:02x}").expect("write SHA-256 hex");
     }
     output
 }
@@ -484,9 +481,9 @@ fn rgb8_fixture(width: usize, height: usize) -> Vec<u8> {
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(width * height * 3)
-        .expect("allocate P16 benchmark fixture");
+        .expect("allocate benchmark fixture");
     for index in 0..width * height {
-        let index = u32::try_from(index).expect("P16 fixture index fits u32");
+        let index = u32::try_from(index).expect("fixture index fits u32");
         pixels.push(index.wrapping_mul(13).wrapping_add(17).to_le_bytes()[0]);
         pixels.push(index.wrapping_mul(29).wrapping_add(71).to_le_bytes()[0]);
         pixels.push(index.wrapping_mul(47).wrapping_add(103).to_le_bytes()[0]);
@@ -494,7 +491,7 @@ fn rgb8_fixture(width: usize, height: usize) -> Vec<u8> {
     pixels
 }
 
-fn p16_criterion() -> Criterion {
+fn input_fusion_criterion() -> Criterion {
     Criterion::default()
         .sample_size(SAMPLE_SIZE)
         .warm_up_time(WARM_UP)
@@ -504,7 +501,7 @@ fn p16_criterion() -> Criterion {
 
 criterion_group! {
     name = benches;
-    config = p16_criterion();
+    config = input_fusion_criterion();
     targets = bench_cuda_input_fusion, bench_cuda_input_fusion_product
 }
 criterion_main!(benches);

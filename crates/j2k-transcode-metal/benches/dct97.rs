@@ -357,11 +357,11 @@ fn p12_batch_output_sha256(batch: &EncodedTranscodeBatch) -> String {
     for tile in &batch.tiles {
         let codestream = &tile
             .as_ref()
-            .expect("P12 end-to-end probe tile succeeds")
+            .expect("end-to-end probe tile succeeds")
             .codestream;
         framed.extend_from_slice(
             &u64::try_from(codestream.len())
-                .expect("P12 codestream length fits u64")
+                .expect("codestream length fits u64")
                 .to_le_bytes(),
         );
         framed.extend_from_slice(codestream);
@@ -388,17 +388,15 @@ fn bench_p12_jpeg_to_htj2k_end_to_end(c: &mut Criterion) {
     let probe = expect_successful_batch(
         probe_transcoder
             .transcode_batch_with_accelerator(&inputs, &options, &mut probe_accelerator)
-            .expect("P12 end-to-end probe succeeds"),
+            .expect("end-to-end probe succeeds"),
         "p12_srgb_ybr420_512_batch_16",
         TranscodeBatchProfileRequest::MetalExplicit,
     );
-    let first = probe.tiles[0]
-        .as_ref()
-        .expect("P12 first probe tile succeeds");
+    let first = probe.tiles[0].as_ref().expect("first probe tile succeeds");
     let decoded = Image::new(&first.codestream, &DecodeSettings::default())
-        .expect("P12 output codestream parses")
+        .expect("output codestream parses")
         .decode_native()
-        .expect("P12 output codestream decodes");
+        .expect("output codestream decodes");
     assert_eq!((decoded.width, decoded.height), (DIM_U32, DIM_U32));
     let timing = &probe.report.timings;
     assert!(timing.accelerator_work_observed());
@@ -426,7 +424,7 @@ fn bench_p12_jpeg_to_htj2k_end_to_end(c: &mut Criterion) {
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
     group.throughput(Throughput::Bytes(
-        u64::try_from(jpeg.len() * BATCH_SIZE).expect("P12 input bytes fit u64"),
+        u64::try_from(jpeg.len() * BATCH_SIZE).expect("input bytes fit u64"),
     ));
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
@@ -439,7 +437,7 @@ fn bench_p12_jpeg_to_htj2k_end_to_end(c: &mut Criterion) {
                         &options,
                         &mut accelerator,
                     )
-                    .expect("P12 end-to-end benchmark succeeds"),
+                    .expect("end-to-end benchmark succeeds"),
                 "p12_srgb_ybr420_512_batch_16",
                 TranscodeBatchProfileRequest::MetalExplicit,
             ));

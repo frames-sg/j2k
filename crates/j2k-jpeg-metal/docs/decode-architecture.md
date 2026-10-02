@@ -98,9 +98,9 @@ policy. This follows Apple's advice to measure work distribution rather than
 assuming a particular group size is universally best:
 [Scale compute workloads across Apple GPUs](https://developer.apple.com/videos/play/wwdc2022/10159/).
 
-The earlier P19 experiment tested a different design: GPU entropy decoding into
-full-image coefficient scratch followed by a separate IDCT pass. Its rejection
-does not apply to this component-plane intermediate.
+An earlier experiment tested a different design: GPU entropy decoding into
+full-image coefficient scratch followed by a separate IDCT pass. That design was
+slower; its result does not apply to this component-plane intermediate.
 
 The existing fast-packet planning benchmark measured about 301 µs without
 restarts and 312 µs with restart interval 2 after the entropy-only traversal

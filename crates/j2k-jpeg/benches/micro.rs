@@ -49,7 +49,7 @@ fn bench_micro(c: &mut Criterion) {
     });
 
     // Scalar-vs-SIMD one-block parity workload on a mid-complexity coefficient
-    // block, tracking the Phase 1 speedup ratio precisely.
+    // block.
     let mut coeffs = [0i16; 64];
     coeffs[0] = 480;
     coeffs[1] = -120;
@@ -204,8 +204,8 @@ fn bench_micro(c: &mut Criterion) {
         });
     });
 
-    // Scalar YCbCr→RGB conversion across a 256-pixel row — the path every
-    // Phase 2 SIMD variant has to beat.
+    // Scalar YCbCr→RGB conversion across a 256-pixel row, the baseline for
+    // the SIMD variants.
     let mut color = BenchColorRowScratch::new(256);
     c.bench_function("micro/ycbcr_to_rgb_row_scalar_256", |b| {
         b.iter(|| {

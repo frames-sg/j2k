@@ -7,8 +7,8 @@ use j2k_jpeg::{
 };
 
 #[cfg(feature = "cuda-runtime")]
-#[path = "encode/p18_baseline.rs"]
-mod p18_baseline;
+#[path = "encode/staged_baseline.rs"]
+mod staged_baseline;
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::{DecodeRequest, Decoder};
 

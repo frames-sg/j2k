@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Single-path profiler for the promoted P19 adaptive-checkpoint decode route.
+//! Single-path profiler for the adaptive-checkpoint CUDA JPEG decode route.
 
 use std::time::{Duration, Instant};
 
@@ -19,12 +19,12 @@ use j2k_jpeg::{
 use j2k_jpeg_cuda::{Codec, CudaSession, Decoder as CudaDecoder};
 use sha2::{Digest, Sha256};
 
-const INPUT_HASH_DOMAIN: &[u8] = b"P19-CUDA-JPEG-DECODE-INPUTS\0";
-const OUTPUT_HASH_DOMAIN: &[u8] = b"P19-CUDA-JPEG-DECODE-OUTPUTS\0";
+const INPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-DECODE-INPUTS\0";
+const OUTPUT_HASH_DOMAIN: &[u8] = b"CUDA-JPEG-DECODE-OUTPUTS\0";
 const MAX_CPU_CHANNEL_DELTA: u8 = 2;
 const PACKED_CHECKPOINT_THREADS_PER_BLOCK: u32 = 128;
 const PACKED_CHECKPOINT_MIN_COUNT: u32 = 128;
-const BENCHMARK_GROUP: &str = "j2k_cuda_p19_decode_adaptive_checkpoints";
+const BENCHMARK_GROUP: &str = "j2k_cuda_jpeg_decode_adaptive_checkpoints";
 const SERIAL_ROUTE_FIELD: &str = "route=serial_below_threshold";
 const PACKED_ROUTE_FIELD: &str = "route=packed_checkpoints";
 
@@ -37,7 +37,7 @@ struct CheckpointLaunch {
 
 fn checkpoint_launch(checkpoint_count: usize) -> CheckpointLaunch {
     let checkpoint_count =
-        u32::try_from(checkpoint_count).expect("P19 checkpoint count fits the CUDA ABI");
+        u32::try_from(checkpoint_count).expect("checkpoint count fits the CUDA ABI");
     let launch = if checkpoint_count < PACKED_CHECKPOINT_MIN_COUNT {
         CheckpointLaunch {
             route_field: SERIAL_ROUTE_FIELD,
@@ -146,9 +146,9 @@ fn bench_decode_adaptive_checkpoints(criterion: &mut Criterion) {
     if let Err(error) = session.cuda_context_diagnostics() {
         assert!(
             std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_none(),
-            "J2K_REQUIRE_CUDA_BENCH is set but P19 CUDA decode is unavailable: {error}"
+            "J2K_REQUIRE_CUDA_BENCH is set but CUDA decode is unavailable: {error}"
         );
-        eprintln!("skipping P19 CUDA JPEG adaptive-checkpoint profile: {error}");
+        eprintln!("skipping CUDA JPEG adaptive-checkpoint profile: {error}");
         return;
     }
 
@@ -176,11 +176,11 @@ fn bench_decode_adaptive_checkpoints(criterion: &mut Criterion) {
         let repeat = profile_probe(case, &input, &cpu, &mut session);
         assert_eq!(
             first.output_sha256, repeat.output_sha256,
-            "P19 production output must be deterministic"
+            "production output must be deterministic"
         );
         assert_eq!(
             first.outputs, repeat.outputs,
-            "P19 repeated production output bytes must be exact"
+            "repeated production output bytes must be exact"
         );
         emit_probe(
             case,
@@ -200,7 +200,7 @@ fn bench_decode_adaptive_checkpoints(criterion: &mut Criterion) {
                     BackendRequest::Cuda,
                     &mut session,
                 )
-                .expect("P19 warm cached-packet CUDA decode")
+                .expect("warm cached-packet CUDA decode")
             });
         });
     }
@@ -218,7 +218,7 @@ struct PacketSummary {
 fn packet_summary(input: &[u8], sampling: JpegSubsampling) -> PacketSummary {
     macro_rules! summarize {
         ($packet:expr, $blocks:expr) => {{
-            let packet = $packet.expect("P19 fast packet");
+            let packet = $packet.expect("fast packet");
             summarize_packet(
                 packet.mcus_per_row,
                 packet.mcu_rows,
@@ -231,7 +231,7 @@ fn packet_summary(input: &[u8], sampling: JpegSubsampling) -> PacketSummary {
         JpegSubsampling::Ybr420 => summarize!(build_fast420_packet(input), 6),
         JpegSubsampling::Ybr422 => summarize!(build_fast422_packet(input), 4),
         JpegSubsampling::Ybr444 => summarize!(build_fast444_packet(input), 3),
-        JpegSubsampling::Gray => unreachable!("P19 matrix is color-only"),
+        JpegSubsampling::Gray => unreachable!("the benchmark matrix is color-only"),
     }
 }
 
@@ -241,13 +241,13 @@ fn summarize_packet(
     checkpoints: &[JpegEntropyCheckpointV1],
     blocks_per_mcu: u32,
 ) -> PacketSummary {
-    let first = checkpoints.first().expect("P19 initial checkpoint");
-    let last = checkpoints.last().expect("P19 final checkpoint");
+    let first = checkpoints.first().expect("initial checkpoint");
+    let last = checkpoints.last().expect("final checkpoint");
     PacketSummary {
         checkpoint_count: checkpoints.len(),
         checkpoint_mcu_range: (first.mcu_index, last.mcu_index),
         checkpoint_entropy_range: (first.entropy_pos, last.entropy_pos),
-        total_mcus: mcus_per_row.checked_mul(mcu_rows).expect("P19 MCU count"),
+        total_mcus: mcus_per_row.checked_mul(mcu_rows).expect("MCU count"),
         blocks_per_mcu,
     }
 }
@@ -269,18 +269,17 @@ struct Probe {
 fn profile_probe(case: &BenchCase, input: &[u8], cpu: &[u8], session: &mut CudaSession) -> Probe {
     let before = session
         .cuda_context_diagnostics()
-        .expect("P19 diagnostics before probe");
+        .expect("diagnostics before probe");
     let wall_start = Instant::now();
     let mut profiled = bench_vec_with_capacity(case.batch_size);
     for _ in 0..case.batch_size {
-        profiled.push(
-            Codec::profile_tile_rgb8_with_session(input, session).expect("P19 profiled decode"),
-        );
+        profiled
+            .push(Codec::profile_tile_rgb8_with_session(input, session).expect("profiled decode"));
     }
     let product_wall_us = wall_start.elapsed().as_micros();
     let after = session
         .cuda_context_diagnostics()
-        .expect("P19 diagnostics after probe");
+        .expect("diagnostics after probe");
     let mut outputs = bench_vec_with_capacity(case.batch_size);
     let mut resource_upload_us = 0u128;
     let mut fused_decode_kernel_us = 0u128;
@@ -291,12 +290,12 @@ fn profile_probe(case: &BenchCase, input: &[u8], cpu: &[u8], session: &mut CudaS
     let mut max_cpu_channel_delta = 0u8;
     for result in profiled {
         let (surface, timings) = result.into_parts();
-        let stats = surface.cuda_surface().expect("P19 CUDA surface").stats();
+        let stats = surface.cuda_surface().expect("CUDA surface").stats();
         assert!(stats.used_owned_cuda_decode());
         let mut output = bench_vec_filled(surface.byte_len(), 0u8);
         surface
             .download_into(&mut output, surface.pitch_bytes())
-            .expect("P19 output download");
+            .expect("output download");
         max_cpu_channel_delta = max_cpu_channel_delta.max(max_channel_delta(&output, cpu));
         resource_upload_us = resource_upload_us.saturating_add(timings.resource_upload_us());
         fused_decode_kernel_us =
@@ -310,7 +309,7 @@ fn profile_probe(case: &BenchCase, input: &[u8], cpu: &[u8], session: &mut CudaS
     }
     assert!(
         max_cpu_channel_delta <= MAX_CPU_CHANNEL_DELTA,
-        "P19 CPU conformance delta {max_cpu_channel_delta}"
+        "CPU conformance delta {max_cpu_channel_delta}"
     );
     let output_sha256 = framed_sha256(OUTPUT_HASH_DOMAIN, outputs.iter().map(Vec::as_slice));
     Probe {
@@ -338,7 +337,7 @@ fn emit_probe(
 ) {
     let launch = checkpoint_launch(packet.checkpoint_count);
     eprintln!(
-        "p19_cuda_jpeg_decode_probe cell={} dimensions={}x{} sampling={:?} restart_interval={} batch={} {} warm_cached_packet_product=true probe_repeat=2 cold_packet_construction_us={} input_sha256={} output_sha256={} exact_production_output=true deterministic=true cpu_conformance=true max_cpu_channel_delta={}/{} checkpoint_count={} checkpoint_mcu_range={}-{} checkpoint_entropy_range={}-{} total_mcus={} blocks_per_mcu={} decode_grid={}x1x1 decode_block={}x1x1 coefficient_scratch_bytes=0 component_workspace_bytes={}/{} resource_upload_us={}/{} fused_decode_kernel_us={}/{} conversion_us={}/{} status_readback_us={}/{} product_wall_us={}/{} kernel_dispatches={}/{} host_to_device_transfers={}/{} host_to_device_bytes={}/{} device_to_host_transfers={}/{} device_to_host_bytes={}/{} status_transfers={}/{} status_bytes={}/{} device_allocations={}/{} device_allocation_bytes={}/{} event_allocations={}/{} event_reuses={}/{} host_synchronizations={}/{}",
+        "cuda_jpeg_decode_probe cell={} dimensions={}x{} sampling={:?} restart_interval={} batch={} {} warm_cached_packet_product=true probe_repeat=2 cold_packet_construction_us={} input_sha256={} output_sha256={} exact_production_output=true deterministic=true cpu_conformance=true max_cpu_channel_delta={}/{} checkpoint_count={} checkpoint_mcu_range={}-{} checkpoint_entropy_range={}-{} total_mcus={} blocks_per_mcu={} decode_grid={}x1x1 decode_block={}x1x1 coefficient_scratch_bytes=0 component_workspace_bytes={}/{} resource_upload_us={}/{} fused_decode_kernel_us={}/{} conversion_us={}/{} status_readback_us={}/{} product_wall_us={}/{} kernel_dispatches={}/{} host_to_device_transfers={}/{} host_to_device_bytes={}/{} device_to_host_transfers={}/{} device_to_host_bytes={}/{} status_transfers={}/{} status_bytes={}/{} device_allocations={}/{} device_allocation_bytes={}/{} event_allocations={}/{} event_reuses={}/{} host_synchronizations={}/{}",
         case.id, case.dimension, case.dimension, case.sampling,
         case.restart_interval.map_or_else(|| "none".to_string(), |value| value.to_string()),
         case.batch_size, launch.route_field, cold_packet_construction_us, input_sha256,
@@ -375,9 +374,8 @@ fn run_correctness_only_seams(session: &mut CudaSession) {
     ] {
         let input = generated_jpeg(dimensions.0, dimensions.1, sampling, None);
         let cpu = cpu_decode(&input);
-        let first = Codec::profile_tile_rgb8_with_session(&input, session).expect("P19 odd probe");
-        let second =
-            Codec::profile_tile_rgb8_with_session(&input, session).expect("P19 odd repeat");
+        let first = Codec::profile_tile_rgb8_with_session(&input, session).expect("odd probe");
+        let second = Codec::profile_tile_rgb8_with_session(&input, session).expect("odd repeat");
         let actual = download_profile(&first);
         let repeated = download_profile(&second);
         assert_eq!(actual, repeated, "{label} exact repeat");
@@ -385,7 +383,7 @@ fn run_correctness_only_seams(session: &mut CudaSession) {
             max_channel_delta(&actual, &cpu) <= MAX_CPU_CHANNEL_DELTA,
             "{label} CPU conformance"
         );
-        eprintln!("p19_cuda_jpeg_correctness cell={label} exact_production_output=true deterministic=true cpu_conformance=true");
+        eprintln!("cuda_jpeg_decode_correctness cell={label} exact_production_output=true deterministic=true cpu_conformance=true");
     }
     restart32_seam(session);
     caller_owned_padded_output(session);
@@ -396,14 +394,14 @@ fn restart32_seam(session: &mut CudaSession) {
     let restart32 = generated_jpeg(512, 512, JpegSubsampling::Ybr420, Some(32));
     let restart32_cpu = cpu_decode(&restart32);
     let restart32_actual = Codec::profile_tile_rgb8_with_session(&restart32, session)
-        .expect("P19 restart32 adaptive decode");
+        .expect("restart32 adaptive decode");
     let restart32_repeat = Codec::profile_tile_rgb8_with_session(&restart32, session)
-        .expect("P19 restart32 adaptive repeat");
+        .expect("restart32 adaptive repeat");
     let restart32_actual = download_profile(&restart32_actual);
     assert_eq!(restart32_actual, download_profile(&restart32_repeat));
     assert!(max_channel_delta(&restart32_actual, &restart32_cpu) <= MAX_CPU_CHANNEL_DELTA);
 
-    eprintln!("p19_cuda_jpeg_correctness restart32_420=true exact_production_output=true deterministic=true cpu_conformance=true");
+    eprintln!("cuda_jpeg_decode_correctness restart32_420=true exact_production_output=true deterministic=true cpu_conformance=true");
 }
 
 fn caller_owned_padded_output(session: &mut CudaSession) {
@@ -414,15 +412,15 @@ fn caller_owned_padded_output(session: &mut CudaSession) {
     let pitch = row_bytes + 19;
     let buffer = session
         .take_owned_cuda_output_buffer(pitch * height as usize)
-        .expect("P19 padded output");
+        .expect("padded output");
     let stats =
         Codec::decode_tile_rgb8_into_cuda_buffer_with_session(&input, &buffer, pitch, session)
-            .expect("P19 padded decode");
+            .expect("padded decode");
     assert!(stats.used_owned_cuda_decode());
     let mut downloaded = bench_vec_filled(buffer.byte_len(), 0u8);
     buffer
         .copy_to_host(&mut downloaded)
-        .expect("P19 padded download");
+        .expect("padded download");
     let mut tight = bench_vec_with_capacity(row_bytes * height as usize);
     for row in downloaded.chunks(pitch).take(height as usize) {
         tight.extend_from_slice(&row[..row_bytes]);
@@ -432,7 +430,7 @@ fn caller_owned_padded_output(session: &mut CudaSession) {
         .chunks(pitch)
         .take(height.saturating_sub(1) as usize)
         .all(|row| row[row_bytes..].iter().all(|byte| *byte == 0)));
-    eprintln!("p19_cuda_jpeg_correctness caller_owned_padded_output=true dimensions=513x517 padding_bytes=19 cpu_conformance=true");
+    eprintln!("cuda_jpeg_decode_correctness caller_owned_padded_output=true dimensions=513x517 padding_bytes=19 cpu_conformance=true");
 }
 
 fn routing_rejection_and_auto_fallback() {
@@ -443,7 +441,7 @@ fn routing_rejection_and_auto_fallback() {
         w: 41,
         h: 37,
     };
-    let mut decoder = CudaDecoder::new(&input).expect("P19 routing decoder");
+    let mut decoder = CudaDecoder::new(&input).expect("routing decoder");
     assert!(decoder
         .decode_region_to_device(PixelFormat::Rgb8, roi, BackendRequest::Cuda)
         .expect_err("strict region rejection")
@@ -463,9 +461,9 @@ fn routing_rejection_and_auto_fallback() {
         .is_unsupported());
     let auto = decoder
         .decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)
-        .expect("P19 Auto fallback");
+        .expect("Auto fallback");
     assert_eq!(auto.backend_kind(), j2k_core::BackendKind::Cpu);
-    eprintln!("p19_cuda_jpeg_correctness strict_region_rejected=true strict_scaled_rejected=true strict_region_scaled_rejected=true auto_fallback=cpu");
+    eprintln!("cuda_jpeg_decode_correctness strict_region_rejected=true strict_scaled_rejected=true strict_region_scaled_rejected=true auto_fallback=cpu");
 }
 
 fn download_profile(profile: &j2k_jpeg_cuda::CudaJpegDecodeProfile) -> Vec<u8> {
@@ -473,7 +471,7 @@ fn download_profile(profile: &j2k_jpeg_cuda::CudaJpegDecodeProfile) -> Vec<u8> {
     let mut output = bench_vec_filled(surface.byte_len(), 0u8);
     surface
         .download_into(&mut output, surface.pitch_bytes())
-        .expect("P19 profile download");
+        .expect("profile download");
     output
 }
 
@@ -481,7 +479,7 @@ fn bench_vec_with_capacity<T>(capacity: usize) -> Vec<T> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(capacity)
-        .expect("allocate bounded P19 benchmark vector");
+        .expect("allocate bounded benchmark vector");
     values
 }
 
@@ -511,15 +509,15 @@ fn generated_jpeg(
             backend: JpegBackend::Cpu,
         },
     )
-    .expect("P19 generated JPEG")
+    .expect("generated JPEG")
     .data
 }
 
 fn cpu_decode(input: &[u8]) -> Vec<u8> {
     CpuDecoder::new(input)
-        .expect("P19 CPU decoder")
+        .expect("CPU decoder")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
-        .expect("P19 CPU decode")
+        .expect("CPU decode")
         .0
 }
 
@@ -607,9 +605,9 @@ const fn delta(before: u64, after: u64) -> u64 {
     after.saturating_sub(before)
 }
 
-fn p19_criterion() -> Criterion {
+fn decode_criterion() -> Criterion {
     Criterion::default().confidence_level(0.95)
 }
 
-criterion_group! { name = benches; config = p19_criterion(); targets = bench_decode_adaptive_checkpoints }
+criterion_group! { name = benches; config = decode_criterion(); targets = bench_decode_adaptive_checkpoints }
 criterion_main!(benches);
