@@ -3,6 +3,8 @@
 use std::mem::size_of;
 use std::sync::Arc;
 
+use super::super::direct_roi::BandRequiredRegion;
+
 use super::super::{
     classic_group_shapes_match, classic_sub_band_shapes_match, ht_group_shapes_match,
     ht_sub_band_shapes_match, idwt_shapes_match, repeated_shared_direct_color_plan_count,
@@ -93,18 +95,35 @@ pub(super) fn checked_f32_instance_offset(
         .ok_or_else(|| span_overflow(context, "instance byte offset"))
 }
 
-pub(super) fn checked_f32_element_offset(
+pub(super) fn checked_f32_band_offset(
     span: &CheckedF32BatchSpan,
     instance_index: usize,
     element_offset: usize,
+    window: BandRequiredRegion,
     context: &'static str,
 ) -> Result<usize, Error> {
-    if element_offset >= span.per_instance_elements {
+    let elements = usize::try_from(window.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(window.height())
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or_else(|| span_overflow(context, "member element count"))?;
+    let end = element_offset
+        .checked_add(elements)
+        .ok_or_else(|| span_overflow(context, "member element end"))?;
+    if end > span.per_instance_elements {
         return Err(Error::MetalKernel {
             message: format!("{context} element offset is outside its instance"),
         });
     }
     let instance_offset = checked_f32_instance_offset(span, instance_index, context)?;
+    // Empty high-frequency bands occur at small decomposition boundaries.
+    // They carry no samples, but Metal still needs an in-buffer binding.
+    if elements == 0 {
+        return Ok(instance_offset);
+    }
     let member_offset = element_offset
         .checked_mul(size_of::<f32>())
         .ok_or_else(|| span_overflow(context, "member byte offset"))?;
@@ -359,29 +378,54 @@ mod tests {
         let span = checked_f32_batch_span(4, 2, "J2K MetalDirect repeated grayscale test span")
             .expect("small repeated span");
         assert_eq!(
-            checked_f32_element_offset(
+            checked_f32_band_offset(
                 &span,
                 1,
                 3,
+                BandRequiredRegion::full(1, 1),
                 "J2K MetalDirect repeated grayscale test offset",
             )
             .expect("last element of last instance"),
             7 * size_of::<f32>()
         );
         assert!(matches!(
-            checked_f32_element_offset(
+            checked_f32_band_offset(
                 &span,
                 1,
                 4,
+                BandRequiredRegion::full(1, 1),
                 "J2K MetalDirect repeated grayscale test offset",
             ),
             Err(Error::MetalKernel { message }) if message.contains("outside its instance")
         ));
+        for window in [
+            BandRequiredRegion::full(0, 4),
+            BandRequiredRegion::full(4, 0),
+        ] {
+            assert_eq!(
+                checked_f32_band_offset(&span, 1, 4, window, "empty grouped sub-band")
+                    .expect("an empty trailing sub-band binds at its instance start"),
+                span.stride_bytes,
+            );
+        }
         assert!(matches!(
-            checked_f32_element_offset(
+            checked_f32_band_offset(
+                &span, 1, 3, BandRequiredRegion::full(2, 1), "crossing sub-band",
+            ),
+            Err(Error::MetalKernel { message }) if message.contains("outside its instance")
+        ));
+        let empty = checked_f32_batch_span(0, 2, "empty group").unwrap();
+        assert_eq!(
+            checked_f32_band_offset(&empty, 1, 0, BandRequiredRegion::full(0, 0), "empty band")
+                .expect("zero-length group uses its placeholder buffer"),
+            0,
+        );
+        assert!(matches!(
+            checked_f32_band_offset(
                 &span,
                 usize::MAX,
                 0,
+                BandRequiredRegion::full(1, 1),
                 "J2K MetalDirect repeated grayscale test offset",
             ),
             Err(Error::MetalKernel { message }) if message.contains("outside its batch")

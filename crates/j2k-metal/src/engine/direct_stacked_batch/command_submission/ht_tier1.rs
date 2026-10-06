@@ -25,7 +25,7 @@ use crate::engine::{
 
 use super::super::resources::{retain_metal_tier1_output, DirectBandSlice};
 use super::super::validation::{
-    checked_f32_batch_span, checked_f32_dimension_span, checked_f32_element_offset,
+    checked_f32_band_offset, checked_f32_batch_span, checked_f32_dimension_span,
     checked_f32_instance_offset,
 };
 use super::{planned_cpu_input_count, try_collect_submission_items, SubmissionContext};
@@ -113,10 +113,11 @@ impl SubmissionContext<'_, '_, '_> {
                 bands.push(DirectBandSlice {
                     band_id: member.band_id,
                     buffer: buffer.clone(),
-                    offset_bytes: checked_f32_element_offset(
+                    offset_bytes: checked_f32_band_offset(
                         &span,
                         source_idx,
                         member.offset_elements,
+                        member.window,
                         "J2K MetalDirect stacked HT group member",
                     )?,
                     window: member.window,

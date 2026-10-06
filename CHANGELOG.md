@@ -44,6 +44,8 @@ and stale roadmap entries have been removed from the public documentation set.
   with its source image and job index, whatever the batch size.
 - Starting a pinned-upload transaction in `j2k-cuda-runtime` on a thread that
   already holds one returns an error instead of deadlocking.
+- Metal stacked batches accept empty high-frequency sub-bands in small and
+  reduced-resolution images while checking each nonempty band's full range.
 - Metal classic RGB batches run the Tier-1 work of every prepared group in
   one GPU dispatch, with code blocks packed into SIMD groups by estimated
   cost. The 24-image Kodak batch decodes GPU-only in about 64 ms on an M4 Pro,
