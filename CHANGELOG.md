@@ -3,14 +3,14 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.12.0] - 2026-10-05
 
 - Breaking (experimental `j2k-cuda-j2k-engine`):
   `J2kCudaEngine::upload_j2k_decode_payload_with_pool` and
   `upload_htj2k_decode_resources_with_tables_and_pool` take the payload as
   parts (`&[&[u8]]`) instead of one slice; pass `&[payload]` for a single
   buffer. `CudaQueuedHtj2kCleanupGroup::new` takes two more `usize`
-  arguments. The next release is therefore a minor version (0.12.0).
+  arguments. This requires a minor release.
 - Raises the minimum supported Rust version to 1.99.0. `j2k-types` and
   `j2k-codec-math`, which the CUDA kernels share, still build with Rust 1.96.
 - CUDA color and grayscale batches decoded from encoded bytes plan images in

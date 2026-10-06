@@ -6,7 +6,11 @@ release tooling; see [`xtask/RELEASING.md`](../xtask/RELEASING.md#public-api-sna
 
 ## Breaking releases
 
-The currently published stable contract is the `0.11.x` line.
+The currently published stable contract is the `0.11.x` line. The `0.12.0`
+candidate changes three rustdoc-hidden CUDA engine signatures and requires
+consumers to retain pooled surfaces until their GPU work completes. See the
+[review](../xtask/release-evidence/public-api/public-api-review-0.12.0.yml)
+and [changelog](../CHANGELOG.md) for migration instructions.
 
 - `0.7.0` removed parts of the `0.6.2` API; it is not source compatible with
   `0.6.x`.
@@ -28,7 +32,7 @@ The currently published stable contract is the `0.11.x` line.
 `0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
 `v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
 exception for the crate split, which is now disabled. The current semver
-baseline is `v0.11.2`.
+baseline is `v0.11.3`.
 
 ## Stability tiers
 

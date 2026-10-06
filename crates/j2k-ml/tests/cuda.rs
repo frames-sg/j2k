@@ -35,7 +35,7 @@ fn staged_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
         let burn_batch = decoder
             .decode_prepared(&prepared)
             .expect("submit prepared CUDA batch");
-        assert!(burn_batch.errors.is_empty());
+        assert_eq!(burn_batch.errors, [] as [j2k::IndexedBatchError; 0]);
         let BurnBatchTensor::U8(tensor) = burn_batch.groups.into_iter().next().unwrap().tensor
         else {
             panic!("expected U8 tensor")
@@ -336,7 +336,9 @@ fn openjph_i16_oracle(fixture: &OpenJphBatchFixture) -> Vec<i16> {
     } else {
         fixture
             .oracle
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
             .collect()
     }

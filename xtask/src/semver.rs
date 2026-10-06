@@ -23,14 +23,14 @@ use compatibility::run_semver_checks;
 #[cfg(test)]
 use compatibility::{semver_check_args, semver_check_release_type};
 
-const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
+const CARGO_SEMVER_CHECKS_VERSION: &str = "0.50.0";
 const SEMVER_TOOLCHAIN: &str = "1.99.0";
-const SEMVER_BASELINE_VERSION: &str = "0.11.2";
-const SEMVER_BASELINE_TAG: &str = "v0.11.2";
-const SEMVER_BASELINE_COMMIT: &str = "75a3e0618e1963d8403e4edad0fa95ee1c217ec1";
+const SEMVER_BASELINE_VERSION: &str = "0.11.3";
+const SEMVER_BASELINE_TAG: &str = "v0.11.3";
+const SEMVER_BASELINE_COMMIT: &str = "c708d2fda9f2672472b9e06aa2e66bf1f191dc3d";
 const API_DIFF_REPORT: &str =
-    "xtask/release-evidence/public-api/reviewed-public-api-diff-0.11.3.md";
-const API_REVIEW_CONFIG: &str = "xtask/release-evidence/public-api/public-api-review-0.11.3.yml";
+    "xtask/release-evidence/public-api/reviewed-public-api-diff-0.12.0.md";
+const API_REVIEW_CONFIG: &str = "xtask/release-evidence/public-api/public-api-review-0.12.0.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {

@@ -21,7 +21,7 @@ name = "j2k_codec_math"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-types = { path = "../j2k-types", version = "=0.11.3" }
+j2k-types = { path = "../j2k-types", version = "=0.12.0" }
 
 [lints]
 workspace = true

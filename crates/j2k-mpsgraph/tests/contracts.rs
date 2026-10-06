@@ -97,7 +97,7 @@ fn non_apple_api_consistently_reports_unsupported_platform() {
     let encoded = Arc::<[u8]>::from(htj2k_rgb8_fixture(8, 8));
     let prepared = prepare_batch(vec![EncodedImage::full(encoded)], options)
         .expect("valid fallback batch preparation");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     let group = prepared
         .groups()
         .first()

@@ -76,7 +76,7 @@ fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.11.3"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.12.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
 }
 
@@ -91,10 +91,18 @@ fn baseline_revision_validation_accepts_only_the_pinned_commit() {
 #[test]
 fn committed_review_config_covers_the_exact_release_scope() {
     let config = load_review_config().expect("load committed API review config");
-    assert_eq!(config.candidate_version, "0.11.3");
-    assert!(
-        config.break_ledger.is_empty(),
-        "patch release must not carry a consumed breaking-change ledger"
+    assert_eq!(config.candidate_version, "0.12.0");
+    assert_eq!(
+        config
+            .break_ledger
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "rustdoc-io-error-path",
+            "cuda-upload-and-cleanup-contract",
+            "cuda-pooled-surface-lifetime"
+        ])
     );
     let expected_packages = SEMVER_BASELINE_PACKAGES
         .iter()
@@ -157,7 +165,7 @@ fn semver_check_command_uses_the_computed_candidate_release_type() {
             "--package",
             "j2k-core",
             "--baseline-version",
-            "0.11.2",
+            "0.11.3",
             "--release-type",
             "major",
             "--color",

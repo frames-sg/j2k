@@ -1178,6 +1178,7 @@ pub j2k_metal::DecodeSurfaceWithReport::report: j2k_metal::DecodeRouteReport
 pub j2k_metal::DecodeSurfaceWithReport::surface: j2k_metal::Surface
 pub j2k_metal::MetalDecodeDispatchReport::classic_tier1: usize
 pub j2k_metal::MetalDecodeDispatchReport::color_output: usize
+pub j2k_metal::MetalDecodeDispatchReport::cpu_tier1_images: usize
 pub j2k_metal::MetalDecodeDispatchReport::dequantization: usize
 pub j2k_metal::MetalDecodeDispatchReport::host_to_device: usize
 pub j2k_metal::MetalDecodeDispatchReport::ht_refinement: usize

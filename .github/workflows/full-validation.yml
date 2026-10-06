@@ -163,7 +163,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.99.0"
-      - run: cargo install cargo-semver-checks --version 0.48.0 --locked
+      - run: cargo install cargo-semver-checks --version 0.50.0 --locked
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: nightly-2026-08-13

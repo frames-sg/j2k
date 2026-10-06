@@ -206,7 +206,8 @@ J2K does not depend on any of them.
 
 ## Status
 
-**Release status:** `0.11.3` is published and security-supported.
+**Release status:** `0.11.3` is published and security-supported. The current
+checkout prepares `0.12.0`; see the [changelog](CHANGELOG.md) for migration notes.
 
 `j2k`, `j2k-core`, `j2k-jpeg`, and `j2k-tilecodec` are the stable crates.
 The GPU, transcode, and ML crates are experimental: patch releases don't

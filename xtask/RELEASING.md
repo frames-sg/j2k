@@ -8,6 +8,13 @@ used only for shapes where it was tested and measured faster.
 
 ## Release status
 
+Version `0.12.0` is the current release candidate. Its
+[API report](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md)
+compares with `v0.11.3`; the
+[review](release-evidence/public-api/public-api-review-0.12.0.yml) records
+CUDA upload and pooled-surface lifetime changes and new Metal batch APIs.
+Publishing requires the hosted and full CUDA/Metal gates below.
+
 Version `0.11.3` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
 compares against `v0.11.2` and shows no public signature changes. The
@@ -443,7 +450,7 @@ other item.
 Every `cargo xtask semver` run generates both passes, compares them with the
 committed files, and checks the added/removed fingerprints and the hidden-item
 count against
-`xtask/release-evidence/public-api/public-api-review-0.11.3.yml`. A package with
+`xtask/release-evidence/public-api/public-api-review-0.12.0.yml`. A package with
 hidden items must give a reason for them in that file.
 
 Any removed item must be listed in the review file with its package, a summary,

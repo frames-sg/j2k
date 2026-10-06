@@ -1,0 +1,192 @@
+version: 3
+baseline_tag: v0.11.3
+baseline_version: 0.11.3
+candidate_version: "0.12.0"
+break_ledger:
+  - id: rustdoc-io-error-path
+    kind: "source"
+    packages: ["j2k-tilecodec"]
+    removed_items: [{"package": "j2k-tilecodec", "item": "pub j2k_tilecodec::TileCodecError::Io::source: std::io::error::Error"}, {"package": "j2k-tilecodec", "item": "pub j2k_tilecodec::TileCodecError::Malformed::source: std::io::error::Error"}]
+    summary: "The pinned rustdoc inventory now renders the standard I/O error type through core::io instead of std::io."
+    migration: "Continue passing std::io::Error; these are re-export paths for the same type and require no source change."
+  - id: cuda-upload-and-cleanup-contract
+    kind: "behavior"
+    packages: ["j2k-cuda-j2k-engine"]
+    removed_items: []
+    summary: "The rustdoc-hidden CUDA upload entry points accept payload parts, and cleanup groups track capacity and retained host bytes; these signature changes are recorded in the hidden inventory."
+    migration: "Pass &[payload] for a single payload to upload_j2k_decode_payload_with_pool and upload_htj2k_decode_resources_with_tables_and_pool. Supply cleanup_capacity and live_host_bytes to CudaQueuedHtj2kCleanupGroup::new as documented in the 0.12.0 API."
+  - id: cuda-pooled-surface-lifetime
+    kind: "behavior"
+    packages: ["j2k-cuda"]
+    removed_items: []
+    summary: "Dropping pooled RGB8/RGBA8 CUDA output returns memory to the session pool without synchronizing."
+    migration: "Keep each surface alive until every consumer stream has finished using device_ptr. Synchronize or retain the surface until downstream work completes."
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 225
+    hidden_fingerprint: "fnv1a64:3bac105ab257d3a4"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Adds retained_host_bytes and planning with external live bytes; the allocation helpers keep their existing contracts."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 103
+    hidden_fingerprint: "fnv1a64:71b5df4e9aaebdcb"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:7402e26c4cc53b41"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Adds shared HT scratch bounds and wavelet tiling constants used by the CUDA kernels; existing signatures are preserved."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-cuda-build-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 253
+    hidden_fingerprint: "fnv1a64:d9d18ccf7cefb706"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Adds pooled uploads from multiple payload slices, with synchronous and queued variants; existing uploads remain available."
+  j2k-cuda-j2k-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 706
+    hidden_fingerprint: "fnv1a64:f63e72f81a7bb7b3"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages."
+  j2k-cuda-jpeg-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 176
+    hidden_fingerprint: "fnv1a64:e88101299bf042a3"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-cuda-transcode-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 84
+    hidden_fingerprint: "fnv1a64:b2fcaa9b0171aba7"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:02139606f1202938"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-mpsgraph-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 562
+    hidden_fingerprint: "fnv1a64:3bd35f4a7d1f83cf"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 574
+    hidden_fingerprint: "fnv1a64:b3e5271cb5d45bac"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-tilecodec:
+    removed_fingerprint: "fnv1a64:de5a5b18d88e8fb8"
+    added_fingerprint: "fnv1a64:4c036c22e22a0254"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "The standard I/O error defining path changes in rustdoc; the source type remains std::io::Error."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 108
+    hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 458
+    hidden_fingerprint: "fnv1a64:449a76476549c1e2"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 20
+    hidden_fingerprint: "fnv1a64:be22ca1d5e12b043"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:79397ffc221464c3"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:d51a8c94610fc3df"
+    hidden_count: 319
+    hidden_fingerprint: "fnv1a64:e46e323954530145"
+    rationale: "Adds shared group submission and cooperative CPU/Metal decoding; existing entry points are preserved."
+    hidden_rationale: "Reviewed the generated hidden inventory against v0.11.3; implementation adapters remain part of the release contract. Metal dispatch telemetry adds cpu_tier1_images."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:b4a8b53d5e10bb00"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 133
+    hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 191
+    hidden_fingerprint: "fnv1a64:82214b7c64fc5d9c"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+  j2k-mpsgraph:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."

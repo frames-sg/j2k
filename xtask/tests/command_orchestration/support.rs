@@ -72,7 +72,7 @@ impl Harness {
         fs::write(
             &rustup,
             format!(
-                "#!/bin/sh\nprintf 'rustup %s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *'public-api --version'*) printf 'cargo-public-api 0.52.0\\n' ;;\n  *' cargo public-api '*) case \"${{RUSTDOCFLAGS-}}\" in *document-hidden*) printf 'pub struct SyntheticHidden\\n' ;; *) printf 'pub struct Synthetic\\n' ;; esac ;;\n  *'semver-checks --version'*) printf 'cargo-semver-checks 0.48.0\\n' ;;\nesac\n",
+                "#!/bin/sh\nprintf 'rustup %s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *'public-api --version'*) printf 'cargo-public-api 0.52.0\\n' ;;\n  *' cargo public-api '*) case \"${{RUSTDOCFLAGS-}}\" in *document-hidden*) printf 'pub struct SyntheticHidden\\n' ;; *) printf 'pub struct Synthetic\\n' ;; esac ;;\n  *'semver-checks --version'*) printf 'cargo-semver-checks 0.50.0\\n' ;;\nesac\n",
                 log.display()
             ),
         )

@@ -272,7 +272,7 @@ fn report_has_one_published_details_section_without_consumed_transition() {
     assert_eq!(report.matches("## Published-package details").count(), 1);
     assert!(report.contains("Rustdoc-hidden candidate items: 1"));
     assert!(report.contains("Full hidden-inventory fingerprint: `fnv1a64:"));
-    assert!(report.contains("Baseline registry version: `0.11.2`"));
+    assert!(report.contains("Baseline registry version: `0.11.3`"));
     assert!(!report.contains("Active intentional-break transition:"));
     assert!(!report.contains("Required next semver baseline:"));
 }
@@ -281,8 +281,8 @@ fn report_has_one_published_details_section_without_consumed_transition() {
 fn parses_review_config_and_rejects_unknown_fields() {
     let source = "\
 version: 3
-baseline_tag: v0.11.2
-baseline_version: 0.11.2
+baseline_tag: v0.11.3
+baseline_version: 0.11.3
 candidate_version: 0.11.0
 break_ledger:
   - id: strict-decode-default
