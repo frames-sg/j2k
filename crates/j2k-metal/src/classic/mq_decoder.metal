@@ -1,24 +1,22 @@
-inline uchar current_byte(thread const J2kArithmeticDecoder &decoder) {
-    return decoder.base_pointer < decoder.data_len ? decoder.data[decoder.base_pointer] : uchar(0xFF);
-}
-
 inline uchar next_byte(thread const J2kArithmeticDecoder &decoder) {
     return decoder.base_pointer + 1u < decoder.data_len ? decoder.data[decoder.base_pointer + 1u] : uchar(0xFF);
 }
 
 inline void arithmetic_read_byte(thread J2kArithmeticDecoder &decoder) {
-    if (current_byte(decoder) == uchar(0xFF)) {
+    if (decoder.byte == uchar(0xFF)) {
         const uchar b1 = next_byte(decoder);
         if (b1 > uchar(0x8F)) {
             decoder.shift_count = 8u;
         } else {
             decoder.base_pointer += 1u;
-            decoder.c = decoder.c + 0xFE00u - (uint(current_byte(decoder)) << 9u);
+            decoder.byte = b1;
+            decoder.c = decoder.c + 0xFE00u - (uint(b1) << 9u);
             decoder.shift_count = 7u;
         }
     } else {
+        decoder.byte = next_byte(decoder);
         decoder.base_pointer += 1u;
-        decoder.c = decoder.c + 0xFF00u - (uint(current_byte(decoder)) << 8u);
+        decoder.c = decoder.c + 0xFF00u - (uint(decoder.byte) << 8u);
         decoder.shift_count = 8u;
     }
 }
@@ -59,7 +57,8 @@ inline bool bypass_read_bit(thread J2kBypassDecoder &decoder, thread uint &bit) 
 }
 
 inline void arithmetic_initialize(thread J2kArithmeticDecoder &decoder) {
-    decoder.c = (uint(current_byte(decoder) ^ uchar(0xFF)) << 16u);
+    decoder.byte = decoder.data_len == 0u ? uchar(0xFF) : decoder.data[0];
+    decoder.c = (uint(decoder.byte ^ uchar(0xFF)) << 16u);
     arithmetic_read_byte(decoder);
     decoder.c <<= 7u;
     decoder.shift_count -= 7u;
@@ -67,58 +66,54 @@ inline void arithmetic_initialize(thread J2kArithmeticDecoder &decoder) {
 }
 
 inline void arithmetic_renormalize(thread J2kArithmeticDecoder &decoder) {
-    while ((decoder.a & 0x8000u) == 0u) {
+    uint remaining = clz(decoder.a) - 16u;
+    while (remaining != 0u) {
         if (decoder.shift_count == 0u) {
             arithmetic_read_byte(decoder);
         }
-        decoder.a <<= 1u;
-        decoder.c <<= 1u;
-        decoder.shift_count -= 1u;
+        const uint shift = min(remaining, decoder.shift_count);
+        decoder.a <<= shift;
+        decoder.c <<= shift;
+        decoder.shift_count -= shift;
+        remaining -= shift;
     }
 }
 
-inline uint arithmetic_decode_bit(thread J2kArithmeticDecoder &decoder, thread uchar *contexts, uint ctx_label) {
-    uchar ctx = contexts[ctx_label];
-    const J2kQeData qe = J2K_QE_TABLE[ctx & uchar(0x7F)];
-    decoder.a -= qe.qe;
+template<typename ContextPointer>
+inline uint arithmetic_decode_bit(
+    thread J2kArithmeticDecoder &decoder,
+    ContextPointer contexts,
+    uint ctx_label
+) {
+    const uint context = contexts[ctx_label];
+    const uint qe = context & 0xFFFFu;
+    const uint mps = context >> 31u;
+    decoder.a -= qe;
 
-    if ((decoder.c >> 16u) < decoder.a) {
-        if ((decoder.a & 0x8000u) != 0u) {
-            return uint(ctx >> 7u);
-        }
-
-        uint d;
-        if (decoder.a < qe.qe) {
-            d = uint((ctx >> 7u) ^ 1u);
-            if (qe.switch_mps != 0u) {
-                ctx ^= uchar(0x80);
-            }
-            ctx = uchar((ctx & 0x80u) | qe.nlps);
-        } else {
-            d = uint(ctx >> 7u);
-            ctx = uchar((ctx & 0x80u) | qe.nmps);
-        }
-        contexts[ctx_label] = ctx;
-        arithmetic_renormalize(decoder);
-        return d;
+    const bool lower = (decoder.c >> 16u) < decoder.a;
+    if (lower && (decoder.a & 0x8000u) != 0u) {
+        return mps;
     }
 
-    decoder.c -= decoder.a << 16u;
+    const uint lps = uint(lower == (decoder.a < qe));
+    const uint decoded = mps ^ lps;
+    if (!lower) {
+        decoder.c -= decoder.a << 16u;
+        decoder.a = qe;
+    }
 
-    uint d;
-    if (decoder.a < qe.qe) {
-        decoder.a = qe.qe;
-        d = uint(ctx >> 7u);
-        ctx = uchar((ctx & 0x80u) | qe.nmps);
+    const uint next_state = lps != 0u
+        ? ((context >> 22u) & 0x3Fu)
+        : ((context >> 16u) & 0x3Fu);
+    const uint next_mps = mps ^ (lps & ((context >> 28u) & 1u));
+    contexts[ctx_label] = J2K_PACKED_QE_TABLE[next_state] | (next_mps << 31u);
+    const uint shifts_needed = clz(decoder.a) - 16u;
+    if (shifts_needed <= decoder.shift_count) {
+        decoder.a <<= shifts_needed;
+        decoder.c <<= shifts_needed;
+        decoder.shift_count -= shifts_needed;
     } else {
-        decoder.a = qe.qe;
-        d = uint((ctx >> 7u) ^ 1u);
-        if (qe.switch_mps != 0u) {
-            ctx ^= uchar(0x80);
-        }
-        ctx = uchar((ctx & 0x80u) | qe.nlps);
+        arithmetic_renormalize(decoder);
     }
-    contexts[ctx_label] = ctx;
-    arithmetic_renormalize(decoder);
-    return d;
+    return decoded;
 }

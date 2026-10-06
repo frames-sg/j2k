@@ -37,12 +37,11 @@ fn submitted_prepared_sub8_ht_grayscale_preserves_native_samples_for_single_and_
     let mut expected_groups = Vec::new();
     let mut actual_groups = Vec::new();
 
-    for batch_len in [1_usize, 2] {
-        let inputs = encoded
+    for input_indices in [&[0_usize][..], &[0, 1][..], &[0, 0, 0][..]] {
+        let batch_len = input_indices.len();
+        let inputs = input_indices
             .iter()
-            .take(batch_len)
-            .cloned()
-            .map(EncodedImage::full)
+            .map(|&index| EncodedImage::full(encoded[index].clone()))
             .collect::<Vec<_>>();
         let expected = cpu.decode(inputs.clone()).expect("CPU Gray4 oracle");
         assert!(expected.errors().is_empty());

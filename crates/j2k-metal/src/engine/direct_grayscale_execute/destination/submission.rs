@@ -10,6 +10,7 @@ use super::super::{
     wait_for_completion_metal, Arc, CommandBuffer, DirectExecutionMetadata,
     DirectStatusRetirementMode, Error, MetalRuntime,
 };
+use crate::engine::SharedClassicTier1Pass;
 use crate::metal_types::{CommandQueue, CommandQueueRef, Event, SharedEvent};
 use crate::MetalDecodeDispatchReport;
 
@@ -34,6 +35,8 @@ pub(crate) struct SubmittedDirectDestination {
     completed_dispatch_report: Option<MetalDecodeDispatchReport>,
     completion_dependency: Option<DirectDestinationCompletionDependency>,
     pub(in crate::engine::direct_grayscale_execute) consumer_waits: Vec<CommandBuffer>,
+    /// Earlier dispatch that decoded this group's classic coefficients.
+    shared_tier1: Option<std::rc::Rc<SharedClassicTier1Pass>>,
     #[cfg(test)]
     known_consumer_event_ptr: Option<usize>,
     #[cfg(test)]
@@ -112,6 +115,7 @@ impl SubmittedDirectDestination {
             .iter()
             .map(|status| match status {
                 DirectStatusCheck::Classic { buffer, .. }
+                | DirectStatusCheck::ClassicShared { buffer, .. }
                 | DirectStatusCheck::Ht { buffer, .. } => {
                     objc2::rc::Retained::as_ptr(buffer).addr()
                 }
@@ -129,6 +133,15 @@ impl SubmittedDirectDestination {
         self.finish()
     }
 
+    /// Makes completion also wait for, and report failure of, the shared
+    /// dispatch whose output this group's command buffer reads.
+    pub(in crate::engine::direct_grayscale_execute) fn depend_on_shared_tier1(
+        &mut self,
+        pass: std::rc::Rc<SharedClassicTier1Pass>,
+    ) {
+        self.shared_tier1 = Some(pass);
+    }
+
     fn finish(&mut self) -> Result<MetalDecodeDispatchReport, Error> {
         let Some(command_buffer) = self.command_buffer.take() else {
             return self
@@ -138,7 +151,12 @@ impl SubmittedDirectDestination {
                     reason: "completed submission lost its dispatch report",
                 });
         };
-        let completion = wait_for_completion_metal(&command_buffer);
+        let completion = wait_for_completion_metal(&command_buffer).and_then(|()| {
+            // A failed shared dispatch leaves zeroed statuses, which read as OK.
+            self.shared_tier1
+                .as_ref()
+                .map_or(Ok(()), |pass| pass.wait())
+        });
         let metadata = self.metadata.take().ok_or(Error::MetalStateInvariant {
             state: "J2K Metal direct destination submission",
             reason: "committed command buffer lost its retained execution resources",
@@ -160,9 +178,14 @@ impl SubmittedDirectDestination {
         );
         drop(retained_buffers);
         let scratch_retirement = recycle_scratch_buffers(&self.runtime, scratch_buffers);
+        let shared_retirement = self
+            .shared_tier1
+            .take()
+            .map_or(Ok(()), SharedClassicTier1Pass::release);
         completion
             .and(status_retirement)
             .and(scratch_retirement)
+            .and(shared_retirement)
             .map(|()| {
                 self.completed_dispatch_report = Some(dispatch_report);
                 dispatch_report
@@ -298,6 +321,7 @@ pub(in crate::engine::direct_grayscale_execute) fn commit_direct_destination(
         completed_dispatch_report: None,
         completion_dependency,
         consumer_waits,
+        shared_tier1: None,
         #[cfg(test)]
         known_consumer_event_ptr,
         #[cfg(test)]

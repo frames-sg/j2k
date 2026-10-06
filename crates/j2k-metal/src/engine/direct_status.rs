@@ -17,6 +17,13 @@ pub(super) enum DirectStatusCheck {
         len: usize,
         source_indices: Option<Vec<usize>>,
     },
+    /// One group's jobs in a classic status buffer shared with other groups.
+    ClassicShared {
+        buffer: Buffer,
+        buffer_len: usize,
+        status_indices: Vec<usize>,
+        source_indices: Option<Vec<usize>>,
+    },
     Ht {
         buffer: Buffer,
         len: usize,
@@ -46,6 +53,11 @@ impl DirectStatusCheck {
                 source_indices,
                 ..
             } => (*len, source_indices),
+            Self::ClassicShared {
+                status_indices,
+                source_indices,
+                ..
+            } => (status_indices.len(), source_indices),
         };
         let indices = source_indices.as_mut().ok_or(Error::MetalStateInvariant {
             state,
@@ -143,6 +155,33 @@ fn validate_direct_status_contents(status_check: &DirectStatusCheck) -> Result<(
                     .and_then(|indices| indices.get(status_index))
                     .copied();
                 return Err(decode_classic_status_error_for_source(status, source_index));
+            }
+        }
+        DirectStatusCheck::ClassicShared {
+            buffer,
+            buffer_len,
+            status_indices,
+            source_indices,
+        } => {
+            let statuses = checked_buffer_slice::<J2kClassicStatus>(
+                buffer,
+                *buffer_len,
+                "shared classic direct status",
+            )?;
+            for (position, &status_index) in status_indices.iter().enumerate() {
+                let status = *statuses
+                    .get(status_index)
+                    .ok_or(Error::MetalStateInvariant {
+                        state: "shared classic direct status",
+                        reason: "status index is outside the shared status buffer",
+                    })?;
+                if status.code != J2K_CLASSIC_STATUS_OK {
+                    let source_index = source_indices
+                        .as_ref()
+                        .and_then(|indices| indices.get(position))
+                        .copied();
+                    return Err(decode_classic_status_error_for_source(status, source_index));
+                }
             }
         }
         DirectStatusCheck::Ht {

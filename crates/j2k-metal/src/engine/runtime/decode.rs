@@ -3,8 +3,10 @@
 use crate::metal_types::{Buffer, ComputePipelineState, Device};
 use j2k_metal_support::{checked_shared_buffer_with_slice, MetalPipelineLoader, MetalSupportError};
 use j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
+use objc2_metal::MTLDevice;
 
 pub(in crate::engine) struct DecodeKernels {
+    pub(in crate::engine) max_threadgroup_memory_length: usize,
     pub(in crate::engine) expand_sampled_plane: ComputePipelineState,
     pub(in crate::engine) pack_gray8: ComputePipelineState,
     pub(in crate::engine) pack_rgb8: ComputePipelineState,
@@ -17,6 +19,7 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) pack_u8_repeated_gray: ComputePipelineState,
     pub(in crate::engine) pack_u16_repeated_gray: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_plain_batched: ComputePipelineState,
+    pub(in crate::engine) classic_cleanup_plain_dense_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_plain_repeated_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_plain_dev_repeated_batched: ComputePipelineState,
@@ -24,13 +27,21 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) classic_store_repeated_batched: ComputePipelineState,
     pub(in crate::engine) idwt_interleave: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_horizontal: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_interleave_horizontal_fused: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_vertical: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_vertical_fused: ComputePipelineState,
     pub(in crate::engine) idwt_interleave_batched: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_interleave_horizontal_scale: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_interleave_horizontal_scale_batched:
         ComputePipelineState,
+    pub(in crate::engine) idwt_irreversible97_interleave_horizontal_fused: ComputePipelineState,
+    pub(in crate::engine) idwt_irreversible97_interleave_horizontal_fused_batched:
+        ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_horizontal_batched: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_interleave_horizontal_fused_batched:
+        ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_vertical_batched: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_vertical_fused_batched: ComputePipelineState,
     #[cfg(test)]
     pub(in crate::engine) idwt_irreversible97_horizontal_scale: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_horizontal_lift_fused: ComputePipelineState,
@@ -76,6 +87,7 @@ impl DecodeKernels {
         let source = super::super::shader_source::decode_shader_source();
         let loader = MetalPipelineLoader::new(device, &source)?;
         Ok(Self {
+            max_threadgroup_memory_length: device.maxThreadgroupMemoryLength(),
             expand_sampled_plane: loader.pipeline("j2k_expand_sampled_plane")?,
             pack_gray8: loader.pipeline("j2k_pack_gray8")?,
             pack_rgb8: loader.pipeline("j2k_pack_rgb8")?,
@@ -89,6 +101,8 @@ impl DecodeKernels {
             pack_u16_repeated_gray: loader.pipeline("j2k_pack_u16_repeated_gray")?,
             classic_cleanup_plain_batched: loader
                 .pipeline("j2k_decode_classic_cleanup_plain_batched")?,
+            classic_cleanup_plain_dense_batched: loader
+                .pipeline("j2k_decode_classic_cleanup_plain_dense_batched")?,
             classic_cleanup_batched: loader.pipeline("j2k_decode_classic_cleanup_batched")?,
             classic_cleanup_plain_repeated_batched: loader
                 .pipeline("j2k_decode_classic_cleanup_plain_repeated_batched")?,
@@ -101,16 +115,28 @@ impl DecodeKernels {
             idwt_interleave: loader.pipeline("j2k_idwt_interleave")?,
             idwt_reversible53_horizontal: loader
                 .pipeline("j2k_idwt_reversible53_horizontal_pass")?,
+            idwt_reversible53_interleave_horizontal_fused: loader
+                .pipeline("j2k_idwt_reversible53_interleave_horizontal_fused")?,
             idwt_reversible53_vertical: loader.pipeline("j2k_idwt_reversible53_vertical_pass")?,
+            idwt_reversible53_vertical_fused: loader
+                .pipeline("j2k_idwt_reversible53_vertical_fused")?,
             idwt_interleave_batched: loader.pipeline("j2k_idwt_interleave_batched")?,
             idwt_irreversible97_interleave_horizontal_scale: loader
                 .pipeline("j2k_idwt_irreversible97_interleave_horizontal_scale")?,
             idwt_irreversible97_interleave_horizontal_scale_batched: loader
                 .pipeline("j2k_idwt_irreversible97_interleave_horizontal_scale_batched")?,
+            idwt_irreversible97_interleave_horizontal_fused: loader
+                .pipeline("j2k_idwt_irreversible97_interleave_horizontal_fused")?,
+            idwt_irreversible97_interleave_horizontal_fused_batched: loader
+                .pipeline("j2k_idwt_irreversible97_interleave_horizontal_fused_batched")?,
             idwt_reversible53_horizontal_batched: loader
                 .pipeline("j2k_idwt_reversible53_horizontal_pass_batched")?,
+            idwt_reversible53_interleave_horizontal_fused_batched: loader
+                .pipeline("j2k_idwt_reversible53_interleave_horizontal_fused_batched")?,
             idwt_reversible53_vertical_batched: loader
                 .pipeline("j2k_idwt_reversible53_vertical_pass_batched")?,
+            idwt_reversible53_vertical_fused_batched: loader
+                .pipeline("j2k_idwt_reversible53_vertical_fused_batched")?,
             #[cfg(test)]
             idwt_irreversible97_horizontal_scale: loader
                 .pipeline("j2k_idwt_irreversible97_horizontal_scale")?,

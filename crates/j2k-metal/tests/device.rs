@@ -477,6 +477,8 @@ mod batch_sessions;
 mod color_batch;
 #[path = "device/color_mct_group.rs"]
 mod color_mct_group;
+#[path = "device/cooperative_batch.rs"]
+mod cooperative_batch;
 #[path = "device/decode.rs"]
 mod decode;
 #[path = "device/direct_gray_requests.rs"]

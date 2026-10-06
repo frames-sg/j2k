@@ -56,7 +56,7 @@ fn prepared_direct_component_plan_supports_runtime(plan: &PreparedDirectGrayscal
             .all(|group| group.jobs.iter().all(ht_prepared_job_supports_runtime))
 }
 
-fn classic_prepared_job_supports_runtime(
+pub(in crate::engine) fn classic_prepared_job_supports_runtime(
     job: &J2kClassicCleanupBatchJob,
     segments: &[J2kClassicSegment],
 ) -> bool {

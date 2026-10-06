@@ -2,6 +2,16 @@ inline uint coeff_index(uint padded_width, uint index_x, uint index_y) {
     return index_x + index_y * padded_width;
 }
 
+struct J2kPlainThreadgroupSoaContexts {
+    threadgroup uint *values;
+    uint job_slot;
+
+    // Each lane owns a column, including when context labels diverge.
+    inline threadgroup uint &operator[](uint context_index) const {
+        return values[context_index * 32u + job_slot];
+    }
+};
+
 inline void set_classic_status(device J2kClassicStatus *status, uint code, uint detail) {
     status->code = code;
     status->detail = detail;
@@ -17,32 +27,8 @@ inline void set_state_bit(thread uchar *states, uint idx, uchar shift, uchar val
     states[idx] = uchar((states[idx] & uchar(~(1u << shift))) | ((value & 1u) << shift));
 }
 
-inline uchar state_bit_dev(device const uchar *states, uint idx, uchar shift) {
-    return (states[idx] >> shift) & uchar(1u);
-}
-
-inline void set_state_bit_dev(device uchar *states, uint idx, uchar shift, uchar value) {
-    states[idx] = uchar((states[idx] & uchar(~(1u << shift))) | ((value & 1u) << shift));
-}
-
-inline uchar state_bit_tg(threadgroup const uchar *states, uint idx, uchar shift) {
-    return (states[idx] >> shift) & uchar(1u);
-}
-
-inline void set_state_bit_tg(threadgroup uchar *states, uint idx, uchar shift, uchar value) {
-    states[idx] = uchar((states[idx] & uchar(~(1u << shift))) | ((value & 1u) << shift));
-}
-
 inline uint coeff_sign(thread const uchar *states, uint idx) {
     return uint(state_bit(states, idx, J2K_SIGN_SHIFT));
-}
-
-inline uint coeff_sign_dev(device const uchar *states, uint idx) {
-    return uint(state_bit_dev(states, idx, J2K_SIGN_SHIFT));
-}
-
-inline uint coeff_sign_tg(threadgroup const uchar *states, uint idx) {
-    return uint(state_bit_tg(states, idx, J2K_SIGN_SHIFT));
 }
 
 inline void coeff_push_bit(device uint *coefficients, uint idx, uint bit, uint position) {
@@ -61,35 +47,11 @@ inline void coeff_set_sign(thread uchar *states, uint idx, uint sign) {
     set_state_bit(states, idx, J2K_SIGN_SHIFT, uchar(sign));
 }
 
-inline void coeff_set_sign_dev(device uchar *states, uint idx, uint sign) {
-    set_state_bit_dev(states, idx, J2K_SIGN_SHIFT, uchar(sign));
-}
-
-inline void coeff_set_sign_tg(threadgroup uchar *states, uint idx, uint sign) {
-    set_state_bit_tg(states, idx, J2K_SIGN_SHIFT, uchar(sign));
-}
-
 inline uchar coeff_is_significant(thread const uchar *states, uint idx) {
     return state_bit(states, idx, J2K_SIG_SHIFT);
 }
 
-inline uchar coeff_is_significant_dev(device const uchar *states, uint idx) {
-    return state_bit_dev(states, idx, J2K_SIG_SHIFT);
-}
-
-inline uchar coeff_is_significant_tg(threadgroup const uchar *states, uint idx) {
-    return state_bit_tg(states, idx, J2K_SIG_SHIFT);
-}
-
 inline uchar coeff_zero_coded_marker(thread const uchar *states, uint idx) {
-    return states[idx] & J2K_STATE_MARKER_MASK;
-}
-
-inline uchar coeff_zero_coded_marker_dev(device const uchar *states, uint idx) {
-    return states[idx] & J2K_STATE_MARKER_MASK;
-}
-
-inline uchar coeff_zero_coded_marker_tg(threadgroup const uchar *states, uint idx) {
     return states[idx] & J2K_STATE_MARKER_MASK;
 }
 
@@ -97,23 +59,7 @@ inline uchar coeff_is_zero_coded(thread const uchar *states, uint idx, uchar mar
     return uchar(marker != 0u && coeff_zero_coded_marker(states, idx) == marker);
 }
 
-inline uchar coeff_is_zero_coded_dev(device const uchar *states, uint idx, uchar marker) {
-    return uchar(marker != 0u && coeff_zero_coded_marker_dev(states, idx) == marker);
-}
-
-inline uchar coeff_is_zero_coded_tg(threadgroup const uchar *states, uint idx, uchar marker) {
-    return uchar(marker != 0u && coeff_zero_coded_marker_tg(states, idx) == marker);
-}
-
 inline void coeff_set_zero_coded_marker(thread uchar *states, uint idx, uchar marker) {
-    states[idx] = uchar((states[idx] & uchar(0xE0u)) | (marker & J2K_STATE_MARKER_MASK));
-}
-
-inline void coeff_set_zero_coded_marker_dev(device uchar *states, uint idx, uchar marker) {
-    states[idx] = uchar((states[idx] & uchar(0xE0u)) | (marker & J2K_STATE_MARKER_MASK));
-}
-
-inline void coeff_set_zero_coded_marker_tg(threadgroup uchar *states, uint idx, uchar marker) {
     states[idx] = uchar((states[idx] & uchar(0xE0u)) | (marker & J2K_STATE_MARKER_MASK));
 }
 
@@ -121,24 +67,8 @@ inline uchar coeff_is_magnitude_refined(thread const uchar *states, uint idx) {
     return state_bit(states, idx, J2K_MAG_REF_SHIFT);
 }
 
-inline uchar coeff_is_magnitude_refined_dev(device const uchar *states, uint idx) {
-    return state_bit_dev(states, idx, J2K_MAG_REF_SHIFT);
-}
-
-inline uchar coeff_is_magnitude_refined_tg(threadgroup const uchar *states, uint idx) {
-    return state_bit_tg(states, idx, J2K_MAG_REF_SHIFT);
-}
-
 inline void coeff_set_magnitude_refined(thread uchar *states, uint idx) {
     set_state_bit(states, idx, J2K_MAG_REF_SHIFT, uchar(1u));
-}
-
-inline void coeff_set_magnitude_refined_dev(device uchar *states, uint idx) {
-    set_state_bit_dev(states, idx, J2K_MAG_REF_SHIFT, uchar(1u));
-}
-
-inline void coeff_set_magnitude_refined_tg(threadgroup uchar *states, uint idx) {
-    set_state_bit_tg(states, idx, J2K_MAG_REF_SHIFT, uchar(1u));
 }
 
 inline float reconstructed_classic_sample(
@@ -205,6 +135,16 @@ inline void reset_contexts(thread uchar *contexts) {
     contexts[18] = uchar(46u);
 }
 
+template<typename ContextPointer>
+inline void reset_decode_contexts(ContextPointer contexts) {
+    for (uint idx = 0u; idx < 19u; ++idx) {
+        contexts[idx] = J2K_PACKED_QE_TABLE[0];
+    }
+    contexts[0] = J2K_PACKED_QE_TABLE[4];
+    contexts[17] = J2K_PACKED_QE_TABLE[3];
+    contexts[18] = J2K_PACKED_QE_TABLE[46];
+}
+
 inline uchar zero_context_label(uchar neighbors, uint sub_band_type) {
     if (sub_band_type == 1u) {
         return ZERO_CTX_HL_LOOKUP[neighbors];
@@ -259,62 +199,6 @@ inline void set_significant(
     set_state_bit(states, idx, J2K_SIG_SHIFT, uchar(1u));
 }
 
-inline uchar neighborhood_states_plain_dev(
-    device const uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    return uchar(
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x, index_y + 1u))) << 0u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x + 1u, index_y + 1u))) << 1u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x + 1u, index_y))) << 2u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x - 1u, index_y + 1u))) << 3u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x - 1u, index_y))) << 4u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x + 1u, index_y - 1u))) << 5u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x, index_y - 1u))) << 6u) |
-        (uint(coeff_is_significant_dev(states, coeff_index(padded_width, index_x - 1u, index_y - 1u))) << 7u)
-    );
-}
-
-inline uchar neighborhood_states_plain_tg(
-    threadgroup const uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    return uchar(
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x, index_y + 1u))) << 0u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x + 1u, index_y + 1u))) << 1u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x + 1u, index_y))) << 2u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x - 1u, index_y + 1u))) << 3u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x - 1u, index_y))) << 4u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x + 1u, index_y - 1u))) << 5u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x, index_y - 1u))) << 6u) |
-        (uint(coeff_is_significant_tg(states, coeff_index(padded_width, index_x - 1u, index_y - 1u))) << 7u)
-    );
-}
-
-inline void set_significant_plain_dev(
-    device uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    const uint idx = coeff_index(padded_width, index_x, index_y);
-    set_state_bit_dev(states, idx, J2K_SIG_SHIFT, uchar(1u));
-}
-
-inline void set_significant_plain_tg(
-    threadgroup uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    const uint idx = coeff_index(padded_width, index_x, index_y);
-    set_state_bit_tg(states, idx, J2K_SIG_SHIFT, uchar(1u));
-}
-
 inline uchar magnitude_refinement_context(
     thread const uchar *states,
     uint padded_width,
@@ -324,7 +208,9 @@ inline uchar magnitude_refinement_context(
     uint style_flags
 ) {
     const uint idx = coeff_index(padded_width, index_x, index_y);
-    const uchar m1 = coeff_is_magnitude_refined(states, idx) * uchar(16u);
+    if (coeff_is_magnitude_refined(states, idx) != 0u) {
+        return uchar(16u);
+    }
     const uchar m2 = uchar(14u + min(uint(effective_neighborhood_states(
         states,
         padded_width,
@@ -333,7 +219,7 @@ inline uchar magnitude_refinement_context(
         height,
         style_flags
     )), 1u));
-    return max(m1, m2);
+    return m2;
 }
 
 inline uchar2 sign_context(
@@ -361,42 +247,6 @@ inline uchar2 sign_context(
             neighbor_in_next_stripe(index_y, height))
         ? 0u
         : coeff_sign(states, coeff_index(padded_width, index_x, index_y + 1u));
-    const uchar signs = uchar((top_sign << 6u) | (left_sign << 4u) | (right_sign << 2u) | bottom_sign);
-    const uchar negative = significances & signs;
-    const uchar positive = significances & uchar(~signs);
-    return SIGN_CONTEXT_LOOKUP[uchar((negative << 1u) | positive)];
-}
-
-inline uchar2 sign_context_plain_dev(
-    device const uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    const uchar significances =
-        neighborhood_states_plain_dev(states, padded_width, index_x, index_y) & uchar(0b01010101);
-    const uint left_sign = coeff_sign_dev(states, coeff_index(padded_width, index_x - 1u, index_y));
-    const uint right_sign = coeff_sign_dev(states, coeff_index(padded_width, index_x + 1u, index_y));
-    const uint top_sign = coeff_sign_dev(states, coeff_index(padded_width, index_x, index_y - 1u));
-    const uint bottom_sign = coeff_sign_dev(states, coeff_index(padded_width, index_x, index_y + 1u));
-    const uchar signs = uchar((top_sign << 6u) | (left_sign << 4u) | (right_sign << 2u) | bottom_sign);
-    const uchar negative = significances & signs;
-    const uchar positive = significances & uchar(~signs);
-    return SIGN_CONTEXT_LOOKUP[uchar((negative << 1u) | positive)];
-}
-
-inline uchar2 sign_context_plain_tg(
-    threadgroup const uchar *states,
-    uint padded_width,
-    uint index_x,
-    uint index_y
-) {
-    const uchar significances =
-        neighborhood_states_plain_tg(states, padded_width, index_x, index_y) & uchar(0b01010101);
-    const uint left_sign = coeff_sign_tg(states, coeff_index(padded_width, index_x - 1u, index_y));
-    const uint right_sign = coeff_sign_tg(states, coeff_index(padded_width, index_x + 1u, index_y));
-    const uint top_sign = coeff_sign_tg(states, coeff_index(padded_width, index_x, index_y - 1u));
-    const uint bottom_sign = coeff_sign_tg(states, coeff_index(padded_width, index_x, index_y + 1u));
     const uchar signs = uchar((top_sign << 6u) | (left_sign << 4u) | (right_sign << 2u) | bottom_sign);
     const uchar negative = significances & signs;
     const uchar positive = significances & uchar(~signs);

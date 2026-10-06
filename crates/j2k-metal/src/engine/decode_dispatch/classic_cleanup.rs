@@ -24,10 +24,11 @@ use self::status_sources::{classic_status_sources, repeated_classic_status_sourc
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) use self::distinct_batch::{
+    encode_distinct_classic_batches_to_buffer_in_encoder,
     encode_distinct_classic_sub_band_groups_to_buffer_in_command_buffer,
     encode_distinct_classic_sub_band_groups_to_buffer_in_encoder,
     encode_distinct_classic_sub_bands_to_buffer_in_command_buffer,
-    encode_distinct_classic_sub_bands_to_buffer_in_encoder,
+    encode_distinct_classic_sub_bands_to_buffer_in_encoder, DistinctClassicBatch,
 };
 
 #[cfg(target_os = "macos")]
@@ -225,6 +226,51 @@ pub(in crate::engine) fn dispatch_classic_cleanup_batched_in_encoder(
         },
         None,
     ))
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn dispatch_classic_cleanup_plain_dense_batched_in_encoder(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: ClassicCleanupBatchDispatch<'_>,
+    flags_scratch: &Buffer,
+    lane_groups: &Buffer,
+    lane_group_count: usize,
+    source_indices: Option<Vec<usize>>,
+) -> Result<DirectStatusCheck, Error> {
+    let status_buffer = zeroed_shared_buffer(
+        &dispatch.runtime.device,
+        dispatch.job_count.max(1) * size_of::<J2kClassicStatus>(),
+    )?;
+    let source_indices = classic_status_sources(dispatch.job_count, source_indices)?;
+    let job_pitch = j2k_u32_param(
+        dispatch.job_count,
+        "classic dense SoA job pitch exceeds u32",
+    )?;
+    let lane_group_count = j2k_u32_param(
+        lane_group_count,
+        "classic dense SIMD-group count exceeds u32",
+    )?;
+    let pipeline = &dispatch.kernels.classic_cleanup_plain_dense_batched;
+    encoder.setComputePipelineState(pipeline);
+    encoder.set_buffer(0, Some(dispatch.coded_data), 0);
+    encoder.set_buffer(1, Some(dispatch.decoded), 0);
+    encoder.set_buffer(2, Some(dispatch.jobs), 0);
+    encoder.set_buffer(3, Some(dispatch.segments), 0);
+    encoder.set_buffer(4, Some(&status_buffer), 0);
+    encoder.set_buffer(5, Some(dispatch.coefficients_scratch), 0);
+    encoder.set_buffer(6, Some(flags_scratch), 0);
+    encoder.set_bytes::<u32>(7, &job_pitch);
+    encoder.set_buffer(8, Some(lane_groups), 0);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(lane_group_count), 1, 1),
+        j2k_metal_support::mtl_size(32, 1, 1),
+    );
+
+    Ok(DirectStatusCheck::Classic {
+        buffer: status_buffer,
+        len: dispatch.job_count,
+        source_indices: Some(source_indices),
+    })
 }
 
 #[cfg(target_os = "macos")]

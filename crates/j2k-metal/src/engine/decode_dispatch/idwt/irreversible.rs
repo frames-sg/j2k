@@ -145,16 +145,36 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pas
     dispatch: SingleIdwtDispatch<'_>,
     high_pass: f32,
 ) {
-    dispatch_irreversible97_interleave_horizontal_scale(encoder, dispatch, high_pass);
-    dispatch_irreversible97_stages_after_horizontal_scale(
-        encoder,
+    if supports_irreversible97_interleave_horizontal_fused(
         dispatch.kernels,
-        dispatch.decoded,
-        dispatch.decoded_offset,
-        dispatch.params,
-        high_pass,
-        1,
-    );
+        &dispatch
+            .kernels
+            .idwt_irreversible97_interleave_horizontal_fused,
+        dispatch.params.width,
+        dispatch.params.height,
+    ) {
+        dispatch_irreversible97_interleave_horizontal_fused(encoder, dispatch, high_pass);
+        dispatch_irreversible97_vertical_after_fused_horizontal(
+            encoder,
+            dispatch.kernels,
+            dispatch.decoded,
+            dispatch.decoded_offset,
+            dispatch.params,
+            high_pass,
+            1,
+        );
+    } else {
+        dispatch_irreversible97_interleave_horizontal_scale(encoder, dispatch, high_pass);
+        dispatch_irreversible97_stages_after_horizontal_scale(
+            encoder,
+            dispatch.kernels,
+            dispatch.decoded,
+            dispatch.decoded_offset,
+            dispatch.params,
+            high_pass,
+            1,
+        );
+    }
 }
 
 pub(super) fn dispatch_irreversible97_interleave_horizontal_scale(
@@ -191,6 +211,51 @@ pub(super) fn dispatch_irreversible97_interleave_horizontal_scale(
         encoder,
         &kernels.idwt_irreversible97_interleave_horizontal_scale,
         (params.width, params.height),
+    );
+    #[cfg(test)]
+    crate::engine::test_counters::record_idwt97_logical_dispatch((params.width, params.height, 1));
+    encoder.memory_barrier_with_resources(&[decoded]);
+}
+
+pub(super) fn dispatch_irreversible97_interleave_horizontal_fused(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: SingleIdwtDispatch<'_>,
+    high_pass: f32,
+) {
+    let SingleIdwtDispatch {
+        kernels,
+        sub_bands,
+        params,
+        decoded,
+        decoded_offset,
+    } = dispatch;
+    let pipeline = &kernels.idwt_irreversible97_interleave_horizontal_fused;
+    encoder.setComputePipelineState(pipeline);
+    for (index, buffer, offset) in [
+        (0, sub_bands.ll, sub_bands.ll_offset),
+        (1, sub_bands.hl, sub_bands.hl_offset),
+        (2, sub_bands.lh, sub_bands.lh_offset),
+        (3, sub_bands.hh, sub_bands.hh_offset),
+    ] {
+        encoder.set_buffer(index, Some(buffer), offset as u64);
+    }
+    encoder.set_buffer(4, Some(decoded), decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
+    encoder.set_bytes::<J2kIdwt97LiftSteps>(
+        6,
+        &irreversible97_horizontal_lift_steps(params.x0 + params.output_x, high_pass),
+    );
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(params.width.div_ceil(IDWT97_ROW_TILE)),
+            u64::from(params.height.div_ceil(IDWT97_ROWS_PER_GROUP)),
+            1,
+        ),
+        j2k_metal_support::mtl_size(
+            u64::from(IDWT97_ROW_THREADS),
+            u64::from(IDWT97_ROWS_PER_GROUP),
+            1,
+        ),
     );
     #[cfg(test)]
     crate::engine::test_counters::record_idwt97_logical_dispatch((params.width, params.height, 1));
@@ -255,8 +320,9 @@ pub(super) fn dispatch_irreversible97_horizontal_scale(
 /// Threadgroup geometry of the fused lifting kernels; must match
 /// `J2K_IDWT97_*` in `idwt.metal`. Each horizontal group owns whole rows and
 /// each vertical group a whole strip of columns.
-const IDWT97_ROWS_PER_GROUP: u32 = 4;
-const IDWT97_ROW_THREADS: u32 = 64;
+pub(super) const IDWT97_ROWS_PER_GROUP: u32 = 4;
+pub(super) const IDWT97_ROW_THREADS: u32 = 64;
+pub(super) const IDWT97_ROW_TILE: u32 = 128;
 const IDWT97_COL_TILE: u32 = 32;
 const IDWT97_COL_ROW_THREADS: u32 = 8;
 
@@ -266,6 +332,32 @@ const IDWT97_LIFT_COEFFICIENTS: [f32; 4] = [
     dwt::IDWT97_NEG_BETA_F32,
     dwt::IDWT97_NEG_ALPHA_F32,
 ];
+
+pub(super) fn supports_irreversible97_interleave_horizontal_fused(
+    kernels: &crate::engine::runtime::DecodeKernels,
+    pipeline: &crate::metal_types::ComputePipelineState,
+    width: u32,
+    height: u32,
+) -> bool {
+    width > IDWT97_ROW_TILE
+        && height > 0
+        && pipeline.maxTotalThreadsPerThreadgroup()
+            >= (IDWT97_ROW_THREADS * IDWT97_ROWS_PER_GROUP) as usize
+        && pipeline.staticThreadgroupMemoryLength() <= kernels.max_threadgroup_memory_length
+}
+
+pub(super) fn irreversible97_horizontal_lift_steps(
+    origin: u32,
+    high_pass: f32,
+) -> J2kIdwt97LiftSteps {
+    J2kIdwt97LiftSteps {
+        coefficients: IDWT97_LIFT_COEFFICIENTS,
+        first_parity: origin & 1,
+        high_pass_bits: high_pass.to_bits(),
+        _reserved0: 0,
+        _reserved1: 0,
+    }
+}
 
 /// Encodes the horizontal lifting steps, vertical scale, and vertical lifting
 /// steps as two fused tile dispatches.
@@ -289,13 +381,8 @@ pub(super) fn dispatch_irreversible97_stages_after_horizontal_scale(
     encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
 
     if params.width > 1 {
-        let horizontal = J2kIdwt97LiftSteps {
-            coefficients: IDWT97_LIFT_COEFFICIENTS,
-            first_parity: (params.x0 + params.output_x) & 1,
-            high_pass_bits: high_pass.to_bits(),
-            _reserved0: 0,
-            _reserved1: 0,
-        };
+        let horizontal =
+            irreversible97_horizontal_lift_steps(params.x0 + params.output_x, high_pass);
         let groups = (
             1_u32,
             params.height.div_ceil(IDWT97_ROWS_PER_GROUP),
@@ -324,6 +411,52 @@ pub(super) fn dispatch_irreversible97_stages_after_horizontal_scale(
         encoder.memory_barrier_with_resources(&[decoded]);
     }
 
+    dispatch_irreversible97_vertical_after_horizontal(
+        encoder,
+        kernels,
+        decoded,
+        decoded_offset,
+        params,
+        high_pass,
+        batch_count,
+    );
+}
+
+pub(super) fn dispatch_irreversible97_vertical_after_fused_horizontal(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    decoded_offset: usize,
+    params: J2kIdwtSingleDecompositionParams,
+    high_pass: f32,
+    batch_count: u32,
+) {
+    #[cfg(test)]
+    crate::engine::test_counters::record_idwt97_stage_sequence();
+    dispatch_irreversible97_vertical_after_horizontal(
+        encoder,
+        kernels,
+        decoded,
+        decoded_offset,
+        params,
+        high_pass,
+        batch_count,
+    );
+}
+
+fn dispatch_irreversible97_vertical_after_horizontal(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    decoded_offset: usize,
+    params: J2kIdwtSingleDecompositionParams,
+    high_pass: f32,
+    batch_count: u32,
+) {
+    if params.width == 0 || params.height == 0 || batch_count == 0 {
+        return;
+    }
+    let size = j2k_metal_support::mtl_size;
     let vertical = J2kIdwt97LiftSteps {
         coefficients: IDWT97_LIFT_COEFFICIENTS,
         first_parity: (params.y0 + params.output_y) & 1,
@@ -339,6 +472,8 @@ pub(super) fn dispatch_irreversible97_stages_after_horizontal_scale(
         batch_count,
     ));
     encoder.setComputePipelineState(&kernels.idwt_irreversible97_vertical_fused);
+    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
     encoder.set_bytes::<J2kIdwt97LiftSteps>(2, &vertical);
     encoder.dispatchThreadgroups_threadsPerThreadgroup(
         size(

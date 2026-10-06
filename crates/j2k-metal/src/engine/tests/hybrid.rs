@@ -246,55 +246,69 @@ fn hybrid_rgb8_flattened_cpu_tier1_batch_uses_one_decode_queue() {
         return;
     }
 
-    let pixels_a = j2k_test_support::gradient_variant_u8(32, 32, 3, 0);
-    let pixels_b = j2k_test_support::gradient_variant_u8(32, 32, 3, 11);
-    let options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: 2,
-        ..EncodeOptions::default()
-    };
-    let bytes_a = encode(&pixels_a, 32, 32, 3, 8, false, &options).expect("encode first rgb8");
-    let bytes_b = encode(&pixels_b, 32, 32, 3, 8, false, &options).expect("encode second rgb8");
-    let image_a = Image::new(&bytes_a, &DecodeSettings::default()).expect("first image");
-    let image_b = Image::new(&bytes_b, &DecodeSettings::default()).expect("second image");
-    let mut context_a = DecoderContext::default();
-    let mut context_b = DecoderContext::default();
-    let plan_a = image_a
-        .build_direct_color_plan_with_context(&mut context_a)
-        .expect("first direct color plan");
-    let plan_b = image_b
-        .build_direct_color_plan_with_context(&mut context_b)
-        .expect("second direct color plan");
-    let prepared_a = Arc::new(prepare_direct_color_plan(&plan_a).expect("first prepared"));
-    let prepared_b = Arc::new(prepare_direct_color_plan(&plan_b).expect("second prepared"));
-    let expected_inputs = prepared_direct_color_tier1_input_count(&prepared_a)
-        + prepared_direct_color_tier1_input_count(&prepared_b);
-    let _guard = HYBRID_COUNTER_TEST_LOCK
-        .lock()
-        .expect("hybrid counter lock");
-    reset_hybrid_cpu_decode_inputs_for_test();
-    reset_flattened_hybrid_cpu_decode_batches_for_test();
+    for ht in [false, true] {
+        let pixels_a = j2k_test_support::gradient_variant_u8(32, 32, 3, 0);
+        let pixels_b = j2k_test_support::gradient_variant_u8(32, 32, 3, 11);
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let encode = if ht { j2k_native::encode_htj2k } else { encode };
+        let bytes_a = encode(&pixels_a, 32, 32, 3, 8, false, &options).expect("encode first rgb8");
+        let bytes_b = encode(&pixels_b, 32, 32, 3, 8, false, &options).expect("encode second rgb8");
+        let image_a = Image::new(&bytes_a, &DecodeSettings::default()).expect("first image");
+        let image_b = Image::new(&bytes_b, &DecodeSettings::default()).expect("second image");
+        let mut context_a = DecoderContext::default();
+        let mut context_b = DecoderContext::default();
+        let plan_a = image_a
+            .build_direct_color_plan_with_context(&mut context_a)
+            .expect("first direct color plan");
+        let plan_b = image_b
+            .build_direct_color_plan_with_context(&mut context_b)
+            .expect("second direct color plan");
+        let prepared_a = Arc::new(prepare_direct_color_plan(&plan_a).expect("first prepared"));
+        let prepared_b = Arc::new(prepare_direct_color_plan(&plan_b).expect("second prepared"));
+        let expected_inputs = prepared_direct_color_tier1_input_count(&prepared_a)
+            + prepared_direct_color_tier1_input_count(&prepared_b);
+        let _guard = HYBRID_COUNTER_TEST_LOCK
+            .lock()
+            .expect("hybrid counter lock");
+        reset_hybrid_cpu_decode_inputs_for_test();
+        reset_flattened_hybrid_cpu_decode_batches_for_test();
 
-    let surfaces = execute_flattened_hybrid_cpu_tier1_direct_color_plan_batch_for_test(
-        &[prepared_a, prepared_b],
-        PixelFormat::Rgb8,
-    )
-    .expect("flattened hybrid distinct RGB8 batch");
+        let surfaces = execute_flattened_hybrid_cpu_tier1_direct_color_plan_batch_for_test(
+            &[prepared_a, prepared_b],
+            PixelFormat::Rgb8,
+        )
+        .expect("flattened hybrid distinct RGB8 batch");
 
-    assert_eq!(surfaces.len(), 2);
-    assert_ne!(
-        surfaces[0].as_bytes().expect("surface byte access"),
-        surfaces[1].as_bytes().expect("surface byte access"),
-        "flattened distinct RGB hybrid batches must keep each tile's coefficients separate"
-    );
-    assert!(
-        hybrid_cpu_decode_inputs_for_test() >= expected_inputs,
-        "flattened RGB hybrid batches should still decode every distinct Tier-1 input"
-    );
-    assert!(
-        flattened_hybrid_cpu_decode_batches_for_test() >= 1,
-        "flattened RGB hybrid should collect Tier-1 work through the flattened CPU decode queue"
-    );
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(
+            surfaces[0].as_bytes().expect("first exact output").as_ref(),
+            pixels_a
+        );
+        assert_eq!(
+            surfaces[1]
+                .as_bytes()
+                .expect("second exact output")
+                .as_ref(),
+            pixels_b
+        );
+        assert_ne!(
+            surfaces[0].as_bytes().expect("surface byte access"),
+            surfaces[1].as_bytes().expect("surface byte access"),
+            "flattened distinct RGB hybrid batches must keep each tile's coefficients separate"
+        );
+        assert!(
+            hybrid_cpu_decode_inputs_for_test() >= expected_inputs,
+            "flattened RGB hybrid batches should still decode every distinct Tier-1 input"
+        );
+        assert!(
+            flattened_hybrid_cpu_decode_batches_for_test() >= 1,
+            "flattened RGB hybrid should collect Tier-1 work through the flattened CPU decode queue"
+        );
+    }
 }
 
 #[test]

@@ -11,6 +11,33 @@ Since version 0.9, the expert constructors and raw buffer handoffs take
 queues, command buffers, and buffers that J2K should own, and borrowed
 references otherwise. The older `metal-rs` types are no longer accepted.
 
+`MetalBatchDecoder::decode_prepared_cooperative` is an explicit CPU/Metal batch
+decode mode. It queues GPU entropy work first, then uses a caller-bounded number
+of CPU workers for part of a large classic RGB8 group while Metal runs. The split
+uses code-block dimensions, coding passes, and payload sizes. Reconstruction,
+color conversion, and final packing stay on Metal, with exact resident output in
+the requested NHWC or NCHW layout. Small batches, repeated plans, grayscale,
+higher bit depths, and HTJ2K use the existing GPU path. The ordinary `decode_prepared`
+and submission methods retain GPU Tier-1 execution.
+
+```rust
+let mut decoder = j2k_metal::MetalBatchDecoder::system_default()?;
+let prepared = decoder.prepare(inputs)?;
+let workers = std::num::NonZeroUsize::new(8).unwrap();
+let decoded = decoder.decode_prepared_cooperative(&prepared, workers)?;
+// Inspect decoded.errors() and decoded.group_errors() before consuming groups.
+```
+
+The cooperative policy currently requires a compatible group of at least eight
+distinct, full-resolution, reversible RGB8 images, each with at least 16,384
+pixels. Its benefit depends on input complexity, CPU budget, and device. Each
+group's dispatch report exposes `cpu_tier1_images` so callers can identify when
+CPU entropy work was used.
+
+CPU workers share a queue ordered by estimated work, taking another item when
+they finish. The initial CPU share is calibrated on the M4 Pro and scales with
+the requested worker budget.
+
 Encoding runs stage by stage on Metal unless one of the resident paths below
 accepts the shape. For lossless HTJ2K encode to host memory, `Auto` runs
 coefficient preparation and HT Tier-1 on Metal and packetizes on the CPU for

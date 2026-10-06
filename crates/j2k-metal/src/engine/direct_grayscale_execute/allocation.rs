@@ -26,6 +26,12 @@ impl DirectExecutionMetadata {
                         .classic_tier1
                         .saturating_add(usize::from(*len != 0));
                 }
+                DirectStatusCheck::ClassicShared { status_indices, .. } => {
+                    self.dispatch_report.classic_tier1 = self
+                        .dispatch_report
+                        .classic_tier1
+                        .saturating_add(usize::from(!status_indices.is_empty()));
+                }
                 DirectStatusCheck::Ht {
                     dispatches,
                     refinement_dispatches,

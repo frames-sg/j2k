@@ -44,12 +44,13 @@ pub(in crate::engine) use self::classic_cleanup::{
     dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
     dispatch_classic_cleanup_repeated_batched_in_command_buffer,
     dispatch_classic_store_repeated_batched_in_command_buffer,
+    encode_distinct_classic_batches_to_buffer_in_encoder,
     encode_distinct_classic_sub_band_groups_to_buffer_in_command_buffer,
     encode_distinct_classic_sub_band_groups_to_buffer_in_encoder,
     encode_distinct_classic_sub_bands_to_buffer_in_command_buffer,
     encode_distinct_classic_sub_bands_to_buffer_in_encoder, ClassicCleanupBatchDispatch,
     ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
-    ClassicRepeatedStoreDispatch,
+    ClassicRepeatedStoreDispatch, DistinctClassicBatch,
 };
 pub(in crate::engine) use self::classic_subband::{
     encode_prepared_classic_sub_band_group_to_buffer_in_encoder,

@@ -267,8 +267,8 @@ fn irreversible_groups_batch_transform_stages_without_changing_pixels() {
                     }
                     assert_eq!(
                         crate::engine::idwt97_stage_sequences_for_test(),
-                        color.channels() * 2,
-                        "{route:?} {color:?} batch {count}: IDWT stage sequences must not grow with batch size",
+                        2,
+                        "{route:?} {color:?} batch {count}: both decomposition levels must each use one sequence across images and compatible components",
                     );
                 }
             }

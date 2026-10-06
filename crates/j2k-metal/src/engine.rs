@@ -93,12 +93,19 @@ use self::direct_cpu::{
 };
 #[cfg(target_os = "macos")]
 mod direct_flattened;
+#[cfg(target_os = "macos")]
+mod direct_shared_tier1;
 #[cfg(all(target_os = "macos", test))]
 use self::direct_flattened::hybrid_cpu_decode_worker_count;
 #[cfg(target_os = "macos")]
 use self::direct_flattened::{
     build_flattened_cpu_tier1_cache, packed_cpu_decode_coefficients,
     packed_cpu_decode_coefficients_in, packed_cpu_decode_output_len, FlattenedCpuTier1Cache,
+};
+#[cfg(target_os = "macos")]
+use self::direct_shared_tier1::{
+    encode_shared_classic_tier1, stacked_plans_use_classic_tier1_only, SharedClassicTier1Group,
+    SharedClassicTier1Pass,
 };
 mod direct_profile;
 #[cfg(target_os = "macos")]
@@ -205,10 +212,11 @@ pub(crate) use self::test_counters::{
     reset_lossless_deinterleave_rct_fused_dispatches_for_test,
     reset_metal_command_buffers_for_test, reset_metal_compute_encoders_for_test,
     reset_resident_codestream_command_buffer_waits_for_test,
-    reset_resident_gpu_timestamp_queries_for_test, reset_stacked_component_batches_for_test,
-    reset_thread_hybrid_cpu_decode_inputs_for_test,
+    reset_resident_gpu_timestamp_queries_for_test, reset_shared_classic_tier1_passes_for_test,
+    reset_stacked_component_batches_for_test, reset_thread_hybrid_cpu_decode_inputs_for_test,
     resident_codestream_command_buffer_waits_for_test, resident_gpu_timestamp_queries_for_test,
-    stacked_component_batches_for_test, thread_hybrid_cpu_decode_inputs_for_test,
+    shared_classic_tier1_passes_for_test, stacked_component_batches_for_test,
+    thread_hybrid_cpu_decode_inputs_for_test,
 };
 
 #[cfg(target_os = "macos")]
@@ -266,16 +274,17 @@ use self::direct_plane_pack::{
 mod direct_grayscale_execute;
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_grayscale_execute::{
-    decode_component_grid_color_batch, execute_hybrid_cpu_tier1_direct_color_plan,
-    execute_hybrid_cpu_tier1_direct_color_plan_batch,
+    cooperative_color_costs, decode_component_grid_color_batch,
+    execute_hybrid_cpu_tier1_direct_color_plan, execute_hybrid_cpu_tier1_direct_color_plan_batch,
     execute_hybrid_cpu_tier1_direct_color_plan_with_device, execute_prepared_direct_color_plan,
     execute_prepared_direct_color_plan_batch, execute_prepared_direct_color_plan_with_device,
     execute_prepared_direct_grayscale_plan, execute_prepared_direct_grayscale_plan_batch,
     execute_prepared_direct_grayscale_plan_with_device,
-    execute_repeated_prepared_direct_grayscale_plan,
+    execute_repeated_prepared_direct_grayscale_plan, submit_cooperative_cpu_color_group,
     submit_prepared_direct_color_plan_batch_into_group,
-    submit_prepared_direct_grayscale_plan_batch_into_group, DirectDestinationConsumerOrdering,
-    SubmittedDirectDestination,
+    submit_prepared_direct_color_plan_batches_into_groups,
+    submit_prepared_direct_grayscale_plan_batch_into_group, ColorGroupSubmission,
+    DirectDestinationConsumerOrdering, SubmittedDirectDestination,
 };
 #[cfg(target_os = "macos")]
 mod direct_prepare;
@@ -296,7 +305,8 @@ mod direct_stacked_batch;
 use self::direct_stacked_batch::{
     encode_prepared_direct_color_plan_in_command_buffer,
     encode_repeated_direct_grayscale_plan_in_command_buffer,
-    encode_stacked_direct_component_plane_batch, lookup_direct_band_slice,
+    encode_stacked_direct_component_plane_batch,
+    encode_stacked_direct_component_plane_batch_with_shared_tier1, lookup_direct_band_slice,
     lookup_direct_band_slice_entry, signed_sample_bias,
     supports_stacked_direct_component_plane_batch, try_encode_stacked_mct_rgb8_direct_color_batch,
     DirectBandSlice, DirectColorPlanRequest, RepeatedDirectGrayscalePlanRequest,

@@ -48,6 +48,8 @@ impl GrayscaleGroupEncoder<'_> {
 
     fn encode_stacked(&mut self, plans: &[&PreparedDirectGrayscalePlan]) -> Result<(), Error> {
         let first = &self.plans[0];
+        let broadcast = self.plans.iter().all(|plan| Arc::ptr_eq(plan, first));
+        let execution_plans = if broadcast { &plans[..1] } else { plans };
         let status_start = self.metadata.status_checks.len();
         let mut stage_timings = DirectHybridStageTimings::default();
         let stacked =
@@ -55,7 +57,7 @@ impl GrayscaleGroupEncoder<'_> {
                 runtime: self.runtime,
                 command_buffers: DirectColorBatchCommandBuffers::single(self.command_buffer),
                 compute_encoder: Some(self.compute_encoder),
-                plans,
+                plans: execution_plans,
                 component_idx: 0,
                 flattened_cpu_tier1_cache: None,
                 tier1_mode: DirectTier1Mode::Metal,
@@ -64,22 +66,33 @@ impl GrayscaleGroupEncoder<'_> {
                 status_checks: &mut self.metadata.status_checks,
                 scratch_buffers: &mut self.metadata.scratch_buffers,
             })?;
-        if stacked.dimensions != first.dimensions || stacked.count != self.plans.len() {
+        if stacked.dimensions != first.dimensions || stacked.count != execution_plans.len() {
             return Err(Error::MetalStateInvariant {
                 state: "J2K Metal stacked grayscale destination",
                 reason: "stacked component output does not match prepared group",
             });
         }
-        encode_stacked_grayscale_destination(
-            self.runtime,
-            self.compute_encoder,
-            &stacked.buffer,
-            first,
-            self.fmt,
-            self.plans.len(),
-            self.destination,
-        )?;
-        if let Some(sources) = self.source_indices {
+        // Immutable repeated plans share one decoded plane. Store it into each
+        // caller-owned image range without repeating Tier 1 or reconstruction.
+        let store_count = if broadcast { self.plans.len() } else { 1 };
+        for destination_image_index in 0..store_count {
+            encode_stacked_grayscale_destination(
+                self.runtime,
+                self.compute_encoder,
+                &stacked.buffer,
+                first,
+                self.fmt,
+                if broadcast { 1 } else { self.plans.len() },
+                destination_image_index,
+                self.destination,
+            )?;
+        }
+        if broadcast {
+            let source = self.source_indices.map_or(0, |indices| indices[0]);
+            for status in &mut self.metadata.status_checks[status_start..] {
+                status.remap_source(source)?;
+            }
+        } else if let Some(sources) = self.source_indices {
             for status in &mut self.metadata.status_checks[status_start..] {
                 status.remap_sources(sources)?;
             }
@@ -91,8 +104,11 @@ impl GrayscaleGroupEncoder<'_> {
                 .filter(|step| matches!(step, super::super::PreparedDirectGrayscaleStep::Idwt(_)))
                 .count(),
         );
-        self.metadata.dispatch_report.color_output =
-            self.metadata.dispatch_report.color_output.saturating_add(1);
+        self.metadata.dispatch_report.color_output = self
+            .metadata
+            .dispatch_report
+            .color_output
+            .saturating_add(store_count);
         Ok(())
     }
 
@@ -139,6 +155,7 @@ fn encode_stacked_grayscale_destination(
     plan: &PreparedDirectGrayscalePlan,
     fmt: PixelFormat,
     count: usize,
+    destination_image_index: usize,
     destination: &MetalImageDestination,
 ) -> Result<(), Error> {
     let layout = destination.layout();
@@ -162,6 +179,12 @@ fn encode_stacked_grayscale_destination(
         ));
     }
     validate_stacked_grayscale_destination_indices(plan.dimensions, count)?;
+    let destination_offset = destination_image_index
+        .checked_mul(layout.image_stride_bytes())
+        .and_then(|offset| layout.byte_offset().checked_add(offset))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal stacked grayscale destination offset overflow".to_string(),
+        })?;
     let scale = j2k_scalar_pack_params(u32::from(plan.bit_depth));
     let max_value = if fmt == PixelFormat::GrayI16 {
         let signed_bits = u32::from(plan.bit_depth).clamp(1, 16);
@@ -208,7 +231,7 @@ fn encode_stacked_grayscale_destination(
     encoder.set_buffer(
         1,
         Some(unsafe { destination.raw_buffer() }),
-        u64::try_from(layout.byte_offset()).map_err(|_| Error::MetalKernel {
+        u64::try_from(destination_offset).map_err(|_| Error::MetalKernel {
             message: "J2K Metal stacked grayscale destination offset exceeds u64".to_string(),
         })?,
     );

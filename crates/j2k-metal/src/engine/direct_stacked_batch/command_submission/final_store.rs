@@ -9,21 +9,33 @@ use crate::engine::decode_dispatch::{
     dispatch_store_component_repeated_in_command_buffer,
     dispatch_store_component_repeated_in_encoder,
 };
-use crate::engine::{elapsed_us, take_f32_scratch_buffer, Error};
+use crate::engine::{
+    direct_preflight_invariant, elapsed_us, take_f32_scratch_buffer, Error,
+    PreparedDirectGrayscaleStep,
+};
 
-use super::super::resources::{lookup_repeated_direct_band_layout_entry, StackedFinalPlane};
+use super::super::resources::{lookup_mapped_repeated_direct_band_layout_entry, StackedFinalPlane};
 use super::super::validation::checked_f32_dimension_span;
 use super::SubmissionContext;
 
 impl SubmissionContext<'_, '_, '_> {
     pub(super) fn submit_store(
         &mut self,
+        step_idx: usize,
         store: &j2k_native::J2kDirectStoreStep,
     ) -> Result<(), Error> {
-        let (input, input_instance_stride) = lookup_repeated_direct_band_layout_entry(
+        let (input, input_instance_stride) = lookup_mapped_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
-            store.input_band_id,
-            store.input_rect,
+            self.plans
+                .iter()
+                .map(|plan| match plan.steps.get(step_idx) {
+                    Some(PreparedDirectGrayscaleStep::Store(step)) => {
+                        Ok((step.input_band_id, step.input_rect))
+                    }
+                    _ => Err(direct_preflight_invariant(
+                        "Store step mismatch in mapped stacked component batch",
+                    )),
+                }),
         )?;
         let dimensions = (store.output_width, store.output_height);
         let span = checked_f32_dimension_span(
@@ -35,6 +47,37 @@ impl SubmissionContext<'_, '_, '_> {
         let required_bytes = u64::try_from(span.total_bytes).map_err(|_| Error::MetalKernel {
             message: "J2K MetalDirect stacked store byte length exceeds u64".to_string(),
         })?;
+        // A complete identity store can keep the already retained coefficient
+        // plane. Tile assembly, cropping, and centered rounding still use Store.
+        if self.compute_encoder.is_some()
+            && self.resources.final_plane.is_none()
+            && step_idx + 1 == self.plans[0].steps.len()
+            && store.addend == 0.0
+            && !self.round_centered_store
+            && store.source_x == 0
+            && store.source_y == 0
+            && store.output_x == 0
+            && store.output_y == 0
+            && store.copy_width == store.output_width
+            && store.copy_height == store.output_height
+            && store.input_rect.width() == store.output_width
+            && store.input_rect.height() == store.output_height
+            && input.window.width() == store.output_width
+            && input.window.height() == store.output_height
+            && input.offset_bytes == 0
+            && input_instance_stride as usize == span.per_instance_elements
+            && input.buffer.length() >= span.total_bytes
+        {
+            self.resources.final_plane = Some(StackedFinalPlane {
+                buffer: input.buffer,
+                dimensions,
+                len: span.total_elements,
+            });
+            for bands in &mut self.resources.band_sets {
+                bands.clear();
+            }
+            return Ok(());
+        }
         let output = if let Some(output) = self.resources.final_plane.as_ref() {
             if output.dimensions != dimensions || output.len != span.total_elements {
                 return Err(Error::MetalStateInvariant {

@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "macos")]
 use crate::metal_types::prelude::*;
+#[cfg(target_os = "macos")]
+use crate::metal_types::ComputePipelineState;
 
 use super::{
     checked_buffer_copy_into, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
@@ -44,6 +46,221 @@ pub(in crate::engine) use batched_irreversible::{
     dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
     dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
 };
+
+#[cfg(target_os = "macos")]
+const IDWT53_ROW_TILE: u32 = 128;
+#[cfg(target_os = "macos")]
+const IDWT53_ROWS_PER_GROUP: u32 = 4;
+#[cfg(target_os = "macos")]
+const IDWT53_ROW_THREADS: u32 = 64;
+#[cfg(target_os = "macos")]
+const IDWT53_COLS_PER_GROUP: u32 = 16;
+#[cfg(target_os = "macos")]
+const IDWT53_COL_TILE: u32 = 128;
+#[cfg(target_os = "macos")]
+const IDWT53_COL_ROW_THREADS: u32 = 16;
+
+#[cfg(target_os = "macos")]
+fn supports_reversible53_interleave_horizontal_fused(
+    kernels: &crate::engine::runtime::DecodeKernels,
+    pipeline: &ComputePipelineState,
+    width: u32,
+    height: u32,
+) -> bool {
+    width > IDWT53_ROW_TILE
+        && height > 0
+        && pipeline.maxTotalThreadsPerThreadgroup()
+            >= (IDWT53_ROW_THREADS * IDWT53_ROWS_PER_GROUP) as usize
+        && pipeline.staticThreadgroupMemoryLength() <= kernels.max_threadgroup_memory_length
+}
+
+#[cfg(target_os = "macos")]
+fn supports_reversible53_vertical_fused(
+    kernels: &crate::engine::runtime::DecodeKernels,
+    pipeline: &ComputePipelineState,
+    width: u32,
+    height: u32,
+) -> bool {
+    height > IDWT53_COL_TILE
+        && width > 0
+        && pipeline.maxTotalThreadsPerThreadgroup()
+            >= (IDWT53_COLS_PER_GROUP * IDWT53_COL_ROW_THREADS) as usize
+        && pipeline.staticThreadgroupMemoryLength() <= kernels.max_threadgroup_memory_length
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_horizontal_single(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    decoded_offset: usize,
+    params: J2kIdwtSingleDecompositionParams,
+) {
+    let serial = &kernels.idwt_reversible53_horizontal;
+    encoder.setComputePipelineState(serial);
+    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
+    let threads = serial.threadExecutionWidth().max(1);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(params.height), 1, 1),
+        j2k_metal_support::mtl_size(threads as u64, 1, 1),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_horizontal_repeated(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    params: J2kRepeatedIdwtSingleDecompositionParams,
+) {
+    let serial = &kernels.idwt_reversible53_horizontal_batched;
+    encoder.setComputePipelineState(serial);
+    encoder.set_buffer(0, Some(decoded), 0);
+    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
+    let threads = serial.threadExecutionWidth().max(1);
+    encoder.dispatchThreads_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(u64::from(params.height), u64::from(params.batch_count), 1),
+        j2k_metal_support::mtl_size(threads as u64, 1, 1),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_vertical_single(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    decoded_offset: usize,
+    params: J2kIdwtSingleDecompositionParams,
+) {
+    let fused = &kernels.idwt_reversible53_vertical_fused;
+    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
+    if supports_reversible53_vertical_fused(kernels, fused, params.width, params.height) {
+        encoder.setComputePipelineState(fused);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(
+                u64::from(params.width.div_ceil(IDWT53_COLS_PER_GROUP)),
+                1,
+                1,
+            ),
+            j2k_metal_support::mtl_size(
+                u64::from(IDWT53_COLS_PER_GROUP),
+                u64::from(IDWT53_COL_ROW_THREADS),
+                1,
+            ),
+        );
+    } else {
+        let serial = &kernels.idwt_reversible53_vertical;
+        encoder.setComputePipelineState(serial);
+        let threads = serial.threadExecutionWidth().max(1);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(u64::from(params.width), 1, 1),
+            j2k_metal_support::mtl_size(threads as u64, 1, 1),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_vertical_repeated(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    decoded: &Buffer,
+    params: J2kRepeatedIdwtSingleDecompositionParams,
+) {
+    let fused = &kernels.idwt_reversible53_vertical_fused_batched;
+    encoder.set_buffer(0, Some(decoded), 0);
+    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
+    if supports_reversible53_vertical_fused(kernels, fused, params.width, params.height) {
+        encoder.setComputePipelineState(fused);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(
+                u64::from(params.width.div_ceil(IDWT53_COLS_PER_GROUP)),
+                1,
+                u64::from(params.batch_count),
+            ),
+            j2k_metal_support::mtl_size(
+                u64::from(IDWT53_COLS_PER_GROUP),
+                u64::from(IDWT53_COL_ROW_THREADS),
+                1,
+            ),
+        );
+    } else {
+        let serial = &kernels.idwt_reversible53_vertical_batched;
+        encoder.setComputePipelineState(serial);
+        let threads = serial.threadExecutionWidth().max(1);
+        encoder.dispatchThreads_threadsPerThreadgroup(
+            j2k_metal_support::mtl_size(u64::from(params.width), u64::from(params.batch_count), 1),
+            j2k_metal_support::mtl_size(threads as u64, 1, 1),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_interleave_horizontal_fused_single(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: SingleIdwtDispatch<'_>,
+) {
+    let pipeline = &dispatch
+        .kernels
+        .idwt_reversible53_interleave_horizontal_fused;
+    encoder.setComputePipelineState(pipeline);
+    for (index, buffer, offset) in [
+        (0, dispatch.sub_bands.ll, dispatch.sub_bands.ll_offset),
+        (1, dispatch.sub_bands.hl, dispatch.sub_bands.hl_offset),
+        (2, dispatch.sub_bands.lh, dispatch.sub_bands.lh_offset),
+        (3, dispatch.sub_bands.hh, dispatch.sub_bands.hh_offset),
+    ] {
+        encoder.set_buffer(index, Some(buffer), offset as u64);
+    }
+    encoder.set_buffer(4, Some(dispatch.decoded), dispatch.decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &dispatch.params);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(dispatch.params.width.div_ceil(IDWT53_ROW_TILE)),
+            u64::from(dispatch.params.height.div_ceil(IDWT53_ROWS_PER_GROUP)),
+            1,
+        ),
+        j2k_metal_support::mtl_size(
+            u64::from(IDWT53_ROW_THREADS),
+            u64::from(IDWT53_ROWS_PER_GROUP),
+            1,
+        ),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_reversible53_interleave_horizontal_fused_repeated(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: RepeatedIdwtDispatch<'_>,
+) {
+    let pipeline = &dispatch
+        .kernels
+        .idwt_reversible53_interleave_horizontal_fused_batched;
+    encoder.setComputePipelineState(pipeline);
+    for (index, buffer, offset) in [
+        (0, dispatch.sub_bands.ll, dispatch.sub_bands.ll_offset),
+        (1, dispatch.sub_bands.hl, dispatch.sub_bands.hl_offset),
+        (2, dispatch.sub_bands.lh, dispatch.sub_bands.lh_offset),
+        (3, dispatch.sub_bands.hh, dispatch.sub_bands.hh_offset),
+    ] {
+        encoder.set_buffer(index, Some(buffer), offset as u64);
+    }
+    encoder.set_buffer(4, Some(dispatch.decoded), 0);
+    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &dispatch.params);
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(dispatch.params.width.div_ceil(IDWT53_ROW_TILE)),
+            u64::from(dispatch.params.height.div_ceil(IDWT53_ROWS_PER_GROUP)),
+            u64::from(dispatch.params.batch_count),
+        ),
+        j2k_metal_support::mtl_size(
+            u64::from(IDWT53_ROW_THREADS),
+            u64::from(IDWT53_ROWS_PER_GROUP),
+            1,
+        ),
+    );
+}
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use irreversible::decode_irreversible97_staged_single_decomposition_idwt;
 #[cfg(target_os = "macos")]
@@ -98,50 +315,64 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         let hh = copied_slice_buffer(&runtime.device, job.hh.coefficients)?;
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
+        let dispatch = SingleIdwtDispatch {
+            kernels: runtime.decode()?,
+            sub_bands: IdwtSubBandBuffers {
+                ll: &ll,
+                ll_offset: 0,
+                hl: &hl,
+                hl_offset: 0,
+                lh: &lh,
+                lh_offset: 0,
+                hh: &hh,
+                hh_offset: 0,
+            },
+            params,
+            decoded: &decoded,
+            decoded_offset: 0,
+        };
+        let use_fused = supports_reversible53_interleave_horizontal_fused(
+            dispatch.kernels,
+            &dispatch
+                .kernels
+                .idwt_reversible53_interleave_horizontal_fused,
+            params.width,
+            params.height,
+        );
 
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.decode()?.idwt_interleave);
-        encoder.set_buffer(0, Some(&ll), 0);
-        encoder.set_buffer(1, Some(&hl), 0);
-        encoder.set_buffer(2, Some(&lh), 0);
-        encoder.set_buffer(3, Some(&hh), 0);
-        encoder.set_buffer(4, Some(&decoded), 0);
-        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
-        dispatch_2d_pipeline(
-            &encoder,
-            &runtime.decode()?.idwt_interleave,
-            (params.width, params.height),
-        );
+        if use_fused {
+            dispatch_reversible53_interleave_horizontal_fused_single(&encoder, dispatch);
+        } else {
+            encoder.setComputePipelineState(&runtime.decode()?.idwt_interleave);
+            encoder.set_buffer(0, Some(&ll), 0);
+            encoder.set_buffer(1, Some(&hl), 0);
+            encoder.set_buffer(2, Some(&lh), 0);
+            encoder.set_buffer(3, Some(&hh), 0);
+            encoder.set_buffer(4, Some(&decoded), 0);
+            encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
+            dispatch_2d_pipeline(
+                &encoder,
+                &runtime.decode()?.idwt_interleave,
+                (params.width, params.height),
+            );
+        }
         encoder.endEncoding();
 
-        let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.decode()?.idwt_reversible53_horizontal);
-        encoder.set_buffer(0, Some(&decoded), 0);
-        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-        let horizontal_width = runtime
-            .decode()?
-            .idwt_reversible53_horizontal
-            .threadExecutionWidth()
-            .max(1);
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            j2k_metal_support::mtl_size(u64::from(params.height), 1, 1),
-            j2k_metal_support::mtl_size(horizontal_width as u64, 1, 1),
-        );
-        encoder.endEncoding();
+        if !use_fused {
+            let encoder = new_compute_command_encoder(&command_buffer)?;
+            dispatch_reversible53_horizontal_single(
+                &encoder,
+                runtime.decode()?,
+                &decoded,
+                0,
+                params,
+            );
+            encoder.endEncoding();
+        }
 
         let encoder = new_compute_command_encoder(&command_buffer)?;
-        encoder.setComputePipelineState(&runtime.decode()?.idwt_reversible53_vertical);
-        encoder.set_buffer(0, Some(&decoded), 0);
-        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-        let vertical_width = runtime
-            .decode()?
-            .idwt_reversible53_vertical
-            .threadExecutionWidth()
-            .max(1);
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            j2k_metal_support::mtl_size(u64::from(params.width), 1, 1),
-            j2k_metal_support::mtl_size(vertical_width as u64, 1, 1),
-        );
+        dispatch_reversible53_vertical_single(&encoder, runtime.decode()?, &decoded, 0, params);
         encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
         checked_buffer_copy_into(&decoded, 0, &mut output[..required_len], "IDWT output")?;
@@ -199,6 +430,17 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
     encoder: &ComputeCommandEncoderRef,
     dispatch: SingleIdwtDispatch<'_>,
 ) {
+    let use_fused = supports_reversible53_interleave_horizontal_fused(
+        dispatch.kernels,
+        &dispatch
+            .kernels
+            .idwt_reversible53_interleave_horizontal_fused,
+        dispatch.params.width,
+        dispatch.params.height,
+    );
+    if use_fused {
+        dispatch_reversible53_interleave_horizontal_fused_single(encoder, dispatch);
+    }
     let SingleIdwtDispatch {
         kernels,
         sub_bands,
@@ -216,44 +458,26 @@ pub(in crate::engine) fn dispatch_reversible53_single_decomposition_buffers_in_e
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.setComputePipelineState(&kernels.idwt_interleave);
-    encoder.set_buffer(0, Some(ll), ll_offset as u64);
-    encoder.set_buffer(1, Some(hl), hl_offset as u64);
-    encoder.set_buffer(2, Some(lh), lh_offset as u64);
-    encoder.set_buffer(3, Some(hh), hh_offset as u64);
-    encoder.set_buffer(4, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
-    dispatch_2d_pipeline(
-        encoder,
-        &kernels.idwt_interleave,
-        (params.width, params.height),
-    );
+    if !use_fused {
+        encoder.setComputePipelineState(&kernels.idwt_interleave);
+        encoder.set_buffer(0, Some(ll), ll_offset as u64);
+        encoder.set_buffer(1, Some(hl), hl_offset as u64);
+        encoder.set_buffer(2, Some(lh), lh_offset as u64);
+        encoder.set_buffer(3, Some(hh), hh_offset as u64);
+        encoder.set_buffer(4, Some(decoded), decoded_offset as u64);
+        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
+        dispatch_2d_pipeline(
+            encoder,
+            &kernels.idwt_interleave,
+            (params.width, params.height),
+        );
+        encoder.memory_barrier_with_resources(&[decoded]);
+
+        dispatch_reversible53_horizontal_single(encoder, kernels, decoded, decoded_offset, params);
+    }
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal);
-    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = kernels
-        .idwt_reversible53_horizontal
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.height), 1, 1),
-        j2k_metal_support::mtl_size(horizontal_width as u64, 1, 1),
-    );
-    encoder.memory_barrier_with_resources(&[decoded]);
-
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical);
-    encoder.set_buffer(0, Some(decoded), decoded_offset as u64);
-    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = kernels
-        .idwt_reversible53_vertical
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.width), 1, 1),
-        j2k_metal_support::mtl_size(vertical_width as u64, 1, 1),
-    );
+    dispatch_reversible53_vertical_single(encoder, kernels, decoded, decoded_offset, params);
 }
 
 #[cfg(target_os = "macos")]
@@ -261,6 +485,15 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
     command_buffers: DirectIdwtCommandBuffers<'_>,
     dispatch: RepeatedIdwtDispatch<'_>,
 ) -> Result<(), Error> {
+    let use_fused = supports_reversible53_interleave_horizontal_fused(
+        dispatch.kernels,
+        &dispatch
+            .kernels
+            .idwt_reversible53_interleave_horizontal_fused_batched,
+        dispatch.params.width,
+        dispatch.params.height,
+    );
+    let fused_dispatch = dispatch;
     let RepeatedIdwtDispatch {
         kernels,
         sub_bands,
@@ -279,49 +512,36 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_command_buffe
     } = sub_bands;
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffers.interleave)?;
-    label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT interleave");
-    encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
-    encoder.set_buffer(0, Some(ll), ll_offset as u64);
-    encoder.set_buffer(1, Some(hl), hl_offset as u64);
-    encoder.set_buffer(2, Some(lh), lh_offset as u64);
-    encoder.set_buffer(3, Some(hh), hh_offset as u64);
-    encoder.set_buffer(4, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
-    dispatch_3d_pipeline(
-        &encoder,
-        &kernels.idwt_interleave_batched,
-        (params.width, params.height, params.batch_count),
-    );
+    if use_fused {
+        label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT fused horizontal");
+        dispatch_reversible53_interleave_horizontal_fused_repeated(&encoder, fused_dispatch);
+    } else {
+        label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT interleave");
+        encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
+        encoder.set_buffer(0, Some(ll), ll_offset as u64);
+        encoder.set_buffer(1, Some(hl), hl_offset as u64);
+        encoder.set_buffer(2, Some(lh), lh_offset as u64);
+        encoder.set_buffer(3, Some(hh), hh_offset as u64);
+        encoder.set_buffer(4, Some(decoded), 0);
+        encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
+        dispatch_3d_pipeline(
+            &encoder,
+            &kernels.idwt_interleave_batched,
+            (params.width, params.height, params.batch_count),
+        );
+    }
     encoder.endEncoding();
 
-    let encoder = new_compute_command_encoder(command_buffers.horizontal)?;
-    label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT horizontal");
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal_batched);
-    encoder.set_buffer(0, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = kernels
-        .idwt_reversible53_horizontal_batched
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.height), u64::from(params.batch_count), 1),
-        j2k_metal_support::mtl_size(horizontal_width as u64, 1, 1),
-    );
-    encoder.endEncoding();
+    if !use_fused {
+        let encoder = new_compute_command_encoder(command_buffers.horizontal)?;
+        label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT horizontal");
+        dispatch_reversible53_horizontal_repeated(&encoder, kernels, decoded, params);
+        encoder.endEncoding();
+    }
 
     let encoder = new_compute_command_encoder(command_buffers.vertical)?;
     label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT vertical");
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical_batched);
-    encoder.set_buffer(0, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = kernels
-        .idwt_reversible53_vertical_batched
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.width), u64::from(params.batch_count), 1),
-        j2k_metal_support::mtl_size(vertical_width as u64, 1, 1),
-    );
+    dispatch_reversible53_vertical_repeated(&encoder, kernels, decoded, params);
     encoder.endEncoding();
     Ok(())
 }
@@ -331,6 +551,17 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
     encoder: &ComputeCommandEncoderRef,
     dispatch: RepeatedIdwtDispatch<'_>,
 ) {
+    let use_fused = supports_reversible53_interleave_horizontal_fused(
+        dispatch.kernels,
+        &dispatch
+            .kernels
+            .idwt_reversible53_interleave_horizontal_fused_batched,
+        dispatch.params.width,
+        dispatch.params.height,
+    );
+    if use_fused {
+        dispatch_reversible53_interleave_horizontal_fused_repeated(encoder, dispatch);
+    }
     let RepeatedIdwtDispatch {
         kernels,
         sub_bands,
@@ -347,42 +578,24 @@ pub(in crate::engine) fn dispatch_reversible53_repeated_buffers_in_encoder_with_
         hh,
         hh_offset,
     } = sub_bands;
-    encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
-    encoder.set_buffer(0, Some(ll), ll_offset as u64);
-    encoder.set_buffer(1, Some(hl), hl_offset as u64);
-    encoder.set_buffer(2, Some(lh), lh_offset as u64);
-    encoder.set_buffer(3, Some(hh), hh_offset as u64);
-    encoder.set_buffer(4, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
-    dispatch_3d_pipeline(
-        encoder,
-        &kernels.idwt_interleave_batched,
-        (params.width, params.height, params.batch_count),
-    );
+    if !use_fused {
+        encoder.setComputePipelineState(&kernels.idwt_interleave_batched);
+        encoder.set_buffer(0, Some(ll), ll_offset as u64);
+        encoder.set_buffer(1, Some(hl), hl_offset as u64);
+        encoder.set_buffer(2, Some(lh), lh_offset as u64);
+        encoder.set_buffer(3, Some(hh), hh_offset as u64);
+        encoder.set_buffer(4, Some(decoded), 0);
+        encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
+        dispatch_3d_pipeline(
+            encoder,
+            &kernels.idwt_interleave_batched,
+            (params.width, params.height, params.batch_count),
+        );
+        encoder.memory_barrier_with_resources(&[decoded]);
+
+        dispatch_reversible53_horizontal_repeated(encoder, kernels, decoded, params);
+    }
     encoder.memory_barrier_with_resources(&[decoded]);
 
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_horizontal_batched);
-    encoder.set_buffer(0, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let horizontal_width = kernels
-        .idwt_reversible53_horizontal_batched
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.height), u64::from(params.batch_count), 1),
-        j2k_metal_support::mtl_size(horizontal_width as u64, 1, 1),
-    );
-    encoder.memory_barrier_with_resources(&[decoded]);
-
-    encoder.setComputePipelineState(&kernels.idwt_reversible53_vertical_batched);
-    encoder.set_buffer(0, Some(decoded), 0);
-    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(1, &params);
-    let vertical_width = kernels
-        .idwt_reversible53_vertical_batched
-        .threadExecutionWidth()
-        .max(1);
-    encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(u64::from(params.width), u64::from(params.batch_count), 1),
-        j2k_metal_support::mtl_size(vertical_width as u64, 1, 1),
-    );
+    dispatch_reversible53_vertical_repeated(encoder, kernels, decoded, params);
 }

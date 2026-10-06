@@ -13,6 +13,24 @@ constant uint J2K_CLASSIC_PADDING = 1u;
 constant uint J2K_CLASSIC_MAX_PADDED_WIDTH = J2K_CLASSIC_MAX_WIDTH + J2K_CLASSIC_PADDING * 2u;
 constant uint J2K_CLASSIC_MAX_PADDED_HEIGHT = J2K_CLASSIC_MAX_HEIGHT + J2K_CLASSIC_PADDING * 2u;
 constant uint J2K_CLASSIC_MAX_COEFF_COUNT = J2K_CLASSIC_MAX_PADDED_WIDTH * J2K_CLASSIC_MAX_PADDED_HEIGHT;
+// One word covers four coefficients and their 3-column by 6-row context window.
+// Sign, magnitude-refinement, and significance-propagation bits occupy the
+// remaining positions so the plain decoder can retain one word while scanning.
+constant uint J2K_CLASSIC_MAX_FLAG_WORDS = J2K_CLASSIC_MAX_PADDED_WIDTH * ((J2K_CLASSIC_MAX_HEIGHT + 3u) / 4u);
+constant uint J2K_CLASSIC_SIGMA_THIS = 1u << 4u;
+constant uint J2K_CLASSIC_SIGMA_NEIGHBORS = 0x1EFu;
+constant uint J2K_CLASSIC_SIGMA_ROWS =
+    J2K_CLASSIC_SIGMA_THIS |
+    (J2K_CLASSIC_SIGMA_THIS << 3u) |
+    (J2K_CLASSIC_SIGMA_THIS << 6u) |
+    (J2K_CLASSIC_SIGMA_THIS << 9u);
+constant uint J2K_CLASSIC_MU_THIS = 1u << 20u;
+constant uint J2K_CLASSIC_PI_THIS = 1u << 21u;
+constant uint J2K_CLASSIC_PI_ALL =
+    J2K_CLASSIC_PI_THIS |
+    (J2K_CLASSIC_PI_THIS << 3u) |
+    (J2K_CLASSIC_PI_THIS << 6u) |
+    (J2K_CLASSIC_PI_THIS << 9u);
 constant uchar J2K_SIG_SHIFT = 7u;
 constant uchar J2K_MAG_REF_SHIFT = 6u;
 constant uchar J2K_SIGN_SHIFT = 5u;

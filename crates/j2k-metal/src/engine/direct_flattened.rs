@@ -141,6 +141,7 @@ pub(super) fn build_flattened_cpu_tier1_cache(
     plans: &[Arc<PreparedDirectColorPlan>],
     stage_timings: &mut DirectHybridStageTimings,
     retained_buffers: &mut Vec<Buffer>,
+    max_workers: Option<std::num::NonZeroUsize>,
 ) -> Result<FlattenedCpuTier1Cache, Error> {
     let specs = collect_flattened_cpu_tier1_bucket_specs(plans)?;
     stage_timings.cpu_tier1_flattened_batches =
@@ -148,7 +149,8 @@ pub(super) fn build_flattened_cpu_tier1_cache(
     let decode_started = metal_profile_stages_enabled().then(Instant::now);
     let cpu_tier1_counters =
         metal_profile_stages_enabled().then(CpuTier1DecodeSubstageCounters::default);
-    let decoded_buckets = decode_flattened_cpu_tier1_buckets(&specs, cpu_tier1_counters.as_ref())?;
+    let decoded_buckets =
+        decode_flattened_cpu_tier1_buckets(&specs, cpu_tier1_counters.as_ref(), max_workers)?;
     if let Some(started) = decode_started {
         stage_timings.cpu_tier1 += elapsed_us(started);
     }
@@ -391,6 +393,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
 fn decode_flattened_cpu_tier1_buckets(
     specs: &[FlattenedCpuTier1BucketSpec<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+    max_workers: Option<std::num::NonZeroUsize>,
 ) -> Result<Vec<Vec<f32>>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let mut budget =
@@ -468,7 +471,24 @@ fn decode_flattened_cpu_tier1_buckets(
         record_flattened_hybrid_cpu_decode_batch();
         record_hybrid_cpu_decode_inputs(work_items.len());
 
-        decode_flattened_cpu_tier1_work_items_chunked(&work_items, profile_counters)?;
+        // Start expensive component/subband inputs early so one large input
+        // does not keep the last worker busy after the rest have drained.
+        work_items.sort_unstable_by_key(|item| {
+            std::cmp::Reverse(match item.source {
+                FlattenedCpuTier1Source::Classic { jobs, .. } => {
+                    jobs.iter().fold(0u64, |cost, job| {
+                        cost.saturating_add(
+                            u64::from(job.width)
+                                .saturating_mul(u64::from(job.height))
+                                .saturating_mul(u64::from(job.number_of_coding_passes))
+                                .saturating_add(u64::from(job.coded_len)),
+                        )
+                    })
+                }
+                FlattenedCpuTier1Source::Ht { .. } => item.output_len as u64,
+            })
+        });
+        decode_flattened_cpu_tier1_work_items(&work_items, profile_counters, max_workers)?;
 
         for (bucket, cache_target) in buckets.iter_mut().zip(cache_targets) {
             if let Some((cache_plan, step_idx, output_len)) = cache_target {
@@ -483,27 +503,34 @@ fn decode_flattened_cpu_tier1_buckets(
 }
 
 #[cfg(target_os = "macos")]
-fn decode_flattened_cpu_tier1_work_items_chunked(
+fn decode_flattened_cpu_tier1_work_items(
     work_items: &[FlattenedCpuTier1WorkItem<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+    max_workers: Option<std::num::NonZeroUsize>,
 ) -> Result<(), Error> {
     if work_items.is_empty() {
         return Ok(());
     }
 
-    let worker_count = hybrid_cpu_decode_worker_count(work_items.len());
-    let chunk_size = work_items.len().div_ceil(worker_count);
+    let worker_count = hybrid_cpu_decode_worker_count(work_items.len())
+        .min(max_workers.map_or(usize::MAX, std::num::NonZeroUsize::get));
+    let next = std::sync::atomic::AtomicUsize::new(0);
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K Metal flattened Tier-1 worker handles",
     );
     std::thread::scope(|scope| -> Result<(), Error> {
         let mut handles =
             budget.try_vec(worker_count, "J2K Metal flattened Tier-1 worker handles")?;
-        for chunk in work_items.chunks(chunk_size) {
+        for _ in 0..worker_count {
+            let next = &next;
             handles.push(scope.spawn(move || {
                 record_hybrid_cpu_decode_worker_init();
                 let mut scratch = FlattenedCpuTier1DecodeScratch::default();
-                for item in chunk {
+                // The counter assigns each disjoint output range exactly once.
+                // Scoped joins publish the completed coefficients to the caller.
+                while let Some(item) =
+                    work_items.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
                     decode_flattened_cpu_tier1_work_item(item, &mut scratch, profile_counters)?;
                 }
                 Ok(())

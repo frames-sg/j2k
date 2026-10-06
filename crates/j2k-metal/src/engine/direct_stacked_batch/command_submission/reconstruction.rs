@@ -20,11 +20,12 @@ use crate::engine::direct_roi::{
 };
 use crate::engine::{
     direct_preflight_invariant, elapsed_us, take_f32_scratch_buffer, Error, J2kWaveletTransform,
-    PreparedDirectGrayscaleStep, PreparedDirectIdwt,
+    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
 };
 
 use super::super::resources::{
-    lookup_direct_band_slice_entry, lookup_repeated_direct_band_layout_entry, DirectBandSlice,
+    lookup_direct_band_slice_entry, lookup_mapped_repeated_direct_band_layout_entry,
+    DirectBandSlice,
 };
 use super::super::validation::{
     checked_f32_dimension_span, checked_f32_instance_offset, CheckedF32BatchSpan,
@@ -34,6 +35,7 @@ use super::SubmissionContext;
 impl SubmissionContext<'_, '_, '_> {
     fn encode_stacked_idwt(
         &mut self,
+        step_idx: usize,
         idwt: &PreparedDirectIdwt,
         output: &crate::metal_types::Buffer,
     ) -> Result<(), Error> {
@@ -43,25 +45,29 @@ impl SubmissionContext<'_, '_, '_> {
         ) {
             return Ok(());
         }
-        let (ll, low_low_stride) = lookup_repeated_direct_band_layout_entry(
+        let (ll, low_low_stride) = lookup_mapped_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
-            idwt.step.ll_band_id,
-            idwt.step.ll,
+            idwt_band_keys(self.plans, step_idx, |step| {
+                (step.step.ll_band_id, step.step.ll)
+            }),
         )?;
-        let (hl, high_low_stride) = lookup_repeated_direct_band_layout_entry(
+        let (hl, high_low_stride) = lookup_mapped_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
-            idwt.step.hl_band_id,
-            idwt.step.hl,
+            idwt_band_keys(self.plans, step_idx, |step| {
+                (step.step.hl_band_id, step.step.hl)
+            }),
         )?;
-        let (lh, low_high_stride) = lookup_repeated_direct_band_layout_entry(
+        let (lh, low_high_stride) = lookup_mapped_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
-            idwt.step.lh_band_id,
-            idwt.step.lh,
+            idwt_band_keys(self.plans, step_idx, |step| {
+                (step.step.lh_band_id, step.step.lh)
+            }),
         )?;
-        let (hh, high_high_stride) = lookup_repeated_direct_band_layout_entry(
+        let (hh, high_high_stride) = lookup_mapped_repeated_direct_band_layout_entry(
             &self.resources.band_sets,
-            idwt.step.hh_band_id,
-            idwt.step.hh,
+            idwt_band_keys(self.plans, step_idx, |step| {
+                (step.step.hh_band_id, step.step.hh)
+            }),
         )?;
         let params = repeated_idwt_params(
             idwt,
@@ -184,17 +190,17 @@ impl SubmissionContext<'_, '_, '_> {
             "J2K MetalDirect stacked IDWT",
         )?;
         let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
+        let use_single = self.count == 1;
+        #[cfg(test)]
+        let use_single = use_single || crate::engine::test_counters::per_image_idwt_forced();
         let encode_started = self.profile_stages.then(Instant::now);
         // Batches reconstruct every instance in one dispatch per level. With
         // fused lifting this is about 11% faster in GPU time than per-image
         // reconstruction at 16 x 1024x1024.
-        let use_single = self.count == 1;
-        #[cfg(test)]
-        let use_single = use_single || crate::engine::test_counters::per_image_idwt_forced();
         if idwt.step.transform == J2kWaveletTransform::Irreversible97 && use_single {
             self.encode_distinct_irreversible97_idwt(step_idx, &output.buffer, &span)?;
         } else {
-            self.encode_stacked_idwt(idwt, &output.buffer)?;
+            self.encode_stacked_idwt(step_idx, idwt, &output.buffer)?;
         }
         if let Some(encoder) = self.compute_encoder {
             encoder.memory_barrier_with_resources(&[&output.buffer]);
@@ -224,4 +230,20 @@ impl SubmissionContext<'_, '_, '_> {
         self.scratch_buffers.push(output);
         Ok(())
     }
+}
+
+fn idwt_band_keys<'a>(
+    plans: &'a [&PreparedDirectGrayscalePlan],
+    step_idx: usize,
+    select: fn(&PreparedDirectIdwt) -> (crate::engine::J2kDirectBandId, j2k_native::J2kRect),
+) -> impl Iterator<Item = Result<(crate::engine::J2kDirectBandId, j2k_native::J2kRect), Error>> + 'a
+{
+    plans
+        .iter()
+        .map(move |plan| match plan.steps.get(step_idx) {
+            Some(PreparedDirectGrayscaleStep::Idwt(step)) => Ok(select(step)),
+            _ => Err(direct_preflight_invariant(
+                "IDWT step mismatch in mapped stacked component batch",
+            )),
+        })
 }

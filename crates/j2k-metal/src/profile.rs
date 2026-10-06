@@ -19,6 +19,8 @@ pub struct MetalDecodeDispatchReport {
     pub ht_refinement: usize,
     /// Classic Tier-1 dispatches completed on Metal.
     pub classic_tier1: usize,
+    /// Images whose classic Tier-1 work completed on CPU in cooperative mode.
+    pub cpu_tier1_images: usize,
     /// Dequantization operations completed on Metal, including fused Tier-1 work.
     pub dequantization: usize,
     /// Inverse-DWT dispatches completed on Metal.
@@ -40,6 +42,7 @@ impl MetalDecodeDispatchReport {
             ht_tier1: 0,
             ht_refinement: 0,
             classic_tier1: 0,
+            cpu_tier1_images: 0,
             dequantization: 0,
             idwt: 0,
             mct: 0,
