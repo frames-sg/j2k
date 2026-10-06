@@ -23,12 +23,26 @@ pub fn plan_ht_gpu_job_chunks(
     jobs: &[HtGpuJobChunkRequest],
     limits: HtGpuJobChunkLimits,
 ) -> Result<HtGpuJobChunkPlan, HtGpuJobChunkPlanError> {
+    plan_ht_gpu_job_chunks_with_external_live_bytes(jobs, limits, 0)
+}
+
+/// Build bounded chunks while charging owners already live in the caller.
+#[doc(hidden)]
+pub fn plan_ht_gpu_job_chunks_with_external_live_bytes(
+    jobs: &[HtGpuJobChunkRequest],
+    limits: HtGpuJobChunkLimits,
+    external_live_bytes: usize,
+) -> Result<HtGpuJobChunkPlan, HtGpuJobChunkPlanError> {
     preflight_jobs(jobs, limits)?;
+    let mut budget = BatchAllocationBudget::with_external_live(
+        "HTJ2K GPU chunk planning metadata",
+        external_live_bytes,
+    );
     if jobs.is_empty() {
+        budget.preflight(&[])?;
         return Ok(HtGpuJobChunkPlan::default());
     }
 
-    let mut budget = BatchAllocationBudget::new("HTJ2K GPU chunk planning metadata");
     budget.preflight(&[
         BatchAllocationRequest::of::<HtGpuJobChunkEntry>(jobs.len()),
         BatchAllocationRequest::of::<HtGpuJobChunk>(jobs.len()),

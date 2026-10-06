@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{strip_classic_payload_owners, strip_grayscale_payload_owners};
+use super::{strip_classic_payload_owners, validate_ht_payload_records};
 use crate::{
     HtOwnedSubBandPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kOwnedSubBandPlan,
     J2kRect,
@@ -38,7 +38,7 @@ fn referenced_ownership_strips_each_coder_without_rejecting_the_other() {
     };
 
     assert_eq!(
-        strip_grayscale_payload_owners(&mut plan, &[]).expect("strip HT owners"),
+        validate_ht_payload_records(&plan, &[]).expect("validate HT records"),
         0
     );
     assert_eq!(

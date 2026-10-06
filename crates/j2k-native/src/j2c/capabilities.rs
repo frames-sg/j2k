@@ -260,8 +260,10 @@ impl J2kCorrespondingProfile {
             .map_err(|_| CapabilityMarkerError::Allocation { bytes })?;
         words.extend(
             payload
-                .chunks_exact(2)
-                .map(|word| u16::from_be_bytes([word[0], word[1]])),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|word| u16::from_be_bytes(*word)),
         );
         Ok(Self { words })
     }

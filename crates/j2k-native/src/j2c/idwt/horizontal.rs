@@ -98,7 +98,7 @@ fn reversible_filter_53r(scanline: &mut [f32], width: usize, x0: usize) {
         width,
         first_odd,
         #[inline(always)]
-        |s, left, right| s + math::floor_f32((left + right) * 0.5),
+        |s, left, right| s + math::floor_half_sum_f32(left, right),
     );
 }
 

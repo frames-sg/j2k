@@ -70,8 +70,6 @@ pub use accelerator::{
     AcceleratorSession, DeviceMemoryRange, ExecutionStats, SurfaceMetadata, SurfaceResidency,
 };
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};
-#[doc(hidden)]
-pub use batch::plan_ht_gpu_job_chunks;
 pub use batch::{
     checked_batch_count_product, checked_batch_count_sum, tile_batch_worker_count,
     try_batch_reserve_for_push, try_batch_reserve_to, try_collect_indexed_batch_results,
@@ -82,6 +80,8 @@ pub use batch::{
     TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob,
     TileRegionScaledDeviceDecodeRequest, TileScaledDecodeJob,
 };
+#[doc(hidden)]
+pub use batch::{plan_ht_gpu_job_chunks, plan_ht_gpu_job_chunks_with_external_live_bytes};
 pub use buffer::{
     checked_surface_len, copy_tight_pixels_to_strided_output, ensure_allocation_within_cap,
     strided_output_len, strided_output_len_capped, validate_strided_output_buffer,

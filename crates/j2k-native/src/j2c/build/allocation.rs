@@ -19,8 +19,13 @@ pub(super) use reuse::push_preallocated;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuildWorkspace {
-    DecodePixels { skipped_resolution_levels: u8 },
+    DecodePixels {
+        skipped_resolution_levels: u8,
+    },
     CoefficientsOnly,
+    /// Plans code blocks without allocating coefficient storage. Sub-band
+    /// coefficient ranges are logical only; nothing may index storage by them.
+    MetadataOnly,
 }
 
 impl BuildWorkspace {
@@ -29,7 +34,7 @@ impl BuildWorkspace {
             Self::DecodePixels {
                 skipped_resolution_levels,
             } => Some(total_count.saturating_sub(usize::from(skipped_resolution_levels))),
-            Self::CoefficientsOnly => None,
+            Self::CoefficientsOnly | Self::MetadataOnly => None,
         }
     }
 }
@@ -77,6 +82,14 @@ impl DecompositionAllocationPlan {
         })
     }
 
+    pub(super) fn coefficient_storage_len(&self) -> usize {
+        if self.workspace == BuildWorkspace::MetadataOnly {
+            0
+        } else {
+            self.coefficients
+        }
+    }
+
     fn add_coefficients(&mut self, count: usize) -> Result<()> {
         self.coefficients = self
             .coefficients
@@ -102,9 +115,9 @@ impl DecompositionAllocationPlan {
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.code_blocks)?;
         checked_include_elements::<Layer>(&mut total_bytes, self.layers)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
-        checked_include_elements::<f32>(&mut total_bytes, self.coefficients)?;
+        checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_len())?;
         if self.exact_integer_decode {
-            checked_include_elements::<i64>(&mut total_bytes, self.coefficients)?;
+            checked_include_elements::<i64>(&mut total_bytes, self.coefficient_storage_len())?;
         }
 
         if self.include_roi_workspace {
@@ -170,12 +183,12 @@ impl DecompositionAllocationPlan {
         checked_include_reusable_elements::<f32>(
             &mut total_bytes,
             storage.coefficients.capacity(),
-            self.coefficients,
+            self.coefficient_storage_len(),
         )?;
         checked_include_reusable_elements::<i64>(
             &mut total_bytes,
             storage.coefficients_i64.capacity(),
-            usize::from(self.exact_integer_decode) * self.coefficients,
+            usize::from(self.exact_integer_decode) * self.coefficient_storage_len(),
         )?;
 
         if self.include_roi_workspace {

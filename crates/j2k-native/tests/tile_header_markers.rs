@@ -330,7 +330,9 @@ fn read_pgx(path: &Path) -> PgxImage {
             .collect()
     } else {
         payload
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| {
                 let raw = if big_endian {
                     u16::from_be_bytes([chunk[0], chunk[1]])

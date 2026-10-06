@@ -205,7 +205,7 @@ impl<'a> ReverseBitReader<'a> {
             remaining: scup - 2,
             tmp,
             bits,
-            unstuff: (d | 0x0F) > 0x8F,
+            unstuff: d > 0x8F,
         }
     }
 

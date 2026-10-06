@@ -32,8 +32,10 @@ pub(super) fn native_request_oracle(
     if raw.signed {
         CpuBatchSamples::I16(apply_batch_layout(
             raw.data
-                .chunks_exact(2)
-                .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|sample| i16::from_le_bytes(*sample))
                 .collect(),
             pixel_count,
             channels,
@@ -44,8 +46,10 @@ pub(super) fn native_request_oracle(
     } else {
         CpuBatchSamples::U16(apply_batch_layout(
             raw.data
-                .chunks_exact(2)
-                .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|sample| u16::from_le_bytes(*sample))
                 .collect(),
             pixel_count,
             channels,

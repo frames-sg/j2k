@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use crate::math::{floor_f32, mul_add};
+use crate::math::{floor_f32, floor_half_sum_f32, mul_add};
 use crate::{EncodeError, EncodeResult};
 use j2k_codec_math::dwt;
 
@@ -230,7 +230,7 @@ fn forward_lift_53(data: &mut [f32]) {
         } else {
             data[last_even]
         };
-        data[i] -= floor_f32((left + right) * 0.5);
+        data[i] -= floor_half_sum_f32(left, right);
     }
 
     // Step 2: Update (low-pass) — update even samples
@@ -277,7 +277,7 @@ fn forward_lift_53_even(data: &mut [f32]) {
     debug_assert!(n.is_multiple_of(2));
 
     for i in (1..n - 1).step_by(2) {
-        data[i] -= floor_f32((data[i - 1] + data[i + 1]) * 0.5);
+        data[i] -= floor_half_sum_f32(data[i - 1], data[i + 1]);
     }
     data[n - 1] -= floor_f32(data[n - 2]);
 
@@ -592,7 +592,7 @@ mod tests {
             } else {
                 data[last_even]
             };
-            data[i] += ((left + right) * 0.5).floor();
+            data[i] += f32::midpoint(left, right).floor();
         }
     }
 
@@ -632,7 +632,7 @@ mod tests {
             } else {
                 data[last_even]
             };
-            data[i] -= ((left + right) * 0.5).floor();
+            data[i] -= f32::midpoint(left, right).floor();
         }
 
         for i in (0..n).step_by(2) {

@@ -61,7 +61,7 @@ fn prepare_accepts_identity_rgb_cdef_with_explicit_alpha() {
     )
     .expect("prepare explicit RGBA image");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups()[0].info().color.channels(), 4);
     assert_eq!(prepared.groups()[0].info().alpha, BatchAlpha::Straight);
     let prepared_image = &prepared.groups()[0].images()[0];
@@ -77,7 +77,7 @@ fn prepare_accepts_identity_rgb_cdef_with_explicit_alpha() {
     let output = session
         .decode_prepared(&prepared)
         .expect("decode explicit RGBA image");
-    assert!(output.errors().is_empty());
+    assert!(output.errors().is_empty(), "{:?}", output.errors());
     let CpuBatchSamples::U8(samples) = output.groups()[0].samples() else {
         panic!("expected native RGBA8 samples")
     };
@@ -140,7 +140,7 @@ fn prepare_preserves_and_groups_straight_and_premultiplied_alpha_separately() {
     )
     .expect("prepare alpha interpretations");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].source_indices(), &[0]);
     assert_eq!(prepared.groups()[0].info().alpha, BatchAlpha::Straight);
@@ -173,7 +173,7 @@ fn prepared_htj2k_rgba_preserves_alpha_semantics_and_avoids_reparse() {
     )
     .expect("prepare retained RGBA HTJ2K plans");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].info().alpha, BatchAlpha::Straight);
     assert_eq!(prepared.groups()[1].info().alpha, BatchAlpha::Premultiplied);
@@ -204,7 +204,7 @@ fn prepared_htj2k_rgba_preserves_alpha_semantics_and_avoids_reparse() {
         .expect("second parse-free RGBA decode");
     let second_stats = decoder.workspace_stats();
 
-    assert!(first.errors().is_empty());
+    assert!(first.errors().is_empty(), "{:?}", first.errors());
     assert_eq!(first.groups(), second.groups());
     let Htj2kRgbaSamples::U8(source_samples) = fixture.samples else {
         panic!("shared U8 RGBA fixture must retain U8 source samples")
@@ -302,7 +302,7 @@ fn prepared_htj2k_rgba_supports_native_types_requests_and_layouts_exactly() {
             let result = decoder
                 .decode_prepared(&prepared)
                 .expect("decode RGBA request matrix");
-            assert!(result.errors().is_empty());
+            assert!(result.errors().is_empty(), "{:?}", result.errors());
             assert_eq!(decoder.workspace_stats().decode_calls(), 0);
             assert_eq!(decoder.workspace_stats().prepared_plan_decode_calls(), 4);
 

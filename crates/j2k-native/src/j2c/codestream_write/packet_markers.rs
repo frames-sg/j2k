@@ -242,7 +242,7 @@ fn packet_length_payload_len(packet_lengths: &[u32]) -> EncodeResult<usize> {
 }
 
 fn encoded_packet_length_len(value: u32) -> usize {
-    let bits = u32::BITS - value.leading_zeros();
+    let bits = value.bit_width();
     if bits == 0 {
         1
     } else {

@@ -43,7 +43,7 @@ impl<'a> Image<'a> {
         j2c::build_component_grid_color_plan(
             self.codestream,
             &self.header,
-            self.retained_metadata_bytes()?,
+            self.retained_planning_bytes()?,
             decoder_context,
         )
     }
@@ -63,7 +63,7 @@ impl<'a> Image<'a> {
         j2c::build_direct_grayscale_plan(
             self.codestream,
             &self.header,
-            self.retained_metadata_bytes()?,
+            self.retained_planning_bytes()?,
             decoder_context,
         )
     }
@@ -81,12 +81,12 @@ impl<'a> Image<'a> {
             ));
         }
 
-        let retained_metadata_bytes = self.retained_metadata_bytes()?;
+        let retained_planning_bytes = self.retained_planning_bytes()?;
         decoder_context.set_output_region(Some(output_region));
         let result = j2c::build_direct_grayscale_plan(
             self.codestream,
             &self.header,
-            retained_metadata_bytes,
+            retained_planning_bytes,
             decoder_context,
         );
         decoder_context.set_output_region(None);
@@ -108,7 +108,7 @@ impl<'a> Image<'a> {
         j2c::build_direct_color_plan(
             self.codestream,
             &self.header,
-            self.retained_metadata_bytes()?,
+            self.retained_planning_bytes()?,
             decoder_context,
         )
     }
@@ -126,12 +126,12 @@ impl<'a> Image<'a> {
             ));
         }
 
-        let retained_metadata_bytes = self.retained_metadata_bytes()?;
+        let retained_planning_bytes = self.retained_planning_bytes()?;
         decoder_context.set_output_region(Some(output_region));
         let result = j2c::build_direct_color_plan(
             self.codestream,
             &self.header,
-            retained_metadata_bytes,
+            retained_planning_bytes,
             decoder_context,
         );
         decoder_context.set_output_region(None);

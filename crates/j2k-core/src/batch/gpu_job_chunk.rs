@@ -8,7 +8,7 @@ use core::num::NonZeroUsize;
 use super::BatchInfrastructureError;
 
 mod planner;
-pub use self::planner::plan_ht_gpu_job_chunks;
+pub use self::planner::{plan_ht_gpu_job_chunks, plan_ht_gpu_job_chunks_with_external_live_bytes};
 
 /// HTJ2K coding-pass family used to keep cleanup-heavy jobs on a fused path.
 #[doc(hidden)]
@@ -295,6 +295,15 @@ impl HtGpuJobChunkPlan {
     pub fn chunk_entries(&self, chunk_index: usize) -> Option<&[HtGpuJobChunkEntry]> {
         let chunk = self.chunks.get(chunk_index)?;
         self.entries.get(chunk.entry_start..chunk.entry_end)
+    }
+
+    /// Allocator-reported host bytes retained by this plan's vector owners.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained_host_bytes(&self) -> usize {
+        crate::host_capacity_bytes::<HtGpuJobChunk>(self.chunks.capacity()).saturating_add(
+            crate::host_capacity_bytes::<HtGpuJobChunkEntry>(self.entries.capacity()),
+        )
     }
 }
 

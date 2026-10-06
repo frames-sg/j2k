@@ -164,7 +164,7 @@ fn try_deinterleave_rgb8_unsigned_to_f32(
     let mut r = try_reserve_f32_plane(num_pixels, plane_bytes)?;
     let mut g = try_reserve_f32_plane(num_pixels, plane_bytes)?;
     let mut b = try_reserve_f32_plane(num_pixels, plane_bytes)?;
-    for pixel in pixels.chunks_exact(3).take(num_pixels) {
+    for pixel in pixels.as_chunks::<3>().0.iter().take(num_pixels) {
         r.push(f32::from(pixel[0]) - 128.0);
         g.push(f32::from(pixel[1]) - 128.0);
         b.push(f32::from(pixel[2]) - 128.0);
@@ -199,7 +199,7 @@ pub(crate) fn deinterleave_rgb8_unsigned_to_f32(pixels: &[u8], num_pixels: usize
     let mut g = Vec::with_capacity(num_pixels);
     let mut b = Vec::with_capacity(num_pixels);
 
-    for pixel in pixels.chunks_exact(3).take(num_pixels) {
+    for pixel in pixels.as_chunks::<3>().0.iter().take(num_pixels) {
         r.push(f32::from(pixel[0]) - 128.0);
         g.push(f32::from(pixel[1]) - 128.0);
         b.push(f32::from(pixel[2]) - 128.0);

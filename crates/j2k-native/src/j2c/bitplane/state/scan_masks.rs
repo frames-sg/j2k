@@ -43,7 +43,7 @@ impl BitPlaneDecodeContext {
         // costs a multiply; deriving the row from `idx` needed a division on
         // every significance and zero-coding update.
         let pad = COEFFICIENTS_PADDING as usize;
-        debug_assert!(idx / padded_width == y + pad);
+        debug_assert_eq!(idx / padded_width, y + pad);
         let x = idx - (y + pad) * padded_width - pad;
         debug_assert!(y < self.height as usize);
         debug_assert!(x < self.width as usize);

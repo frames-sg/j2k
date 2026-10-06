@@ -56,9 +56,80 @@ pub const DWT97_KAPPA_F64: f64 = 1.230_174_104_914_001;
 /// Inverse irreversible 9/7 scaling factor at f64 precision.
 pub const DWT97_INV_KAPPA_F64: f64 = 1.0 / DWT97_KAPPA_F64;
 
+/// Output columns one block of the tiled horizontal inverse-DWT kernel writes.
+pub const IDWT_HORIZONTAL_TILE_COLUMNS: u32 = 120;
+/// Columns read on each side of a horizontal tile for the lifting steps.
+pub const IDWT_HORIZONTAL_TILE_HALO: u32 = 4;
+/// Rows one block of the tiled horizontal inverse-DWT kernel processes.
+pub const IDWT_HORIZONTAL_TILE_ROWS: u32 = 16;
+/// Threads per tiled horizontal block: one per tile and halo column.
+pub const IDWT_HORIZONTAL_TILE_THREADS: u32 =
+    IDWT_HORIZONTAL_TILE_COLUMNS + 2 * IDWT_HORIZONTAL_TILE_HALO;
+/// Columns one block of the vertical strip inverse-DWT kernels processes.
+pub const IDWT_VERTICAL_STRIP_COLUMNS: u32 = 8;
+/// Columns one block of the fused final-vertical RGB8 store writes.
+pub const FUSED_VERTICAL_TILE_COLUMNS: u32 = 32;
+/// Rows one block of the fused final-vertical RGB8 store writes.
+pub const FUSED_VERTICAL_TILE_ROWS: u32 = 32;
+/// Threads per fused final-vertical RGB8 store block.
+pub const FUSED_VERTICAL_TILE_THREADS: u32 = 256;
+
+/// Whole-sample symmetric extension used at wavelet boundaries: reflects
+/// `index` about the first and last samples into `0..len`. `len` must be at
+/// least 2; a one-sample signal has no reflection period.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "every returned index lies in 0..len, which fits u32"
+)]
+pub const fn reflect_index(index: i64, len: u32) -> u32 {
+    let len = len as i64;
+    let positive = if index < 0 { -index } else { index };
+    if positive < len {
+        return positive as u32;
+    }
+    let period = 2 * (len - 1);
+    if positive <= period {
+        return (period - positive) as u32;
+    }
+    let wrapped = positive % period;
+    if wrapped < len {
+        wrapped as u32
+    } else {
+        (period - wrapped) as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reflect one edge at a time until `index` lands inside the signal.
+    fn reflect_by_steps(mut index: i64, len: u32) -> u32 {
+        let len = i64::from(len);
+        while index < 0 || index >= len {
+            index = if index < 0 {
+                -index
+            } else {
+                2 * (len - 1) - index
+            };
+        }
+        u32::try_from(index).expect("reflected index is in range")
+    }
+
+    #[test]
+    fn reflect_index_matches_repeated_edge_reflection() {
+        for len in 2..=40 {
+            for index in -300..=300 {
+                assert_eq!(
+                    reflect_index(index, len),
+                    reflect_by_steps(index, len),
+                    "index {index}, len {len}"
+                );
+            }
+        }
+    }
 
     const MAX_LEVELS_FOR_U32_GEOMETRY: u8 = max_decomposition_levels(u32::MAX, u32::MAX);
 

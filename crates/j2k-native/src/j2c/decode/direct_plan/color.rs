@@ -186,7 +186,7 @@ pub(super) fn build_direct_color_tile_components_plan<'a, const COMPONENT_COUNT:
         &mut ctx.storage,
         structural_workspace_bytes,
         decode_region.is_some(),
-        build::BuildWorkspace::CoefficientsOnly,
+        build::BuildWorkspace::MetadataOnly,
     )?;
     if let Some(output_region) = decode_region {
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;

@@ -239,8 +239,10 @@ fn add_opaque_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, 
         .take(height)
     {
         for (rgb, rgba) in src_row
-            .chunks_exact(3)
-            .zip(dst_row[..dst_row_bytes].chunks_exact_mut(4))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(dst_row[..dst_row_bytes].as_chunks_mut::<4>().0)
         {
             rgba[..3].copy_from_slice(rgb);
             rgba[3] = u8::MAX;
@@ -257,8 +259,10 @@ fn drop_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height
         .take(height)
     {
         for (rgba, rgb) in src_row
-            .chunks_exact(4)
-            .zip(dst_row[..dst_row_bytes].chunks_exact_mut(3))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dst_row[..dst_row_bytes].as_chunks_mut::<3>().0)
         {
             rgb.copy_from_slice(&rgba[..3]);
         }

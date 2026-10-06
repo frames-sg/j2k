@@ -25,6 +25,105 @@ fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
         ))
     );
 }
+
+#[test]
+fn retained_parse_baseline_is_carried_into_direct_plan_allocation() {
+    let pixels = (0..64u8).collect::<Vec<_>>();
+    let bytes = encode(
+        &pixels,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            use_ht_block_coding: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode bounded direct-plan fixture");
+    let settings = DecodeSettings::default();
+    Image::new(&bytes, &settings)
+        .expect("unbounded image")
+        .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+        .expect("the fixture plans without a retained baseline");
+
+    let bounded =
+        Image::new_with_retained_baseline(&bytes, &settings, largest_parse_baseline(&bytes))
+            .expect("metadata exactly fits remaining parser budget");
+    let error = bounded
+        .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+        .expect_err("direct-plan owners have no remaining aggregate headroom");
+
+    assert!(is_allocation_limit(&error), "{error:?}");
+}
+
+#[test]
+fn retained_parse_baseline_is_carried_into_referenced_htj2k_plans() {
+    let settings = DecodeSettings::default();
+    for components in [1u16, 3] {
+        let pixels = (0..=u8::MAX)
+            .cycle()
+            .take(64 * usize::from(components))
+            .collect::<Vec<_>>();
+        let bytes = encode(
+            &pixels,
+            8,
+            8,
+            components,
+            8,
+            false,
+            &EncodeOptions {
+                use_ht_block_coding: true,
+                num_decomposition_levels: 1,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode bounded referenced-plan fixture");
+        let region = (0, 0, 8, 8);
+        Image::new(&bytes, &settings)
+            .expect("unbounded image")
+            .build_referenced_htj2k_plan_region_with_context(&mut DecoderContext::default(), region)
+            .expect("the fixture plans without a retained baseline");
+
+        let bounded =
+            Image::new_with_retained_baseline(&bytes, &settings, largest_parse_baseline(&bytes))
+                .expect("metadata exactly fits remaining parser budget");
+        let error = bounded
+            .build_referenced_htj2k_plan_region_with_context(&mut DecoderContext::default(), region)
+            .expect_err("referenced-plan owners have no remaining aggregate headroom");
+
+        assert!(
+            is_allocation_limit(&error),
+            "{components} components: {error:?}"
+        );
+    }
+}
+
+/// Largest retained baseline the parser still accepts for `bytes`.
+fn largest_parse_baseline(bytes: &[u8]) -> usize {
+    let settings = DecodeSettings::default();
+    let mut accepted = 0usize;
+    let mut rejected = DEFAULT_MAX_DECODE_BYTES + 1;
+    while rejected - accepted > 1 {
+        let candidate = usize::midpoint(accepted, rejected);
+        if Image::new_with_retained_baseline(bytes, &settings, candidate).is_ok() {
+            accepted = candidate;
+        } else {
+            rejected = candidate;
+        }
+    }
+    accepted
+}
+
+fn is_allocation_limit(error: &DecodeError) -> bool {
+    matches!(
+        error,
+        DecodeError::Validation(ValidationError::ImageTooLarge)
+            | DecodeError::AllocationTooLarge { .. }
+    )
+}
 #[test]
 fn ht_uvlc_encode_table_bytes_match_entry_packing_order() {
     let entries = ht_uvlc_encode_table();
@@ -155,10 +254,6 @@ fn classic_decode_adapter_accepts_legal_38_bit_roi_bitplane_count() {
 }
 
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "reversible ROI decoding must preserve exact integer-valued f32 coefficients"
-)]
 fn classic_scalar_decode_applies_nonzero_roi_maxshift() {
     let roi_shift = 3;
     let total_bitplanes = 3;
@@ -1680,7 +1775,7 @@ fn direct_color_cpu_rgb8_executor_matches_scaled_region_decode() {
         .expect("execute direct RGBA plan");
 
         let mut expected_rgba = Vec::with_capacity(direct_rgba.len());
-        for rgb in expected.chunks_exact(3) {
+        for rgb in expected.as_chunks::<3>().0 {
             expected_rgba.extend_from_slice(rgb);
             expected_rgba.push(255);
         }
@@ -1840,10 +1935,6 @@ fn scalar_forward_dwt_rejects_caller_geometry_with_typed_errors() {
 }
 
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "the reversible color transform uses exactly representable integer-valued f32 outputs"
-)]
 fn forward_rct_reference_matches_internal_path() {
     // Single pixel: R=100, G=150, B=200
     let planes = vec![vec![100.0f32], vec![150.0f32], vec![200.0f32]];

@@ -103,7 +103,7 @@ fn cpu_execution_failure_compacts_and_preserves_successful_group_members() {
     )
     .expect("prepare header-valid group");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 1);
     let mut session = CpuBatchDecoder::new(options);
     let result = session
@@ -138,7 +138,7 @@ fn cpu_batch_preserves_signed_i16_samples_in_nchw_layout() {
     let mut session = CpuBatchDecoder::new(options);
     let result = session.decode(inputs).expect("decode signed batch");
 
-    assert!(result.errors().is_empty());
+    assert!(result.errors().is_empty(), "{:?}", result.errors());
     assert_eq!(result.groups().len(), 1);
     assert_eq!(result.groups()[0].source_indices(), &[0, 1]);
     let CpuBatchSamples::I16(samples) = result.groups()[0].samples() else {
@@ -175,7 +175,7 @@ fn reduced_and_region_reduced_requests_group_by_decoded_geometry() {
     )
     .expect("prepare reduced requests");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].info().dimensions, (4, 3));
     assert_eq!(prepared.groups()[1].info().dimensions, (3, 2));
@@ -184,7 +184,7 @@ fn reduced_and_region_reduced_requests_group_by_decoded_geometry() {
     let result = session
         .decode_prepared(&prepared)
         .expect("decode reduced requests");
-    assert!(result.errors().is_empty());
+    assert!(result.errors().is_empty(), "{:?}", result.errors());
     assert_eq!(result.groups()[0].samples().len(), 12);
     assert_eq!(result.groups()[1].samples().len(), 6);
 }

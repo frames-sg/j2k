@@ -9,6 +9,7 @@ use super::{
     HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kCodestreamRange, J2kDirectBandId,
     J2kDirectGrayscaleStep, J2kRect, PayloadRangeOwner, Result, SubBand, Vec,
 };
+use crate::error::DecodingError;
 use crate::j2c::build::CodeBlockCoding;
 
 #[expect(
@@ -56,22 +57,39 @@ pub(super) fn build_ht_sub_band_step(
                 continue;
             }
 
-            if let Some(payloads) = ht_payloads.as_deref_mut() {
+            let (data, cleanup_length, refinement_length) = if let Some(payloads) =
+                ht_payloads.as_deref_mut()
+            {
                 append_referenced_payload_records(
                     payloads,
                     payload_range_owner,
                     code_block,
                     storage,
+                    budget,
                 )?;
-            }
-
-            let combined = ht_block_decode::collect_code_block_data(code_block, storage, budget)?;
+                // Referenced jobs read through payload ranges and carry no owned copy.
+                let (cleanup, refinement) =
+                    ht_block_decode::selected_code_block_segment_lengths(code_block, storage)?;
+                (
+                    Vec::new(),
+                    u32::try_from(cleanup).map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
+                    u32::try_from(refinement).map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
+                )
+            } else {
+                let combined =
+                    ht_block_decode::collect_code_block_data(code_block, storage, budget)?;
+                (
+                    combined.data,
+                    combined.cleanup_length,
+                    combined.refinement_length,
+                )
+            };
             jobs.push(HtOwnedCodeBlockBatchJob {
                 output_x: code_block.rect.x0 - sub_band.rect.x0,
                 output_y: code_block.rect.y0 - sub_band.rect.y0,
-                data: combined.data,
-                cleanup_length: combined.cleanup_length,
-                refinement_length: combined.refinement_length,
+                data,
+                cleanup_length,
+                refinement_length,
                 width: code_block.rect.width(),
                 height: code_block.rect.height(),
                 output_stride: sub_band.rect.width() as usize,
@@ -101,12 +119,14 @@ fn append_referenced_payload_records(
     payload_range_owner: PayloadRangeOwner<'_>,
     code_block: &crate::j2c::build::CodeBlock,
     storage: &DecompositionStorage<'_>,
+    budget: &mut DecodeAllocationBudget,
 ) -> Result<()> {
     let first_record = payloads.len();
     ht_block_decode::visit_code_block_segments(code_block, storage, |kind, data| {
         let range = encoded_input_range(payload_range_owner, data)?;
         match kind {
             ht_block_decode::HtCodeBlockSegmentKind::Cleanup => {
+                budget.reserve_additional(payloads, 1)?;
                 payloads.push(HtCodeBlockPayloadRanges {
                     cleanup: range,
                     refinement: None,
@@ -119,6 +139,7 @@ fn append_referenced_payload_records(
                 if first.refinement.is_none() {
                     first.refinement = Some(range);
                 } else {
+                    budget.reserve_additional(payloads, 1)?;
                     payloads.push(HtCodeBlockPayloadRanges {
                         cleanup: J2kCodestreamRange {
                             offset: range.offset,

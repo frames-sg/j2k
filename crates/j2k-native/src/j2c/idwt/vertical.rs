@@ -236,7 +236,7 @@ fn reversible_filter_53r_simd<S: Simd>(
         #[inline(always)]
         |s1, s2, s3| s1 + ((s2 + s3) * 0.5).floor(),
         #[inline(always)]
-        |s1, s2, s3| s1 + math::floor_f32((s2 + s3) * 0.5),
+        |s1, s2, s3| s1 + math::floor_half_sum_f32(s2, s3),
     );
 }
 

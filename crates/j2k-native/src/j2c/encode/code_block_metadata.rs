@@ -139,7 +139,7 @@ pub(super) fn validate_accelerated_classic_code_block(
     if max_magnitude == 0 {
         return Err("accelerated classic code-block encoded an all-zero input");
     }
-    let coded_bitplanes = u8::try_from(u32::BITS - max_magnitude.leading_zeros())
+    let coded_bitplanes = u8::try_from(max_magnitude.bit_width())
         .map_err(|_| "accelerated classic code-block bitplane count exceeds u8")?;
     let expected_missing = total_bitplanes
         .checked_sub(coded_bitplanes)

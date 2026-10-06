@@ -2543,7 +2543,7 @@ fn ht_layer_contributions_emit_the_selected_ht_set_atomically() {
     let contributions = ht_layer_contributions(&encoded, 2, &[0, 1]).expect("layered HT set");
 
     assert_eq!(contributions.len(), 2);
-    assert!(contributions[0].data.is_empty());
+    assert_eq!(contributions[0].data, [] as [u8; 0]);
     assert_eq!(contributions[0].ht_cleanup_length, 0);
     assert_eq!(contributions[0].ht_refinement_length, 0);
     assert_eq!(contributions[0].num_coding_passes, 0);
@@ -2570,11 +2570,11 @@ fn ht_layer_contributions_preserve_refinement_metadata_when_co_located() {
         ht_layer_contributions(&encoded, 3, &[0, 1, 2]).expect("layered HT pass assignment");
 
     assert_eq!(contributions.len(), 3);
-    assert!(contributions[0].data.is_empty());
+    assert_eq!(contributions[0].data, [] as [u8; 0]);
     assert_eq!(contributions[0].ht_cleanup_length, 0);
     assert_eq!(contributions[0].ht_refinement_length, 0);
     assert_eq!(contributions[0].num_coding_passes, 0);
-    assert!(contributions[1].data.is_empty());
+    assert_eq!(contributions[1].data, [] as [u8; 0]);
     assert_eq!(contributions[1].ht_cleanup_length, 0);
     assert_eq!(contributions[1].ht_refinement_length, 0);
     assert_eq!(contributions[1].num_coding_passes, 0);

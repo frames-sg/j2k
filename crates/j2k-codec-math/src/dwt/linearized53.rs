@@ -146,7 +146,10 @@ fn high_weight(sample_len: usize, high_index: usize, sample_index: usize) -> f64
         left_even
     };
     delta(sample_index, odd_index)
-        - 0.5 * (delta(sample_index, left_even) + delta(sample_index, right_even))
+        - f64::midpoint(
+            delta(sample_index, left_even),
+            delta(sample_index, right_even),
+        )
 }
 
 fn delta(left: usize, right: usize) -> f64 {
@@ -238,6 +241,6 @@ mod tests {
         let odd_index = high_index * 2 + 1;
         let left = samples[odd_index - 1];
         let right = samples.get(odd_index + 1).copied().unwrap_or(left);
-        samples[odd_index] - (left + right) * 0.5
+        samples[odd_index] - f64::midpoint(left, right)
     }
 }

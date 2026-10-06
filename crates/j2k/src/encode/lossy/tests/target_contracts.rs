@@ -165,9 +165,8 @@ fn effective_target_requires_single_and_layer_targets_to_agree() {
 fn quality_layer_byte_targets_convert_bpp_and_reject_nonmonotonic_layers() {
     let samples = single_pixel_samples();
     let empty = J2kLossyEncodeOptions::default();
-    assert!(lossy_quality_layer_byte_targets(samples, &empty)
-        .unwrap()
-        .is_empty());
+    let targets = lossy_quality_layer_byte_targets(samples, &empty).unwrap();
+    assert!(targets.is_empty(), "{targets:?}");
     assert_eq!(lossy_quality_layer_count(&empty), 1);
 
     let options = empty.clone().with_quality_layers(vec![
@@ -184,9 +183,8 @@ fn quality_layer_byte_targets_convert_bpp_and_reject_nonmonotonic_layers() {
         layer(J2kRateTarget::Bytes(1)),
         layer(J2kRateTarget::PsnrDb(30.0)),
     ]);
-    assert!(lossy_quality_layer_byte_targets(samples, &psnr)
-        .unwrap()
-        .is_empty());
+    let targets = lossy_quality_layer_byte_targets(samples, &psnr).unwrap();
+    assert!(targets.is_empty(), "{targets:?}");
 
     let descending = empty.with_quality_layers(vec![
         layer(J2kRateTarget::Bytes(3)),

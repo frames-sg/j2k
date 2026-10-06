@@ -51,9 +51,17 @@ fn build_decompositions(
         include_roi_workspace,
         workspace,
     )?;
-    try_resize_decode_elements(&mut storage.coefficients, plan.coefficients, 0.0)?;
+    try_resize_decode_elements(
+        &mut storage.coefficients,
+        plan.coefficient_storage_len(),
+        0.0,
+    )?;
     if storage.exact_integer_decode {
-        try_resize_decode_elements(&mut storage.coefficients_i64, plan.coefficients, 0)?;
+        try_resize_decode_elements(
+            &mut storage.coefficients_i64,
+            plan.coefficient_storage_len(),
+            0,
+        )?;
     }
     let mut coefficient_counter = 0usize;
 
@@ -93,7 +101,7 @@ fn build_decompositions(
             let coefficient_end = coefficient_counter
                 .checked_add(added_coefficients)
                 .ok_or(ValidationError::ImageTooLarge)?;
-            if coefficient_end > storage.coefficients.len() {
+            if coefficient_end > plan.coefficients {
                 return Err(DecodingError::InvalidPrecinct.into());
             }
             let coefficients = coefficient_counter..coefficient_end;
@@ -166,8 +174,11 @@ fn validate_built_storage(
     storage: &DecompositionStorage<'_>,
     coefficient_count: usize,
 ) -> Result<()> {
-    let coefficient_lengths_match = coefficient_count == storage.coefficients.len()
-        && (!storage.exact_integer_decode || coefficient_count == storage.coefficients_i64.len());
+    let stored_coefficients = plan.coefficient_storage_len();
+    let coefficient_lengths_match = coefficient_count == plan.coefficients
+        && stored_coefficients == storage.coefficients.len()
+        && storage.coefficients_i64.len()
+            == usize::from(storage.exact_integer_decode) * stored_coefficients;
     let structural_lengths_match = storage.tile_decompositions.len() == plan.tile_decompositions
         && storage.decompositions.len() == plan.decompositions
         && storage.sub_bands.len() == plan.sub_bands

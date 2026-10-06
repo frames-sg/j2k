@@ -101,7 +101,7 @@ fn test_encode_all_zeros() {
     let coeffs = vec![0i32; 16];
     let result = encode_code_block(&coeffs, 4, 4, SubBandType::LowLow, 8);
     assert_eq!(result.num_coding_passes, 0);
-    assert!(result.data.is_empty());
+    assert_eq!(result.data, [] as [u8; 0]);
     assert_eq!(result.num_zero_bitplanes, 8);
 }
 
@@ -111,7 +111,7 @@ fn test_encode_single_nonzero() {
     coeffs[0] = 128;
     let result = encode_code_block(&coeffs, 4, 4, SubBandType::LowLow, 8);
     assert!(result.num_coding_passes > 0);
-    assert!(!result.data.is_empty());
+    assert_ne!(result.data, [] as [u8; 0]);
     assert_eq!(result.num_zero_bitplanes, 0);
 }
 
@@ -240,7 +240,7 @@ fn test_encode_various_magnitudes() {
         .collect();
     let result = encode_code_block(&coeffs, 8, 8, SubBandType::HighHigh, 12);
     assert!(result.num_coding_passes > 0);
-    assert!(!result.data.is_empty());
+    assert_ne!(result.data, [] as [u8; 0]);
 }
 
 #[test]
@@ -280,7 +280,7 @@ fn clear_coded_in_current_pass_touches_only_recorded_indices() {
     assert_eq!(states[2] & CODED_IN_CURRENT_PASS, 0);
     assert_eq!(states[5] & CODED_IN_CURRENT_PASS, 0);
     assert_eq!(states[6], SIGNIFICANT);
-    assert!(coded_indices.is_empty());
+    assert_eq!(coded_indices, [] as [usize; 0]);
 }
 
 #[test]

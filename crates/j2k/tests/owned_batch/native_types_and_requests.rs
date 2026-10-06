@@ -56,7 +56,7 @@ fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly() {
                             .collect(),
                     )
                     .expect("prepare Gray/RGB request matrix");
-                assert!(prepared.errors().is_empty());
+                assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
                 assert!(prepared.groups().iter().all(|group| {
                     group.info().sample_type == sample_type
                         && group.info().color.channels() == components as usize
@@ -68,7 +68,7 @@ fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly() {
                 let result = decoder
                     .decode_prepared(&prepared)
                     .expect("decode Gray/RGB request matrix");
-                assert!(result.errors().is_empty());
+                assert!(result.errors().is_empty(), "{:?}", result.errors());
                 for source_index in 0..requests.len() {
                     let prepared_image = prepared
                         .groups()

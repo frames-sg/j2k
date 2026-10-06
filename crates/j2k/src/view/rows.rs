@@ -249,8 +249,8 @@ fn pump_u16_rows<R: RowSink<u16>>(
         for row_index in 0..rows {
             let start = row_index as usize * layout.row_bytes;
             let packed_row = &packed[start..start + layout.row_bytes];
-            for (dst, src) in row.iter_mut().zip(packed_row.chunks_exact(2)) {
-                *dst = u16::from_le_bytes([src[0], src[1]]);
+            for (dst, src) in row.iter_mut().zip(packed_row.as_chunks::<2>().0) {
+                *dst = u16::from_le_bytes(*src);
             }
             sink.write_row(y + row_index, row)
                 .map_err(DecodeRowsError::Sink)?;
@@ -269,7 +269,7 @@ fn row_format_u8(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
         3 => Ok(PixelFormat::Rgb8),
         4 => Ok(PixelFormat::Rgba8),
         _ => Err(j2k_core::Unsupported {
-            what: "row decode only supports Gray/RGB/RGBA images in J2K-M2",
+            what: "row decode only supports Gray/RGB/RGBA images",
         }
         .into()),
     }
@@ -281,7 +281,7 @@ fn row_format_u16(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
         3 => Ok(PixelFormat::Rgb16),
         4 => Ok(PixelFormat::Rgba16),
         _ => Err(j2k_core::Unsupported {
-            what: "row decode only supports Gray/RGB/RGBA images in J2K-M2",
+            what: "row decode only supports Gray/RGB/RGBA images",
         }
         .into()),
     }

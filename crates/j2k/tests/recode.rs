@@ -454,8 +454,14 @@ fn recode_jph_drops_palette_metadata_on_pixel_fallback() {
         [J2kColorSpec::Enumerated { value: 16 }]
     ));
     assert!(metadata.palette.is_none());
-    assert!(metadata.component_mappings.is_empty());
-    assert!(metadata.channel_definitions.is_empty());
+    assert_eq!(
+        metadata.component_mappings,
+        [] as [j2k::J2kComponentMapping; 0]
+    );
+    assert_eq!(
+        metadata.channel_definitions,
+        [] as [j2k::J2kChannelDefinition; 0]
+    );
     let decoded = Image::new(&recoded.bytes, &DecodeSettings::default())
         .expect("recoded direct RGB JPH")
         .decode_native_components()
@@ -557,7 +563,10 @@ fn recode_jph_drops_component_mapping_metadata_on_sampled_pixel_fallback() {
     let support = j2k::J2kDecoder::inspect_support(&recoded.bytes).expect("inspect recoded JPH");
     let metadata = support.file_metadata.as_ref().expect("JPH metadata");
     assert!(metadata.palette.is_none());
-    assert!(metadata.component_mappings.is_empty());
+    assert_eq!(
+        metadata.component_mappings,
+        [] as [j2k::J2kComponentMapping; 0]
+    );
     assert!(!support.has_component_subsampling());
     assert_eq!(decode_native(&recoded.bytes).data, decode_native(&jp2).data);
 }

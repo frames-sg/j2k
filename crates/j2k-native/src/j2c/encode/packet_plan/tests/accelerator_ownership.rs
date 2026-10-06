@@ -74,8 +74,8 @@ fn packet_accelerator_output_accepts_exact_cap_without_copying() {
     assert_eq!(packetized.data.as_ptr(), output_ptr);
     assert_eq!(packetized.data.capacity(), output_capacity);
     assert_eq!(packetized.data, [3, 5, 8]);
-    assert!(packetized.packet_lengths.is_empty());
-    assert!(packetized.packet_headers.is_empty());
+    assert_eq!(packetized.packet_lengths, [] as [u32; 0]);
+    assert_eq!(packetized.packet_headers, [] as [Vec<u8>; 0]);
 }
 
 #[test]

@@ -93,7 +93,7 @@ fn test_empty_packet() {
     };
 
     let packet = form_packet(&mut resolution).expect("valid test packet");
-    assert!(!packet.is_empty());
+    assert_ne!(packet, [] as [u8; 0]);
 }
 
 #[test]

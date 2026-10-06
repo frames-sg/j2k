@@ -25,7 +25,7 @@ fn process_sample(
         *rho_acc |= 1 << (slot & 0x3);
         val -= 1;
         let val_u32 = val as u32;
-        e_q[slot] = (u32::BITS - val_u32.leading_zeros()) as i32;
+        e_q[slot] = val_u32.bit_width() as i32;
         *e_qmax = (*e_qmax).max(e_q[slot]);
         val -= 1;
         s[slot] = (val as u32) + (value >> 31);

@@ -29,8 +29,10 @@ fn referenced_htj2k_grayscale_executes_all_tiles_bit_exactly() {
     assert_eq!(decoded.component_count(), 1);
     let actual = decoded.plane(0).expect("grayscale plane").samples();
     let expected = OPENJPH_GRAY_U12_53_ORACLE
-        .chunks_exact(2)
-        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| u16::from_le_bytes(*bytes));
     assert_eq!(actual.len(), 19 * 13);
     for (index, (actual, expected)) in actual.iter().copied().zip(expected).enumerate() {
         assert_eq!(
@@ -43,8 +45,20 @@ fn referenced_htj2k_grayscale_executes_all_tiles_bit_exactly() {
 
 #[test]
 fn referenced_htj2k_rgb_executes_all_tiles_bit_exactly() {
-    let image = Image::new(OPENJPH_RGB_U12_53, &DecodeSettings::strict())
-        .expect("parse independent OpenJPH fixture");
+    // A retained parse baseline bounds planning but must not change which
+    // tiles plan or what they decode to.
+    for retained_baseline in [0, 1 << 20] {
+        assert_rgb_tiles_match_oracle(retained_baseline);
+    }
+}
+
+fn assert_rgb_tiles_match_oracle(retained_baseline: usize) {
+    let image = Image::new_with_retained_baseline(
+        OPENJPH_RGB_U12_53,
+        &DecodeSettings::strict(),
+        retained_baseline,
+    )
+    .expect("parse independent OpenJPH fixture");
     let mut context = DecoderContext::default();
     let plan = image
         .build_referenced_htj2k_plan_region_with_context(&mut context, (0, 0, 19, 13))
@@ -61,15 +75,17 @@ fn referenced_htj2k_rgb_executes_all_tiles_bit_exactly() {
         decoded.plane(2).expect("blue plane"),
     ];
     let expected: Vec<_> = OPENJPH_RGB_U12_53_ORACLE
-        .chunks_exact(2)
-        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| u16::from_le_bytes(*bytes))
         .collect();
     for pixel in 0..19 * 13 {
         for component in 0..3 {
             assert_eq!(
                 planes[component].samples()[pixel].to_bits(),
                 f32::from(expected[pixel * 3 + component]).to_bits(),
-                "pixel {pixel}, component {component}"
+                "baseline {retained_baseline}, pixel {pixel}, component {component}"
             );
         }
     }

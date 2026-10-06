@@ -24,8 +24,8 @@ pub(super) fn discard_stale_capacity(
     release_capacity_above(&mut storage.code_blocks, plan.code_blocks);
     release_capacity_above(&mut storage.layers, plan.layers);
     release_capacity_above(&mut storage.tag_tree_nodes, plan.tag_tree_nodes);
-    release_capacity_above(&mut storage.coefficients, plan.coefficients);
-    let integer_target = usize::from(storage.exact_integer_decode) * plan.coefficients;
+    release_capacity_above(&mut storage.coefficients, plan.coefficient_storage_len());
+    let integer_target = usize::from(storage.exact_integer_decode) * plan.coefficient_storage_len();
     release_capacity_above(&mut storage.coefficients_i64, integer_target);
 }
 
@@ -123,9 +123,12 @@ pub(super) fn reserve_decomposition_storage(
     budget.reserve(&mut storage.code_blocks, plan.code_blocks)?;
     budget.reserve(&mut storage.layers, plan.layers)?;
     budget.reserve(&mut storage.tag_tree_nodes, plan.tag_tree_nodes)?;
-    budget.reserve(&mut storage.coefficients, plan.coefficients)?;
+    budget.reserve(&mut storage.coefficients, plan.coefficient_storage_len())?;
     if storage.exact_integer_decode {
-        budget.reserve(&mut storage.coefficients_i64, plan.coefficients)?;
+        budget.reserve(
+            &mut storage.coefficients_i64,
+            plan.coefficient_storage_len(),
+        )?;
     }
     Ok(())
 }

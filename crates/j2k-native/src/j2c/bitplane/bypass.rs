@@ -178,7 +178,7 @@ impl SafeScalarTier1 {
                     let state = ctx.coefficient_states[idx].0;
 
                     debug_assert!(state & SIGNIFICANCE_MASK != 0);
-                    debug_assert!(state & HAS_ZERO_CODING_MASK == 0);
+                    debug_assert_eq!(state & HAS_ZERO_CODING_MASK, 0);
 
                     let neighbors = ctx.neighborhood_significance_states_index(idx, y);
                     let ctx_label =
