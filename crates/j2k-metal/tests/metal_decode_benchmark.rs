@@ -720,14 +720,12 @@ fn external_decode_input_dirs() -> Vec<PathBuf> {
 
 fn env_truthy(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
 fn env_falsey(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .is_ok_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
 fn operation_label(operation: DecodeOperation) -> &'static str {

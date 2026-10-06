@@ -88,7 +88,7 @@ fn independent_openjph_multitile_rgb_decodes_exactly_on_metal() {
     let prepared = decoder
         .prepare(vec![EncodedImage::full(Arc::from(fixture.encoded))])
         .expect("prepare independent OpenJPH RGB fixture");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
     assert_eq!(
         prepared.groups()[0].images()[0].preparation_depth(),

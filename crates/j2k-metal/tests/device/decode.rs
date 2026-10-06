@@ -54,7 +54,9 @@ fn full_classic_signed_gray4_decode_to_metal_matches_host_exactly() {
     let actual = surface
         .as_bytes()
         .expect("signed classic gray4 surface bytes")
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_ne_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -86,7 +88,9 @@ fn full_classic_signed_gray4_roi_decode_to_metal_matches_host_exactly() {
     let actual = surface
         .as_bytes()
         .expect("signed classic gray4 ROI surface bytes")
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_ne_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);

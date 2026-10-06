@@ -129,6 +129,10 @@ fn reference_reversible53_vertical(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "encodes eight IDWT variants into one command buffer over shared inputs, then compares them pairwise"
+)]
 fn compare_interleave(
     runtime: &MetalRuntime,
     params: J2kIdwtSingleDecompositionParams,

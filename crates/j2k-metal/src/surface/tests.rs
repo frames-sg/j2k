@@ -190,7 +190,7 @@ fn empty_packed_download_avoids_staging() {
     reset_packed_staging_for_test();
     let output = download_surfaces_packed(&session, &[]).expect("empty packed download");
 
-    assert!(output.is_empty());
+    assert_eq!(output, [] as [u8; 0]);
     assert_eq!(packed_staging_for_test(), (0, 0));
 }
 

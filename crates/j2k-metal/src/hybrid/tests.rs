@@ -25,7 +25,7 @@ fn should_run_metal_runtime() -> bool {
 
 fn encoded_rgb8_tile_for_region_scaled_plan_cache(seed: u8) -> Arc<[u8]> {
     let mut pixels = j2k_test_support::gradient_u8(64, 64, 3);
-    for pixel in pixels.chunks_exact_mut(3) {
+    for pixel in pixels.as_chunks_mut::<3>().0 {
         pixel[0] = pixel[0].wrapping_add(seed);
         pixel[1] = pixel[1].wrapping_add(seed.wrapping_mul(3));
         pixel[2] = pixel[2].wrapping_add(seed.wrapping_mul(5));

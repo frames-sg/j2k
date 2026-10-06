@@ -129,7 +129,9 @@ fn assert_native_samples(
         }
         CpuBatchSamples::U16(expected) => {
             let actual = actual
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
                 .collect::<Vec<_>>();
             assert!(
@@ -142,7 +144,9 @@ fn assert_native_samples(
         }
         CpuBatchSamples::I16(expected) => {
             let actual = actual
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
                 .collect::<Vec<_>>();
             assert!(

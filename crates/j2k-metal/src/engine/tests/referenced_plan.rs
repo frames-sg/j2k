@@ -39,7 +39,7 @@ fn referenced_htj2k_payload_ranges_reconstruct_owned_direct_plan_bytes() {
         };
         for (owned_job, referenced_job) in owned_sub_band.jobs.iter().zip(&referenced_sub_band.jobs)
         {
-            assert!(referenced_job.data.is_empty());
+            assert_eq!(referenced_job.data, [] as [u8; 0]);
             let payload = referenced
                 .payloads()
                 .get(payload_cursor)

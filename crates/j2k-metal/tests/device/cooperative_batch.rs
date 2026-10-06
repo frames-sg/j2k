@@ -6,7 +6,10 @@ fn distinct_classic_inputs() -> Vec<EncodedImage> {
     (0..8u8)
         .map(|seed| {
             let pixels = (0..128 * 128 * 3)
-                .map(|index| ((index * (usize::from(seed) + 3) + index / 128) & 255) as u8)
+                .map(|index| {
+                    u8::try_from((index * (usize::from(seed) + 3) + index / 128) & 255)
+                        .expect("masked fixture sample fits u8")
+                })
                 .collect::<Vec<_>>();
             let encoded = encode(
                 &pixels,
@@ -50,7 +53,7 @@ fn cooperative_classic_batch_preserves_order_layout_and_reuse() {
             let result = decoder
                 .decode_prepared_cooperative(&prepared, std::num::NonZeroUsize::new(12).unwrap())
                 .expect("cooperative decode");
-            assert!(result.errors().is_empty());
+            assert_eq!(result.errors(), []);
             assert!(
                 result.group_errors().is_empty(),
                 "{:?}",
@@ -74,7 +77,7 @@ fn cooperative_classic_batch_preserves_order_layout_and_reuse() {
                     std::num::NonZeroUsize::new(workers).unwrap(),
                 )
                 .expect("partial CPU budget");
-            assert!(limited.errors().is_empty());
+            assert_eq!(limited.errors(), []);
             assert!(limited.group_errors().is_empty());
             if workers == 1 {
                 assert_eq!(limited.groups()[0].dispatch_report().cpu_tier1_images, 0);

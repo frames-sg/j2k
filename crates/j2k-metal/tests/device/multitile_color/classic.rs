@@ -24,7 +24,7 @@ fn classic_multitile_rgb8_decodes_exactly_on_metal() {
     let prepared = decoder
         .prepare(vec![EncodedImage::full(encoded)])
         .expect("prepare odd-edge multi-tile classic RGB8 fixture");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
     assert_eq!(
         prepared.groups()[0].images()[0].preparation_depth(),

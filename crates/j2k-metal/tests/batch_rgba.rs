@@ -31,14 +31,18 @@ fn assert_native_samples(actual: &[u8], expected: &CpuBatchSamples) {
         CpuBatchSamples::U8(expected) => assert_eq!(actual, expected),
         CpuBatchSamples::U16(expected) => {
             let actual = actual
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
                 .collect::<Vec<_>>();
             assert_eq!(&actual, expected);
         }
         CpuBatchSamples::I16(expected) => {
             let actual = actual
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
                 .collect::<Vec<_>>();
             assert_eq!(&actual, expected);
@@ -286,7 +290,7 @@ fn prepared_htj2k_rgba_nhwc_resident_group_is_exact_and_uses_one_allocation() {
     let result = decoder
         .decode_prepared(&prepared)
         .expect("decode resident RGBA group");
-    assert!(result.errors().is_empty());
+    assert_eq!(result.errors(), []);
     assert!(result.group_errors().is_empty());
     assert_eq!(result.groups().len(), 1);
     let group = &result.groups()[0];
@@ -345,7 +349,7 @@ fn prepared_htj2k_rgba_nchw_resident_group_is_exact_without_surface_mislabeling(
         .decode_prepared(&prepared)
         .expect("decode NCHW resident RGBA group");
     let (mut groups, errors, group_errors) = result.into_parts();
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [j2k::IndexedBatchError; 0]);
     assert!(group_errors.is_empty());
     assert_eq!(groups.len(), 1);
     let group = groups.pop().expect("one NCHW RGBA group");

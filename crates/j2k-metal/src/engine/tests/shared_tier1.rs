@@ -19,7 +19,10 @@ use std::sync::Arc;
 
 fn encoded_rgb(seed: u8, (width, height): (u32, u32)) -> Vec<u8> {
     let pixels = (0..width * height * 3)
-        .map(|index| (index.wrapping_mul(u32::from(seed) + 7) ^ (index / width)) as u8)
+        .map(|index| {
+            u8::try_from((index.wrapping_mul(u32::from(seed) + 7) ^ (index / width)) & 255)
+                .expect("masked fixture sample fits u8")
+        })
         .collect::<Vec<_>>();
     let options = EncodeOptions {
         reversible: true,
