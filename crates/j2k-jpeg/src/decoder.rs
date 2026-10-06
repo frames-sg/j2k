@@ -114,7 +114,7 @@ pub use self::tile::{
 };
 mod lossless_render;
 
-/// Non-fatal outcome of a successful decode. See spec Section 2.
+/// Non-fatal outcome of a successful decode.
 ///
 /// `DecodeOutcome` lives on `decoder.rs` rather than `info.rs` because it
 /// carries `Warning` values from `error.rs`, and moving it into `info` would

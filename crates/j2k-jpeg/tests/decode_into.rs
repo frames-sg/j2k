@@ -461,7 +461,7 @@ fn decode_into_gray16_accepts_extended12_grayscale_samples() {
         .expect("12-bit grayscale decode must succeed");
 
     assert_eq!(outcome.decoded, Rect::full((w, h)));
-    for sample in buf.chunks_exact(2) {
+    for sample in buf.as_chunks::<2>().0 {
         assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
     }
 }
@@ -485,7 +485,7 @@ fn decode_region_into_gray16_crops_extended12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for sample in row[..roi.w as usize * 2].chunks_exact(2) {
+        for sample in row[..roi.w as usize * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[roi.w as usize * 2..], &[0xaa; 4]);
@@ -508,7 +508,7 @@ fn decode_scaled_into_gray16_projects_extended12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_w * 2].chunks_exact(2) {
+        for sample in row[..scaled_w * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[scaled_w * 2..], &[0xaa; 4]);
@@ -529,7 +529,7 @@ fn decode_into_gray16_accepts_extended12_restart_grayscale_samples() {
 
     assert_eq!(dec.info().restart_interval, Some(1));
     assert_eq!(outcome.decoded, Rect::full((w, h)));
-    for sample in buf.chunks_exact(2) {
+    for sample in buf.as_chunks::<2>().0 {
         assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
     }
 }
@@ -555,7 +555,7 @@ fn decode_region_scaled_into_gray16_accepts_extended12_restart_grayscale_samples
     assert_eq!(dec.info().restart_interval, Some(1));
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_roi.w as usize * 2].chunks_exact(2) {
+        for sample in row[..scaled_roi.w as usize * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[scaled_roi.w as usize * 2..], &[0xaa; 4]);
@@ -583,7 +583,7 @@ fn decode_region_scaled_into_rgb16_accepts_extended12_restart_grayscale_samples(
     assert_eq!(dec.info().restart_interval, Some(1));
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for pixel in row[..scaled_roi.w as usize * 6].chunks_exact(6) {
+        for pixel in row[..scaled_roi.w as usize * 6].as_chunks::<6>().0 {
             let channels = [
                 u16::from_le_bytes([pixel[0], pixel[1]]),
                 u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -608,7 +608,7 @@ fn decode_into_gray16_accepts_progressive12_grayscale_samples() {
         .expect("12-bit progressive Gray16 decode must succeed");
 
     assert_eq!(outcome.decoded, Rect::full((w, h)));
-    for sample in buf.chunks_exact(2) {
+    for sample in buf.as_chunks::<2>().0 {
         assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
     }
 }
@@ -632,7 +632,7 @@ fn decode_region_into_gray16_crops_progressive12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for sample in row[..roi.w as usize * 2].chunks_exact(2) {
+        for sample in row[..roi.w as usize * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[roi.w as usize * 2..], &[0xaa; 4]);
@@ -654,7 +654,7 @@ fn decode_scaled_into_gray16_projects_progressive12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_w * 2].chunks_exact(2) {
+        for sample in row[..scaled_w * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[scaled_w * 2..], &[0xaa; 4]);
@@ -681,7 +681,7 @@ fn decode_region_scaled_into_gray16_projects_progressive12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_roi.w as usize * 2].chunks_exact(2) {
+        for sample in row[..scaled_roi.w as usize * 2].as_chunks::<2>().0 {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
         assert_eq!(&row[scaled_roi.w as usize * 2..], &[0xaa; 4]);
@@ -701,7 +701,7 @@ fn decode_into_rgb16_expands_progressive12_grayscale_samples() {
         .expect("12-bit progressive Rgb16 decode must succeed");
 
     assert_eq!(outcome.decoded, Rect::full((w, h)));
-    for pixel in buf.chunks_exact(6) {
+    for pixel in buf.as_chunks::<6>().0 {
         let channels = [
             u16::from_le_bytes([pixel[0], pixel[1]]),
             u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -731,7 +731,7 @@ fn decode_region_scaled_into_rgb16_projects_progressive12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for pixel in row[..scaled_roi.w as usize * 6].chunks_exact(6) {
+        for pixel in row[..scaled_roi.w as usize * 6].as_chunks::<6>().0 {
             let channels = [
                 u16::from_le_bytes([pixel[0], pixel[1]]),
                 u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -782,7 +782,7 @@ fn decode_region_scaled_into_rgba16_projects_12bit_grayscale_samples() {
 
         assert_eq!(outcome.decoded, roi, "{label}");
         for row in buf.chunks_exact(stride) {
-            for pixel in row[..row_bytes].chunks_exact(8) {
+            for pixel in row[..row_bytes].as_chunks::<8>().0 {
                 let channels = [
                     u16::from_le_bytes([pixel[0], pixel[1]]),
                     u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -966,7 +966,7 @@ fn decode_into_rgb16_expands_extended12_grayscale_samples() {
         .expect("12-bit grayscale Rgb16 decode must succeed");
 
     assert_eq!(outcome.decoded, Rect::full((w, h)));
-    for pixel in buf.chunks_exact(6) {
+    for pixel in buf.as_chunks::<6>().0 {
         let channels = [
             u16::from_le_bytes([pixel[0], pixel[1]]),
             u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -995,7 +995,7 @@ fn decode_region_into_rgb16_crops_extended12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for pixel in row[..roi.w as usize * 6].chunks_exact(6) {
+        for pixel in row[..roi.w as usize * 6].as_chunks::<6>().0 {
             let channels = [
                 u16::from_le_bytes([pixel[0], pixel[1]]),
                 u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -1027,7 +1027,7 @@ fn decode_region_scaled_into_rgb16_projects_extended12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, roi);
     for row in buf.chunks_exact(stride) {
-        for pixel in row[..scaled_roi.w as usize * 6].chunks_exact(6) {
+        for pixel in row[..scaled_roi.w as usize * 6].as_chunks::<6>().0 {
             let channels = [
                 u16::from_le_bytes([pixel[0], pixel[1]]),
                 u16::from_le_bytes([pixel[2], pixel[3]]),
@@ -1540,7 +1540,9 @@ fn assert_gray16_rows_with_padding(
         .zip(expected.chunks_exact(width as usize))
     {
         for (sample, expected) in row[..width as usize * 2]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(expected_row.iter().copied())
         {
             assert_eq!(
@@ -1639,7 +1641,7 @@ fn rgb16_samples_to_le_bytes(samples: &[u16]) -> Vec<u8> {
 fn rgb16_to_rgba16(rgb: &[u8], alpha: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 6 * 8);
     let alpha = alpha.to_le_bytes();
-    for pixel in rgb.chunks_exact(6) {
+    for pixel in rgb.as_chunks::<6>().0 {
         out.extend_from_slice(pixel);
         out.extend_from_slice(&alpha);
     }
@@ -1660,8 +1662,10 @@ fn crop_rgb16_bytes(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
 fn assert_rgb16_image_eq(actual: &[u8], expected: &[u8], width: usize) {
     assert_eq!(actual.len(), expected.len());
     for (pixel_index, (actual_pixel, expected_pixel)) in actual
-        .chunks_exact(6)
-        .zip(expected.chunks_exact(6))
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .zip(expected.as_chunks::<6>().0.iter())
         .enumerate()
     {
         if actual_pixel != expected_pixel {

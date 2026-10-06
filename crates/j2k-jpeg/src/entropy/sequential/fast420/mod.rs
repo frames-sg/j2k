@@ -187,8 +187,7 @@ where
             },
         )?;
         profile.finish_rgb_emit(emit_timer);
-        core::mem::swap(&mut prev_stripe, &mut curr_stripe);
-        core::mem::swap(&mut curr_stripe, &mut next_stripe);
+        (prev_stripe, curr_stripe, next_stripe) = (curr_stripe, next_stripe, prev_stripe);
         has_prev = true;
     }
 
@@ -363,8 +362,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
                     },
                 )?;
             }
-            core::mem::swap(&mut prev_stripe, &mut curr_stripe);
-            core::mem::swap(&mut curr_stripe, &mut next_stripe);
+            (prev_stripe, curr_stripe, next_stripe) = (curr_stripe, next_stripe, prev_stripe);
             has_prev = true;
         }
 

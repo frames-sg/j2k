@@ -404,7 +404,7 @@ pub(super) fn upsample_h2v2_u8_at(
     output_x: usize,
     output_y: usize,
 ) -> u8 {
-    debug_assert!(!plane.is_empty());
+    debug_assert!(!plane.is_empty(), "chroma plane needs at least one sample");
     debug_assert!(chroma_width > 0);
     debug_assert!(chroma_height > 0);
     let chroma_y = output_y / 2;
@@ -430,7 +430,7 @@ pub(super) fn upsample_h2v2_u16_at(
     output_x: usize,
     output_y: usize,
 ) -> u16 {
-    debug_assert!(!plane.is_empty());
+    debug_assert!(!plane.is_empty(), "chroma plane needs at least one sample");
     debug_assert!(chroma_width > 0);
     debug_assert!(chroma_height > 0);
     let chroma_y = output_y / 2;

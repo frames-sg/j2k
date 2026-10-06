@@ -525,7 +525,7 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(41)
             .wrapping_add(29);
@@ -533,7 +533,7 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
         pixel[1] = pixel[1].wrapping_add(delta);
         pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index).wrapping_mul(59).wrapping_add(3);
         pixel[0] = pixel[0].wrapping_sub(delta.rotate_left(2));
         pixel[1] ^= delta.rotate_right(1);
@@ -696,7 +696,7 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(61)
             .wrapping_add(13);
@@ -704,7 +704,7 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
         pixel[1] ^= delta.rotate_left(1);
         pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(67)
             .wrapping_add(31);
@@ -1058,7 +1058,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_texture
     .expect("encode restart-coded fast420 region-scaled texture jpeg");
     let packet = build_fast420_packet(&jpeg.data).expect("restart fast420 packet");
     assert_ne!(packet.restart_interval_mcus, 0);
-    assert!(!packet.restart_offsets.is_empty());
+    assert_ne!(packet.restart_offsets, [] as [u32; 0]);
 
     let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 2)
         .expect("texture output");
@@ -1137,12 +1137,12 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
         JpegSubsampling::Ybr422 => {
             let packet = build_fast422_packet(&jpeg.data).expect("restart fast422 packet");
             assert_ne!(packet.restart_interval_mcus, 0);
-            assert!(!packet.restart_offsets.is_empty());
+            assert_ne!(packet.restart_offsets, [] as [u32; 0]);
         }
         JpegSubsampling::Ybr444 => {
             let packet = build_fast444_packet(&jpeg.data).expect("restart fast444 packet");
             assert_ne!(packet.restart_interval_mcus, 0);
-            assert!(!packet.restart_offsets.is_empty());
+            assert_ne!(packet.restart_offsets, [] as [u32; 0]);
         }
         _ => panic!("restart region-scaled texture helper expects fast422 or fast444"),
     }
@@ -1229,7 +1229,7 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(43)
             .wrapping_add(19);
@@ -1237,7 +1237,7 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
         pixel[1] = pixel[1].wrapping_sub(delta);
         pixel[2] ^= delta.rotate_right(2);
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(47)
             .wrapping_add(23);
@@ -1555,13 +1555,13 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index).wrapping_mul(31).wrapping_add(5);
         pixel[0] = pixel[0].wrapping_sub(delta);
         pixel[1] = pixel[1].wrapping_add(delta.rotate_left(1));
         pixel[2] ^= delta.rotate_right(2);
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(37)
             .wrapping_add(17);
@@ -1779,7 +1779,7 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(23)
             .wrapping_add(11);
@@ -1787,7 +1787,7 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
         pixel[1] ^= delta;
         pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(19)
             .wrapping_add(53);
@@ -2209,7 +2209,7 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_uses_reusable_component_pl
     let dimensions = (128, 128);
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(17)
             .wrapping_add(31);
@@ -2309,13 +2309,13 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index).wrapping_mul(29).wrapping_add(7);
         pixel[0] ^= delta;
         pixel[1] = pixel[1].wrapping_add(delta.rotate_left(2));
         pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(13)
             .wrapping_add(41);

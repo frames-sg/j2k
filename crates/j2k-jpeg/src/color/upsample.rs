@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Chroma upsamplers. Three shapes this milestone supports:
+//! Chroma upsamplers for three sampling layouts:
 //!
 //! - **`upsample_1x1`** (4:4:4): identity copy; no resampling.
 //! - **`upsample_h2v1_fancy`** (4:2:2): 2× horizontal triangle filter.
@@ -59,15 +59,15 @@ pub(crate) fn upsample_h2v1_fancy_row(
     let visible = &mut output_row[..output_width];
     visible[0] = input_row[0];
 
-    let mut output_pairs = visible[1..].chunks_exact_mut(2);
-    for (input_pair, output_pair) in input_row.windows(2).zip(output_pairs.by_ref()) {
+    let (output_pairs, remainder) = visible[1..].as_chunks_mut::<2>();
+    for (input_pair, output_pair) in input_row.windows(2).zip(output_pairs) {
         let left = u16::from(input_pair[0]);
         let right = u16::from(input_pair[1]);
         output_pair[0] = ((3 * left + right + 2) >> 2) as u8;
         output_pair[1] = ((3 * right + left + 1) >> 2) as u8;
     }
 
-    if let [tail] = output_pairs.into_remainder() {
+    if let [tail] = remainder {
         let x = output_width - 1;
         *tail = if x == n * 2 - 1 {
             input_row[n - 1]

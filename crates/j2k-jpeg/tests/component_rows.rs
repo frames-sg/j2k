@@ -52,8 +52,8 @@ fn component_rows_expose_ycbcr_rows_for_full_decode() {
         .decode_component_rows_with_scratch(&mut pool, &mut rows)
         .expect("decode component rows");
 
-    assert!(rows.gray.is_empty());
-    assert!(rows.rgb.is_empty());
+    assert_eq!(rows.gray, [] as [Vec<u8>; 0]);
+    assert!(rows.rgb.is_empty(), "{:?}", rows.rgb);
     assert_eq!(rows.ycbcr.len(), 16);
     assert!(rows
         .ycbcr

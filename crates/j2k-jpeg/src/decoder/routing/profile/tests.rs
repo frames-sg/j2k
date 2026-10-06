@@ -219,10 +219,10 @@ fn profile_capture_is_thread_local_nested_and_restored() {
         0,
     )
     .emit(&outcome(Rect::full((1, 1))));
-    assert!(std::thread::spawn(captured_profile_rows)
+    let child_rows = std::thread::spawn(captured_profile_rows)
         .join()
-        .expect("profile sink child thread")
-        .is_empty());
+        .expect("profile sink child thread");
+    assert!(child_rows.is_empty(), "{child_rows:?}");
 
     {
         let _inner = use_test_profile_sink();

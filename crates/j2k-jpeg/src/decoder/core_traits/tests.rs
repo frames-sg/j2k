@@ -384,9 +384,13 @@ fn cropped_interleaved_writer_failed_row_reservation_is_transactional() {
         error,
         JpegError::HostAllocationFailed { .. } | JpegError::MemoryCapExceeded { .. }
     ));
-    assert!(writer.top_row.is_empty());
-    assert!(writer.bottom_row.is_empty());
-    assert!(writer.inner.interleaved.is_empty());
+    assert_eq!(writer.top_row, [] as [u8; 0]);
+    assert_eq!(writer.bottom_row, [] as [u8; 0]);
+    assert!(
+        writer.inner.interleaved.is_empty(),
+        "{:?}",
+        writer.inner.interleaved
+    );
 }
 
 #[test]

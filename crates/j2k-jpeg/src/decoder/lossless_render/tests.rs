@@ -88,7 +88,11 @@ fn lossless_gray16_full_and_scaled_region_decode_constant_samples() {
     let full_outcome = decoder
         .decode_into(&mut full, 16 * 2, PixelFormat::Gray16)
         .expect("lossless Gray16 full decode");
-    assert!(full.chunks_exact(2).all(|sample| sample == [0x00, 0x80]));
+    assert!(full
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|sample| *sample == [0x00, 0x80]));
     assert_eq!(full_outcome.decoded, Rect::full((16, 16)));
 
     let mut region = vec![0; 4 * 4 * 2];
@@ -101,7 +105,11 @@ fn lossless_gray16_full_and_scaled_region_decode_constant_samples() {
             Downscale::Half,
         )
         .expect("lossless Gray16 scaled region decode");
-    assert!(region.chunks_exact(2).all(|sample| sample == [0x00, 0x80]));
+    assert!(region
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|sample| *sample == [0x00, 0x80]));
     assert_eq!(region_outcome.decoded, source_roi());
 }
 
@@ -120,7 +128,11 @@ fn lossless_color8_scaled_region_preserves_source_roi_for_rgb_and_rgba() {
             Downscale::Half,
         )
         .expect("lossless RGB8 scaled region decode");
-    assert!(rgb.chunks_exact(3).all(|pixel| pixel == [128, 128, 128]));
+    assert!(rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [128, 128, 128]));
     assert_eq!(rgb_outcome.decoded, source_roi());
 
     let mut rgba = vec![0; 4 * 4 * 4];
@@ -134,8 +146,10 @@ fn lossless_color8_scaled_region_preserves_source_roi_for_rgb_and_rgba() {
         )
         .expect("lossless RGBA8 scaled region decode");
     assert!(rgba
-        .chunks_exact(4)
-        .all(|pixel| pixel == [128, 128, 128, 255]));
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [128, 128, 128, 255]));
     assert_eq!(rgba_outcome.decoded, source_roi());
 }
 
@@ -154,7 +168,11 @@ fn lossless_color16_scaled_region_preserves_source_roi_for_rgb_and_rgba() {
             Downscale::Half,
         )
         .expect("lossless RGB16 scaled region decode");
-    assert!(rgb.chunks_exact(2).all(|sample| sample == [0x00, 0x80]));
+    assert!(rgb
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|sample| *sample == [0x00, 0x80]));
     assert_eq!(rgb_outcome.decoded, source_roi());
 
     let mut rgba = vec![0; 4 * 4 * 8];
@@ -168,8 +186,10 @@ fn lossless_color16_scaled_region_preserves_source_roi_for_rgb_and_rgba() {
         )
         .expect("lossless RGBA16 scaled region decode");
     assert!(rgba
-        .chunks_exact(8)
-        .all(|pixel| { pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0xFF, 0xFF] }));
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .all(|pixel| { *pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0xFF, 0xFF] }));
     assert_eq!(rgba_outcome.decoded, source_roi());
 }
 
@@ -190,8 +210,10 @@ fn lossless_output_format_routing_preserves_custom_alpha() {
         .expect("lossless custom-alpha RGBA decode");
 
     assert!(rgba
-        .chunks_exact(4)
-        .all(|pixel| pixel == [128, 128, 128, 17]));
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [128, 128, 128, 17]));
 }
 
 #[test]
@@ -215,7 +237,9 @@ fn lossless_scaled_region_output_format_preserves_custom_alpha16() {
         .expect("lossless custom-alpha RGBA16 region decode");
 
     assert!(rgba
-        .chunks_exact(8)
-        .all(|pixel| { pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x34, 0x12] }));
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .all(|pixel| { *pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x34, 0x12] }));
     assert_eq!(outcome.decoded, source_roi());
 }

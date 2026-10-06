@@ -149,9 +149,7 @@ impl ScratchPool {
         resize_rows(&mut self.ycbcr_420_rows, layout.row_width);
         resize_generic_rows(&mut self.ycbcr_generic_rows, layout.row_width);
         resize_rgb_rows(&mut self.rgb_generic_rows, layout.row_width);
-        for dc in &mut self.prev_dc {
-            *dc = 0;
-        }
+        self.prev_dc.fill(0);
         self.ensure_retained_capacity(target_bytes)?;
         Ok(())
     }

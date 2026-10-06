@@ -214,7 +214,7 @@ fn baseline_420_restart_fixture_builds_fast420_packet() {
     assert_eq!(packet.mcu_rows, 1);
     assert!(packet.restart_interval_mcus > 0);
     assert_eq!(packet.restart_offsets.first(), Some(&0));
-    assert!(!packet.restart_offsets.is_empty());
+    assert_ne!(packet.restart_offsets, [] as [u32; 0]);
     assert_eq!(
         packet.entropy_checkpoints.len(),
         packet.restart_offsets.len()

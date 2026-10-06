@@ -55,7 +55,9 @@ fn reference_samples(case: &ScaledMatrixCase, denominator: u32) -> Vec<u16> {
 fn output_samples(case: &ScaledMatrixCase, bytes: &[u8]) -> Vec<u16> {
     if case.precision > 8 {
         bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect()
     } else {
@@ -167,10 +169,12 @@ fn scaled_rgba_decodes_match_libjpeg_turbo() {
             match decode(&decoder, request) {
                 Ok(bytes) => {
                     let rgb: Vec<u16> = bytes
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .flat_map(|px| px[..3].iter().map(|&v| u16::from(v)))
                         .collect();
-                    let alpha_ok = bytes.chunks_exact(4).all(|px| px[3] == u8::MAX);
+                    let alpha_ok = bytes.as_chunks::<4>().0.iter().all(|px| px[3] == u8::MAX);
                     if let Some(message) =
                         describe_mismatch(&reference_samples(&case, denominator), &rgb)
                     {
@@ -214,14 +218,21 @@ fn twelve_bit_color_layouts_are_cpu_eligible_and_decode_rgba16() {
                 Ok(bytes) => {
                     let samples = output_samples(&case, &bytes);
                     let rgb: Vec<u16> = samples
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .flat_map(|px| px[..3].to_vec())
                         .collect();
                     if let Some(message) =
                         describe_mismatch(&reference_samples(&case, denominator), &rgb)
                     {
                         failures.push(format!("{label}: {message}"));
-                    } else if !samples.chunks_exact(4).all(|px| px[3] == u16::MAX) {
+                    } else if !samples
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|px| px[3] == u16::MAX)
+                    {
                         failures.push(format!("{label}: alpha is not opaque"));
                     }
                 }

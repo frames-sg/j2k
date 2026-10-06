@@ -99,7 +99,7 @@ fn dequantized_only_extraction_omits_quantized_blocks() {
         .iter()
         .zip(default_image.components.iter())
     {
-        assert!(actual.quantized_blocks.is_empty());
+        assert_eq!(actual.quantized_blocks, [] as [[i16; 64]; 0]);
         assert_eq!(actual.dequantized_blocks, expected.dequantized_blocks);
         assert_eq!(actual.block_cols, expected.block_cols);
         assert_eq!(actual.block_rows, expected.block_rows);
@@ -204,7 +204,7 @@ fn progressive_dequantized_only_extraction_omits_quantized_blocks() {
         .iter()
         .zip(default_image.components.iter())
     {
-        assert!(actual.quantized_blocks.is_empty());
+        assert_eq!(actual.quantized_blocks, [] as [[i16; 64]; 0]);
         assert_eq!(actual.dequantized_blocks, expected.dequantized_blocks);
     }
 }

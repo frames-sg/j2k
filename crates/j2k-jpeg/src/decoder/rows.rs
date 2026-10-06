@@ -177,6 +177,10 @@ impl Decoder<'_> {
     ///
     /// Returns an invalid-region or scan error, or an error reported by
     /// `writer`.
+    #[expect(
+        clippy::mut_mut,
+        reason = "`OutputWriter` is implemented for `&mut W`, so the full-frame path lends it the caller's writer"
+    )]
     pub fn decode_region_component_rows_with_scratch<W>(
         &self,
         pool: &mut ScratchPool,

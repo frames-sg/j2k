@@ -105,7 +105,7 @@ fn write_rgb8_bmp(
     let padding = vec![0_u8; row_stride - width * 3];
     for y in (0..height).rev() {
         let row = &rgb[y * width * 3..(y + 1) * width * 3];
-        for pixel in row.chunks_exact(3) {
+        for pixel in row.as_chunks::<3>().0 {
             out.write_all(&[pixel[2], pixel[1], pixel[0]])?;
         }
         out.write_all(&padding)?;

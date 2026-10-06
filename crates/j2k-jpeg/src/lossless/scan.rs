@@ -501,8 +501,7 @@ fn undifference_row(predictor: u8, diff: &[u16], above: &[u16], out: &mut [u16])
         }
         _ => {
             for (sample, (above, &d)) in rest.iter_mut().zip(pairs) {
-                let prediction = (u32::from(ra) + u32::from(above[1])) >> 1;
-                ra = (prediction as u16).wrapping_add(d);
+                ra = u16::midpoint(ra, above[1]).wrapping_add(d);
                 *sample = ra;
             }
         }

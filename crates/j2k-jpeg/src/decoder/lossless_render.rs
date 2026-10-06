@@ -275,7 +275,12 @@ impl Decoder<'_> {
                     provided: rgb_row.len(),
                 });
             }
-            for (pixel, &sample) in rgb_row[..rgb_len].chunks_exact_mut(3).zip(gray_row.iter()) {
+            for (pixel, &sample) in rgb_row[..rgb_len]
+                .as_chunks_mut::<3>()
+                .0
+                .iter_mut()
+                .zip(gray_row.iter())
+            {
                 pixel.copy_from_slice(&[sample, sample, sample]);
             }
             sink.write_row(y, &rgb_row[..rgb_len])
