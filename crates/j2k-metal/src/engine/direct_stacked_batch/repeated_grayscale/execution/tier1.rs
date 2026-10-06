@@ -8,7 +8,7 @@ use crate::engine::decode_dispatch::{
 };
 use crate::engine::direct_roi::BandRequiredRegion;
 use crate::engine::direct_stacked_batch::validation::{
-    checked_f32_batch_span, checked_f32_dimension_span, checked_f32_element_offset,
+    checked_f32_band_offset, checked_f32_batch_span, checked_f32_dimension_span,
     checked_f32_instance_offset, CheckedF32BatchSpan,
 };
 use crate::engine::{
@@ -45,10 +45,11 @@ impl RepeatedGrayscaleExecution<'_> {
                 bands.push(DirectBandSlice {
                     band_id: member.band_id,
                     buffer: output.buffer.clone(),
-                    offset_bytes: checked_f32_element_offset(
+                    offset_bytes: checked_f32_band_offset(
                         &span,
                         instance_idx,
                         member.offset_elements,
+                        member.window,
                         "J2K MetalDirect repeated classic group member",
                     )?,
                     window: member.window,
@@ -81,10 +82,11 @@ impl RepeatedGrayscaleExecution<'_> {
                 bands.push(DirectBandSlice {
                     band_id: member.band_id,
                     buffer: output.buffer.clone(),
-                    offset_bytes: checked_f32_element_offset(
+                    offset_bytes: checked_f32_band_offset(
                         &span,
                         instance_idx,
                         member.offset_elements,
+                        member.window,
                         "J2K MetalDirect repeated HT group member",
                     )?,
                     window: member.window,

@@ -25,7 +25,7 @@ use crate::engine::{
 
 use super::super::resources::{retain_metal_tier1_output, DirectBandSlice};
 use super::super::validation::{
-    checked_f32_batch_span, checked_f32_dimension_span, checked_f32_element_offset,
+    checked_f32_band_offset, checked_f32_batch_span, checked_f32_dimension_span,
     checked_f32_instance_offset, CheckedF32BatchSpan,
 };
 use super::{planned_cpu_input_count, try_collect_submission_items, SubmissionContext};
@@ -119,17 +119,17 @@ impl SubmissionContext<'_, '_, '_> {
             } else {
                 instance_idx
             };
-            let source_group = groups[source_idx];
-            for member in &source_group.members {
+            for member in &groups[source_idx].members {
                 bands.push(DirectBandSlice {
                     band_id: member.band_id,
                     buffer: buffer.clone(),
                     offset_bytes: checked_shared_offset(
                         shared_offset_bytes,
-                        checked_f32_element_offset(
+                        checked_f32_band_offset(
                             &span,
                             source_idx,
                             member.offset_elements,
+                            member.window,
                             "J2K MetalDirect stacked classic group member",
                         )?,
                     )?,
@@ -150,12 +150,15 @@ impl SubmissionContext<'_, '_, '_> {
             .shared_classic_tier1
             .as_deref_mut()
             .ok_or_else(|| direct_preflight_invariant("shared classic Tier-1 is missing"))?;
-        shared.take_step(
+        let (buffer, offset) = shared.take_step(
             step_idx,
             span.per_instance_elements,
             span.instance_count,
             self.status_checks,
-        )
+        )?;
+        // An empty step may sit at the arena's end. Its bands are never read,
+        // so bind the arena's valid placeholder start.
+        Ok((buffer, if span.total_elements == 0 { 0 } else { offset }))
     }
 
     fn prepare_classic_group_cpu_buffer(
