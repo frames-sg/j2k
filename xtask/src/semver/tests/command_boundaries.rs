@@ -8,7 +8,7 @@ use super::super::{
     validate_baseline_revision, verify_or_write_report, workspace_package_versions, Options,
     PackageApiDiff, ReleaseType, SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION,
     HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT, SEMVER_BASELINE_PACKAGES,
-    SEMVER_NEW_PACKAGES,
+    SEMVER_NEW_PACKAGES, SEMVER_TOOLCHAIN,
 };
 #[cfg(target_os = "macos")]
 use super::super::{require_macos, semver};
@@ -150,7 +150,7 @@ fn semver_check_command_uses_the_computed_candidate_release_type() {
         semver_check_args(&diff),
         [
             "run",
-            "1.96",
+            SEMVER_TOOLCHAIN,
             "cargo",
             "semver-checks",
             "check-release",

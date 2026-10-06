@@ -24,12 +24,13 @@ use compatibility::run_semver_checks;
 use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
-const SEMVER_TOOLCHAIN: &str = "1.96";
+const SEMVER_TOOLCHAIN: &str = "1.99.0";
 const SEMVER_BASELINE_VERSION: &str = "0.11.2";
 const SEMVER_BASELINE_TAG: &str = "v0.11.2";
 const SEMVER_BASELINE_COMMIT: &str = "75a3e0618e1963d8403e4edad0fa95ee1c217ec1";
-const API_DIFF_REPORT: &str = "docs/release-evidence/public-api/reviewed-public-api-diff-0.11.3.md";
-const API_REVIEW_CONFIG: &str = "docs/release-evidence/public-api/public-api-review-0.11.3.yml";
+const API_DIFF_REPORT: &str =
+    "xtask/release-evidence/public-api/reviewed-public-api-diff-0.11.3.md";
+const API_REVIEW_CONFIG: &str = "xtask/release-evidence/public-api/public-api-review-0.11.3.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {
@@ -558,6 +559,7 @@ fn common_candidate_version(
 }
 
 fn baseline_api_snapshot(cargo_public_api_version: &str) -> Result<String, String> {
+    // The baseline tag predates the move of the snapshot to xtask/api/.
     let object = format!("{SEMVER_BASELINE_TAG}:docs/stable-api-1.0.public-api.txt");
     let snapshot = capture_command(
         OsString::from("git"),
@@ -746,7 +748,7 @@ fn fingerprint(items: &BTreeSet<String>) -> String {
     }
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for item in items {
-        for byte in item.as_bytes().iter().copied().chain([b'\n']) {
+        for byte in item.as_bytes().iter().copied().chain(*b"\n") {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }

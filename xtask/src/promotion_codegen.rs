@@ -82,7 +82,7 @@ pub(crate) fn promotion_codegen(mut args: impl Iterator<Item = String>) -> Resul
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| "xtask manifest has no repository parent".to_string())?;
-    let manifest_path = root.join("docs/routing-promotion-evidence.json");
+    let manifest_path = root.join("xtask/routing-promotion-evidence.json");
     let source = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
     let manifest: Manifest = serde_json::from_str(&source)
@@ -405,7 +405,7 @@ mod tests {
     use super::*;
 
     fn manifest() -> Manifest {
-        serde_json::from_str(include_str!("../../docs/routing-promotion-evidence.json"))
+        serde_json::from_str(include_str!("../routing-promotion-evidence.json"))
             .expect("checked-in promotion manifest")
     }
 

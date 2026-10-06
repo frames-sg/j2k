@@ -11,10 +11,11 @@ use std::{
 
 use crate::command_support::command_output_os_detailed_with_env;
 
-pub(super) const PUBLIC_API_SNAPSHOT: &str = "docs/stable-api-1.0.public-api.txt";
-pub(super) const HIDDEN_API_SNAPSHOT: &str = "docs/stable-api-1.0.implementation-public-api.txt";
+pub(super) const PUBLIC_API_SNAPSHOT: &str = "xtask/api/stable-api-1.0.public-api.txt";
+pub(super) const HIDDEN_API_SNAPSHOT: &str =
+    "xtask/api/stable-api-1.0.implementation-public-api.txt";
 pub(super) const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
-pub(super) const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-06-28";
+pub(super) const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-08-13";
 pub(super) const PUBLIC_API_TARGET: &str = "aarch64-apple-darwin";
 pub(super) const ORDINARY_RUSTDOCFLAGS: &str = "-D warnings";
 const HIDDEN_RUSTDOCFLAGS: &str = "-D warnings --document-hidden-items";
@@ -227,7 +228,6 @@ mod tests {
     fn snapshot_paths_and_generation_inputs_are_pinned() {
         assert_ne!(PUBLIC_API_SNAPSHOT, HIDDEN_API_SNAPSHOT);
         assert_eq!(CARGO_PUBLIC_API_VERSION, "0.52.0");
-        assert_eq!(PUBLIC_API_TOOLCHAIN, "nightly-2026-06-28");
         assert_eq!(PUBLIC_API_TARGET, "aarch64-apple-darwin");
     }
 
@@ -237,7 +237,7 @@ mod tests {
             public_api_cargo_args(["public-api", "--version"]),
             [
                 "run",
-                "nightly-2026-06-28",
+                PUBLIC_API_TOOLCHAIN,
                 "cargo",
                 "public-api",
                 "--version",

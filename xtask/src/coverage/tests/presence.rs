@@ -40,7 +40,10 @@ pub fn absent() {
         result.changed_functions_without_covered_body,
         [format!("{path}::absent@4")]
     );
-    assert!(result.absent_instrumentable_files.is_empty());
+    assert_eq!(
+        result.absent_instrumentable_files,
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -92,7 +95,10 @@ fn zero_count_body_record_does_not_prove_changed_signature_coverage() {
         result.changed_functions_without_covered_body,
         [format!("{path}::never_called@1")]
     );
-    assert!(result.absent_instrumentable_files.is_empty());
+    assert_eq!(
+        result.absent_instrumentable_files,
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -121,6 +127,12 @@ fn changed_executable_body_line_without_da_is_uncovered() {
     assert_eq!(result.overall.covered, 0);
     assert_eq!(result.uncovered, [(path.to_string(), 2)]);
     assert_eq!(result.unmeasured, [(path.to_string(), 2)]);
-    assert!(result.changed_functions_without_covered_body.is_empty());
-    assert!(!coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(
+        result.changed_functions_without_covered_body,
+        [] as [std::string::String; 0]
+    );
+    assert_ne!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }

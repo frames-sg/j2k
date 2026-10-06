@@ -35,7 +35,7 @@ impl Harness {
         fs::write(
             &cargo,
             format!(
-                "#!/bin/sh\nprintf '%s|RUSTDOCFLAGS=%s|RUST_TEST_THREADS=%s\\n' \"$*\" \"${{RUSTDOCFLAGS-unset}}\" \"${{RUST_TEST_THREADS-unset}}\" >> '{}'\nif [ \"$1\" = metadata ]; then exec cat '{}'; fi\nif [ \"$1\" = clippy ]; then printf '%s\\n' '{{\"reason\":\"build-finished\",\"success\":true}}'; exit 0; fi\nif [ \"$1\" = test ]; then printf 'test result: ok. 100 passed; 0 failed;\\n'; exit 0; fi\nif [ \"$1\" = -V ]; then printf 'cargo 1.96.0\\n'; fi\n",
+                "#!/bin/sh\nprintf '%s|RUSTDOCFLAGS=%s|RUST_TEST_THREADS=%s\\n' \"$*\" \"${{RUSTDOCFLAGS-unset}}\" \"${{RUST_TEST_THREADS-unset}}\" >> '{}'\nif [ \"$1\" = metadata ]; then exec cat '{}'; fi\nif [ \"$1\" = clippy ]; then printf '%s\\n' '{{\"reason\":\"build-finished\",\"success\":true}}'; exit 0; fi\nif [ \"$1\" = test ]; then printf 'test result: ok. 100 passed; 0 failed;\\n'; exit 0; fi\nif [ \"$1\" = -V ]; then printf 'cargo 1.99.0\\n'; fi\n",
                 log.display(),
                 metadata.display()
             ),

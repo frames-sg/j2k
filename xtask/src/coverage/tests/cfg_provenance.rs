@@ -27,5 +27,8 @@ fn cfg_active_changed_source_cannot_evade_coverage_gate() {
     .unwrap();
 
     assert_eq!(result.absent_instrumentable_files, [path.to_string()]);
-    assert!(!coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_ne!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }

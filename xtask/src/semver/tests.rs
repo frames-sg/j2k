@@ -11,7 +11,8 @@ use super::{
     parse_api_snapshot, parse_options, render_report, semver_cargo_args, semver_check_release_type,
     snapshot_uses_generator, validate_baseline_transition, validate_package_partition,
     BaselineTransition, PackageApiDiff, ReleaseType, SnapshotKind, Version,
-    INTENTIONAL_BREAK_TRANSITION, SEMVER_BASELINE_PACKAGES, SEMVER_NEW_PACKAGES,
+    INTENTIONAL_BREAK_TRANSITION, PUBLIC_API_TOOLCHAIN, SEMVER_BASELINE_PACKAGES,
+    SEMVER_NEW_PACKAGES, SEMVER_TOOLCHAIN,
 };
 
 mod api_planning;
@@ -98,7 +99,7 @@ fn intentional_break_transition_is_exact_and_names_the_next_baseline() {
 
 #[test]
 fn package_partition_tracks_baselines_and_exact_first_release_packages() {
-    assert!(SEMVER_NEW_PACKAGES.is_empty());
+    assert_eq!(SEMVER_NEW_PACKAGES, [] as [&str; 0]);
     assert!(SEMVER_BASELINE_PACKAGES.contains(&"j2k-mpsgraph-support"));
     for package in [
         "j2k-cuda-build-support",
@@ -167,12 +168,14 @@ fn snapshot_generator_marker_must_match_a_complete_line() {
         "0.52.0"
     ));
 
-    let current = "# J2K 1.0 Rustdoc-Hidden Public API Snapshot\n\n\
-                   Generator: `cargo-public-api 0.52.0`.\n\n\
-                   Rustdoc toolchain: `nightly-2026-06-28`.\n\
-                   Target: `aarch64-apple-darwin`.\n";
+    let current = format!(
+        "# J2K 1.0 Rustdoc-Hidden Public API Snapshot\n\n\
+         Generator: `cargo-public-api 0.52.0`.\n\n\
+         Rustdoc toolchain: `{PUBLIC_API_TOOLCHAIN}`.\n\
+         Target: `aarch64-apple-darwin`.\n"
+    );
     assert!(current_snapshot_uses_generation_contract(
-        current,
+        &current,
         SnapshotKind::Hidden,
         "0.52.0"
     ));
@@ -207,10 +210,32 @@ fn report_regeneration_flag_is_explicit() {
 }
 
 #[test]
+fn semver_toolchain_matches_the_repository_toolchain() {
+    let manifest = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../rust-toolchain.toml"
+    ))
+    .expect("read rust-toolchain.toml");
+    let manifest: toml::Table = manifest.parse().expect("parse rust-toolchain.toml");
+    let channel = manifest
+        .get("toolchain")
+        .and_then(|toolchain| toolchain.get("channel"))
+        .and_then(toml::Value::as_str)
+        .expect("rust-toolchain.toml pins a channel");
+    assert_eq!(SEMVER_TOOLCHAIN, channel);
+}
+
+#[test]
 fn semver_checks_commands_use_the_pinned_rustup_toolchain() {
     assert_eq!(
         semver_cargo_args(["semver-checks", "--version"]),
-        ["run", "1.96", "cargo", "semver-checks", "--version"]
+        [
+            "run",
+            SEMVER_TOOLCHAIN,
+            "cargo",
+            "semver-checks",
+            "--version"
+        ]
     );
 }
 

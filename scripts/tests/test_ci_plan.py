@@ -113,10 +113,10 @@ class ClassificationTests(unittest.TestCase):
 
     def test_machine_readable_api_evidence_requires_fail_closed_quality_lanes(self) -> None:
         for path in (
-            "docs/stable-api-1.0.public-api.txt",
-            "docs/stable-api-1.0.implementation-public-api.txt",
-            "docs/release-evidence/public-api/public-api-review-0.8.1.yml",
-            "docs/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md",
+            "xtask/api/stable-api-1.0.public-api.txt",
+            "xtask/api/stable-api-1.0.implementation-public-api.txt",
+            "xtask/release-evidence/public-api/public-api-review-0.8.1.yml",
+            "xtask/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md",
         ):
             with self.subTest(path=path):
                 plan = self.classify(path)

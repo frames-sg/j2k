@@ -288,11 +288,7 @@ fn checked_in_publish_workflow_script_and_docs_agree_with_the_manifest() {
     );
     let manifest = release_manifest_contract().expect("checked-in release manifest");
     let packages = manifest.ordered_crates().collect::<Vec<_>>();
-    validate_release_docs_source(
-        include_str!("../../../docs/release.md"),
-        &packages,
-        &mut errors,
-    );
+    validate_release_docs_source(include_str!("../../RELEASING.md"), &packages, &mut errors);
 
     assert!(errors.is_empty(), "release contract drift: {errors:#?}");
 }

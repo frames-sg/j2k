@@ -155,7 +155,7 @@ and commit or platform mismatches. The output hash covers the raw results, the
 manifest, and every estimate used.
 
 Accepted results and the workloads they route to the GPU are listed in
-`docs/routing-promotion-evidence.json`. Regenerate the Rust routing tables with
+`xtask/routing-promotion-evidence.json`. Regenerate the Rust routing tables with
 `cargo xtask promotion-codegen`; CI runs `cargo xtask promotion-codegen
 --check` to catch stale tables. The generator checks the manifest schema,
 backend, SHA-256 values, that all six operations were measured, workload

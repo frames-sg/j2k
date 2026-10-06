@@ -46,8 +46,8 @@ DOCUMENTATION_PATHS = frozenset(
     }
 )
 QUALITY_EVIDENCE_PREFIXES = (
-    "docs/stable-api-",
-    "docs/release-evidence/public-api/",
+    "xtask/api/stable-api-",
+    "xtask/release-evidence/public-api/",
 )
 BROAD_PATHS = frozenset(
     {

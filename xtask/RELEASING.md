@@ -2,7 +2,7 @@
 
 The `j2k` 0.11.3 public crate release is published and security-supported.
 Its T.803 decoder conformance results are in
-[`T.803 conformance`](t803-conformance.md). The
+[`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
 used only for shapes where it was tested and measured faster.
 
@@ -136,7 +136,7 @@ x86-64. A CUDA or Metal statement needs that backend's own report from real
 hardware. Every report must contain all selected cases with no skips. A missing
 GPU report only blocks the statement for that GPU; it does not affect the CPU
 result. `--scope all` is a convenience for checking everything at once. Current
-results are in [`docs/t803-conformance.md`](t803-conformance.md).
+results are in [`docs/t803-conformance.md`](../docs/t803-conformance.md).
 
 While preparing a release, the changelog has an `## [Unreleased]` heading and a
 staged-version line. As the last edit before freezing, replace the heading with
@@ -361,7 +361,7 @@ runs the exact list of ignored hardware tests.
 
 Compiling the benchmarks only checks that they build; it is not a performance
 check. Performance numbers in a release must come from CPU, Metal, or CUDA
-results recorded in [`docs/benchmark-evidence.md`](benchmark-evidence.md) or an
+results recorded in [`docs/benchmark-evidence.md`](../docs/benchmark-evidence.md) or an
 attached run bundle. `cargo xtask j2k-perf-guard --lane host` can compare CPU
 Criterion medians against a baseline, but it is not a default release check
 until the checklist names a baseline ref and how long artifacts are kept. GPU
@@ -410,3 +410,71 @@ test helpers are not published, even though they share the workspace version.
 
 `j2k-test-support` is an unpublished dev helper. The comparator crates and
 automation tools are not runtime API.
+
+## Public API snapshots
+
+The generated files are:
+
+- `xtask/api/stable-api-1.0.public-api.txt`
+- `xtask/api/stable-api-1.0.implementation-public-api.txt`
+
+Check or regenerate them with:
+
+```bash
+cargo xtask stable-api
+cargo xtask stable-api --write
+```
+
+This must run on macOS with `cargo-public-api` `0.52.0`
+(`cargo install cargo-public-api --version 0.52.0 --locked`) and the
+`nightly-2026-08-13` toolchain. Both passes target `aarch64-apple-darwin`, so
+the Metal APIs are included and the output does not change with the host or
+the nightly channel.
+
+The first pass runs with `RUSTDOCFLAGS=-D warnings` and lists the normal public
+API. The second pass adds `--document-hidden-items`; the implementation file
+records only the items that the second pass adds. Rustdoc sometimes rewrites
+re-export paths when hidden modules become visible, so the implementation file
+keeps those rewritten paths too rather than dropping them. The command fails if
+the first pass is empty; an empty hidden-only list is recorded as empty.
+`#[doc(hidden)]` items are still public Rust API and are reviewed like any
+other item.
+
+Every `cargo xtask semver` run generates both passes, compares them with the
+committed files, and checks the added/removed fingerprints and the hidden-item
+count against
+`xtask/release-evidence/public-api/public-api-review-0.11.3.yml`. A package with
+hidden items must give a reason for them in that file.
+
+Any removed item must be listed in the review file with its package, a summary,
+and migration instructions, and that list must match the generated diff
+exactly. Behavior changes that a signature diff cannot show are listed the same
+way, without removed items. A pre-1.0 version bump alone does not excuse an
+undocumented break.
+
+The two snapshot files are written together and rolled back together on
+failure. Generation refuses to run if compiler, rustdoc, target, wrapper,
+deployment-target, or flag environment variables are set, and both passes run
+through `rustup run` with the pinned toolchain. `cargo xtask semver` uses Rust
+`1.99.0` and rejects the old `J2K_SEMVER_TOOLCHAIN` override.
+
+The snapshots also cover the CLI exit codes described below. Do not copy the
+item list into the docs.
+
+### Release comparisons
+
+| Release | Compared with | Report |
+| --- | --- | --- |
+| 0.8.0 | 0.7.5 | [API diff][v0.8.0-api-report]; review file lists every break |
+| 0.8.1 | 0.8.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md), [review](release-evidence/public-api/public-api-review-0.8.1.yml); additions only |
+| 0.9.0 | 0.8.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md), [review](release-evidence/public-api/public-api-review-0.9.0.yml) |
+| 0.10.0 | 0.9.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md), [review](release-evidence/public-api/public-api-review-0.10.0.yml) |
+| 0.11.0 | 0.10.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.0.md), [review](release-evidence/public-api/public-api-review-0.11.0.yml); removes experimental MPSGraph items |
+| 0.11.1 | 0.11.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.1.md), [review](release-evidence/public-api/public-api-review-0.11.1.yml) |
+| 0.11.2 | 0.11.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md), [review](release-evidence/public-api/public-api-review-0.11.2.yml); stable changes are additions only |
+| 0.11.3 | 0.11.2 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md), [review](release-evidence/public-api/public-api-review-0.11.3.yml) |
+
+Each report also records every package's hidden-item count and fingerprint.
+The CPU, CUDA, and Metal release checks passed for each published release.
+
+[v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md

@@ -45,7 +45,10 @@ pub fn build_callback() {
     assert_eq!(result.overall.measurable, 1);
     assert_eq!(result.uncovered, [(path.to_string(), 3)]);
     assert_eq!(result.unmeasured, [(path.to_string(), 3)]);
-    assert!(result.changed_functions_without_covered_body.is_empty());
+    assert_eq!(
+        result.changed_functions_without_covered_body,
+        [] as [std::string::String; 0]
+    );
     assert_eq!(
         result.changed_executable_bodies_without_covered_body,
         [format!("{path}::closure@2")]
@@ -123,8 +126,11 @@ fn covered_opaque_macro_invocation_has_positive_execution_evidence() {
     )
     .unwrap();
 
-    assert!(result.changed_opaque_macros.is_empty());
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(result.changed_opaque_macros, [] as [std::string::String; 0]);
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -144,6 +150,9 @@ fn cfg_test_macro_remains_test_only() {
     .unwrap();
 
     assert_eq!(result.overall.measurable, 0);
-    assert!(result.changed_opaque_macros.is_empty());
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(result.changed_opaque_macros, [] as [std::string::String; 0]);
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }

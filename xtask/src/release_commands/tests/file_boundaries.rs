@@ -35,7 +35,7 @@ fn missing_release_contract_files_fail_with_path_context() {
         let expected = match case.as_str() {
             "workflow" => ".github/workflows/publish.yml",
             "script" => "scripts/publish-crate.sh",
-            "docs" => "docs/release.md",
+            "docs" => "xtask/RELEASING.md",
             "changelog" => "CHANGELOG.md",
             "provenance" => "PATCH_PROVENANCE.md",
             _ => unreachable!("validated case"),

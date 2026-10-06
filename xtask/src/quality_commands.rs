@@ -25,7 +25,7 @@ pub(super) fn ci() -> Result<(), String> {
     panic_surface()?;
     test()?;
     doc()?;
-    verify_unsafe_audit()
+    verify_jpeg_simd_unsafe_boundary()
 }
 
 pub(super) fn repo_lint(mut args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -418,86 +418,6 @@ pub(super) fn no_std() -> Result<(), String> {
     ])
 }
 
-pub(super) fn verify_unsafe_audit() -> Result<(), String> {
-    verify_jpeg_simd_unsafe_boundary()?;
-
-    let audit_path = Path::new("docs/unsafe-audit.md");
-    let audit = fs::read_to_string(audit_path)
-        .map_err(|err| format!("failed to read {}: {err}", audit_path.display()))?;
-    if !audit.contains("| Path | Scope | Invariants | Regression guards |") {
-        return Err(
-            "docs/unsafe-audit.md must include Path/Scope/Invariants/Regression guards columns"
-                .to_string(),
-        );
-    }
-    let mut malformed_rows = Vec::new();
-    let mut documented_paths = BTreeSet::new();
-    for line in audit.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("| `crates/") {
-            continue;
-        }
-        let cells = trimmed.split('|').map(str::trim).collect::<Vec<_>>();
-        if let Some(path) = cells.get(1).and_then(|cell| {
-            cell.strip_prefix('`')
-                .and_then(|cell| cell.strip_suffix('`'))
-        }) {
-            documented_paths.insert(path.to_string());
-        }
-        if cells.len() < 6
-            || cells[1].is_empty()
-            || cells[2].is_empty()
-            || cells[3].is_empty()
-            || cells[4].is_empty()
-            || cells[3].eq_ignore_ascii_case("tbd")
-            || cells[4].eq_ignore_ascii_case("tbd")
-        {
-            malformed_rows.push(trimmed.to_string());
-        }
-    }
-    if !malformed_rows.is_empty() {
-        return Err(format!(
-            "docs/unsafe-audit.md has unsafe rows missing invariants or regression guards: {malformed_rows:?}"
-        ));
-    }
-    let mut missing = Vec::new();
-    let mut current_unsafe = BTreeSet::new();
-    for path in rust_sources(Path::new("crates"))? {
-        let source = fs::read_to_string(&path)
-            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-        if source_contains_unsafe_rust(&source).map_err(|err| {
-            format!(
-                "failed to parse {} while scanning for unsafe Rust: {err}",
-                path.display()
-            )
-        })? {
-            let relative = path.to_string_lossy().replace('\\', "/");
-            current_unsafe.insert(relative);
-        }
-    }
-    for relative in &current_unsafe {
-        if !documented_paths.contains(relative) {
-            missing.push(relative.clone());
-        }
-    }
-    let stale = documented_paths
-        .difference(&current_unsafe)
-        .cloned()
-        .collect::<Vec<_>>();
-    if !stale.is_empty() {
-        return Err(format!(
-            "docs/unsafe-audit.md has stale unsafe source entries: {stale:?}"
-        ));
-    }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "docs/unsafe-audit.md is missing unsafe source entries: {missing:?}"
-        ))
-    }
-}
-
 const JPEG_SIMD_UNSAFE_BLOCK_CAP: usize = 24;
 const JPEG_SIMD_UNSAFE_BOUNDARIES: &[&str] = &[
     "crates/j2k-jpeg/src/simd/neon_memory.rs",
@@ -505,7 +425,7 @@ const JPEG_SIMD_UNSAFE_BOUNDARIES: &[&str] = &[
     "crates/j2k-jpeg/src/simd/x86_memory.rs",
 ];
 
-fn verify_jpeg_simd_unsafe_boundary() -> Result<(), String> {
+pub(super) fn verify_jpeg_simd_unsafe_boundary() -> Result<(), String> {
     let mut paths = BTreeSet::new();
     for root in [
         "crates/j2k-jpeg/src/backend",
@@ -652,167 +572,14 @@ fn scan_simd_macro_tokens(
     }
 }
 
-fn source_contains_unsafe_rust(source: &str) -> syn::Result<bool> {
-    let file = syn::parse_file(source)?;
-    let mut detector = UnsafeRustDetector::default();
-    detector.visit_file(&file);
-    Ok(detector.found)
-}
-
-#[derive(Default)]
-struct UnsafeRustDetector {
-    found: bool,
-}
-
-impl<'ast> Visit<'ast> for UnsafeRustDetector {
-    fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
-        let contains_unsafe = attribute.path().is_ident("unsafe")
-            || match &attribute.meta {
-                syn::Meta::List(list) => tokens_contain_unsafe(&list.tokens),
-                syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
-            };
-        if contains_unsafe {
-            self.found = true;
-        } else {
-            visit::visit_attribute(self, attribute);
-        }
-    }
-
-    fn visit_expr_unsafe(&mut self, _expression: &'ast syn::ExprUnsafe) {
-        self.found = true;
-    }
-
-    fn visit_item_foreign_mod(&mut self, _foreign_mod: &'ast syn::ItemForeignMod) {
-        // Foreign declarations are an unsafe boundary even in editions where
-        // the `unsafe extern` spelling is not mandatory.
-        self.found = true;
-    }
-
-    fn visit_item_impl(&mut self, item_impl: &'ast syn::ItemImpl) {
-        if item_impl.unsafety.is_some() {
-            self.found = true;
-        } else {
-            visit::visit_item_impl(self, item_impl);
-        }
-    }
-
-    fn visit_item_mod(&mut self, item_mod: &'ast syn::ItemMod) {
-        if item_mod.unsafety.is_some() {
-            self.found = true;
-        } else {
-            visit::visit_item_mod(self, item_mod);
-        }
-    }
-
-    fn visit_item_trait(&mut self, item_trait: &'ast syn::ItemTrait) {
-        if item_trait.unsafety.is_some() {
-            self.found = true;
-        } else {
-            visit::visit_item_trait(self, item_trait);
-        }
-    }
-
-    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
-        if signature.unsafety.is_some() {
-            self.found = true;
-        } else {
-            visit::visit_signature(self, signature);
-        }
-    }
-
-    fn visit_token_stream(&mut self, tokens: &'ast TokenStream) {
-        // Syn preserves macro bodies, attribute arguments, and syntax it
-        // represents verbatim as token streams. Scan those token trees so an
-        // unsafe boundary cannot hide behind a macro or newer Rust syntax.
-        if tokens_contain_unsafe(tokens) {
-            self.found = true;
-        }
-    }
-
-    fn visit_type_bare_fn(&mut self, bare_fn: &'ast syn::TypeBareFn) {
-        if bare_fn.unsafety.is_some() {
-            self.found = true;
-        } else {
-            visit::visit_type_bare_fn(self, bare_fn);
-        }
-    }
-}
-
-fn tokens_contain_unsafe(tokens: &TokenStream) -> bool {
-    tokens.clone().into_iter().any(|token| match token {
-        TokenTree::Group(group) => tokens_contain_unsafe(&group.stream()),
-        TokenTree::Ident(ident) => ident == "unsafe",
-        TokenTree::Literal(_) | TokenTree::Punct(_) => false,
-    })
-}
-
 fn test_downstream_examples() -> Result<(), String> {
     run_cargo(&["test", "-p", "j2k", "--examples"])?;
     run_cargo(&["test", "-p", "j2k-transcode", "--examples"])
 }
 
 #[cfg(test)]
-mod unsafe_audit_tests {
-    use super::{audit_jpeg_simd_source, source_contains_unsafe_rust};
-
-    #[test]
-    fn detects_unsafe_rust_across_supported_syntax() {
-        let cases = [
-            ("block", "fn boundary(pointer: *const u8) { unsafe\n{ let _ = *pointer; } }"),
-            ("free function", "unsafe\nfn boundary() {}"),
-            ("unsafe trait", "unsafe trait Boundary {}"),
-            (
-                "unsafe implementation",
-                "trait Boundary {} struct Value; unsafe impl Boundary for Value {}",
-            ),
-            ("foreign block", "extern \"C\" { fn boundary(); }"),
-            (
-                "unsafe associated function",
-                "trait Boundary { unsafe fn call(); }",
-            ),
-            (
-                "unsafe bare function type",
-                "type Boundary = unsafe extern \"C\" fn();",
-            ),
-            (
-                "unsafe attribute",
-                "#[unsafe(no_mangle)] pub extern \"C\" fn boundary() {}",
-            ),
-            (
-                "macro-contained unsafe block",
-                "macro_rules! boundary { () => { unsafe\n{ core::hint::unreachable_unchecked() } } }",
-            ),
-        ];
-
-        for (label, source) in cases {
-            assert!(
-                source_contains_unsafe_rust(source).expect("valid Rust syntax"),
-                "failed to detect {label}"
-            );
-        }
-    }
-
-    #[test]
-    fn ignores_unsafe_text_in_comments_and_literals() {
-        let source = r##"
-            // unsafe { comment_only(); }
-            /* pub unsafe fn also_comment_only() {} */
-            const MESSAGE: &str = "pub unsafe fn string_only()";
-            const RAW: &str = r#"unsafe { raw_string_only(); }"#;
-            fn unsafe_count() -> usize { 0 }
-            pub extern "C" fn safe_callback() {}
-            macro_rules! literal_only { () => { "unsafe { macro_literal(); }" } }
-        "##;
-
-        assert!(!source_contains_unsafe_rust(source).expect("valid Rust syntax"));
-    }
-
-    #[test]
-    fn rejects_unparsable_rust_instead_of_skipping_it() {
-        let error = source_contains_unsafe_rust("fn incomplete( {")
-            .expect_err("invalid Rust must fail the audit scan");
-        assert!(!error.to_string().is_empty());
-    }
+mod jpeg_simd_boundary_tests {
+    use super::audit_jpeg_simd_source;
 
     #[test]
     fn jpeg_simd_boundary_rejects_unsafe_functions() {

@@ -16,8 +16,14 @@ fn accelerator_lane_uses_raw_implementation_coverage_as_audit_evidence() {
         covered: 4,
     };
 
-    assert!(coverage_violations(CoverageLane::Metal, &result).is_empty());
-    assert!(coverage_violations(CoverageLane::Cuda, &result).is_empty());
+    assert_eq!(
+        coverage_violations(CoverageLane::Metal, &result),
+        [] as [std::string::String; 0]
+    );
+    assert_eq!(
+        coverage_violations(CoverageLane::Cuda, &result),
+        [] as [std::string::String; 0]
+    );
 
     result.critical.covered = 3;
     let violations = coverage_violations(CoverageLane::Metal, &result);
