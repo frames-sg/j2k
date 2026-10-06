@@ -206,9 +206,8 @@ J2K does not depend on any of them.
 
 ## Status
 
-**Release line:** `0.12.0`. Published packages and validation reports are listed
-in [GitHub releases](https://github.com/frames-sg/j2k/releases); see the
-[changelog](CHANGELOG.md) for migration notes.
+**Release status:** `0.11.3` is published and security-supported. The current
+checkout prepares `0.12.0`; see the [changelog](CHANGELOG.md) for migration notes.
 
 `j2k`, `j2k-core`, `j2k-jpeg`, and `j2k-tilecodec` are the stable crates.
 The GPU, transcode, and ML crates are experimental: patch releases don't

@@ -1,14 +1,14 @@
 # Release Policy
 
-The J2K public crates are versioned together.
-T.803 decoder conformance results are in
+The `j2k` 0.11.3 public crate release is published and security-supported.
+Its T.803 decoder conformance results are in
 [`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
 used only for shapes where it was tested and measured faster.
 
 ## Release status
 
-Version `0.12.0` is the current release line. Its
+Version `0.12.0` is the current release candidate. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md)
 compares with `v0.11.3`; the
 [review](release-evidence/public-api/public-api-review-0.12.0.yml) records

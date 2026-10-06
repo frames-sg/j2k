@@ -6,7 +6,8 @@ release tooling; see [`xtask/RELEASING.md`](../xtask/RELEASING.md#public-api-sna
 
 ## Breaking releases
 
-The `0.12.0` release changes three rustdoc-hidden CUDA engine signatures and requires
+The currently published stable contract is the `0.11.x` line. The `0.12.0`
+candidate changes three rustdoc-hidden CUDA engine signatures and requires
 consumers to retain pooled surfaces until their GPU work completes. See the
 [review](../xtask/release-evidence/public-api/public-api-review-0.12.0.yml)
 and [changelog](../CHANGELOG.md) for migration instructions.
