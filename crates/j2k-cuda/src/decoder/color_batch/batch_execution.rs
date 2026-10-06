@@ -4,8 +4,15 @@ mod completion;
 mod execution;
 mod preparation;
 
+#[cfg(test)]
+mod tests;
+
 use self::{
-    completion::complete_color_cuda_resident_batch, execution::enqueue_color_cuda_resident_batch,
+    completion::complete_color_cuda_resident_batch,
+    execution::{
+        enqueue_color_cuda_resident_batch, enqueue_color_cuda_resident_batch_pipelined,
+        should_pipeline_color_entropy_groups,
+    },
     preparation::prepare_color_cuda_resident_batch,
 };
 use super::{
@@ -20,9 +27,16 @@ pub(in crate::decoder) fn decode_color_cuda_resident_batch_surfaces_with_profile
     collect_stage_timings: bool,
 ) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
     let batch_wall_started = profile::profile_now(collect_stage_timings);
-    let (colors, shared_payload) = prepare_color_cuda_resident_batch(inputs, fmt)?;
-    let enqueued =
-        enqueue_color_cuda_resident_batch(session, colors, &shared_payload, collect_stage_timings)?;
+    let enqueued = if should_pipeline_color_entropy_groups(
+        inputs,
+        collect_stage_timings,
+        session.htj2k_decode_chunk_limits().max_payload_bytes(),
+    ) {
+        enqueue_color_cuda_resident_batch_pipelined(inputs, session, fmt)?
+    } else {
+        let colors = prepare_color_cuda_resident_batch(inputs, fmt)?;
+        enqueue_color_cuda_resident_batch(session, colors, fmt, collect_stage_timings)?
+    };
     let (surfaces, reports, table_upload_us, payload_upload_us) =
         complete_color_cuda_resident_batch(enqueued, fmt, collect_stage_timings)?;
     let aggregate = finalize_color_batch_decode_report(

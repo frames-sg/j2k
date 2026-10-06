@@ -8,12 +8,14 @@ use super::super::decode_dispatch::{
 };
 use super::super::{
     decode_prepared_classic_sub_band_on_cpu, direct_tier1_input_buffer_prepares_for_test,
-    execute_hybrid_cpu_tier1_direct_color_plan, prepare_direct_color_plan,
-    prepare_direct_color_plan_for_cpu_upload, prepare_direct_grayscale_plan,
-    reset_direct_tier1_input_buffer_prepares_for_test, PreparedClassicSubBand,
+    execute_hybrid_cpu_tier1_direct_color_plan, execute_prepared_direct_grayscale_plan,
+    prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
+    prepare_direct_grayscale_plan, reset_direct_tier1_input_buffer_prepares_for_test,
+    ClassicTier1Buffers, MetalRuntime, PreparedClassicSubBand, PreparedDirectColorPlan,
     PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
 };
 use super::runtime::should_run_metal_runtime;
+use crate::metal_types::prelude::*;
 use j2k_native::{
     decode_j2k_sub_band_scalar, encode, DecodeSettings, DecoderContext, EncodeOptions, Image,
     J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob,
@@ -141,20 +143,173 @@ fn cpu_upload_color_prepare_skips_tier1_metal_input_buffers() {
     reset_direct_tier1_input_buffer_prepares_for_test();
     let metal_prepared = prepare_direct_color_plan(&plan).expect("Metal prepared color plan");
     assert_eq!(metal_prepared.component_plans.len(), 3);
-    assert!(
-        direct_tier1_input_buffer_prepares_for_test() > 0,
-        "normal Metal preparation should build Tier-1 input buffers"
+    assert_eq!(
+        direct_tier1_input_buffer_prepares_for_test(),
+        0,
+        "Metal preparation should leave Tier-1 input buffers to their first reader"
+    );
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+    let read = read_color_plan_tier1_buffers(&runtime, &metal_prepared).len();
+    assert!(read > 0, "fixture must have classic sub-bands");
+    assert_eq!(
+        direct_tier1_input_buffer_prepares_for_test(),
+        3 * read,
+        "the first read should build each sub-band's and group's three Tier-1 input buffers"
     );
 
     reset_direct_tier1_input_buffer_prepares_for_test();
     let cpu_upload_prepared =
         prepare_direct_color_plan_for_cpu_upload(&plan).expect("CPUUpload prepared color plan");
     assert_eq!(cpu_upload_prepared.component_plans.len(), 3);
+    read_color_plan_tier1_buffers(&runtime, &cpu_upload_prepared);
     assert_eq!(
         direct_tier1_input_buffer_prepares_for_test(),
         0,
-        "CPUUpload preparation should keep coded Tier-1 payloads on CPU and skip Metal input buffers"
+        "CPUUpload plans should keep coded Tier-1 payloads on CPU and skip Metal input buffers"
     );
+}
+
+#[test]
+fn classic_tier1_buffers_are_built_once_and_charged_from_preparation() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let bytes = encoded_classic(32, 32, 1);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let plan = image
+        .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+        .expect("direct grayscale plan");
+    let prepared = prepare_direct_grayscale_plan(&plan).expect("prepared grayscale plan");
+    assert!(
+        !prepared.classic_groups.is_empty(),
+        "fixture must exercise grouped classic sub-bands"
+    );
+    let charged = prepared.retained_cache_bytes().expect("retained bytes");
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+
+    reset_direct_tier1_input_buffer_prepares_for_test();
+    let first = read_grayscale_plan_tier1_buffers(&runtime, &prepared);
+    let built = direct_tier1_input_buffer_prepares_for_test();
+    assert_eq!(built, 3 * first.len());
+    let second = read_grayscale_plan_tier1_buffers(&runtime, &prepared);
+    assert_eq!(
+        direct_tier1_input_buffer_prepares_for_test(),
+        built,
+        "later reads should reuse the buffers built by the first"
+    );
+    for (first, second) in first.iter().zip(&second) {
+        assert!(std::ptr::eq(*first, *second));
+    }
+
+    assert_eq!(
+        prepared.retained_cache_bytes().expect("retained bytes"),
+        charged,
+        "building the buffers must not change the weight the cache charged at insertion"
+    );
+    let allocated = first
+        .iter()
+        .map(|buffers| buffers.coded.length() + buffers.jobs.length() + buffers.segments.length())
+        .sum::<usize>();
+    assert_eq!(
+        charged.device, allocated,
+        "the cache should charge exactly the device bytes the buffers occupy"
+    );
+}
+
+#[test]
+fn single_image_route_builds_tier1_buffers_once_per_plan() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let bytes = encoded_classic(32, 32, 1);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let plan = prepare_direct_grayscale_plan(
+        &image
+            .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+            .expect("direct grayscale plan"),
+    )
+    .expect("prepared grayscale plan");
+    let expected = cpu_decode(&bytes, 32, j2k_core::PixelFormat::Gray8);
+
+    reset_direct_tier1_input_buffer_prepares_for_test();
+    for pass in ["first", "second"] {
+        let surface = execute_prepared_direct_grayscale_plan(&plan, j2k_core::PixelFormat::Gray8)
+            .expect("single-image decode");
+        assert_eq!(
+            surface.as_bytes().expect("surface bytes").as_ref(),
+            expected,
+            "{pass} pass"
+        );
+        let built = built_grayscale_plan_tier1_buffers(&plan);
+        assert!(built > 0, "the single-image route reads the plan's buffers");
+        assert_eq!(
+            direct_tier1_input_buffer_prepares_for_test(),
+            3 * built,
+            "{pass} pass"
+        );
+    }
+}
+
+pub(super) fn encoded_classic(width: u32, height: u32, components: u16) -> Vec<u8> {
+    let pixels = j2k_test_support::gradient_u8(width, height, usize::from(components));
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, width, height, components, 8, false, &options).expect("encode classic")
+}
+
+pub(super) fn cpu_decode(bytes: &[u8], width: usize, format: j2k_core::PixelFormat) -> Vec<u8> {
+    let mut decoder = j2k::J2kDecoder::new(bytes).expect("CPU decoder");
+    let row_bytes = width * format.channels();
+    let mut output = vec![0; row_bytes * decoder.info().dimensions.1 as usize];
+    decoder
+        .decode_into(&mut output, row_bytes, format)
+        .expect("CPU decode");
+    output
+}
+
+fn read_grayscale_plan_tier1_buffers<'a>(
+    runtime: &MetalRuntime,
+    plan: &'a PreparedDirectGrayscalePlan,
+) -> Vec<&'a ClassicTier1Buffers> {
+    let sub_bands = plan.steps.iter().filter_map(|step| match step {
+        PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+            Some(sub_band.tier1_buffers(runtime))
+        }
+        _ => None,
+    });
+    let groups = plan
+        .classic_groups
+        .iter()
+        .map(|group| group.tier1_buffers(runtime));
+    sub_bands
+        .chain(groups)
+        .collect::<Result<_, _>>()
+        .expect("classic Tier-1 buffers")
+}
+
+fn read_color_plan_tier1_buffers<'a>(
+    runtime: &MetalRuntime,
+    plan: &'a PreparedDirectColorPlan,
+) -> Vec<&'a ClassicTier1Buffers> {
+    plan.component_plans
+        .iter()
+        .flat_map(|component| read_grayscale_plan_tier1_buffers(runtime, component))
+        .collect()
+}
+
+pub(super) fn built_grayscale_plan_tier1_buffers(plan: &PreparedDirectGrayscalePlan) -> usize {
+    let sub_bands = plan.steps.iter().filter(|step| {
+        matches!(step, PreparedDirectGrayscaleStep::ClassicSubBand(sub_band)
+            if sub_band.tier1_inputs.buffers.get().is_some())
+    });
+    let groups = plan
+        .classic_groups
+        .iter()
+        .filter(|group| group.tier1_inputs.buffers.get().is_some());
+    sub_bands.count() + groups.count()
 }
 
 fn first_native_classic_sub_band(

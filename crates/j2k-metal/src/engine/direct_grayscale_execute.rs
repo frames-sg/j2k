@@ -28,9 +28,10 @@ use super::{
     encode_gray_plane_to_surface_in_encoder, encode_prepared_direct_color_plan_in_command_buffer,
     encode_repeated_direct_grayscale_plan_in_command_buffer,
     encode_repeated_gray_plane_to_surfaces_in_command_buffer,
-    encode_stacked_direct_component_plane_batch, j2k_scalar_pack_params, lookup_direct_band_slice,
-    lookup_direct_band_slice_entry, metal_profile_stages_enabled, new_command_buffer,
-    new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
+    encode_stacked_direct_component_plane_batch,
+    encode_stacked_direct_component_plane_batch_with_shared_tier1, j2k_scalar_pack_params,
+    lookup_direct_band_slice, lookup_direct_band_slice_entry, metal_profile_stages_enabled,
+    new_command_buffer, new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
     recycle_scratch_buffers, retire_direct_status_checks,
     supports_stacked_direct_component_plane_batch, take_f32_scratch_buffer,
     try_encode_stacked_mct_rgb8_direct_color_batch, wait_for_completion_metal, with_runtime,
@@ -61,7 +62,11 @@ use self::color_batch_completion::{
     complete_direct_color_batch_command, complete_split_direct_color_batch_command,
     retire_direct_color_batch_resources,
 };
-pub(crate) use self::color_destination::submit_prepared_direct_color_plan_batch_into_group;
+pub(crate) use self::color_destination::{
+    cooperative_color_costs, submit_cooperative_cpu_color_group,
+    submit_prepared_direct_color_plan_batch_into_group,
+    submit_prepared_direct_color_plan_batches_into_groups, ColorGroupSubmission,
+};
 pub(in crate::engine) use self::component_plane::{
     checked_coefficient_len, encode_prepared_direct_component_plane_in_command_buffer,
     encode_prepared_direct_component_plane_in_encoder, upload_cpu_decoded_coefficients,

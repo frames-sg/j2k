@@ -616,6 +616,482 @@ inline uint idwt97_first_of_parity(uint lo, uint parity) {
     return lo + ((lo & 1u) != parity ? 1u : 0u);
 }
 
+template<typename Params>
+inline float idwt_interleaved_sample(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    constant Params &params,
+    uint ll_instance_offset,
+    uint hl_instance_offset,
+    uint lh_instance_offset,
+    uint hh_instance_offset,
+    uint x,
+    uint y
+) {
+    const uint global_x = params.x0 + params.output_x + x;
+    const uint global_y = params.y0 + params.output_y + y;
+    const bool low_x = (global_x & 1u) == 0u;
+    const bool low_y = (global_y & 1u) == 0u;
+    const uint full_band_x = low_x ? low_index(global_x, params.x0) : high_index(global_x, params.x0);
+    const uint full_band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
+    float sample;
+
+    if (low_y && low_x) {
+        const uint band_x = full_band_x - params.ll_x;
+        const uint band_y = full_band_y - params.ll_y;
+        sample = (band_x < params.ll_width && band_y < params.ll_height)
+            ? ll[ll_instance_offset + band_y * params.ll_width + band_x]
+            : 0.0f;
+    } else if (low_y) {
+        const uint band_x = full_band_x - params.hl_x;
+        const uint band_y = full_band_y - params.hl_y;
+        sample = (band_x < params.hl_width && band_y < params.hl_height)
+            ? hl[hl_instance_offset + band_y * params.hl_width + band_x]
+            : 0.0f;
+    } else if (low_x) {
+        const uint band_x = full_band_x - params.lh_x;
+        const uint band_y = full_band_y - params.lh_y;
+        sample = (band_x < params.lh_width && band_y < params.lh_height)
+            ? lh[lh_instance_offset + band_y * params.lh_width + band_x]
+            : 0.0f;
+    } else {
+        const uint band_x = full_band_x - params.hh_x;
+        const uint band_y = full_band_y - params.hh_y;
+        sample = (band_x < params.hh_width && band_y < params.hh_height)
+            ? hh[hh_instance_offset + band_y * params.hh_width + band_x]
+            : 0.0f;
+    }
+
+    return sample;
+}
+
+constant uint J2K_IDWT53_HALO = 2u;
+constant uint J2K_IDWT53_ROW_TILE = 128u;
+constant uint J2K_IDWT53_ROWS_PER_GROUP = 4u;
+constant uint J2K_IDWT53_ROW_THREADS = 64u;
+
+template<typename Params>
+inline void idwt53_interleave_horizontal_fused_core(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    device float *out,
+    constant Params &params,
+    uint ll_instance_offset,
+    uint hl_instance_offset,
+    uint lh_instance_offset,
+    uint hh_instance_offset,
+    uint instance,
+    uint3 group,
+    uint3 local,
+    threadgroup float *rows
+) {
+    const uint row_stride = J2K_IDWT53_ROW_TILE + 2u * J2K_IDWT53_HALO;
+    threadgroup float *row = rows + local.y * row_stride;
+    const uint width = params.width;
+    const uint y = group.y * J2K_IDWT53_ROWS_PER_GROUP + local.y;
+    const uint tile_start = group.x * J2K_IDWT53_ROW_TILE;
+    const uint tile_end = min(tile_start + J2K_IDWT53_ROW_TILE, width);
+    const uint load_start = tile_start > J2K_IDWT53_HALO ? tile_start - J2K_IDWT53_HALO : 0u;
+    const uint load_end = min(tile_end + J2K_IDWT53_HALO, width);
+    const bool row_active = y < params.height;
+    const uint first_even_x = (params.x0 + params.output_x) & 1u;
+
+    if (row_active) {
+        for (uint x = load_start + local.x; x < load_end; x += J2K_IDWT53_ROW_THREADS) {
+            row[x - load_start] = idwt_interleaved_sample(
+                ll,
+                hl,
+                lh,
+                hh,
+                params,
+                ll_instance_offset,
+                hl_instance_offset,
+                lh_instance_offset,
+                hh_instance_offset,
+                x,
+                y
+            );
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (row_active && width == 1u) {
+        if (local.x == 0u && first_even_x != 0u) {
+            row[0] *= 0.5f;
+        }
+    } else if (row_active) {
+        const uint lo = tile_start > 1u ? tile_start - 1u : 0u;
+        const uint hi = min(tile_end + 1u, width);
+        const uint first = lo + ((lo & 1u) != first_even_x ? 1u : 0u);
+        for (uint x = first + 2u * local.x; x < hi; x += 2u * J2K_IDWT53_ROW_THREADS) {
+            const uint i = x - load_start;
+            row[i] = reversible53_predict(
+                row[i],
+                row[periodic_symmetric_extension_left_u32(x, 1u) - load_start],
+                row[periodic_symmetric_extension_right_u32(x, 1u, width) - load_start]
+            );
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (row_active && width > 1u) {
+        const uint first_odd_x = 1u - first_even_x;
+        const uint first = tile_start + ((tile_start & 1u) != first_odd_x ? 1u : 0u);
+        for (uint x = first + 2u * local.x; x < tile_end; x += 2u * J2K_IDWT53_ROW_THREADS) {
+            const uint i = x - load_start;
+            row[i] = reversible53_update(
+                row[i],
+                row[periodic_symmetric_extension_left_u32(x, 1u) - load_start],
+                row[periodic_symmetric_extension_right_u32(x, 1u, width) - load_start]
+            );
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (row_active) {
+        const ulong plane_offset = ulong(instance) * width * params.height;
+        for (uint x = tile_start + local.x; x < tile_end; x += J2K_IDWT53_ROW_THREADS) {
+            out[plane_offset + ulong(y) * width + x] = row[x - load_start];
+        }
+    }
+}
+
+kernel void j2k_idwt_reversible53_interleave_horizontal_fused(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(5)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float rows[
+        J2K_IDWT53_ROWS_PER_GROUP * (J2K_IDWT53_ROW_TILE + 2u * J2K_IDWT53_HALO)
+    ];
+    idwt53_interleave_horizontal_fused_core(
+        ll, hl, lh, hh, out, params,
+        0u, 0u, 0u, 0u, 0u, group, local, rows
+    );
+}
+
+kernel void j2k_idwt_reversible53_interleave_horizontal_fused_batched(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kRepeatedIdwtSingleDecompositionParams &params [[buffer(5)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float rows[
+        J2K_IDWT53_ROWS_PER_GROUP * (J2K_IDWT53_ROW_TILE + 2u * J2K_IDWT53_HALO)
+    ];
+    idwt53_interleave_horizontal_fused_core(
+        ll, hl, lh, hh, out, params,
+        group.z * params.ll_instance_stride,
+        group.z * params.hl_instance_stride,
+        group.z * params.lh_instance_stride,
+        group.z * params.hh_instance_stride,
+        group.z,
+        group,
+        local,
+        rows
+    );
+}
+
+constant uint J2K_IDWT53_COLS_PER_GROUP = 16u;
+constant uint J2K_IDWT53_COL_TILE = 128u;
+constant uint J2K_IDWT53_COL_ROW_THREADS = 16u;
+
+template<typename Params>
+inline void idwt53_vertical_fused_core(
+    device float *out,
+    constant Params &params,
+    uint instance,
+    uint3 group,
+    uint3 local,
+    threadgroup float *columns,
+    threadgroup float *carry_rows
+) {
+    threadgroup float *carry = carry_rows + local.x * J2K_IDWT53_HALO;
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint x = group.x * J2K_IDWT53_COLS_PER_GROUP + local.x;
+    const bool column_active = x < width;
+    const uint first_even_y = (params.y0 + params.output_y) & 1u;
+    device float *plane = out + ulong(instance) * width * height;
+
+    for (uint tile_start = 0u; tile_start < height; tile_start += J2K_IDWT53_COL_TILE) {
+        const uint tile_end = min(tile_start + J2K_IDWT53_COL_TILE, height);
+        const uint load_start = tile_start > J2K_IDWT53_HALO
+            ? tile_start - J2K_IDWT53_HALO
+            : 0u;
+        const uint load_end = min(tile_end + J2K_IDWT53_HALO, height);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (column_active) {
+            for (uint y = tile_start + local.y; y < load_end; y += J2K_IDWT53_COL_ROW_THREADS) {
+                columns[(y - load_start) * J2K_IDWT53_COLS_PER_GROUP + local.x] =
+                    plane[ulong(y) * width + x];
+            }
+            for (uint y = load_start + local.y; y < tile_start; y += J2K_IDWT53_COL_ROW_THREADS) {
+                columns[(y - load_start) * J2K_IDWT53_COLS_PER_GROUP + local.x] =
+                    carry[y - (tile_start - J2K_IDWT53_HALO)];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (column_active && tile_end < height && local.y < J2K_IDWT53_HALO) {
+            const uint row = tile_end - J2K_IDWT53_HALO + local.y - load_start;
+            carry[local.y] = columns[row * J2K_IDWT53_COLS_PER_GROUP + local.x];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (column_active && height == 1u) {
+            if (local.y == 0u && first_even_y != 0u) {
+                columns[local.x] *= 0.5f;
+            }
+        } else if (column_active) {
+            const uint lo = tile_start > 1u ? tile_start - 1u : 0u;
+            const uint hi = min(tile_end + 1u, height);
+            const uint first = lo + ((lo & 1u) != first_even_y ? 1u : 0u);
+            for (uint y = first + 2u * local.y; y < hi; y += 2u * J2K_IDWT53_COL_ROW_THREADS) {
+                const uint i = (y - load_start) * J2K_IDWT53_COLS_PER_GROUP + local.x;
+                const uint left = (periodic_symmetric_extension_left_u32(y, 1u) - load_start) *
+                    J2K_IDWT53_COLS_PER_GROUP + local.x;
+                const uint right = (periodic_symmetric_extension_right_u32(y, 1u, height) - load_start) *
+                    J2K_IDWT53_COLS_PER_GROUP + local.x;
+                columns[i] = reversible53_predict(
+                    columns[i],
+                    columns[left],
+                    columns[right]
+                );
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (column_active && height > 1u) {
+            const uint first_odd_y = 1u - first_even_y;
+            const uint first = tile_start + ((tile_start & 1u) != first_odd_y ? 1u : 0u);
+            for (uint y = first + 2u * local.y; y < tile_end; y += 2u * J2K_IDWT53_COL_ROW_THREADS) {
+                const uint i = (y - load_start) * J2K_IDWT53_COLS_PER_GROUP + local.x;
+                const uint left = (periodic_symmetric_extension_left_u32(y, 1u) - load_start) *
+                    J2K_IDWT53_COLS_PER_GROUP + local.x;
+                const uint right = (periodic_symmetric_extension_right_u32(y, 1u, height) - load_start) *
+                    J2K_IDWT53_COLS_PER_GROUP + local.x;
+                columns[i] = reversible53_update(
+                    columns[i],
+                    columns[left],
+                    columns[right]
+                );
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (column_active) {
+            for (uint y = tile_start + local.y; y < tile_end; y += J2K_IDWT53_COL_ROW_THREADS) {
+                plane[ulong(y) * width + x] =
+                    columns[(y - load_start) * J2K_IDWT53_COLS_PER_GROUP + local.x];
+            }
+        }
+    }
+}
+
+kernel void j2k_idwt_reversible53_vertical_fused(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float columns[
+        J2K_IDWT53_COLS_PER_GROUP * (J2K_IDWT53_COL_TILE + 2u * J2K_IDWT53_HALO)
+    ];
+    threadgroup float carry[J2K_IDWT53_COLS_PER_GROUP * J2K_IDWT53_HALO];
+    idwt53_vertical_fused_core(out, params, 0u, group, local, columns, carry);
+}
+
+kernel void j2k_idwt_reversible53_vertical_fused_batched(
+    device float *out [[buffer(0)]],
+    constant J2kRepeatedIdwtSingleDecompositionParams &params [[buffer(1)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float columns[
+        J2K_IDWT53_COLS_PER_GROUP * (J2K_IDWT53_COL_TILE + 2u * J2K_IDWT53_HALO)
+    ];
+    threadgroup float carry[J2K_IDWT53_COLS_PER_GROUP * J2K_IDWT53_HALO];
+    idwt53_vertical_fused_core(out, params, group.z, group, local, columns, carry);
+}
+
+template<typename Params>
+inline float idwt97_interleaved_horizontal_sample(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    constant Params &params,
+    uint ll_instance_offset,
+    uint hl_instance_offset,
+    uint lh_instance_offset,
+    uint hh_instance_offset,
+    uint x,
+    uint y,
+    float high_pass
+) {
+    float sample = idwt_interleaved_sample(
+        ll,
+        hl,
+        lh,
+        hh,
+        params,
+        ll_instance_offset,
+        hl_instance_offset,
+        lh_instance_offset,
+        hh_instance_offset,
+        x,
+        y
+    );
+    if (params.width == 1u) {
+        if (((params.x0 + params.output_x) & 1u) != 0u) {
+            sample *= 0.5f;
+        }
+    } else {
+        const uint first_even_x = (params.x0 + params.output_x) & 1u;
+        const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+        sample *= (x & 1u) == first_even_x ? KAPPA : high_pass;
+    }
+    return sample;
+}
+
+template<typename Params>
+inline void idwt97_interleave_horizontal_fused_core(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    device float *out,
+    constant Params &params,
+    constant J2kIdwt97LiftSteps &steps,
+    uint ll_instance_offset,
+    uint hl_instance_offset,
+    uint lh_instance_offset,
+    uint hh_instance_offset,
+    uint instance,
+    uint3 group,
+    uint3 local,
+    threadgroup float *rows
+) {
+    const uint row_stride = J2K_IDWT97_ROW_TILE + 2u * J2K_IDWT97_HALO;
+    threadgroup float *row = rows + local.y * row_stride;
+    const uint width = params.width;
+    const uint y = group.y * J2K_IDWT97_ROWS_PER_GROUP + local.y;
+    const uint tile_start = group.x * J2K_IDWT97_ROW_TILE;
+    const uint tile_end = min(tile_start + J2K_IDWT97_ROW_TILE, width);
+    const uint load_start = tile_start > J2K_IDWT97_HALO ? tile_start - J2K_IDWT97_HALO : 0u;
+    const uint load_end = min(tile_end + J2K_IDWT97_HALO, width);
+    const bool row_active = y < params.height;
+    const bool lift = row_active && width > 1u;
+    const float high_pass = as_type<float>(steps.high_pass_bits);
+
+    if (row_active) {
+        for (uint x = load_start + local.x; x < load_end; x += J2K_IDWT97_ROW_THREADS) {
+            row[x - load_start] = idwt97_interleaved_horizontal_sample(
+                ll,
+                hl,
+                lh,
+                hh,
+                params,
+                ll_instance_offset,
+                hl_instance_offset,
+                lh_instance_offset,
+                hh_instance_offset,
+                x,
+                y,
+                high_pass
+            );
+        }
+    }
+
+    for (uint step = 0u; step < 4u; ++step) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (!lift) {
+            continue;
+        }
+        const uint reach = 3u - step;
+        const uint lo = tile_start > reach ? tile_start - reach : 0u;
+        const uint hi = min(tile_end + reach, width);
+        const uint first = idwt97_first_of_parity(lo, steps.first_parity ^ (step & 1u));
+        const float coefficient = steps.coefficients[step];
+        for (uint x = first + 2u * local.x; x < hi; x += 2u * J2K_IDWT97_ROW_THREADS) {
+            const uint i = x - load_start;
+            row[i] = fma(
+                row[idwt97_left(x) - load_start] + row[idwt97_right(x, width) - load_start],
+                coefficient,
+                row[i]
+            );
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (row_active) {
+        const ulong plane_offset = ulong(instance) * width * params.height;
+        for (uint x = tile_start + local.x; x < tile_end; x += J2K_IDWT97_ROW_THREADS) {
+            out[plane_offset + ulong(y) * width + x] = row[x - load_start];
+        }
+    }
+}
+
+kernel void j2k_idwt_irreversible97_interleave_horizontal_fused(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(5)]],
+    constant J2kIdwt97LiftSteps &steps [[buffer(6)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float rows[
+        J2K_IDWT97_ROWS_PER_GROUP * (J2K_IDWT97_ROW_TILE + 2u * J2K_IDWT97_HALO)
+    ];
+    idwt97_interleave_horizontal_fused_core(
+        ll, hl, lh, hh, out, params, steps,
+        0u, 0u, 0u, 0u, 0u, group, local, rows
+    );
+}
+
+kernel void j2k_idwt_irreversible97_interleave_horizontal_fused_batched(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kRepeatedIdwtSingleDecompositionParams &params [[buffer(5)]],
+    constant J2kIdwt97LiftSteps &steps [[buffer(6)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float rows[
+        J2K_IDWT97_ROWS_PER_GROUP * (J2K_IDWT97_ROW_TILE + 2u * J2K_IDWT97_HALO)
+    ];
+    idwt97_interleave_horizontal_fused_core(
+        ll, hl, lh, hh, out, params, steps,
+        group.z * params.ll_instance_stride,
+        group.z * params.hl_instance_stride,
+        group.z * params.lh_instance_stride,
+        group.z * params.hh_instance_stride,
+        group.z,
+        group,
+        local,
+        rows
+    );
+}
+
 kernel void j2k_idwt_irreversible97_horizontal_lift_fused(
     device float *out [[buffer(0)]],
     constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],

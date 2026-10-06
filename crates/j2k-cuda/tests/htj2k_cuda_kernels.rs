@@ -202,7 +202,7 @@ fn cuda_htj2k_encode_batch_shapes_match_scalar_oracle_when_required() {
                     // pass modes instead of treating these distinct bitstreams as equal.
                     if block.num_coding_passes() == 0 {
                         assert!(coefficients[start..end].iter().all(|value| *value == 0));
-                        assert!(block.data().is_empty());
+                        assert_eq!(block.data(), [] as [u8; 0]);
                         continue;
                     }
                     assert_eq!(block.num_coding_passes(), passes);
@@ -629,7 +629,7 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
         .into_iter()
         .zip(green)
         .zip(blue)
-        .zip(expected.chunks_exact(3))
+        .zip(expected.as_chunks::<3>().0)
     {
         assert!((actual_y - expected[0]).abs() < 0.0001);
         assert!((actual_cb - expected[1]).abs() < 0.0001);

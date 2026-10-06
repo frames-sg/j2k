@@ -23,7 +23,7 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
         .expect("distinct HT batch");
     let after_distinct = decoder.submissions().expect("Metal batch submissions");
 
-    assert!(distinct.errors().is_empty());
+    assert_eq!(distinct.errors(), []);
     assert!(distinct.group_errors().is_empty());
     assert_eq!(distinct.groups().len(), 1);
     assert_eq!(distinct.groups()[0].surfaces().len(), 2);
@@ -45,7 +45,7 @@ fn persistent_metal_batch_decoder_reuses_one_session_for_distinct_and_repeated_h
         .expect("repeated HT batch");
     let after_repeated = decoder.submissions().expect("Metal batch submissions");
 
-    assert!(repeated.errors().is_empty());
+    assert_eq!(repeated.errors(), []);
     assert!(repeated.group_errors().is_empty());
     assert_eq!(repeated.groups().len(), 1);
     assert_eq!(repeated.groups()[0].surfaces().len(), 2);
@@ -78,7 +78,7 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
         ])
         .expect("shared batch preparation");
 
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
     assert_eq!(prepared.groups()[0].source_indices(), &[0, 1]);
     assert!(Arc::ptr_eq(
@@ -91,7 +91,7 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
         let result = decoder
             .decode_prepared(&prepared)
             .expect("prepared Metal batch decode");
-        assert!(result.errors().is_empty());
+        assert_eq!(result.errors(), []);
         assert_eq!(result.groups().len(), 1);
         let group = &result.groups()[0];
         assert_eq!(group.source_indices(), &[0, 1]);
@@ -190,7 +190,7 @@ fn submitted_shared_batch_continues_after_nonfatal_group_submit_failure() {
 
     assert_eq!(submitted.len(), 1);
     let result = submitted.wait().expect("complete supported shared group");
-    assert!(result.errors().is_empty());
+    assert_eq!(result.errors(), []);
     assert_eq!(result.groups().len(), 1);
     assert_eq!(result.groups()[0].source_indices(), &[0]);
     assert_eq!(result.group_errors().len(), 1);
@@ -246,7 +246,7 @@ fn shared_metal_prepared_batch_decodes_classic_resident_color_without_legacy_sta
         panic!("classic RGB8 must use U8 batch storage")
     };
     let prepared = decoder.prepare(inputs).expect("prepare RGB batch");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(
         prepared.groups()[0].images()[0].preparation_depth(),
         PreparationDepth::ClassicOffsetPlan
@@ -289,7 +289,7 @@ fn prepared_ht_rgb_nchw_resident_group_is_exact_without_interleaved_surface_view
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder.prepare(inputs).expect("prepare NCHW HT RGB batch");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
 
     let result = decoder
         .decode_prepared(&prepared)

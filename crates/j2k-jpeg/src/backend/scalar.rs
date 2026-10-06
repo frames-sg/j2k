@@ -6,7 +6,7 @@ use crate::color::ycbcr::ycbcr_to_rgb;
 use super::{Rgb420CroppedRowPair, Rgb420RowPair};
 
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
-    for (&gray, pixel) in gray_row.iter().zip(dst.chunks_exact_mut(3)) {
+    for (&gray, pixel) in gray_row.iter().zip(dst.as_chunks_mut::<3>().0.iter_mut()) {
         pixel[0] = gray;
         pixel[1] = gray;
         pixel[2] = gray;
@@ -18,7 +18,7 @@ pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], ds
         .iter()
         .zip(g_row.iter())
         .zip(b_row.iter())
-        .zip(dst.chunks_exact_mut(3))
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut())
     {
         pixel[0] = r;
         pixel[1] = g;
@@ -31,7 +31,7 @@ pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8]
         .iter()
         .zip(cb_row.iter())
         .zip(cr_row.iter())
-        .zip(dst.chunks_exact_mut(3))
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut())
     {
         let (r, g, b) = ycbcr_to_rgb(y_sample, cb_sample, cr_sample);
         pixel[0] = r;
@@ -41,7 +41,7 @@ pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8]
 }
 
 pub(crate) fn fill_rgba_row_from_gray(gray_row: &[u8], dst: &mut [u8], alpha: u8) {
-    for (&gray, pixel) in gray_row.iter().zip(dst.chunks_exact_mut(4)) {
+    for (&gray, pixel) in gray_row.iter().zip(dst.as_chunks_mut::<4>().0.iter_mut()) {
         write_rgba_pixel(pixel, gray, gray, gray, alpha);
     }
 }
@@ -57,7 +57,7 @@ pub(crate) fn fill_rgba_row_from_rgb(
         .iter()
         .zip(g_row.iter())
         .zip(b_row.iter())
-        .zip(dst.chunks_exact_mut(4))
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
     {
         write_rgba_pixel(pixel, r, g, b, alpha);
     }
@@ -74,7 +74,7 @@ pub(crate) fn fill_rgba_row_from_ycbcr(
         .iter()
         .zip(cb_row.iter())
         .zip(cr_row.iter())
-        .zip(dst.chunks_exact_mut(4))
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
     {
         let (r, g, b) = ycbcr_to_rgb(y_sample, cb_sample, cr_sample);
         write_rgba_pixel(pixel, r, g, b, alpha);
@@ -107,7 +107,7 @@ pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
     debug_assert!(y_bottom.is_none_or(|row| row.len() == width));
     debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
 
-    for (x, pixel) in dst_top.chunks_exact_mut(3).enumerate() {
+    for (x, pixel) in dst_top.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let cb = h2v2_fancy_sample(prev_cb, curr_cb, x);
         let cr = h2v2_fancy_sample(prev_cr, curr_cr, x);
         let (r, g, b) = ycbcr_to_rgb(y_top[x], cb, cr);
@@ -117,7 +117,7 @@ pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
     }
 
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
-        for (x, pixel) in dst_bottom.chunks_exact_mut(3).enumerate() {
+        for (x, pixel) in dst_bottom.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let cb = h2v2_fancy_sample(next_cb, curr_cb, x);
             let cr = h2v2_fancy_sample(next_cr, curr_cr, x);
             let (r, g, b) = ycbcr_to_rgb(y_bottom[x], cb, cr);
@@ -157,7 +157,7 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'
     debug_assert_eq!(prev_cr.len(), curr_cr.len());
     debug_assert_eq!(prev_cr.len(), next_cr.len());
 
-    for (local_x, pixel) in dst_top.chunks_exact_mut(3).enumerate() {
+    for (local_x, pixel) in dst_top.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let x = crop_start + local_x;
         let cb = h2v2_fancy_sample(prev_cb, curr_cb, x);
         let cr = h2v2_fancy_sample(prev_cr, curr_cr, x);
@@ -168,7 +168,7 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'
     }
 
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
-        for (local_x, pixel) in dst_bottom.chunks_exact_mut(3).enumerate() {
+        for (local_x, pixel) in dst_bottom.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let x = crop_start + local_x;
             let cb = h2v2_fancy_sample(next_cb, curr_cb, x);
             let cr = h2v2_fancy_sample(next_cr, curr_cr, x);

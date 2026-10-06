@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
           components: rustfmt
       - run: cargo xtask fmt
 
@@ -162,11 +162,11 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
-      - run: cargo install cargo-semver-checks --version 0.48.0 --locked
+          toolchain: "1.99.0"
+      - run: cargo install cargo-semver-checks --version 0.50.0 --locked
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: nightly-2026-06-28
+          toolchain: nightly-2026-08-13
           targets: aarch64-apple-darwin
       - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7
         with:
@@ -193,7 +193,7 @@ jobs:
           toolchain: stable
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: nightly-2026-06-28
+          toolchain: nightly-2026-08-13
           targets: aarch64-apple-darwin
       - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7
         with:
@@ -260,11 +260,11 @@ jobs:
         include:
           - { os: ubuntu-latest,      rust: stable, arch: x86_64 }
           - { os: ubuntu-latest,      rust: beta,   arch: x86_64 }
-          - { os: ubuntu-latest,      rust: "1.96", arch: x86_64 }
+          - { os: ubuntu-latest,      rust: "1.99.0", arch: x86_64 }
           - { os: ubuntu-24.04-arm,   rust: stable, arch: aarch64 }
-          - { os: ubuntu-24.04-arm,   rust: "1.96", arch: aarch64 }
+          - { os: ubuntu-24.04-arm,   rust: "1.99.0", arch: aarch64 }
           - { os: macos-latest,       rust: stable, arch: aarch64 }
-          - { os: macos-latest,       rust: "1.96", arch: aarch64 }
+          - { os: macos-latest,       rust: "1.99.0", arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

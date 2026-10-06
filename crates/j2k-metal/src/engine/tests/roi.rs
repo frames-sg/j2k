@@ -3,9 +3,77 @@
 use super::super::direct_roi::prepared_idwt_output_len;
 use super::super::{
     crop_prepared_direct_grayscale_plan_to_output_region, prepare_direct_grayscale_plan,
-    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedHtPayloadSource,
+    MetalRuntime, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    PreparedHtPayloadSource,
 };
-use j2k_native::{encode_htj2k, DecodeSettings, DecoderContext, EncodeOptions, Image};
+use super::runtime::should_run_metal_runtime;
+use crate::metal_types::prelude::*;
+use j2k_native::{encode, encode_htj2k, DecodeSettings, DecoderContext, EncodeOptions, Image};
+
+#[test]
+fn cropping_a_classic_plan_drops_tier1_buffers_built_from_pruned_jobs() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        code_block_width_exp: 0,
+        code_block_height_exp: 0,
+        ..EncodeOptions::default()
+    };
+    let pixels = j2k_test_support::gradient_u8(128, 128, 1);
+    let bytes = encode(&pixels, 128, 128, 1, 8, false, &options).expect("encode classic gray8");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let plan = image
+        .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+        .expect("direct grayscale plan");
+    let mut prepared = prepare_direct_grayscale_plan(&plan).expect("prepared direct plan");
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+    let mut full_job_counts = Vec::new();
+    for step in &prepared.steps {
+        if let PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) = step {
+            sub_band.tier1_buffers(&runtime).expect("Tier-1 buffers");
+            full_job_counts.push(sub_band.jobs.len());
+        }
+    }
+
+    crop_prepared_direct_grayscale_plan_to_output_region(
+        &mut prepared,
+        j2k_core::Rect {
+            x: 24,
+            y: 24,
+            w: 8,
+            h: 8,
+        },
+    )
+    .expect("crop direct plan");
+
+    let sub_bands = prepared.steps.iter().filter_map(|step| match step {
+        PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => Some(sub_band),
+        _ => None,
+    });
+    let mut pruned = 0;
+    for (sub_band, full_jobs) in sub_bands.zip(full_job_counts) {
+        if sub_band.jobs.len() == full_jobs {
+            assert!(sub_band.tier1_inputs.buffers.get().is_some());
+            continue;
+        }
+        pruned += 1;
+        assert!(
+            sub_band.tier1_inputs.buffers.get().is_none(),
+            "buffers built from the uncropped jobs must not survive the crop"
+        );
+        let rebuilt = sub_band
+            .tier1_buffers(&runtime)
+            .expect("rebuilt Tier-1 buffers");
+        assert_eq!(
+            rebuilt.jobs.length(),
+            size_of_val(sub_band.jobs.as_slice()).max(1)
+        );
+    }
+    assert!(pruned > 0, "fixture must prune classic code-block jobs");
+}
 
 #[test]
 #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]

@@ -71,7 +71,10 @@ pub fn build_future() {
         result.changed_executable_bodies_without_covered_body,
         [format!("{path}::async@2")]
     );
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
     assert!(audited_zero_body_findings(CoverageLane::Host, &result)
         .iter()
         .any(|entry| entry.finding.ends_with("async@2")
@@ -131,13 +134,18 @@ pub fn build() {
     )
     .unwrap();
 
-    assert!(result
-        .changed_executable_bodies_without_covered_body
-        .is_empty());
-    assert!(result
-        .changed_deferred_bodies_without_covered_compiler_region
-        .is_empty());
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(
+        result.changed_executable_bodies_without_covered_body,
+        [] as [std::string::String; 0]
+    );
+    assert_eq!(
+        result.changed_deferred_bodies_without_covered_compiler_region,
+        [] as [std::string::String; 0]
+    );
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }
 
 fn assert_one_line_deferred_body(source: &str, label: &str, region_count: Option<u64>) {
@@ -164,25 +172,29 @@ fn assert_one_line_deferred_body(source: &str, label: &str, region_count: Option
                 result.changed_deferred_bodies_without_covered_compiler_region,
                 [format!("{path}::{label}")]
             );
-            assert!(violations.is_empty());
+            assert_eq!(violations, [] as [std::string::String; 0]);
             assert_eq!(
                 audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
                 ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)
             );
         }
         Some(_) => {
-            assert!(result
-                .changed_deferred_bodies_without_covered_compiler_region
-                .is_empty());
-            assert!(result.compiler_noninstrumentable_deferred_bodies.is_empty());
-            assert!(violations.is_empty());
+            assert_eq!(
+                result.changed_deferred_bodies_without_covered_compiler_region,
+                [] as [std::string::String; 0]
+            );
+            assert_eq!(
+                result.compiler_noninstrumentable_deferred_bodies,
+                [] as [std::string::String; 0]
+            );
+            assert_eq!(violations, [] as [std::string::String; 0]);
         }
         None => {
             assert_eq!(
                 result.compiler_noninstrumentable_deferred_bodies,
                 [format!("{path}::{label}")]
             );
-            assert!(violations.is_empty());
+            assert_eq!(violations, [] as [std::string::String; 0]);
         }
     }
 }

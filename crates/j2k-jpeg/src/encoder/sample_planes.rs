@@ -106,7 +106,7 @@ pub(super) fn component_planes(
             let mut cr_plane =
                 try_new_vec_with_live_budget(pixels, &mut live_bytes, plane_capacity_limit)
                     .map_err(map_allocation_budget_error)?;
-            for rgb in data.chunks_exact(3) {
+            for rgb in data.as_chunks::<3>().0 {
                 let (y, cb, cr) = rgb_to_ycbcr(rgb[0], rgb[1], rgb[2]);
                 y_plane.push(y);
                 cb_plane.push(cb);

@@ -26,7 +26,7 @@ fn prepared_batch_is_reusable_and_groups_heterogeneous_images_without_padding() 
     };
     let prepared = prepare_batch(inputs, options).expect("prepare batch");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].source_indices(), &[0, 2]);
     assert_eq!(prepared.groups()[1].source_indices(), &[1]);
@@ -101,7 +101,7 @@ fn caller_supplied_prepared_images_regroup_in_new_submission_order_without_repar
         .prepare_prepared_images(vec![larger.clone(), smaller, larger])
         .expect("regroup caller-supplied prepared images");
 
-    assert!(regrouped.errors().is_empty());
+    assert!(regrouped.errors().is_empty(), "{:?}", regrouped.errors());
     assert_eq!(regrouped.groups().len(), 2);
     assert_eq!(regrouped.groups()[0].source_indices(), [0, 2]);
     assert_eq!(regrouped.groups()[1].source_indices(), [1]);
@@ -122,7 +122,11 @@ fn caller_supplied_prepared_images_regroup_in_new_submission_order_without_repar
     let batch_output = decoder
         .decode_prepared(&regrouped)
         .expect("decode regrouped prepared images");
-    assert!(batch_output.errors().is_empty());
+    assert!(
+        batch_output.errors().is_empty(),
+        "{:?}",
+        batch_output.errors()
+    );
     assert_eq!(batch_output.groups()[0].source_indices(), [0, 2]);
     assert_eq!(batch_output.groups()[1].source_indices(), [1]);
     let CpuBatchSamples::U8(samples) = batch_output.groups()[0].samples() else {
@@ -197,7 +201,7 @@ fn valid_lenient_batch_does_not_report_a_recovery_warning() {
         .decode_prepared(&prepared)
         .expect("decode valid lenient image");
 
-    assert!(output.errors().is_empty());
+    assert!(output.errors().is_empty(), "{:?}", output.errors());
     assert_eq!(output.groups().len(), 1);
     assert_eq!(output.groups()[0].warnings(), &[Vec::new()]);
 }
@@ -230,7 +234,11 @@ fn cpu_session_reuses_multitile_classic_prepared_workspace_across_decodes() {
         .expect("second prepared decode");
     let second = session.workspace_stats();
 
-    assert!(first_output.errors().is_empty());
+    assert!(
+        first_output.errors().is_empty(),
+        "{:?}",
+        first_output.errors()
+    );
     assert_eq!(first_output.groups(), second_output.groups());
     assert_eq!(first.prepared_plan_decode_calls(), 1);
     assert_eq!(second.prepared_plan_decode_calls(), 2);
@@ -256,13 +264,13 @@ fn cpu_session_reuses_preparation_workers_across_one_shot_batches() {
     let first = session
         .prepare(vec![EncodedImage::full(Arc::clone(&encoded))])
         .expect("first retained preparation");
-    assert!(first.errors().is_empty());
+    assert!(first.errors().is_empty(), "{:?}", first.errors());
     let first_stats = session.workspace_stats();
 
     let second = session
         .prepare(vec![EncodedImage::full(encoded)])
         .expect("second retained preparation");
-    assert!(second.errors().is_empty());
+    assert!(second.errors().is_empty(), "{:?}", second.errors());
     let second_stats = session.workspace_stats();
 
     assert_eq!(first_stats.preparation_calls(), 1);

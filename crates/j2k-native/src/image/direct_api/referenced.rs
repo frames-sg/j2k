@@ -21,14 +21,14 @@ impl<'a> Image<'a> {
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kReferencedClassicPlan> {
         validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-        let retained_metadata_bytes = self.retained_metadata_bytes()?;
+        let retained_planning_bytes = self.retained_planning_bytes()?;
         decoder_context.set_output_region(Some(output_region));
         let result = if matches!(self.color_space, ColorSpace::Gray) {
             j2c::build_referenced_classic_grayscale_plan(
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         } else if self.has_alpha {
@@ -36,7 +36,7 @@ impl<'a> Image<'a> {
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         } else {
@@ -44,7 +44,7 @@ impl<'a> Image<'a> {
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         };
@@ -61,14 +61,14 @@ impl<'a> Image<'a> {
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kReferencedHtj2kPlan> {
         validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-        let retained_metadata_bytes = self.retained_metadata_bytes()?;
+        let retained_planning_bytes = self.retained_planning_bytes()?;
         decoder_context.set_output_region(Some(output_region));
         let result = if matches!(self.color_space, ColorSpace::Gray) {
             j2c::build_referenced_htj2k_grayscale_plan(
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         } else if self.has_alpha {
@@ -76,7 +76,7 @@ impl<'a> Image<'a> {
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         } else {
@@ -84,7 +84,7 @@ impl<'a> Image<'a> {
                 self.codestream,
                 self.encoded_input,
                 &self.header,
-                retained_metadata_bytes,
+                retained_planning_bytes,
                 decoder_context,
             )
         };

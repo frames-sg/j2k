@@ -46,10 +46,12 @@ fn formatted_profile_errors_emit_typed_diagnostics() {
 fn profile_sink_is_nested_and_transactional() {
     let _outer = use_test_profile_sink();
     emit_profile_line("outer-before");
-    assert!(std::thread::spawn(captured_profile_lines)
-        .join()
-        .expect("profile sink child thread")
-        .is_empty());
+    assert_eq!(
+        std::thread::spawn(captured_profile_lines)
+            .join()
+            .expect("profile sink child thread"),
+        [] as [std::string::String; 0]
+    );
 
     {
         let _inner = use_test_profile_sink();

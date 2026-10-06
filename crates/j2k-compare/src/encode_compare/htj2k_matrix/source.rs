@@ -39,7 +39,7 @@ pub(super) fn generated_source(format: SampleFormat) -> SourceImage {
     };
     let mut pnm_bytes = format!("{magic}\n{WIDTH} {HEIGHT}\n{max_value}\n").into_bytes();
     if format == SampleFormat::Gray16 {
-        for sample in pixels_le.chunks_exact(2) {
+        for sample in pixels_le.as_chunks::<2>().0 {
             pnm_bytes.extend_from_slice(&u16::from_le_bytes([sample[0], sample[1]]).to_be_bytes());
         }
     } else {
@@ -98,7 +98,9 @@ pub(super) fn read_pnm_as_le(path: &Path, expected: SampleFormat) -> Result<Vec<
     }
     if expected == SampleFormat::Gray16 {
         Ok(payload
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|sample| u16::from_be_bytes([sample[0], sample[1]]).to_le_bytes())
             .collect())
     } else {

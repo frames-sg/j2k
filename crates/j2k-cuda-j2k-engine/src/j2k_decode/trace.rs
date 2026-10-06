@@ -4,16 +4,18 @@ use super::{
     types::CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtBatchKernelMode, CudaJ2kIdwtBatchStageProfile,
     CudaJ2kIdwtBatchTraceRow,
 };
+/// Largest batch dimension the cooperative 5/3 and 9/7 IDWT kernels accept.
+pub(crate) const MAX_COOPERATIVE_IDWT_DIMENSION: u32 = 512;
+
 pub(crate) fn idwt_batch_kernel_mode(
     kernel_jobs: &[CudaJ2kIdwtMultiKernelJob],
     max_width: u32,
     max_height: u32,
 ) -> CudaJ2kIdwtBatchKernelMode {
-    const MAX_COOPERATIVE_DIMENSION: u32 = 512;
     const MIN_COOPERATIVE_53_DIMENSION: u32 = 128;
     const MIN_COOPERATIVE_97_DIMENSION: u32 = 64;
     let bounded_cooperative_shape =
-        max_width <= MAX_COOPERATIVE_DIMENSION && max_height <= MAX_COOPERATIVE_DIMENSION;
+        max_width <= MAX_COOPERATIVE_IDWT_DIMENSION && max_height <= MAX_COOPERATIVE_IDWT_DIMENSION;
     if !bounded_cooperative_shape {
         return CudaJ2kIdwtBatchKernelMode::Generic;
     }

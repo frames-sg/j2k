@@ -3,12 +3,12 @@
 //! Retained RGB/RGBA plan assembly for HTJ2K and classic codestreams.
 
 use super::{
-    append_classic_payload_records, append_decode_elements,
+    append_classic_payload_records, append_retained_records,
     color::{build_direct_color_tile_components_plan, DirectColorComponentPlans},
     color_plan_rects, output_region_rect, payload_record_span, referenced_output_region, tile,
-    tile_intersects_output, validate_and_strip_classic_payload_owners,
-    validate_and_strip_referenced_payload_owners, validate_color_tile, BitReader,
-    ClassicPayloadCollector, DecoderContext, DirectPlanUnsupportedReason, Header,
+    tile_intersects_output, validate_and_strip_classic_payload_owners, validate_color_tile,
+    validate_referenced_payload_records, BitReader, ClassicPayloadCollector,
+    DecodeAllocationBudget, DecoderContext, DirectPlanUnsupportedReason, Header,
     HtCodeBlockPayloadRanges, J2kClassicCodeBlockPayload, J2kCodestreamRange, J2kDirectBandId,
     J2kRect, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedTileGeometry,
     J2kReferencedTilePlan, Result, ValidationError, Vec,
@@ -81,9 +81,11 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
         let parsed_tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
         let output_region = referenced_output_region(header, ctx);
         let output_rect = output_region_rect(output_region);
+        let mut retained =
+            DecodeAllocationBudget::from_live_bytes(parsed_tiles.structural_workspace_bytes())?;
         let mut payloads = Vec::new();
         let mut tile_plans = Vec::new();
-        crate::try_reserve_decode_elements(&mut tile_plans, parsed_tiles.len())?;
+        retained.reserve_new(&mut tile_plans, parsed_tiles.len())?;
         let mut next_band_id: J2kDirectBandId = 0;
 
         for tile in parsed_tiles.iter() {
@@ -104,7 +106,7 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
                 payload_range_owner,
                 tile,
                 header,
-                parsed_tiles.structural_workspace_bytes(),
+                retained.live_bytes(),
                 ctx,
                 component_count_error,
                 &mut next_band_id,
@@ -114,16 +116,13 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
                 Some(&mut classic_collector),
                 false,
             )?;
-            validate_and_strip_referenced_payload_owners(
-                &mut plans.component_plans,
-                &tile_payloads,
-            )?;
+            validate_referenced_payload_records(&plans.component_plans, &tile_payloads)?;
             validate_and_strip_classic_payload_owners(
                 &mut plans.component_plans,
                 tile_classic_payloads.len(),
             )?;
             let record_count = tile_payloads.len();
-            append_decode_elements(&mut payloads, &mut tile_payloads)?;
+            append_retained_records(&mut retained, &mut payloads, &mut tile_payloads)?;
             let payload_records = payload_record_span(first_record, record_count)?;
             let (decoded_rect, destination_rect) =
                 color_plan_rects::<COMPONENT_COUNT>(&plans.component_plans, output_rect)?;

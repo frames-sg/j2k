@@ -3,6 +3,63 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.12.0] - 2026-10-06
+
+- Breaking (experimental `j2k-cuda-j2k-engine`):
+  `J2kCudaEngine::upload_j2k_decode_payload_with_pool` and
+  `upload_htj2k_decode_resources_with_tables_and_pool` take the payload as
+  parts (`&[&[u8]]`) instead of one slice; pass `&[payload]` for a single
+  buffer. `CudaQueuedHtj2kCleanupGroup::new` takes two more `usize`
+  arguments. This requires a minor release.
+- Raises the minimum supported Rust version to 1.99.0. `j2k-types` and
+  `j2k-codec-math`, which the CUDA kernels share, still build with Rust 1.96.
+- CUDA color and grayscale batches decoded from encoded bytes plan images in
+  parallel and no longer concatenate payloads into one shared buffer.
+  Single-tile RGB images whose blocks are cleanup-only upload straight from
+  the codestream into pinned memory; other inputs are copied into a per-image
+  buffer first. Batches built from prepared native color plans still use one
+  shared buffer.
+- Color batches of more than 4 images and 16 MiB are decoded in groups of 4,
+  planning the next group while the current one runs. Images of different
+  shapes and bit depths share one batched wavelet and store sequence.
+- Decode planning no longer allocates host coefficient buffers, which lowers
+  CUDA host memory use, and code blocks with no data are skipped.
+- CUDA HTJ2K batches whose blocks are all cleanup-only decode with two
+  kernels; batches with refinement passes keep the single kernel. Full-image
+  RGB8 and RGBA8 batches finish the last wavelet step together with color
+  conversion and reuse pooled output buffers.
+- CUDA queues every pooled pinned upload on a separate transfer stream, and
+  fills pinned upload memory from up to four threads for uploads over 4 MiB.
+- CUDA integer output from irreversible (9/7) images is rounded before the
+  level shift, as the CPU decoder does. Before, a few samples could differ by
+  one from the CPU output.
+- A CUDA session keeps up to 2,048 idle batch buffers (2 GiB) for reuse, and
+  the pinned staging cache keeps up to 32 buffers instead of 8.
+- Dropping a pooled RGB8 or RGBA8 CUDA surface returns its memory to the
+  session pool without synchronizing. Keep the surface alive until other
+  streams are done with `device_ptr`.
+- Classic (non-HT) CUDA block decoding keeps its lookup tables in on-chip
+  memory and skips stripe columns that are already fully decoded.
+- A failing GPU job in a CUDA color batch is reported as `CudaTier1JobFailed`
+  with its source image and job index, whatever the batch size.
+- Starting a pinned-upload transaction in `j2k-cuda-runtime` on a thread that
+  already holds one returns an error instead of deadlocking.
+- Metal classic RGB batches run the Tier-1 work of every prepared group in
+  one GPU dispatch, with code blocks packed into SIMD groups by estimated
+  cost. The 24-image Kodak batch decodes GPU-only in about 64 ms on an M4 Pro,
+  down from 103 ms. `MetalBatchDecoder::submit_prepared_groups_into` submits
+  several prepared groups through that shared dispatch.
+- `MetalBatchDecoder::decode_prepared_cooperative` decodes the Tier-1 work of
+  part of a large classic RGB8 group on a bounded number of CPU workers while
+  Metal decodes the rest. `MetalDecodeDispatchReport` gains
+  `cpu_tier1_images`.
+- Metal plan preparation no longer copies classic code-block data into GPU
+  buffers that the batch routes never read. Routes that need them build them
+  on first use.
+- Calling `MetalBatchDecoder::submit_prepared_group_into` once per group is
+  slower than before for multi-group batches (about 140 ms vs 103 ms on the
+  Kodak batch). Use `submit_prepared_groups_into` for those.
+
 ## [0.11.3] - 2026-09-28
 
 - Bounds native JPEG 2000 tag-tree construction to populated branches. Tall,

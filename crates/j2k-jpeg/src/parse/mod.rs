@@ -2,7 +2,7 @@
 
 //! JPEG marker-level parser. Walks the byte stream until the end of the
 //! headers (the SOS marker) and populates [`crate::info::Info`] plus the
-//! parsed DQT / DHT / DRI / APP14 / SOS state. See spec Section 3 phase 1.
+//! parsed DQT / DHT / DRI / APP14 / SOS state.
 
 pub(crate) mod adobe_app14;
 pub(crate) mod allocation;

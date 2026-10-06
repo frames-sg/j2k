@@ -63,10 +63,9 @@ fn write_component_rows_u16(
     for y in 0..height {
         let src = &plane.samples()[y * width..(y + 1) * width];
         let dst = &mut out[y * stride..y * stride + width * 2];
-        for (sample, destination) in src.iter().zip(dst.chunks_exact_mut(2)) {
-            destination.copy_from_slice(
-                &component_sample_as_u16(*sample, plane.bit_depth(), plane.signed()).to_le_bytes(),
-            );
+        for (sample, destination) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
+            *destination =
+                component_sample_as_u16(*sample, plane.bit_depth(), plane.signed()).to_le_bytes();
         }
     }
 }
@@ -358,9 +357,8 @@ fn convert_or_copy_u16(
             dst_row.copy_from_slice(src_row);
             continue;
         }
-        for (sample, dst_sample) in src_row.iter().zip(dst_row.chunks_exact_mut(2)) {
-            let widened = widen_u8_sample_to_u16(*sample, bit_depth);
-            dst_sample.copy_from_slice(&widened.to_le_bytes());
+        for (sample, dst_sample) in src_row.iter().zip(dst_row.as_chunks_mut::<2>().0) {
+            *dst_sample = widen_u8_sample_to_u16(*sample, bit_depth).to_le_bytes();
         }
     }
 }

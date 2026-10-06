@@ -121,6 +121,14 @@ pub struct Image<'a> {
     pub(crate) has_alpha: bool,
     /// The color space of the image.
     pub(crate) color_space: ColorSpace,
+    /// Codec-owned bytes already live when this image was parsed, set by
+    /// `new_with_retained_baseline`. Only the planning entry points charge it:
+    /// `prepare_region_decoder_with_context` and the `build_*_plan*_with_context`
+    /// direct and referenced planners. Pixel decode entry points (`decode*`,
+    /// `decode_native*`, `decode_into`) charge only this image's metadata;
+    /// callers that need the baseline there pass it explicitly through the
+    /// `*_with_retained_capacity` variants.
+    retained_baseline_bytes: usize,
 }
 
 /// Scoped region decoder that retains one parsed tile graph across calls.
@@ -188,7 +196,7 @@ impl<'a> Image<'a> {
         &'image self,
         decoder_context: &'context mut DecoderContext<'a>,
     ) -> Result<PreparedRegionDecoder<'image, 'context, 'a>> {
-        let retained_image_bytes = self.retained_metadata_bytes()?;
+        let retained_image_bytes = self.retained_planning_bytes()?;
         let tiles = j2c::prepare_region_tiles(
             self.codestream,
             &self.header,
@@ -239,11 +247,19 @@ impl<'a> Image<'a> {
             used_lenient_metadata_recovery,
             has_alpha,
             color_space,
+            retained_baseline_bytes,
         })
     }
 
     pub(crate) fn retained_metadata_bytes(&self) -> Result<usize> {
         retained_metadata_bytes(&self.header, &self.boxes, &self.color_space)
+    }
+
+    pub(crate) fn retained_planning_bytes(&self) -> Result<usize> {
+        allocation::combine_retained_bytes(
+            self.retained_baseline_bytes,
+            self.retained_metadata_bytes()?,
+        )
     }
 
     /// Return the allocator capacities retained by this parsed image.
@@ -312,7 +328,8 @@ impl<'a> Image<'a> {
     /// Parse an image while accounting already-live codec-owned allocations.
     ///
     /// This adapter is used when validation parses another image while an
-    /// encoded output and earlier parsed metadata remain live.
+    /// encoded output and earlier parsed metadata remain live. The baseline is
+    /// retained for later tile and direct-plan allocation phases on this image.
     ///
     /// # Errors
     ///
@@ -400,6 +417,13 @@ impl<'a> Image<'a> {
                 EnumeratedColorspace::Sycc | EnumeratedColorspace::CieLab(_)
             ))
         )
+    }
+
+    /// Number of tiles in the codestream's tile grid.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn tile_count(&self) -> u32 {
+        self.header.size_data.num_tiles()
     }
 
     /// Decode the image and return its decoded result as a `Vec<u8>`, with each

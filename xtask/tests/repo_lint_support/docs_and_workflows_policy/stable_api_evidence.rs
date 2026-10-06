@@ -16,11 +16,11 @@ struct SummaryEvidence {
 fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
     let root = repo_root();
     let report = fs::read_to_string(
-        root.join("docs/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md"),
+        root.join("xtask/release-evidence/public-api/reviewed-public-api-diff-0.8.1.md"),
     )
     .expect("read reviewed API diff report");
     let config_source = fs::read_to_string(
-        root.join("docs/release-evidence/public-api/public-api-review-0.8.1.yml"),
+        root.join("xtask/release-evidence/public-api/public-api-review-0.8.1.yml"),
     )
     .expect("read public API review config");
     let config: serde_yaml_ng::Value =

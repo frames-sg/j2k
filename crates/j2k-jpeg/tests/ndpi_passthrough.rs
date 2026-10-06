@@ -557,7 +557,7 @@ fn read_classic_ifd(file: &mut File, endian: Endian, offset: u64) -> io::Result<
     let entry_count = usize::from(endian.u16(&count_bytes));
     let bytes = read_exact_at(file, offset + 2, entry_count * 12 + 4)?;
     let mut entries = Vec::with_capacity(entry_count);
-    for chunk in bytes[..entry_count * 12].chunks_exact(12) {
+    for chunk in bytes[..entry_count * 12].as_chunks::<12>().0 {
         let mut inline_value = [0u8; 8];
         inline_value[..4].copy_from_slice(&chunk[8..12]);
         entries.push(IfdEntry {
@@ -591,7 +591,7 @@ fn read_big_ifd(file: &mut File, endian: Endian, offset: u64) -> io::Result<Ifd>
     }
     let bytes = read_exact_at(file, offset + 8, entry_count * 20 + 8)?;
     let mut entries = Vec::with_capacity(entry_count);
-    for chunk in bytes[..entry_count * 20].chunks_exact(20) {
+    for chunk in bytes[..entry_count * 20].as_chunks::<20>().0 {
         let mut inline_value = [0u8; 8];
         inline_value.copy_from_slice(&chunk[12..20]);
         entries.push(IfdEntry {

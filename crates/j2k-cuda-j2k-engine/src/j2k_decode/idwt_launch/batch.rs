@@ -2,19 +2,19 @@
 
 use crate::{driver::CuDevicePtr, error::CudaError};
 
-use super::super::CudaJ2kIdwtBatchKernelMode;
+use super::super::{idwt::launch_validation::IdwtBatchLaunchPlan, CudaJ2kIdwtBatchKernelMode};
 
 impl crate::J2kCudaEngine<'_> {
     pub(in crate::j2k_decode) fn launch_j2k_idwt_batch_interleave_horizontal_ptr(
         &self,
-        mode: CudaJ2kIdwtBatchKernelMode,
+        plan: IdwtBatchLaunchPlan,
         jobs_ptr: CuDevicePtr,
-        max_width: usize,
-        max_height: usize,
         job_count: usize,
         synchronize_each_launch: bool,
     ) -> Result<(), CudaError> {
-        match mode {
+        let max_width = plan.max_width as usize;
+        let max_height = plan.max_height as usize;
+        match plan.kernel_mode {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
                 .launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
                     jobs_ptr,
@@ -34,7 +34,9 @@ impl crate::J2kCudaEngine<'_> {
             CudaJ2kIdwtBatchKernelMode::Generic => self
                 .launch_j2k_idwt_interleave_horizontal_multi_ptr(
                     jobs_ptr,
+                    max_width,
                     max_height,
+                    plan.tiled_horizontal_blocks,
                     job_count,
                     synchronize_each_launch,
                 ),
@@ -43,14 +45,14 @@ impl crate::J2kCudaEngine<'_> {
 
     pub(in crate::j2k_decode) fn launch_j2k_idwt_batch_vertical_ptr(
         &self,
-        mode: CudaJ2kIdwtBatchKernelMode,
+        plan: IdwtBatchLaunchPlan,
         jobs_ptr: CuDevicePtr,
-        max_width: usize,
-        max_height: usize,
         job_count: usize,
         synchronize_each_launch: bool,
     ) -> Result<(), CudaError> {
-        match mode {
+        let max_width = plan.max_width as usize;
+        let max_height = plan.max_height as usize;
+        match plan.kernel_mode {
             CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
                 .launch_j2k_idwt_vertical_53_multi_ptr(
                     jobs_ptr,
@@ -70,6 +72,7 @@ impl crate::J2kCudaEngine<'_> {
             CudaJ2kIdwtBatchKernelMode::Generic => self.launch_j2k_idwt_vertical_multi_ptr(
                 jobs_ptr,
                 max_width,
+                max_height,
                 job_count,
                 synchronize_each_launch,
             ),
@@ -78,26 +81,20 @@ impl crate::J2kCudaEngine<'_> {
 
     pub(in crate::j2k_decode) fn launch_j2k_idwt_batch_mode_ptr(
         &self,
-        mode: CudaJ2kIdwtBatchKernelMode,
+        plan: IdwtBatchLaunchPlan,
         jobs_ptr: CuDevicePtr,
-        max_width: usize,
-        max_height: usize,
         job_count: usize,
         synchronize_each_launch: bool,
     ) -> Result<usize, CudaError> {
         self.launch_j2k_idwt_batch_interleave_horizontal_ptr(
-            mode,
+            plan,
             jobs_ptr,
-            max_width,
-            max_height,
             job_count,
             synchronize_each_launch,
         )?;
         self.launch_j2k_idwt_batch_vertical_ptr(
-            mode,
+            plan,
             jobs_ptr,
-            max_width,
-            max_height,
             job_count,
             synchronize_each_launch,
         )?;

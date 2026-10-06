@@ -336,5 +336,5 @@ fn unpublished_dependency_validation_skips_external_edges_and_accepts_path_only_
     validate_unpublished_dependencies("consumer", &package, &unpublished, &mut errors)
         .expect("valid dependency records");
 
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [std::string::String; 0]);
 }

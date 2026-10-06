@@ -3,7 +3,8 @@ name = "j2k-codec-math"
 description = "no_std codec constants, generated fragments, and allocation-free helper algorithms for j2k"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Shared CUDA device code must support the compiler pinned by CUDA-Oxide.
+rust-version = "1.96"
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -20,7 +21,7 @@ name = "j2k_codec_math"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-types = { path = "../j2k-types", version = "=0.11.3" }
+j2k-types = { path = "../j2k-types", version = "=0.12.0" }
 
 [lints]
 workspace = true

@@ -104,7 +104,10 @@ end_of_record
 #[test]
 fn eighty_percent_changed_line_coverage_passes_exactly() {
     let result = synthetic_result(5, 4);
-    assert!(coverage_violations(CoverageLane::Cuda, &result).is_empty());
+    assert_eq!(
+        coverage_violations(CoverageLane::Cuda, &result),
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]

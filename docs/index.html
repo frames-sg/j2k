@@ -68,7 +68,7 @@
             <a class="button" href="https://docs.rs/j2k">API docs <span aria-hidden="true">↗</span></a>
             <a class="text-link" href="https://github.com/frames-sg/j2k">Repository <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="release-line"><span class="release-label">Release status</span><span class="release-copy">See the <a href="https://github.com/frames-sg/j2k/blob/main/docs/release.md">release policy</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</span></p>
+          <p class="release-line"><span class="release-label">Release status</span><span class="release-copy">See the <a href="https://github.com/frames-sg/j2k/blob/main/CHANGELOG.md">changelog</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</span></p>
         </div>
 
         <aside class="signal-console" aria-label="J2K routing overview">
@@ -128,7 +128,7 @@
             <span class="card-number" aria-hidden="true">01</span>
             <p class="card-kicker">Safety</p>
             <h3>Safe public Rust APIs</h3>
-            <p>The public codec surface is safe Rust. Audited unsafe code is isolated at FFI, GPU integration, architecture-specific SIMD/intrinsic, allocation, and bounded pointer or buffer boundaries; the <a href="https://github.com/frames-sg/j2k/blob/main/docs/unsafe-audit.md">unsafe audit</a> is authoritative.</p>
+            <p>The public codec surface is safe Rust. Unsafe code is limited to FFI, GPU integration, architecture-specific SIMD/intrinsic, allocation, and bounded pointer or buffer boundaries, and every host-side unsafe block explains why it is sound.</p>
           </article>
           <article class="card feature-card">
             <span class="card-number" aria-hidden="true">02</span>

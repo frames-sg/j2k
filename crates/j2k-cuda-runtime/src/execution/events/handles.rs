@@ -3,10 +3,10 @@
 use crate::{build_flags::CUDA_ERROR_NOT_READY, driver::CuStream};
 use crate::{context::CudaContext, driver::CuEvent, error::CudaError};
 
-#[cfg(test)]
 mod stream;
-#[cfg(test)]
 pub(crate) use stream::CudaStream;
+#[cfg(test)]
+pub(crate) use stream::CU_STREAM_DEFAULT;
 
 /// CUDA event RAII handle for timing and synchronization.
 #[derive(Debug)]

@@ -33,29 +33,63 @@ pub(in crate::decoder) use self::single::{
 };
 #[cfg(feature = "cuda-runtime")]
 use self::store::{
-    can_fuse_mct_store_for_stores, dispatch_color_store, prepare_rgb8_mct_batch_store,
-    rgb8_mct_batch_store_target, run_color_mct, validate_color_stores, ColorStoreInputs,
+    can_fuse_mct_store_for_stores, dispatch_color_store, final_vertical_fuses_with_store,
+    prepare_rgb8_mct_batch_store, rgb8_mct_batch_store_target, run_color_mct,
+    validate_color_stores, ColorStoreInputs,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::decode_profile::aggregate_decode_reports;
 #[cfg(feature = "cuda-runtime")]
-use super::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
+use super::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile_and_cap;
 #[cfg(feature = "cuda-runtime")]
 use super::resident::{
-    can_batch_color_idwt, decode_cuda_component_subbands_with_resources,
-    finish_cuda_component_decode, pooled_cuda_buffer, run_color_component_idwt_batches,
-    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps,
+    decode_cuda_component_subbands_with_resources, finish_cuda_component_decode,
+    pooled_cuda_buffer, run_color_component_idwt_batches, run_component_cleanup_dequant_batches,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::{
-    cuda_error, cuda_range_storage, profile, Arc, BackendKind, CudaBufferPool,
-    CudaComponentDecodeWork, CudaDecodedComponent, CudaDeviceBuffer, CudaExecutionStats,
-    CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession,
-    CudaSurfaceStats, Error, J2kDecoder, NativeDecoderContext, PixelFormat, Rect, Storage, Surface,
-    SurfaceResidency, CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE, CUDA_HTJ2K_KERNELS_NOT_READY,
+    cuda_error, profile, Arc, BackendKind, CudaBufferPool, CudaComponentDecodeWork,
+    CudaDecodedComponent, CudaDeviceBuffer, CudaExecutionStats, CudaHtj2kColorDecodePlans,
+    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession, CudaSurfaceStats, Error, J2kDecoder,
+    NativeDecoderContext, PixelFormat, Rect, Storage, Surface, SurfaceResidency,
+    CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 #[cfg(feature = "cuda-runtime")]
 use crate::allocation::HostPhaseBudget;
+
+/// Allocates decode work for every component of every color image, in batch
+/// order.
+#[cfg(feature = "cuda-runtime")]
+fn build_color_component_work(
+    context: &j2k_cuda_runtime::CudaContext,
+    pool: &CudaBufferPool,
+    colors: &[CudaHtj2kColorDecodePlans],
+    collect_stage_timings: bool,
+    budget: &mut HostPhaseBudget,
+) -> Result<Vec<CudaComponentDecodeWork>, Error> {
+    let component_count = colors
+        .iter()
+        .try_fold(0usize, |count, color| {
+            count.checked_add(color.components.len())
+        })
+        .ok_or(Error::HostAllocationFailed {
+            bytes: usize::MAX,
+            what: "j2k CUDA color component work",
+        })?;
+    let mut component_work = budget.try_vec_with_capacity(component_count)?;
+    for color in colors {
+        for plan in &color.components {
+            component_work.push(decode_cuda_component_subbands_with_resources(
+                context,
+                plan,
+                pool,
+                collect_stage_timings,
+                budget,
+            )?);
+        }
+    }
+    Ok(component_work)
+}
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 std::thread_local! {

@@ -167,8 +167,8 @@ impl Decoder<'_> {
         // Every component must declare H,V in 1..=4 per T.81 §B.2.2, and max_h
         // must actually divide every component's H (same for V). Malformed
         // streams can set H=0 (div-by-zero in upsample ratio), non-divisors
-        // (arbitrary ratios M2 handles), or ratios that don't produce planes
-        // that cover the image width.
+        // (unsupported arbitrary ratios), or ratios that don't produce
+        // planes that cover the image width.
         for (h, v) in header.sampling.iter() {
             if h == 0 || v == 0 || h > 4 || v > 4 {
                 return Err(JpegError::NotImplemented { sof: info.sof_kind });

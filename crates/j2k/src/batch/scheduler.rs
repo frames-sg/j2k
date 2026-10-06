@@ -247,6 +247,27 @@ mod tests {
         let mut jobs: [u8; 0] = [];
         let outcomes = decode_batch(&mut jobs, TileBatchOptions::default(), |_, _, _| Ok(()))
             .expect("empty batch");
-        assert!(outcomes.is_empty());
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+    }
+
+    #[test]
+    fn parallel_panic_is_reported_after_other_chunks_finish() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for workers in [2, 4] {
+            let completed = AtomicUsize::new(0);
+            let mut jobs = [0, 1, 2, 3, 4, 5, 6, 7];
+            let plan = select_batch_plan(jobs.len(), workers).unwrap();
+            let error = run_chunks_scoped(&mut jobs, plan, None, |_, jobs, _| {
+                assert_ne!(jobs[0], 0, "first chunk panics");
+                completed.fetch_add(jobs.len(), Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                BatchInfrastructureError::WorkerPanicked { worker: 0 }
+            ));
+            assert_eq!(completed.load(Ordering::Relaxed), 8 - plan.chunk_size);
+        }
     }
 }

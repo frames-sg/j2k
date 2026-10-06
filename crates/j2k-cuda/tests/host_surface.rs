@@ -4,7 +4,7 @@ use j2k_core::{
     TileBatchDecodeDevice, TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
-use j2k_native::{encode, EncodeOptions};
+use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::{
     cuda_device_unavailable_is_skip, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
     htj2k_gray8_97_fixture, htj2k_gray8_fixture, htj2k_rgb8_97_fixture,
@@ -1631,48 +1631,162 @@ fn decode_tiles_to_device_cpu_preserves_host_residency() {
 
 #[test]
 fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
-    let first = fixture_ht_rgb8_pattern(32, 32, 17);
-    let second = fixture_ht_rgb8_pattern(32, 32, 29);
-    let inputs = [first.as_slice(), second.as_slice()];
+    // Cross tile boundaries, reflected edges and the single-row fallback.
+    let cases = [
+        (32, 32, fixture_ht_rgb8_pattern(32, 32, 17)),
+        (33, 65, fixture_ht_rgb8_pattern(33, 65, 29)),
+        (127, 129, fixture_ht_rgb8_pattern(127, 129, 43)),
+        (1, 65, fixture_ht_rgb8_pattern(1, 65, 51)),
+        (65, 1, fixture_ht_rgb8_pattern(65, 1, 61)),
+        (63, 67, fixture_classic(63, 67, 3, false)),
+        (65, 63, htj2k_rgb8_97_fixture(65, 63)),
+    ];
+    let mut ctx = j2k_cuda::J2kContext::default();
+    let mut pool = j2k_cuda::J2kScratchPool::new();
+    for (width, height, first) in cases {
+        let second = if width == 32 && height == 32 {
+            fixture_ht_rgb8_pattern(width, height, 73)
+        } else {
+            first.clone()
+        };
+        let inputs = [first.as_slice(), second.as_slice()];
+
+        let surfaces = match Codec::decode_tiles_to_device(
+            &mut ctx,
+            &mut pool,
+            &inputs,
+            PixelFormat::Rgb8,
+            BackendRequest::Cuda,
+        ) {
+            Ok(surfaces) => surfaces,
+            Err(Error::CudaUnavailable) if cuda_device_unavailable_is_skip(module_path!()) => {
+                return;
+            }
+            #[cfg(feature = "cuda-runtime")]
+            Err(Error::CudaRuntime { .. }) if cuda_device_unavailable_is_skip(module_path!()) => {
+                return;
+            }
+            Err(error) => panic!("strict CUDA RGB8 batch decode failed: {error}"),
+        };
+
+        assert_eq!(surfaces.len(), inputs.len());
+        for surface in &surfaces {
+            assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
+            assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+            assert_eq!(surface.as_host_bytes(), None);
+            assert_cuda_batch_surface(surface);
+        }
+
+        // A live surface must keep its allocation out of the session pool even
+        // when a later batch completes before the first batch is downloaded.
+        let later = Codec::decode_tiles_to_device(
+            &mut ctx,
+            &mut pool,
+            &[inputs[1], inputs[0]],
+            PixelFormat::Rgb8,
+            BackendRequest::Cuda,
+        )
+        .expect("decode with earlier surfaces still live");
+        drop(later);
+        let downloaded =
+            j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download tight batch");
+        let expected = inputs
+            .iter()
+            .flat_map(|input| {
+                let mut out = vec![0u8; (width * height * 3) as usize];
+                J2kDecoder::new(input)
+                    .expect("host decoder")
+                    .decode_into(&mut out, (width * 3) as usize, PixelFormat::Rgb8)
+                    .expect("host decode");
+                out
+            })
+            .collect::<Vec<_>>();
+        let mismatch = downloaded.iter().zip(&expected).position(|(a, b)| a != b);
+        assert_eq!(downloaded.len(), expected.len());
+        assert_eq!(
+            mismatch, None,
+            "{width}x{height} first mismatching byte: {mismatch:?}"
+        );
+    }
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_reused_pool_clears_empty_and_sparse_ht_bands() {
+    const WIDTH: u32 = 256;
+    const HEIGHT: u32 = 256;
+    const BATCH_SIZE: usize = 2;
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+
+    let encode_fixture = |pixels: &[u8]| {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        };
+        encode_htj2k(pixels, WIDTH, HEIGHT, 3, 8, false, &options)
+            .expect("encode HT coefficient-clear fixture")
+    };
+
+    let constant_pixels = vec![128; (WIDTH * HEIGHT * 3) as usize];
+    let mut sparse_pixels = constant_pixels.clone();
+    // A corner-localized patch populates one of the four code blocks in each
+    // subband, leaving the other three dependent on explicit zero filling.
+    for y in 16..32 {
+        for x in 16..32 {
+            let offset = ((y * WIDTH + x) * 3) as usize;
+            sparse_pixels[offset] = ((x * 17 + y * 7) & 0xff) as u8;
+            sparse_pixels[offset + 1] = ((x * 29 + y * 11) & 0xff) as u8;
+            sparse_pixels[offset + 2] = ((x * 43 + y * 13) & 0xff) as u8;
+        }
+    }
+
+    let dense = fixture_ht_rgb8_pattern(WIDTH, HEIGHT, 43);
+    let empty = encode_fixture(&constant_pixels);
+    let sparse = encode_fixture(&sparse_pixels);
+    let cases = [
+        ("dense before", dense.as_slice()),
+        ("empty", empty.as_slice()),
+        ("sparse", sparse.as_slice()),
+        ("dense after", dense.as_slice()),
+    ];
     let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
-    let surfaces = match Codec::decode_tiles_to_device(
-        &mut ctx,
-        &mut pool,
-        &inputs,
-        PixelFormat::Rgb8,
-        BackendRequest::Cuda,
-    ) {
-        Ok(surfaces) => surfaces,
-        Err(Error::CudaUnavailable) if cuda_device_unavailable_is_skip(module_path!()) => return,
-        #[cfg(feature = "cuda-runtime")]
-        Err(Error::CudaRuntime { .. }) if cuda_device_unavailable_is_skip(module_path!()) => return,
-        Err(error) => panic!("strict CUDA RGB8 batch decode failed: {error}"),
-    };
+    for (label, bytes) in cases {
+        let inputs = [bytes; BATCH_SIZE];
+        let surfaces = Codec::decode_tiles_to_device(
+            &mut ctx,
+            &mut pool,
+            &inputs,
+            PixelFormat::Rgb8,
+            BackendRequest::Cuda,
+        )
+        .unwrap_or_else(|error| panic!("{label} strict CUDA batch decode failed: {error}"));
+        let actual =
+            j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download tight batch");
 
-    assert_eq!(surfaces.len(), inputs.len());
-    for surface in &surfaces {
-        assert_eq!(surface.backend_kind(), j2k_core::BackendKind::Cuda);
-        assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
-        assert_eq!(surface.as_host_bytes(), None);
-        assert_cuda_batch_surface(surface);
+        let mut expected = vec![0; (WIDTH * HEIGHT * 3) as usize];
+        J2kDecoder::new(bytes)
+            .expect("host decoder")
+            .decode_into(&mut expected, (WIDTH * 3) as usize, PixelFormat::Rgb8)
+            .expect("host decode");
+        let expected = expected.repeat(BATCH_SIZE);
+        let first_mismatch = actual
+            .iter()
+            .zip(&expected)
+            .position(|(lhs, rhs)| lhs != rhs);
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label} output length mismatch"
+        );
+        assert_eq!(
+            first_mismatch, None,
+            "{label} first mismatching byte: {first_mismatch:?}"
+        );
     }
-
-    let downloaded =
-        j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download tight batch");
-    let expected = inputs
-        .iter()
-        .flat_map(|input| {
-            let mut out = vec![0u8; 32 * 32 * 3];
-            J2kDecoder::new(input)
-                .expect("host decoder")
-                .decode_into(&mut out, 32 * 3, PixelFormat::Rgb8)
-                .expect("host decode");
-            out
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(downloaded, expected);
 }
 
 #[test]
@@ -1766,46 +1880,77 @@ fn decode_tiles_to_device_explicit_cuda_repeated_large_classic_gray_matches_host
     let width_u32 = u32::try_from(WIDTH).expect("fixture width fits u32");
     let height_u32 = u32::try_from(HEIGHT).expect("fixture height fits u32");
     let classic = fixture_classic(width_u32, height_u32, 1, true);
-    let mut single = vec![0; WIDTH * HEIGHT];
-    J2kDecoder::new(&classic)
-        .expect("host decoder")
-        .decode_into(&mut single, WIDTH, PixelFormat::Gray8)
-        .expect("host repeated grayscale reference");
+    let mut sparse_pixels = vec![128; WIDTH * HEIGHT];
+    for y in HEIGHT / 2 - 16..HEIGHT / 2 + 16 {
+        for x in WIDTH / 2 - 16..WIDTH / 2 + 16 {
+            sparse_pixels[y * WIDTH + x] =
+                u8::try_from((x * 29 + y * 17) & 0xff).expect("masked to one byte");
+        }
+    }
+    let sparse = encode(
+        &sparse_pixels,
+        width_u32,
+        height_u32,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode sparse classic grayscale fixture");
+    let cases = [
+        ("textured", classic.as_slice()),
+        ("sparse", sparse.as_slice()),
+        ("textured reuse", classic.as_slice()),
+    ]
+    .map(|(label, bytes)| {
+        let mut expected = vec![0; WIDTH * HEIGHT];
+        J2kDecoder::new(bytes)
+            .expect("host decoder")
+            .decode_into(&mut expected, WIDTH, PixelFormat::Gray8)
+            .expect("host repeated grayscale reference");
+        (label, bytes, expected)
+    });
 
     for (profiled, batch_size) in [(true, 1), (false, 1), (false, 2), (false, 16)] {
-        let inputs = vec![classic.as_slice(); batch_size];
         let mut session = CudaSession::default();
-        let surfaces = if profiled {
-            J2kDecoder::decode_batch_to_device_with_session_and_profile(
-                &inputs,
-                PixelFormat::Gray8,
-                &mut session,
-            )
-            .map(|(surfaces, _report)| surfaces)
-        } else {
-            J2kDecoder::decode_batch_to_device_with_session(
-                &inputs,
-                PixelFormat::Gray8,
-                &mut session,
-            )
-        }
-        .expect("strict CUDA repeated classic grayscale batch");
-        assert_eq!(surfaces.len(), batch_size);
-        for surface in &surfaces {
-            assert_resident_cuda_surface(surface);
-        }
+        for (label, bytes, single) in &cases {
+            let inputs = vec![*bytes; batch_size];
+            let surfaces = if profiled {
+                J2kDecoder::decode_batch_to_device_with_session_and_profile(
+                    &inputs,
+                    PixelFormat::Gray8,
+                    &mut session,
+                )
+                .map(|(surfaces, _report)| surfaces)
+            } else {
+                J2kDecoder::decode_batch_to_device_with_session(
+                    &inputs,
+                    PixelFormat::Gray8,
+                    &mut session,
+                )
+            }
+            .expect("strict CUDA repeated classic grayscale batch");
+            assert_eq!(surfaces.len(), batch_size);
+            for surface in &surfaces {
+                assert_resident_cuda_surface(surface);
+            }
 
-        let actual = j2k_cuda::Surface::download_batch_tight(&surfaces)
-            .expect("download repeated gray batch");
-        let expected = single.repeat(batch_size);
-        let first_mismatch = actual
-            .iter()
-            .zip(&expected)
-            .position(|(lhs, rhs)| lhs != rhs);
-        assert_eq!(
-            first_mismatch, None,
-            "profiled={profiled} batch size {batch_size} first mismatch: {first_mismatch:?}"
-        );
+            let actual = j2k_cuda::Surface::download_batch_tight(&surfaces)
+                .expect("download repeated gray batch");
+            let expected = single.repeat(batch_size);
+            let first_mismatch = actual
+                .iter()
+                .zip(&expected)
+                .position(|(lhs, rhs)| lhs != rhs);
+            assert_eq!(
+                first_mismatch, None,
+                "{label}, profiled={profiled}, batch size {batch_size} first mismatch: {first_mismatch:?}"
+            );
+        }
     }
 }
 

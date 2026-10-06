@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{plan_ht_gpu_job_chunks, HtGpuJobChunkLimits, HtGpuJobPassBucket};
+use j2k_core::{
+    plan_ht_gpu_job_chunks_with_external_live_bytes, HtGpuJobChunkLimits, HtGpuJobPassBucket,
+};
 use j2k_cuda_j2k_engine::{
     CudaHtj2kDecodeResources, CudaQueuedHtj2kCleanup, CudaQueuedHtj2kCleanupGroup, J2kCudaEngine,
 };
@@ -11,13 +13,19 @@ mod targets;
 
 use self::{
     kernel::enqueue_chunk_kernel,
-    materialize::{materialize_chunk_payload, select_chunk_jobs},
+    materialize::{
+        build_logical_payload, materialize_chunk_payload, select_chunk_jobs, LogicalPayload,
+        MaterializedHtj2kChunk,
+    },
     targets::build_chunk_targets,
 };
 
 use super::super::super::{
     cuda_error, CudaBufferPool, CudaComponentDecodeWork, CudaContext,
     CudaHtj2kDecodeTableResources, Error, CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+};
+use super::super::cleanup_dequant::{
+    retire_jobless_coefficient_clears, with_pending_coefficient_clears,
 };
 use super::planning::{chunk_requests, flatten_job_locations, Htj2kJobLocation};
 use super::{ChunkedHtj2kCleanup, Htj2kChunkJobIdentity};
@@ -43,94 +51,94 @@ fn chunk_plan_invariant_error() -> Error {
 pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
     context: &CudaContext,
     tables: Option<&CudaHtj2kDecodeTableResources>,
-    shared_payload: &[u8],
+    payload_parts: &[&[u8]],
     component_work: &mut [CudaComponentDecodeWork],
     component_source_indices: &[usize],
     pool: &CudaBufferPool,
     limits: HtGpuJobChunkLimits,
     live_host_bytes: usize,
 ) -> Result<ChunkedHtj2kCleanup, Error> {
-    let locations = flatten_job_locations(component_work, component_source_indices)?;
-    if locations.is_empty() {
-        return Ok(ChunkedHtj2kCleanup {
-            group: None,
-            resources: Vec::new(),
-            identities: Vec::new(),
-            chunk_count: 0,
-            dequant_chunk_count: 0,
-        });
-    }
-    let tables = tables.ok_or(Error::capability_rejected(
-        j2k_core::CapabilityRejection::contract_violation(
-            "CUDA HTJ2K chunks require resident cleanup lookup tables",
-        ),
-    ))?;
-    let requests = chunk_requests(component_work, &locations)?;
-    let plan = plan_ht_gpu_job_chunks(&requests, limits)?;
-    let status_group =
-        CudaQueuedHtj2kCleanupGroup::new(context, pool, locations.len()).map_err(cuda_error)?;
-    let mut owner = ChunkedHtj2kCleanup {
-        group: Some(status_group),
-        resources: Vec::new(),
-        identities: Vec::new(),
-        chunk_count: 0,
-        dequant_chunk_count: 0,
-    };
-    owner
-        .resources
-        .try_reserve_exact(plan.chunks().len())
-        .map_err(|_| Error::HostAllocationFailed {
-            bytes: plan
-                .chunks()
-                .len()
-                .saturating_mul(core::mem::size_of::<CudaHtj2kDecodeResources>()),
-            what: "CUDA retained HTJ2K chunks",
-        })?;
-    owner
-        .identities
-        .try_reserve_exact(locations.len())
-        .map_err(|_| Error::HostAllocationFailed {
-            bytes: locations
-                .len()
-                .saturating_mul(core::mem::size_of::<Htj2kChunkJobIdentity>()),
-            what: "CUDA retained HTJ2K status identities",
-        })?;
+    with_pending_coefficient_clears(
+        context,
+        component_work,
+        false,
+        live_host_bytes,
+        |component_work, clear_enqueued| {
+            let mut retained_budget = HostPhaseBudget::with_live_bytes(
+                "CUDA retained HTJ2K chunk planning",
+                live_host_bytes,
+            )?;
+            let locations = flatten_job_locations(
+                component_work,
+                component_source_indices,
+                &mut retained_budget,
+            )?;
+            if locations.is_empty() {
+                retire_jobless_coefficient_clears(context, component_work, clear_enqueued)?;
+                return Ok(ChunkedHtj2kCleanup {
+                    group: None,
+                    resources: Vec::new(),
+                    identities: Vec::new(),
+                    chunk_count: 0,
+                    dequant_chunk_count: 0,
+                });
+            }
+            let tables = tables.ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "CUDA HTJ2K chunks require resident cleanup lookup tables",
+                ),
+            ))?;
+            let requests = chunk_requests(component_work, &locations, &mut retained_budget)?;
+            let plan = plan_ht_gpu_job_chunks_with_external_live_bytes(
+                &requests,
+                limits,
+                retained_budget.live_bytes(),
+            )?;
+            retained_budget.account_bytes(plan.retained_host_bytes())?;
+            let logical_payload = build_logical_payload(payload_parts, &mut retained_budget)?;
+            let (mut owner, mut accounted_group_host_bytes) = new_chunked_cleanup_owner(
+                context,
+                pool,
+                locations.len(),
+                plan.chunks().len(),
+                &mut retained_budget,
+            )?;
 
-    for (chunk_index, chunk) in plan.chunks().iter().copied().enumerate() {
-        let entries = plan
-            .chunk_entries(chunk_index)
-            .ok_or_else(chunk_plan_invariant_error)?;
-        let submission = enqueue_one_chunk(
-            context,
-            tables,
-            shared_payload,
-            component_work,
-            &locations,
-            entries,
-            chunk.bucket(),
-            chunk.payload_bytes(),
-            pool,
-            live_host_bytes,
-            owner
-                .group
-                .as_ref()
-                .ok_or_else(chunk_plan_invariant_error)?,
-            owner.identities.len(),
-        );
-        match submission {
-            Ok(submitted) => {
+            for (chunk_index, chunk) in plan.chunks().iter().copied().enumerate() {
+                let entries = plan
+                    .chunk_entries(chunk_index)
+                    .ok_or_else(chunk_plan_invariant_error)?;
+                let submission = enqueue_one_chunk(
+                    context,
+                    tables,
+                    &logical_payload,
+                    component_work,
+                    &locations,
+                    entries,
+                    chunk.bucket(),
+                    chunk.payload_bytes(),
+                    pool,
+                    retained_budget.live_bytes(),
+                    owner
+                        .group
+                        .as_ref()
+                        .ok_or_else(chunk_plan_invariant_error)?,
+                    owner.identities.len(),
+                );
                 let SubmittedHtj2kChunk {
                     cleanup,
                     resources,
                     identities,
-                } = submitted;
-                if let Err(error) = owner
-                    .group
-                    .as_mut()
-                    .ok_or_else(chunk_plan_invariant_error)?
-                    .retain(cleanup)
-                    .map_err(cuda_error)
-                {
+                } = match submission {
+                    Ok(submitted) => submitted,
+                    Err(error) => return Err(owner.finish_after_error(error)),
+                };
+                if let Err(error) = retain_chunk_status(
+                    owner.group.as_mut(),
+                    cleanup,
+                    &mut retained_budget,
+                    &mut accounted_group_host_bytes,
+                ) {
                     return Err(owner.finish_after_error(error));
                 }
                 owner.resources.push(resources);
@@ -140,14 +148,59 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
                     owner.dequant_chunk_count = owner.dequant_chunk_count.saturating_add(1);
                 }
             }
-            Err(error) => return Err(owner.finish_after_error(error)),
-        }
-    }
-    account_chunk_dispatches(component_work, &locations, &owner);
-    for work in component_work {
-        work.pending_dequant_bands.clear();
-    }
-    Ok(owner)
+            account_chunk_dispatches(component_work, &locations, &owner);
+            for work in component_work {
+                work.pending_dequant_bands.clear();
+            }
+            Ok(owner)
+        },
+    )
+}
+
+fn new_chunked_cleanup_owner(
+    context: &CudaContext,
+    pool: &CudaBufferPool,
+    job_count: usize,
+    chunk_count: usize,
+    retained_budget: &mut HostPhaseBudget,
+) -> Result<(ChunkedHtj2kCleanup, usize), Error> {
+    let resources = retained_budget.try_vec_with_capacity(chunk_count)?;
+    let identities = retained_budget.try_vec_with_capacity(job_count)?;
+    let status_group = CudaQueuedHtj2kCleanupGroup::new(
+        context,
+        pool,
+        job_count,
+        chunk_count,
+        retained_budget.live_bytes(),
+    )
+    .map_err(cuda_error)?;
+    let accounted_group_host_bytes = status_group.retained_host_bytes();
+    retained_budget.account_bytes(accounted_group_host_bytes)?;
+    let owner = ChunkedHtj2kCleanup {
+        group: Some(status_group),
+        resources,
+        identities,
+        chunk_count: 0,
+        dequant_chunk_count: 0,
+    };
+    Ok((owner, accounted_group_host_bytes))
+}
+
+fn retain_chunk_status(
+    group: Option<&mut CudaQueuedHtj2kCleanupGroup>,
+    cleanup: CudaQueuedHtj2kCleanup,
+    retained_budget: &mut HostPhaseBudget,
+    accounted_group_host_bytes: &mut usize,
+) -> Result<(), Error> {
+    let group = group.ok_or_else(chunk_plan_invariant_error)?;
+    group.retain(cleanup).map_err(cuda_error)?;
+    let retained_group_host_bytes = group.retained_host_bytes();
+    let additional_group_host_bytes = retained_group_host_bytes
+        .checked_sub(*accounted_group_host_bytes)
+        .ok_or_else(chunk_plan_invariant_error)?;
+    retained_budget.account_bytes(additional_group_host_bytes)?;
+    *accounted_group_host_bytes = retained_group_host_bytes;
+    Ok(())
 }
 
 #[expect(
@@ -157,7 +210,7 @@ pub(in crate::decoder) fn enqueue_chunked_htj2k_cleanup_dequant(
 fn enqueue_one_chunk(
     context: &CudaContext,
     tables: &CudaHtj2kDecodeTableResources,
-    shared_payload: &[u8],
+    logical_payload: &LogicalPayload<'_>,
     component_work: &[CudaComponentDecodeWork],
     locations: &[Htj2kJobLocation],
     entries: &[j2k_core::HtGpuJobChunkEntry],
@@ -173,20 +226,19 @@ fn enqueue_one_chunk(
         live_host_bytes,
     )?;
     let selected = select_chunk_jobs(entries, locations, &mut budget)?;
-    let (payload, jobs, identities) = materialize_chunk_payload(
-        shared_payload,
+    let MaterializedHtj2kChunk {
+        payload_parts,
+        jobs,
+        identities,
+    } = materialize_chunk_payload(
+        logical_payload,
         component_work,
         &selected,
         payload_bytes,
         &mut budget,
     )?;
-    if payload.len() != payload_bytes {
-        return Err(Error::capability_rejected(
-            j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
-        ));
-    }
     let resources = J2kCudaEngine::new(context)
-        .upload_htj2k_decode_resources_with_tables_and_pool(&payload, tables, pool)
+        .upload_htj2k_decode_resources_with_tables_and_pool(&payload_parts, tables, pool)
         .map_err(cuda_error)?;
     let targets = build_chunk_targets(component_work, &selected, &jobs, &mut budget)?;
     let cleanup = enqueue_chunk_kernel(
@@ -214,9 +266,9 @@ fn account_chunk_dispatches(
     let Some(first) = locations.first() else {
         return;
     };
-    let cleanup_dispatches = owner.chunk_count;
     let dequant_dispatches = owner.dequant_chunk_count;
-    let fused_dequant_dispatches = cleanup_dispatches.saturating_sub(dequant_dispatches);
+    let fused_dequant_dispatches = owner.chunk_count.saturating_sub(dequant_dispatches);
+    let cleanup_dispatches = owner.chunk_count.saturating_add(fused_dequant_dispatches);
     let Some(accounting) = component_work.get_mut(first.work) else {
         return;
     };

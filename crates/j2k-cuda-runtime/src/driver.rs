@@ -53,6 +53,9 @@ pub(crate) type CuMemFreeHost = unsafe extern "C" fn(*mut c_void) -> CuResult;
 
 pub(crate) type CuMemcpyHtoD = unsafe extern "C" fn(CuDevicePtr, *const c_void, usize) -> CuResult;
 
+pub(crate) type CuMemcpyHtoDAsync =
+    unsafe extern "C" fn(CuDevicePtr, *const c_void, usize, CuStream) -> CuResult;
+
 pub(crate) type CuMemcpyDtoH = unsafe extern "C" fn(*mut c_void, CuDevicePtr, usize) -> CuResult;
 
 pub(crate) type CuMemsetD8 = unsafe extern "C" fn(CuDevicePtr, u8, usize) -> CuResult;
@@ -87,10 +90,8 @@ pub(crate) type CuLaunchKernel = unsafe extern "C" fn(
 
 pub(crate) type CuCtxSynchronize = unsafe extern "C" fn() -> CuResult;
 
-#[cfg(test)]
 pub(crate) type CuStreamCreate = unsafe extern "C" fn(*mut CuStream, c_uint) -> CuResult;
 
-#[cfg(test)]
 pub(crate) type CuStreamDestroy = unsafe extern "C" fn(CuStream) -> CuResult;
 
 pub(crate) type CuEventCreate = unsafe extern "C" fn(*mut CuEvent, c_uint) -> CuResult;
@@ -129,6 +130,7 @@ pub(crate) struct Driver {
     pub(crate) cu_mem_host_alloc: CuMemHostAlloc,
     pub(crate) cu_mem_free_host: CuMemFreeHost,
     pub(crate) cu_memcpy_htod: CuMemcpyHtoD,
+    pub(crate) cu_memcpy_htod_async: CuMemcpyHtoDAsync,
     pub(crate) cu_memcpy_dtoh: CuMemcpyDtoH,
     pub(crate) cu_memset_d8: CuMemsetD8,
     pub(crate) cu_memset_d32: CuMemsetD32,
@@ -139,9 +141,7 @@ pub(crate) struct Driver {
     pub(crate) cu_module_get_function: CuModuleGetFunction,
     pub(crate) cu_launch_kernel: CuLaunchKernel,
     pub(crate) cu_ctx_synchronize: CuCtxSynchronize,
-    #[cfg(test)]
     pub(crate) cu_stream_create: CuStreamCreate,
-    #[cfg(test)]
     pub(crate) cu_stream_destroy: CuStreamDestroy,
     pub(crate) cu_event_create: CuEventCreate,
     pub(crate) cu_event_destroy: CuEventDestroy,
@@ -196,6 +196,7 @@ impl Driver {
             cu_mem_host_alloc: load_symbol(&library, b"cuMemHostAlloc\0")?,
             cu_mem_free_host: load_symbol(&library, b"cuMemFreeHost\0")?,
             cu_memcpy_htod: load_symbol(&library, b"cuMemcpyHtoD_v2\0")?,
+            cu_memcpy_htod_async: load_symbol(&library, b"cuMemcpyHtoDAsync_v2\0")?,
             cu_memcpy_dtoh: load_symbol(&library, b"cuMemcpyDtoH_v2\0")?,
             cu_memset_d8: load_symbol(&library, b"cuMemsetD8_v2\0")?,
             cu_memset_d32: load_symbol(&library, b"cuMemsetD32_v2\0")?,
@@ -206,9 +207,7 @@ impl Driver {
             cu_module_get_function: load_symbol(&library, b"cuModuleGetFunction\0")?,
             cu_launch_kernel: load_symbol(&library, b"cuLaunchKernel\0")?,
             cu_ctx_synchronize: load_symbol(&library, b"cuCtxSynchronize\0")?,
-            #[cfg(test)]
             cu_stream_create: load_symbol(&library, b"cuStreamCreate\0")?,
-            #[cfg(test)]
             cu_stream_destroy: load_symbol(&library, b"cuStreamDestroy_v2\0")?,
             cu_event_create: load_symbol(&library, b"cuEventCreate\0")?,
             cu_event_destroy: load_symbol(&library, b"cuEventDestroy_v2\0")?,

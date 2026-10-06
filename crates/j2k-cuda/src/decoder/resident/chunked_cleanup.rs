@@ -37,10 +37,28 @@ pub(in crate::decoder) struct ChunkedHtj2kCleanup {
 }
 
 impl ChunkedHtj2kCleanup {
+    pub(in crate::decoder) fn retained_host_bytes(&self) -> usize {
+        let group_bytes = self
+            .group
+            .as_ref()
+            .map_or(0, CudaQueuedHtj2kCleanupGroup::retained_host_bytes);
+        j2k_core::host_capacity_bytes::<CudaHtj2kDecodeResources>(self.resources.capacity())
+            .saturating_add(j2k_core::host_capacity_bytes::<Htj2kChunkJobIdentity>(
+                self.identities.capacity(),
+            ))
+            .saturating_add(group_bytes)
+    }
+
     pub(in crate::decoder) fn has_status_readback(&self) -> bool {
         self.group
             .as_ref()
             .is_some_and(|group| group.status_count() != 0)
+    }
+
+    pub(in crate::decoder) fn status_count(&self) -> usize {
+        self.group
+            .as_ref()
+            .map_or(0, CudaQueuedHtj2kCleanupGroup::status_count)
     }
 
     /// Number of bounded compressed/descriptor arenas submitted for this group.

@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let encoded = jpeg_to_htj2k(JPEG_GRAYSCALE_8X8, &JpegToHtj2kOptions::lossless_53())?;
     let report = &encoded.report;
 
-    assert!(!encoded.codestream.is_empty());
+    assert_ne!(encoded.codestream, [] as [u8; 0]);
     println!(
         "transcoded {}x{} JPEG with {} component(s) into {} HTJ2K bytes",
         report.width,

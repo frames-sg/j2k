@@ -289,7 +289,7 @@ mod tests {
         let mut w = walker(bytes);
         let m = w.next_marker().unwrap().unwrap();
         assert_eq!(m.code, 0xD0);
-        assert!(m.payload.is_empty());
+        assert_eq!(m.payload, [] as [u8; 0]);
     }
 
     #[test]

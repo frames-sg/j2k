@@ -162,5 +162,6 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         collect_stage_timings,
         run_idwt: true,
         emit_report: true,
+        preaccounted_host_bytes: None,
     })
 }

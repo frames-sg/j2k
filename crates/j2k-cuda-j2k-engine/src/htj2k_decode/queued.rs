@@ -52,6 +52,13 @@ impl CudaQueuedHtj2kCleanup {
         self.resources.len() + usize::from(self.status_buffer.is_some())
     }
 
+    /// Allocator-reported host bytes retained by this cleanup guard.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained_host_bytes(&self) -> usize {
+        j2k_core::host_capacity_bytes::<CudaPooledDeviceBuffer>(self.resources.capacity())
+    }
+
     /// Synchronize through status download and validate kernel statuses.
     pub fn finish(mut self) -> Result<CudaExecutionStats, CudaError> {
         if self.uses_external_status_group && self.status_count != 0 {

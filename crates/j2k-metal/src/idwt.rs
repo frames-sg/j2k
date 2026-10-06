@@ -122,14 +122,20 @@ mod tests {
         j2k_test_support::metal_runtime_gate(module_path!())
     }
 
-    fn fixture_j2k_gray8() -> Vec<u8> {
-        let pixels: Vec<u8> = (0..16).collect();
+    fn fixture_j2k_gray8(width: u32, height: u32) -> Vec<u8> {
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|index| {
+                let x = index % width;
+                let y = index / width;
+                ((x * 37 + y * 53 + x * y * 7) & 0xff) as u8
+            })
+            .collect();
         let options = EncodeOptions {
             reversible: true,
             num_decomposition_levels: 1,
             ..EncodeOptions::default()
         };
-        encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
+        encode(&pixels, width, height, 1, 8, false, &options).expect("encode classic gray8")
     }
 
     fn fixture_j2k_gray8_two_levels() -> Vec<u8> {
@@ -159,31 +165,33 @@ mod tests {
             return;
         }
 
-        let bytes = fixture_j2k_gray8();
-        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
-        let mut expected_context = DecoderContext::default();
-        let expected = image
-            .decode_components_with_context(&mut expected_context)
-            .expect("native decode");
+        for (width, height) in [(3, 5), (65, 67), (513, 7), (8193, 3)] {
+            let bytes = fixture_j2k_gray8(width, height);
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+            let mut expected_context = DecoderContext::default();
+            let expected = image
+                .decode_components_with_context(&mut expected_context)
+                .expect("native decode");
 
-        let mut hooked_context = DecoderContext::default();
-        let mut decoder = MetalIdwtDecoder::default();
-        let actual = image
-            .decode_components_with_ht_decoder(&mut hooked_context, &mut decoder)
-            .expect("hooked decode");
+            let mut hooked_context = DecoderContext::default();
+            let mut decoder = MetalIdwtDecoder::default();
+            let actual = image
+                .decode_components_with_ht_decoder(&mut hooked_context, &mut decoder)
+                .expect("hooked decode");
 
-        assert_eq!(actual.dimensions(), expected.dimensions());
-        assert_eq!(actual.planes().len(), expected.planes().len());
-        assert_eq!(
-            actual.planes()[0].samples(),
-            expected.planes()[0].samples(),
-            "Metal IDWT output must match native decode"
-        );
-        #[cfg(target_os = "macos")]
-        assert!(
-            decoder.kernel_dispatches() > 0,
-            "single-decomposition grayscale fixture must exercise the Metal IDWT kernel"
-        );
+            assert_eq!(actual.dimensions(), expected.dimensions());
+            assert_eq!(actual.planes().len(), expected.planes().len());
+            assert_eq!(
+                actual.planes()[0].samples(),
+                expected.planes()[0].samples(),
+                "Metal IDWT output must match native decode for {width}x{height}"
+            );
+            #[cfg(target_os = "macos")]
+            assert!(
+                decoder.kernel_dispatches() > 0,
+                "{width}x{height} fixture must exercise the Metal IDWT kernel"
+            );
+        }
     }
 
     #[test]
@@ -751,7 +759,7 @@ mod tests {
 
     #[test]
     fn default_decoder_without_idwt_kernel_still_decodes() {
-        let bytes = fixture_j2k_gray8();
+        let bytes = fixture_j2k_gray8(4, 4);
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
         let mut decoder = CpuOnlyCodeBlockDecoder;

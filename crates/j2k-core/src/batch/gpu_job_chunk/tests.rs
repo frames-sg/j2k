@@ -5,7 +5,8 @@ use core::num::NonZeroUsize;
 use alloc::vec::Vec;
 
 use super::{
-    plan_ht_gpu_job_chunks, HtGpuJobChunkLimit, HtGpuJobChunkLimits, HtGpuJobChunkPlanError,
+    plan_ht_gpu_job_chunks, plan_ht_gpu_job_chunks_with_external_live_bytes, HtGpuJobChunk,
+    HtGpuJobChunkEntry, HtGpuJobChunkLimit, HtGpuJobChunkLimits, HtGpuJobChunkPlanError,
     HtGpuJobChunkRequest, HtGpuJobPassBucket,
 };
 
@@ -149,6 +150,40 @@ fn zero_pass_job_is_rejected_with_original_identity() {
 #[test]
 fn empty_input_produces_an_allocation_free_empty_plan() {
     let plan = plan_ht_gpu_job_chunks(&[], limits(1, 0, 0)).expect("empty plan");
-    assert!(plan.chunks().is_empty());
-    assert!(plan.entries().is_empty());
+    assert_eq!(plan.chunks(), []);
+    assert_eq!(plan.entries(), []);
+    assert_eq!(plan.retained_host_bytes(), 0);
+}
+
+#[test]
+fn external_live_bytes_are_preflighted_and_actual_plan_capacity_is_reported() {
+    assert!(matches!(
+        plan_ht_gpu_job_chunks_with_external_live_bytes(
+            &[],
+            limits(1, 0, 0),
+            crate::DEFAULT_MAX_HOST_ALLOCATION_BYTES.saturating_add(1),
+        ),
+        Err(HtGpuJobChunkPlanError::BatchInfrastructure(
+            crate::BatchInfrastructureError::AllocationTooLarge { .. }
+        ))
+    ));
+
+    let jobs = [job(0, 1, 1, 1)];
+    let error = plan_ht_gpu_job_chunks_with_external_live_bytes(
+        &jobs,
+        limits(1, 1, 1),
+        crate::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    )
+    .expect_err("retained caller owners leave no room for plan metadata");
+    assert!(matches!(
+        error,
+        HtGpuJobChunkPlanError::BatchInfrastructure(
+            crate::BatchInfrastructureError::AllocationTooLarge { .. }
+        )
+    ));
+
+    let plan = plan_ht_gpu_job_chunks(&jobs, limits(1, 1, 1)).expect("bounded plan");
+    let minimum = core::mem::size_of::<HtGpuJobChunk>()
+        .saturating_add(core::mem::size_of::<HtGpuJobChunkEntry>());
+    assert!(plan.retained_host_bytes() >= minimum);
 }

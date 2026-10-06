@@ -64,6 +64,19 @@ std::thread_local! {
     static DIRECT_DESTINATION_EVENT_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_DESTINATION_EVENT_SIGNALS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_DESTINATION_EVENT_WAITS: Cell<usize> = const { Cell::new(0) };
+    static SHARED_CLASSIC_TIER1_PASSES: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn reset_shared_classic_tier1_passes_for_test() {
+    SHARED_CLASSIC_TIER1_PASSES.with(|count| count.set(0));
+}
+
+pub(crate) fn shared_classic_tier1_passes_for_test() -> usize {
+    SHARED_CLASSIC_TIER1_PASSES.with(Cell::get)
+}
+
+pub(crate) fn record_shared_classic_tier1_pass() {
+    SHARED_CLASSIC_TIER1_PASSES.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 pub(crate) fn reset_direct_destination_event_bridge_for_test() {

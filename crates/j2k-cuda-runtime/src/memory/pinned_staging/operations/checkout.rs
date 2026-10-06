@@ -6,6 +6,7 @@ use super::super::{
 use super::CudaPinnedUploadOperationGuard;
 use crate::{context::PinnedUploadStaging, error::select_resource_release_error};
 use crate::{CudaDeviceBuffer, CudaError};
+use std::sync::OnceLock;
 
 #[doc(hidden)]
 /// RAII checkout of one page-locked upload allocation.
@@ -49,7 +50,7 @@ impl CudaPinnedUploadStagingCheckout<'_, '_> {
             };
             return self.recycle_with_primary_error(error);
         }
-        self.copy_from_slice(bytes)?;
+        self.copy_from_parts(&[bytes])?;
         let upload_result = self.operation.context.upload(self.as_slice()?);
         let recycle_result = self.recycle_inner();
         select_pinned_upload_result(upload_result, recycle_result)
@@ -60,8 +61,12 @@ impl CudaPinnedUploadStagingCheckout<'_, '_> {
         self.recycle_inner()
     }
 
-    pub(crate) fn copy_from_slice(&mut self, bytes: &[u8]) -> Result<(), CudaError> {
-        if bytes.len() != self.requested_len {
+    /// Copy `parts` back to back into staging; their total must match the checkout.
+    pub(crate) fn copy_from_parts(&mut self, parts: &[&[u8]]) -> Result<(), CudaError> {
+        let total = parts
+            .iter()
+            .try_fold(0_usize, |total, part| total.checked_add(part.len()));
+        if total != Some(self.requested_len) {
             return Err(CudaError::InvalidArgument {
                 message: "prepared CUDA pinned upload byte length changed".to_string(),
             });
@@ -69,7 +74,17 @@ impl CudaPinnedUploadStagingCheckout<'_, '_> {
         let staging = self.staging.as_mut().ok_or(CudaError::InternalInvariant {
             what: "CUDA pinned upload staging checkout is empty",
         })?;
-        staging.as_mut_slice()[..self.requested_len].copy_from_slice(bytes);
+        let target = &mut staging.as_mut_slice()[..self.requested_len];
+        let workers = if self.requested_len >= PARALLEL_STAGING_FILL_MIN_BYTES {
+            staging_fill_workers().min(parts.len())
+        } else {
+            1
+        };
+        if workers <= 1 {
+            copy_parts(target, parts);
+        } else {
+            copy_parts_in_parallel(target, parts, workers);
+        }
         Ok(())
     }
 
@@ -80,11 +95,26 @@ impl CudaPinnedUploadStagingCheckout<'_, '_> {
         Ok(&staging.as_slice()[..self.requested_len])
     }
 
+    pub(crate) fn into_pending(
+        mut self,
+        completion: crate::CudaEvent,
+    ) -> Result<super::PendingPinnedUpload, CudaError> {
+        let staging = self.staging.take().ok_or(CudaError::InternalInvariant {
+            what: "CUDA pinned upload staging checkout is empty",
+        })?;
+        Ok(super::PendingPinnedUpload::new(
+            self.operation.context.clone(),
+            staging,
+            self.requested_len,
+            completion,
+        ))
+    }
+
     fn recycle_inner(&mut self) -> Result<(), CudaError> {
         let staging = self.staging.take().ok_or(CudaError::InternalInvariant {
             what: "CUDA pinned upload staging checkout is empty",
         })?;
-        self.operation.recycle_pinned_upload_staging(staging)
+        self.operation.held().recycle_pinned_upload_staging(staging)
     }
 
     fn recycle_with_primary_error<T>(&mut self, error: CudaError) -> Result<T, CudaError> {
@@ -92,6 +122,14 @@ impl CudaPinnedUploadStagingCheckout<'_, '_> {
             Ok(()) => Err(error),
             Err(recycle_error) => Err(select_resource_release_error(error, recycle_error)),
         }
+    }
+}
+
+fn copy_parts(mut target: &mut [u8], parts: &[&[u8]]) {
+    for part in parts {
+        let (head, tail) = target.split_at_mut(part.len());
+        head.copy_from_slice(part);
+        target = tail;
     }
 }
 
@@ -108,3 +146,52 @@ impl Drop for CudaPinnedUploadStagingCheckout<'_, '_> {
 
 #[cfg(test)]
 mod tests;
+
+/// Uploads at least this large fill disjoint pinned spans from several threads.
+const PARALLEL_STAGING_FILL_MIN_BYTES: usize = 4 * 1024 * 1024;
+/// Temporary fill threads per upload, bounded independently of the caller's
+/// planning thread pool.
+const MAX_STAGING_FILL_WORKERS: usize = 4;
+
+fn staging_fill_workers() -> usize {
+    static WORKERS: OnceLock<usize> = OnceLock::new();
+    *WORKERS.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(MAX_STAGING_FILL_WORKERS)
+    })
+}
+
+/// Copy `parts` into `target` with up to `workers` threads. A span whose
+/// thread cannot be created is copied on this thread instead.
+fn copy_parts_in_parallel(target: &mut [u8], parts: &[&[u8]], workers: usize) {
+    let mut spans: [(&mut [u8], &[&[u8]]); MAX_STAGING_FILL_WORKERS] = Default::default();
+    let mut span_count = 0;
+    let mut remaining = target;
+    for group in parts.chunks(parts.len().div_ceil(workers)) {
+        let len = group.iter().map(|part| part.len()).sum();
+        let (head, tail) = std::mem::take(&mut remaining).split_at_mut(len);
+        remaining = tail;
+        spans[span_count] = (head, group);
+        span_count += 1;
+    }
+    let Some((last, spawned)) = spans[..span_count].split_last_mut() else {
+        return;
+    };
+    let unspawned = std::thread::scope(|scope| {
+        let mut unspawned = [false; MAX_STAGING_FILL_WORKERS];
+        for (index, span) in spawned.iter_mut().enumerate() {
+            let (head, group) = (&mut *span.0, span.1);
+            unspawned[index] = std::thread::Builder::new()
+                .spawn_scoped(scope, move || copy_parts(head, group))
+                .is_err();
+        }
+        copy_parts(last.0, last.1);
+        unspawned
+    });
+    for (span, failed) in spawned.iter_mut().zip(unspawned) {
+        if failed {
+            copy_parts(span.0, span.1);
+        }
+    }
+}

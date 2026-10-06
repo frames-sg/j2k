@@ -129,3 +129,79 @@ fn referenced_htj2k_tile_accepts_observed_classic_and_ht_steps() {
     assert_eq!(plan.code_blocks()[0].payload_offset, 0);
     assert_eq!(plan.classic_code_blocks()[0].payload_offset, 1);
 }
+
+#[test]
+fn zero_pass_blocks_preserve_payload_order_without_entropy_jobs() {
+    let mut direct = referenced_mixed_plan();
+    for (step, zero_step) in direct.steps.iter_mut().zip(referenced_mixed_plan().steps) {
+        match (step, zero_step) {
+            (
+                J2kDirectGrayscaleStep::HtSubBand(band),
+                J2kDirectGrayscaleStep::HtSubBand(mut empty),
+            ) => {
+                let mut zero = empty.jobs.pop().unwrap();
+                zero.number_of_coding_passes = 0;
+                zero.cleanup_length = 0;
+                band.jobs.insert(0, zero);
+            }
+            (
+                J2kDirectGrayscaleStep::ClassicSubBand(band),
+                J2kDirectGrayscaleStep::ClassicSubBand(mut empty),
+            ) => {
+                let mut zero = empty.jobs.pop().unwrap();
+                zero.number_of_coding_passes = 0;
+                zero.segments.clear();
+                band.jobs.insert(0, zero);
+            }
+            _ => unreachable!(),
+        }
+    }
+    let ht_payloads = [0, 1].map(|length| HtCodeBlockPayloadRanges {
+        cleanup: J2kCodestreamRange { offset: 0, length },
+        refinement: None,
+    });
+    let classic_payloads = [0, 1].map(|length| J2kClassicCodeBlockPayload {
+        first_range: 0,
+        range_count: length,
+        combined_length: length,
+    });
+    let encoded = [0xaa, 0xbb];
+    let mut payload = Vec::new();
+    let referenced = CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_into_shared(
+        &direct,
+        &ht_payloads,
+        &classic_payloads,
+        &[J2kCodestreamRange {
+            offset: 1,
+            length: 1,
+        }],
+        &encoded,
+        PixelFormat::Gray8,
+        (0, 0),
+        (1, 1),
+        &mut payload,
+        &mut HostPhaseBudget::new("zero-pass referenced plan"),
+    )
+    .expect("referenced plan");
+    assert_eq!(payload, encoded);
+    assert_eq!(referenced.code_blocks().len(), 1);
+    assert_eq!(referenced.classic_code_blocks().len(), 1);
+    assert_eq!(referenced.classic_code_blocks()[0].payload_offset, 1);
+
+    for step in &mut direct.steps {
+        match step {
+            J2kDirectGrayscaleStep::HtSubBand(band) => band.jobs[1].data = vec![encoded[0]],
+            J2kDirectGrayscaleStep::ClassicSubBand(band) => band.jobs[1].data = vec![encoded[1]],
+            _ => unreachable!(),
+        }
+    }
+    let owned =
+        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+            .expect("owned plan");
+    assert_eq!(owned.payload(), encoded);
+    assert_eq!(owned.code_blocks(), referenced.code_blocks());
+    assert_eq!(
+        owned.classic_code_blocks(),
+        referenced.classic_code_blocks()
+    );
+}

@@ -114,7 +114,7 @@ pub(crate) fn collect_encode_distribution(
         return Ok(HtCleanupEncodeDistribution::default());
     };
 
-    let block_bitplanes = (u32::BITS - max_magnitude.leading_zeros()) as u8;
+    let block_bitplanes = max_magnitude.bit_width() as u8;
     if block_bitplanes > total_bitplanes {
         return Err(EncodeError::InvalidInput {
             what: "HTJ2K block magnitude exceeds configured bitplane count",

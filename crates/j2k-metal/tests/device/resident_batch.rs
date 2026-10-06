@@ -153,7 +153,7 @@ fn metal_prepared_batch_continues_after_one_group_execution_failure() {
     let result = decoder
         .decode_prepared(&prepared)
         .expect("unsupported RGN group must not abort the reusable Metal session");
-    assert!(result.errors().is_empty());
+    assert_eq!(result.errors(), []);
     assert_eq!(result.groups().len(), 1);
     assert_eq!(result.groups()[0].source_indices(), &[1]);
     assert_eq!(result.group_errors().len(), 1);

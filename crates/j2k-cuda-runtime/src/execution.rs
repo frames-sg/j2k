@@ -10,6 +10,7 @@ pub use completion::CudaSynchronizationOutcome;
 #[doc(hidden)]
 pub use events::elapsed_event_us_ceil;
 pub use events::CudaEvent;
+pub(crate) use events::CudaStream;
 pub use queued::{
     CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput, CudaKernelOutput,
     CudaPooledKernelOutput, CudaQueuedExecution,

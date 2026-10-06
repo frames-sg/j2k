@@ -3,9 +3,9 @@
 //! Consecutive sub-band grouping and classic JPEG 2000 group preparation.
 
 use super::super::{
-    prepare_direct_tier1_input_buffer, with_runtime, BandRequiredRegion, DirectTier1Mode, Error,
-    J2kClassicCleanupBatchJob, J2kClassicSegment, PreparedClassicSubBand,
-    PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep,
+    BandRequiredRegion, ClassicTier1Inputs, DirectTier1Mode, Error, J2kClassicCleanupBatchJob,
+    J2kClassicSegment, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep,
 };
 
 #[cfg(target_os = "macos")]
@@ -83,14 +83,14 @@ fn prepare_classic_sub_band_group(
     for sub_band in sub_bands {
         output_base = append_classic_group_sub_band(&mut owners, sub_band, output_base)?;
     }
-    finish_classic_sub_band_group(
+    Ok(finish_classic_sub_band_group(
         start_step,
         end_step,
         output_base,
         sub_bands.iter().any(|sub_band| sub_band.zero_fill),
         tier1_prepare_mode,
         owners,
-    )
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -233,26 +233,16 @@ fn finish_classic_sub_band_group(
     zero_fill: bool,
     tier1_prepare_mode: DirectTier1Mode,
     owners: ClassicGroupOwners,
-) -> Result<PreparedClassicSubBandGroup, Error> {
-    with_runtime(|runtime| {
-        let coded_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.coded_data, tier1_prepare_mode)?;
-        let jobs_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.jobs, tier1_prepare_mode)?;
-        let segments_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.segments, tier1_prepare_mode)?;
-        Ok(PreparedClassicSubBandGroup {
-            start_step,
-            end_step,
-            total_coefficients,
-            zero_fill,
-            coded_data: owners.coded_data,
-            coded_buffer,
-            jobs: owners.jobs,
-            jobs_buffer,
-            segments: owners.segments,
-            segments_buffer,
-            members: owners.members,
-        })
-    })
+) -> PreparedClassicSubBandGroup {
+    PreparedClassicSubBandGroup {
+        start_step,
+        end_step,
+        total_coefficients,
+        zero_fill,
+        coded_data: owners.coded_data,
+        jobs: owners.jobs,
+        segments: owners.segments,
+        tier1_inputs: ClassicTier1Inputs::new(tier1_prepare_mode),
+        members: owners.members,
+    }
 }

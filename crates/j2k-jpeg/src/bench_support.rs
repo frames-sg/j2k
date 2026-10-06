@@ -872,7 +872,7 @@ impl BenchColorRowScratch {
             .iter()
             .zip(self.cb[input_offset..input_offset + width].iter())
             .zip(self.cr[input_offset..input_offset + width].iter())
-            .zip(self.rgb.chunks_exact_mut(3))
+            .zip(self.rgb.as_chunks_mut::<3>().0.iter_mut())
         {
             let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
             pixel[0] = r;

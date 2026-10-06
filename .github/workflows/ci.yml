@@ -33,7 +33,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
       - id: plan
         name: Classify changed paths and dependency impact
         env:
@@ -66,6 +66,17 @@ jobs:
     name: Secret scan
     uses: ./.github/workflows/secret-scan.yml
 
+  device-crates-msrv:
+    name: Shared device crates on Rust 1.96
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # CUDA-Oxide kernels build j2k-types and j2k-codec-math with a 1.96 compiler.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.96"
+      - run: cargo +1.96 check -p j2k-types -p j2k-codec-math --no-default-features
+
   rust-quality:
     name: Rust quality
     needs: [planner]
@@ -77,11 +88,11 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: pr-host-${{ runner.os }}-${{ runner.arch }}-1.96
+          shared-key: pr-host-${{ runner.os }}-${{ runner.arch }}-1.99.0
           cache-bin: false
           save-if: false
       - name: Run fast hosted Rust gates
@@ -102,10 +113,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: pr-docs-${{ runner.os }}-${{ runner.arch }}-1.96
+          shared-key: pr-docs-${{ runner.os }}-${{ runner.arch }}-1.99.0
           cache-bin: false
           save-if: false
       - run: cargo xtask doc
@@ -119,11 +130,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: pr-metal-compile-${{ runner.os }}-${{ runner.arch }}-1.96
+          shared-key: pr-metal-compile-${{ runner.os }}-${{ runner.arch }}-1.99.0
           cache-bin: false
           save-if: false
       - run: cargo xtask metal-compile
@@ -175,6 +186,7 @@ jobs:
       - github-actions-verifier
       - diff-check
       - secret-scan
+      - device-crates-msrv
       - rust-quality
       - docs
       - metal-compile
@@ -194,4 +206,5 @@ jobs:
             --always-required github-actions-verifier \
             --always-required diff-check \
             --always-required secret-scan \
+            --always-required device-crates-msrv \
             --always-required gpu-evidence

@@ -132,6 +132,15 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn is_host_planning_limit(&self) -> bool {
+        matches!(self, Self::HostAllocationTooLarge { .. })
+            || matches!(
+                self,
+                Self::NativeDecode { source, .. } if source.is_allocation_limit()
+            )
+    }
+
     /// Whether this error can leave submitted CUDA work referencing an
     /// external allocation whose completion was not established.
     #[cfg(feature = "cuda-runtime")]

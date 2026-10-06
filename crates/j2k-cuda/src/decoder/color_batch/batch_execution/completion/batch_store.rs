@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer, CudaDeviceBufferRange, CudaExecutionStats};
+use j2k_cuda_runtime::{CudaDeviceBufferRange, CudaExecutionStats, CudaPooledDeviceBuffer};
+
+use super::FinishColorBatchRequest;
+
+use crate::surface::cuda_pooled_range_storage;
 
 use super::super::super::store::CudaPreparedRgb8MctBatchStore;
 use super::super::super::{
-    can_fuse_mct_store_for_stores, cuda_error, cuda_range_storage, host_owners,
-    prepare_rgb8_mct_batch_store, profile, rgb8_mct_batch_store_target, take_component_work,
-    validate_color_stores, Arc, BackendKind, CudaComponentDecodeWork, CudaHtj2kColorDecodePlans,
-    CudaHtj2kProfileReport, CudaSurfaceStats, Error, HostPhaseBudget, PixelFormat, Surface,
-    SurfaceResidency, CUDA_HTJ2K_KERNELS_NOT_READY,
+    can_fuse_mct_store_for_stores, cuda_error, host_owners, prepare_rgb8_mct_batch_store, profile,
+    rgb8_mct_batch_store_target, take_component_work, validate_color_stores, Arc, BackendKind,
+    CudaComponentDecodeWork, CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport, CudaSurfaceStats,
+    Error, HostPhaseBudget, PixelFormat, Surface, SurfaceResidency, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 
-pub(super) fn can_batch_rgb8_mct_color_store(
+pub(in crate::decoder::color_batch::batch_execution) fn can_batch_rgb8_mct_color_store(
     fmt: PixelFormat,
     colors: &[CudaHtj2kColorDecodePlans],
     component_work: &[CudaComponentDecodeWork],
@@ -47,30 +50,45 @@ pub(super) fn can_batch_rgb8_mct_color_store(
 }
 
 pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
-    context: &CudaContext,
-    fmt: PixelFormat,
-    colors: Vec<CudaHtj2kColorDecodePlans>,
-    component_work: Vec<CudaComponentDecodeWork>,
-    collect_stage_timings: bool,
+    request: FinishColorBatchRequest<'_>,
+    fused_final_vertical: bool,
 ) -> Result<(Vec<Surface>, Vec<CudaHtj2kProfileReport>), Error> {
-    let (mut host_budget, prepared) = prepare_batch_store_items(fmt, colors, component_work)?;
+    let FinishColorBatchRequest {
+        context,
+        pool,
+        fmt,
+        colors,
+        component_work,
+        collect_stage_timings,
+        external_live_host_bytes,
+    } = request;
+    let (mut host_budget, prepared) =
+        prepare_batch_store_items(fmt, colors, component_work, external_live_host_bytes)?;
     let targets =
         host_budget.try_collect_results_exact(prepared.iter().map(rgb8_mct_batch_store_target))?;
-    let (store_output, store_us) = context
-        .time_default_stream_named_us_if(
-            collect_stage_timings,
-            "j2k.htj2k.decode.store.color.batch",
-            || {
-                j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
-                    .j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(
-                        &targets,
-                        host_budget.live_bytes(),
-                    )
-            },
-        )
-        .map_err(cuda_error)?;
+    let mut run = || {
+        j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
+            .j2k_store_rgb8_mct_batch_contiguous_device_with_pool(
+                &targets,
+                host_budget.live_bytes(),
+                fused_final_vertical,
+                pool,
+            )
+    };
+    let (store_output, store_us) = if collect_stage_timings {
+        context.time_default_stream_named_us("j2k.htj2k.decode.store.color.batch", &mut run)
+    } else {
+        // Successful work is already complete; preserve error-path completion
+        // before any captured allocations can be released.
+        context
+            .with_nvtx_range("j2k.htj2k.decode.store.color.batch", run)
+            .or_else(|error| context.synchronize_then_error(error))
+            .map(|output| (output, 0))
+    }
+    .map_err(cuda_error)?;
     drop(targets);
-    let (surface_buffer, surface_ranges, store_stats) = store_output.into_parts();
+    let (store_output, surface_ranges) = store_output;
+    let (surface_buffer, store_stats) = store_output.into_parts();
     if surface_ranges.len() != prepared.len() {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::missing_prepared_plan(CUDA_HTJ2K_KERNELS_NOT_READY),
@@ -83,6 +101,7 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
         surface_ranges,
         store_stats,
         store_us,
+        external_live_host_bytes,
     )
 }
 
@@ -90,8 +109,12 @@ fn prepare_batch_store_items(
     fmt: PixelFormat,
     colors: Vec<CudaHtj2kColorDecodePlans>,
     component_work: Vec<CudaComponentDecodeWork>,
+    external_live_host_bytes: usize,
 ) -> Result<(HostPhaseBudget, Vec<CudaPreparedRgb8MctBatchStore>), Error> {
-    let mut host_budget = HostPhaseBudget::new("j2k CUDA prepared color batch store graph");
+    let mut host_budget = HostPhaseBudget::with_live_bytes(
+        "j2k CUDA prepared color batch store graph",
+        external_live_host_bytes,
+    )?;
     host_owners::account_colors(&mut host_budget, &colors)?;
     host_owners::account_component_work(&mut host_budget, &component_work)?;
     let mut prepared = host_budget.try_vec_with_capacity(colors.len())?;
@@ -112,12 +135,16 @@ fn prepare_batch_store_items(
 fn assemble_batch_store_surfaces(
     fmt: PixelFormat,
     prepared: Vec<CudaPreparedRgb8MctBatchStore>,
-    surface_buffer: CudaDeviceBuffer,
+    surface_buffer: CudaPooledDeviceBuffer,
     surface_ranges: Vec<CudaDeviceBufferRange>,
     store_stats: CudaExecutionStats,
     store_us: u128,
+    external_live_host_bytes: usize,
 ) -> Result<(Vec<Surface>, Vec<CudaHtj2kProfileReport>), Error> {
-    let mut output_budget = HostPhaseBudget::new("j2k CUDA stored color batch output graph");
+    let mut output_budget = HostPhaseBudget::with_live_bytes(
+        "j2k CUDA stored color batch output graph",
+        external_live_host_bytes,
+    )?;
     output_budget.account_vec(&prepared)?;
     for item in &prepared {
         item.color.account_host_owners(&mut output_budget)?;
@@ -143,7 +170,7 @@ fn assemble_batch_store_surfaces(
                 copy: 0,
                 decode: decode_dispatches,
             },
-            storage: cuda_range_storage(
+            storage: cuda_pooled_range_storage(
                 shared_surface_buffer.clone(),
                 surface_range.offset,
                 surface_range.len,

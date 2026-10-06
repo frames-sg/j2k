@@ -277,7 +277,7 @@ fn validation_error_text_and_empty_block_result_remain_exact() {
 
     let encoded =
         encode_code_block_with_passes(&[0; 9], 3, 3, 8, 3).expect("all-zero block is valid");
-    assert!(encoded.data.is_empty());
+    assert_eq!(encoded.data, [] as [u8; 0]);
     assert_eq!(encoded.num_coding_passes, 0);
     assert_eq!(encoded.num_zero_bitplanes, 8);
     assert_eq!(encoded.ht_cleanup_length, 0);

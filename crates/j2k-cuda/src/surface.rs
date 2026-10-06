@@ -8,7 +8,7 @@ use j2k_core::{
     DeviceSurface, ExecutionStats, PixelFormat, SurfaceMetadata,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::CudaDeviceBuffer;
+use j2k_cuda_runtime::{CudaDeviceBuffer, CudaPooledDeviceBuffer};
 
 use crate::allocation::try_vec_filled;
 #[cfg(feature = "cuda-runtime")]
@@ -30,6 +30,32 @@ pub(crate) enum Storage {
         offset: usize,
         len: usize,
     },
+    #[cfg(feature = "cuda-runtime")]
+    CudaPooledRange {
+        buffer: Arc<CudaPooledDeviceBuffer>,
+        offset: usize,
+        len: usize,
+    },
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl Storage {
+    fn cuda_buffer_range(&self) -> Option<(&CudaDeviceBuffer, usize, usize)> {
+        match self {
+            Self::Cuda(buffer) => Some((buffer, 0, buffer.byte_len())),
+            Self::CudaRange {
+                buffer,
+                offset,
+                len,
+            } => Some((buffer, *offset, *len)),
+            Self::CudaPooledRange {
+                buffer,
+                offset,
+                len,
+            } => Some((buffer.as_device_buffer()?, *offset, *len)),
+            Self::Host(_) => None,
+        }
+    }
 }
 
 /// CUDA surface execution counters.
@@ -69,6 +95,11 @@ pub struct CudaSurface<'a> {
 
 impl CudaSurface<'_> {
     /// Raw CUDA device pointer value.
+    ///
+    /// Keep the owning [`Surface`] alive until every operation that reads
+    /// this pointer on another CUDA stream has completed. Dropping the
+    /// surface may return its memory to the session's buffer pool without
+    /// synchronizing, and the next decode can then overwrite it.
     pub fn device_ptr(&self) -> u64 {
         self.device_ptr
     }
@@ -118,80 +149,72 @@ impl Surface {
         match &self.storage {
             Storage::Host(bytes) => Some(bytes),
             #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(_) | Storage::CudaRange { .. } => None,
+            Storage::Cuda(_) | Storage::CudaRange { .. } | Storage::CudaPooledRange { .. } => None,
         }
     }
 
     /// Download or copy the surface into caller-owned strided output.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
-        match &self.storage {
-            Storage::Host(bytes) => {
-                copy_tight_pixels_to_strided_output(bytes, self.dimensions, self.fmt, out, stride)
-                    .map_err(Error::from)
-            }
-            #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(buffer) => {
-                let byte_len = self.byte_len();
-                if let Some(len) =
-                    tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
-                {
-                    return buffer.copy_to_host(&mut out[..len]).map_err(cuda_error);
-                }
-                let mut tight = try_vec_filled(byte_len, 0u8, "j2k CUDA surface download staging")?;
-                buffer.copy_to_host(&mut tight).map_err(cuda_error)?;
-                copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
-                    .map_err(Error::from)
-            }
-            #[cfg(feature = "cuda-runtime")]
-            Storage::CudaRange {
-                buffer,
-                offset,
-                len,
-            } => {
-                let byte_len = self.byte_len();
-                if *len < byte_len {
-                    return Err(BufferError::InputTooSmall {
-                        required: byte_len,
-                        have: *len,
-                    }
-                    .into());
-                }
-                if let Some(len) =
-                    tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
-                {
-                    return buffer
-                        .copy_range_to_host(*offset, &mut out[..len])
-                        .map_err(cuda_error);
-                }
-                let mut tight = try_vec_filled(byte_len, 0u8, "j2k CUDA range download staging")?;
-                buffer
-                    .copy_range_to_host(*offset, &mut tight)
-                    .map_err(cuda_error)?;
-                copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
-                    .map_err(Error::from)
-            }
+        if let Some(bytes) = self.as_host_bytes() {
+            return copy_tight_pixels_to_strided_output(
+                bytes,
+                self.dimensions,
+                self.fmt,
+                out,
+                stride,
+            )
+            .map_err(Error::from);
         }
+        #[cfg(feature = "cuda-runtime")]
+        if let Some((buffer, offset, len)) = self.storage.cuda_buffer_range() {
+            let byte_len = self.byte_len();
+            if len < byte_len {
+                return Err(BufferError::InputTooSmall {
+                    required: byte_len,
+                    have: len,
+                }
+                .into());
+            }
+            if let Some(len) =
+                tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
+            {
+                return buffer
+                    .copy_range_to_host(offset, &mut out[..len])
+                    .map_err(cuda_error);
+            }
+            let mut tight = try_vec_filled(byte_len, 0u8, "j2k CUDA surface download staging")?;
+            buffer
+                .copy_range_to_host(offset, &mut tight)
+                .map_err(cuda_error)?;
+            return copy_tight_pixels_to_strided_output(
+                &tight,
+                self.dimensions,
+                self.fmt,
+                out,
+                stride,
+            )
+            .map_err(Error::from);
+        }
+        Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "CUDA surface has no device buffer to download",
+            ),
+        ))
     }
 
     /// Borrow CUDA metadata when the surface is CUDA-backed.
     pub fn cuda_surface(&self) -> Option<CudaSurface<'_>> {
         #[cfg(feature = "cuda-runtime")]
-        match &self.storage {
-            Storage::Cuda(buffer) => Some(CudaSurface {
-                device_ptr: buffer.device_ptr(),
+        {
+            let (buffer, offset, _) = self.storage.cuda_buffer_range()?;
+            let device_ptr = buffer
+                .device_ptr()
+                .checked_add(u64::try_from(offset).ok()?)?;
+            Some(CudaSurface {
+                device_ptr,
                 _marker: core::marker::PhantomData,
                 stats: self.stats,
-            }),
-            Storage::CudaRange { buffer, offset, .. } => {
-                let offset = u64::try_from(*offset).ok()?;
-                let device_ptr = buffer.device_ptr().checked_add(offset)?;
-                Some(CudaSurface {
-                    device_ptr,
-                    _marker: core::marker::PhantomData,
-                    stats: self.stats,
-                })
-            }
-            Storage::Host(_) => None,
+            })
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -289,34 +312,30 @@ pub(crate) fn cuda_range_storage(
 }
 
 #[cfg(feature = "cuda-runtime")]
-fn contiguous_cuda_batch_range(surfaces: &[Surface]) -> Option<(&CudaDeviceBuffer, usize)> {
-    let first = surfaces.first()?;
-    let Storage::CudaRange {
+pub(crate) fn cuda_pooled_range_storage(
+    buffer: Arc<CudaPooledDeviceBuffer>,
+    offset: usize,
+    len: usize,
+) -> Storage {
+    Storage::CudaPooledRange {
         buffer,
         offset,
         len,
-    } = &first.storage
-    else {
-        return None;
-    };
-    let first_buffer = buffer;
-    let first_offset = *offset;
-    let mut expected_offset = first_offset.checked_add(*len)?;
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn contiguous_cuda_batch_range(surfaces: &[Surface]) -> Option<(&CudaDeviceBuffer, usize)> {
+    let (first_buffer, first_offset, first_len) = surfaces.first()?.storage.cuda_buffer_range()?;
+    let mut expected_offset = first_offset.checked_add(first_len)?;
     for surface in &surfaces[1..] {
-        let Storage::CudaRange {
-            buffer,
-            offset,
-            len,
-        } = &surface.storage
-        else {
-            return None;
-        };
-        if !Arc::ptr_eq(first_buffer, buffer) || *offset != expected_offset {
+        let (buffer, offset, len) = surface.storage.cuda_buffer_range()?;
+        if !core::ptr::eq(first_buffer, buffer) || offset != expected_offset {
             return None;
         }
-        expected_offset = expected_offset.checked_add(*len)?;
+        expected_offset = expected_offset.checked_add(len)?;
     }
-    Some((first_buffer.as_ref(), first_offset))
+    Some((first_buffer, first_offset))
 }
 
 #[cfg(any(feature = "cuda-runtime", test))]
@@ -359,26 +378,19 @@ impl DeviceSurface for Surface {
     }
 
     fn memory_range(&self) -> Option<DeviceMemoryRange> {
-        match &self.storage {
-            Storage::Host(_) => None,
-            #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(buffer) => Some(DeviceMemoryRange::new(
+        #[cfg(feature = "cuda-runtime")]
+        {
+            let (buffer, offset, _) = self.storage.cuda_buffer_range()?;
+            Some(DeviceMemoryRange::new(
                 BackendKind::Cuda,
                 buffer.device_ptr(),
-                0,
-                self.byte_len(),
-            )),
-            #[cfg(feature = "cuda-runtime")]
-            Storage::CudaRange {
-                buffer,
                 offset,
-                len,
-            } => Some(DeviceMemoryRange::new(
-                BackendKind::Cuda,
-                buffer.device_ptr(),
-                *offset,
-                *len,
-            )),
+                self.byte_len(),
+            ))
+        }
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            None
         }
     }
 }

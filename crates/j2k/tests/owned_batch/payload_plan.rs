@@ -133,7 +133,7 @@ pub(super) fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(bytes: V
         };
         for (owned_job, referenced_job) in owned_sub_band.jobs.iter().zip(&referenced_sub_band.jobs)
         {
-            assert!(referenced_job.data.is_empty());
+            assert_eq!(referenced_job.data, [] as [u8; 0]);
             let payload = referenced
                 .payload(payload_cursor)
                 .expect("first payload record for referenced HT job");
@@ -169,7 +169,7 @@ pub(super) fn assert_prepared_ht_payload_ranges_reconstruct_owned_bytes(bytes: V
                     .bytes()
                     .get(refinement.offset..refinement_end)
                     .expect("continuation range inside retained encoded owner");
-                assert!(!bytes.is_empty());
+                assert_ne!(bytes, [] as [u8; 0]);
                 refinement_bytes += bytes.len();
                 reconstructed.extend_from_slice(bytes);
             }

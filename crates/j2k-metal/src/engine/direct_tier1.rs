@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::metal_types::Buffer;
 use j2k_core::accelerator::GpuAbi;
 
-use super::{copied_slice_buffer, Error, MetalRuntime, PreparedDirectColorPlan};
+use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment};
+use super::{
+    copied_slice_buffer, ClassicTier1Buffers, ClassicTier1Inputs, Error, MetalRuntime,
+    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
+};
 
 pub(super) const HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK: usize = 1;
 
@@ -36,7 +40,7 @@ fn record_direct_tier1_input_buffer_runtime(runtime: &MetalRuntime) {
 #[cfg(not(test))]
 fn record_direct_tier1_input_buffer_runtime(_runtime: &MetalRuntime) {}
 
-pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
+fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
     mode: DirectTier1Mode,
@@ -48,6 +52,71 @@ pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
             copied_slice_buffer(&runtime.device, data)
         }
         DirectTier1Mode::CpuUpload => Ok(runtime.tier1_dummy_buffer.clone()),
+    }
+}
+
+/// Bytes of the buffer `prepare_direct_tier1_input_buffer` creates for `data`.
+/// `CpuUpload` binds the runtime's shared placeholder, which no plan owns.
+pub(super) fn direct_tier1_input_buffer_bytes<T>(data: &[T], mode: DirectTier1Mode) -> usize {
+    match mode {
+        DirectTier1Mode::Metal => size_of_val(data).max(1),
+        DirectTier1Mode::CpuUpload => 0,
+    }
+}
+
+impl ClassicTier1Inputs {
+    pub(super) fn new(mode: DirectTier1Mode) -> Self {
+        Self {
+            mode,
+            buffers: OnceLock::new(),
+        }
+    }
+
+    /// Returns the device copies of `coded_data`, `jobs` and `segments`,
+    /// building them on the first call.
+    pub(super) fn get_or_create(
+        &self,
+        runtime: &MetalRuntime,
+        coded_data: &[u8],
+        jobs: &[J2kClassicCleanupBatchJob],
+        segments: &[J2kClassicSegment],
+    ) -> Result<&ClassicTier1Buffers, Error> {
+        if let Some(buffers) = self.buffers.get() {
+            return Ok(buffers);
+        }
+        let buffers = ClassicTier1Buffers {
+            coded: prepare_direct_tier1_input_buffer(runtime, coded_data, self.mode)?,
+            jobs: prepare_direct_tier1_input_buffer(runtime, jobs, self.mode)?,
+            segments: prepare_direct_tier1_input_buffer(runtime, segments, self.mode)?,
+        };
+        // If another reader filled the lock first, its buffers hold the same
+        // bytes and this set is dropped.
+        Ok(self.buffers.get_or_init(|| buffers))
+    }
+
+    /// Drops buffers built from host vectors that have since been edited.
+    pub(super) fn reset(&mut self) {
+        self.buffers.take();
+    }
+}
+
+impl PreparedClassicSubBand {
+    pub(super) fn tier1_buffers(
+        &self,
+        runtime: &MetalRuntime,
+    ) -> Result<&ClassicTier1Buffers, Error> {
+        self.tier1_inputs
+            .get_or_create(runtime, &self.coded_data, &self.jobs, &self.segments)
+    }
+}
+
+impl PreparedClassicSubBandGroup {
+    pub(super) fn tier1_buffers(
+        &self,
+        runtime: &MetalRuntime,
+    ) -> Result<&ClassicTier1Buffers, Error> {
+        self.tier1_inputs
+            .get_or_create(runtime, &self.coded_data, &self.jobs, &self.segments)
     }
 }
 

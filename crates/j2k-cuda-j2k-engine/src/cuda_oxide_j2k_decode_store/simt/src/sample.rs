@@ -38,6 +38,14 @@ pub(crate) fn round_ties_even_f32(value: f32) -> f32 {
 }
 
 #[inline(always)]
+pub(crate) fn round_integer_output_then_add(sample: f32, addend: f32) -> f32 {
+    // Match the CPU integer-output path: round the centered 9/7 result before
+    // applying the unsigned level shift. Adding a 16-bit shift first discards
+    // one bit of f32 precision and can move samples across a rounding boundary.
+    round_ties_even_f32(sample) + addend
+}
+
+#[inline(always)]
 fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
     if value < min {
         min

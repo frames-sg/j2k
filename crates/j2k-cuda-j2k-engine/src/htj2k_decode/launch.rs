@@ -9,10 +9,16 @@ use crate::{
         htj2k_codeblock_launch_geometry, htj2k_codeblock_sample_launch_geometry, CudaKernel,
         CudaLaunchGeometry,
     },
-    memory::CudaDeviceBuffer,
+    memory::{CudaBufferPool, CudaDeviceBuffer, CudaPooledDeviceBuffer},
 };
 
-use super::types::{Htj2kDecodeCodeblocksLaunch, Htj2kDecodeCodeblocksMultiLaunch};
+use super::{
+    planning::Htj2kMultiDecodeRoute,
+    types::{
+        CudaHtj2kCoefficientClearKernelBatch, Htj2kDecodeCodeblocksLaunch,
+        Htj2kDecodeCodeblocksMultiLaunch,
+    },
+};
 
 macro_rules! cuda_kernel_params {
     ($($arg:ident),+ $(,)?) => {
@@ -20,7 +26,50 @@ macro_rules! cuda_kernel_params {
     };
 }
 
+/// Device arguments shared by both multi-block HTJ2K decode routes.
+#[derive(Clone, Copy)]
+struct MultiDecodeArgs {
+    payload: u64,
+    jobs: u64,
+    vlc_table0: u64,
+    vlc_table1: u64,
+    uvlc_table0: u64,
+    uvlc_table1: u64,
+    statuses: u64,
+    job_count: c_uint,
+}
+
+/// Symbol scratch for the cleanup route: `HT_MAX_SCRATCH` `u16` entries per
+/// code block, the worst case for any supported block size.
+pub(super) fn cleanup_scratch(
+    route: Htj2kMultiDecodeRoute,
+    jobs: usize,
+    pool: &CudaBufferPool,
+) -> Result<Option<CudaPooledDeviceBuffer>, CudaError> {
+    if route == Htj2kMultiDecodeRoute::Full {
+        return Ok(None);
+    }
+    let bytes = jobs
+        .checked_mul(j2k_codec_math::htj2k::HT_MAX_SCRATCH * size_of::<u16>())
+        .ok_or(CudaError::LengthTooLarge { len: jobs })?;
+    pool.take(bytes).map(Some)
+}
+
 impl crate::J2kCudaEngine<'_> {
+    pub(super) fn launch_htj2k_coefficient_clear(
+        &self,
+        mut batch: CudaHtj2kCoefficientClearKernelBatch,
+        geometry: CudaLaunchGeometry,
+    ) -> Result<(), CudaError> {
+        let mut params = cuda_kernel_params!(batch);
+        self.launch_htj2k_decode_kernel(
+            CudaKernel::Htj2kClearCoefficientTargets,
+            geometry,
+            &mut params,
+            CudaLaunchMode::Async,
+        )
+    }
+
     #[expect(
         clippy::similar_names,
         reason = "per-job block and byte offsets intentionally share domain terminology"
@@ -73,16 +122,13 @@ impl crate::J2kCudaEngine<'_> {
         )
     }
 
-    #[expect(
-        clippy::similar_names,
-        reason = "per-job block and byte offsets intentionally share domain terminology"
-    )]
     pub(super) fn launch_htj2k_decode_codeblocks_multi(
         &self,
         launch: Htj2kDecodeCodeblocksMultiLaunch<'_>,
     ) -> Result<(), CudaError> {
         let Htj2kDecodeCodeblocksMultiLaunch {
-            kernel,
+            scratch,
+            route,
             payload,
             jobs,
             tables,
@@ -91,32 +137,63 @@ impl crate::J2kCudaEngine<'_> {
             job_count,
             mode,
         } = launch;
-        let mut payload_ptr = payload.device_ptr();
-        let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = tables.vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = tables.vlc_table1.device_ptr();
-        let mut uvlc_table0_ptr = tables.uvlc_table0.device_ptr();
-        let mut uvlc_table1_ptr = tables.uvlc_table1.device_ptr();
-        let mut statuses_ptr = statuses
-            .device_ptr()
-            .checked_add(u64::try_from(status_byte_offset).map_err(|_| {
-                CudaError::LengthTooLarge {
+        let args = MultiDecodeArgs {
+            payload: payload.device_ptr(),
+            jobs: jobs.device_ptr(),
+            vlc_table0: tables.vlc_table0.device_ptr(),
+            vlc_table1: tables.vlc_table1.device_ptr(),
+            uvlc_table0: tables.uvlc_table0.device_ptr(),
+            uvlc_table1: tables.uvlc_table1.device_ptr(),
+            statuses: statuses
+                .device_ptr()
+                .checked_add(u64::try_from(status_byte_offset).map_err(|_| {
+                    CudaError::LengthTooLarge {
+                        len: status_byte_offset,
+                    }
+                })?)
+                .ok_or(CudaError::LengthTooLarge {
                     len: status_byte_offset,
-                }
-            })?)
-            .ok_or(CudaError::LengthTooLarge {
-                len: status_byte_offset,
-            })?;
-        let mut job_count = c_uint::try_from(job_count)
-            .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+                })?,
+            job_count: c_uint::try_from(job_count)
+                .map_err(|_| CudaError::LengthTooLarge { len: job_count })?,
+        };
+        match (route, scratch) {
+            (Htj2kMultiDecodeRoute::Full, None) => self.launch_htj2k_full_multi(args, mode),
+            (Htj2kMultiDecodeRoute::Cleanup { dequantize }, Some(scratch)) => {
+                self.launch_htj2k_cleanup_multi(args, scratch, dequantize, mode)
+            }
+            (Htj2kMultiDecodeRoute::Full, Some(_)) => Err(CudaError::InternalInvariant {
+                what: "full HTJ2K decode does not take cleanup symbol scratch",
+            }),
+            (Htj2kMultiDecodeRoute::Cleanup { .. }, None) => Err(CudaError::InternalInvariant {
+                what: "HTJ2K cleanup route requires symbol scratch",
+            }),
+        }
+    }
+
+    fn launch_htj2k_full_multi(
+        &self,
+        args: MultiDecodeArgs,
+        mode: CudaLaunchMode,
+    ) -> Result<(), CudaError> {
+        let MultiDecodeArgs {
+            mut payload,
+            mut jobs,
+            mut vlc_table0,
+            mut vlc_table1,
+            mut uvlc_table0,
+            mut uvlc_table1,
+            mut statuses,
+            mut job_count,
+        } = args;
         let mut params = cuda_kernel_params!(
-            payload_ptr,
-            jobs_ptr,
-            vlc_table0_ptr,
-            vlc_table1_ptr,
-            uvlc_table0_ptr,
-            uvlc_table1_ptr,
-            statuses_ptr,
+            payload,
+            jobs,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table0,
+            uvlc_table1,
+            statuses,
             job_count
         );
         let geometry = htj2k_codeblock_launch_geometry(job_count as usize).ok_or(
@@ -124,8 +201,74 @@ impl crate::J2kCudaEngine<'_> {
                 len: job_count as usize,
             },
         )?;
+        self.launch_htj2k_decode_kernel(
+            CudaKernel::Htj2kDecodeCodeblocksMulti,
+            geometry,
+            &mut params,
+            mode,
+        )
+    }
 
-        self.launch_htj2k_decode_kernel(kernel, geometry, &mut params, mode)
+    fn launch_htj2k_cleanup_multi(
+        &self,
+        args: MultiDecodeArgs,
+        scratch: &CudaDeviceBuffer,
+        dequantize: bool,
+        mode: CudaLaunchMode,
+    ) -> Result<(), CudaError> {
+        let MultiDecodeArgs {
+            mut payload,
+            mut jobs,
+            mut vlc_table0,
+            mut vlc_table1,
+            mut uvlc_table0,
+            mut uvlc_table1,
+            mut statuses,
+            mut job_count,
+        } = args;
+        let mut scratch = scratch.device_ptr();
+        let mut dequantize = u32::from(dequantize);
+        // Four independent symbol decoders per warp balance block occupancy
+        // and divergent codeblock lengths; small launches need more blocks.
+        let mut jobs_per_block = if job_count >= 512 { 4 } else { 1 };
+        let mut symbol_params = cuda_kernel_params!(
+            payload,
+            jobs,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table0,
+            uvlc_table1,
+            statuses,
+            job_count,
+            scratch,
+            dequantize,
+            jobs_per_block
+        );
+        let symbols =
+            CudaLaunchGeometry::new((job_count.div_ceil(jobs_per_block), 1, 1), (32, 1, 1)).ok_or(
+                CudaError::LengthTooLarge {
+                    len: job_count as usize,
+                },
+            )?;
+        self.launch_htj2k_decode_kernel(
+            CudaKernel::Htj2kDecodeCleanupSymbols,
+            symbols,
+            &mut symbol_params,
+            mode,
+        )?;
+        let mut magsgn_params =
+            cuda_kernel_params!(payload, jobs, statuses, job_count, scratch, dequantize);
+        let magsgn = CudaLaunchGeometry::new((job_count, 1, 1), (32, 1, 1)).ok_or(
+            CudaError::LengthTooLarge {
+                len: job_count as usize,
+            },
+        )?;
+        self.launch_htj2k_decode_kernel(
+            CudaKernel::Htj2kDecodeCleanupMagsgn,
+            magsgn,
+            &mut magsgn_params,
+            mode,
+        )
     }
 
     fn launch_htj2k_decode_kernel<const N: usize>(

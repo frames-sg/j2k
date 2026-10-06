@@ -71,7 +71,7 @@ fn referenced_cuda_plan_concatenates_refinement_continuation_records() {
             }),
         },
     ];
-    let (mut owners, _) = CudaPlanOwners::from_referenced_plan(&plan).unwrap();
+    let mut owners = CudaPlanOwners::from_referenced_plan(&plan).unwrap();
     let mut records = payloads.iter();
     let mut shared = Vec::new();
 

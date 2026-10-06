@@ -68,7 +68,7 @@ mod macos {
             let result = decoder
                 .decode_prepared(&prepared)
                 .expect("decode readback fixture");
-            assert!(result.errors().is_empty());
+            assert_eq!(result.errors(), []);
             assert!(result.group_errors().is_empty());
             let surfaces = result
                 .groups()

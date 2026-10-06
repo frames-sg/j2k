@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use self::sweep::{sweep_disjoint_output_regions, OrderedRowsDisjointness};
 use super::CudaHtj2kCodeBlockJob;
 use crate::{allocation::HostPhaseBudget, error::CudaError};
 pub(crate) use sweep::{validate_disjoint_output_regions, Htj2kOutputRect, Htj2kOutputRegion};
@@ -77,6 +78,21 @@ pub(super) fn validate_disjoint_htj2k_job_outputs_with_live_bytes(
 ) -> Result<(), CudaError> {
     let mut host_budget =
         HostPhaseBudget::with_live_bytes("CUDA HTJ2K output-region validation", live_host_bytes)?;
+    let mut ordered = OrderedRowsDisjointness::default();
+    let mut needs_general_sweep = false;
+    for job in jobs {
+        let Some(region) = output_rect(job, output_words)? else {
+            continue;
+        };
+        if !ordered.push(region) {
+            needs_general_sweep = true;
+            break;
+        }
+    }
+    if !needs_general_sweep {
+        return Ok(());
+    }
+
     let mut regions = host_budget.try_vec_with_capacity(jobs.len())?;
     for job in jobs {
         let Some(region) = output_rect(job, output_words)? else {
@@ -84,7 +100,8 @@ pub(super) fn validate_disjoint_htj2k_job_outputs_with_live_bytes(
         };
         regions.push(region);
     }
-    validate_disjoint_output_regions(&mut regions, host_budget.live_bytes())
+    // The ordered-row check above already failed, so go straight to the sweep.
+    sweep_disjoint_output_regions(&mut regions, host_budget.live_bytes())
 }
 
 pub(super) fn validate_htj2k_output_layout(

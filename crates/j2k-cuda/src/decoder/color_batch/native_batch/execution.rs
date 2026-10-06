@@ -49,6 +49,9 @@ pub(super) fn decode_native_color_batch(
         &component_source_indices,
         host_budget.live_bytes(),
     )?;
+    if let Some(cleanup) = entropy.pending_cleanup.as_ref() {
+        host_budget.account_bytes(cleanup.retained_host_bytes())?;
+    }
     drop(component_source_indices);
     drop(shared_payload);
     let pending_idwt =

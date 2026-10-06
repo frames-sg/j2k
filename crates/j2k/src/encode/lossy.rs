@@ -180,7 +180,7 @@ pub(super) fn encode_lossy_to_byte_target(
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
-        let mid = (low + high) * 0.5;
+        let mid = f32::midpoint(low, high);
         let codestream = encode_at_scale(mid)?;
         let len = codestream.len() as u64;
         let diff = byte_target_diff(len, target_bytes);
@@ -245,7 +245,7 @@ pub(super) fn encode_lossy_to_psnr_target(
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
-        let mid = (low + high) * 0.5;
+        let mid = f32::midpoint(low, high);
         let codestream = encode_at_scale(mid)?;
         let psnr = decoded_psnr(samples, &codestream)?;
         if psnr + tolerance >= target_psnr_db {

@@ -37,7 +37,7 @@ pub(crate) use self::referenced_grayscale::{
 };
 mod storage;
 use self::storage::build_component_plan_from_storage;
-use self::storage::sub_band::{strip_classic_payload_owners, strip_grayscale_payload_owners};
+use self::storage::sub_band::{strip_classic_payload_owners, validate_ht_payload_records};
 
 #[derive(Clone, Copy)]
 struct PayloadRangeOwner<'a> {
@@ -163,7 +163,7 @@ fn build_direct_grayscale_tile_plan<'a>(
         &mut ctx.storage,
         structural_workspace_bytes,
         decode_region.is_some(),
-        build::BuildWorkspace::CoefficientsOnly,
+        build::BuildWorkspace::MetadataOnly,
     )?;
     if let Some(output_region) = decode_region {
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;
@@ -292,6 +292,23 @@ fn payload_record_span(
     })
 }
 
+/// Moves one tile's payload records into the plan-wide list and charges any
+/// growth to `budget`, so the next tile plans against everything retained so
+/// far. The first allocated list is adopted without a copy.
+fn append_retained_records<T>(
+    budget: &mut DecodeAllocationBudget,
+    records: &mut Vec<T>,
+    tile_records: &mut Vec<T>,
+) -> Result<()> {
+    if records.capacity() == 0 {
+        core::mem::swap(records, tile_records);
+        return budget.include_elements::<T>(records.capacity());
+    }
+    budget.reserve_additional(records, tile_records.len())?;
+    records.append(tile_records);
+    Ok(())
+}
+
 fn append_decode_elements<T>(destination: &mut Vec<T>, source: &mut Vec<T>) -> Result<()> {
     let target_len = destination
         .len()
@@ -371,14 +388,14 @@ fn color_plan_rects<const COMPONENT_COUNT: usize>(
     Ok(expected)
 }
 
-fn validate_and_strip_referenced_payload_owners(
-    component_plans: &mut [J2kDirectGrayscalePlan],
+fn validate_referenced_payload_records(
+    component_plans: &[J2kDirectGrayscalePlan],
     payloads: &[HtCodeBlockPayloadRanges],
 ) -> Result<()> {
     let mut record_count = 0_usize;
     for component in component_plans {
         record_count = record_count
-            .checked_add(strip_grayscale_payload_owners(
+            .checked_add(validate_ht_payload_records(
                 component,
                 payloads
                     .get(record_count..)

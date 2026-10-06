@@ -23,8 +23,7 @@ const ACC_BITS: u8 = 64;
 
 /// Refill threshold. Every call that consumes bits ensures `bits >= 56`
 /// before returning so the next 16-bit peek can always succeed without a
-/// mid-decode refill. 56 matches the spec's "refill when `bits < 56`, 4 bytes
-/// at a time" guidance (spec §5 hot-path discipline).
+/// mid-decode refill.
 const REFILL_THRESHOLD: u8 = 56;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

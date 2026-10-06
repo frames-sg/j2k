@@ -189,6 +189,9 @@ impl MetalBatchDecoder {
     /// Commit every representable shared prepared group to codec-owned Metal
     /// output storage without waiting on the CPU.
     ///
+    /// Compatible classic RGB groups decode their Tier-1 code blocks in one
+    /// shared dispatch before each group's transforms and store.
+    ///
     /// Indexed preflight failures are retained in the returned guard. A
     /// non-fatal group submission failure is retained alongside other pending
     /// groups; a session-fatal failure aborts submission after safely retiring
@@ -210,18 +213,44 @@ impl MetalBatchDecoder {
             "J2K submitted shared prepared indexed errors",
         )?;
         errors.extend_from_slice(prepared.errors());
+        let mut indexed_group_errors = budget.try_vec(
+            prepared.groups().len(),
+            "J2K submitted shared prepared indexed group errors",
+        )?;
+        let mut residents = budget.try_vec(
+            prepared.groups().len(),
+            "J2K submitted shared prepared resident groups",
+        )?;
+        let mut resident_indices = budget.try_vec(
+            prepared.groups().len(),
+            "J2K submitted shared prepared resident group indices",
+        )?;
+
+        for (index, group) in prepared.groups().iter().enumerate() {
+            match self.prepare_resident_group(group, prepared.options()) {
+                Ok(resident) => {
+                    residents.push(resident);
+                    resident_indices.push(index);
+                }
+                Err(source) if source.session_is_unusable() => return Err(source),
+                Err(source) => {
+                    indexed_group_errors.push((index, MetalBatchGroupError::new(group, source)));
+                }
+            }
+        }
+        let (submitted, _) = self.submit_resident_groups(residents, Vec::new())?;
+        for (index, result) in resident_indices.into_iter().zip(submitted) {
+            match result {
+                Ok(pending) => pending_groups.push(pending),
+                Err(error) => indexed_group_errors.push((index, error)),
+            }
+        }
+        indexed_group_errors.sort_by_key(|(index, _)| *index);
         let mut group_errors = budget.try_vec(
             prepared.groups().len(),
             "J2K submitted shared prepared group errors",
         )?;
-
-        for group in prepared.groups() {
-            match self.submit_prepared_resident_group(group, prepared.options()) {
-                Ok(pending) => pending_groups.push(pending),
-                Err(source) if source.session_is_unusable() => return Err(source),
-                Err(source) => group_errors.push(MetalBatchGroupError::new(group, source)),
-            }
-        }
+        group_errors.extend(indexed_group_errors.into_iter().map(|(_, error)| error));
         Ok(SubmittedMetalPreparedBatch {
             pending_groups,
             errors,

@@ -13,15 +13,13 @@ use super::color_batch::finalize_color_batch_decode_report;
 use super::pending_completion::{PendingCleanup, PendingDecodeCompletion};
 use super::plan::{
     build_cuda_classic_grayscale_plans_from_referenced_with_profile,
-    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile,
-    build_cuda_htj2k_grayscale_plan_from_bytes_with_profile,
+    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap,
     build_cuda_htj2k_grayscale_plans_from_referenced_with_profile,
 };
 use super::resident::{
-    can_batch_color_idwt, decode_cuda_component_subbands_with_resources,
-    enqueue_component_classic_batches, enqueue_component_cleanup_dequant_batches,
-    finish_cuda_component_decode, pooled_cuda_buffer, run_color_component_idwt_batches,
-    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps,
+    decode_cuda_component_subbands_with_resources, enqueue_component_classic_batches,
+    enqueue_component_cleanup_dequant_batches, finish_cuda_component_decode, pooled_cuda_buffer,
+    run_color_component_idwt_batches, run_component_cleanup_dequant_batches,
 };
 use super::{
     cuda_error, cuda_range_storage, profile, BackendKind, CudaComponentDecodeWork,
@@ -46,6 +44,8 @@ pub(crate) use self::completion::{
 use self::execution::decode_grayscale_cuda_batch_with_profile;
 #[cfg(test)]
 use self::preparation::prepare_grayscale_batch;
+#[cfg(test)]
+use self::preparation::prepare_grayscale_batch_with_cap;
 pub(crate) use self::preparation::GrayscaleBatchInput;
 
 pub(super) fn decode_grayscale_cuda_resident_batch_surfaces_with_profile(

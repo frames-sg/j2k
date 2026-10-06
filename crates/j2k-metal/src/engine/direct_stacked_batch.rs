@@ -21,7 +21,7 @@ use super::{
     DirectColorBatchCommandBuffers, DirectHybridStageTimings, DirectScratchBuffer,
     DirectStatusCheck, DirectTier1Mode, Error, FlattenedCpuTier1Cache, MetalRuntime,
     NativeColorSpace, PixelFormat, PlaneStage, PreparedDirectColorPlan,
-    PreparedDirectGrayscalePlan, Surface,
+    PreparedDirectGrayscalePlan, SharedClassicTier1Group, Surface,
 };
 
 mod command_submission;
@@ -223,6 +223,7 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
             preflight.execution_plans,
             stage_timings,
             retained_buffers,
+            None,
         )?)
     } else {
         None
@@ -330,10 +331,34 @@ pub(super) struct StackedDirectComponentPlaneBatchRequest<'a, 'p> {
 pub(super) fn encode_stacked_direct_component_plane_batch(
     request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
 ) -> Result<StackedDirectComponentPlane, Error> {
+    encode_stacked_component_plane(request, None)
+}
+
+/// Like [`encode_stacked_direct_component_plane_batch`], but reads classic
+/// coefficients that a dispatch shared with other groups already decoded.
+#[cfg(target_os = "macos")]
+pub(super) fn encode_stacked_direct_component_plane_batch_with_shared_tier1(
+    request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
+    shared_tier1: &mut SharedClassicTier1Group,
+) -> Result<StackedDirectComponentPlane, Error> {
+    if request.tier1_mode != DirectTier1Mode::Metal || request.flattened_cpu_tier1_cache.is_some() {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K Metal shared classic Tier-1",
+            reason: "shared coefficients replace a Metal Tier-1 dispatch only",
+        });
+    }
+    encode_stacked_component_plane(request, Some(shared_tier1))
+}
+
+#[cfg(target_os = "macos")]
+fn encode_stacked_component_plane(
+    request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
+    shared_tier1: Option<&mut SharedClassicTier1Group>,
+) -> Result<StackedDirectComponentPlane, Error> {
     let tier1_mode = request.tier1_mode;
     let plan = plan_stacked_component_batch(request.plans, tier1_mode)?;
     let mut resources = prepare_stacked_component_resources(plan.count, plan.first.steps.len())?;
-    submit_stacked_component_commands(request, &plan, &mut resources)?;
+    submit_stacked_component_commands(request, shared_tier1, &plan, &mut resources)?;
     let final_plane = resources.final_plane.ok_or_else(|| Error::MetalKernel {
         message: "J2K MetalDirect color component batch did not produce a final plane".to_string(),
     })?;

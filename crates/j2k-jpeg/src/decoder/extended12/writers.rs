@@ -175,7 +175,9 @@ pub(super) fn write_extended12_color422_planes_region(
             continue;
         }
         for (dst, output_x) in dst_row
-            .chunks_exact_mut(6)
+            .as_chunks_mut::<6>()
+            .0
+            .iter_mut()
             .zip(output_rect.x..output_rect.x + output_rect.w)
         {
             let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
@@ -235,7 +237,9 @@ pub(super) fn write_extended12_color420_planes_region(
             continue;
         }
         for (dst, output_x) in dst_row
-            .chunks_exact_mut(6)
+            .as_chunks_mut::<6>()
+            .0
+            .iter_mut()
             .zip(output_rect.x..output_rect.x + output_rect.w)
         {
             let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
@@ -289,7 +293,7 @@ fn write_fancy_full_row(
 ) {
     let mut up = [[0u16; FANCY_CHUNK + 2]; 2];
     let mut start = span.start;
-    let mut dst = dst_row.chunks_exact_mut(6);
+    let mut dst = dst_row.as_chunks_mut::<6>().0.iter_mut();
     while start < span.end {
         let end = (start + FANCY_CHUNK).min(span.end);
         let first_sample = start / 2;
@@ -335,7 +339,7 @@ fn fancy_pairs(
     for (offset, sum) in sums[..pairs + 2].iter_mut().enumerate() {
         *sum = column_sum((first + offset).saturating_sub(1).min(last));
     }
-    for (pair, window) in out.chunks_exact_mut(2).zip(sums.windows(3)) {
+    for (pair, window) in out.as_chunks_mut::<2>().0.iter_mut().zip(sums.windows(3)) {
         let this = 3 * window[1];
         pair[0] = ((this + window[0] + rule.even_round) >> rule.shift) as u16;
         pair[1] = ((this + window[2] + rule.odd_round) >> rule.shift) as u16;
@@ -502,7 +506,7 @@ fn write_gray16_block_full(
     for (row, src_col, dst_row, dst_col, len) in full_block_rows(region, block_origin) {
         let src = &pixels[row * 8 + src_col..][..len];
         let dst = &mut out[dst_row * stride + dst_col * 2..][..len * 2];
-        for (dst, &sample) in dst.chunks_exact_mut(2).zip(src) {
+        for (dst, &sample) in dst.as_chunks_mut::<2>().0.iter_mut().zip(src) {
             dst.copy_from_slice(&sample.to_le_bytes());
         }
     }
@@ -520,7 +524,12 @@ fn write_rgb16_block_full(
         let start = row * 8 + src_col;
         let [c0, c1, c2] = pixels.each_ref().map(|plane| &plane[start..start + len]);
         let dst = &mut out[dst_row * stride + dst_col * 6..][..len * 6];
-        for (dst, ((&c0, &c1), &c2)) in dst.chunks_exact_mut(6).zip(c0.iter().zip(c1).zip(c2)) {
+        for (dst, ((&c0, &c1), &c2)) in dst
+            .as_chunks_mut::<6>()
+            .0
+            .iter_mut()
+            .zip(c0.iter().zip(c1).zip(c2))
+        {
             write_projected_rgb16(dst, projection, c0, c1, c2);
         }
     }

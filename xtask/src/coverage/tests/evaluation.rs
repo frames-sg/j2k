@@ -52,7 +52,10 @@ pub fn calculate() -> u32 {
         without_covered_body.changed_functions_without_covered_body,
         [format!("{path}::calculate@1")]
     );
-    assert!(without_covered_body.absent_instrumentable_files.is_empty());
+    assert_eq!(
+        without_covered_body.absent_instrumentable_files,
+        [] as [std::string::String; 0]
+    );
 
     let body_covered = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(1, 1), (3, 1)]))]),
@@ -66,7 +69,10 @@ pub fn calculate() -> u32 {
         &index,
     )
     .unwrap();
-    assert!(present.changed_functions_without_covered_body.is_empty());
+    assert_eq!(
+        present.changed_functions_without_covered_body,
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ use j2k_cuda_j2k_engine::{
     CudaHtj2kEncodeResources, J2kCudaEngine,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaContextDiagnostics};
+use j2k_cuda_runtime::{CudaBufferPool, CudaBufferPoolLimits, CudaContext, CudaContextDiagnostics};
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
 #[cfg(feature = "cuda-runtime")]
@@ -152,6 +152,13 @@ pub struct CudaSession {
     #[cfg(all(test, feature = "cuda-runtime"))]
     last_htj2k_decode_chunk_count: usize,
 }
+
+/// Idle completed device scratch a session keeps for batch decode. The values
+/// are fixed, not scaled to device memory, and not derived from a measurement.
+#[cfg(feature = "cuda-runtime")]
+const DECODE_BATCH_POOL_MAX_CACHED_BUFFERS: usize = 2_048;
+#[cfg(feature = "cuda-runtime")]
+const DECODE_BATCH_POOL_MAX_CACHED_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 impl CudaSession {
     /// Create a session bound to an existing CUDA context.
@@ -304,7 +311,16 @@ impl CudaSession {
             return Ok(pool.clone());
         }
         let context = self.cuda_context()?;
-        let pool = context.best_fit_buffer_pool();
+        // Dense batches retain several subband and IDWT allocations per image;
+        // the general-purpose 128-buffer limit churns even for 16 RGB images.
+        let pool = CudaBufferPool::best_fit_with_limits(
+            context,
+            CudaBufferPoolLimits {
+                max_cached_buffers: DECODE_BATCH_POOL_MAX_CACHED_BUFFERS,
+                max_cached_bytes: DECODE_BATCH_POOL_MAX_CACHED_BYTES,
+                ..CudaBufferPoolLimits::default()
+            },
+        );
         self.decode_batch_buffer_pool = Some(pool.clone());
         Ok(pool)
     }

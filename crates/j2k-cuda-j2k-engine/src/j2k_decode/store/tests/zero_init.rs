@@ -26,12 +26,12 @@ fn assert_u16_output(buffer: &CudaDeviceBuffer, expected: &[u16]) {
     buffer
         .copy_to_host(&mut bytes)
         .expect("download 16-bit store output");
-    let mut chunks = bytes.chunks_exact(2);
+    let (chunks, remainder) = bytes.as_chunks::<2>();
     let actual = chunks
-        .by_ref()
-        .map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
+        .iter()
+        .map(|chunk| u16::from_ne_bytes(*chunk))
         .collect::<Vec<_>>();
-    assert!(chunks.remainder().is_empty());
+    assert_eq!(remainder, [] as [u8; 0]);
     assert_eq!(actual, expected);
 }
 

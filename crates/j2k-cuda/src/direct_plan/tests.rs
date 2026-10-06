@@ -163,8 +163,8 @@ fn append_payload_to_shared_offsets_blocks_and_drains_local_payload() {
         .expect("append second payload");
 
     assert_eq!(shared, vec![1, 2, 3, 4, 5]);
-    assert!(first.payload().is_empty());
-    assert!(second.payload().is_empty());
+    assert_eq!(first.payload(), [] as [u8; 0]);
+    assert_eq!(second.payload(), [] as [u8; 0]);
     assert_eq!(first.payload.capacity(), 0);
     assert_eq!(second.payload.capacity(), 0);
     assert_eq!(first.code_blocks()[0].payload_offset, 0);
@@ -386,7 +386,7 @@ fn referenced_prepared_plan_materializes_only_the_execution_arena() {
     .expect("flatten referenced CUDA plan");
 
     assert_eq!(shared, expected);
-    assert!(cuda.payload().is_empty());
+    assert_eq!(cuda.payload(), [] as [u8; 0]);
     assert_eq!(cuda.code_blocks().len(), referenced.payloads().len());
     assert_eq!(cuda.code_blocks()[0].payload_offset, 0);
 }

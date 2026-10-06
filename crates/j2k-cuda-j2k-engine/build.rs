@@ -6,6 +6,7 @@ const J2K_DECODE_STORE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/abi.rs",
     "simt/src/color.rs",
     "simt/src/exports.rs",
+    "simt/src/fused_idwt.rs",
     "simt/src/layout.rs",
     "simt/src/memory.rs",
     "simt/src/native_color.rs",

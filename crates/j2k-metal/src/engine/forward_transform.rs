@@ -567,13 +567,16 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
     dispatch_width: u32,
     label: &str,
 ) -> Result<(), Error> {
-    debug_assert!(!inputs.is_empty());
-    debug_assert!(!outputs.is_empty());
     debug_assert!(params.component_count >= 1 && params.component_count <= 3);
-    let first_input_buffer = &inputs[0];
+    let (Some(first_input_buffer), Some(first_output_buffer)) = (inputs.first(), outputs.first())
+    else {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K Metal batched forward 5/3 pass",
+            reason: "pass has no input or output buffers",
+        });
+    };
     let second_input_buffer = inputs.get(1).unwrap_or(first_input_buffer);
     let third_input_buffer = inputs.get(2).unwrap_or(first_input_buffer);
-    let first_output_buffer = &outputs[0];
     let second_output_buffer = outputs.get(1).unwrap_or(first_output_buffer);
     let third_output_buffer = outputs.get(2).unwrap_or(first_output_buffer);
 

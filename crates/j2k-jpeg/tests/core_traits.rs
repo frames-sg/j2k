@@ -73,7 +73,7 @@ fn row_and_tile_core_traits_are_callable() {
     let mut sink = CollectRows { rows: Vec::new() };
     <Decoder<'_> as ImageDecodeRows<'_, u8>>::decode_rows(&mut dec, &mut sink)
         .expect("decode_rows");
-    assert!(!sink.rows.is_empty());
+    assert_ne!(sink.rows, [] as [Vec<u8>; 0]);
 
     let mut out = vec![0u8; 16 * 16 * 3];
     let mut pool = ScratchPool::new();

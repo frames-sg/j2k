@@ -198,5 +198,5 @@ fn checkpoint_reservation_fails_before_exceeding_the_host_cap() {
             cap: checkpoint_bytes,
         }
     );
-    assert!(cached.is_empty());
+    assert!(cached.is_empty(), "{cached:?}");
 }

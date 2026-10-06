@@ -5,7 +5,7 @@
 use j2k_cuda_j2k_engine::{
     CudaClassicCodeBlockJob, CudaClassicDecodeTarget, CudaClassicSegment, J2kCudaEngine,
 };
-use j2k_cuda_runtime::{CudaBufferPool, CudaContext};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaError};
 use j2k_native::{
     decode_j2k_code_block_scalar, encode_j2k_code_block_scalar_with_style, J2kCodeBlockDecodeJob,
     J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType,
@@ -62,6 +62,17 @@ fn classic_tier1_cuda_matches_native_style_and_dimension_matrix() {
     if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
+    let cases = tier1_cases();
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    for case in &cases {
+        run_case(&context, &pool, case);
+    }
+    run_case_batch(&context, &pool, &cases);
+}
+
+fn tier1_cases() -> [Tier1Case; 10] {
+    use J2kSubBandType::{HighHigh, HighLow, LowHigh, LowLow};
     let default_style = J2kCodeBlockStyle {
         selective_arithmetic_coding_bypass: false,
         reset_context_probabilities: false,
@@ -69,86 +80,155 @@ fn classic_tier1_cuda_matches_native_style_and_dimension_matrix() {
         vertically_causal_context: false,
         segmentation_symbols: false,
     };
-    let cases = [
+    let bypass = J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: true,
+        ..default_style
+    };
+    let term_reset = J2kCodeBlockStyle {
+        reset_context_probabilities: true,
+        termination_on_each_pass: true,
+        ..default_style
+    };
+    let segmentation = J2kCodeBlockStyle {
+        segmentation_symbols: true,
+        ..default_style
+    };
+    let vcausal = J2kCodeBlockStyle {
+        vertically_causal_context: true,
+        ..default_style
+    };
+    let all_modes = J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: true,
+        reset_context_probabilities: true,
+        termination_on_each_pass: true,
+        vertically_causal_context: true,
+        segmentation_symbols: true,
+    };
+    [
         Tier1Case {
-            name: "normal_ll_1x1_31bit",
-            width: 1,
-            height: 1,
             total_bitplanes: 31,
-            subband: J2kSubBandType::LowLow,
-            style: default_style,
-            seed: 0x5100,
+            ..tier1_case("normal_ll_1x1_31bit", (1, 1), LowLow, default_style, 0x5100)
         },
-        Tier1Case {
-            name: "bypass_lh",
-            width: 13,
-            height: 9,
-            total_bitplanes: 10,
-            subband: J2kSubBandType::LowHigh,
-            style: J2kCodeBlockStyle {
-                selective_arithmetic_coding_bypass: true,
-                ..default_style
-            },
-            seed: 0x5200,
-        },
-        Tier1Case {
-            name: "term_reset_hl",
-            width: 13,
-            height: 9,
-            total_bitplanes: 10,
-            subband: J2kSubBandType::HighLow,
-            style: J2kCodeBlockStyle {
-                reset_context_probabilities: true,
-                termination_on_each_pass: true,
-                ..default_style
-            },
-            seed: 0x5300,
-        },
-        Tier1Case {
-            name: "segmentation_hh",
-            width: 13,
-            height: 9,
-            total_bitplanes: 10,
-            subband: J2kSubBandType::HighHigh,
-            style: J2kCodeBlockStyle {
-                segmentation_symbols: true,
-                ..default_style
-            },
-            seed: 0x5400,
-        },
-        Tier1Case {
-            name: "vcausal_ll",
-            width: 13,
-            height: 9,
-            total_bitplanes: 10,
-            subband: J2kSubBandType::LowLow,
-            style: J2kCodeBlockStyle {
-                vertically_causal_context: true,
-                ..default_style
-            },
-            seed: 0x5500,
-        },
-        Tier1Case {
-            name: "combined_64x64",
-            width: 64,
-            height: 64,
-            total_bitplanes: 10,
-            subband: J2kSubBandType::HighHigh,
-            style: J2kCodeBlockStyle {
-                selective_arithmetic_coding_bypass: true,
-                reset_context_probabilities: true,
-                termination_on_each_pass: true,
-                vertically_causal_context: true,
-                segmentation_symbols: true,
-            },
-            seed: 0x5600,
-        },
-    ];
+        tier1_case("bypass_lh", (13, 9), LowHigh, bypass, 0x5200),
+        tier1_case("term_reset_hl", (13, 9), HighLow, term_reset, 0x5300),
+        tier1_case("segmentation_hh", (13, 9), HighHigh, segmentation, 0x5400),
+        tier1_case("vcausal_ll", (13, 9), LowLow, vcausal, 0x5500),
+        tier1_case("partial_height_2", (7, 2), LowLow, default_style, 0x5510),
+        tier1_case("partial_height_3_vcausal", (7, 3), HighLow, vcausal, 0x5520),
+        tier1_case("partial_height_5", (7, 5), LowHigh, default_style, 0x5530),
+        tier1_case(
+            "partial_height_63_vcausal",
+            (7, 63),
+            HighHigh,
+            vcausal,
+            0x5540,
+        ),
+        tier1_case("combined_64x64", (64, 64), HighHigh, all_modes, 0x5600),
+    ]
+}
 
-    let context = CudaContext::system_default().expect("CUDA context");
-    let pool = context.buffer_pool();
+/// A 10-bitplane case; override `total_bitplanes` with struct update syntax.
+fn tier1_case(
+    name: &'static str,
+    (width, height): (u32, u32),
+    subband: J2kSubBandType,
+    style: J2kCodeBlockStyle,
+    seed: u32,
+) -> Tier1Case {
+    Tier1Case {
+        name,
+        width,
+        height,
+        total_bitplanes: 10,
+        subband,
+        style,
+        seed,
+    }
+}
+
+fn run_case_batch(context: &CudaContext, pool: &CudaBufferPool, cases: &[Tier1Case]) {
+    let mut payload = Vec::new();
+    let mut jobs = Vec::new();
+    let mut segments = Vec::new();
+    let mut expected = Vec::new();
+    let mut malformed_ranges = Vec::new();
     for case in cases {
-        run_case(&context, &pool, &case);
+        let encoded = encode_j2k_code_block_scalar_with_style(
+            &generated_coefficients(case),
+            case.width,
+            case.height,
+            case.subband,
+            case.total_bitplanes,
+            case.style,
+        )
+        .unwrap_or_else(|error| panic!("{} batch encode: {error}", case.name));
+        let mut job = cuda_job(case, &encoded, encoded.data.len(), true);
+        job.payload_offset = u64::try_from(payload.len()).expect("batch payload offset");
+        job.segment_start = u32::try_from(segments.len()).expect("batch segment offset");
+        let stride = case.width as usize;
+        expected.resize(expected.len().div_ceil(stride) * stride, 0.0);
+        job.output_offset = u32::try_from(expected.len()).expect("batch output offset");
+        if case.name == "bypass_lh" {
+            let mut malformed = encoded.data.clone();
+            for segment in encoded
+                .segments
+                .iter()
+                .filter(|segment| !segment.use_arithmetic)
+            {
+                let start = segment.data_offset as usize;
+                let end = start + segment.data_length as usize;
+                malformed[start..end].fill(0xff);
+                malformed_ranges.push(payload.len() + start..payload.len() + end);
+            }
+            assert!(native_decode(case, &encoded, &malformed, &encoded.segments, true).is_err());
+        }
+        expected.extend(
+            native_decode(case, &encoded, &encoded.data, &encoded.segments, true)
+                .unwrap_or_else(|error| panic!("{} batch native decode: {error}", case.name)),
+        );
+        payload.extend_from_slice(&encoded.data);
+        segments.extend(cuda_segments(&encoded.segments));
+        jobs.push(job);
+    }
+    for queued in [false, true] {
+        let actual = cuda_decode_jobs(
+            context,
+            pool,
+            &payload,
+            &jobs,
+            &segments,
+            expected.len(),
+            queued,
+        )
+        .expect("heterogeneous classic batch decode");
+        assert_eq!(actual, expected, "classic batch queued={queued}");
+    }
+
+    for range in malformed_ranges {
+        payload[range].fill(0xff);
+    }
+    for queued in [false, true] {
+        let error = cuda_decode_jobs(
+            context,
+            pool,
+            &payload,
+            &jobs,
+            &segments,
+            expected.len(),
+            queued,
+        )
+        .expect_err("malformed bypass in the second input job must fail");
+        let index = error
+            .kernel_job_index()
+            .unwrap_or_else(|| panic!("unexpected classic batch failure: {error}"));
+        let expected = cases
+            .iter()
+            .position(|case| case.name == "bypass_lh")
+            .expect("malformed bypass case");
+        assert_eq!(
+            index, expected,
+            "failure keeps the input job index, queued={queued}"
+        );
     }
 }
 
@@ -268,34 +348,60 @@ fn cuda_decode(
     segments: &[CudaClassicSegment],
     output_words: usize,
 ) -> Result<Vec<f32>, String> {
-    let resources = J2kCudaEngine::new(context)
-        .upload_j2k_decode_payload(payload)
-        .map_err(|error| error.to_string())?;
-    let output = J2kCudaEngine::new(context)
-        .allocate_classic_coefficients_with_pool(output_words, pool)
-        .map_err(|error| error.to_string())?;
-    J2kCudaEngine::new(context)
-        .decode_classic_codeblocks_multi_with_resources_and_pool(
-            &resources,
-            &[CudaClassicDecodeTarget {
-                coefficients: output
-                    .as_device_buffer()
-                    .ok_or_else(|| "classic output is not device-resident".to_string())?,
-                jobs: &[job],
-                segments,
-                output_words,
-            }],
-            pool,
-            0,
-        )
-        .map_err(|error| error.to_string())?;
+    cuda_decode_jobs(
+        context,
+        pool,
+        payload,
+        &[job],
+        segments,
+        output_words,
+        false,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn cuda_decode_jobs(
+    context: &CudaContext,
+    pool: &CudaBufferPool,
+    payload: &[u8],
+    jobs: &[CudaClassicCodeBlockJob],
+    segments: &[CudaClassicSegment],
+    output_words: usize,
+    queued: bool,
+) -> Result<Vec<f32>, CudaError> {
+    let engine = J2kCudaEngine::new(context);
+    let resources = engine.upload_j2k_decode_payload(payload)?;
+    let output = engine.allocate_classic_coefficients_with_pool(output_words, pool)?;
+    let targets = [CudaClassicDecodeTarget {
+        coefficients: output
+            .as_device_buffer()
+            .expect("device-resident classic output"),
+        jobs,
+        segments,
+        output_words,
+    }];
+    if queued {
+        let tables = engine.upload_classic_decode_table_resources()?;
+        // SAFETY: payload, tables, output, and pool remain live and unchanged
+        // until this submission is finished immediately below.
+        unsafe {
+            engine.decode_classic_codeblocks_multi_enqueue_with_resources_and_pool(
+                &resources, &tables, &targets, pool, 0,
+            )?
+        }
+        .finish()?;
+    } else {
+        engine.decode_classic_codeblocks_multi_with_resources_and_pool(
+            &resources, &targets, pool, 0,
+        )?;
+    }
     let mut bytes = vec![0; output.byte_len()];
-    output
-        .copy_to_host(&mut bytes)
-        .map_err(|error| error.to_string())?;
+    output.copy_to_host(&mut bytes)?;
     Ok(bytes
-        .chunks_exact(4)
-        .map(|word| f32::from_ne_bytes(word.try_into().expect("f32 word")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| f32::from_ne_bytes(*word))
         .collect())
 }
 

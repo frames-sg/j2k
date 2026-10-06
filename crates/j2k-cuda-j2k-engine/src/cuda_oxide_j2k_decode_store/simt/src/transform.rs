@@ -6,7 +6,7 @@ use crate::sample::floor_f32;
 use cuda_device::ptx_asm;
 
 #[inline(always)]
-fn fused_mul_add_f32(multiplicand: f32, multiplier: f32, addend: f32) -> f32 {
+pub(crate) fn fused_mul_add_f32(multiplicand: f32, multiplier: f32, addend: f32) -> f32 {
     let output: f32;
     // SAFETY: this is a pure register-only IEEE binary32 FMA with no memory,
     // control-flow, or lane-participation contract.

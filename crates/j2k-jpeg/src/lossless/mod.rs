@@ -17,6 +17,10 @@ pub(crate) trait LosslessSample: Copy + Default {
     fn write_le(self, dst: &mut [u8]);
 
     /// Store one component row, shifted left by the point transform.
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "`Self::BYTES` is generic over the sample type, so it cannot be a const generic argument"
+    )]
     fn store_row(samples: &[u16], shift: u8, dst: &mut [u8]) {
         for (dst, &sample) in dst.chunks_exact_mut(Self::BYTES).zip(samples) {
             Self::from_sample(sample << shift).write_le(dst);
@@ -24,6 +28,10 @@ pub(crate) trait LosslessSample: Copy + Default {
     }
 
     /// Interleave three component rows into one pixel row.
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "`Self::BYTES` is generic over the sample type, so it cannot be a const generic argument"
+    )]
     fn store_interleaved(rows: [&[u16]; 3], shift: u8, dst: &mut [u8]) {
         let [c0, c1, c2] = rows;
         for (pixel, ((&s0, &s1), &s2)) in dst
@@ -63,7 +71,12 @@ impl LosslessSample for u8 {
 
     fn store_interleaved(rows: [&[u16]; 3], shift: u8, dst: &mut [u8]) {
         let [c0, c1, c2] = rows;
-        for (pixel, ((&s0, &s1), &s2)) in dst.chunks_exact_mut(3).zip(c0.iter().zip(c1).zip(c2)) {
+        for (pixel, ((&s0, &s1), &s2)) in dst
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(c0.iter().zip(c1).zip(c2))
+        {
             pixel[0] = Self::from_sample(s0 << shift);
             pixel[1] = Self::from_sample(s1 << shift);
             pixel[2] = Self::from_sample(s2 << shift);

@@ -55,6 +55,7 @@ struct J2kArithmeticDecoder {
     uint c;
     uint a;
     uint base_pointer;
+    uchar byte;
     uint shift_count;
 };
 

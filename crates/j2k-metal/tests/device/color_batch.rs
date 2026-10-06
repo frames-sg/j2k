@@ -49,7 +49,7 @@ fn submitted_prepared_ht_rgb_u8_stores_exact_native_nhwc_and_nchw_for_all_reques
             let prepared = decoder
                 .prepare(inputs)
                 .expect("prepare exact-native HT RGB U8 group");
-            assert!(prepared.errors().is_empty());
+            assert_eq!(prepared.errors(), []);
             assert_eq!(prepared.groups().len(), 1);
             let group = &prepared.groups()[0];
             assert_eq!(group.info().sample_type, NativeSampleType::U8);
@@ -129,7 +129,7 @@ fn submitted_prepared_ht_rgb_u16_stores_exact_native_nhwc_and_nchw() {
         let prepared = decoder
             .prepare(inputs)
             .expect("prepare exact-native HT RGB U16 group");
-        assert!(prepared.errors().is_empty());
+        assert_eq!(prepared.errors(), []);
         let group = &prepared.groups()[0];
         let (width, height) = group.info().dimensions;
         let samples_per_image =

@@ -95,7 +95,8 @@ impl crate::J2kCudaEngine<'_> {
             return Ok(CudaExecutionStats::default());
         }
         self.prepare_operation()?;
-        let jobs_buffer = pool.upload(htj2k_dequantize_jobs_as_bytes(&kernel_jobs))?;
+        let jobs_buffer =
+            pool.upload_pinned_parts_enqueue(&[htj2k_dequantize_jobs_as_bytes(&kernel_jobs)])?;
         self.launch_j2k_dequantize_htj2k_codeblocks_multi(
             pooled_device_buffer(&jobs_buffer)?,
             kernel_jobs.len(),

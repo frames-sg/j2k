@@ -5,6 +5,195 @@ use objc2::Message as _;
 use objc2_metal::{MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _};
 
 #[test]
+fn distinct_classic_gray16_dense_tail_preserves_external_batch_order() {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 512;
+    const IMAGE_COUNT: usize = 17;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let base_samples = (0..WIDTH * HEIGHT)
+        .map(|index| {
+            let x = index % WIDTH;
+            let y = index / WIDTH;
+            u16::try_from(
+                (x.wrapping_mul(193) ^ y.wrapping_mul(257) ^ (x * y).rotate_left(7)) & 0xffff,
+            )
+            .expect("masked fixture sample fits u16")
+        })
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    let mut expected = Vec::with_capacity(IMAGE_COUNT);
+    let mut encoded = Vec::with_capacity(IMAGE_COUNT);
+    for image_index in 0..IMAGE_COUNT {
+        let mut samples = base_samples.clone();
+        let marker_index = image_index * 15_419;
+        samples[marker_index] = samples[marker_index]
+            .wrapping_add(u16::try_from(image_index + 1).expect("image index fits u16") * 997);
+        let pixels = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>();
+        encoded.push(Arc::<[u8]>::from(
+            encode(&pixels, WIDTH, HEIGHT, 1, 16, false, &options)
+                .expect("encode level-5 classic Gray16 tail fixture"),
+        ));
+        expected.push(pixels);
+    }
+
+    let mut decoder = MetalBatchDecoder::system_default().expect("persistent Metal decoder");
+    let prepared = decoder
+        .prepare(encoded.iter().cloned().map(EncodedImage::full).collect())
+        .expect("prepare distinct classic Gray16 tail group");
+    assert_eq!(prepared.errors(), []);
+    assert_eq!(prepared.groups().len(), 1);
+    let group = &prepared.groups()[0];
+    assert_eq!(group.info().route, BatchCodecRoute::Classic);
+    assert_eq!(group.images().len(), IMAGE_COUNT);
+    assert!(group.source_indices().iter().copied().eq(0..IMAGE_COUNT));
+
+    let image_bytes = WIDTH as usize * HEIGHT as usize * 2;
+    let output_bytes = image_bytes * IMAGE_COUNT;
+    let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+        decoder.backend_session().device(),
+        output_bytes + 8,
+    )
+    .expect("distinct classic Gray16 tail destination buffer");
+    let layout = MetalImageLayout::new_batch(
+        4,
+        (WIDTH, HEIGHT),
+        WIDTH as usize * 2,
+        PixelFormat::Gray16,
+        IMAGE_COUNT,
+        image_bytes,
+    )
+    .expect("distinct classic Gray16 tail destination layout");
+    // SAFETY: this fresh range remains exclusively retained by the submitted
+    // codec work until its explicit completion wait.
+    let destination = unsafe {
+        MetalImageDestination::from_exclusive_buffer(buffer.clone(), layout)
+            .expect("distinct classic Gray16 tail destination")
+    };
+    decoder
+        .submit_prepared_group_into(group, destination)
+        .expect("submit distinct classic Gray16 tail group")
+        .wait()
+        .expect("complete distinct classic Gray16 tail group");
+
+    // SAFETY: codec completion released exclusive destination access.
+    let actual = unsafe {
+        j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, output_bytes)
+            .expect("distinct classic Gray16 tail pixels")
+    };
+    for (image_index, (actual, expected)) in
+        actual.chunks_exact(image_bytes).zip(&expected).enumerate()
+    {
+        assert_eq!(actual, expected, "image {image_index}");
+    }
+}
+
+#[test]
+fn repeated_and_partial_duplicate_ht_rgb_groups_preserve_external_batch_order() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let rgb8 = [0, 17, 31].map(|offset| Arc::<[u8]>::from(fixture_ht_rgb_u8_sized(8, 8, offset)));
+    let rgb16 =
+        [0, 257, 509].map(|offset| Arc::<[u8]>::from(fixture_ht_rgb_u16_sized(8, 8, offset)));
+    for (sources, format) in [(&rgb8, PixelFormat::Rgb8), (&rgb16, PixelFormat::Rgb16)] {
+        for batch_layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+            for input_indices in [&[0_usize, 0, 0][..], &[0, 1, 0, 2, 1][..]] {
+                let (actual, expected) =
+                    decode_external_rgb_group(sources, input_indices, batch_layout, format);
+                assert_eq!(actual, expected, "{format:?} {batch_layout:?}");
+            }
+        }
+    }
+}
+
+/// Decodes `input_indices` of `sources` on the CPU and into an external Metal
+/// destination that starts 4 bytes into its buffer. Returns the Metal bytes
+/// and the CPU bytes.
+fn decode_external_rgb_group(
+    sources: &[Arc<[u8]>; 3],
+    input_indices: &[usize],
+    batch_layout: BatchLayout,
+    format: PixelFormat,
+) -> (Vec<u8>, Vec<u8>) {
+    let options = BatchDecodeOptions {
+        layout: batch_layout,
+        ..BatchDecodeOptions::default()
+    };
+    let inputs = input_indices
+        .iter()
+        .map(|&index| EncodedImage::full(Arc::clone(&sources[index])))
+        .collect::<Vec<_>>();
+    let mut cpu = CpuBatchDecoder::new(options);
+    let cpu_output = cpu
+        .decode(inputs.clone())
+        .expect("CPU repeated/partial-duplicate RGB oracle");
+    let expected = match (format, cpu_output.groups()[0].samples()) {
+        (PixelFormat::Rgb8, CpuBatchSamples::U8(samples)) => samples.clone(),
+        (PixelFormat::Rgb16, CpuBatchSamples::U16(samples)) => samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect(),
+        _ => panic!("six-bit RGB must use U8 batch storage and twelve-bit RGB U16"),
+    };
+
+    let mut decoder =
+        MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
+    let prepared = decoder
+        .prepare(inputs)
+        .expect("prepare repeated/partial-duplicate RGB group");
+    assert_eq!(prepared.errors(), []);
+    assert_eq!(prepared.groups().len(), 1);
+    let group = &prepared.groups()[0];
+    assert_eq!(group.images().len(), input_indices.len());
+    let (width, height) = group.info().dimensions;
+    let row_bytes = width as usize * 3 * format.bytes_per_sample();
+    let image_len = row_bytes * height as usize;
+    let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+        decoder.backend_session().device(),
+        expected.len() + 8,
+    )
+    .expect("repeated/partial-duplicate RGB destination buffer");
+    let destination_layout = MetalImageLayout::new_batch(
+        4,
+        (width, height),
+        row_bytes,
+        format,
+        group.images().len(),
+        image_len,
+    )
+    .expect("repeated/partial-duplicate RGB destination layout");
+    // SAFETY: the fresh allocation stays exclusively retained until the
+    // submitted group has completed.
+    let destination = unsafe {
+        MetalImageDestination::from_exclusive_buffer(buffer.clone(), destination_layout)
+            .expect("repeated/partial-duplicate RGB destination")
+    };
+    decoder
+        .submit_prepared_group_into(group, destination)
+        .expect("submit repeated/partial-duplicate RGB group")
+        .wait()
+        .expect("complete repeated/partial-duplicate RGB group");
+
+    // SAFETY: completion released the exclusive destination owner.
+    let actual =
+        unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, expected.len()) }
+            .expect("repeated/partial-duplicate RGB destination bytes");
+    (actual, expected)
+}
+
+#[test]
 fn shared_metal_batch_keeps_indexed_prepare_failures_and_decodes_other_groups() {
     if !should_run_metal_runtime() {
         return;
@@ -88,7 +277,7 @@ fn persistent_metal_batch_decoder_writes_distinct_ht_gray_group_into_external_su
             EncodedImage::full(Arc::from(second_bytes.as_slice())),
         ])
         .expect("prepare external HT grayscale group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
 
     decoder
@@ -131,7 +320,7 @@ fn shared_prepared_gray8_group_writes_one_destination_with_unaligned_item_offset
             EncodedImage::full(second_bytes.clone()),
         ])
         .expect("prepare odd Gray8 group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
 
     let device = decoder.backend_session().device();
@@ -328,7 +517,7 @@ fn submitted_prepared_signed_gray12_group_stores_native_i16_samples() {
             EncodedImage::full(Arc::<[u8]>::from(second_encoded)),
         ])
         .expect("prepare signed Gray12 group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 1);
     assert_eq!(
         prepared.groups()[0].info().sample_type,
@@ -358,7 +547,9 @@ fn submitted_prepared_signed_gray12_group_stores_native_i16_samples() {
     let bytes = unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, 64) }
         .expect("signed group bytes");
     let actual = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     assert_eq!(actual, [first_expected, second_expected].concat());

@@ -5,11 +5,15 @@ use std::sync::Arc;
 use crate::{
     error::CudaError,
     execution::{CudaExecutionStats, CudaLaunchMode},
-    kernels::CudaKernel,
     memory::{pooled_device_buffer, CudaDeviceBuffer, CudaPooledDeviceBuffer},
 };
+use j2k_cuda_runtime::CudaKernelParam;
+
+use super::planning::Htj2kMultiDecodeRoute;
 
 use super::output_regions::ValidatedHtj2kOutputLayout;
+
+pub(crate) const HTJ2K_COEFFICIENT_CLEAR_TARGETS_PER_BATCH: usize = 32;
 
 #[doc(hidden)]
 /// HTJ2K code-block decode job consumed by the CUDA entropy kernel launcher.
@@ -77,6 +81,29 @@ pub struct CudaHtj2kCleanupTarget<'a> {
     /// Number of coefficient words available in `coefficients`.
     pub output_words: usize,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CudaHtj2kCoefficientClearKernelTarget {
+    pub(crate) output_ptr: u64,
+    pub(crate) words: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CudaHtj2kCoefficientClearKernelBatch {
+    pub(crate) targets:
+        [CudaHtj2kCoefficientClearKernelTarget; HTJ2K_COEFFICIENT_CLEAR_TARGETS_PER_BATCH],
+    pub(crate) target_count: u32,
+    pub(crate) blocks_per_target: u32,
+}
+
+// SAFETY: this padding-free repr(C) value contains only CUDA integer scalars
+// and has the same 520-byte layout as the device kernel parameter.
+unsafe impl CudaKernelParam for CudaHtj2kCoefficientClearKernelBatch {}
+
+const _: [(); 16] = [(); core::mem::size_of::<CudaHtj2kCoefficientClearKernelTarget>()];
+const _: [(); 520] = [(); core::mem::size_of::<CudaHtj2kCoefficientClearKernelBatch>()];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -332,7 +359,8 @@ pub(super) struct Htj2kDecodeCodeblocksLaunch<'a> {
 
 #[derive(Clone, Copy)]
 pub(super) struct Htj2kDecodeCodeblocksMultiLaunch<'a> {
-    pub(super) kernel: CudaKernel,
+    pub(super) scratch: Option<&'a CudaDeviceBuffer>,
+    pub(super) route: Htj2kMultiDecodeRoute,
     pub(super) payload: &'a CudaDeviceBuffer,
     pub(super) jobs: &'a CudaDeviceBuffer,
     pub(super) tables: Htj2kDecodeKernelTables<'a>,

@@ -3,10 +3,10 @@
 //! Grayscale plan construction for prepared and one-shot inputs.
 
 use super::{
-    native_decode_error, profile, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
-    CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan, DeviceDecodeRequest, Downscale,
-    Error, HostPhaseBudget, J2kDecoder, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
-    NativeDecoderContext, NativeImage, PixelFormat, Rect,
+    native_decode_error, parse_with_host_cap, profile, CudaHtj2kDecodePlan,
+    CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan,
+    DeviceDecodeRequest, Downscale, Error, HostPhaseBudget, J2kDecoder, J2kReferencedClassicPlan,
+    J2kReferencedHtj2kPlan, NativeDecoderContext, NativeImage, PixelFormat, Rect,
 };
 
 pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_with_profile<'a>(
@@ -14,16 +14,17 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_with_profil
     fmt: PixelFormat,
     native_context: &mut NativeDecoderContext<'a>,
 ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
-    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile(
+    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap(
         input,
         fmt,
         None,
         DecodeSettings::default(),
         native_context,
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
     )
 }
 
-pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile<
+pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap<
     'a,
 >(
     input: &'a [u8],
@@ -31,6 +32,7 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_
     device_plan: Option<DeviceDecodePlan>,
     settings: DecodeSettings,
     native_context: &mut NativeDecoderContext<'a>,
+    host_cap: usize,
 ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
     let total_start = profile::profile_now(true);
     let parse_start = profile::profile_now(true);
@@ -50,7 +52,12 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_
         target_resolution,
         ..settings
     };
-    let image = NativeImage::new(input, &decode_settings).map_err(native_decode_error)?;
+    let (image, mut host_budget) = parse_with_host_cap(
+        input,
+        &decode_settings,
+        host_cap,
+        "j2k CUDA bounded grayscale planning",
+    )?;
     let parse_us = profile::elapsed_us(parse_start);
 
     let plan_start = profile::profile_now(true);
@@ -78,14 +85,26 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_
     let plan_us = profile::elapsed_us(plan_start);
 
     let flatten_start = profile::profile_now(true);
+    host_budget.account_bytes(
+        native_plan
+            .retained_allocation_bytes()
+            .map_err(j2k_native::DecodeError::from)
+            .map_err(native_decode_error)?,
+    )?;
     let cuda_plan = match selected_rect {
-        Some(rect) => CudaHtj2kDecodePlan::from_grayscale_direct_plan_region(
+        Some(rect) => CudaHtj2kDecodePlan::from_grayscale_direct_plan_region_with_budget(
             &native_plan,
             fmt,
             (rect.x, rect.y),
             (rect.w, rect.h),
+            &mut host_budget,
         )?,
-        None => CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, fmt, (0, 0))?,
+        None => CudaHtj2kDecodePlan::from_grayscale_direct_plan_with_budget(
+            &native_plan,
+            fmt,
+            (0, 0),
+            &mut host_budget,
+        )?,
     };
     let flatten_us = profile::elapsed_us(flatten_start);
     let report = CudaHtj2kProfileReport {

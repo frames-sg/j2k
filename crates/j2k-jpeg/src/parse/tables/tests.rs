@@ -116,7 +116,7 @@ fn rejects_invalid_dqt_precision_before_length_interpretation() {
         .expect_err("DQT precision is restricted to 8 or 16 bits");
 
     assert_eq!(error, JpegError::UnsupportedBitDepth { depth: 2 });
-    assert!(tables.versions.is_empty());
+    assert_eq!(tables.versions, [] as [[u16; 64]; 0]);
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn rejects_zero_quantizers_without_mutating_table_state() {
             },
             "precision {precision}"
         );
-        assert!(tables.versions.is_empty());
+        assert_eq!(tables.versions, [] as [[u16; 64]; 0]);
     }
 }
 
@@ -225,5 +225,5 @@ fn table_state_rejects_an_unvalidated_quant_slot_without_panicking() {
             reason: "unvalidated DQT slot reached table definition",
         }
     );
-    assert!(tables.versions.is_empty());
+    assert_eq!(tables.versions, [] as [[u16; 64]; 0]);
 }

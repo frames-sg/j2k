@@ -52,7 +52,7 @@ fn input(
     variant: u8,
 ) -> Vec<u8> {
     let mut rgb = j2k_test_support::gpu_bench_rgb8(u32::from(width), u32::from(height));
-    for pixel in rgb.chunks_exact_mut(3) {
+    for pixel in rgb.as_chunks_mut::<3>().0 {
         pixel[0] = pixel[0].wrapping_add(variant);
     }
     let mut bytes = Vec::new();

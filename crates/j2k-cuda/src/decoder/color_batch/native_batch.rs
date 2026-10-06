@@ -11,7 +11,7 @@ use j2k_cuda_j2k_engine::CudaQueuedJ2kStoreBatch;
 use j2k_cuda_runtime::{CudaDeviceBuffer, CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut};
 
 use super::{
-    append_color_payload_to_shared, can_batch_color_idwt, cuda_error,
+    append_color_payload_to_shared, build_color_component_work, cuda_error,
     finalize_color_batch_decode_report, host_owners, profile, run_color_component_idwt_batches,
     CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession, Error,
     NativeDecoderContext,
@@ -24,8 +24,7 @@ use crate::decoder::plan::{
     build_cuda_htj2k_color_plans_from_referenced_with_profile,
 };
 use crate::decoder::resident::{
-    decode_cuda_component_subbands_with_resources, enqueue_chunked_htj2k_cleanup_dequant,
-    enqueue_component_classic_batches, ChunkedHtj2kCleanup,
+    enqueue_chunked_htj2k_cleanup_dequant, enqueue_component_classic_batches, ChunkedHtj2kCleanup,
 };
 use crate::decoder::CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED;
 
@@ -196,7 +195,7 @@ mod tests {
             .expect("prepare retained CUDA RGB plan");
             assert_eq!(prepared.colors[0].dimensions, plan.output_dims());
             assert_eq!(prepared.colors[0].report.parse_us, 0);
-            assert!(!prepared.shared_payload.is_empty());
+            assert_ne!(prepared.shared_payload, [] as [u8; 0]);
         }
         let _ = BatchLayout::Nhwc;
     }

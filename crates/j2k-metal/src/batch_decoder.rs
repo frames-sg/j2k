@@ -26,6 +26,8 @@ use crate::metal_types::{Buffer, DeviceRef};
 use crate::{Error, MetalBackendSession, Surface};
 
 mod contracts;
+#[cfg(target_os = "macos")]
+mod cooperative;
 mod decoder;
 #[cfg(all(test, target_os = "macos"))]
 mod encoder_count_tests;
@@ -36,6 +38,8 @@ mod plan_cache;
 #[cfg(all(test, target_os = "macos"))]
 mod queue_ordering_tests;
 mod resident;
+#[cfg(all(test, target_os = "macos"))]
+mod shared_tier1_tests;
 #[cfg(target_os = "macos")]
 mod submission;
 
@@ -198,7 +202,7 @@ mod batch_contract_tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn external_ht_rgb_group_stacks_each_component_across_images() {
+    fn external_ht_rgb_group_stacks_components_and_images() {
         if !j2k_test_support::metal_runtime_gate(module_path!()) {
             return;
         }
@@ -253,8 +257,8 @@ mod batch_contract_tests {
 
         assert_eq!(
             crate::engine::stacked_component_batches_for_test(),
-            3,
-            "RGB components must each coalesce the two image plans"
+            1,
+            "compatible RGB components and both images must share one stacked graph"
         );
         // SAFETY: codec completion released the exclusive destination before
         // this host-only parity check.

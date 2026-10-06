@@ -21,6 +21,8 @@ pub(super) struct NativeColorStoreConfig {
     pub(super) image_count: usize,
     pub(super) broadcast_planes: bool,
     pub(super) destination_image_index: usize,
+    pub(super) source_image_index: usize,
+    pub(super) source_plane_base_indices: [usize; 4],
 }
 
 #[cfg(target_os = "macos")]
@@ -35,6 +37,7 @@ pub(super) fn encode_exact_native_color_batch_store_in_encoder(
     let NativeColorStorePlan {
         channels,
         destination_offset,
+        source_plane_offsets,
         params,
         pipeline,
     } = plan_exact_native_color_store(runtime, planes, plan, config, destination)?;
@@ -50,8 +53,13 @@ pub(super) fn encode_exact_native_color_batch_store_in_encoder(
         _ => unreachable!("plane count was validated against the native color format"),
     }
     encoder.setComputePipelineState(pipeline);
-    for (index, plane) in planes.iter().enumerate() {
-        encoder.set_buffer(index as u64, Some(plane), 0);
+    for (index, (plane, source_plane_offset)) in planes.iter().zip(source_plane_offsets).enumerate()
+    {
+        let source_plane_offset =
+            u64::try_from(source_plane_offset).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal stacked exact color source offset exceeds u64".to_string(),
+            })?;
+        encoder.set_buffer(index as u64, Some(plane), source_plane_offset);
     }
     // SAFETY: the checked destination owns this exact dense group range until
     // the submitted command buffer has completed.

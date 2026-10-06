@@ -29,8 +29,10 @@ fn irreversible_rgb16_mct_rounds_centered_ties_even_before_shift_when_runtime_re
         .copy_to_host(&mut bytes)
         .expect("download irreversible RGB16 MCT store");
     let actual = bytes
-        .chunks_exact(2)
-        .map(|sample| u16::from_ne_bytes([sample[0], sample[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| u16::from_ne_bytes(*sample))
         .collect::<Vec<_>>();
     assert_eq!(actual, [128, 128, 128, 126, 126, 126]);
 }

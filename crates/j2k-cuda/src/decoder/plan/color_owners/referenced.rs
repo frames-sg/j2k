@@ -10,6 +10,72 @@ use crate::allocation::HostPhaseBudget;
 use crate::direct_plan::referenced_ht_payload_record_count;
 use crate::{CudaHtj2kDecodePlan, Error};
 
+/// The HT payload records of the component whose records start at `offset`,
+/// and the offset just past them.
+fn component_ht_payloads<'p>(
+    component_plan: &J2kDirectGrayscalePlan,
+    ht_payloads: &'p [HtCodeBlockPayloadRanges],
+    offset: usize,
+    encoded: &[u8],
+) -> Result<(&'p [HtCodeBlockPayloadRanges], usize), Error> {
+    let remaining = ht_payloads.get(offset..).ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::geometry_mismatch(
+            "CUDA color tile payload offset is out of bounds",
+        ),
+    ))?;
+    let count = referenced_ht_payload_record_count(component_plan, remaining, encoded)?;
+    let end = offset.checked_add(count).ok_or(Error::capability_rejected(
+        j2k_core::CapabilityRejection::resource_limit(
+            super::super::super::CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
+        ),
+    ))?;
+    let payloads = ht_payloads
+        .get(offset..end)
+        .ok_or(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "CUDA color tile payload ranges do not match component geometry",
+            ),
+        ))?;
+    Ok((payloads, end))
+}
+
+pub(in crate::decoder::plan) fn flatten_direct_source_cuda_color_tile_components(
+    component_plans: &[J2kDirectGrayscalePlan],
+    ht_payloads: &[HtCodeBlockPayloadRanges],
+    encoded: &[u8],
+    format: PixelFormat,
+    output_origin: (u32, u32),
+    output_dimensions: (u32, u32),
+    host_budget: &mut HostPhaseBudget,
+) -> Result<Vec<CudaHtj2kDecodePlan>, Error> {
+    let mut components = host_budget.try_vec_with_capacity(component_plans.len())?;
+    let mut ht_payload_offset = 0usize;
+    for component_plan in component_plans {
+        let (payloads, end) =
+            component_ht_payloads(component_plan, ht_payloads, ht_payload_offset, encoded)?;
+        components.push(
+            CudaHtj2kDecodePlan::from_referenced_tile_grayscale_plan_direct_source(
+                component_plan,
+                payloads,
+                encoded,
+                format,
+                output_origin,
+                output_dimensions,
+                host_budget,
+            )?,
+        );
+        ht_payload_offset = end;
+    }
+    if ht_payload_offset != ht_payloads.len() {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "direct-source CUDA color tile payload ranges contain trailing jobs",
+            ),
+        ));
+    }
+    Ok(components)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "referenced tile bridge keeps destination geometry and retained owners explicit"
@@ -30,28 +96,8 @@ pub(in crate::decoder::plan) fn flatten_referenced_cuda_color_tile_components(
     let mut ht_payload_offset = 0usize;
     let mut classic_payload_offset = 0usize;
     for component_plan in component_plans {
-        let remaining_ht_payloads =
-            ht_payloads
-                .get(ht_payload_offset..)
-                .ok_or(Error::capability_rejected(
-                    j2k_core::CapabilityRejection::geometry_mismatch(
-                        "prepared CUDA color tile payload offset is out of bounds",
-                    ),
-                ))?;
-        let component_ht_payload_count =
-            referenced_ht_payload_record_count(component_plan, remaining_ht_payloads, encoded)?;
-        let ht_payload_end = ht_payload_offset
-            .checked_add(component_ht_payload_count)
-            .ok_or(Error::capability_rejected(
-                j2k_core::CapabilityRejection::resource_limit(
-                    super::super::super::CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
-                ),
-            ))?;
-        let component_ht_payloads = ht_payloads.get(ht_payload_offset..ht_payload_end).ok_or(
-            Error::capability_rejected(j2k_core::CapabilityRejection::geometry_mismatch(
-                "prepared CUDA color tile payload ranges do not match component geometry",
-            )),
-        )?;
+        let (component_ht_payloads, ht_payload_end) =
+            component_ht_payloads(component_plan, ht_payloads, ht_payload_offset, encoded)?;
         let component_classic_payload_count = component_plan
             .steps
             .iter()

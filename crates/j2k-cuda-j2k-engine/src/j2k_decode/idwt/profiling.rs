@@ -50,6 +50,7 @@ impl crate::J2kCudaEngine<'_> {
                 live_host_bytes,
                 normalization,
                 true,
+                false,
             )
         }
     }

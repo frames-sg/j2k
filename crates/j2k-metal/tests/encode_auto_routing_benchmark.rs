@@ -738,8 +738,7 @@ fn include_generated_host_input() -> bool {
 
 fn env_falsey(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .is_ok_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
 fn external_encode_cases() -> Vec<ExternalEncodeCase> {

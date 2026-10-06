@@ -36,9 +36,11 @@ pub(crate) fn sycc_to_rgb<S: Simd>(
 
     for ((luma_chunk, blue_chroma_chunk), red_chroma_chunk) in luma
         .container
-        .chunks_exact_mut(SIMD_WIDTH)
-        .zip(blue_chroma.container.chunks_exact_mut(SIMD_WIDTH))
-        .zip(red_chroma.container.chunks_exact_mut(SIMD_WIDTH))
+        .as_chunks_mut::<SIMD_WIDTH>()
+        .0
+        .iter_mut()
+        .zip(blue_chroma.container.as_chunks_mut::<SIMD_WIDTH>().0)
+        .zip(red_chroma.container.as_chunks_mut::<SIMD_WIDTH>().0)
     {
         let luma_values = f32x8::from_slice(simd, luma_chunk);
         let blue_chroma_values = f32x8::from_slice(simd, blue_chroma_chunk) - offset_v;

@@ -310,7 +310,7 @@ fn production_batch_decode_empty_input_succeeds() {
     let outcomes = decode_tiles_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::default())
         .expect("empty batch succeeds");
 
-    assert!(outcomes.is_empty());
+    assert!(outcomes.is_empty(), "{outcomes:?}");
 }
 
 #[test]

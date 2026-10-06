@@ -16,8 +16,10 @@ pub(super) fn max_sample_delta(left: &[u8], right: &[u8], bit_depth: u8) -> Resu
         return Err("16-bit decoded output has an odd byte length".to_string());
     }
     Ok(left
-        .chunks_exact(2)
-        .zip(right.chunks_exact(2))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(right.as_chunks::<2>().0)
         .map(|(a, b)| {
             u32::from(u16::from_le_bytes([a[0], a[1]]).abs_diff(u16::from_le_bytes([b[0], b[1]])))
         })
@@ -44,8 +46,10 @@ pub(super) fn psnr(reference: &[u8], actual: &[u8], bit_depth: u8) -> Result<f64
             return Err("16-bit PSNR input has an odd byte length".to_string());
         }
         let error = reference
-            .chunks_exact(2)
-            .zip(actual.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(actual.as_chunks::<2>().0)
             .map(|(a, b)| {
                 let delta = f64::from(u16::from_le_bytes([a[0], a[1]]))
                     - f64::from(u16::from_le_bytes([b[0], b[1]]));

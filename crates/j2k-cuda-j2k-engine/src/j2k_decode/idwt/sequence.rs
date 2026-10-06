@@ -31,6 +31,7 @@ struct IdwtSequenceStageLaunch {
     job_size: usize,
     trace_enabled: bool,
     collect_stage_profile: bool,
+    defer_final_vertical: bool,
 }
 
 impl crate::J2kCudaEngine<'_> {
@@ -46,7 +47,8 @@ impl crate::J2kCudaEngine<'_> {
     /// concurrently read input allocation; dependencies may alias only across
     /// ordered stages. These rules and context ownership are validated at
     /// runtime. All pool clones must remain confined to that stream until the
-    /// same completion point.
+    /// same completion point; the pool may then hand the buffers to uploads on
+    /// its separate upload stream.
     #[doc(hidden)]
     pub unsafe fn j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
         &self,
@@ -71,6 +73,7 @@ impl crate::J2kCudaEngine<'_> {
         live_host_bytes: usize,
         normalization: CudaJ2kIdwtNormalization,
         collect_stage_profile: bool,
+        defer_final_vertical: bool,
     ) -> Result<(CudaQueuedExecution, CudaJ2kIdwtBatchStageProfile), CudaError> {
         validate_idwt_sequence_enqueue_context(self.context, target_batches, pool)?;
         let total_target_count = target_batches.iter().try_fold(0usize, |count, targets| {
@@ -110,7 +113,8 @@ impl crate::J2kCudaEngine<'_> {
         self.prepare_operation()?;
 
         let mut queued_resources = host_budget.try_vec_with_capacity(1)?;
-        let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&all_jobs))?;
+        let jobs_buffer =
+            pool.upload_pinned_parts_enqueue(&[idwt_multi_jobs_as_bytes(&all_jobs)])?;
         queued_resources.push(jobs_buffer);
         let jobs_base = pooled_device_buffer(&queued_resources[0])?.device_ptr();
         let job_size = std::mem::size_of::<CudaJ2kIdwtMultiKernelJob>();
@@ -132,10 +136,17 @@ impl crate::J2kCudaEngine<'_> {
                         job_size,
                         trace_enabled,
                         collect_stage_profile,
+                        defer_final_vertical,
                     },
                     &all_jobs,
                 )?;
-                kernel_dispatches = kernel_dispatches.saturating_add(2);
+                kernel_dispatches = kernel_dispatches.saturating_add(
+                    if defer_final_vertical && stage_index + 1 == stage_count {
+                        1
+                    } else {
+                        2
+                    },
+                );
                 if stage_profile.final_stage {
                     final_stage_profile = stage_profile;
                 }
@@ -176,24 +187,33 @@ impl crate::J2kCudaEngine<'_> {
             .ok_or(CudaError::LengthTooLarge { len: byte_offset })?;
         let final_stage = launch.stage_index.saturating_add(1) == launch.stage_count;
         let profile_stage = launch.trace_enabled || (launch.collect_stage_profile && final_stage);
-        let profile = if profile_stage {
-            self.profile_j2k_idwt_batch_mode_ptr(
-                launch.plan.kernel_mode,
-                jobs_ptr,
-                launch.plan.max_width as usize,
-                launch.plan.max_height as usize,
-                launch.count,
+        let profile = if final_stage && launch.defer_final_vertical {
+            let horizontal = || {
+                self.launch_j2k_idwt_batch_interleave_horizontal_ptr(
+                    launch.plan,
+                    jobs_ptr,
+                    launch.count,
+                    false,
+                )
+            };
+            let elapsed_us = if profile_stage {
+                self.context
+                    .time_default_stream_named_us("j2k.idwt.final.horizontal", horizontal)?
+                    .1
+            } else {
+                horizontal()?;
+                0
+            };
+            CudaJ2kIdwtBatchStageProfile {
                 final_stage,
-            )?
+                elapsed_us,
+                interleave_horizontal_us: elapsed_us,
+                vertical_us: 0,
+            }
+        } else if profile_stage {
+            self.profile_j2k_idwt_batch_mode_ptr(launch.plan, jobs_ptr, launch.count, final_stage)?
         } else {
-            self.launch_j2k_idwt_batch_mode_ptr(
-                launch.plan.kernel_mode,
-                jobs_ptr,
-                launch.plan.max_width as usize,
-                launch.plan.max_height as usize,
-                launch.count,
-                false,
-            )?;
+            self.launch_j2k_idwt_batch_mode_ptr(launch.plan, jobs_ptr, launch.count, false)?;
             CudaJ2kIdwtBatchStageProfile {
                 final_stage,
                 ..CudaJ2kIdwtBatchStageProfile::default()

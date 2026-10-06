@@ -179,7 +179,10 @@ fn rust_test_output_parsers_are_name_and_summary_exact() {
         .len(),
         1
     );
-    assert!(successful_test_summaries("Doc-tests j2k_cuda\nrunning 2 tests").is_empty());
+    assert_eq!(
+        successful_test_summaries("Doc-tests j2k_cuda\nrunning 2 tests"),
+        [] as [crate::cuda::test_output::TestSummary; 0]
+    );
 }
 
 #[cfg(unix)]

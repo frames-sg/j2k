@@ -655,6 +655,20 @@ pub(crate) fn floor_f32(x: f32) -> f32 {
     }
 }
 
+/// `floor((a + b) / 2)` with the sum rounded in `f32`, as 5/3 lifting needs.
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
+#[expect(
+    clippy::manual_midpoint,
+    reason = "5/3 lifting must round like its f32x8 lanes; f32::midpoint widens to f64"
+)]
+#[inline(always)]
+pub(crate) fn floor_half_sum_f32(a: f32, b: f32) -> f32 {
+    floor_f32((a + b) * 0.5)
+}
+
 #[expect(
     clippy::inline_always,
     reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"

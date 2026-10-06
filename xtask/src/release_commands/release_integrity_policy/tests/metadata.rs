@@ -70,5 +70,5 @@ fn unpublished_dependency_metadata_cannot_silently_disappear() {
                 .expect_err("malformed dependency metadata rejected");
         assert!(error.contains(expected), "unexpected error: {error}");
     }
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [std::string::String; 0]);
 }

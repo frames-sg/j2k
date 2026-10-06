@@ -18,7 +18,7 @@ cargo xtask doc
 ```
 
 Comparator benchmarks may need optional system libraries. Benchmark rules are
-in [`docs/benchmark-corpora.md`](docs/benchmark-corpora.md).
+in [`xtask/BENCHMARKS.md`](xtask/BENCHMARKS.md).
 
 ## Pull Requests
 
@@ -68,10 +68,15 @@ surface behavior should update:
 - README quick-start or examples when user-facing behavior changes
 - API docs for affected public items
 - integration tests covering caller-visible behavior
-- the README benchmark policy when benchmark methodology changes
-- `docs/stable-api-1.0.public-api.txt` and
-  `docs/stable-api-1.0.implementation-public-api.txt`, regenerated together
+- `xtask/BENCHMARKS.md` when benchmark methodology changes
+- `xtask/api/stable-api-1.0.public-api.txt` and
+  `xtask/api/stable-api-1.0.implementation-public-api.txt`, regenerated together
   with `cargo xtask stable-api --write`, when public items change
 - `docs/public-support.md`, checked with `cargo xtask public-support`, when
   codec support changes
 - `cargo xtask semver` for the stable published libraries
+
+## Releases
+
+The release process and its required checks are in
+[`xtask/RELEASING.md`](xtask/RELEASING.md).

@@ -29,7 +29,10 @@ pub(super) fn upsample_extended12_plane_h2v1_at(
 /// `h2v1_fancy_upsample`: +1 toward the left neighbour, +2 toward the right.
 /// Lossless decoding keeps `upsample_h2v1_u16_at`.
 pub(super) fn upsample_extended12_h2v1_at(row: &[u16], output_x: usize) -> u16 {
-    debug_assert!(!row.is_empty());
+    debug_assert!(
+        !row.is_empty(),
+        "upsampling needs at least one source sample"
+    );
     let last = row.len() - 1;
     let sample = (output_x / 2).min(last);
     let near = 3 * u32::from(row[sample]);
@@ -113,7 +116,10 @@ pub(in crate::decoder) fn upsample_h2v1_sample_at<S: UpsampleSample>(
     row: &[S],
     output_x: usize,
 ) -> S {
-    debug_assert!(!row.is_empty());
+    debug_assert!(
+        !row.is_empty(),
+        "upsampling needs at least one source sample"
+    );
     if row.len() == 1 {
         return row[0];
     }

@@ -49,8 +49,10 @@ pub(crate) fn materialize<B: Backend>(
         )),
         NativeSampleType::U16 => {
             let samples = bytes
-                .chunks_exact(2)
-                .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|bytes| u16::from_ne_bytes(*bytes))
                 .collect();
             BurnBatchTensor::U16(Tensor::from_data(
                 TensorData::new(samples, shape),
@@ -59,8 +61,10 @@ pub(crate) fn materialize<B: Backend>(
         }
         NativeSampleType::I16 => {
             let samples = bytes
-                .chunks_exact(2)
-                .map(|bytes| i16::from_ne_bytes([bytes[0], bytes[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|bytes| i16::from_ne_bytes(*bytes))
                 .collect();
             BurnBatchTensor::I16(Tensor::from_data(
                 TensorData::new(samples, shape),

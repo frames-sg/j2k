@@ -126,7 +126,7 @@ fn slot_release_reports_missing_reserved_capacity_without_panicking() {
             ..
         })
     ));
-    assert!(state.free_slots.is_empty());
+    assert_eq!(state.free_slots, [] as [usize; 0]);
 }
 
 #[test]

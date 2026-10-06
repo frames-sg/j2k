@@ -89,9 +89,66 @@ fn validate_same_stride_rects(
     Ok(())
 }
 
+// Native codeblock grids arrive in rows with one stride. Prove disjointness
+// directly when each row group starts after the preceding group's tallest
+// rectangle and its columns are ordered without overlap. Irregular layouts
+// still use the general sweep below.
+#[derive(Default)]
+pub(super) struct OrderedRowsDisjointness {
+    stride: Option<usize>,
+    row_start: usize,
+    row_end: usize,
+    column_end: usize,
+}
+
+impl OrderedRowsDisjointness {
+    pub(super) fn push(&mut self, region: Htj2kOutputRegion) -> bool {
+        let rect = region.rect;
+        let Some(stride) = self.stride else {
+            self.stride = Some(region.stride);
+            self.row_start = rect.row_start;
+            self.row_end = rect.row_end;
+            self.column_end = rect.column_end;
+            return true;
+        };
+        if region.stride != stride {
+            return false;
+        }
+        if rect.row_start != self.row_start {
+            if rect.row_start < self.row_end {
+                return false;
+            }
+            self.row_start = rect.row_start;
+            self.column_end = 0;
+        }
+        if rect.column_start < self.column_end {
+            return false;
+        }
+        self.row_end = self.row_end.max(rect.row_end);
+        self.column_end = rect.column_end;
+        true
+    }
+}
+
+fn ordered_rows_are_disjoint(regions: &[Htj2kOutputRegion]) -> bool {
+    let mut ordered = OrderedRowsDisjointness::default();
+    regions.iter().copied().all(|region| ordered.push(region))
+}
+
 /// Validate that strided rectangular output regions do not overlap.
 #[doc(hidden)]
 pub(crate) fn validate_disjoint_output_regions(
+    regions: &mut [Htj2kOutputRegion],
+    live_region_bytes: usize,
+) -> Result<(), CudaError> {
+    if ordered_rows_are_disjoint(regions) {
+        return Ok(());
+    }
+    sweep_disjoint_output_regions(regions, live_region_bytes)
+}
+
+/// General overlap sweep for regions that are not in disjoint row order.
+pub(super) fn sweep_disjoint_output_regions(
     regions: &mut [Htj2kOutputRegion],
     live_region_bytes: usize,
 ) -> Result<(), CudaError> {

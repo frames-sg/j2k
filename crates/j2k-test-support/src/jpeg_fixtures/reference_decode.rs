@@ -92,7 +92,7 @@ pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
 
 pub(super) fn ycbcr8_pixels_to_rgb8(samples: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len());
-    for pixel in samples.chunks_exact(3) {
+    for pixel in samples.as_chunks::<3>().0 {
         let (r, g, b) = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
         out.extend_from_slice(&[r, g, b]);
     }
@@ -122,7 +122,7 @@ pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) 
 
 pub(super) fn ycbcr16_pixels_to_rgb16(samples: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
-    for pixel in samples.chunks_exact(3) {
+    for pixel in samples.as_chunks::<3>().0 {
         let (r, g, b) = ycbcr16_to_rgb16_for_fixture(pixel[0], pixel[1], pixel[2]);
         out.extend_from_slice(&r.to_le_bytes());
         out.extend_from_slice(&g.to_le_bytes());

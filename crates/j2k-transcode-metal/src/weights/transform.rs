@@ -36,7 +36,7 @@ fn linearized_53_with_buffers(
     for odd_idx in (1..samples.len()).step_by(2) {
         let left = samples[odd_idx - 1];
         let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
-        high.push(samples[odd_idx] - ((left + right) * 0.5));
+        high.push(samples[odd_idx] - f64::midpoint(left, right));
     }
 
     for even_idx in (0..samples.len()).step_by(2) {

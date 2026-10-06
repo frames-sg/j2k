@@ -25,7 +25,7 @@ use self::classic::referenced::{
 use self::{
     classic::append_classic_subband,
     ht::append_ht_subband,
-    required_regions::required_regions_for_direct_plan,
+    required_regions::required_regions_for_direct_plan_with_budget,
     shared::{convert_store_step, CudaPlanOwners},
 };
 
@@ -351,7 +351,7 @@ impl CudaHtj2kDecodePlan {
         if payload_bytes != 0 {
             host_budget.try_vec_reserve(shared_payload, payload_bytes)?;
         }
-        let (mut owners, _) = CudaPlanOwners::from_referenced_plan(plan)?;
+        let mut owners = CudaPlanOwners::from_referenced_plan_with_budget(plan, host_budget)?;
         let mut payloads = payloads.iter();
         for step in &plan.steps {
             match step {
@@ -400,19 +400,51 @@ impl CudaHtj2kDecodePlan {
         Self::from_grayscale_direct_plan_region(plan, output_format, output_origin, plan.dimensions)
     }
 
+    pub(crate) fn from_grayscale_direct_plan_with_budget(
+        plan: &J2kDirectGrayscalePlan,
+        output_format: PixelFormat,
+        output_origin: (u32, u32),
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        Self::from_grayscale_direct_plan_region_with_budget(
+            plan,
+            output_format,
+            output_origin,
+            plan.dimensions,
+            host_budget,
+        )
+    }
+
     pub(crate) fn from_grayscale_direct_plan_region(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,
         output_origin: (u32, u32),
         output_dimensions: (u32, u32),
     ) -> Result<Self, Error> {
-        let (mut owners, retained_plan_capacity) = CudaPlanOwners::from_plan(plan)?;
+        let mut host_budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
+        Self::from_grayscale_direct_plan_region_with_budget(
+            plan,
+            output_format,
+            output_origin,
+            output_dimensions,
+            &mut host_budget,
+        )
+    }
+
+    pub(crate) fn from_grayscale_direct_plan_region_with_budget(
+        plan: &J2kDirectGrayscalePlan,
+        output_format: PixelFormat,
+        output_origin: (u32, u32),
+        output_dimensions: (u32, u32),
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        let mut owners = CudaPlanOwners::from_plan_with_budget(plan, host_budget)?;
         let required_regions = if output_origin == (0, 0) && output_dimensions == plan.dimensions {
             None
         } else {
-            Some(required_regions_for_direct_plan(
+            Some(required_regions_for_direct_plan_with_budget(
                 plan,
-                retained_plan_capacity,
+                host_budget,
             )?)
         };
 

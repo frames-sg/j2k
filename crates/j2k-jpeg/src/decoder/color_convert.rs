@@ -54,7 +54,7 @@ pub(super) fn convert_ycbcr8_to_rgb8_in_place(
     let row_bytes = width as usize * 3;
     for y in 0..height as usize {
         let row = &mut out[y * stride..y * stride + row_bytes];
-        for pixel in row.chunks_exact_mut(3) {
+        for pixel in row.as_chunks_mut::<3>().0 {
             let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]);
             pixel.copy_from_slice(&[r, g, b]);
         }
@@ -63,7 +63,12 @@ pub(super) fn convert_ycbcr8_to_rgb8_in_place(
 
 pub(super) fn copy_ycbcr8_row_to_rgb8(src: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(src.len(), dst.len());
-    for (source, target) in src.chunks_exact(3).zip(dst.chunks_exact_mut(3)) {
+    for (source, target) in src
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut())
+    {
         let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(source[0], source[1], source[2]);
         target.copy_from_slice(&[r, g, b]);
     }
@@ -83,7 +88,12 @@ pub(super) fn copy_rgb8_to_rgba8(
     for y in 0..height as usize {
         let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
         let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
-        for (source, target) in src_row.chunks_exact(3).zip(dst_row.chunks_exact_mut(4)) {
+        for (source, target) in src_row
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
+        {
             target.copy_from_slice(&[source[0], source[1], source[2], alpha]);
         }
     }
@@ -104,7 +114,12 @@ pub(super) fn copy_rgb16_to_rgba16(
     for y in 0..height as usize {
         let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
         let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
-        for (source, target) in src_row.chunks_exact(6).zip(dst_row.chunks_exact_mut(8)) {
+        for (source, target) in src_row
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .zip(dst_row.as_chunks_mut::<8>().0.iter_mut())
+        {
             target[..6].copy_from_slice(source);
             target[6..8].copy_from_slice(&alpha);
         }
@@ -120,7 +135,7 @@ pub(super) fn convert_ycbcr16_to_rgb16_in_place(
     let row_bytes = width as usize * 6;
     for y in 0..height as usize {
         let row = &mut out[y * stride..y * stride + row_bytes];
-        for pixel in row.chunks_exact_mut(6) {
+        for pixel in row.as_chunks_mut::<6>().0 {
             let y = u16::from_le_bytes([pixel[0], pixel[1]]);
             let cb = u16::from_le_bytes([pixel[2], pixel[3]]);
             let cr = u16::from_le_bytes([pixel[4], pixel[5]]);
@@ -134,7 +149,12 @@ pub(super) fn convert_ycbcr16_to_rgb16_in_place(
 
 pub(super) fn copy_ycbcr16_row_to_rgb16(src: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(src.len(), dst.len());
-    for (source, target) in src.chunks_exact(6).zip(dst.chunks_exact_mut(6)) {
+    for (source, target) in src
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<6>().0.iter_mut())
+    {
         let y = u16::from_le_bytes([source[0], source[1]]);
         let cb = u16::from_le_bytes([source[2], source[3]]);
         let cr = u16::from_le_bytes([source[4], source[5]]);

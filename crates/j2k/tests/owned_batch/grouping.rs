@@ -17,7 +17,7 @@ fn grouping_separates_incompatible_backend_execution_shapes() {
     )
     .expect("prepare differing execution shapes");
 
-    assert!(prepared.errors().is_empty());
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].source_indices(), &[0]);
     assert_eq!(prepared.groups()[1].source_indices(), &[1]);

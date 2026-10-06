@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Image metadata and primitive value types. See spec Sections 2 and 4.
+//! Image metadata and primitive value types.
 //!
 //! `info.rs` intentionally has **no dependency on `error.rs`** — `error`
 //! depends on us (for `Rect` and `SofKind`), and the reverse would create a
-//! cycle. `DecodeOutcome`, which does need `Warning`, lives in `decoder.rs`
-//! and is added in M1b when the decode methods are introduced.
+//! cycle. `DecodeOutcome`, which does need `Warning`, lives in `decoder.rs`.
 
 use alloc::vec::Vec;
 
@@ -105,7 +104,10 @@ impl SamplingFactors {
     }
 
     pub(crate) fn from_validated_components(components: &[(u8, u8)]) -> Self {
-        debug_assert!(!components.is_empty());
+        debug_assert!(
+            !components.is_empty(),
+            "validated frames have at least one component"
+        );
         debug_assert!(components.len() <= 4);
         debug_assert!(components
             .iter()
@@ -328,8 +330,7 @@ impl OutputFormat {
     }
 }
 
-/// IDCT-level downscale factor; applies only to DCT-based SOFs (see spec
-/// Section 4 matrix).
+/// IDCT-level downscale factor; applies only to DCT-based SOFs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DownscaleFactor {
     Full,

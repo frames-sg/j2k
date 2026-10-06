@@ -55,7 +55,7 @@ fn external_batch_handles_roi_reduction_and_drop_safe_session_reuse_when_runtime
     ];
     let options = BatchDecodeOptions::default();
     let prepared = prepare_batch(inputs, options).expect("prepare shared batch");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups().len(), 2);
     assert_eq!(prepared.groups()[0].source_indices(), &[0]);
     assert_eq!(prepared.groups()[1].source_indices(), &[1]);

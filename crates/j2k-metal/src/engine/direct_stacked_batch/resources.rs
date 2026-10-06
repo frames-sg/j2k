@@ -137,7 +137,7 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
     } else {
         checked_repeated_band_fallback_stride(entry.window.width(), entry.window.height())?
     };
-    if stride_bytes % size_of::<f32>() != 0 {
+    if !stride_bytes.is_multiple_of(size_of::<f32>()) {
         return Err(Error::MetalKernel {
             message: "J2K MetalDirect repeated band stride is not f32-aligned".to_string(),
         });
@@ -147,6 +147,86 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
             message: "J2K MetalDirect repeated band stride exceeds u32".to_string(),
         })?;
     Ok((entry, stride_elements))
+}
+
+pub(super) fn lookup_mapped_repeated_direct_band_layout_entry(
+    band_sets: &[Vec<DirectBandSlice>],
+    keys: impl IntoIterator<Item = Result<(J2kDirectBandId, j2k_native::J2kRect), Error>>,
+) -> Result<(DirectBandSlice, u32), Error> {
+    let mut keys = keys.into_iter();
+    let first_bands = band_sets.first().ok_or_else(|| Error::MetalKernel {
+        message: "missing J2K MetalDirect mapped band set".to_string(),
+    })?;
+    let (first_band_id, first_rect) = keys.next().ok_or(Error::MetalStateInvariant {
+        state: "J2K MetalDirect mapped repeated band layout",
+        reason: "band identity count is shorter than the instance count",
+    })??;
+    let first = lookup_direct_band_slice_entry(first_bands, first_band_id, first_rect)?;
+    let first_buffer = objc2::rc::Retained::as_ptr(&first.buffer);
+    let mut stride_bytes: Option<usize> = None;
+    for (instance_index, bands) in band_sets.iter().enumerate().skip(1) {
+        let (band_id, rect) = keys.next().ok_or(Error::MetalStateInvariant {
+            state: "J2K MetalDirect mapped repeated band layout",
+            reason: "band identity count is shorter than the instance count",
+        })??;
+        let entry = lookup_direct_band_slice_entry(bands, band_id, rect)?;
+        if objc2::rc::Retained::as_ptr(&entry.buffer) != first_buffer {
+            return Err(Error::MetalStateInvariant {
+                state: "J2K MetalDirect mapped repeated band layout",
+                reason: "mapped instances do not share one coefficient buffer",
+            });
+        }
+        if entry.window.width() != first.window.width()
+            || entry.window.height() != first.window.height()
+        {
+            return Err(Error::MetalStateInvariant {
+                state: "J2K MetalDirect mapped repeated band layout",
+                reason: "mapped instances have different band dimensions",
+            });
+        }
+        let offset_delta = entry.offset_bytes.checked_sub(first.offset_bytes).ok_or(
+            Error::MetalStateInvariant {
+                state: "J2K MetalDirect mapped repeated band layout",
+                reason: "mapped band offsets are not monotonic",
+            },
+        )?;
+        if let Some(stride) = stride_bytes {
+            let expected_delta =
+                stride
+                    .checked_mul(instance_index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K MetalDirect mapped band stride overflow".to_string(),
+                    })?;
+            if offset_delta != expected_delta {
+                return Err(Error::MetalStateInvariant {
+                    state: "J2K MetalDirect mapped repeated band layout",
+                    reason: "mapped band offsets do not have a uniform stride",
+                });
+            }
+        } else {
+            stride_bytes = Some(offset_delta);
+        }
+    }
+    if keys.next().is_some() {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K MetalDirect mapped repeated band layout",
+            reason: "band identity count exceeds the instance count",
+        });
+    }
+    let stride_bytes = stride_bytes.unwrap_or(checked_repeated_band_fallback_stride(
+        first.window.width(),
+        first.window.height(),
+    )?);
+    if !stride_bytes.is_multiple_of(size_of::<f32>()) {
+        return Err(Error::MetalKernel {
+            message: "J2K MetalDirect mapped band stride is not f32-aligned".to_string(),
+        });
+    }
+    let stride_elements =
+        u32::try_from(stride_bytes / size_of::<f32>()).map_err(|_| Error::MetalKernel {
+            message: "J2K MetalDirect mapped band stride exceeds u32".to_string(),
+        })?;
+    Ok((first, stride_elements))
 }
 
 fn checked_repeated_band_fallback_stride(width: u32, height: u32) -> Result<usize, Error> {

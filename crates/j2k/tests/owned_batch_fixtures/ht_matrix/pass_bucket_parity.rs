@@ -210,7 +210,9 @@ fn external_cleanup_magref_and_generated_sigprop_jobs_decode_in_batches() {
         panic!("independent OpenHT RGB12 fixture must retain u16 samples")
     };
     let expected_sigprop = openhtj2k_sigprop_pixels_le()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     assert_eq!(sigprop_samples.len(), expected_sigprop.len());
@@ -221,7 +223,9 @@ fn external_cleanup_magref_and_generated_sigprop_jobs_decode_in_batches() {
         .decode_into(&mut scalar_bytes, 128 * 3 * 2, PixelFormat::Rgb16)
         .expect("independent OpenHT scalar RGB16 decode");
     let scalar_samples = scalar_bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     let (scalar_difference_index, scalar_difference) = sigprop_samples

@@ -139,7 +139,7 @@ fn release_facing_docs_match_the_latest_release_tag() {
             format!("| `{version}` | Latest published and security-supported release |"),
         ),
         (
-            "docs/release.md",
+            "xtask/RELEASING.md",
             format!(
                 "The `j2k` {version} public crate release is published and security-supported."
             ),
@@ -178,9 +178,9 @@ fn static_site_release_status_uses_canonical_sources() {
         let source = fs::read_to_string(root.join(relative))
             .unwrap_or_else(|err| panic!("read {relative}: {err}"));
         assert!(
-            source.contains("https://github.com/frames-sg/j2k/blob/main/docs/release.md")
+            source.contains("https://github.com/frames-sg/j2k/blob/main/CHANGELOG.md")
                 && source.contains("https://crates.io/crates/j2k"),
-            "{relative} must point to the canonical release policy and crates.io"
+            "{relative} must point to the changelog and crates.io"
         );
         assert!(
             !source.contains("<strong>Release status:</strong> j2k "),

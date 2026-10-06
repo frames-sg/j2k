@@ -227,7 +227,15 @@ pub(super) fn allocate_codec_owned_group_destination(
     group: &PreparedBatchGroup,
     fmt: PixelFormat,
 ) -> Result<CodecOwnedMetalGroupDestination, Error> {
-    let dimensions = group.info().dimensions;
+    allocate_codec_owned_destination(device, group.info().dimensions, group.images().len(), fmt)
+}
+
+pub(super) fn allocate_codec_owned_destination(
+    device: &DeviceRef,
+    dimensions: (u32, u32),
+    image_count: usize,
+    fmt: PixelFormat,
+) -> Result<CodecOwnedMetalGroupDestination, Error> {
     let row_bytes = usize::try_from(dimensions.0)
         .ok()
         .and_then(|width| width.checked_mul(fmt.bytes_per_pixel()))
@@ -240,7 +248,7 @@ pub(super) fn allocate_codec_owned_group_destination(
             message: "J2K submitted codec-owned Metal image size overflow".to_string(),
         })?;
     let total_bytes = image_bytes
-        .checked_mul(group.images().len())
+        .checked_mul(image_count)
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K submitted codec-owned Metal group size overflow".to_string(),
         })?;
@@ -251,20 +259,14 @@ pub(super) fn allocate_codec_owned_group_destination(
                 source,
             )
         })?;
-    let layout = MetalImageLayout::new_batch(
-        0,
-        dimensions,
-        row_bytes,
-        fmt,
-        group.images().len(),
-        image_bytes,
-    )
-    .map_err(|source| {
-        crate::error::metal_kernel_support_error(
-            "J2K submitted codec-owned Metal group layout failed",
-            source,
-        )
-    })?;
+    let layout =
+        MetalImageLayout::new_batch(0, dimensions, row_bytes, fmt, image_count, image_bytes)
+            .map_err(|source| {
+                crate::error::metal_kernel_support_error(
+                    "J2K submitted codec-owned Metal group layout failed",
+                    source,
+                )
+            })?;
     // SAFETY: `output` is a fresh codec-owned allocation and remains
     // exclusively retained by the pending group until GPU completion.
     let destination =
@@ -348,7 +350,7 @@ fn completed_codec_owned_resident_batch(
 impl SubmittedMetalResidentGroup {
     pub(super) fn wait(self) -> Result<MetalBatchGroup, (Vec<usize>, Box<Error>)> {
         let Self {
-            mut metadata,
+            metadata,
             submission,
             destination,
             output,
@@ -359,22 +361,29 @@ impl SubmittedMetalResidentGroup {
             Err(source) => return Err((metadata.source_indices, Box::new(source))),
         };
         drop(destination);
+        metadata.complete(output, layout, dispatch_report)
+    }
+}
+
+impl MetalResidentGroupMetadata {
+    /// Expose storage only after every writer completed and its exclusive
+    /// destination was released by the caller.
+    pub(super) fn complete(
+        mut self,
+        output: Buffer,
+        layout: MetalImageLayout,
+        dispatch_report: crate::MetalDecodeDispatchReport,
+    ) -> Result<MetalBatchGroup, (Vec<usize>, Box<Error>)> {
         let expose_surface_views =
-            metadata.info.color == BatchColor::Gray || metadata.info.layout == BatchLayout::Nhwc;
+            self.info.color == BatchColor::Gray || self.info.layout == BatchLayout::Nhwc;
         let (resident_batch, surfaces) =
-            completed_codec_owned_resident_batch(output, layout, expose_surface_views).map_err(
-                |source| {
-                    (
-                        core::mem::take(&mut metadata.source_indices),
-                        Box::new(source),
-                    )
-                },
-            )?;
+            completed_codec_owned_resident_batch(output, layout, expose_surface_views)
+                .map_err(|source| (core::mem::take(&mut self.source_indices), Box::new(source)))?;
         Ok(MetalBatchGroup {
-            info: metadata.info,
-            source_indices: metadata.source_indices,
-            decoded_rects: metadata.decoded_rects,
-            warnings: metadata.warnings,
+            info: self.info,
+            source_indices: self.source_indices,
+            decoded_rects: self.decoded_rects,
+            warnings: self.warnings,
             surfaces,
             dispatch_report,
             resident_batch,

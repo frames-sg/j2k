@@ -17,8 +17,8 @@ mod kernels {
         layout::{output_pixel_index, pixel_coords, source_index},
         memory::{load_f32, load_job, store_f32, store_i16, store_u8, store_u16},
         sample::{
-            sample_as_native_i16, sample_as_native_u8, sample_as_native_u16, sample_as_u8,
-            sample_as_u16,
+            round_integer_output_then_add, sample_as_native_i16, sample_as_native_u8,
+            sample_as_native_u16, sample_as_u8, sample_as_u16,
         },
         native_color::{
             store_rgb8_native_sample, store_rgb16_native_sample, store_rgba8_native_sample,
@@ -47,7 +47,10 @@ mod kernels {
         store_u8(
             output,
             dst,
-            sample_as_u8(load_f32(input, src) + job.addend, job.bit_depth),
+            sample_as_u8(
+                round_integer_output_then_add(load_f32(input, src), job.addend),
+                job.bit_depth,
+            ),
         );
     }
 
@@ -70,7 +73,10 @@ mod kernels {
         store_u16(
             output,
             dst,
-            sample_as_u16(load_f32(input, src) + job.addend, job.bit_depth),
+            sample_as_u16(
+                round_integer_output_then_add(load_f32(input, src), job.addend),
+                job.bit_depth,
+            ),
         );
     }
 
@@ -92,7 +98,10 @@ mod kernels {
         store_i16(
             output,
             dst,
-            sample_as_native_i16(load_f32(input, src) + job.addend, job.bit_depth),
+            sample_as_native_i16(
+                round_integer_output_then_add(load_f32(input, src), job.addend),
+                job.bit_depth,
+            ),
         );
     }
 
@@ -114,7 +123,10 @@ mod kernels {
         store_u8(
             output,
             dst,
-            sample_as_native_u8(load_f32(input, src) + job.addend, job.bit_depth),
+            sample_as_native_u8(
+                round_integer_output_then_add(load_f32(input, src), job.addend),
+                job.bit_depth,
+            ),
         );
     }
 
@@ -136,7 +148,10 @@ mod kernels {
         store_u16(
             output,
             dst,
-            sample_as_native_u16(load_f32(input, src) + job.addend, job.bit_depth),
+            sample_as_native_u16(
+                round_integer_output_then_add(load_f32(input, src), job.addend),
+                job.bit_depth,
+            ),
         );
     }
 

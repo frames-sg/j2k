@@ -16,7 +16,7 @@ fn colr_is_optional_for_jph_but_remains_required_for_jp2() {
     let jph = wrapper_without_colr(*b"jph ", None, &[0]);
     let container = inspect_jp2_container(&jph).expect("JPH may omit COLR");
     assert_eq!(container.file_kind, Jp2FileKind::Jph);
-    assert!(container.metadata.color_specs.is_empty());
+    assert_eq!(container.metadata.color_specs, [] as [Jp2ColorSpec; 0]);
 
     let jp2 = wrapper_without_colr(*b"jp2 ", None, &[0]);
     assert!(matches!(

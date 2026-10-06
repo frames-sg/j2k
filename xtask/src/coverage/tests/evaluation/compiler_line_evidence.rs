@@ -47,9 +47,12 @@ fn covered_compiler_region_owns_multiline_expression_lines_without_da_records() 
     assert_eq!(result.overall.covered, 1);
     assert_eq!(result.critical.measurable, 1);
     assert_eq!(result.critical.covered, 1);
-    assert!(result.uncovered.is_empty());
-    assert!(result.unmeasured.is_empty());
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(result.uncovered, [] as [(std::string::String, usize); 0]);
+    assert_eq!(result.unmeasured, [] as [(std::string::String, usize); 0]);
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -59,8 +62,11 @@ fn zero_compiler_region_keeps_an_executable_line_without_da_uncovered() {
     assert_eq!(result.overall.measurable, 1);
     assert_eq!(result.overall.covered, 0);
     assert_eq!(result.uncovered, [(PATH.to_string(), 3)]);
-    assert!(result.unmeasured.is_empty());
-    assert!(!coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(result.unmeasured, [] as [(std::string::String, usize); 0]);
+    assert_ne!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }
 
 #[test]
@@ -68,11 +74,14 @@ fn compiler_noninstrumentable_line_is_recorded_without_entering_the_denominator(
     let result = evaluate_case(None);
 
     assert_eq!(result.overall.measurable, 0);
-    assert!(result.uncovered.is_empty());
-    assert!(result.unmeasured.is_empty());
+    assert_eq!(result.uncovered, [] as [(std::string::String, usize); 0]);
+    assert_eq!(result.unmeasured, [] as [(std::string::String, usize); 0]);
     assert_eq!(
         result.compiler_noninstrumentable_lines,
         [format!("{PATH}:3")]
     );
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }

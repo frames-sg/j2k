@@ -266,7 +266,7 @@ fn auto_compatible_256_tile_batches_use_metal_and_preserve_pixels() {
         let inputs = (0_u8..16)
             .map(|index| {
                 let mut rgb = j2k_test_support::patterned_rgb8(256, 256);
-                for pixel in rgb.chunks_exact_mut(3) {
+                for pixel in rgb.as_chunks_mut::<3>().0 {
                     pixel[0] = pixel[0].wrapping_add(index.wrapping_mul(17));
                     pixel[2] ^= index.wrapping_mul(29);
                 }

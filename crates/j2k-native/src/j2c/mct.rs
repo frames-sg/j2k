@@ -210,14 +210,10 @@ fn apply_inner_impl<S: Simd>(
             let red_level = f32x8::splat(simd, addends[0]);
             let green_level = f32x8::splat(simd, addends[1]);
             let blue_level = f32x8::splat(simd, addends[2]);
-            let mut s0_chunks = s0.chunks_exact_mut(8);
-            let mut s1_chunks = s1.chunks_exact_mut(8);
-            let mut s2_chunks = s2.chunks_exact_mut(8);
-            for ((y0, y1), y2) in s0_chunks
-                .by_ref()
-                .zip(s1_chunks.by_ref())
-                .zip(s2_chunks.by_ref())
-            {
+            let (s0_chunks, s0_rest) = s0.as_chunks_mut::<8>();
+            let (s1_chunks, s1_rest) = s1.as_chunks_mut::<8>();
+            let (s2_chunks, s2_rest) = s2.as_chunks_mut::<8>();
+            for ((y0, y1), y2) in s0_chunks.iter_mut().zip(s1_chunks).zip(s2_chunks) {
                 let y_0 = f32x8::from_slice(simd, y0);
                 let y_1 = f32x8::from_slice(simd, y1);
                 let y_2 = f32x8::from_slice(simd, y2);
@@ -233,12 +229,7 @@ fn apply_inner_impl<S: Simd>(
                 i1.store(y1);
                 i2.store(y2);
             }
-            for ((y0, y1), y2) in s0_chunks
-                .into_remainder()
-                .iter_mut()
-                .zip(s1_chunks.into_remainder().iter_mut())
-                .zip(s2_chunks.into_remainder().iter_mut())
-            {
+            for ((y0, y1), y2) in s0_rest.iter_mut().zip(s1_rest).zip(s2_rest) {
                 let src0 = *y0;
                 let src1 = *y1;
                 let src2 = *y2;
@@ -258,14 +249,10 @@ fn apply_inner_impl<S: Simd>(
             let red_level = f32x8::splat(simd, addends[0]);
             let green_level = f32x8::splat(simd, addends[1]);
             let blue_level = f32x8::splat(simd, addends[2]);
-            let mut s0_chunks = s0.chunks_exact_mut(8);
-            let mut s1_chunks = s1.chunks_exact_mut(8);
-            let mut s2_chunks = s2.chunks_exact_mut(8);
-            for ((y0, y1), y2) in s0_chunks
-                .by_ref()
-                .zip(s1_chunks.by_ref())
-                .zip(s2_chunks.by_ref())
-            {
+            let (s0_chunks, s0_rest) = s0.as_chunks_mut::<8>();
+            let (s1_chunks, s1_rest) = s1.as_chunks_mut::<8>();
+            let (s2_chunks, s2_rest) = s2.as_chunks_mut::<8>();
+            for ((y0, y1), y2) in s0_chunks.iter_mut().zip(s1_chunks).zip(s2_chunks) {
                 let y_0 = f32x8::from_slice(simd, y0);
                 let y_1 = f32x8::from_slice(simd, y1);
                 let y_2 = f32x8::from_slice(simd, y2);
@@ -278,12 +265,7 @@ fn apply_inner_impl<S: Simd>(
                 (i1 + green_level).store(y1);
                 i2.store(y2);
             }
-            for ((y0, y1), y2) in s0_chunks
-                .into_remainder()
-                .iter_mut()
-                .zip(s1_chunks.into_remainder().iter_mut())
-                .zip(s2_chunks.into_remainder().iter_mut())
-            {
+            for ((y0, y1), y2) in s0_rest.iter_mut().zip(s1_rest).zip(s2_rest) {
                 let src0 = *y0;
                 let src1 = *y1;
                 let src2 = *y2;

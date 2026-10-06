@@ -8,6 +8,7 @@ use super::super::{
     metal_profile_stages_enabled, DirectColorBatchCommandBuffers, DirectHybridStageTimings,
     DirectScratchBuffer, DirectStatusCheck, DirectTier1Mode, Error, FlattenedCpuTier1Cache,
     MetalRuntime, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    SharedClassicTier1Group,
 };
 use super::resources::StackedComponentResources;
 use super::validation::StackedComponentBatchPlan;
@@ -25,6 +26,7 @@ struct SubmissionContext<'a, 'p, 'r> {
     plans: &'a [&'p PreparedDirectGrayscalePlan],
     component_idx: usize,
     flattened_cpu_tier1_cache: Option<&'a FlattenedCpuTier1Cache>,
+    shared_classic_tier1: Option<&'a mut SharedClassicTier1Group>,
     tier1_mode: DirectTier1Mode,
     stage_timings: &'a mut DirectHybridStageTimings,
     retained_buffers: &'a mut Vec<Buffer>,
@@ -66,6 +68,7 @@ fn try_collect_submission_items<T>(
 
 pub(super) fn submit_stacked_component_commands<'p>(
     request: StackedDirectComponentPlaneBatchRequest<'_, 'p>,
+    shared_classic_tier1: Option<&mut SharedClassicTier1Group>,
     plan: &StackedComponentBatchPlan<'p>,
     resources: &mut StackedComponentResources,
 ) -> Result<(), Error> {
@@ -90,6 +93,7 @@ pub(super) fn submit_stacked_component_commands<'p>(
         plans,
         component_idx,
         flattened_cpu_tier1_cache,
+        shared_classic_tier1,
         tier1_mode,
         stage_timings,
         retained_buffers,
@@ -127,7 +131,7 @@ pub(super) fn submit_stacked_component_commands<'p>(
                 context.submit_idwt(step_idx, idwt)?;
             }
             PreparedDirectGrayscaleStep::Store(store) => {
-                context.submit_store(store)?;
+                context.submit_store(step_idx, store)?;
             }
         }
         step_idx += 1;

@@ -219,8 +219,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
                     scaled: &setup.scaled,
                 })?;
             }
-            core::mem::swap(&mut prev_stripe, &mut curr_stripe);
-            core::mem::swap(&mut curr_stripe, &mut next_stripe);
+            (prev_stripe, curr_stripe, next_stripe) = (curr_stripe, next_stripe, prev_stripe);
             has_prev = true;
         }
     }

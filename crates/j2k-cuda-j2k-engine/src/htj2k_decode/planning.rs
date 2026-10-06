@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::{allocation::HostPhaseBudget, error::CudaError, kernels::CudaKernel};
+use crate::{allocation::HostPhaseBudget, error::CudaError};
 
 use super::{
     output_regions::{validate_htj2k_output_layout, validate_htj2k_output_layout_with_live_bytes},
@@ -188,35 +188,44 @@ pub(crate) fn htj2k_cleanup_multi_kernel_jobs_with_live_host_bytes(
     Ok(kernel_jobs)
 }
 
-pub(crate) fn htj2k_decode_multi_kernel_for_jobs(
-    jobs: &[CudaHtj2kCleanupMultiKernelJob],
-) -> (CudaKernel, &'static str) {
-    let cleanup_only = jobs
-        .iter()
-        .all(|job| job.refinement_length == 0 && job.number_of_coding_passes <= 1);
-    if cleanup_only {
-        (
-            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly,
-            "j2k_htj2k_decode_codeblocks_multi_cleanup_only",
-        )
-    } else {
-        (
-            CudaKernel::Htj2kDecodeCodeblocksMulti,
-            "j2k_htj2k_decode_codeblocks_multi",
-        )
+/// How a batch of HTJ2K code blocks is decoded on the device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Htj2kMultiDecodeRoute {
+    /// One thread per code block decodes cleanup and any refinement passes.
+    Full,
+    /// Cleanup-only blocks run the symbol kernel, then the warp `MagSgn` kernel.
+    Cleanup { dequantize: bool },
+}
+
+impl Htj2kMultiDecodeRoute {
+    /// Kernel or stage name reported with a failing code block's status.
+    pub(crate) const fn status_kernel_name(self) -> &'static str {
+        match self {
+            Self::Full => "j2k_htj2k_decode_codeblocks_multi",
+            Self::Cleanup { .. } => "j2k_htj2k_decode_cleanup_symbols+magsgn",
+        }
     }
 }
 
-pub(crate) fn htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(
+fn jobs_are_cleanup_only(jobs: &[CudaHtj2kCleanupMultiKernelJob]) -> bool {
+    jobs.iter()
+        .all(|job| job.refinement_length == 0 && job.number_of_coding_passes <= 1)
+}
+
+pub(crate) fn htj2k_decode_multi_route_for_jobs(
     jobs: &[CudaHtj2kCleanupMultiKernelJob],
-) -> Option<(CudaKernel, &'static str)> {
-    let cleanup_only = jobs
-        .iter()
-        .all(|job| job.refinement_length == 0 && job.number_of_coding_passes <= 1);
-    cleanup_only.then_some((
-        CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize,
-        "j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize",
-    ))
+) -> Htj2kMultiDecodeRoute {
+    if jobs_are_cleanup_only(jobs) {
+        Htj2kMultiDecodeRoute::Cleanup { dequantize: false }
+    } else {
+        Htj2kMultiDecodeRoute::Full
+    }
+}
+
+pub(crate) fn htj2k_decode_multi_cleanup_dequant_route_for_jobs(
+    jobs: &[CudaHtj2kCleanupMultiKernelJob],
+) -> Option<Htj2kMultiDecodeRoute> {
+    jobs_are_cleanup_only(jobs).then_some(Htj2kMultiDecodeRoute::Cleanup { dequantize: true })
 }
 
 pub(crate) fn htj2k_decode_needs_zero_fill(

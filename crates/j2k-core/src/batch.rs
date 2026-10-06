@@ -18,9 +18,9 @@ pub use collection::{
 };
 #[doc(hidden)]
 pub use gpu_job_chunk::{
-    plan_ht_gpu_job_chunks, HtGpuJobChunk, HtGpuJobChunkEntry, HtGpuJobChunkLimit,
-    HtGpuJobChunkLimits, HtGpuJobChunkPlan, HtGpuJobChunkPlanError, HtGpuJobChunkRequest,
-    HtGpuJobPassBucket,
+    plan_ht_gpu_job_chunks, plan_ht_gpu_job_chunks_with_external_live_bytes, HtGpuJobChunk,
+    HtGpuJobChunkEntry, HtGpuJobChunkLimit, HtGpuJobChunkLimits, HtGpuJobChunkPlan,
+    HtGpuJobChunkPlanError, HtGpuJobChunkRequest, HtGpuJobPassBucket,
 };
 
 /// Worker configuration for CPU tile batches.

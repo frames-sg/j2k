@@ -109,7 +109,7 @@ pub fn project_scaled_interleaved_u16(
 /// Converts RGB8 bytes to RGBA8 bytes with constant alpha.
 pub fn rgb8_to_rgba8(rgb: &[u8], alpha: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for pixel in rgb.chunks_exact(3) {
+    for pixel in rgb.as_chunks::<3>().0 {
         out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], alpha]);
     }
     out
@@ -128,7 +128,7 @@ pub fn u16_samples_to_le_bytes(samples: &[u16]) -> Vec<u8> {
 pub fn rgb16le_to_rgba16le(rgb: &[u8], alpha: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 6 * 8);
     let alpha = alpha.to_le_bytes();
-    for pixel in rgb.chunks_exact(6) {
+    for pixel in rgb.as_chunks::<6>().0 {
         out.extend_from_slice(pixel);
         out.extend_from_slice(&alpha);
     }
@@ -138,7 +138,7 @@ pub fn rgb16le_to_rgba16le(rgb: &[u8], alpha: u16) -> Vec<u8> {
 /// Converts native-endian RGB16 bytes to opaque RGBA16 bytes.
 pub fn rgb16ne_to_opaque_rgba16ne(rgb: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 6 * 8);
-    for pixel in rgb.chunks_exact(6) {
+    for pixel in rgb.as_chunks::<6>().0 {
         out.extend_from_slice(pixel);
         out.extend_from_slice(&u16::MAX.to_ne_bytes());
     }

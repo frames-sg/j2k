@@ -50,7 +50,9 @@ fn is_narrow_subsampled(case: &ScaledMatrixCase) -> bool {
 }
 
 fn expected_rgba(rgb: &[u8]) -> Vec<u8> {
-    rgb.chunks_exact(3)
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|px| [px[0], px[1], px[2], u8::MAX])
         .collect()
 }

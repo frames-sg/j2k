@@ -527,7 +527,7 @@ fn validate_release_docs(
     manifest: &ReleaseManifestContract,
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
-    let release_doc_path = Path::new("docs/release.md");
+    let release_doc_path = Path::new("xtask/RELEASING.md");
     let release_doc = fs::read_to_string(release_doc_path)
         .map_err(|err| format!("failed to read {}: {err}", release_doc_path.display()))?;
     let packages = manifest.ordered_crates().collect::<Vec<_>>();
@@ -540,7 +540,7 @@ fn validate_release_docs_source(
     publishable_packages: &[&str],
     errors: &mut Vec<String>,
 ) {
-    let release_doc_path = Path::new("docs/release.md");
+    let release_doc_path = Path::new("xtask/RELEASING.md");
     for package in publishable_packages {
         if !release_doc.contains(&format!("`{package}`")) {
             errors.push(format!(

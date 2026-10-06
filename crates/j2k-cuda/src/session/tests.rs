@@ -82,3 +82,57 @@ fn cuda_session_reuses_one_decode_buffer_pool_when_required() {
 
     assert!(second.cached_count().expect("shared pool cached count") >= 1);
 }
+
+#[test]
+fn warm_dense_decode_batch_does_not_allocate_per_image_when_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let (fixture, pixels) = j2k_test_support::htj2k_rgb8_fixture_with_pixels(128, 128);
+    let mut allocation_counts = Vec::new();
+    for batch_size in [1, 16] {
+        let inputs = j2k_core::try_host_vec_filled(batch_size, fixture.as_slice())
+            .expect("batch fixture inputs");
+        let mut session = CudaSession::default();
+        for _ in 0..3 {
+            let surfaces = crate::J2kDecoder::decode_batch_to_device_with_session(
+                &inputs,
+                j2k_core::PixelFormat::Rgb8,
+                &mut session,
+            )
+            .expect("warm dense batch");
+            let actual = crate::Surface::download_batch_tight(&surfaces).expect("batch readback");
+            assert_eq!(actual, pixels.repeat(inputs.len()));
+        }
+        let before = session.diagnostics().expect("warm diagnostics");
+        drop(
+            crate::J2kDecoder::decode_batch_to_device_with_session(
+                &inputs,
+                j2k_core::PixelFormat::Rgb8,
+                &mut session,
+            )
+            .expect("reuse dense batch"),
+        );
+        let after = session.diagnostics().expect("reused diagnostics");
+        allocation_counts.push(
+            after
+                .runtime
+                .expect("CUDA runtime")
+                .device_allocation_operations
+                - before
+                    .runtime
+                    .expect("CUDA runtime")
+                    .device_allocation_operations,
+        );
+        let pool = after.pools.batch_decode.expect("batch pool");
+        assert_eq!(pool.deferred_buffers, 0);
+        assert_eq!(pool.reuse_holds, 0);
+        assert!(pool.cached_bytes <= super::DECODE_BATCH_POOL_MAX_CACHED_BYTES);
+    }
+    // This API returns a fresh owned output allocation and descriptor buffer.
+    // Its coefficient/IDWT scratch must be reused even as the batch grows.
+    assert_eq!(
+        allocation_counts[1], allocation_counts[0],
+        "warm scratch allocations within the byte budget must not scale with batch size"
+    );
+}

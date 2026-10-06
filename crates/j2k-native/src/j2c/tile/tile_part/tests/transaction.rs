@@ -62,7 +62,7 @@ fn minimal_merged_tile_part_commits_one_empty_body_transactionally() {
         panic!("tile part without external headers stays merged");
     };
     assert!(part.data.tail().is_none_or(<[u8]>::is_empty));
-    assert!(part.packet_lengths.lengths.is_empty());
+    assert_eq!(part.packet_lengths.lengths, [] as [u32; 0]);
     assert!(budget.retained_bytes() >= retained_before);
     budget
         .validate_owner_graph(&tiles)

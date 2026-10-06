@@ -9,8 +9,7 @@ use libfuzzer_sys::fuzz_target;
 /// NEVER panics. libfuzzer aborts on panic; that is the detection mechanism.
 ///
 /// We cap the output buffer at 1 MiB so a fuzzer-crafted SOF declaring
-/// enormous dimensions doesn't OOM the host. A real `MemoryCapExceeded`
-/// handshake lands in M2 (DecoderBuilder::max_decode_bytes, capability O).
+/// enormous dimensions doesn't OOM the host.
 const MAX_OUTPUT_BYTES: usize = 1 << 20;
 
 fuzz_target!(|data: &[u8]| {

@@ -283,7 +283,10 @@ fn package_gate_ignores_dev_dependencies_and_rejects_registry_sibling_edges() {
         .iter()
         .find(|step| step.package == "j2k-native")
         .expect("native step");
-    assert!(native.patches.is_empty());
+    assert_eq!(
+        native.patches,
+        [] as [(std::string::String, std::string::String); 0]
+    );
 
     let native = metadata["packages"]
         .as_array_mut()

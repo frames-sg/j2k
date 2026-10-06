@@ -310,7 +310,7 @@ mod tests {
     fn transcodes_fixture_to_nonempty_htj2k_codestream() {
         let encoded =
             transcode_jpeg_to_htj2k_bytes(JPEG_GRAYSCALE_8X8).expect("transcode JPEG fixture");
-        assert!(!encoded.codestream.is_empty());
+        assert_ne!(encoded.codestream, [] as [u8; 0]);
         assert!(encoded.codestream.starts_with(&[0xff, 0x4f]));
         let summary = format_transcode_summary(&encoded);
         assert!(summary.contains("transcoded 8x8"));

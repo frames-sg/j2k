@@ -100,6 +100,8 @@ pub(crate) struct CudaClassicKernelJob {
     pub(crate) irreversible_midpoint: u32,
     pub(crate) dequantization_step: f32,
     pub(crate) roi_shift: u32,
+    // Original input position, independent of dispatch order.
+    pub(crate) status_index: u64,
 }
 
 #[repr(C)]
@@ -163,16 +165,40 @@ pub(crate) struct CudaClassicKernelTables {
     pub(crate) mq_qe: [u32; 47],
     pub(crate) mq_transitions: [u32; 47],
     pub(crate) sign_contexts: [u16; 256],
-    pub(crate) zero_contexts_ll_lh: [u8; 256],
-    pub(crate) zero_contexts_hl: [u8; 256],
-    pub(crate) zero_contexts_hh: [u8; 256],
+    pub(crate) zero_contexts_ll_lh: [u8; 512],
+    pub(crate) zero_contexts_hl: [u8; 512],
+    pub(crate) zero_contexts_hh: [u8; 512],
+}
+
+const fn direct_zero_contexts(byte_table: &[u8; 256]) -> [u8; 512] {
+    const fn bit(window: usize, index: usize) -> usize {
+        (window >> index) & 1
+    }
+
+    let mut direct = [0_u8; 512];
+    let mut window = 0;
+    while window < direct.len() {
+        // Packed flag window: NW,N,NE,W,self,E,SW,S,SE. The established
+        // byte tables use NW,N,NE,W,SW,E,SE,S from most to least significant.
+        let neighbor_byte = (bit(window, 0) << 7)
+            | (bit(window, 1) << 6)
+            | (bit(window, 2) << 5)
+            | (bit(window, 3) << 4)
+            | (bit(window, 6) << 3)
+            | (bit(window, 5) << 2)
+            | (bit(window, 8) << 1)
+            | bit(window, 7);
+        direct[window] = byte_table[neighbor_byte];
+        window += 1;
+    }
+    direct
 }
 
 pub(super) const CLASSIC_KERNEL_TABLES: CudaClassicKernelTables = CudaClassicKernelTables {
     mq_qe: MQ_QE_VALUES,
     mq_transitions: PACKED_MQ_TRANSITION_VALUES,
     sign_contexts: PACKED_SIGN_CONTEXT_LOOKUP,
-    zero_contexts_ll_lh: ZERO_CTX_LL_LH_LOOKUP,
-    zero_contexts_hl: ZERO_CTX_HL_LOOKUP,
-    zero_contexts_hh: ZERO_CTX_HH_LOOKUP,
+    zero_contexts_ll_lh: direct_zero_contexts(&ZERO_CTX_LL_LH_LOOKUP),
+    zero_contexts_hl: direct_zero_contexts(&ZERO_CTX_HL_LOOKUP),
+    zero_contexts_hh: direct_zero_contexts(&ZERO_CTX_HH_LOOKUP),
 };

@@ -79,9 +79,8 @@ fn fill_row(samples: &[f32], out_row: &mut [f32], placement: &SubsampledPlacemen
     match scale_x {
         1 => out.copy_from_slice(samples),
         2 => {
-            for (pair, &sample) in out.chunks_exact_mut(2).zip(samples) {
-                pair[0] = sample;
-                pair[1] = sample;
+            for (pair, &sample) in out.as_chunks_mut::<2>().0.iter_mut().zip(samples) {
+                *pair = [sample; 2];
             }
         }
         _ => {

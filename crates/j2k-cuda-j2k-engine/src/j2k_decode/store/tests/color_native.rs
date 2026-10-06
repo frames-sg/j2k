@@ -55,8 +55,10 @@ fn exact_native_rgb_batch_preserves_subnative_codes_and_layout_when_runtime_requ
             .copy_to_host(&mut bytes)
             .expect("download exact RGB U16");
         let actual = bytes
-            .chunks_exact(2)
-            .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| u16::from_ne_bytes(*bytes))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }
@@ -83,8 +85,10 @@ fn exact_native_rgb_batch_preserves_subnative_codes_and_layout_when_runtime_requ
             .copy_to_host(&mut bytes)
             .expect("download exact RGB I16");
         let actual = bytes
-            .chunks_exact(2)
-            .map(|bytes| i16::from_ne_bytes([bytes[0], bytes[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| i16::from_ne_bytes(*bytes))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }

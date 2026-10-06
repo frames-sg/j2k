@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    can_batch_color_idwt, finish_cuda_component_decode, run_color_component_idwt_batches,
-    run_cuda_component_idwt_steps, validate_color_stores, CudaBufferPool, CudaComponentDecodeWork,
-    CudaDecodedComponent, CudaHtj2kColorDecodePlans, CudaQueuedIdwtBatch, Error, HostPhaseBudget,
-    CUDA_HTJ2K_KERNELS_NOT_READY,
+    finish_cuda_component_decode, run_color_component_idwt_batches, validate_color_stores,
+    CudaBufferPool, CudaComponentDecodeWork, CudaDecodedComponent, CudaHtj2kColorDecodePlans,
+    CudaQueuedIdwtBatch, Error, HostPhaseBudget, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 
 pub(super) struct PreparedColorComponents {
@@ -25,27 +24,15 @@ pub(super) fn run_pending_color_idwt(
     for component in &color.components {
         batch_components.push(component);
     }
-    if can_batch_color_idwt(&batch_components) {
-        run_color_component_idwt_batches(
-            context,
-            &batch_components,
-            component_work,
-            pool,
-            collect_stage_timings,
-            host_budget.live_bytes(),
-        )
-    } else {
-        for (plan, work) in color.components.iter().zip(component_work.iter_mut()) {
-            run_cuda_component_idwt_steps(
-                context,
-                plan.idwt_steps(),
-                work,
-                pool,
-                collect_stage_timings,
-            )?;
-        }
-        Ok(None)
-    }
+    run_color_component_idwt_batches(
+        context,
+        &batch_components,
+        component_work,
+        pool,
+        collect_stage_timings,
+        host_budget.live_bytes(),
+        false,
+    )
 }
 
 pub(super) fn finish_color_components(

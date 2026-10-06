@@ -148,7 +148,10 @@ pub(crate) fn load_tail_window(src: &[u8], start: usize, len: usize) -> [u8; 16]
 }
 
 pub(crate) fn load_head_window(src: &[u8], len: usize) -> [u8; 16] {
-    debug_assert!(!src.is_empty());
+    debug_assert!(
+        !src.is_empty(),
+        "head window needs at least one source byte"
+    );
     debug_assert!(len > 0);
     debug_assert!(len <= 16);
     let mut out = [0u8; 16];

@@ -50,7 +50,13 @@ fn compiler_mapped_documentation_is_not_an_executable_changed_line() {
     .unwrap();
 
     assert_eq!(result.overall.measurable, 0);
-    assert!(result.uncovered.is_empty());
-    assert!(result.changed_functions_without_covered_body.is_empty());
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(result.uncovered, [] as [(std::string::String, usize); 0]);
+    assert_eq!(
+        result.changed_functions_without_covered_body,
+        [] as [std::string::String; 0]
+    );
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
 }

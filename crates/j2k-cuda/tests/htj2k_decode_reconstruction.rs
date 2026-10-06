@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_j2k_engine::{CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine};
+use j2k_cuda_j2k_engine::{
+    CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine,
+};
 use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
@@ -9,6 +11,135 @@ use j2k_native::{
     encode_ht_code_block_scalar, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1,
     HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
 };
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "shape matrix keeps the scalar reference and guarded device result together"
+)]
+fn cuda_cleanup_matches_scalar_with_row_guards_for_tall_wide_and_odd_blocks_when_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let engine = J2kCudaEngine::new(&context);
+    let pool = context.buffer_pool();
+    let tables = engine
+        .upload_htj2k_decode_table_resources(CudaHtj2kDecodeTables {
+            vlc_table0: ht_vlc_table0(),
+            vlc_table1: ht_vlc_table1(),
+            uvlc_table0: ht_uvlc_table0(),
+            uvlc_table1: ht_uvlc_table1(),
+        })
+        .expect("cleanup tables");
+    for (width, height) in [
+        (1, 1),
+        (1, 127),
+        (7, 9),
+        (32, 32),
+        (63, 65),
+        (64, 64),
+        (128, 32),
+        (256, 16),
+        (16, 256),
+    ] {
+        let source = (0..width * height)
+            .map(|i| {
+                if i % 11 == 10 {
+                    0
+                } else {
+                    i32::try_from((i * 37 + i / width * 13) % 1023).unwrap() - 511
+                }
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_ht_code_block_scalar(&source, width, height, 12)
+            .expect("encode shaped cleanup block");
+        assert_eq!(encoded.num_coding_passes, 1);
+        let mut expected =
+            j2k_core::try_host_vec_filled(source.len(), 0.0_f32).expect("scalar reference storage");
+        decode_ht_code_block_scalar(
+            HtCodeBlockDecodeJob {
+                data: &encoded.data,
+                cleanup_length: encoded.cleanup_length,
+                refinement_length: 0,
+                width,
+                height,
+                output_stride: width as usize,
+                missing_bit_planes: encoded.num_zero_bitplanes,
+                number_of_coding_passes: 1,
+                num_bitplanes: 12,
+                roi_shift: 0,
+                stripe_causal: false,
+                strict: true,
+                dequantization_step: 0.25,
+            },
+            &mut expected,
+        )
+        .expect("scalar cleanup reference");
+        let job = CudaHtj2kCodeBlockJob {
+            payload_offset: 0,
+            payload_len: u32::try_from(encoded.data.len()).unwrap(),
+            cleanup_length: encoded.cleanup_length,
+            refinement_length: 0,
+            width,
+            height,
+            output_stride: width + 3,
+            output_offset: 3,
+            missing_bit_planes: encoded.num_zero_bitplanes,
+            number_of_coding_passes: 1,
+            num_bitplanes: 12,
+            roi_shift: 0,
+            stripe_causal: false,
+            irreversible_midpoint: false,
+            dequantization_step: 0.25,
+        };
+        let resources = engine
+            .upload_htj2k_decode_resources_with_tables_and_pool(&[&encoded.data], &tables, &pool)
+            .expect("cleanup payload");
+        let sentinel = -12345.0_f32;
+        let output_words = ((width + 3) * height + 4) as usize;
+        let mut guarded_expected = j2k_core::try_host_vec_filled(output_words, sentinel)
+            .expect("guarded reference storage");
+        for row in 0..height as usize {
+            let start = 3 + row * (width as usize + 3);
+            guarded_expected[start..start + width as usize]
+                .copy_from_slice(&expected[row * width as usize..(row + 1) * width as usize]);
+        }
+        let initial = j2k_core::try_host_vec_filled(output_words, sentinel)
+            .expect("guarded device initialization")
+            .into_iter()
+            .flat_map(f32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        let output = context.upload(&initial).expect("guarded cleanup output");
+        engine
+            .decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(
+                &resources,
+                &[CudaHtj2kCleanupTarget {
+                    coefficients: &output,
+                    jobs: &[job],
+                    output_words,
+                }],
+                &pool,
+                false,
+            )
+            .expect("fused cleanup decode");
+        let mut bytes = j2k_core::try_host_vec_filled(initial.len(), 0).expect("readback storage");
+        output
+            .copy_to_host(&mut bytes)
+            .expect("read cleanup output");
+        let actual = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| f32::from_ne_bytes(*v))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual, guarded_expected,
+            "cleanup {width}x{height}, including row guards"
+        );
+    }
+}
 
 #[cfg(feature = "cuda-runtime")]
 fn decode_cuda(payload: &[u8], job: CudaHtj2kCodeBlockJob) -> Vec<f32> {
@@ -36,8 +167,10 @@ fn decode_cuda(payload: &[u8], job: CudaHtj2kCodeBlockJob) -> Vec<f32> {
         .copy_to_host(&mut bytes)
         .expect("download CUDA coefficients");
     bytes
-        .chunks_exact(core::mem::size_of::<f32>())
-        .map(|word| f32::from_ne_bytes(word.try_into().expect("one f32 word")))
+        .as_chunks::<{ core::mem::size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|word| f32::from_ne_bytes(*word))
         .collect()
 }
 

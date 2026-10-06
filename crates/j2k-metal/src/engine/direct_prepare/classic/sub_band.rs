@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Classic JPEG 2000 sub-band payload packing and Metal buffer preparation.
+//! Classic JPEG 2000 sub-band payload packing.
 
 use super::super::{
-    classic_style_flags, prepare_direct_tier1_input_buffer, with_runtime, DirectTier1Mode, Error,
-    J2kClassicCleanupBatchJob, J2kClassicSegment, PreparedClassicSubBand,
+    classic_style_flags, ClassicTier1Inputs, DirectTier1Mode, Error, J2kClassicCleanupBatchJob,
+    J2kClassicSegment, PreparedClassicSubBand,
 };
 
 #[cfg(target_os = "macos")]
@@ -76,7 +76,12 @@ pub(super) fn prepare_classic_sub_band_with_payloads(
             .jobs
             .iter()
             .any(|job| job.coded_len == 0 || job.number_of_coding_passes == 0);
-    finish_classic_sub_band(job, tier1_prepare_mode, zero_fill, owners)
+    Ok(finish_classic_sub_band(
+        job,
+        tier1_prepare_mode,
+        zero_fill,
+        owners,
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -200,25 +205,15 @@ fn finish_classic_sub_band(
     tier1_prepare_mode: DirectTier1Mode,
     zero_fill: bool,
     owners: ClassicSubBandOwners,
-) -> Result<PreparedClassicSubBand, Error> {
-    with_runtime(|runtime| {
-        let coded_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.coded_data, tier1_prepare_mode)?;
-        let jobs_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.jobs, tier1_prepare_mode)?;
-        let segments_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &owners.segments, tier1_prepare_mode)?;
-        Ok(PreparedClassicSubBand {
-            band_id: job.band_id,
-            width: job.width,
-            height: job.height,
-            zero_fill,
-            coded_data: owners.coded_data,
-            coded_buffer,
-            jobs: owners.jobs,
-            jobs_buffer,
-            segments: owners.segments,
-            segments_buffer,
-        })
-    })
+) -> PreparedClassicSubBand {
+    PreparedClassicSubBand {
+        band_id: job.band_id,
+        width: job.width,
+        height: job.height,
+        zero_fill,
+        coded_data: owners.coded_data,
+        jobs: owners.jobs,
+        segments: owners.segments,
+        tier1_inputs: ClassicTier1Inputs::new(tier1_prepare_mode),
+    }
 }

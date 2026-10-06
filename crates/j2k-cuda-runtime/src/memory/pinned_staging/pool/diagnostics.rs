@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 const DEFAULT_MAX_CACHED_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_MAX_CACHED_BUFFERS: usize = 8;
+const DEFAULT_MAX_CACHED_BUFFERS: usize = 32;
 
 #[doc(hidden)]
 /// Retention limits for a CUDA context's reusable page-locked upload staging.

@@ -270,7 +270,7 @@ fn mixed_external_batches_group_compatible_distinct_inputs_only() {
 fn generated_encoder_rejects_invalid_samples_and_unknown_codec() {
     let error =
         encode_lossless(&[], 1, 1, 1, Codec::Classic).expect_err("invalid sample length must fail");
-    assert!(!error.is_empty());
+    assert_ne!(error, "");
 
     let error = encode_lossless(&[0], 1, 1, 1, Codec::Unknown)
         .expect_err("unknown generated codec must fail");

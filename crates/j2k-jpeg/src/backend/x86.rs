@@ -52,7 +52,7 @@ pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
     while offset + RGB_UNROLL <= gray_row.len() {
         let chunk = &gray_row[offset..offset + RGB_UNROLL];
         let dst_chunk = &mut dst[offset * 3..(offset + RGB_UNROLL) * 3];
-        for (gray, pixel) in chunk.iter().zip(dst_chunk.chunks_exact_mut(3)) {
+        for (gray, pixel) in chunk.iter().zip(dst_chunk.as_chunks_mut::<3>().0) {
             pixel[0] = *gray;
             pixel[1] = *gray;
             pixel[2] = *gray;
@@ -87,7 +87,7 @@ pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], ds
             .iter()
             .zip(g_chunk.iter())
             .zip(b_chunk.iter())
-            .zip(dst_chunk.chunks_exact_mut(3))
+            .zip(dst_chunk.as_chunks_mut::<3>().0)
         {
             pixel[0] = r;
             pixel[1] = g;
@@ -392,7 +392,7 @@ fn store_rgb_chunk(dst_chunk: &mut [u8], r: __m256i, g: __m256i, b: __m256i) {
         .iter()
         .zip(g_bytes.iter())
         .zip(b_bytes.iter())
-        .zip(dst_chunk.chunks_exact_mut(3))
+        .zip(dst_chunk.as_chunks_mut::<3>().0)
         .zip(0..LANES)
     {
         pixel[0] = *r;

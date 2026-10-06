@@ -13,6 +13,8 @@
 pub mod classic;
 /// JPEG 2000 DWT constants.
 pub mod dwt;
+/// HTJ2K decode limits shared by host launch code and device kernels.
+pub mod htj2k;
 /// Generated backend source fragments derived from codec constants.
 pub mod generated {
     /// Metal source fragment defining JPEG 2000 DWT 9/7 constants.

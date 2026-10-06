@@ -176,7 +176,9 @@ fn openjph_i16_oracle(fixture: &OpenJphBatchFixture) -> Vec<i16> {
     } else {
         fixture
             .oracle
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
             .collect()
     }

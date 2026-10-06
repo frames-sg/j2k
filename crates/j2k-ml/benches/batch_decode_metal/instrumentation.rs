@@ -22,11 +22,7 @@ pub(super) fn ensure_criterion_instrumentation_disabled() -> Result<(), String> 
     let enabled = INSTRUMENTATION_FLAGS
         .iter()
         .copied()
-        .filter(|name| {
-            std::env::var(name)
-                .ok()
-                .is_some_and(|value| instrumentation_value_enabled(&value))
-        })
+        .filter(|name| std::env::var(name).is_ok_and(|value| instrumentation_value_enabled(&value)))
         .collect::<Vec<_>>();
     if enabled.is_empty() {
         Ok(())

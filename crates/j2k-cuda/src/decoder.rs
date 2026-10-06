@@ -92,10 +92,7 @@ use self::decode_profile::{format_cuda_idwt_batch_host_trace_row, CudaIdwtBatchH
 #[cfg(all(test, feature = "cuda-runtime"))]
 use self::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
 #[cfg(all(test, feature = "cuda-runtime"))]
-use self::resident::{
-    can_batch_color_idwt, cuda_code_block_job_from_plan_block,
-    htj2k_batched_cleanup_dequant_dispatches, htj2k_batched_cleanup_dispatches,
-};
+use self::resident::{cuda_code_block_job_from_plan_block, htj2k_batched_cleanup_dispatches};
 #[cfg(all(test, feature = "cuda-runtime"))]
 use self::resident::{htj2k_batched_dequant_dispatches, split_htj2k_subband_decode_dispatches};
 
@@ -126,6 +123,7 @@ struct CudaPendingDequantBand {
     band_index: usize,
     jobs: Vec<CudaHtj2kCodeBlockJob>,
     output_words: usize,
+    needs_zero_fill: bool,
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -159,36 +157,6 @@ struct CudaQueuedIdwtBatch {
 
 #[cfg(feature = "cuda-runtime")]
 impl CudaQueuedIdwtBatch {
-    fn merge(mut self, mut next: Self) -> Result<Self, Error> {
-        if !self.context.is_same_context(&next.context) {
-            return Err(Error::capability_rejected(
-                j2k_core::CapabilityRejection::geometry_mismatch(CUDA_HTJ2K_PLAN_INVARIANT_FAILED),
-            ));
-        }
-        self.queued
-            .try_reserve_exact(next.queued.len())
-            .map_err(|_| {
-                crate::allocation::host_allocation_error::<CudaQueuedExecution>(
-                    self.queued.len().saturating_add(next.queued.len()),
-                    "j2k CUDA independent IDWT completion guards",
-                )
-            })?;
-        self.queued.append(&mut next.queued);
-        self.kernel_dispatches = self
-            .kernel_dispatches
-            .saturating_add(next.kernel_dispatches);
-        self.decode_dispatches = self
-            .decode_dispatches
-            .saturating_add(next.decode_dispatches);
-        self.final_interleave_horizontal_us = self
-            .final_interleave_horizontal_us
-            .saturating_add(next.final_interleave_horizontal_us);
-        self.final_vertical_us = self
-            .final_vertical_us
-            .saturating_add(next.final_vertical_us);
-        Ok(self)
-    }
-
     fn resources_pending(&self) -> bool {
         self.kernel_dispatches != 0 && !self.queued.is_empty()
     }
@@ -275,8 +243,7 @@ impl CudaHtj2kColorDecodePlans {
 #[cfg(all(test, feature = "cuda-runtime"))]
 mod tests {
     use super::{
-        build_cuda_htj2k_color_plans_from_bytes_with_profile, can_batch_color_idwt,
-        cuda_code_block_job_from_plan_block, htj2k_batched_cleanup_dequant_dispatches,
+        build_cuda_htj2k_color_plans_from_bytes_with_profile, cuda_code_block_job_from_plan_block,
         htj2k_batched_cleanup_dispatches, htj2k_batched_dequant_dispatches, CudaDecodeStageTimings,
     };
     use j2k_core::PixelFormat;
@@ -314,18 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn batched_cleanup_and_dequant_dispatch_helpers_count_one_shared_dispatch() {
+    fn batched_cleanup_and_dequant_dispatch_helpers_count_entropy_stages() {
         assert_eq!(htj2k_batched_cleanup_dispatches(0), 0);
         assert_eq!(htj2k_batched_cleanup_dispatches(1), 1);
         assert_eq!(htj2k_batched_cleanup_dispatches(3), 1);
         assert_eq!(htj2k_batched_dequant_dispatches(0), 0);
         assert_eq!(htj2k_batched_dequant_dispatches(1), 1);
         assert_eq!(htj2k_batched_dequant_dispatches(3), 1);
-        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(0, true), (0, 0));
-        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(1, true), (1, 0));
-        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(3, true), (1, 0));
-        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(1, false), (1, 1));
-        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(3, false), (1, 1));
     }
 
     #[test]
@@ -382,7 +344,7 @@ mod tests {
         };
 
         assert_eq!(surfaces.len(), 2);
-        assert_eq!(report.detail.ht_dispatch_count, 1);
+        assert_eq!(report.detail.ht_dispatch_count, 2);
         assert_eq!(report.detail.ht_refinement_dispatch_count, 0);
         assert_eq!(report.detail.dequant_dispatch_count, 0);
         assert_eq!(report.detail.fused_dequant_dispatch_count, 1);
@@ -413,44 +375,53 @@ mod tests {
     }
 
     #[test]
-    fn cuda_batch_decode_mixed_idwt_shapes_avoids_fused_batch_store_without_idwt_batch() {
-        let codestream_a = rgb8_htj2k_fixture(32, 32, 1, 7);
-        let codestream_b = rgb8_htj2k_fixture(32, 32, 2, 19);
-        let inputs = [codestream_a.as_slice(), codestream_b.as_slice()];
-        let mut batch_session = crate::CudaSession::default();
+    fn cuda_batch_decode_mixed_idwt_shapes_uses_one_idwt_sequence_and_batch_store() {
+        for (shallow_depth, expected_idwt_dispatches) in [(1, 3), (0, 4)] {
+            let codestream_a = rgb8_htj2k_fixture(24, 32, shallow_depth, 7);
+            let codestream_b = rgb8_htj2k_fixture(40, 48, 2, 19);
+            let inputs = [codestream_a.as_slice(), codestream_b.as_slice()];
+            let dimensions = [(24usize, 32usize), (40, 48)];
+            let mut batch_session = crate::CudaSession::default();
 
-        let result = crate::J2kDecoder::decode_batch_to_device_with_session(
-            &inputs,
-            PixelFormat::Rgb8,
-            &mut batch_session,
-        );
-        let surfaces = match result {
-            Ok(surfaces) => surfaces,
-            Err(crate::Error::CudaUnavailable | crate::Error::CudaRuntime { .. })
-                if !cuda_runtime_gate() =>
+            let result = crate::J2kDecoder::decode_batch_to_device_with_session_and_profile(
+                &inputs,
+                PixelFormat::Rgb8,
+                &mut batch_session,
+            );
+            let (surfaces, report) = match result {
+                Ok(result) => result,
+                Err(crate::Error::CudaUnavailable | crate::Error::CudaRuntime { .. })
+                    if !cuda_runtime_gate() =>
+                {
+                    return;
+                }
+                Err(crate::Error::UnsupportedCudaRequest { .. }) if !cuda_runtime_gate() => return,
+                Err(error) => panic!("mixed-shape batch CUDA decode failed: {error}"),
+            };
+
+            assert_eq!(surfaces.len(), inputs.len());
+            assert_eq!(
+                report.detail.idwt_dispatch_count, expected_idwt_dispatches,
+                "unexpected IDWT dispatch count for shallow depth {shallow_depth}"
+            );
+            assert_eq!(report.detail.store_dispatch_count, 1);
+            for ((index, codestream), (width, height)) in inputs.iter().enumerate().zip(dimensions)
             {
-                return;
+                let mut single_session = crate::CudaSession::default();
+                let mut decoder = crate::J2kDecoder::new(codestream).expect("single decoder");
+                let single = decoder
+                    .decode_to_device_with_session(PixelFormat::Rgb8, &mut single_session)
+                    .expect("single CUDA decode");
+                let mut single_pixels = vec![0u8; width * height * 3];
+                let mut batch_pixels = vec![0u8; width * height * 3];
+                single
+                    .download_into(&mut single_pixels, width * 3)
+                    .expect("download single decode");
+                surfaces[index]
+                    .download_into(&mut batch_pixels, width * 3)
+                    .expect("download mixed-shape batch decode");
+                assert_eq!(batch_pixels, single_pixels);
             }
-            Err(crate::Error::UnsupportedCudaRequest { .. }) => return,
-            Err(error) => panic!("mixed-shape batch CUDA decode failed: {error}"),
-        };
-
-        assert_eq!(surfaces.len(), inputs.len());
-        for (index, codestream) in inputs.iter().enumerate() {
-            let mut single_session = crate::CudaSession::default();
-            let mut decoder = crate::J2kDecoder::new(codestream).expect("single decoder");
-            let single = decoder
-                .decode_to_device_with_session(PixelFormat::Rgb8, &mut single_session)
-                .expect("single CUDA decode");
-            let mut single_pixels = vec![0u8; 32 * 32 * 3];
-            let mut batch_pixels = vec![0u8; 32 * 32 * 3];
-            single
-                .download_into(&mut single_pixels, 32 * 3)
-                .expect("download single decode");
-            surfaces[index]
-                .download_into(&mut batch_pixels, 32 * 3)
-                .expect("download mixed-shape batch decode");
-            assert_eq!(batch_pixels, single_pixels);
         }
     }
 
@@ -525,10 +496,10 @@ mod tests {
             .expect("CUDA color plans");
 
         assert_eq!(color.components.len(), 3);
-        assert!(!color.payload.is_empty());
+        assert_ne!(color.payload, [] as [u8; 0]);
         assert_eq!(color.report.payload_bytes, color.payload.len());
         for component in &color.components {
-            assert!(component.payload().is_empty());
+            assert_eq!(component.payload(), [] as [u8; 0]);
             for block in component.code_blocks() {
                 let start = usize::try_from(block.payload_offset).expect("payload offset");
                 let end = start + block.payload_len as usize;
@@ -579,36 +550,6 @@ mod tests {
                 .map(|component| component.code_blocks().len())
                 .collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn multi_image_color_components_can_share_one_idwt_batch() {
-        let pixels: Vec<u8> = (0u16..16 * 16 * 3)
-            .map(|idx| u8::try_from((idx * 17 + idx / 7) & 0xff).expect("masked byte"))
-            .collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
-        let codestream =
-            encode_htj2k(&pixels, 16, 16, 3, 8, false, &options).expect("encode HTJ2K RGB fixture");
-        let mut first = crate::J2kDecoder::new(&codestream).expect("first decoder");
-        let mut second = crate::J2kDecoder::new(&codestream).expect("second decoder");
-        let first = first
-            .build_cuda_htj2k_color_plans_with_profile(PixelFormat::Rgb8)
-            .expect("first CUDA color plans");
-        let second = second
-            .build_cuda_htj2k_color_plans_with_profile(PixelFormat::Rgb8)
-            .expect("second CUDA color plans");
-        let components = first
-            .components
-            .iter()
-            .chain(second.components.iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(components.len(), 6);
-        assert!(can_batch_color_idwt(&components));
     }
 
     #[test]

@@ -22,7 +22,7 @@
 
 Security fixes are developed on the current workspace line and backported to
 older supported lines when applicable. See
-[`docs/release.md`](docs/release.md) for the publication state.
+[`CHANGELOG.md`](CHANGELOG.md) for published releases.
 
 ## Reporting vulnerabilities
 
@@ -57,5 +57,6 @@ Response expectations:
 - Error messages do not expose internal details.
 - An explicitly requested GPU backend never silently switches to another
   backend.
-- Every file with `unsafe` Rust is listed in `docs/unsafe-audit.md`.
+- Every host-side `unsafe` block in the published crates explains why it is
+  sound, and Clippy rejects one that doesn't.
 - Fuzzing and malformed-input tests run before each release.

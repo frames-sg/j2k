@@ -118,15 +118,13 @@ pub(super) fn include_generated_images() -> bool {
 pub(super) fn include_kakadu_encoder() -> bool {
     env_truthy("J2K_INCLUDE_KAKADU")
         || env_truthy("J2K_REQUIRE_KAKADU")
-        || std::env::var("J2K_ENCODE_COMPARE_ENCODERS")
-            .ok()
-            .is_some_and(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .map(str::to_ascii_lowercase)
-                    .any(|part| matches!(part.as_str(), "kakadu" | "kdu"))
-            })
+        || std::env::var("J2K_ENCODE_COMPARE_ENCODERS").is_ok_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .any(|part| matches!(part.as_str(), "kakadu" | "kdu"))
+        })
 }
 
 pub(super) fn batch_size_config_from_env() -> Result<common::BatchSizeConfig, String> {

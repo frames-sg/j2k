@@ -46,21 +46,24 @@ pub(super) fn validate_classic_launch_owners(
         .map_err(|_| invalid("classic decode target allocations must be pairwise disjoint"))
 }
 
+fn checked_target_total(
+    targets: &[CudaClassicDecodeTarget<'_>],
+    len: impl Fn(&CudaClassicDecodeTarget<'_>) -> usize,
+) -> Result<usize, CudaError> {
+    targets.iter().try_fold(0usize, |count, target| {
+        count
+            .checked_add(len(target))
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })
+    })
+}
+
 pub(super) fn prepare_classic_decode(
     payload_len: usize,
     targets: &[CudaClassicDecodeTarget<'_>],
     host_budget: &mut HostPhaseBudget,
 ) -> Result<PreparedClassicDecode, CudaError> {
-    let total_jobs = targets.iter().try_fold(0usize, |count, target| {
-        count
-            .checked_add(target.jobs.len())
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })
-    })?;
-    let total_segments = targets.iter().try_fold(0usize, |count, target| {
-        count
-            .checked_add(target.segments.len())
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })
-    })?;
+    let total_jobs = checked_target_total(targets, |target| target.jobs.len())?;
+    let total_segments = checked_target_total(targets, |target| target.segments.len())?;
     let mut jobs = host_budget.try_vec_with_capacity(total_jobs)?;
     let mut segments = host_budget.try_vec_with_capacity(total_segments)?;
     let mut scratch_words = 0usize;
@@ -113,6 +116,7 @@ pub(super) fn prepare_classic_decode(
                 irreversible_midpoint: u32::from(job.irreversible_midpoint),
                 dequantization_step: job.dequantization_step,
                 roi_shift: job.roi_shift,
+                status_index: jobs.len() as u64,
             });
             let segment_end = job.segment_start.checked_add(job.segment_count).ok_or(
                 CudaError::LengthTooLarge {
@@ -141,6 +145,14 @@ pub(super) fn prepare_classic_decode(
             ));
         }
     }
+    // Start expensive blocks first to avoid a long tail of active warps.
+    // Status slots and coefficient addresses retain their input identities.
+    jobs.sort_unstable_by_key(|job| {
+        (
+            std::cmp::Reverse(job.number_of_coding_passes * job.width * job.height),
+            job.status_index,
+        )
+    });
     Ok(PreparedClassicDecode {
         jobs,
         segments,

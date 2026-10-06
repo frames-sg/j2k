@@ -30,5 +30,5 @@ fn external_consumer_can_use_the_preference_honoring_encoder() {
     assert_eq!(result.fallback_reason(), None);
     assert_eq!(result.dispatch_report(), J2kEncodeDispatchReport::default());
     assert!(result.encoded().codestream.starts_with(&[0xff, 0x4f]));
-    assert!(!result.into_encoded().codestream.is_empty());
+    assert_ne!(result.into_encoded().codestream, [] as [u8; 0]);
 }

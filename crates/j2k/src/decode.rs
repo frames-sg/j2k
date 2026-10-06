@@ -202,7 +202,8 @@ mod tests {
 
     #[test]
     fn decode_warnings_only_report_an_actual_lenient_recovery() {
-        assert!(decode_warnings_for_recovery(false).is_empty());
+        let warnings = decode_warnings_for_recovery(false);
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
             decode_warnings_for_recovery(true),
             vec![J2kDecodeWarning::LenientMetadataRecovery]

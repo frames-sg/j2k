@@ -285,7 +285,7 @@ fn matching_empty_batches_and_repeated_same_context_targets_remain_valid() {
             &fixture.local_pool,
         )
         .expect("matching empty multi-input encode");
-    assert!(compact.payload().is_empty());
+    assert_eq!(compact.payload(), [] as [u8; 0]);
     assert!(compact.code_blocks().is_empty());
 
     let blocks = crate::J2kCudaEngine::new(&fixture.context)

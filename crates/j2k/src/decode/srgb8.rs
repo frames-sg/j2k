@@ -277,8 +277,13 @@ fn expand_gray_alpha(
     retained_bytes: usize,
 ) -> Result<J2kSrgb8Image, J2kError> {
     let mut output = allocate_output(dimensions, J2kSrgb8Layout::Rgba, retained_bytes)?;
-    for (input, pixel) in source.chunks_exact(2).zip(output.chunks_exact_mut(4)) {
-        pixel.copy_from_slice(&[input[0], input[0], input[0], input[1]]);
+    for (input, pixel) in source
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<4>().0)
+    {
+        *pixel = [input[0], input[0], input[0], input[1]];
     }
     finish(output, dimensions, J2kSrgb8Layout::Rgba)
 }

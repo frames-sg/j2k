@@ -6,6 +6,7 @@ mod operations;
 mod pool;
 
 pub use self::operations::{CudaPinnedUploadOperationGuard, CudaPinnedUploadStagingCheckout};
+pub(crate) use self::operations::{PendingPinnedUpload, PendingUploadRetireError};
 pub use self::pool::{CudaPinnedUploadStagingPoolDiagnostics, CudaPinnedUploadStagingPoolLimits};
 pub(crate) use self::pool::{PinnedUploadStagingAdmission, PinnedUploadStagingPool};
 

@@ -296,15 +296,17 @@ fn collect_classic_payload(
     Ok((Vec::new(), segments))
 }
 
-pub(in crate::j2c::decode::direct_plan) fn strip_grayscale_payload_owners(
-    plan: &mut J2kDirectGrayscalePlan,
+/// Checks that `payloads` covers every HT job's cleanup and refinement bytes,
+/// in plan order, and returns how many records the plan consumed.
+pub(in crate::j2c::decode::direct_plan) fn validate_ht_payload_records(
+    plan: &J2kDirectGrayscalePlan,
     payloads: &[HtCodeBlockPayloadRanges],
 ) -> Result<usize> {
     let mut next_record = 0_usize;
-    for step in &mut plan.steps {
+    for step in &plan.steps {
         match step {
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
-                for job in &mut sub_band.jobs {
+                for job in &sub_band.jobs {
                     let first = *payloads
                         .get(next_record)
                         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
@@ -340,7 +342,6 @@ pub(in crate::j2c::decode::direct_plan) fn strip_grayscale_payload_owners(
                             bail!(DecodingError::CodeBlockDecodeFailure);
                         }
                     }
-                    job.data = Vec::new();
                 }
             }
             J2kDirectGrayscaleStep::ClassicSubBand(_)

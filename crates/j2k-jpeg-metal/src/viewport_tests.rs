@@ -165,7 +165,7 @@ fn quarter_scaled_crop_workload() -> ViewportWorkload {
 #[cfg(target_os = "macos")]
 fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
-    for pixel in rgb.chunks_exact(3) {
+    for pixel in rgb.as_chunks::<3>().0 {
         rgba.extend_from_slice(pixel);
         rgba.push(u8::MAX);
     }

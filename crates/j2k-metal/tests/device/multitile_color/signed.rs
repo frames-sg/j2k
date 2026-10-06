@@ -29,7 +29,7 @@ fn prepared_metal_color_preserves_signed_rgb_in_resident_output() {
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder.prepare(inputs).expect("prepare signed RGB group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(
         prepared.groups()[0].info().sample_type,
         NativeSampleType::I16

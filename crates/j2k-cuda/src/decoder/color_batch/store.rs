@@ -8,8 +8,8 @@ use j2k_cuda_j2k_engine::{
 use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer, CudaError, CudaKernelOutput};
 
 use super::super::{
-    cuda_error, CudaHtj2kStoreStep, CudaHtj2kTransform, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
-    CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    cuda_error, CudaHtj2kColorDecodePlans, CudaHtj2kStoreStep, CudaHtj2kTransform, Error,
+    CUDA_HTJ2K_KERNELS_NOT_READY, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 
 mod batch;
@@ -177,6 +177,32 @@ pub(super) fn can_fuse_mct_store_for_stores(stores: [&CudaHtj2kStoreStep; 3]) ->
         && stores[0].source_x == stores[2].source_x
         && stores[0].source_y == stores[1].source_y
         && stores[0].source_y == stores[2].source_y
+}
+
+/// Whether each component's final vertical IDWT pass can run inside the
+/// batched RGB8 MCT store: a full, origin-zero plane stored without cropping.
+pub(super) fn final_vertical_fuses_with_store(color: &CudaHtj2kColorDecodePlans) -> bool {
+    color.components.iter().all(|component| {
+        let (Some(step), [store]) = (component.idwt_steps().last(), component.store_steps()) else {
+            return false;
+        };
+        step.transform == color.transform
+            && step.rect.x0 == 0
+            && step.rect.y0 == 0
+            && step.rect.x1 == color.dimensions.0
+            && step.rect.y1 == color.dimensions.1
+            && step.rect.y1 >= 2
+            && store.input_band_id == step.output_band_id
+            && store.input_rect == step.rect
+            && store.source_x == 0
+            && store.source_y == 0
+            && store.output_x == 0
+            && store.output_y == 0
+            && store.copy_width == step.rect.x1
+            && store.copy_height == step.rect.y1
+            && store.output_width == step.rect.x1
+            && store.output_height == step.rect.y1
+    })
 }
 
 pub(super) fn color_store_input_width(store: &CudaHtj2kStoreStep) -> u32 {

@@ -351,10 +351,10 @@ mod tests {
         assert!(summary.emit_on_drop_enabled());
 
         summary.flush_to_stderr().expect("summary should flush");
-        assert!(summary
-            .format_rows()
-            .expect("empty summary should format")
-            .is_empty());
+        assert_eq!(
+            summary.format_rows().expect("empty summary should format"),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[cfg(feature = "std")]
@@ -376,11 +376,13 @@ mod tests {
             &[("stage", "off"), ("elapsed_us", "10")],
         );
         TEST_SUMMARY.with(|summary| {
-            assert!(summary
-                .borrow()
-                .format_rows()
-                .expect("empty summary should format")
-                .is_empty());
+            assert_eq!(
+                summary
+                    .borrow()
+                    .format_rows()
+                    .expect("empty summary should format"),
+                [] as [std::string::String; 0]
+            );
         });
 
         emit_profile_row(
@@ -691,10 +693,10 @@ mod tests {
                 .take_formatted_rows()
                 .expect("summary should format and clear")
         );
-        assert!(summary
-            .format_rows()
-            .expect("empty summary should format")
-            .is_empty());
+        assert_eq!(
+            summary.format_rows().expect("empty summary should format"),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
@@ -894,6 +896,9 @@ mod tests {
         let empty = ProfileSummary::empty_counts_only();
         assert_eq!(empty.row_count(), 0);
         assert_eq!(empty.limits(), ProfileLimits::default());
-        assert!(empty.format_rows().expect("empty rows").is_empty());
+        assert_eq!(
+            empty.format_rows().expect("empty rows"),
+            [] as [std::string::String; 0]
+        );
     }
 }

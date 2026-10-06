@@ -55,7 +55,7 @@ fn mixed_signed_rgb_mct_modes_preserve_each_images_samples() {
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder.prepare(inputs).expect("prepare mixed-MCT group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(
         prepared.groups().len(),
         2,

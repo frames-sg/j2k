@@ -49,7 +49,7 @@ fn isolated_child_returns_direct_packet_owners_with_separated_headers() {
     )
     .expect("direct packetized tile");
 
-    assert!(!packetized.packet_lengths.is_empty());
+    assert_ne!(packetized.packet_lengths, [] as [u32; 0]);
     assert_eq!(
         packetized.packet_headers.len(),
         packetized.packet_lengths.len()

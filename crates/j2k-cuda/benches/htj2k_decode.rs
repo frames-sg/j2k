@@ -818,8 +818,7 @@ fn include_generated_decode_cases() -> bool {
 
 fn env_falsey(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .is_ok_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
 #[expect(

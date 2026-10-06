@@ -1,16 +1,102 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_native::{
-    HtCodeBlockPayloadRanges, J2kRect, J2kReferencedHtj2kPlan, J2kReferencedTilePlan,
+    HtCodeBlockPayloadRanges, J2kDirectGrayscaleStep, J2kRect, J2kReferencedHtj2kPlan,
+    J2kReferencedTilePlan,
 };
 
 use super::super::{
+    flatten_direct_source_cuda_color_tile_components,
     flatten_referenced_cuda_color_tile_components, profile, rgba_bit_depths_from_rgb,
     CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
     CudaHtj2kProfileReport, CudaHtj2kTransform, DeviceDecodePlan, Error, HostPhaseBudget,
     PixelFormat,
 };
 use super::ReferencedTileColorGeometry;
+
+/// Build the narrow borrowed-payload route used by raw HT color batches.
+/// Multi-tile, mixed classic, and refinement inputs return `None` so callers
+/// can preserve the existing compact owned-payload path.
+pub(in crate::decoder) fn build_cuda_htj2k_color_plan_from_referenced_direct_source(
+    input: &[u8],
+    referenced: &J2kReferencedHtj2kPlan,
+    fmt: PixelFormat,
+    device_plan: DeviceDecodePlan,
+    host_budget: &mut HostPhaseBudget,
+) -> Result<Option<CudaHtj2kColorDecodePlans>, Error> {
+    let [tile] = referenced.tiles() else {
+        return Ok(None);
+    };
+    if !tile.classic_payloads().is_empty() {
+        return Ok(None);
+    }
+    let (geometry_dimensions, bit_depths, mct, transform, component_plans) =
+        ht_tile_color_geometry(tile)?;
+    if component_plans.len() != fmt.channels()
+        || component_plans.iter().any(|plan| {
+            plan.steps.iter().any(|step| match step {
+                J2kDirectGrayscaleStep::HtSubBand(subband) => subband
+                    .jobs
+                    .iter()
+                    .any(|job| job.number_of_coding_passes > 1 || job.refinement_length != 0),
+                J2kDirectGrayscaleStep::ClassicSubBand(_) => true,
+                J2kDirectGrayscaleStep::Idwt(_) | J2kDirectGrayscaleStep::Store(_) => false,
+            })
+        })
+    {
+        return Ok(None);
+    }
+    let output_rect = referenced.output_rect();
+    let output_dimensions = device_plan.output_dims();
+    if (output_rect.width(), output_rect.height()) != output_dimensions {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "direct-source CUDA color tile output geometry is inconsistent",
+            ),
+        ));
+    }
+    let (payload_end, payloads) = ht_tile_payloads(referenced, tile, 0)?;
+    if payload_end != referenced.payloads().len() {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch(
+                "direct-source CUDA color tile payloads contain trailing records",
+            ),
+        ));
+    }
+    let flatten_start = profile::profile_now(true);
+    let components = flatten_direct_source_cuda_color_tile_components(
+        component_plans,
+        payloads,
+        input,
+        fmt,
+        (output_rect.x0, output_rect.y0),
+        output_dimensions,
+        host_budget,
+    )?;
+    let ht_block_count = components
+        .iter()
+        .map(|component| component.code_blocks().len())
+        .sum::<usize>();
+    Ok(Some(CudaHtj2kColorDecodePlans {
+        output_index: 0,
+        dimensions: output_dimensions,
+        mct_dimensions: geometry_dimensions,
+        bit_depths,
+        mct,
+        transform: CudaHtj2kTransform::from_native(transform),
+        payload: Vec::new(),
+        components,
+        report: CudaHtj2kProfileReport {
+            flatten_us: profile::elapsed_us(flatten_start),
+            block_count: ht_block_count,
+            ht_block_count,
+            payload_bytes: input.len(),
+            residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
+            ..CudaHtj2kProfileReport::default()
+        },
+    }))
+}
 
 pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_referenced_with_profile(
     input: &[u8],

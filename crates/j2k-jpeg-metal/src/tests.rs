@@ -15,7 +15,7 @@ fn patterned_index_byte(index: usize) -> u8 {
 #[cfg(target_os = "macos")]
 pub(crate) fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
-    for pixel in rgb.chunks_exact(3) {
+    for pixel in rgb.as_chunks::<3>().0 {
         rgba.extend_from_slice(pixel);
         rgba.push(u8::MAX);
     }
@@ -1024,7 +1024,7 @@ fn concurrent_four_group_buffer_batches_share_session_without_stalling() {
             scope.spawn(move || {
                 let dimensions = (64, 64);
                 let mut rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-                for pixel in rgb.chunks_exact_mut(3) {
+                for pixel in rgb.as_chunks_mut::<3>().0 {
                     pixel[0] = pixel[0].wrapping_add(variant);
                 }
                 let jpegs = [95, 85, 70, 50].map(|quality| {
@@ -1098,7 +1098,7 @@ fn assert_table_mixed_full_buffer_groups_resident(
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(43)
             .wrapping_add(17);
@@ -1106,7 +1106,7 @@ fn assert_table_mixed_full_buffer_groups_resident(
         pixel[1] = pixel[1].wrapping_sub(delta);
         pixel[2] = pixel[2].wrapping_add(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(47)
             .wrapping_add(23);
@@ -1665,7 +1665,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
     .expect("encode restart-coded fast420 region-scaled jpeg");
     let packet = build_fast420_packet(&jpeg.data).expect("restart fast420 packet");
     assert_ne!(packet.restart_interval_mcus, 0);
-    assert!(!packet.restart_offsets.is_empty());
+    assert_ne!(packet.restart_offsets, [] as [u32; 0]);
 
     let output = MetalBatchOutputBuffer::new_rgb8_tiles(&session, (scaled.w, scaled.h), 2)
         .expect("output buffer");
@@ -1745,12 +1745,12 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
         JpegSubsampling::Ybr422 => {
             let packet = build_fast422_packet(&jpeg.data).expect("restart fast422 packet");
             assert_ne!(packet.restart_interval_mcus, 0);
-            assert!(!packet.restart_offsets.is_empty());
+            assert_ne!(packet.restart_offsets, [] as [u32; 0]);
         }
         JpegSubsampling::Ybr444 => {
             let packet = build_fast444_packet(&jpeg.data).expect("restart fast444 packet");
             assert_ne!(packet.restart_interval_mcus, 0);
-            assert!(!packet.restart_offsets.is_empty());
+            assert_ne!(packet.restart_offsets, [] as [u32; 0]);
         }
         _ => panic!("restart region-scaled buffer helper expects fast422 or fast444"),
     }
@@ -1841,7 +1841,7 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_c = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
-    for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_b.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(37)
             .wrapping_add(19);
@@ -1849,7 +1849,7 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
         pixel[1] ^= delta;
         pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
     }
-    for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+    for (index, pixel) in rgb_c.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let delta = patterned_index_byte(index)
             .wrapping_mul(53)
             .wrapping_add(11);

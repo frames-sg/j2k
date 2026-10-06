@@ -317,10 +317,7 @@ fn classify_file_type(payload: &[u8]) -> Result<Jp2FileKind> {
     if payload[..4] == *b"jph " {
         return Ok(Jp2FileKind::Jph);
     }
-    if payload[8..]
-        .chunks_exact(4)
-        .any(|compatible_brand| compatible_brand == b"jph ")
-    {
+    if payload[8..].as_chunks::<4>().0.contains(b"jph ") {
         return Ok(Jp2FileKind::Jph);
     }
     Ok(Jp2FileKind::Jp2)

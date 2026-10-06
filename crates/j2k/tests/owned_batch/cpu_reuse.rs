@@ -109,7 +109,7 @@ fn cpu_prepared_ht_plan_decode_avoids_native_reparse() {
         .expect("second parse-free prepared decode");
     let second_stats = session.workspace_stats();
 
-    assert!(first.errors().is_empty());
+    assert!(first.errors().is_empty(), "{:?}", first.errors());
     assert_eq!(first.groups(), second.groups());
     assert_eq!(first_stats.prepared_plan_decode_calls(), 1);
     assert_eq!(second_stats.prepared_plan_decode_calls(), 2);
@@ -205,7 +205,7 @@ fn prepared_classic_plan_supports_duplicate_full_roi_and_reduced_requests() {
             options,
         )
         .expect("prepare classic request matrix");
-        assert!(prepared.errors().is_empty());
+        assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
         assert!(prepared
             .groups()
             .iter()
@@ -222,7 +222,7 @@ fn prepared_classic_plan_supports_duplicate_full_roi_and_reduced_requests() {
         let second = decoder
             .decode_prepared(&prepared)
             .expect("second classic request matrix decode");
-        assert!(first.errors().is_empty());
+        assert!(first.errors().is_empty(), "{:?}", first.errors());
         assert_eq!(first.groups(), second.groups());
         assert_eq!(decoder.workspace_stats().decode_calls(), 0);
         assert_eq!(decoder.workspace_stats().prepared_plan_decode_calls(), 10);
@@ -280,7 +280,7 @@ fn referenced_classic_whole_plan_executes_all_gray_and_rgb_tiles_exactly() {
             BatchDecodeOptions::default(),
         )
         .expect("prepare multi-tile classic whole-plan fixture");
-        assert!(prepared.errors().is_empty());
+        assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
         let image = &prepared.groups()[0].images()[0];
         let oracle = native_request_oracle(image, BatchLayout::Nhwc);
         let CpuBatchSamples::U8(oracle) = oracle else {
@@ -340,7 +340,7 @@ fn cpu_session_retained_workspace_stabilizes_during_thousand_batch_soak() {
         let decoded = session
             .decode_prepared(&prepared)
             .expect("decode CPU soak batch");
-        assert!(decoded.errors().is_empty());
+        assert!(decoded.errors().is_empty(), "{:?}", decoded.errors());
     }
     let soaked = session.workspace_stats();
 

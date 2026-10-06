@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Typed error and warning taxonomy. See spec Section 6.
+//! Typed error and warning taxonomy.
 
 use crate::info::{ColorSpace, Rect, SofKind};
 use j2k_core::CodecError;
@@ -619,7 +619,7 @@ pub enum JpegError {
     /// the requested shape yet. Distinct from `UnsupportedSof` because callers
     /// routing to a fallback decoder on `is_unsupported()` should NOT reroute
     /// streams that a newer version of j2k will decode natively.
-    #[error("decode not yet implemented for {sof:?} — see CHANGELOG for milestone")]
+    #[error("decode not yet implemented for {sof:?}")]
     NotImplemented {
         /// SOF kind awaiting implementation.
         sof: SofKind,
@@ -729,7 +729,7 @@ impl CodecError for JpegError {
     }
 }
 
-/// Non-fatal notices emitted during decode. See spec Section 6.
+/// Non-fatal notices emitted during decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Warning {
@@ -910,8 +910,8 @@ mod tests {
         assert!(not_impl.is_not_implemented());
         assert!(
             !not_impl.is_unsupported(),
-            "NotImplemented is a transient M1b/M2 gap — callers routing on is_unsupported() must NOT \
-             reroute these streams, because M3 adds real support"
+            "NotImplemented represents a decoder implementation gap and must remain distinct \
+             from an unsupported format"
         );
         assert!(!not_impl.is_truncated());
         assert!(!not_impl.is_api_misuse());

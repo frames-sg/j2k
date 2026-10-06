@@ -23,6 +23,34 @@ fn coefficient_plan(baseline: usize, coefficients: usize) -> DecompositionAlloca
 }
 
 #[test]
+fn metadata_plan_retains_logical_samples_without_allocating_pixel_storage() {
+    let mut storage = DecompositionStorage {
+        exact_integer_decode: true,
+        ..DecompositionStorage::default()
+    };
+    storage.coefficients.try_reserve_exact(8).unwrap();
+    storage.coefficients_i64.try_reserve_exact(8).unwrap();
+    let baseline = DEFAULT_MAX_DECODE_BYTES - size_of::<SubBand>();
+    let mut plan =
+        DecompositionAllocationPlan::new(baseline, true, false, BuildWorkspace::MetadataOnly)
+            .unwrap();
+    plan.sub_bands = 1;
+    let logical_samples = DEFAULT_MAX_DECODE_BYTES / size_of::<f32>() + 1;
+    plan.add_coefficients(logical_samples).unwrap();
+    plan.validate_minimum_live_workspace(0)
+        .expect("metadata fits without pixel storage");
+    discard_stale_capacity(&mut storage, &plan);
+    super::reuse::reserve_decomposition_storage(&plan, &mut storage, baseline)
+        .expect("only metadata is reserved");
+    plan.account_live_workspace(&storage, 0).unwrap();
+    assert_eq!(plan.coefficients, logical_samples);
+    assert_eq!(plan.total_bytes, DEFAULT_MAX_DECODE_BYTES);
+    assert_eq!(storage.coefficients.capacity(), 0);
+    assert_eq!(storage.coefficients_i64.capacity(), 0);
+    assert_eq!(storage.sub_bands.capacity(), 1);
+}
+
+#[test]
 fn allocation_plan_tag_tree_count_matches_builder_for_edge_shapes() {
     for (width, height) in [
         (0, 0),

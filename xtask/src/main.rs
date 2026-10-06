@@ -54,7 +54,7 @@ use command_support::passed_test_count;
 use panic_surface::panic_surface;
 use quality_commands::{
     ci, clippy, clippy_strict, doc, fmt, fuzz_build, fuzz_run, machete, miri, no_std, repo_lint,
-    test, verify_unsafe_audit,
+    test, verify_jpeg_simd_unsafe_boundary,
 };
 use release_commands::{
     j2k_ml_package_smoke, package, package_consumer_smoke, published_library_packages, release_cpu,
@@ -122,7 +122,7 @@ fn run() -> Result<(), String> {
         "panic-surface" => panic_surface(),
         "promotion-codegen" => promotion_codegen::promotion_codegen(env::args().skip(2)),
         "no-std" => no_std(),
-        "unsafe-audit" => verify_unsafe_audit(),
+        "unsafe-audit" => verify_jpeg_simd_unsafe_boundary(),
         "repo-lint" => repo_lint(env::args().skip(2)),
         "t803" => t803::t803(env::args().skip(2)),
         "release-integrity" => release_integrity(env::args().skip(2)),
@@ -177,7 +177,7 @@ fn print_help() {
           panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
           promotion-codegen generate or check verifier-backed GPU Auto-routing tables [--check]\n\
            no-std        check no_std-compatible codec crates\n\
-           unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
+           unsafe-audit  verify JPEG SIMD unsafe code stays in its boundary modules\n\
            repo-lint     run repository policy checks owned by xtask\n\
            t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\

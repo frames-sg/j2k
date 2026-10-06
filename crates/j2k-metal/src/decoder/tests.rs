@@ -204,7 +204,7 @@ fn metal_backend_sessions_own_distinct_direct_plan_caches() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
+fn fresh_direct_plan_preparation_builds_no_tier1_buffers_on_any_runtime() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -229,7 +229,6 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
     )
     .expect("encode classic grayscale session-runtime fixture");
     let session = MetalBackendSession::new(device.clone());
-    let session_runtime = session.runtime().expect("explicit session runtime");
 
     crate::engine::reset_direct_tier1_input_buffer_prepares_for_test();
     crate::engine::with_isolated_runtime_for_device_for_test(&device, || {
@@ -241,14 +240,11 @@ fn fresh_direct_plan_preparation_uses_the_explicit_session_runtime() {
     })
     .expect("prepare direct plan with explicit session");
 
-    assert!(
-        crate::engine::direct_tier1_input_buffer_prepares_for_test() > 0,
-        "fixture must allocate classic Tier-1 input buffers"
-    );
     assert_eq!(
         crate::engine::direct_tier1_input_buffer_runtime_for_test(),
-        Arc::as_ptr(&session_runtime).addr(),
-        "fresh cached buffers must be prepared by the explicit session runtime"
+        0,
+        "preparation must leave classic Tier-1 input buffers to the first dispatch, \
+         which builds them on the runtime encoding it"
     );
 }
 

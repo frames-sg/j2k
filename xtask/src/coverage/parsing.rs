@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn git_output_trims_stdout_and_reports_command_failures() {
         let head = git_output(&["rev-parse", "HEAD"]).unwrap();
-        assert!(!head.is_empty());
+        assert_ne!(head, "");
         assert!(head.bytes().all(|byte| byte.is_ascii_hexdigit()));
 
         let error = git_output(&["rev-parse", "--verify", MISSING_REVISION]).unwrap_err();

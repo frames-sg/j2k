@@ -26,7 +26,7 @@ use crate::engine::{
 use super::super::resources::{retain_metal_tier1_output, DirectBandSlice};
 use super::super::validation::{
     checked_f32_batch_span, checked_f32_dimension_span, checked_f32_element_offset,
-    checked_f32_instance_offset,
+    checked_f32_instance_offset, CheckedF32BatchSpan,
 };
 use super::{planned_cpu_input_count, try_collect_submission_items, SubmissionContext};
 
@@ -65,7 +65,10 @@ impl SubmissionContext<'_, '_, '_> {
             self.count,
             "J2K MetalDirect stacked classic group",
         )?;
-        let buffer = match self.tier1_mode {
+        let (buffer, shared_offset_bytes) = match self.tier1_mode {
+            DirectTier1Mode::Metal if self.shared_classic_tier1.is_some() => {
+                self.take_shared_classic_step(step_idx, &span)?
+            }
             DirectTier1Mode::Metal => {
                 let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
                 let (buffers, status_check) = if let Some(encoder) = self.compute_encoder {
@@ -88,22 +91,26 @@ impl SubmissionContext<'_, '_, '_> {
                 if let Some(encoder) = self.compute_encoder {
                     encoder.memory_barrier_with_resources(&[&output.buffer]);
                 }
-                retain_metal_tier1_output(
+                let buffer = retain_metal_tier1_output(
                     output,
                     buffers,
                     status_check,
                     self.retained_buffers,
                     self.status_checks,
                     self.scratch_buffers,
-                )?
+                )?;
+                (buffer, 0)
             }
-            DirectTier1Mode::CpuUpload => self.prepare_classic_group_cpu_buffer(
-                first,
-                step_idx,
-                group,
-                &groups,
-                &mut metadata_budget,
-            )?,
+            DirectTier1Mode::CpuUpload => {
+                let buffer = self.prepare_classic_group_cpu_buffer(
+                    first,
+                    step_idx,
+                    group,
+                    &groups,
+                    &mut metadata_budget,
+                )?;
+                (buffer, 0)
+            }
         };
 
         for (instance_idx, bands) in self.resources.band_sets.iter_mut().enumerate() {
@@ -117,17 +124,38 @@ impl SubmissionContext<'_, '_, '_> {
                 bands.push(DirectBandSlice {
                     band_id: member.band_id,
                     buffer: buffer.clone(),
-                    offset_bytes: checked_f32_element_offset(
-                        &span,
-                        source_idx,
-                        member.offset_elements,
-                        "J2K MetalDirect stacked classic group member",
+                    offset_bytes: checked_shared_offset(
+                        shared_offset_bytes,
+                        checked_f32_element_offset(
+                            &span,
+                            source_idx,
+                            member.offset_elements,
+                            "J2K MetalDirect stacked classic group member",
+                        )?,
                     )?,
                     window: member.window,
                 });
             }
         }
         Ok(())
+    }
+
+    /// Coefficients of a step decoded by a dispatch shared with other groups.
+    fn take_shared_classic_step(
+        &mut self,
+        step_idx: usize,
+        span: &CheckedF32BatchSpan,
+    ) -> Result<(Buffer, usize), Error> {
+        let shared = self
+            .shared_classic_tier1
+            .as_deref_mut()
+            .ok_or_else(|| direct_preflight_invariant("shared classic Tier-1 is missing"))?;
+        shared.take_step(
+            step_idx,
+            span.per_instance_elements,
+            span.instance_count,
+            self.status_checks,
+        )
     }
 
     fn prepare_classic_group_cpu_buffer(
@@ -225,7 +253,10 @@ impl SubmissionContext<'_, '_, '_> {
             self.count,
             "J2K MetalDirect stacked classic sub-band",
         )?;
-        let buffer = match self.tier1_mode {
+        let (buffer, shared_offset_bytes) = match self.tier1_mode {
+            DirectTier1Mode::Metal if self.shared_classic_tier1.is_some() => {
+                self.take_shared_classic_step(step_idx, &span)?
+            }
             DirectTier1Mode::Metal => {
                 let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
                 let (buffers, status_check) = if let Some(encoder) = self.compute_encoder {
@@ -248,22 +279,26 @@ impl SubmissionContext<'_, '_, '_> {
                 if let Some(encoder) = self.compute_encoder {
                     encoder.memory_barrier_with_resources(&[&output.buffer]);
                 }
-                retain_metal_tier1_output(
+                let buffer = retain_metal_tier1_output(
                     output,
                     buffers,
                     status_check,
                     self.retained_buffers,
                     self.status_checks,
                     self.scratch_buffers,
-                )?
+                )?;
+                (buffer, 0)
             }
-            DirectTier1Mode::CpuUpload => self.prepare_classic_sub_band_cpu_buffer(
-                first,
-                step_idx,
-                span.per_instance_elements,
-                &sub_bands,
-                &mut metadata_budget,
-            )?,
+            DirectTier1Mode::CpuUpload => {
+                let buffer = self.prepare_classic_sub_band_cpu_buffer(
+                    first,
+                    step_idx,
+                    span.per_instance_elements,
+                    &sub_bands,
+                    &mut metadata_budget,
+                )?;
+                (buffer, 0)
+            }
         };
 
         for (instance_idx, bands) in self.resources.band_sets.iter_mut().enumerate() {
@@ -276,10 +311,13 @@ impl SubmissionContext<'_, '_, '_> {
             bands.push(DirectBandSlice {
                 band_id: source_sub_band.band_id,
                 buffer: buffer.clone(),
-                offset_bytes: checked_f32_instance_offset(
-                    &span,
-                    source_idx,
-                    "J2K MetalDirect stacked classic sub-band",
+                offset_bytes: checked_shared_offset(
+                    shared_offset_bytes,
+                    checked_f32_instance_offset(
+                        &span,
+                        source_idx,
+                        "J2K MetalDirect stacked classic sub-band",
+                    )?,
                 )?,
                 window: BandRequiredRegion::full(source_sub_band.width, source_sub_band.height),
             });
@@ -345,4 +383,12 @@ impl SubmissionContext<'_, '_, '_> {
         }
         Ok(buffer)
     }
+}
+
+/// Byte offset of a band inside a Tier-1 output that starts `base` bytes into
+/// its buffer.
+fn checked_shared_offset(base: usize, offset: usize) -> Result<usize, Error> {
+    base.checked_add(offset).ok_or_else(|| Error::MetalKernel {
+        message: "J2K MetalDirect shared classic Tier-1 band offset overflow".to_string(),
+    })
 }

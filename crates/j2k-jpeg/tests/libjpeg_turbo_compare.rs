@@ -69,7 +69,7 @@ fn turbojpeg_rgb_and_region_match_j2k_fixtures() {
         .decode_scaled_rgb(bytes, Downscale::Quarter)
         .expect("turbojpeg scaled");
     assert_eq!(turbo_scaled.len(), scaled.len());
-    assert!(!turbo_scaled.is_empty());
+    assert_ne!(turbo_scaled, [] as [u8; 0]);
 
     let roi = Rect {
         x: 4,
@@ -220,8 +220,10 @@ fn rgba420_and_non_row_aligned_restarts_match_turbo_with_padded_output() {
             .zip(reference.chunks_exact(width as usize * 3))
         {
             for (rgba, expected) in row[..width as usize * 4]
-                .chunks_exact(4)
-                .zip(rgb.chunks_exact(3))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(rgb.as_chunks::<3>().0.iter())
             {
                 assert_eq!(&rgba[..3], expected, "restart {restart_interval:?}");
                 assert_eq!(rgba[3], 255);
@@ -238,7 +240,12 @@ fn rgba420_and_non_row_aligned_restarts_match_turbo_with_padded_output() {
             .decode_request(DecodeRequest::region(PixelFormat::Rgba8, roi))
             .unwrap();
         let expected = crop_rgb(&reference, width as usize, roi);
-        for (rgba, rgb) in region.chunks_exact(4).zip(expected.chunks_exact(3)) {
+        for (rgba, rgb) in region
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<3>().0.iter())
+        {
             assert_eq!(&rgba[..3], rgb);
             assert_eq!(rgba[3], 255);
         }
@@ -309,7 +316,9 @@ fn rgb8_with_contrasting_rows_below(width: u32, height: u32, real_height: u32) -
     let mut pixels = j2k_test_support::patterned_rgb8(width, height);
     let row_len = width as usize * 3;
     for (x, pixel) in pixels[real_height as usize * row_len..]
-        .chunks_exact_mut(3)
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
         .enumerate()
     {
         let magenta_or_blue = if (x % width as usize / 3).is_multiple_of(2) {
@@ -353,7 +362,7 @@ fn assert_rgb_rows_eq(actual: &[u8], channels: usize, expected_rgb: &[u8], width
     {
         let matches = actual_row
             .chunks_exact(channels)
-            .zip(expected_row.chunks_exact(3))
+            .zip(expected_row.as_chunks::<3>().0.iter())
             .all(|(actual, expected)| &actual[..3] == expected);
         assert!(matches, "{what}: row {row} differs from libjpeg-turbo");
     }
@@ -802,7 +811,9 @@ fn extended12_decodes_match_turbo() {
                     .decode_request(DecodeRequest::full(format))
                     .expect("12-bit decode");
                 let actual = actual
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| i16::from_ne_bytes([pair[0], pair[1]]))
                     .collect::<Vec<_>>();
                 assert_eq!(actual.len(), expected.len(), "{spec:?}: size");
@@ -886,7 +897,9 @@ fn lossless_decodes_match_turbo() {
                         .decode_request(DecodeRequest::full(format))
                         .unwrap_or_else(|err| panic!("{spec:?}: 16-bit lossless decode: {err}"));
                     let actual = actual
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                         .collect::<Vec<_>>();
                     assert!(actual == expected, "{spec:?}: 16-bit lossless mismatch");

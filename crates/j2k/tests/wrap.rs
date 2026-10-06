@@ -162,7 +162,10 @@ fn wrap_classic_codestream_as_jp2_inspects_and_decodes() {
         file_metadata.color_specs.as_slice(),
         [J2kColorSpec::Enumerated { value: 17 }]
     ));
-    assert!(file_metadata.bits_per_component.is_empty());
+    assert_eq!(
+        file_metadata.bits_per_component,
+        [] as [j2k::J2kComponentInfo; 0]
+    );
     assert!(!file_metadata.has_channel_definition);
 
     let mut decoder = J2kDecoder::new(&jp2).expect("decoder");

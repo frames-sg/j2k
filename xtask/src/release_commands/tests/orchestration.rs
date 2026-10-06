@@ -51,8 +51,8 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
         .join("release-root");
     for directory in [
         release_root.join(".github/workflows"),
-        release_root.join("docs"),
         release_root.join("scripts"),
+        release_root.join("xtask"),
     ] {
         std::fs::create_dir_all(directory).expect("create hermetic release directory");
     }
@@ -61,10 +61,7 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
             ".github/workflows/publish.yml",
             include_str!("../../../../.github/workflows/publish.yml"),
         ),
-        (
-            "docs/release.md",
-            include_str!("../../../../docs/release.md"),
-        ),
+        ("xtask/RELEASING.md", include_str!("../../../RELEASING.md")),
         (
             "scripts/publish-crate.sh",
             include_str!("../../../../scripts/publish-crate.sh"),

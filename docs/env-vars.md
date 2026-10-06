@@ -194,8 +194,23 @@ Stability values:
 | `J2K_AUTO_ROUTING_CANDIDATE_SHA` | Lowercase 40-hex commit SHA recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
 | `J2K_AUTO_ROUTING_HARDWARE` | Accelerator hardware name recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
 | `J2K_AUTO_ROUTING_DRIVER` | Driver/toolchain version recorded in routing results. | None; routing runs fail when unset | Benchmark/CI |
-| `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
-| `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
+| `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA decode profile example. | 128 | Benchmark |
+| `J2K_CUDA_PROFILE_ITERATIONS` | Measured iterations after three verified warmup batches in the CUDA decode profile example. | 100 | Benchmark |
+| `J2K_CUDA_PROFILE_INPUT` | One encoded grayscale or RGB input at up to 16 bits for the CUDA decode profile example. Mutually exclusive with `J2K_CUDA_PROFILE_INPUTS`. | Generated RGB8 fixture | Benchmark |
+| `J2K_CUDA_PROFILE_INPUTS` | Encoded input files or recursively scanned directories, separated by the OS path-list separator (`:` on Unix, `;` on Windows). Inputs are sorted, deduplicated, and cycled to fill the batch; all must map to the same output pixel format, but dimensions and decomposition counts may differ. Mutually exclusive with `J2K_CUDA_PROFILE_INPUT`. | Generated RGB8 fixture | Benchmark |
+| `J2K_CUDA_PROFILE_WIDTH` | Generated profile fixture width. Ignored when an input file or corpus is supplied. | 512 | Benchmark |
+| `J2K_CUDA_PROFILE_HEIGHT` | Generated profile fixture height. Ignored when an input file or corpus is supplied. | 512 | Benchmark |
+| `J2K_CUDA_PROFILE_FORMAT` | Generated profile fixture format: `rgb8` or unsigned `gray16`. | `rgb8` | Benchmark |
+| `J2K_CUDA_PROFILE_TRANSFORM` | Generated profile fixture wavelet: `53` or `97`. | `53` | Benchmark |
+| `J2K_CUDA_PROFILE_CODING` | Generated profile fixture block coding: `ht` or `classic`. | `ht` | Benchmark |
+| `J2K_CUDA_PROFILE_DECOMPOSITION_LEVELS` | Generated profile fixture wavelet decomposition count. | 1 | Benchmark |
+| `J2K_CUDA_PROFILE_WRITE_FIXTURE` | Save the profile input for comparison with another decoder. Requires exactly one resolved input and refuses to overwrite an existing file. | Not set | Benchmark |
+| `J2K_CUDA_PROFILE_WRITE_REFERENCE` | Save tightly packed CPU reference pixels before timing. Requires exactly one resolved input and refuses to overwrite an existing file. | Not set | Benchmark |
+
+The CUDA profile example measures compressed input to completed device-resident
+surfaces. Its separate `stages` report synchronizes stage boundaries and uses a
+single payload upload; it does not measure the copy/compute overlap used by the
+normal batch path. Use the main median/p95 values for throughput comparisons.
 
 ## Xtask And Release Tooling
 
@@ -205,7 +220,7 @@ Stability values:
 | `J2K_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `J2K_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
 | `J2K_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |
-| `J2K_SEMVER_TOOLCHAIN` | Rejected by `cargo xtask semver`; Rust `1.96` is pinned in source and CI. | Must not be set | Test/CI |
+| `J2K_SEMVER_TOOLCHAIN` | Rejected by `cargo xtask semver`; Rust `1.99.0` is pinned in source and CI. | Must not be set | Test/CI |
 
 CI overrides the fuzz defaults to 512 runs / 60 seconds for pull requests and
 20,000 runs / 900 seconds for the scheduled long fuzz job.

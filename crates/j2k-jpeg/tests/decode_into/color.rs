@@ -48,7 +48,7 @@ fn decode_into_rgba8_converts_cmyk_and_ycck_with_alpha() {
         dec.decode_into(&mut buf, (w * 4) as usize, PixelFormat::Rgba8)
             .expect("CMYK/YCCK to RGBA8 decode should succeed");
 
-        for pixel in buf.chunks_exact(4) {
+        for pixel in buf.as_chunks::<4>().0 {
             assert_eq!(pixel, &[64, 64, 64, 255]);
         }
     }
@@ -717,7 +717,7 @@ fn decode_region_into_rgba8_crops_cmyk_and_ycck_with_alpha() {
 
         assert_eq!(outcome.decoded, roi);
         for row in buf.chunks_exact(stride) {
-            for pixel in row[..roi.w as usize * 4].chunks_exact(4) {
+            for pixel in row[..roi.w as usize * 4].as_chunks::<4>().0 {
                 assert_eq!(pixel, &[64, 64, 64, 255]);
             }
             assert_eq!(&row[roi.w as usize * 4..], &[0xaa; 4]);

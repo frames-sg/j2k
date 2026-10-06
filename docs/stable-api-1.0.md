@@ -1,79 +1,16 @@
 # Stable API Policy
 
-The list of public API items is generated. This page explains how it is
-generated and what each stability tier promises.
+This page explains what each stability tier of the public API promises and
+which releases broke it. The generated item list is maintained with the
+release tooling; see [`xtask/RELEASING.md`](../xtask/RELEASING.md#public-api-snapshots).
 
-## Generated snapshot
+## Breaking releases
 
-The generated files are:
-
-- `docs/stable-api-1.0.public-api.txt`
-- `docs/stable-api-1.0.implementation-public-api.txt`
-
-Check or regenerate them with:
-
-```bash
-cargo xtask stable-api
-cargo xtask stable-api --write
-```
-
-This must run on macOS with `cargo-public-api` `0.52.0`
-(`cargo install cargo-public-api --version 0.52.0 --locked`) and the
-`nightly-2026-06-28` toolchain. Both passes target `aarch64-apple-darwin`, so
-the Metal APIs are included and the output does not change with the host or
-the nightly channel.
-
-The first pass runs with `RUSTDOCFLAGS=-D warnings` and lists the normal public
-API. The second pass adds `--document-hidden-items`; the implementation file
-records only the items that the second pass adds. Rustdoc sometimes rewrites
-re-export paths when hidden modules become visible, so the implementation file
-keeps those rewritten paths too rather than dropping them. The command fails if
-the first pass is empty; an empty hidden-only list is recorded as empty.
-`#[doc(hidden)]` items are still public Rust API and are reviewed like any
-other item.
-
-Every `cargo xtask semver` run generates both passes, compares them with the
-committed files, and checks the added/removed fingerprints and the hidden-item
-count against
-`docs/release-evidence/public-api/public-api-review-0.11.3.yml`. A package with
-hidden items must give a reason for them in that file.
-
-Any removed item must be listed in the review file with its package, a summary,
-and migration instructions, and that list must match the generated diff
-exactly. Behavior changes that a signature diff cannot show are listed the same
-way, without removed items. A pre-1.0 version bump alone does not excuse an
-undocumented break.
-
-The two snapshot files are written together and rolled back together on
-failure. Generation refuses to run if compiler, rustdoc, target, wrapper,
-deployment-target, or flag environment variables are set, and both passes run
-through `rustup run` with the pinned toolchain. `cargo xtask semver` uses Rust
-`1.96` and rejects the old `J2K_SEMVER_TOOLCHAIN` override.
-
-The snapshots also cover the CLI exit codes described below. Do not copy the
-item list into this page.
-
-### Release comparisons
-
-| Release | Compared with | Report |
-| --- | --- | --- |
-| 0.8.0 | 0.7.5 | [API diff][v0.8.0-api-report]; review file lists every break |
-| 0.8.1 | 0.8.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md), [review](release-evidence/public-api/public-api-review-0.8.1.yml); additions only |
-| 0.9.0 | 0.8.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.9.0.md), [review](release-evidence/public-api/public-api-review-0.9.0.yml) |
-| 0.10.0 | 0.9.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.10.0.md), [review](release-evidence/public-api/public-api-review-0.10.0.yml) |
-| 0.11.0 | 0.10.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.0.md), [review](release-evidence/public-api/public-api-review-0.11.0.yml); removes experimental MPSGraph items |
-| 0.11.1 | 0.11.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.1.md), [review](release-evidence/public-api/public-api-review-0.11.1.yml) |
-| 0.11.2 | 0.11.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.2.md), [review](release-evidence/public-api/public-api-review-0.11.2.yml); stable changes are additions only |
-| 0.11.3 | 0.11.2 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md), [review](release-evidence/public-api/public-api-review-0.11.3.yml) |
-
-Each report also records every package's hidden-item count and fingerprint.
-The CPU, CUDA, and Metal release checks passed for each published release.
-
-[v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md
-
-### Breaking releases
-
-The currently published stable contract is the `0.11.x` line.
+The currently published stable contract is the `0.11.x` line. The `0.12.0`
+candidate changes three rustdoc-hidden CUDA engine signatures and requires
+consumers to retain pooled surfaces until their GPU work completes. See the
+[review](../xtask/release-evidence/public-api/public-api-review-0.12.0.yml)
+and [changelog](../CHANGELOG.md) for migration instructions.
 
 - `0.7.0` removed parts of the `0.6.2` API; it is not source compatible with
   `0.6.x`.
@@ -95,7 +32,7 @@ The currently published stable contract is the `0.11.x` line.
 `0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
 `v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
 exception for the crate split, which is now disabled. The current semver
-baseline is `v0.11.2`.
+baseline is `v0.11.3`.
 
 ## Stability tiers
 

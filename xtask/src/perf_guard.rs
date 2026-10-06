@@ -970,8 +970,14 @@ mod tests {
             .filter(|command| command.lane == PerfLane::Metal)
             .collect::<Vec<_>>();
 
-        assert!(!cuda.is_empty());
-        assert!(!metal.is_empty());
+        assert_ne!(
+            cuda,
+            [] as [&crate::benchmark_registry::PerformanceBenchmark; 0]
+        );
+        assert_ne!(
+            metal,
+            [] as [&crate::benchmark_registry::PerformanceBenchmark; 0]
+        );
         assert!(cuda.iter().all(|command| {
             command.env.contains(&("J2K_REQUIRE_CUDA_BENCH", "1"))
                 && !command.package.contains("metal")

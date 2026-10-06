@@ -475,5 +475,5 @@ fn gpu_batch_rejects_retained_frames_across_source_groups_before_submission() {
         JpegEncodeError::MemoryCapExceeded { requested, cap }
             if requested > cap && cap == j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
     ));
-    assert!(adapter.submissions.is_empty());
+    assert!(adapter.submissions.is_empty(), "{:?}", adapter.submissions);
 }

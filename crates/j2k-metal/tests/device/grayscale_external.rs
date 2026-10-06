@@ -37,15 +37,14 @@ fn submitted_prepared_sub8_ht_grayscale_preserves_native_samples_for_single_and_
     let mut expected_groups = Vec::new();
     let mut actual_groups = Vec::new();
 
-    for batch_len in [1_usize, 2] {
-        let inputs = encoded
+    for input_indices in [&[0_usize][..], &[0, 1][..], &[0, 0, 0][..]] {
+        let batch_len = input_indices.len();
+        let inputs = input_indices
             .iter()
-            .take(batch_len)
-            .cloned()
-            .map(EncodedImage::full)
+            .map(|&index| EncodedImage::full(encoded[index].clone()))
             .collect::<Vec<_>>();
         let expected = cpu.decode(inputs.clone()).expect("CPU Gray4 oracle");
-        assert!(expected.errors().is_empty());
+        assert_eq!(expected.errors(), []);
         assert_eq!(expected.groups().len(), 1);
         let expected_group = &expected.groups()[0];
         assert_eq!(expected_group.info().precision, 4);
@@ -55,7 +54,7 @@ fn submitted_prepared_sub8_ht_grayscale_preserves_native_samples_for_single_and_
         expected_groups.push(expected_samples.clone());
 
         let prepared = metal.prepare(inputs).expect("prepare Metal Gray4 group");
-        assert!(prepared.errors().is_empty());
+        assert_eq!(prepared.errors(), []);
         assert_eq!(prepared.groups().len(), 1);
         assert_eq!(prepared.groups()[0].info().precision, 4);
         let output_len = 16 * batch_len;
@@ -126,7 +125,7 @@ fn submitted_prepared_ht_grayscale_roi_and_reduction_match_cpu_oracle() {
         let prepared = decoder
             .prepare(vec![EncodedImage::new(encoded.clone(), request)])
             .expect("prepare Metal request");
-        assert!(prepared.errors().is_empty());
+        assert_eq!(prepared.errors(), []);
         assert_eq!(prepared.groups().len(), 1);
         let group = &prepared.groups()[0];
         let (width, height) = group.info().dimensions;
@@ -259,7 +258,7 @@ fn submitted_prepared_classic_grayscale_writes_external_group_without_staging() 
     let prepared = decoder
         .prepare(vec![EncodedImage::full(Arc::<[u8]>::from(fixture_gray8()))])
         .expect("prepare classic grayscale group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     assert_eq!(prepared.groups()[0].info().route, BatchCodecRoute::Classic);
 
     let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
@@ -324,7 +323,9 @@ fn submitted_prepared_classic_signed_gray12_preserves_native_i16_samples() {
     let bytes = unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 4, 32) }
         .expect("classic signed pixels");
     let actual = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -353,7 +354,7 @@ fn dropped_pending_metal_batch_can_be_followed_by_a_successful_decode() {
             EncodedImage::full(bytes),
         ])
         .expect("decoder reuse after pending drop");
-    assert!(result.errors().is_empty());
+    assert_eq!(result.errors(), []);
     assert!(result.group_errors().is_empty());
     assert_eq!(result.groups().len(), 1);
     assert_eq!(result.groups()[0].surfaces().len(), 2);

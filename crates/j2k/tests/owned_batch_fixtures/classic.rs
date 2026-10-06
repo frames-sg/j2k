@@ -36,7 +36,7 @@ fn classic_raw_and_jp2_regression_outputs_are_bit_exact() {
         ])
         .expect("decode classic raw/JP2 batch");
 
-    assert!(result.errors().is_empty());
+    assert_eq!(result.errors(), []);
     assert_eq!(result.groups().len(), 2);
     for (index, payload_kind) in [
         (0, CompressedPayloadKind::Jpeg2000Codestream),
@@ -59,7 +59,9 @@ fn classic_raw_and_jp2_regression_outputs_are_bit_exact() {
 
 fn u16_from_le_bytes(bytes: &[u8]) -> Vec<u16> {
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
         .collect()
 }

@@ -35,7 +35,10 @@ fn low_risk_tooling_absence_is_an_audited_residual_not_a_critical_failure() {
         .changed_functions_without_covered_body
         .push(finding.to_string());
 
-    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert_eq!(
+        coverage_violations(CoverageLane::Host, &result),
+        [] as [std::string::String; 0]
+    );
     assert_eq!(
         audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
         ZeroBodyAudit::Residual(ResidualDisposition::LowRiskTooling)

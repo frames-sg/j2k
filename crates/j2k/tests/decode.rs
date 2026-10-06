@@ -359,7 +359,7 @@ fn explicit_lenient_mode_does_not_warn_for_a_valid_stream() {
         .expect("decode");
 
     assert_eq!(out, pixels);
-    assert!(outcome.warnings.is_empty());
+    assert_eq!(outcome.warnings, [] as [j2k::J2kDecodeWarning; 0]);
 }
 
 #[test]

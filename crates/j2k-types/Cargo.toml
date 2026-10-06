@@ -3,7 +3,8 @@ name = "j2k-types"
 description = "Shared JPEG 2000 and HTJ2K codec value contracts and dispatch accounting"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Shared CUDA device code must support the compiler pinned by CUDA-Oxide.
+rust-version = "1.96"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"

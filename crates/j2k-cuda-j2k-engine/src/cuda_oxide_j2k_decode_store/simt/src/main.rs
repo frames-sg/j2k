@@ -3,6 +3,7 @@
 mod abi;
 mod color;
 mod exports;
+mod fused_idwt;
 mod layout;
 mod memory;
 mod native_color;

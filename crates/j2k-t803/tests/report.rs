@@ -278,7 +278,10 @@ fn schema_five_defaults_to_openjpeg_reference_evidence() {
         parsed.encoder.cases[0].reference_decoder,
         EncoderReferenceDecoder::OpenJpeg
     );
-    assert!(parsed.encoder.supplemental_reference_decoders.is_empty());
+    assert_eq!(
+        parsed.encoder.supplemental_reference_decoders,
+        [] as [j2k_t803::EncoderSupplementalReferenceIdentity; 0]
+    );
 }
 
 #[test]

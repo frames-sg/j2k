@@ -3,11 +3,12 @@
 //! Retained HTJ2K and classic grayscale plan construction.
 
 use super::{
-    append_classic_payload_records, append_decode_elements, bail, build_direct_grayscale_tile_plan,
-    grayscale_plan_rects, output_region_rect, payload_record_span, referenced_output_region,
-    strip_classic_payload_owners, strip_grayscale_payload_owners, tile, tile_intersects_output,
-    validate_grayscale_tile, BitReader, ClassicPayloadCollector, DecoderContext, DecodingError,
-    Header, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedTileGeometry,
+    append_classic_payload_records, append_retained_records, bail,
+    build_direct_grayscale_tile_plan, grayscale_plan_rects, output_region_rect,
+    payload_record_span, referenced_output_region, strip_classic_payload_owners, tile,
+    tile_intersects_output, validate_grayscale_tile, validate_ht_payload_records, BitReader,
+    ClassicPayloadCollector, DecodeAllocationBudget, DecoderContext, DecodingError, Header,
+    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedTileGeometry,
     J2kReferencedTilePlan, Result, ValidationError, Vec,
 };
 
@@ -24,9 +25,11 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
         let parsed_tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
         let output_region = referenced_output_region(header, ctx);
         let output_rect = output_region_rect(output_region);
+        let mut retained =
+            DecodeAllocationBudget::from_live_bytes(parsed_tiles.structural_workspace_bytes())?;
         let mut payloads = Vec::new();
         let mut tile_plans = Vec::new();
-        crate::try_reserve_decode_elements(&mut tile_plans, parsed_tiles.len())?;
+        retained.reserve_new(&mut tile_plans, parsed_tiles.len())?;
         let mut next_band_id = 0;
 
         for tile in parsed_tiles.iter() {
@@ -47,7 +50,7 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
                 payload_range_owner,
                 tile,
                 header,
-                parsed_tiles.structural_workspace_bytes(),
+                retained.live_bytes(),
                 ctx,
                 &mut next_band_id,
                 Some(output_region),
@@ -55,7 +58,7 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
                 Some(&mut tile_payloads),
                 Some(&mut classic_collector),
             )?;
-            let record_count = strip_grayscale_payload_owners(&mut geometry, &tile_payloads)?;
+            let record_count = validate_ht_payload_records(&geometry, &tile_payloads)?;
             if record_count != tile_payloads.len() {
                 bail!(DecodingError::CodeBlockDecodeFailure);
             }
@@ -63,7 +66,7 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
             if classic_job_count != tile_classic_payloads.len() {
                 bail!(DecodingError::CodeBlockDecodeFailure);
             }
-            append_decode_elements(&mut payloads, &mut tile_payloads)?;
+            append_retained_records(&mut retained, &mut payloads, &mut tile_payloads)?;
             let payload_records = payload_record_span(first_record, record_count)?;
             let (decoded_rect, destination_rect) = grayscale_plan_rects(&geometry, output_rect)?;
             tile_plans.push(J2kReferencedTilePlan::new(

@@ -101,9 +101,11 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
 
     for ((l_chunk, a_chunk), b_chunk) in l
         .container
-        .chunks_exact_mut(SIMD_WIDTH)
-        .zip(a.container.chunks_exact_mut(SIMD_WIDTH))
-        .zip(b.container.chunks_exact_mut(SIMD_WIDTH))
+        .as_chunks_mut::<SIMD_WIDTH>()
+        .0
+        .iter_mut()
+        .zip(a.container.as_chunks_mut::<SIMD_WIDTH>().0)
+        .zip(b.container.as_chunks_mut::<SIMD_WIDTH>().0)
     {
         let l_v = f32x8::from_slice(simd, l_chunk);
         let a_v = f32x8::from_slice(simd, a_chunk);
