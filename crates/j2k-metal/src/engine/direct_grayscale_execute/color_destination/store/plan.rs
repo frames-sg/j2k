@@ -55,42 +55,13 @@ pub(super) fn plan_exact_native_color_store<'a>(
             reason: "broadcast planes require the first source image",
         });
     }
-    let source_plane_bytes = plane_stride
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal stacked exact color source plane size overflow".to_string(),
-        })?;
-    let source_plane_count = if broadcast_planes { 1 } else { image_count };
-    let source_span_bytes = source_plane_count
-        .checked_mul(source_plane_bytes)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal stacked exact color source range overflow".to_string(),
-        })?;
-    let mut source_plane_offsets = [0; 4];
-    for channel in 0..channels {
-        let source_plane_index = source_plane_base_indices[channel]
-            .checked_add(source_image_index)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "J2K Metal stacked exact color source plane index overflow".to_string(),
-            })?;
-        let source_plane_offset = source_plane_index
-            .checked_mul(source_plane_bytes)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "J2K Metal stacked exact color source offset overflow".to_string(),
-            })?;
-        let source_end = source_plane_offset
-            .checked_add(source_span_bytes)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "J2K Metal stacked exact color source range overflow".to_string(),
-            })?;
-        if planes[channel].length() < source_end {
-            return Err(Error::MetalStateInvariant {
-                state: "J2K Metal stacked exact color store",
-                reason: "stacked source plane range exceeds its buffer",
-            });
-        }
-        source_plane_offsets[channel] = source_plane_offset;
-    }
+    let source_plane_offsets = checked_source_plane_offsets(
+        planes,
+        plane_stride,
+        source_plane_base_indices,
+        source_image_index,
+        if broadcast_planes { 1 } else { image_count },
+    )?;
     validate_stacked_color_destination_indices(
         plan.dimensions,
         channels,
@@ -98,23 +69,8 @@ pub(super) fn plan_exact_native_color_store<'a>(
         image_count,
         broadcast_planes,
     )?;
-    let destination_end = destination_image_index
-        .checked_add(image_count)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal exact color destination image range overflow".to_string(),
-        })?;
-    if destination_end > destination_layout.image_count() {
-        return Err(Error::MetalStateInvariant {
-            state: "J2K Metal exact color store",
-            reason: "destination image range exceeds the validated output group",
-        });
-    }
-    let destination_offset = destination_layout
-        .image_offset_bytes(destination_image_index)
-        .and_then(|offset| destination_layout.byte_offset().checked_add(offset))
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal exact color destination offset overflow".to_string(),
-        })?;
+    let destination_offset =
+        checked_destination_offset(destination_layout, destination_image_index, image_count)?;
     let params = J2kNativeColorBatchStoreParams {
         width: plan.dimensions.0,
         height: plan.dimensions.1,
@@ -160,6 +116,77 @@ pub(super) fn plan_exact_native_color_store<'a>(
         params,
         pipeline,
     })
+}
+
+/// Byte offset of each channel's first source plane, checked against the
+/// channel's buffer for `source_plane_count` consecutive planes.
+fn checked_source_plane_offsets(
+    planes: &[Buffer],
+    plane_stride: usize,
+    source_plane_base_indices: [usize; 4],
+    source_image_index: usize,
+    source_plane_count: usize,
+) -> Result<[usize; 4], Error> {
+    let source_plane_bytes = plane_stride
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal stacked exact color source plane size overflow".to_string(),
+        })?;
+    let source_span_bytes = source_plane_count
+        .checked_mul(source_plane_bytes)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal stacked exact color source range overflow".to_string(),
+        })?;
+    let mut source_plane_offsets = [0; 4];
+    for (channel, plane) in planes.iter().enumerate() {
+        let source_plane_index = source_plane_base_indices[channel]
+            .checked_add(source_image_index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked exact color source plane index overflow".to_string(),
+            })?;
+        let source_plane_offset = source_plane_index
+            .checked_mul(source_plane_bytes)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked exact color source offset overflow".to_string(),
+            })?;
+        let source_end = source_plane_offset
+            .checked_add(source_span_bytes)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked exact color source range overflow".to_string(),
+            })?;
+        if plane.length() < source_end {
+            return Err(Error::MetalStateInvariant {
+                state: "J2K Metal stacked exact color store",
+                reason: "stacked source plane range exceeds its buffer",
+            });
+        }
+        source_plane_offsets[channel] = source_plane_offset;
+    }
+    Ok(source_plane_offsets)
+}
+
+fn checked_destination_offset(
+    destination_layout: j2k_metal_support::MetalImageLayout,
+    destination_image_index: usize,
+    image_count: usize,
+) -> Result<usize, Error> {
+    let destination_end = destination_image_index
+        .checked_add(image_count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal exact color destination image range overflow".to_string(),
+        })?;
+    if destination_end > destination_layout.image_count() {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K Metal exact color store",
+            reason: "destination image range exceeds the validated output group",
+        });
+    }
+    destination_layout
+        .image_offset_bytes(destination_image_index)
+        .and_then(|offset| destination_layout.byte_offset().checked_add(offset))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal exact color destination offset overflow".to_string(),
+        })
 }
 
 fn native_color_layout(layout: BatchLayout) -> Result<u32, Error> {

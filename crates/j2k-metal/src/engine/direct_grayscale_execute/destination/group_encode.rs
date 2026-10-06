@@ -76,15 +76,11 @@ impl GrayscaleGroupEncoder<'_> {
         // caller-owned image range without repeating Tier 1 or reconstruction.
         let store_count = if broadcast { self.plans.len() } else { 1 };
         for destination_image_index in 0..store_count {
-            encode_stacked_grayscale_destination(
-                self.runtime,
-                self.compute_encoder,
+            self.encode_stacked_destination(
                 &stacked.buffer,
                 first,
-                self.fmt,
                 if broadcast { 1 } else { self.plans.len() },
                 destination_image_index,
-                self.destination,
             )?;
         }
         if broadcast {
@@ -146,100 +142,103 @@ impl GrayscaleGroupEncoder<'_> {
         }
         Ok(())
     }
-}
 
-fn encode_stacked_grayscale_destination(
-    runtime: &MetalRuntime,
-    encoder: &crate::metal_types::ComputeCommandEncoderRef,
-    plane: &crate::metal_types::Buffer,
-    plan: &PreparedDirectGrayscalePlan,
-    fmt: PixelFormat,
-    count: usize,
-    destination_image_index: usize,
-    destination: &MetalImageDestination,
-) -> Result<(), Error> {
-    let layout = destination.layout();
-    let bytes_per_sample = fmt.bytes_per_sample();
-    let tight_row_bytes = usize::try_from(plan.dimensions.0)
-        .ok()
-        .and_then(|width| width.checked_mul(bytes_per_sample))
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal stacked grayscale row size overflow".to_string(),
-        })?;
-    let tight_image_bytes = tight_row_bytes
-        .checked_mul(plan.dimensions.1 as usize)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal stacked grayscale image size overflow".to_string(),
-        })?;
-    if layout.pitch_bytes() != tight_row_bytes || layout.image_stride_bytes() != tight_image_bytes {
-        return Err(Error::capability_rejected(
-            j2k_core::CapabilityRejection::geometry_mismatch(
-                "J2K Metal stacked grayscale destination must be one dense contiguous group",
-            ),
-        ));
-    }
-    validate_stacked_grayscale_destination_indices(plan.dimensions, count)?;
-    let destination_offset = destination_image_index
-        .checked_mul(layout.image_stride_bytes())
-        .and_then(|offset| layout.byte_offset().checked_add(offset))
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal stacked grayscale destination offset overflow".to_string(),
-        })?;
-    let scale = j2k_scalar_pack_params(u32::from(plan.bit_depth));
-    let max_value = if fmt == PixelFormat::GrayI16 {
-        let signed_bits = u32::from(plan.bit_depth).clamp(1, 16);
-        f32::from(u16::try_from((1_u32 << (signed_bits - 1)) - 1).unwrap_or(u16::MAX))
-    } else {
-        scale.max_value
-    };
-    let params = J2kRepeatedGrayStoreParams {
-        input_width: plan.dimensions.0,
-        input_height: plan.dimensions.1,
-        source_x: 0,
-        source_y: 0,
-        copy_width: plan.dimensions.0,
-        copy_height: plan.dimensions.1,
-        output_width: plan.dimensions.0,
-        output_height: plan.dimensions.1,
-        output_x: 0,
-        output_y: 0,
-        addend: 0.0,
-        batch_count: u32::try_from(count).map_err(|_| Error::MetalKernel {
-            message: "J2K Metal stacked grayscale batch count exceeds u32".to_string(),
-        })?,
-        max_value,
-        u8_scale: 1.0,
-        u16_scale: scale.u16_scale,
-    };
-    let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.decode()?.store_component_repeated_gray_u8,
-        PixelFormat::Gray16 => &runtime.decode()?.store_component_repeated_gray_u16,
-        PixelFormat::GrayI16 => &runtime.decode()?.store_component_repeated_gray_i16,
-        _ => {
+    fn encode_stacked_destination(
+        &self,
+        plane: &crate::metal_types::Buffer,
+        plan: &PreparedDirectGrayscalePlan,
+        count: usize,
+        destination_image_index: usize,
+    ) -> Result<(), Error> {
+        let runtime = self.runtime;
+        let encoder = self.compute_encoder;
+        let fmt = self.fmt;
+        let destination = self.destination;
+        let layout = destination.layout();
+        let bytes_per_sample = fmt.bytes_per_sample();
+        let tight_row_bytes = usize::try_from(plan.dimensions.0)
+            .ok()
+            .and_then(|width| width.checked_mul(bytes_per_sample))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked grayscale row size overflow".to_string(),
+            })?;
+        let tight_image_bytes = tight_row_bytes
+            .checked_mul(plan.dimensions.1 as usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked grayscale image size overflow".to_string(),
+            })?;
+        if layout.pitch_bytes() != tight_row_bytes
+            || layout.image_stride_bytes() != tight_image_bytes
+        {
             return Err(Error::capability_rejected(
-                j2k_core::CapabilityRejection::unsupported_format(
-                    "J2K Metal stacked grayscale destination supports Gray8/Gray16/GrayI16",
+                j2k_core::CapabilityRejection::geometry_mismatch(
+                    "J2K Metal stacked grayscale destination must be one dense contiguous group",
                 ),
             ));
         }
-    };
-    encoder.memory_barrier_with_resources(&[plane]);
-    encoder.setComputePipelineState(pipeline);
-    encoder.set_buffer(0, Some(plane), 0);
-    // SAFETY: the checked destination owns this exact dense group range until
-    // the submitted command buffer has completed.
-    encoder.set_buffer(
-        1,
-        Some(unsafe { destination.raw_buffer() }),
-        u64::try_from(destination_offset).map_err(|_| Error::MetalKernel {
-            message: "J2K Metal stacked grayscale destination offset exceeds u64".to_string(),
-        })?,
-    );
-    encoder.set_bytes::<J2kRepeatedGrayStoreParams>(2, &params);
-    dispatch_3d_pipeline(
-        encoder,
-        pipeline,
-        (params.copy_width, params.copy_height, params.batch_count),
-    );
-    Ok(())
+        validate_stacked_grayscale_destination_indices(plan.dimensions, count)?;
+        let destination_offset = destination_image_index
+            .checked_mul(layout.image_stride_bytes())
+            .and_then(|offset| layout.byte_offset().checked_add(offset))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal stacked grayscale destination offset overflow".to_string(),
+            })?;
+        let scale = j2k_scalar_pack_params(u32::from(plan.bit_depth));
+        let max_value = if fmt == PixelFormat::GrayI16 {
+            let signed_bits = u32::from(plan.bit_depth).clamp(1, 16);
+            f32::from(u16::try_from((1_u32 << (signed_bits - 1)) - 1).unwrap_or(u16::MAX))
+        } else {
+            scale.max_value
+        };
+        let params = J2kRepeatedGrayStoreParams {
+            input_width: plan.dimensions.0,
+            input_height: plan.dimensions.1,
+            source_x: 0,
+            source_y: 0,
+            copy_width: plan.dimensions.0,
+            copy_height: plan.dimensions.1,
+            output_width: plan.dimensions.0,
+            output_height: plan.dimensions.1,
+            output_x: 0,
+            output_y: 0,
+            addend: 0.0,
+            batch_count: u32::try_from(count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal stacked grayscale batch count exceeds u32".to_string(),
+            })?,
+            max_value,
+            u8_scale: 1.0,
+            u16_scale: scale.u16_scale,
+        };
+        let pipeline = match fmt {
+            PixelFormat::Gray8 => &runtime.decode()?.store_component_repeated_gray_u8,
+            PixelFormat::Gray16 => &runtime.decode()?.store_component_repeated_gray_u16,
+            PixelFormat::GrayI16 => &runtime.decode()?.store_component_repeated_gray_i16,
+            _ => {
+                return Err(Error::capability_rejected(
+                    j2k_core::CapabilityRejection::unsupported_format(
+                        "J2K Metal stacked grayscale destination supports Gray8/Gray16/GrayI16",
+                    ),
+                ));
+            }
+        };
+        encoder.memory_barrier_with_resources(&[plane]);
+        encoder.setComputePipelineState(pipeline);
+        encoder.set_buffer(0, Some(plane), 0);
+        // SAFETY: the checked destination owns this exact dense group range until
+        // the submitted command buffer has completed.
+        encoder.set_buffer(
+            1,
+            Some(unsafe { destination.raw_buffer() }),
+            u64::try_from(destination_offset).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal stacked grayscale destination offset exceeds u64".to_string(),
+            })?,
+        );
+        encoder.set_bytes::<J2kRepeatedGrayStoreParams>(2, &params);
+        dispatch_3d_pipeline(
+            encoder,
+            pipeline,
+            (params.copy_width, params.copy_height, params.batch_count),
+        );
+        Ok(())
+    }
 }

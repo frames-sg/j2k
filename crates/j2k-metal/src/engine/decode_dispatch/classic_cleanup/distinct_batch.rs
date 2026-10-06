@@ -327,15 +327,11 @@ fn dense_lane_group_buffer(
     Ok((copied_slice_buffer(&runtime.device, &groups)?, groups.len()))
 }
 
-/// Decodes every batch in one Tier-1 dispatch. The status check attributes each
-/// job to the index of its batch.
-pub(in crate::engine) fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
-    runtime: &MetalRuntime,
-    encoder: &ComputeCommandEncoderRef,
+/// Concatenates the batches' Tier-1 inputs and returns them with the number of
+/// leading output words to zero before decoding.
+fn gather_distinct_classic_batches<'a>(
     batches: impl Iterator<Item = DistinctClassicBatch<'a>> + Clone,
-    output: &Buffer,
-    scratch_buffers: &mut Vec<DirectScratchBuffer>,
-) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+) -> Result<(DistinctClassicMetadata, usize), Error> {
     let zero_fill_word_count = batches.clone().try_fold(0usize, |word_count, batch| {
         if !batch.zero_fill && !batch.jobs.is_empty() {
             return Ok(word_count);
@@ -368,10 +364,40 @@ pub(in crate::engine) fn encode_distinct_classic_batches_to_buffer_in_encoder<'a
             "classic J2K MetalDirect distinct color submission",
         ),
     )?;
-
     for (source_index, batch) in batches.enumerate() {
         append_distinct_classic_batch(&mut metadata, source_index, batch)?;
     }
+    Ok((metadata, zero_fill_word_count))
+}
+
+/// Whether the dense plain kernel can decode `jobs` on this device.
+fn uses_dense_plain_path(
+    runtime: &MetalRuntime,
+    jobs: &[J2kClassicCleanupBatchJob],
+    segments: &[J2kClassicSegment],
+) -> Result<bool, Error> {
+    if jobs.len() < CLASSIC_PLAIN_DENSE_MIN_JOBS
+        || !classic_batch_uses_plain_fast_path(jobs, segments)
+        || !jobs
+            .iter()
+            .all(|job| classic_prepared_job_supports_runtime(job, segments))
+    {
+        return Ok(false);
+    }
+    let kernel = &runtime.decode()?.classic_cleanup_plain_dense_batched;
+    Ok(kernel.maxTotalThreadsPerThreadgroup() >= 32 && kernel.threadExecutionWidth() == 32)
+}
+
+/// Decodes every batch in one Tier-1 dispatch. The status check attributes each
+/// job to the index of its batch.
+pub(in crate::engine) fn encode_distinct_classic_batches_to_buffer_in_encoder<'a>(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    batches: impl Iterator<Item = DistinctClassicBatch<'a>> + Clone,
+    output: &Buffer,
+    scratch_buffers: &mut Vec<DirectScratchBuffer>,
+) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+    let (metadata, zero_fill_word_count) = gather_distinct_classic_batches(batches)?;
     let DistinctClassicMetadata {
         coded_data,
         mut jobs,
@@ -405,21 +431,7 @@ pub(in crate::engine) fn encode_distinct_classic_batches_to_buffer_in_encoder<'a
             .classic_cleanup_plain_batched
             .maxTotalThreadsPerThreadgroup()
             >= 32;
-    let use_dense_plain_path = jobs.len() >= CLASSIC_PLAIN_DENSE_MIN_JOBS
-        && classic_batch_uses_plain_fast_path(&jobs, &segments)
-        && jobs
-            .iter()
-            .all(|job| classic_prepared_job_supports_runtime(job, &segments))
-        && runtime
-            .decode()?
-            .classic_cleanup_plain_dense_batched
-            .maxTotalThreadsPerThreadgroup()
-            >= 32
-        && runtime
-            .decode()?
-            .classic_cleanup_plain_dense_batched
-            .threadExecutionWidth()
-            == 32;
+    let use_dense_plain_path = uses_dense_plain_path(runtime, &jobs, &segments)?;
     let lane_groups = if use_dense_plain_path {
         Some(dense_lane_group_buffer(
             runtime,

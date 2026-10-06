@@ -137,7 +137,7 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
     } else {
         checked_repeated_band_fallback_stride(entry.window.width(), entry.window.height())?
     };
-    if stride_bytes % size_of::<f32>() != 0 {
+    if !stride_bytes.is_multiple_of(size_of::<f32>()) {
         return Err(Error::MetalKernel {
             message: "J2K MetalDirect repeated band stride is not f32-aligned".to_string(),
         });
@@ -217,7 +217,7 @@ pub(super) fn lookup_mapped_repeated_direct_band_layout_entry(
         first.window.width(),
         first.window.height(),
     )?);
-    if stride_bytes % size_of::<f32>() != 0 {
+    if !stride_bytes.is_multiple_of(size_of::<f32>()) {
         return Err(Error::MetalKernel {
             message: "J2K MetalDirect mapped band stride is not f32-aligned".to_string(),
         });

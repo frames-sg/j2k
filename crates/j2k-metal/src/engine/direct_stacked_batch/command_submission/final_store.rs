@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::metal_types::prelude::*;
+use crate::metal_types::Buffer;
 
 use std::time::Instant;
 
@@ -44,9 +45,6 @@ impl SubmissionContext<'_, '_, '_> {
             self.count,
             "J2K MetalDirect stacked store",
         )?;
-        let required_bytes = u64::try_from(span.total_bytes).map_err(|_| Error::MetalKernel {
-            message: "J2K MetalDirect stacked store byte length exceeds u64".to_string(),
-        })?;
         // A complete identity store can keep the already retained coefficient
         // plane. Tile assembly, cropping, and centered rounding still use Store.
         if self.compute_encoder.is_some()
@@ -78,31 +76,7 @@ impl SubmissionContext<'_, '_, '_> {
             }
             return Ok(());
         }
-        let output = if let Some(output) = self.resources.final_plane.as_ref() {
-            if output.dimensions != dimensions || output.len != span.total_elements {
-                return Err(Error::MetalStateInvariant {
-                    state: "J2K MetalDirect stacked component tile store",
-                    reason: "later tile store changed the final component plane shape",
-                });
-            }
-            if u64::try_from(output.buffer.length()).map_or(true, |len| len < required_bytes) {
-                return Err(Error::MetalStateInvariant {
-                    state: "J2K MetalDirect stacked component tile store",
-                    reason: "retained final component plane is smaller than the validated store",
-                });
-            }
-            output.buffer.clone()
-        } else {
-            let output = take_f32_scratch_buffer(self.runtime, span.total_elements)?;
-            let buffer = output.buffer.clone();
-            self.resources.final_plane = Some(StackedFinalPlane {
-                buffer: buffer.clone(),
-                dimensions,
-                len: span.total_elements,
-            });
-            self.scratch_buffers.push(output);
-            buffer
-        };
+        let output = self.final_store_output(dimensions, span.total_elements, span.total_bytes)?;
         let encode_started = self.profile_stages.then(Instant::now);
         let params = J2kRepeatedStoreParams {
             input_width: store.input_rect.width(),
@@ -149,5 +123,42 @@ impl SubmissionContext<'_, '_, '_> {
             bands.clear();
         }
         Ok(())
+    }
+
+    /// Returns the final component plane a store writes: the one an earlier
+    /// tile store created, or a new scratch plane.
+    fn final_store_output(
+        &mut self,
+        dimensions: (u32, u32),
+        total_elements: usize,
+        total_bytes: usize,
+    ) -> Result<Buffer, Error> {
+        let required_bytes = u64::try_from(total_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K MetalDirect stacked store byte length exceeds u64".to_string(),
+        })?;
+        if let Some(output) = self.resources.final_plane.as_ref() {
+            if output.dimensions != dimensions || output.len != total_elements {
+                return Err(Error::MetalStateInvariant {
+                    state: "J2K MetalDirect stacked component tile store",
+                    reason: "later tile store changed the final component plane shape",
+                });
+            }
+            if u64::try_from(output.buffer.length()).map_or(true, |len| len < required_bytes) {
+                return Err(Error::MetalStateInvariant {
+                    state: "J2K MetalDirect stacked component tile store",
+                    reason: "retained final component plane is smaller than the validated store",
+                });
+            }
+            return Ok(output.buffer.clone());
+        }
+        let output = take_f32_scratch_buffer(self.runtime, total_elements)?;
+        let buffer = output.buffer.clone();
+        self.resources.final_plane = Some(StackedFinalPlane {
+            buffer: buffer.clone(),
+            dimensions,
+            len: total_elements,
+        });
+        self.scratch_buffers.push(output);
+        Ok(buffer)
     }
 }

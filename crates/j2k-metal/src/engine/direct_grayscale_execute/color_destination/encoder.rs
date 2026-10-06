@@ -232,6 +232,11 @@ impl ColorGroupEncoder<'_> {
         for status in &mut self.metadata.status_checks[status_start..] {
             status.remap_sources(&unique_sources)?;
         }
+        self.report_partially_repeated_dispatches(stacked_rgb);
+        Ok(())
+    }
+
+    fn report_partially_repeated_dispatches(&mut self, stacked_rgb: bool) {
         let report_component_count = if stacked_rgb {
             1
         } else {
@@ -258,7 +263,6 @@ impl ColorGroupEncoder<'_> {
             .dispatch_report
             .color_output
             .saturating_add(self.plans.len());
-        Ok(())
     }
 
     fn encode_repeated_planes(&mut self, planes: &mut Vec<Buffer>) -> Result<bool, Error> {

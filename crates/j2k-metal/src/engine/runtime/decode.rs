@@ -83,6 +83,10 @@ pub(in crate::engine) struct DecodeKernels {
 }
 
 impl DecodeKernels {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one field per compiled decode kernel; splitting the table hides no logic"
+    )]
     pub(super) fn new(device: &Device) -> Result<Self, MetalSupportError> {
         let source = super::super::shader_source::decode_shader_source();
         let loader = MetalPipelineLoader::new(device, &source)?;
