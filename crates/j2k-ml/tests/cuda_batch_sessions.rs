@@ -59,7 +59,7 @@ fn empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializi
     let output = submitted.wait().expect("finish empty shared batch");
 
     assert!(output.groups.is_empty());
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     assert_eq!(decoder.codec().session().submissions(), 0);
 }
 
@@ -118,7 +118,7 @@ fn dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable() 
     let output = decoder
         .decode(vec![EncodedImage::full(encoded)])
         .expect("reuse CUDA Burn decoder after dropped submission");
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     let [group] = output.groups.as_slice() else {
         panic!("expected one decoded CUDA Burn group")
     };
@@ -233,7 +233,7 @@ fn cuda_burn_batch_decodes_classic_roi_and_ht_groups_together() {
     assert_eq!(submitted.len(), 2);
     let output = submitted.wait().expect("finish mixed CUDA groups");
 
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     assert!(output.group_errors.is_empty());
     assert_eq!(output.groups.len(), expected.groups().len());
     for (actual, expected) in output.groups.into_iter().zip(expected.groups()) {

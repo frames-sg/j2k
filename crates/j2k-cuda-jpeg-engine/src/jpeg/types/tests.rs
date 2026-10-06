@@ -124,7 +124,7 @@ fn entropy_self_sync_returns_empty_report_for_empty_entropy_when_runtime_require
         .diagnose_jpeg_420_entropy_self_sync(&plan)
         .expect("empty diagnostic report");
     assert_eq!(report.subsequence_count(), 0);
-    assert!(report.overflows.is_empty());
+    assert_eq!(report.overflows, [] as [CudaJpegEntropyOverflowState; 0]);
 }
 
 #[cfg(all(

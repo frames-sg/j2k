@@ -54,7 +54,10 @@ fn native_ht_coverage_is_derived_only_from_observed_passing_dispatches() {
     assert_eq!(coverage.selected_bmagb_min, 8);
     assert_eq!(coverage.selected_bmagb_max, 15);
     assert_eq!(coverage.observed_bmagb, vec![8, 15]);
-    assert!(coverage.missing_axes.is_empty());
+    assert_eq!(
+        coverage.missing_axes,
+        [] as [crate::report::part15::NativeHtCoverageAxis; 0]
+    );
     assert_eq!(coverage.status, ReportStatus::Pass);
     assert_eq!(
         coverage

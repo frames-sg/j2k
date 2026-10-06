@@ -44,8 +44,8 @@ fn persistent_cpu_burn_decoder_reuses_prepared_integer_batch() {
         .decode_prepared(&prepared)
         .expect("second prepared Burn decode");
 
-    assert!(first.errors.is_empty());
-    assert!(second.errors.is_empty());
+    assert_eq!(first.errors, [] as [j2k::IndexedBatchError; 0]);
+    assert_eq!(second.errors, [] as [j2k::IndexedBatchError; 0]);
     assert!(first.group_errors.is_empty());
     assert!(second.group_errors.is_empty());
     assert_eq!(first.groups.len(), 1);
@@ -89,8 +89,8 @@ fn cpu_burn_decoder_accepts_caller_supplied_prepared_images() {
         .decode_prepared_images(vec![image.clone(), image])
         .expect("regroup and decode prepared Burn inputs");
 
-    assert!(first.errors.is_empty());
-    assert!(second.errors.is_empty());
+    assert_eq!(first.errors, [] as [j2k::IndexedBatchError; 0]);
+    assert_eq!(second.errors, [] as [j2k::IndexedBatchError; 0]);
     assert_eq!(first.groups[0].source_indices, [0, 1]);
     assert_eq!(second.groups[0].source_indices, [0, 1]);
     let BurnBatchTensor::U8(first_tensor) = first.groups.into_iter().next().unwrap().tensor else {
@@ -132,7 +132,7 @@ fn signed_i16_codec_group_stays_i16_in_burn() {
         .decode(vec![EncodedImage::full(Arc::<[u8]>::from(encoded))])
         .expect("decode signed Burn batch");
 
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     let BurnBatchTensor::I16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
         panic!("expected I16 Burn tensor group")
     };
@@ -159,7 +159,7 @@ fn independent_openhtj2k_cleanup_and_refinement_samples_are_exact() {
         let output = decoder
             .decode(vec![EncodedImage::full(Arc::<[u8]>::from(encoded))])
             .expect("decode independent OpenHTJ2K fixture");
-        assert!(output.errors.is_empty());
+        assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
         let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
             panic!("expected U8 OpenHTJ2K tensor")
         };

@@ -52,14 +52,12 @@ pub fn infer_corpus_category(path: &Path) -> &'static str {
 
 pub fn env_truthy(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
 pub fn env_falsey(name: &str) -> bool {
     std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .is_ok_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
 pub fn combined_batch_sizes(case_batch_sizes: &[usize], mixed_batch_sizes: &[usize]) -> Vec<usize> {

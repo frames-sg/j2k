@@ -336,7 +336,9 @@ fn linearized_53_into(samples: &[f64], output: &mut Dwt53OneDimensional) {
     for odd_idx in (1..samples.len()).step_by(2) {
         let left = samples[odd_idx - 1];
         let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
-        output.high.push(samples[odd_idx] - ((left + right) * 0.5));
+        output
+            .high
+            .push(samples[odd_idx] - f64::midpoint(left, right));
     }
 
     output.low.clear();

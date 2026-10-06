@@ -280,7 +280,7 @@ fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53Row<f64> {
     for odd_idx in (1..samples.len()).step_by(2) {
         let left = samples[odd_idx - 1];
         let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
-        high.push(samples[odd_idx] - ((left + right) * 0.5));
+        high.push(samples[odd_idx] - f64::midpoint(left, right));
     }
 
     let mut low = Vec::with_capacity(low_len(samples.len()));

@@ -54,7 +54,7 @@ fn recursive_external_discovery_accepts_jhc_and_empty_dirs() {
 
     let mut empty_paths = Vec::new();
     collect_j2k_paths(&empty, &mut empty_paths).expect("collect empty dir");
-    assert!(empty_paths.is_empty());
+    assert_eq!(empty_paths, [] as [std::path::PathBuf; 0]);
 
     let mut paths = Vec::new();
     collect_j2k_paths(&root, &mut paths).expect("collect recursive paths");

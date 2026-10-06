@@ -246,7 +246,7 @@ fn completed_rgb8_batch_becomes_mpsgraph_tensor_without_host_pixels() {
         ])
         .expect("direct MPSGraph decode");
 
-    assert!(output.errors().is_empty());
+    assert_eq!(output.errors(), []);
     assert!(output.group_errors().is_empty());
     assert_eq!(output.groups().len(), 1);
     let group = &output.groups()[0];
@@ -455,7 +455,7 @@ fn identity_graph_is_exact_for_every_native_color_dtype_and_layout() {
                 let inputs = vec![EncodedImage::full(encoded.clone())];
                 let mut cpu = CpuBatchDecoder::new(options);
                 let expected = cpu.decode(inputs.clone()).expect("CPU native oracle");
-                assert!(expected.errors().is_empty());
+                assert_eq!(expected.errors(), []);
                 let expected = cpu_sample_bytes(expected.groups()[0].samples());
                 let mut decoder = MpsGraphBatchDecoder::system_default(options)
                     .expect("MPSGraph native matrix decoder");
@@ -497,7 +497,7 @@ fn completed_pipelined_and_nonblocking_paths_are_equivalent() {
 
     let completed = decoder.decode(inputs).expect("completed decode");
     let (mut completed_groups, errors, group_errors) = completed.into_parts();
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [j2k::IndexedBatchError; 0]);
     assert!(group_errors.is_empty());
     assert_eq!(completed_groups.len(), 1);
     let completed = program
@@ -559,7 +559,7 @@ fn caller_built_f32_graph_matches_cpu_for_every_submission_path() {
         .decode_prepared(&prepared)
         .expect("completed resident decode");
     let (mut completed_groups, errors, group_errors) = completed.into_parts();
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [j2k::IndexedBatchError; 0]);
     assert!(group_errors.is_empty());
     assert_eq!(completed_groups.len(), 1);
     let completed = program

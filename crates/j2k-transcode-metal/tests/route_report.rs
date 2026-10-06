@@ -58,7 +58,7 @@ fn cpu_transcode_route_reports_explicit_cpu_request() {
     )
     .expect("CPU-routed transcode succeeds");
 
-    assert!(!routed.encoded.codestream.is_empty());
+    assert_ne!(routed.encoded.codestream, [] as [u8; 0]);
     assert_eq!(routed.route.request, BackendRequest::Cpu);
     assert_eq!(routed.route.selected_transform_backend, BackendKind::Cpu);
     assert_eq!(routed.route.output_backend, BackendKind::Cpu);

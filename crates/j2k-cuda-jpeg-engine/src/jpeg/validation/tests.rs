@@ -136,7 +136,7 @@ fn safe_jpeg_apis_reject_foreign_buffers_and_keep_empty_batch_noop() {
     let empty = engine
         .encode_jpeg_baseline_entropy_batch(&encode_batch_job(&foreign_buffer, Vec::new()))
         .expect("an empty JPEG encode batch remains a no-op");
-    assert!(empty.is_empty());
+    assert_eq!(empty, [] as [Vec<u8>; 0]);
 }
 
 #[test]

@@ -105,7 +105,7 @@ fn compare_color_case(
                 let mut gray = Vec::new();
                 gray.try_reserve_exact(reference.len() / 3)
                     .map_err(|_| "cannot allocate Annex G grayscale reference".to_string())?;
-                for pixel in reference.chunks_exact(3) {
+                for pixel in reference.as_chunks::<3>().0 {
                     if pixel[0] != pixel[1] || pixel[0] != pixel[2] {
                         return Err(
                             "grayscale TIFF reference contains non-neutral pixels".to_string()

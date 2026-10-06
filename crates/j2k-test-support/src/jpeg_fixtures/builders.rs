@@ -2865,7 +2865,7 @@ fn pack_entropy_bits(mut bits: Vec<bool>) -> Vec<u8> {
         bits.push(true);
     }
     let mut out = Vec::new();
-    for chunk in bits.chunks_exact(8) {
+    for chunk in bits.as_chunks::<8>().0 {
         let mut byte = 0u8;
         for &bit in chunk {
             byte = (byte << 1) | u8::from(bit);

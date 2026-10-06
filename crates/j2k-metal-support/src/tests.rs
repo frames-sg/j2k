@@ -367,5 +367,5 @@ fn zero_length_readback_does_not_require_cpu_visible_contents() {
     let buffer = checked_private_buffer(&device, 4).expect("bounded private buffer");
     // SAFETY: A zero-element request performs no memory access.
     let values = unsafe { checked_buffer_read_vec::<u32>(&buffer, 4, 0) }.expect("empty readback");
-    assert!(values.is_empty());
+    assert_eq!(values, [] as [u32; 0]);
 }

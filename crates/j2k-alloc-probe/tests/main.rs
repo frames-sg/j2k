@@ -283,7 +283,7 @@ fn warmed_ht_encode_workspace_avoids_fixed_reservoir_allocations() {
         j2k_native::encode_ht_code_block_scalar_with_passes(&coefficients, 64, 64, 9, 1)
     });
 
-    assert!(!encoded.data.is_empty());
+    assert_ne!(encoded.data, [] as [u8; 0]);
     assert!(
         reused.allocation_calls() + 3 <= fresh.allocation_calls(),
         "the reusable workspace must remove the MEL, VLC, and magnitude/sign reservoir allocations: reused={reused:?}, fresh={fresh:?}"
@@ -356,7 +356,7 @@ fn precomputed_encode_obeys_ledger_and_allocator_budgets() {
         || encode_precomputed_at_cap(pool, &image, &options, exact_cap),
     )
     .expect("exact ledger cap must encode");
-    assert!(!encoded.is_empty());
+    assert_ne!(encoded, [] as [u8; 0]);
 
     let error = encode_precomputed_at_cap(pool, &image, &options, exact_cap - 1)
         .expect_err("one byte below the exact ledger cap must fail");

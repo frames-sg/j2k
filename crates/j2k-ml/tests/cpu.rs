@@ -36,7 +36,7 @@ fn raw_j2k_jp2_raw_htj2k_and_jph_stay_exact_u8_batches() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let output = decoder.decode(inputs).expect("decode wrapper matrix");
 
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     assert_eq!(
         output.groups.len(),
         4,
@@ -71,7 +71,7 @@ fn classic_and_ht_wrappers_preserve_u16_values_and_dtype() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let output = decoder.decode(inputs).expect("decode U16 wrapper matrix");
 
-    assert!(output.errors.is_empty());
+    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
     for group in output.groups {
         let BurnBatchTensor::U16(tensor) = group.tensor else {
             panic!("expected U16 group")
@@ -186,7 +186,7 @@ fn empty_batch_is_a_success_and_corrupt_inputs_are_indexed() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let empty = decoder.decode(Vec::new()).expect("empty batch");
     assert!(empty.groups.is_empty());
-    assert!(empty.errors.is_empty());
+    assert_eq!(empty.errors, [] as [j2k::IndexedBatchError; 0]);
 
     let valid = Arc::<[u8]>::from(classic_j2k_gray8_fixture(2, 2));
     let output = decoder

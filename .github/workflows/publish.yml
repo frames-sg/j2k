@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: "1.96"
+          toolchain: "1.99.0"
       - name: Enforce dry-run-only manual publishing
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: test "${DRY_RUN_ONLY}" = "true"
@@ -93,7 +93,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: nightly-2026-06-28
+          toolchain: nightly-2026-08-13
       - name: Revalidate canonical release checkout after environment approval
         run: scripts/publish-crate.sh --preflight-all
       - name: Publish the remaining checksum-matched manifest prefix

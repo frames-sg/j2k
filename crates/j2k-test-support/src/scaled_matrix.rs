@@ -82,7 +82,9 @@ impl ScaledMatrixCase {
     pub fn reference_u16(&self, denominator: u32) -> Vec<u16> {
         assert!(self.precision > 8, "{} is an 8-bit case", self.name);
         self.reference(denominator)
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect()
     }
