@@ -77,7 +77,7 @@ fn htj2k_encode_compact_jobs_accept_empty_batches() {
     let (compact_jobs, compact_len) =
         assert_compact_jobs_match_for_single_and_multi_input(&[], &[]).expect("empty compact plan");
 
-    assert!(compact_jobs.is_empty());
+    assert_eq!(compact_jobs, [] as [super::CudaHtj2kEncodeCompactJob; 0]);
     assert_eq!(compact_len, 0);
 }
 

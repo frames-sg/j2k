@@ -58,6 +58,7 @@ impl_gpu_abi! {
         irreversible_midpoint: u32,
         dequantization_step: f32,
         roi_shift: u32,
+        status_index: u64,
     },
     CudaClassicKernelSegment {
         data_offset: u32,
@@ -70,9 +71,9 @@ impl_gpu_abi! {
         mq_qe: [u32; 47],
         mq_transitions: [u32; 47],
         sign_contexts: [u16; 256],
-        zero_contexts_ll_lh: [u8; 256],
-        zero_contexts_hl: [u8; 256],
-        zero_contexts_hh: [u8; 256],
+        zero_contexts_ll_lh: [u8; 512],
+        zero_contexts_hl: [u8; 512],
+        zero_contexts_hh: [u8; 512],
     },
     CudaClassicStatus {
         code: u32,
@@ -104,19 +105,20 @@ mod tests {
 
     #[test]
     fn classic_cuda_abi_sizes_and_offsets_match_the_device_contract() {
-        assert_eq!(size_of::<CudaClassicKernelJob>(), 80);
+        assert_eq!(size_of::<CudaClassicKernelJob>(), 88);
         assert_eq!(offset_of!(CudaClassicKernelJob, dequantization_step), 72);
         assert_eq!(offset_of!(CudaClassicKernelJob, roi_shift), 76);
+        assert_eq!(offset_of!(CudaClassicKernelJob, status_index), 80);
         assert_eq!(size_of::<CudaClassicKernelSegment>(), 20);
-        assert_eq!(size_of::<CudaClassicKernelTables>(), 1_656);
+        assert_eq!(size_of::<CudaClassicKernelTables>(), 2_424);
         assert_eq!(offset_of!(CudaClassicKernelTables, mq_transitions), 188);
         assert_eq!(offset_of!(CudaClassicKernelTables, sign_contexts), 376);
         assert_eq!(
             offset_of!(CudaClassicKernelTables, zero_contexts_ll_lh),
             888
         );
-        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hl), 1_144);
-        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hh), 1_400);
+        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hl), 1_400);
+        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hh), 1_912);
         assert_eq!(size_of::<CudaClassicStatus>(), 16);
     }
 }

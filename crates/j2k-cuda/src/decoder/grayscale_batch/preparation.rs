@@ -4,17 +4,22 @@
 
 use super::{
     build_cuda_classic_grayscale_plans_from_referenced_with_profile,
-    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile,
-    build_cuda_htj2k_grayscale_plan_from_bytes_with_profile,
-    build_cuda_htj2k_grayscale_plans_from_referenced_with_profile, CudaHtj2kDecodePlan,
+    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap,
+    build_cuda_htj2k_grayscale_plans_from_referenced_with_profile, profile, CudaHtj2kDecodePlan,
     CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan, Error, HostPhaseBudget,
     NativeDecoderContext, PixelFormat,
+};
+use crate::decoder::decode_profile::share_plan_wall_time;
+use crate::decoder::plan::{
+    next_payload_base, plan_in_waves, referenced_classic_payload_bytes, referenced_ht_payload_bytes,
 };
 
 pub(super) struct PreparedGrayscaleBatch {
     pub(super) plans: Vec<CudaHtj2kDecodePlan>,
     pub(super) reports: Vec<CudaHtj2kProfileReport>,
-    pub(super) shared_payload: Vec<u8>,
+    /// Per-input payloads, uploaded back to back in this order. Plan block
+    /// offsets already address that combined layout.
+    pub(super) payload_parts: Vec<Vec<u8>>,
     pub(super) output_indices: Vec<usize>,
     pub(super) output_dimensions: Vec<(u32, u32)>,
     pub(super) source_indices: Vec<usize>,
@@ -44,134 +49,184 @@ impl<'a> GrayscaleBatchInput<'a> {
     }
 }
 
+/// One input's tile plans, with block offsets relative to its own payload.
+struct BuiltGrayscaleInput {
+    plans: Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>,
+    payload: Vec<u8>,
+}
+
+impl BuiltGrayscaleInput {
+    fn account_host_owners(&self, budget: &mut HostPhaseBudget) -> Result<(), Error> {
+        budget.account_vec(&self.payload)?;
+        for (plan, _) in &self.plans {
+            plan.account_host_owners(budget)?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn prepare_grayscale_batch(
     inputs: &[GrayscaleBatchInput<'_>],
     fmt: PixelFormat,
     settings: DecodeSettings,
 ) -> Result<PreparedGrayscaleBatch, Error> {
-    let mut initial_budget = HostPhaseBudget::new("j2k CUDA grayscale batch plan owners");
+    prepare_grayscale_batch_with_cap(
+        inputs,
+        fmt,
+        settings,
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    )
+}
+
+pub(super) fn prepare_grayscale_batch_with_cap<'a>(
+    inputs: &[GrayscaleBatchInput<'a>],
+    fmt: PixelFormat,
+    settings: DecodeSettings,
+    host_cap: usize,
+) -> Result<PreparedGrayscaleBatch, Error> {
+    const PLAN_OWNERS: &str = "j2k CUDA grayscale batch plan owners";
+    let mut initial_budget = HostPhaseBudget::with_cap(PLAN_OWNERS, host_cap);
+    let plan_started = profile::profile_now(true);
+    let plan_capacity = inputs.iter().try_fold(0usize, |total, input| {
+        let additional = input
+            .referenced_plan
+            .map_or_else(
+                || input.referenced_classic_plan.map(|plan| plan.tiles().len()),
+                |plan| Some(plan.tiles().len()),
+            )
+            .unwrap_or(1);
+        total
+            .checked_add(additional)
+            .ok_or(Error::capability_rejected(
+                j2k_core::CapabilityRejection::resource_limit(
+                    "prepared CUDA grayscale tile count overflows",
+                ),
+            ))
+    })?;
     let mut prepared = PreparedGrayscaleBatch {
-        plans: initial_budget.try_vec_with_capacity(inputs.len())?,
-        reports: initial_budget.try_vec_with_capacity(inputs.len())?,
-        shared_payload: Vec::new(),
-        output_indices: initial_budget.try_vec_with_capacity(inputs.len())?,
+        plans: initial_budget.try_vec_with_capacity(plan_capacity)?,
+        reports: initial_budget.try_vec_with_capacity(plan_capacity)?,
+        payload_parts: initial_budget.try_vec_with_capacity(inputs.len())?,
+        output_indices: initial_budget.try_vec_with_capacity(plan_capacity)?,
         output_dimensions: initial_budget.try_vec_with_capacity(inputs.len())?,
-        source_indices: initial_budget.try_vec_with_capacity(inputs.len())?,
+        source_indices: initial_budget.try_vec_with_capacity(plan_capacity)?,
     };
-    let mut native_context = NativeDecoderContext::default();
-
-    for (output_index, input) in inputs.iter().enumerate() {
-        let (input_plans, payload_is_shared) = prepare_grayscale_input(
-            input,
-            fmt,
-            settings,
-            &mut native_context,
-            &mut initial_budget,
-            &mut prepared,
-        )?;
-        append_grayscale_input(
-            &mut prepared,
-            output_index,
-            input,
-            input_plans,
-            payload_is_shared,
-        )?;
-    }
-
+    let mut payload_base = 0_u64;
+    plan_in_waves(
+        inputs,
+        host_cap,
+        &mut initial_budget,
+        |input: &GrayscaleBatchInput<'a>, context: &mut NativeDecoderContext<'a>, worker_cap| {
+            build_grayscale_input_with_cap(input, fmt, settings, context, worker_cap)
+        },
+        |budget, input_index, built| {
+            built.account_host_owners(budget)?;
+            append_grayscale_input(
+                &mut prepared,
+                input_index,
+                &inputs[input_index],
+                built,
+                &mut payload_base,
+            )
+        },
+    )?;
+    let plan_wall_us = profile::elapsed_us(plan_started);
+    share_plan_wall_time(&mut prepared.reports, plan_wall_us, |report| report);
     Ok(prepared)
 }
 
-fn prepare_grayscale_input<'a>(
+fn build_grayscale_input_with_cap<'a>(
     input: &GrayscaleBatchInput<'a>,
     fmt: PixelFormat,
     settings: DecodeSettings,
     native_context: &mut NativeDecoderContext<'a>,
-    initial_budget: &mut HostPhaseBudget,
-    prepared: &mut PreparedGrayscaleBatch,
-) -> Result<(Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>, bool), Error> {
-    match (input.referenced_plan, input.referenced_classic_plan) {
+    host_cap: usize,
+) -> Result<BuiltGrayscaleInput, Error> {
+    let mut payload: Vec<u8>;
+    // The phase cap covers adapter-owned planning temporaries and returned
+    // CUDA plans. Encoded bytes and prepared native plans are borrowed from
+    // the caller and remain outside this operation's ownership budget.
+    let mut host_budget =
+        HostPhaseBudget::with_cap("j2k CUDA bounded grayscale input planning", host_cap);
+    let plans = match (input.referenced_plan, input.referenced_classic_plan) {
         (Some(referenced), None) => {
+            payload = host_budget
+                .try_vec_with_capacity(referenced_ht_payload_bytes(referenced.payloads())?)?;
             let device_plan = input.device_plan.ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(
                     "prepared CUDA HTJ2K plan is missing normalized output geometry",
                 ),
             ))?;
-            let mut budget = grayscale_owner_budget(
-                &prepared.plans,
-                &prepared.reports,
-                &prepared.shared_payload,
-                None,
-                "j2k CUDA referenced grayscale batch plan owners",
-            )?;
             build_cuda_htj2k_grayscale_plans_from_referenced_with_profile(
                 input.bytes,
                 referenced,
                 fmt,
                 device_plan,
-                &mut prepared.shared_payload,
-                &mut budget,
-            )
-            .map(|plans| (plans, true))
+                &mut payload,
+                &mut host_budget,
+            )?
         }
         (None, Some(referenced)) => {
+            payload = host_budget
+                .try_vec_with_capacity(referenced_classic_payload_bytes(referenced.tiles())?)?;
             let device_plan = input.device_plan.ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(
                     "prepared CUDA classic plan is missing normalized output geometry",
                 ),
             ))?;
-            let mut budget = grayscale_owner_budget(
-                &prepared.plans,
-                &prepared.reports,
-                &prepared.shared_payload,
-                None,
-                "j2k CUDA referenced classic grayscale batch plan owners",
-            )?;
             build_cuda_classic_grayscale_plans_from_referenced_with_profile(
                 input.bytes,
                 referenced,
                 fmt,
                 device_plan,
-                &mut prepared.shared_payload,
-                &mut budget,
-            )
-            .map(|plans| (plans, true))
+                &mut payload,
+                &mut host_budget,
+            )?
         }
         (None, None) => {
-            let (plan, report) = match input.device_plan {
-                Some(device_plan) => {
-                    build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile(
-                        input.bytes,
-                        fmt,
-                        Some(device_plan),
-                        settings,
-                        native_context,
-                    )?
-                }
-                None => build_cuda_htj2k_grayscale_plan_from_bytes_with_profile(
+            let plan_settings = if input.device_plan.is_some() {
+                settings
+            } else {
+                DecodeSettings::default()
+            };
+            let (mut plan, report) =
+                build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap(
                     input.bytes,
                     fmt,
+                    input.device_plan,
+                    plan_settings,
                     native_context,
-                )?,
-            };
-            let mut plans = initial_budget.try_vec_with_capacity(1)?;
+                    host_cap,
+                )?;
+            payload = plan.take_payload();
+            host_budget.account_vec(&payload)?;
+            plan.account_host_owners(&mut host_budget)?;
+            let mut plans = host_budget.try_vec_with_capacity(1)?;
             plans.push((plan, report));
-            Ok((plans, false))
+            plans
         }
-        (Some(_), Some(_)) => Err(Error::capability_rejected(
-            j2k_core::CapabilityRejection::contract_violation(
-                "prepared CUDA grayscale input contains conflicting codec plans",
-            ),
-        )),
-    }
+        (Some(_), Some(_)) => {
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::contract_violation(
+                    "prepared CUDA grayscale input contains conflicting codec plans",
+                ),
+            ))
+        }
+    };
+    Ok(BuiltGrayscaleInput { plans, payload })
 }
 
 fn append_grayscale_input(
     prepared: &mut PreparedGrayscaleBatch,
     output_index: usize,
     input: &GrayscaleBatchInput<'_>,
-    mut input_plans: Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>,
-    payload_is_shared: bool,
+    built: BuiltGrayscaleInput,
+    payload_base: &mut u64,
 ) -> Result<(), Error> {
+    let BuiltGrayscaleInput {
+        plans: mut input_plans,
+        payload,
+    } = built;
     let Some(first) = input_plans.first() else {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::missing_prepared_plan(
@@ -182,39 +237,18 @@ fn append_grayscale_input(
     let dimensions = input
         .device_plan
         .map_or(first.0.dimensions(), DeviceDecodePlan::output_dims);
-    if !payload_is_shared {
-        for (plan, _) in &mut input_plans {
-            let mut budget = grayscale_owner_budget(
-                &prepared.plans,
-                &prepared.reports,
-                &prepared.shared_payload,
-                Some(plan),
-                "j2k CUDA grayscale batch plan owners",
-            )?;
-            plan.append_payload_to_shared_with_budget(&mut prepared.shared_payload, &mut budget)?;
-        }
+    for (plan, _) in &mut input_plans {
+        plan.rebase_payload_offsets(*payload_base)?;
     }
+    *payload_base = next_payload_base(*payload_base, payload.len())?;
 
-    let mut budget = grayscale_owner_budget(
-        &prepared.plans,
-        &prepared.reports,
-        &prepared.shared_payload,
-        None,
-        "j2k CUDA grayscale tile owner append",
-    )?;
-    budget.account_vec(&prepared.output_indices)?;
-    budget.account_vec(&prepared.output_dimensions)?;
-    budget.account_vec(&prepared.source_indices)?;
-    budget.try_vec_reserve(&mut prepared.plans, input_plans.len())?;
-    budget.try_vec_reserve(&mut prepared.reports, input_plans.len())?;
-    budget.try_vec_reserve(&mut prepared.output_indices, input_plans.len())?;
-    budget.try_vec_reserve(&mut prepared.source_indices, input_plans.len())?;
     for (plan, report) in input_plans {
         prepared.plans.push(plan);
         prepared.reports.push(report);
         prepared.output_indices.push(output_index);
         prepared.source_indices.push(input.source_index);
     }
+    prepared.payload_parts.push(payload);
     prepared.output_dimensions.push(dimensions);
     Ok(())
 }
@@ -222,18 +256,17 @@ fn append_grayscale_input(
 pub(super) fn grayscale_owner_budget(
     plans: &Vec<CudaHtj2kDecodePlan>,
     reports: &Vec<CudaHtj2kProfileReport>,
-    payload: &Vec<u8>,
-    pending: Option<&CudaHtj2kDecodePlan>,
+    payload_parts: &Vec<Vec<u8>>,
     what: &'static str,
 ) -> Result<HostPhaseBudget, Error> {
     let mut budget = HostPhaseBudget::new(what);
     budget.account_vec(plans)?;
     budget.account_vec(reports)?;
-    budget.account_vec(payload)?;
-    for plan in plans {
-        plan.account_host_owners(&mut budget)?;
+    budget.account_vec(payload_parts)?;
+    for part in payload_parts {
+        budget.account_vec(part)?;
     }
-    if let Some(plan) = pending {
+    for plan in plans {
         plan.account_host_owners(&mut budget)?;
     }
     Ok(budget)

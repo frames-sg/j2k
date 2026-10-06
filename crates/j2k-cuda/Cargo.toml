@@ -23,6 +23,7 @@ default = []
 cuda-runtime = [
     "dep:j2k-cuda-j2k-engine",
     "dep:j2k-cuda-runtime",
+    "dep:rayon",
     "j2k-cuda-runtime/cuda-oxide-copy-u8",
     "j2k-cuda-j2k-engine/cuda-oxide-j2k-encode",
     "j2k-cuda-j2k-engine/cuda-oxide-j2k-decode-store",
@@ -41,6 +42,7 @@ j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.11.3", optional
 j2k = { path = "../j2k", version = "=0.11.3" }
 j2k-native = { path = "../j2k-native", version = "=0.11.3" }
 j2k-profile = { path = "../j2k-profile", version = "=0.11.3" }
+rayon = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

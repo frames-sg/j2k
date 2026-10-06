@@ -319,7 +319,8 @@ fn safe_store_apis_reject_foreign_context_buffers_and_keep_empty_batches_valid()
     let empty_contiguous_batch = crate::J2kCudaEngine::new(&context)
         .j2k_store_rgb8_mct_batch_contiguous_device(&[])
         .expect("empty contiguous store batch");
-    assert!(empty_contiguous_batch.ranges().is_empty());
+    let ranges = empty_contiguous_batch.ranges();
+    assert!(ranges.is_empty(), "{ranges:?}");
     assert_eq!(empty_contiguous_batch.output().byte_len(), 0);
     assert_eq!(empty_contiguous_batch.execution().kernel_dispatches(), 0);
 }

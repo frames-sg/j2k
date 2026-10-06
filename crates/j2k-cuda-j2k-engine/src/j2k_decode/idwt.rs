@@ -168,15 +168,10 @@ impl crate::J2kCudaEngine<'_> {
         let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&kernel_jobs))?;
         queued_resources.push(jobs_buffer);
         let jobs_device = pooled_device_buffer(&queued_resources[0])?;
-        let max_width = plan.max_width;
-        let max_height = plan.max_height;
-        let kernel_mode = plan.kernel_mode;
         let pool_reuse_guard = pool.defer_reuse()?;
         let launch_result = self.launch_j2k_idwt_batch_mode_ptr(
-            kernel_mode,
+            plan,
             jobs_device.device_ptr(),
-            max_width as usize,
-            max_height as usize,
             kernel_jobs.len(),
             false,
         );
@@ -209,14 +204,9 @@ impl crate::J2kCudaEngine<'_> {
         self.prepare_operation()?;
         let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&kernel_jobs))?;
         let jobs_device = pooled_device_buffer(&jobs_buffer)?;
-        let max_width = plan.max_width;
-        let max_height = plan.max_height;
-        let kernel_mode = plan.kernel_mode;
         let kernel_dispatches = self.launch_j2k_idwt_batch_mode_ptr(
-            kernel_mode,
+            plan,
             jobs_device.device_ptr(),
-            max_width as usize,
-            max_height as usize,
             kernel_jobs.len(),
             true,
         )?;

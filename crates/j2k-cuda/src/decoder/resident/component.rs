@@ -137,8 +137,12 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
             )),
         )?;
         let allocate_start = profile::profile_now(collect_stage_timings);
-        let output = engine
-            .allocate_htj2k_codeblock_coefficients_with_pool(&jobs, output_words, pool)
+        let (output, needs_zero_fill) = engine
+            .allocate_htj2k_codeblock_coefficients_deferred_clear_with_pool(
+                &jobs,
+                output_words,
+                pool,
+            )
             .map_err(cuda_error)?;
         let allocate_wall_us = profile::elapsed_us(allocate_start);
         timings.h2d = timings.h2d.saturating_add(allocate_wall_us);
@@ -148,13 +152,12 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
             band_id: subband.band_id,
             buffer,
         });
-        if !jobs.is_empty() {
-            pending_dequant_bands.push(CudaPendingDequantBand {
-                band_index,
-                jobs,
-                output_words,
-            });
-        }
+        pending_dequant_bands.push(CudaPendingDequantBand {
+            band_index,
+            jobs,
+            output_words,
+            needs_zero_fill,
+        });
     }
 
     let classic_allocate_us = append_classic_subbands(

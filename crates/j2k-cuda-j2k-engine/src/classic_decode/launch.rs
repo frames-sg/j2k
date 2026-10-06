@@ -118,8 +118,9 @@ impl J2kCudaEngine<'_> {
         }
         let spec = classic_kernel_spec()?;
         let payload = resources.payload_buffer()?;
-        let jobs = pool.upload_pinned(classic_jobs_as_bytes(&prepared.jobs))?;
-        let segments = pool.upload_pinned(classic_segments_as_bytes(&prepared.segments))?;
+        let jobs = pool.upload_pinned_parts_enqueue(&[classic_jobs_as_bytes(&prepared.jobs)])?;
+        let segments =
+            pool.upload_pinned_parts_enqueue(&[classic_segments_as_bytes(&prepared.segments)])?;
         let scratch = pool.take(checked_bytes::<u32>(prepared.scratch_words)?)?;
         let statuses = pool.take(checked_bytes::<CudaClassicStatus>(prepared.jobs.len())?)?;
         let mut queued_resources = host_budget.try_vec_with_capacity(4)?;
@@ -198,11 +199,13 @@ impl J2kCudaEngine<'_> {
         let spec = classic_kernel_spec()?;
         let payload = resources.payload_buffer()?;
         let job_upload_start = collect_stage_timings.then(Instant::now);
-        let jobs = pool.upload_pinned(classic_jobs_as_bytes(&prepared.jobs))?;
-        let segments = pool.upload_pinned(classic_segments_as_bytes(&prepared.segments))?;
+        let jobs = pool.upload_pinned_parts_enqueue(&[classic_jobs_as_bytes(&prepared.jobs)])?;
+        let segments =
+            pool.upload_pinned_parts_enqueue(&[classic_segments_as_bytes(&prepared.segments)])?;
         let job_upload_us = job_upload_start.map_or(0, |start| start.elapsed().as_micros());
         let table_upload_start = collect_stage_timings.then(Instant::now);
-        let tables = pool.upload_pinned(classic_tables_as_bytes(&CLASSIC_KERNEL_TABLES))?;
+        let tables =
+            pool.upload_pinned_parts_enqueue(&[classic_tables_as_bytes(&CLASSIC_KERNEL_TABLES)])?;
         let table_upload_us = table_upload_start.map_or(0, |start| start.elapsed().as_micros());
         let statuses = pool.take(checked_bytes::<CudaClassicStatus>(prepared.jobs.len())?)?;
         let scratch = pool.take(checked_bytes::<u32>(prepared.scratch_words)?)?;

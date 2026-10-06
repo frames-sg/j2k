@@ -55,6 +55,9 @@ fn append_classic_job(
     job: &J2kOwnedCodeBlockBatchJob,
 ) -> Result<(), Error> {
     validate_classic_job(job, job.data.len())?;
+    if job.number_of_coding_passes == 0 {
+        return Ok(());
+    }
     let payload_offset = checked_u64(owners.payload.len())?;
     let payload_len = checked_u32(job.data.len())?;
     append_classic_job_metadata(owners, subband_index, job, payload_offset, payload_len)?;

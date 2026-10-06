@@ -130,13 +130,104 @@ fn runtime_raii_primitives_smoke_when_required() {
             .copy_to_host(&mut downloaded_bytes)
             .expect("download pooled pinned i16 upload");
         let downloaded = downloaded_bytes
-            .chunks_exact(std::mem::size_of::<i16>())
-            .map(|chunk| i16::from_ne_bytes([chunk[0], chunk[1]]))
+            .as_chunks::<{ std::mem::size_of::<i16>() }>()
+            .0
+            .iter()
+            .map(|chunk| i16::from_ne_bytes(*chunk))
             .collect::<Vec<_>>();
         assert_eq!(downloaded, i16_samples);
     }
     let cached_after_upload = pool.cached_count().expect("cached after upload");
     assert!(cached_after_upload >= cached_count);
+}
+
+#[test]
+fn queued_pinned_upload_copies_sources_retains_staging_and_orders_default_stream_consumers_when_required(
+) {
+    if !cuda_runtime_gate() {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let len = 8 * 1024 * 1024;
+    let pattern_byte =
+        |index: usize| u8::try_from(index % 251).expect("residue below 251 fits in u8");
+    let mut source = (0..len).map(pattern_byte).collect::<Vec<_>>();
+    let first = pool
+        .upload_pinned_parts_enqueue(&[&source[..17], &[], &source[17..]])
+        .expect("queue fragmented upload");
+    source.fill(55);
+    let abandoned = pool
+        .upload_pinned_parts_enqueue(&[&source])
+        .expect("queue early-drop upload");
+    drop(abandoned);
+    source.fill(99);
+    let detached = pool
+        .upload_pinned_parts_enqueue(&[&source])
+        .expect("queue detached upload")
+        .into_device_buffer()
+        .expect("detach only after transfer completion");
+    source.fill(0);
+    let copied = context
+        .copy_device_range_to_device_with_kernel(
+            first.as_device_buffer().expect("live upload"),
+            0..len,
+        )
+        .expect("default-stream kernel consumes queued upload");
+    copied
+        .copy_to_host(&mut source)
+        .expect("read ordered kernel output");
+    assert!(source
+        .iter()
+        .enumerate()
+        .all(|(index, &byte)| byte == pattern_byte(index)));
+    detached
+        .copy_to_host(&mut source)
+        .expect("read detached upload");
+    assert!(source.iter().all(|&byte| byte == 99));
+    drop(first);
+    let empty = pool
+        .upload_pinned_parts_enqueue(&[&[]])
+        .expect("empty queued upload");
+    assert_eq!(empty.byte_len(), 0);
+    let diagnostics = context
+        .pinned_upload_staging_pool_diagnostics()
+        .expect("staging diagnostics");
+    assert_eq!(diagnostics.active_buffers, 0);
+    assert_eq!(diagnostics.uncertain_buffers, 0);
+    context
+        .begin_pinned_upload_operation()
+        .expect("staging transaction")
+        .verify_host_budget()
+        .expect("staging ownership remains fully accounted");
+}
+
+#[test]
+fn dropping_queued_upload_inside_its_own_transaction_retires_without_deadlock_when_required() {
+    if !cuda_runtime_gate() {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let queued = pool
+        .upload_pinned_parts_enqueue(&[&[7u8; 4096]])
+        .expect("queue upload");
+    let operation = context
+        .begin_pinned_upload_operation()
+        .expect("staging transaction");
+    assert!(matches!(
+        context.begin_pinned_upload_operation(),
+        Err(CudaError::InvalidArgument { .. })
+    ));
+    drop(queued);
+    let diagnostics = context
+        .pinned_upload_staging_pool_diagnostics()
+        .expect("diagnostics inside the transaction");
+    assert_eq!(diagnostics.active_buffers, 0);
+    assert_eq!(diagnostics.uncertain_buffers, 0);
+    operation
+        .verify_host_budget()
+        .expect("staging ownership remains fully accounted");
 }
 
 #[test]

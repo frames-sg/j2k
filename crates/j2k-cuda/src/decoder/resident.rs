@@ -25,17 +25,14 @@ pub(super) use self::cleanup_dequant::{
 };
 #[cfg(test)]
 pub(super) use self::cleanup_dequant::{
-    htj2k_batched_cleanup_dequant_dispatches, htj2k_batched_cleanup_dispatches,
-    htj2k_batched_dequant_dispatches,
+    htj2k_batched_cleanup_dispatches, htj2k_batched_dequant_dispatches,
 };
 #[cfg(test)]
 pub(super) use self::component::cuda_code_block_job_from_plan_block;
 pub(super) use self::component::{
     decode_cuda_component_subbands_with_resources, finish_cuda_component_decode,
 };
-pub(super) use self::idwt::{
-    can_batch_color_idwt, run_color_component_idwt_batches, run_cuda_component_idwt_steps,
-};
+pub(super) use self::idwt::run_color_component_idwt_batches;
 pub(super) use self::routing::{
     decode_batch_to_cuda_resident_surface_with_profile_control,
     decode_region_scaled_to_cuda_resident_surface_impl,

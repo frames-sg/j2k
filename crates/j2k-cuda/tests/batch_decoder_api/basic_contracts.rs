@@ -20,7 +20,7 @@ fn persistent_batch_decoder_accepts_an_empty_batch_without_cuda() {
         .expect("empty batch must not initialize CUDA");
 
     assert!(output.groups().is_empty());
-    assert!(output.errors().is_empty());
+    assert_eq!(output.errors(), []);
     assert!(output.group_errors().is_empty());
     assert_eq!(decoder.session().submissions(), 0);
 }
@@ -75,7 +75,7 @@ fn asynchronous_resident_decoder_accepts_an_empty_batch_without_cuda() {
 
     let output = submitted.wait().expect("wait empty submission");
     assert!(output.groups().is_empty());
-    assert!(output.errors().is_empty());
+    assert_eq!(output.errors(), []);
     assert!(output.group_errors().is_empty());
     assert_eq!(decoder.session().submissions(), 0);
 }
@@ -99,7 +99,7 @@ fn persistent_batch_decoder_implements_shared_prepared_contract() {
         .expect("empty prepared batch must not initialize CUDA");
 
     assert!(output.groups().is_empty());
-    assert!(output.errors().is_empty());
+    assert_eq!(output.errors(), []);
     assert!(output.group_errors().is_empty());
     assert_eq!(decoder.session().submissions(), 0);
 }

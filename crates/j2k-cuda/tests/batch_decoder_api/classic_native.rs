@@ -304,7 +304,7 @@ fn assert_classic_case(
         options,
     )
     .expect("prepare classic native fixture");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     let [group] = prepared.groups() else {
         panic!("expected one classic native group")
     };
@@ -375,7 +375,7 @@ fn assert_classic_irreversible_case(
         options,
     )
     .expect("prepare classic irreversible fixture");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     let [group] = prepared.groups() else {
         panic!("expected one classic irreversible group")
     };

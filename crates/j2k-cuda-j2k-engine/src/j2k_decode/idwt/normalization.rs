@@ -87,6 +87,7 @@ impl crate::J2kCudaEngine<'_> {
                 live_host_bytes,
                 CudaJ2kIdwtNormalization::Standard,
                 false,
+                false,
             )
         }
         .map(|(execution, _profile)| execution)
@@ -117,8 +118,40 @@ impl crate::J2kCudaEngine<'_> {
                 live_host_bytes,
                 normalization,
                 false,
+                false,
             )
         }
         .map(|(execution, _profile)| execution)
+    }
+}
+
+impl crate::J2kCudaEngine<'_> {
+    /// Enqueue codestream IDWT stages, leaving the last vertical pass for a fused store.
+    ///
+    /// # Safety
+    ///
+    /// The target, pool, aliasing and stream requirements of
+    /// [`Self::j2k_inverse_dwt_batch_sequence_enqueue_with_pool`] apply. Final
+    /// output planes contain horizontal synthesis only and must be consumed by
+    /// the matching fused vertical-IDWT/MCT store before exposing pixels.
+    #[doc(hidden)]
+    pub unsafe fn j2k_inverse_dwt_batch_sequence_defer_final_vertical_with_pool(
+        &self,
+        target_batches: &[&[CudaJ2kIdwtTarget<'_>]],
+        pool: &CudaBufferPool,
+        live_host_bytes: usize,
+        collect_stage_profile: bool,
+    ) -> Result<(CudaQueuedExecution, super::CudaJ2kIdwtBatchStageProfile), CudaError> {
+        // SAFETY: the caller retains the same resources through the dependent store.
+        unsafe {
+            self.j2k_inverse_dwt_batch_sequence_enqueue_with_pool_and_live_host_bytes_impl(
+                target_batches,
+                pool,
+                live_host_bytes,
+                CudaJ2kIdwtNormalization::OpenJpegCodestream,
+                collect_stage_profile,
+                true,
+            )
+        }
     }
 }

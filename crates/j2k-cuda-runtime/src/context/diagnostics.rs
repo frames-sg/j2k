@@ -266,7 +266,7 @@ fn usize_as_u64(value: usize) -> u64 {
 
 fn atomic_saturating_add(counter: &AtomicU64, increment: u64) -> u64 {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(increment))
         })
         .map_or_else(
@@ -277,7 +277,7 @@ fn atomic_saturating_add(counter: &AtomicU64, increment: u64) -> u64 {
 
 fn atomic_saturating_sub(counter: &AtomicU64, decrement: u64) -> u64 {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_sub(decrement))
         })
         .map_or_else(

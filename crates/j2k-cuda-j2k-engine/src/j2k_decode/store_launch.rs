@@ -186,6 +186,30 @@ impl crate::J2kCudaEngine<'_> {
         self.launch_kernel(function, geometry, &mut params)
     }
 
+    pub(in crate::j2k_decode) unsafe fn launch_j2k_idwt_vertical_rgb8_mct_batch_enqueue(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_tiles: usize,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function =
+            Self::j2k_decode_store_kernel_function(CudaKernel::J2kIdwtVerticalRgb8MctBatch)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = cuda_kernel_params!(jobs_ptr);
+        let geometry = crate::kernels::CudaLaunchGeometry::new(
+            (
+                u32::try_from(max_tiles)
+                    .map_err(|_| CudaError::LengthTooLarge { len: max_tiles })?,
+                u32::try_from(job_count)
+                    .map_err(|_| CudaError::LengthTooLarge { len: job_count })?,
+                1,
+            ),
+            (j2k_codec_math::dwt::FUSED_VERTICAL_TILE_THREADS, 1, 1),
+        )
+        .ok_or(CudaError::LengthTooLarge { len: max_tiles })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
     fn j2k_decode_store_kernel_function(
         kernel: CudaKernel,
     ) -> Result<crate::driver::CuFunction, CudaError> {

@@ -34,6 +34,7 @@ pub(super) fn sort_selected_jobs_for_coalesced_targets(selected: &mut [SelectedH
 pub(super) fn flatten_job_locations(
     component_work: &[CudaComponentDecodeWork],
     component_source_indices: &[usize],
+    budget: &mut HostPhaseBudget,
 ) -> Result<Vec<Htj2kJobLocation>, Error> {
     if component_work.len() != component_source_indices.len() {
         return Err(Error::capability_rejected(
@@ -50,7 +51,6 @@ pub(super) fn flatten_job_locations(
             bytes: usize::MAX,
             what: "CUDA HTJ2K flattened job locations",
         })?;
-    let mut budget = HostPhaseBudget::new("CUDA HTJ2K flattened job locations");
     let mut locations = budget.try_vec_with_capacity(job_count)?;
     for (work_index, (work, source_index)) in component_work
         .iter()
@@ -74,8 +74,8 @@ pub(super) fn flatten_job_locations(
 pub(super) fn chunk_requests(
     component_work: &[CudaComponentDecodeWork],
     locations: &[Htj2kJobLocation],
+    budget: &mut HostPhaseBudget,
 ) -> Result<Vec<HtGpuJobChunkRequest>, Error> {
-    let mut budget = HostPhaseBudget::new("CUDA HTJ2K shared chunk requests");
     let mut requests = budget.try_vec_with_capacity(locations.len())?;
     let descriptor_bytes = htj2k_cleanup_multi_descriptor_bytes();
     for location in locations {

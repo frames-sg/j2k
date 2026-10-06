@@ -323,8 +323,7 @@ fn cuda_runtime_required_implies_feature_compiled() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase-1 ACCEPTANCE GATE
-// Test 5: CUDA facade byte-exact parity matrix vs. CPU reference
+// CUDA facade byte-exact parity matrix vs. CPU reference
 // ---------------------------------------------------------------------------
 //
 // CPU reference rationale
@@ -352,10 +351,10 @@ fn cuda_runtime_required_implies_feature_compiled() {
 //
 // Round-trip decode scope (signed vs unsigned)
 // --------------------------------------------
-// Every cell asserts CUDA-vs-native CODESTREAM byte parity (the Phase-1
-// deliverable) and that the codestream parses and decodes. The additional
-// byte-exact pixel round-trip — decode the codestream, compare to the original
-// input — is asserted only for UNSIGNED components. The native DECODER does not
+// Every cell asserts CUDA-vs-native CODESTREAM byte parity and that the
+// codestream parses and decodes. The additional byte-exact pixel round-trip —
+// decode the codestream, compare to the original input — is asserted only for
+// UNSIGNED components. The native DECODER does not
 // reconstruct signed samples: it reads the SIZ Ssiz signed bit and ignores it
 // (j2k-native/src/j2c/codestream.rs) and unconditionally re-applies the
 // unsigned inverse DC level-shift, then clamps negatives

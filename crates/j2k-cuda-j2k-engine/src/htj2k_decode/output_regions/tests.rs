@@ -69,6 +69,38 @@ fn accepts_large_disjoint_grid_without_quadratic_pair_scanning() {
 }
 
 #[test]
+fn ordered_grid_validation_needs_no_temporary_region_budget() {
+    let jobs = [job(0, 4, 2, 8), job(4, 4, 2, 8), job(16, 8, 1, 8)];
+
+    validate_disjoint_htj2k_job_outputs_with_live_bytes(
+        &jobs,
+        24,
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    )
+    .expect("ordered rows validate without allocating a region table");
+    assert!(validate_disjoint_htj2k_job_outputs_with_live_bytes(
+        &jobs,
+        24,
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES + 1,
+    )
+    .is_err());
+}
+
+#[test]
+fn ordered_stream_still_validates_every_job_geometry() {
+    let jobs = [job(0, 4, 1, 8), job(14, 4, 1, 8)];
+
+    assert!(matches!(
+        validate_disjoint_htj2k_job_outputs_with_live_bytes(
+            &jobs,
+            16,
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        ),
+        Err(CudaError::InvalidArgument { .. })
+    ));
+}
+
+#[test]
 fn rejects_overlap_hidden_after_many_disjoint_rectangles() {
     const STRIDE: u32 = 128;
     const ROWS: u32 = 64;
@@ -124,4 +156,15 @@ fn coverage_planning_distinguishes_full_output_from_gaps() {
     let partial = [job(0, 3, 1, 8), job(4, 4, 1, 8)];
     let partial_layout = validate_htj2k_output_layout(&partial, 8).expect("partial output layout");
     assert!(partial_layout.needs_zero_fill);
+}
+
+#[test]
+fn irregular_row_groups_preserve_disjointness_checks() {
+    let staggered = [job(0, 2, 3, 8), job(10, 2, 1, 8), job(16, 2, 1, 8)];
+    assert!(validate_htj2k_output_layout(&staggered, 24).is_err());
+
+    let disjoint = [job(0, 2, 3, 8), job(10, 2, 1, 8), job(20, 2, 1, 8)];
+    validate_htj2k_output_layout(&disjoint, 24).expect("staggered columns remain disjoint");
+    let reversed = [disjoint[2], disjoint[1], disjoint[0]];
+    validate_htj2k_output_layout(&reversed, 24).expect("job order does not change validity");
 }

@@ -80,7 +80,10 @@ impl CudaPinnedUploadOperationGuard<'_> {
             }),
         };
         if let Err(error) = confirmation {
-            return match self.release_active_pinned_upload_staging(staging, Some(error)) {
+            return match self
+                .held()
+                .release_active_pinned_upload_staging(staging, Some(error))
+            {
                 Err(error) => Err(error),
                 Ok(()) => Err(CudaError::InternalInvariant {
                     what: "CUDA pinned upload staging lost confirmation failure",

@@ -220,5 +220,5 @@ fn cuda_lossless_device_buffer_encode_matches_host_htj2k_when_required() {
     assert!(device.resident.coefficient_prep_used);
     assert!(device.resident.packetization_used);
     assert!(!device.input_copy_used);
-    assert!(!device.encoded.codestream.is_empty());
+    assert_ne!(device.encoded.codestream, [] as [u8; 0]);
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::gate::{held_by_current_thread, TrackedPinnedUploadGate};
 use crate::{allocation::HostPhaseBudget, error::CudaError};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 pub(super) const PINNED_UPLOAD_STAGING_ALLOCATION: &str = "CUDA pinned upload staging allocation";
 
@@ -16,10 +17,18 @@ pub(super) fn validate_pinned_upload_staging_len(len: usize, cap: usize) -> Resu
 
 pub(super) fn lock_pinned_upload_operation(
     gate: &Mutex<()>,
-) -> Result<MutexGuard<'_, ()>, CudaError> {
-    gate.lock().map_err(|error| CudaError::StatePoisoned {
+) -> Result<TrackedPinnedUploadGate<'_>, CudaError> {
+    if held_by_current_thread(gate) {
+        return Err(CudaError::InvalidArgument {
+            message:
+                "this thread already holds the CUDA pinned-upload transaction for this context"
+                    .to_string(),
+        });
+    }
+    let guard = gate.lock().map_err(|error| CudaError::StatePoisoned {
         message: error.to_string(),
-    })
+    })?;
+    Ok(TrackedPinnedUploadGate::new(gate, guard))
 }
 
 pub(super) fn validate_pinned_upload_operation_context(

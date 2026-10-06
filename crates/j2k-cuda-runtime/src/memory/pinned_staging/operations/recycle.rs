@@ -4,7 +4,7 @@ use super::super::{
     retain_pinned_upload_staging_after_active_release_failure,
     retain_pinned_upload_staging_after_release_failure,
 };
-use super::CudaPinnedUploadOperationGuard;
+use super::HeldPinnedUploadGate;
 use crate::{
     context::PinnedUploadStaging,
     error::{select_resource_release_error, CudaError},
@@ -16,9 +16,9 @@ enum ReleaseAccounting {
     Inactive,
 }
 
-impl CudaPinnedUploadOperationGuard<'_> {
+impl HeldPinnedUploadGate<'_> {
     pub(super) fn release_active_pinned_upload_staging(
-        &self,
+        self,
         staging: PinnedUploadStaging,
         primary_error: Option<CudaError>,
     ) -> Result<(), CudaError> {
@@ -26,7 +26,7 @@ impl CudaPinnedUploadOperationGuard<'_> {
     }
 
     pub(super) fn release_inactive_pinned_upload_staging(
-        &self,
+        self,
         staging: PinnedUploadStaging,
         primary_error: Option<CudaError>,
     ) -> Result<(), CudaError> {
@@ -34,7 +34,7 @@ impl CudaPinnedUploadOperationGuard<'_> {
     }
 
     fn release_pinned_upload_staging(
-        &self,
+        self,
         mut staging: PinnedUploadStaging,
         primary_error: Option<CudaError>,
         accounting: ReleaseAccounting,

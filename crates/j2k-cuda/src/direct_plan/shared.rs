@@ -37,25 +37,35 @@ pub(super) struct CudaPlanOwners {
 }
 
 impl CudaPlanOwners {
-    pub(super) fn from_plan(plan: &J2kDirectGrayscalePlan) -> Result<(Self, usize), Error> {
-        Self::from_plan_with_payload_capacity(plan, None)
+    pub(super) fn from_plan_with_budget(
+        plan: &J2kDirectGrayscalePlan,
+        budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        Self::from_plan_with_payload_capacity(plan, None, budget)
     }
 
-    pub(super) fn from_referenced_plan(
+    #[cfg(test)]
+    pub(super) fn from_referenced_plan(plan: &J2kDirectGrayscalePlan) -> Result<Self, Error> {
+        let mut budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
+        Self::from_plan_with_payload_capacity(plan, Some(0), &mut budget)
+    }
+
+    pub(super) fn from_referenced_plan_with_budget(
         plan: &J2kDirectGrayscalePlan,
-    ) -> Result<(Self, usize), Error> {
-        Self::from_plan_with_payload_capacity(plan, Some(0))
+        budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
+        Self::from_plan_with_payload_capacity(plan, Some(0), budget)
     }
 
     fn from_plan_with_payload_capacity(
         plan: &J2kDirectGrayscalePlan,
         payload_capacity: Option<usize>,
-    ) -> Result<(Self, usize), Error> {
+        budget: &mut HostPhaseBudget,
+    ) -> Result<Self, Error> {
         let mut hint = cuda_plan_capacity_hint(plan)?;
         if let Some(payload_capacity) = payload_capacity {
             hint.payload_bytes = payload_capacity;
         }
-        let mut budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
         let owners = Self {
             payload: budget.try_vec_with_capacity(hint.payload_bytes)?,
             code_blocks: budget.try_vec_with_capacity(hint.code_blocks)?,
@@ -67,7 +77,7 @@ impl CudaPlanOwners {
             store_steps: budget.try_vec_with_capacity(hint.store_steps)?,
             transform: None,
         };
-        Ok((owners, budget.live_bytes()))
+        Ok(owners)
     }
 
     pub(super) fn append_idwt(&mut self, step: J2kDirectIdwtStep) -> Result<(), Error> {

@@ -113,7 +113,7 @@ fn assert_exact_rgb_case(
         options,
     )
     .expect("prepare exact RGB group");
-    assert!(prepared.errors().is_empty());
+    assert_eq!(prepared.errors(), []);
     let [prepared_group] = prepared.groups() else {
         panic!("expected one exact RGB group")
     };

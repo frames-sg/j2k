@@ -6,10 +6,9 @@ use j2k_native::{
 };
 
 use super::{CudaHtj2kBandId, Error, PLAN_OUTPUT_RECT_MISMATCH, PLAN_PAYLOAD_TOO_LARGE};
-use crate::allocation::{try_vec_reserve, try_vec_with_capacity, HostPhaseBudget};
+use crate::allocation::{try_vec_reserve, HostPhaseBudget};
 
 const REQUIRED_REGIONS: &str = "CUDA direct-plan required regions";
-const DIRECT_PLAN_OWNERS: &str = "CUDA direct-plan owner graph";
 
 pub(super) struct RequiredBandRegions {
     entries: Vec<(CudaHtj2kBandId, RequiredBandRegion)>,
@@ -24,15 +23,12 @@ impl RequiredBandRegions {
     }
 }
 
-pub(super) fn required_regions_for_direct_plan(
+pub(super) fn required_regions_for_direct_plan_with_budget(
     plan: &J2kDirectGrayscalePlan,
-    retained_plan_bytes: usize,
+    host_budget: &mut HostPhaseBudget,
 ) -> Result<RequiredBandRegions, Error> {
     let capacity = required_region_capacity(plan)?;
-    let entries = try_vec_with_capacity(capacity, REQUIRED_REGIONS)?;
-    let mut budget = HostPhaseBudget::new(DIRECT_PLAN_OWNERS);
-    budget.account_bytes(retained_plan_bytes)?;
-    budget.account_capacity::<(CudaHtj2kBandId, RequiredBandRegion)>(entries.capacity())?;
+    let entries = host_budget.try_vec_with_capacity_named(capacity, REQUIRED_REGIONS)?;
     let mut required = RequiredBandRegions { entries };
 
     for step in &plan.steps {

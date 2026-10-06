@@ -7,6 +7,158 @@ mod native_store;
 
 use forward_reference::{cpu_forward_dwt53_buffer, cpu_forward_dwt97_buffer};
 
+#[test]
+fn j2k_inverse_dwt_mixed_column_tails_match_single_when_runtime_required() {
+    if !cuda_runtime_gate() {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let engine = crate::J2kCudaEngine::new(&context);
+    let shapes = [
+        (129_u32, 131_u32, 0_u32, 0_u32),
+        (129, 131, 1, 1),
+        (7, 257, 1, 0),
+        (8, 511, 0, 1),
+        (511, 512, 1, 1),
+        (1, 1, 1, 1),
+        (2, 3, 0, 1),
+        (3, 2, 1, 0),
+        (513, 17, 1, 0),
+        (129, 769, 1, 1),
+    ];
+    // Exercise both the whole-line and wide tiled horizontal routes.
+    for shapes in [
+        &shapes[..shapes.len() - 2],
+        &shapes[..shapes.len() - 1],
+        &shapes[..],
+    ] {
+        for (irreversible97, normalization) in [
+            (Some(0), CudaJ2kIdwtNormalization::Standard),
+            (Some(1), CudaJ2kIdwtNormalization::Standard),
+            (Some(1), CudaJ2kIdwtNormalization::OpenJpegCodestream),
+            (None, CudaJ2kIdwtNormalization::OpenJpegCodestream),
+        ] {
+            let cases = shapes
+                .iter()
+                .enumerate()
+                .map(|(case_index, &shape)| {
+                    let irreversible97 = irreversible97.unwrap_or(u32::from(case_index % 2 != 0));
+                    mixed_tail_case(
+                        &context,
+                        &engine,
+                        &pool,
+                        shape,
+                        irreversible97,
+                        normalization,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let targets = cases
+                .iter()
+                .map(|case| CudaJ2kIdwtTarget {
+                    ll: &case.bands[0],
+                    hl: &case.bands[1],
+                    lh: &case.bands[2],
+                    hh: &case.bands[3],
+                    output: case.output.as_device_buffer().expect("output buffer"),
+                    job: case.job,
+                })
+                .collect::<Vec<_>>();
+            engine
+                .j2k_inverse_dwt_batch_device_with_pool_normalized(&targets, normalization, &pool)
+                .expect("cooperative mixed tail batch");
+            for case in &cases {
+                let mut actual = j2k_core::try_host_vec_filled(case.expected.len(), 0.0_f32)
+                    .expect("tail-case readback storage");
+                case.output
+                    .copy_to_host(super::super::f32_slice_as_bytes_mut(&mut actual))
+                    .expect("read cooperative output");
+                assert_eq!(
+                    actual, case.expected,
+                    "tail parity for {:?}, {normalization:?}",
+                    case.job
+                );
+            }
+        }
+    }
+}
+
+struct MixedTailCase {
+    job: CudaJ2kIdwtJob,
+    bands: [j2k_cuda_runtime::CudaDeviceBuffer; 4],
+    output: j2k_cuda_runtime::CudaPooledDeviceBuffer,
+    expected: Vec<f32>,
+}
+
+/// Uploads one tail-shape case and reads its single-job IDWT result as the oracle.
+fn mixed_tail_case(
+    context: &CudaContext,
+    engine: &crate::J2kCudaEngine<'_>,
+    pool: &j2k_cuda_runtime::CudaBufferPool,
+    (width, height, x0, y0): (u32, u32, u32, u32),
+    irreversible97: u32,
+    normalization: CudaJ2kIdwtNormalization,
+) -> MixedTailCase {
+    let low_width = (width + 1 - (x0 & 1)) / 2;
+    let low_height = (height + 1 - (y0 & 1)) / 2;
+    let rects = [
+        (low_width, low_height),
+        (width - low_width, low_height),
+        (low_width, height - low_height),
+        (width - low_width, height - low_height),
+    ]
+    .map(|(x1, y1)| CudaJ2kRect {
+        x0: 0,
+        y0: 0,
+        x1,
+        y1,
+    });
+    let bands = rects.map(|rect| {
+        let samples = (0..rect.x1 * rect.y1)
+            .map(|index| f32::from(i16::try_from(index % 71).unwrap() - 35) * 0.125)
+            .collect::<Vec<_>>();
+        context
+            .upload(super::super::f32_slice_as_bytes(&samples))
+            .expect("upload tail-case band")
+    });
+    let job = CudaJ2kIdwtJob {
+        rect: CudaJ2kRect {
+            x0,
+            y0,
+            x1: x0 + width,
+            y1: y0 + height,
+        },
+        ll_rect: rects[0],
+        hl_rect: rects[1],
+        lh_rect: rects[2],
+        hh_rect: rects[3],
+        irreversible97,
+    };
+    let single = engine
+        .j2k_inverse_dwt_single_device_with_pool_normalized(
+            [&bands[0], &bands[1], &bands[2], &bands[3]],
+            job,
+            normalization,
+            pool,
+        )
+        .expect("generic tail-case oracle");
+    let mut expected = j2k_core::try_host_vec_filled((width * height) as usize, 0.0_f32)
+        .expect("tail-case reference storage");
+    single
+        .buffer()
+        .expect("oracle buffer")
+        .copy_range_to_host(0, super::super::f32_slice_as_bytes_mut(&mut expected))
+        .expect("read oracle");
+    let output = pool.take(expected.len() * 4).expect("tail-case output");
+    MixedTailCase {
+        job,
+        bands,
+        output,
+        expected,
+    }
+}
+
 fn square_idwt_job(band_side: u32, irreversible97: u32) -> CudaJ2kIdwtJob {
     let band_rect = CudaJ2kRect {
         x0: 0,
@@ -214,9 +366,9 @@ fn idwt_batch_trace_row_reports_stage_shape_and_mode() {
     );
 
     assert_eq!(
-            format_idwt_batch_trace_row(row),
-            "j2k_profile codec=j2k op=cuda_idwt_batch path=decode stage_index=3 final_stage=true mode=Cooperative97 job_count=2 max_width=128 max_height=96 min_width=64 min_height=48 total_pixels=15360 irreversible_jobs=2 elapsed_us=42 interleave_horizontal_us=17 vertical_us=25"
-        );
+        format_idwt_batch_trace_row(row),
+        "j2k_profile codec=j2k op=cuda_idwt_batch path=decode stage_index=3 final_stage=true mode=Cooperative97 job_count=2 max_width=128 max_height=96 min_width=64 min_height=48 total_pixels=15360 irreversible_jobs=2 elapsed_us=42 interleave_horizontal_us=17 vertical_us=25"
+    );
 }
 
 #[test]

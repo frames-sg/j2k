@@ -23,6 +23,8 @@ pub struct CudaQueuedHtj2kCleanupGroup {
     status_buffer: Option<CudaPooledDeviceBuffer>,
     status_count: usize,
     cleanups: Vec<CudaQueuedHtj2kCleanup>,
+    retained_host_bytes: usize,
+    finish_host_live_bytes: usize,
     finished: bool,
 }
 
@@ -39,12 +41,19 @@ impl CudaQueuedHtj2kCleanupGroup {
         context: &CudaContext,
         pool: &CudaBufferPool,
         status_count: usize,
+        cleanup_capacity: usize,
+        live_host_bytes: usize,
     ) -> Result<Self, CudaError> {
         if !pool.is_owned_by(context) {
             return Err(CudaError::InvalidArgument {
                 message: "HTJ2K status group pool must belong to the decode context".to_string(),
             });
         }
+        let mut host_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA grouped HTJ2K cleanup retained metadata",
+            live_host_bytes,
+        )?;
+        let cleanups = host_budget.try_vec_with_capacity(cleanup_capacity)?;
         let status_buffer = (status_count != 0)
             .then(|| pool.take(htj2k_statuses_byte_len(status_count)?))
             .transpose()?;
@@ -52,9 +61,20 @@ impl CudaQueuedHtj2kCleanupGroup {
             context: context.clone(),
             status_buffer,
             status_count,
-            cleanups: Vec::new(),
+            retained_host_bytes: j2k_core::host_capacity_bytes::<CudaQueuedHtj2kCleanup>(
+                cleanups.capacity(),
+            ),
+            cleanups,
+            finish_host_live_bytes: host_budget.live_bytes(),
             finished: false,
         })
+    }
+
+    /// Host bytes owned by the group's cleanup-guard arena.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn retained_host_bytes(&self) -> usize {
+        self.retained_host_bytes
     }
 
     pub(crate) fn status_destination(
@@ -120,15 +140,19 @@ impl CudaQueuedHtj2kCleanupGroup {
                 });
             }
         }
-        self.cleanups
-            .try_reserve(1)
-            .map_err(|_| CudaError::HostAllocationFailed {
-                bytes: self
-                    .cleanups
-                    .len()
-                    .saturating_add(1)
-                    .saturating_mul(core::mem::size_of::<CudaQueuedHtj2kCleanup>()),
-            })?;
+        let cleanup_owner_bytes =
+            j2k_core::host_capacity_bytes::<CudaPooledDeviceBuffer>(cleanup.resources.capacity());
+        let mut host_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA grouped HTJ2K cleanup retained metadata",
+            self.finish_host_live_bytes,
+        )?;
+        host_budget.account_bytes(cleanup_owner_bytes)?;
+        host_budget.try_vec_reserve(&mut self.cleanups, 1)?;
+        let additional = host_budget
+            .live_bytes()
+            .saturating_sub(self.finish_host_live_bytes);
+        self.retained_host_bytes = self.retained_host_bytes.saturating_add(additional);
+        self.finish_host_live_bytes = host_budget.live_bytes();
         self.cleanups.push(cleanup);
         Ok(())
     }
@@ -142,15 +166,9 @@ impl CudaQueuedHtj2kCleanupGroup {
 
     fn finish_inner(&mut self) -> Result<CudaExecutionStats, CudaError> {
         let mut execution = CudaExecutionStats::default();
-        let retained_live_bytes = self
-            .cleanups
-            .iter()
-            .map(|cleanup| cleanup.finish_host_live_bytes)
-            .max()
-            .unwrap_or(0);
         let statuses_result = HostPhaseBudget::with_live_bytes(
             "CUDA grouped HTJ2K cleanup status readback",
-            retained_live_bytes,
+            self.finish_host_live_bytes,
         )
         .and_then(|mut budget| {
             budget.try_vec_filled(self.status_count, CudaHtj2kStatus::default())

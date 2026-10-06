@@ -51,11 +51,24 @@ pub(super) fn account_component_work(
 ) -> Result<(), Error> {
     budget.account_vec(work)?;
     for component in work {
-        budget.account_vec(&component.bands)?;
-        budget.account_vec(&component.pending_dequant_bands)?;
-        for pending in &component.pending_dequant_bands {
-            budget.account_vec(&pending.jobs)?;
-        }
+        account_component_work_item(budget, component)?;
+    }
+    Ok(())
+}
+
+pub(super) fn account_component_work_item(
+    budget: &mut HostPhaseBudget,
+    work: &CudaComponentDecodeWork,
+) -> Result<(), Error> {
+    budget.account_vec(&work.bands)?;
+    budget.account_vec(&work.pending_classic_bands)?;
+    for pending in &work.pending_classic_bands {
+        budget.account_vec(&pending.jobs)?;
+        budget.account_vec(&pending.segments)?;
+    }
+    budget.account_vec(&work.pending_dequant_bands)?;
+    for pending in &work.pending_dequant_bands {
+        budget.account_vec(&pending.jobs)?;
     }
     Ok(())
 }

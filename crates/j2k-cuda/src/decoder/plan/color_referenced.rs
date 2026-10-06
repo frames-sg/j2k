@@ -17,5 +17,8 @@ type ReferencedTileColorGeometry<'a> = (
 
 pub(in crate::decoder) use self::{
     classic::build_cuda_classic_color_plans_from_referenced_with_profile,
-    ht::build_cuda_htj2k_color_plans_from_referenced_with_profile,
+    ht::{
+        build_cuda_htj2k_color_plan_from_referenced_direct_source,
+        build_cuda_htj2k_color_plans_from_referenced_with_profile,
+    },
 };

@@ -5,11 +5,14 @@ mod checkout;
 mod gate;
 mod growth;
 mod policy;
+mod queued;
 mod recycle;
+pub(crate) use queued::{PendingPinnedUpload, PendingUploadRetireError};
 
 use self::api::pinned_upload_staging_pool_diagnostics;
 pub use self::checkout::CudaPinnedUploadStagingCheckout;
 pub use self::gate::CudaPinnedUploadOperationGuard;
+use self::gate::HeldPinnedUploadGate;
 use self::policy::{lock_pinned_upload_operation, validate_pinned_upload_operation_context};
 use super::{
     retain_pinned_upload_staging_after_lock_poison, CudaPinnedUploadStagingPoolDiagnostics,
@@ -83,8 +86,31 @@ impl CudaPinnedUploadOperationGuard<'_> {
         })
     }
 
-    pub(crate) fn recycle_pinned_upload_staging(
-        &self,
+    #[doc(hidden)]
+    /// Snapshot retained staging while this transaction excludes peer uploads.
+    pub fn diagnostics(&self) -> Result<CudaPinnedUploadStagingPoolDiagnostics, CudaError> {
+        pinned_upload_staging_pool_diagnostics(self.context)
+    }
+
+    /// Verify that the context authority and pinned pool retain the same bytes.
+    #[doc(hidden)]
+    pub fn verify_host_budget(&self) -> Result<(), CudaError> {
+        let authority_bytes = self.context.authority_pinned_host_bytes()?;
+        let pool_bytes = self.diagnostics()?.retained_bytes;
+        if authority_bytes == pool_bytes {
+            Ok(())
+        } else {
+            self.context.poison_host_budget();
+            Err(CudaError::InternalInvariant {
+                what: "CUDA pinned pool and context host authority byte totals diverged",
+            })
+        }
+    }
+}
+
+impl HeldPinnedUploadGate<'_> {
+    pub(super) fn recycle_pinned_upload_staging(
+        self,
         staging: PinnedUploadStaging,
     ) -> Result<(), CudaError> {
         let mut candidate = Some(staging);
@@ -181,27 +207,6 @@ impl CudaPinnedUploadOperationGuard<'_> {
                     };
                 }
             }
-        }
-    }
-
-    #[doc(hidden)]
-    /// Snapshot retained staging while this transaction excludes peer uploads.
-    pub fn diagnostics(&self) -> Result<CudaPinnedUploadStagingPoolDiagnostics, CudaError> {
-        pinned_upload_staging_pool_diagnostics(self.context)
-    }
-
-    /// Verify that the context authority and pinned pool retain the same bytes.
-    #[doc(hidden)]
-    pub fn verify_host_budget(&self) -> Result<(), CudaError> {
-        let authority_bytes = self.context.authority_pinned_host_bytes()?;
-        let pool_bytes = self.diagnostics()?.retained_bytes;
-        if authority_bytes == pool_bytes {
-            Ok(())
-        } else {
-            self.context.poison_host_budget();
-            Err(CudaError::InternalInvariant {
-                what: "CUDA pinned pool and context host authority byte totals diverged",
-            })
         }
     }
 }

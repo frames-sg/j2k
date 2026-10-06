@@ -10,7 +10,7 @@ use self::{
 use super::{
     cuda_error, dispatch_color_store, host_owners, pooled_cuda_buffer, profile, run_color_mct,
     ColorStoreInputs, CudaBufferPool, CudaComponentDecodeWork, CudaHtj2kColorDecodePlans,
-    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, Error, PixelFormat, Surface,
+    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, Error, HostPhaseBudget, PixelFormat, Surface,
 };
 
 pub(super) fn finish_color_cuda_resident_surface_with_component_work(
@@ -26,9 +26,18 @@ pub(super) fn finish_color_cuda_resident_surface_with_component_work(
         collect_stage_timings,
         run_idwt,
         emit_report,
+        preaccounted_host_bytes,
     } = request;
-    let mut host_budget =
-        host_owners::color_work_budget(&color, &component_work, "j2k CUDA color completion graph")?;
+    let mut host_budget = match preaccounted_host_bytes {
+        Some(live_bytes) => {
+            HostPhaseBudget::with_live_bytes("j2k CUDA color completion graph", live_bytes)?
+        }
+        None => host_owners::color_work_budget(
+            &color,
+            &component_work,
+            "j2k CUDA color completion graph",
+        )?,
+    };
     let pending_idwt_batch = if run_idwt {
         run_pending_color_idwt(
             context,
@@ -115,4 +124,5 @@ pub(super) struct FinishColorCudaResidentSurfaceRequest<'a> {
     pub(super) collect_stage_timings: bool,
     pub(super) run_idwt: bool,
     pub(super) emit_report: bool,
+    pub(super) preaccounted_host_bytes: Option<usize>,
 }

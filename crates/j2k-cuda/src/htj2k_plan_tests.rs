@@ -45,9 +45,12 @@ fn flat_htj2k_plan_contains_payload_offsets_not_pointers() {
     assert_eq!(cuda_plan.dimensions(), (8, 8));
     assert_eq!(cuda_plan.output_format(), PixelFormat::Gray8);
     assert_eq!(cuda_plan.transform(), CudaHtj2kTransform::Reversible53);
-    assert!(!cuda_plan.payload().is_empty());
-    assert!(!cuda_plan.code_blocks().is_empty());
-    assert!(!cuda_plan.subbands().is_empty());
+    assert_ne!(cuda_plan.payload(), [] as [u8; 0]);
+    assert!(
+        !cuda_plan.code_blocks().is_empty(),
+        "plan has no code blocks"
+    );
+    assert!(!cuda_plan.subbands().is_empty(), "plan has no subbands");
     assert_eq!(
         cuda_plan.dispatch_count_hint(),
         cuda_plan.code_blocks().len()
@@ -107,7 +110,7 @@ fn flat_htj2k_plan_records_irreversible_97_transform() {
         .expect("CUDA flat 9/7 plan");
 
     assert_eq!(cuda_plan.transform(), CudaHtj2kTransform::Irreversible97);
-    assert!(!cuda_plan.idwt_steps().is_empty());
+    assert!(!cuda_plan.idwt_steps().is_empty(), "plan has no IDWT steps");
     assert!(cuda_plan
         .idwt_steps()
         .iter()
@@ -219,9 +222,15 @@ fn flat_cuda_plan_preserves_classic_j2k_subband_steps() {
         .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
         .expect("classic CUDA plan");
 
-    assert!(!plan.payload().is_empty());
-    assert!(!plan.classic_code_blocks().is_empty());
-    assert!(!plan.classic_segments().is_empty());
+    assert_ne!(plan.payload(), [] as [u8; 0]);
+    assert!(
+        !plan.classic_code_blocks().is_empty(),
+        "plan has no classic code blocks"
+    );
+    assert!(
+        !plan.classic_segments().is_empty(),
+        "plan has no classic segments"
+    );
     assert_eq!(report.block_count, plan.classic_code_blocks().len());
 }
 
@@ -331,8 +340,10 @@ fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
         .copy_to_host(&mut actual_bytes)
         .expect("download coefficients");
     let actual = actual_bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("f32 bytes")))
+        .as_chunks::<{ std::mem::size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
 }
@@ -422,8 +433,10 @@ fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() 
         .copy_to_host(&mut actual_bytes)
         .expect("download coefficients");
     let actual = actual_bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("f32 bytes")))
+        .as_chunks::<{ std::mem::size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
 }

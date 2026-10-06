@@ -14,16 +14,16 @@ use crate::{
     },
     error::CudaError,
     execution::{CudaExecutionStats, CudaLaunchMode},
-    kernels::CudaKernel,
     memory::{pooled_device_buffer, CudaBufferPool, CudaDeviceBuffer},
 };
 
 use super::{
     context_validation::validate_cleanup_context,
+    launch::cleanup_scratch,
     planning::{
         htj2k_cleanup_multi_kernel_jobs_with_live_host_bytes,
-        htj2k_decode_multi_cleanup_dequant_kernel_for_jobs, htj2k_decode_multi_kernel_for_jobs,
-        htj2k_kernel_jobs,
+        htj2k_decode_multi_cleanup_dequant_route_for_jobs, htj2k_decode_multi_route_for_jobs,
+        htj2k_kernel_jobs, Htj2kMultiDecodeRoute,
     },
     status::{first_status_error, select_status_release_result},
     types::{
@@ -40,15 +40,17 @@ impl crate::J2kCudaEngine<'_> {
         resources: &CudaHtj2kDecodeResources,
         kernel_jobs: &[CudaHtj2kCleanupMultiKernelJob],
         pool: &CudaBufferPool,
-        selected_kernel: (CudaKernel, &'static str),
+        route: Htj2kMultiDecodeRoute,
         collect_stage_timings: bool,
         host_budget: &mut HostPhaseBudget,
     ) -> Result<(CudaExecutionStats, CudaHtj2kDecodeStageTimings), CudaError> {
-        let (decode_kernel, decode_kernel_name) = selected_kernel;
         let mut statuses =
             host_budget.try_vec_filled(kernel_jobs.len(), CudaHtj2kStatus::default())?;
-        let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(kernel_jobs))?;
+        let jobs_buffer =
+            pool.upload_pinned_parts_enqueue(&[htj2k_cleanup_multi_jobs_as_bytes(kernel_jobs)])?;
         let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
+        let scratch = cleanup_scratch(route, kernel_jobs.len(), pool)?;
+        let dispatches = 1 + usize::from(scratch.is_some());
         let tables = htj2k_decode_kernel_tables(resources)?;
         let payload_buffer = resources.payload.buffer()?;
         let jobs_device_buffer = pooled_device_buffer(&jobs_buffer)?;
@@ -61,7 +63,8 @@ impl crate::J2kCudaEngine<'_> {
         };
         let launch_result =
             self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
-                kernel: decode_kernel,
+                scratch: scratch.as_ref().map(pooled_device_buffer).transpose()?,
+                route,
                 payload: payload_buffer,
                 jobs: jobs_device_buffer,
                 tables,
@@ -92,8 +95,8 @@ impl crate::J2kCudaEngine<'_> {
             })?
             .release();
         let execution = select_status_release_result(
-            CudaExecutionStats::new(1, 0, 1, false),
-            first_status_error(&statuses, decode_kernel_name),
+            CudaExecutionStats::new(dispatches, 0, dispatches, false),
+            first_status_error(&statuses, route.status_kernel_name()),
             release_result,
         )?;
 
@@ -106,8 +109,8 @@ impl crate::J2kCudaEngine<'_> {
         ))
     }
 
-    /// Decode HTJ2K cleanup passes for multiple output buffers with one CUDA
-    /// dispatch and return optional host-side timing splits.
+    /// Decode HTJ2K cleanup passes for multiple output buffers and return optional
+    /// host-side timing splits. Cleanup-only work uses two entropy dispatches.
     ///
     /// Dequantization is left to a later dispatch. When `collect_stage_timings`
     /// is false, the cleanup kernel launch is left asynchronous and the
@@ -162,14 +165,14 @@ impl crate::J2kCudaEngine<'_> {
             resources,
             &kernel_jobs,
             pool,
-            htj2k_decode_multi_kernel_for_jobs(&kernel_jobs),
+            htj2k_decode_multi_route_for_jobs(&kernel_jobs),
             collect_stage_timings,
             &mut host_budget,
         )
     }
 
     /// Decode HTJ2K cleanup-only passes and dequantize their coefficients in
-    /// one CUDA dispatch. Targets containing refinement passes are rejected so
+    /// two ordered CUDA dispatches. Targets containing refinement passes are rejected so
     /// callers can fall back to cleanup followed by dequantization.
     #[doc(hidden)]
     pub fn decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(
@@ -210,9 +213,7 @@ impl crate::J2kCudaEngine<'_> {
                 CudaHtj2kDecodeStageTimings::default(),
             ));
         }
-        let Some((decode_kernel, decode_kernel_name)) =
-            htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&kernel_jobs)
-        else {
+        let Some(route) = htj2k_decode_multi_cleanup_dequant_route_for_jobs(&kernel_jobs) else {
             return Err(CudaError::InvalidArgument {
                 message: "fused HTJ2K cleanup/dequantize requires cleanup-only jobs".to_string(),
             });
@@ -228,7 +229,7 @@ impl crate::J2kCudaEngine<'_> {
             resources,
             &kernel_jobs,
             pool,
-            (decode_kernel, decode_kernel_name),
+            route,
             collect_stage_timings,
             &mut host_budget,
         )

@@ -2567,6 +2567,7 @@ dependencies = [
  "j2k-native",
  "j2k-profile",
  "j2k-test-support",
+ "rayon",
  "sha2",
  "thiserror 2.0.18",
 ]

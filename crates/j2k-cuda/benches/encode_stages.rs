@@ -245,7 +245,7 @@ fn forward_lift_53(data: &mut [f32]) {
         } else {
             data[last_even]
         };
-        data[i] -= ((left + right) * 0.5).floor();
+        data[i] -= f32::midpoint(left, right).floor();
     }
 
     for i in (0..n).step_by(2) {

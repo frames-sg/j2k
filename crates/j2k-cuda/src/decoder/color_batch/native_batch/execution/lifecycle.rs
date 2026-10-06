@@ -3,10 +3,9 @@
 use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources, J2kCudaEngine};
 
 use super::super::{
-    can_batch_color_idwt, cuda_error, decode_cuda_component_subbands_with_resources,
-    enqueue_chunked_htj2k_cleanup_dequant, enqueue_component_classic_batches, host_owners, profile,
-    run_color_component_idwt_batches, ChunkedHtj2kCleanup, CudaHtj2kColorDecodePlans,
-    CudaQueuedIdwtBatch, CudaSession, Error,
+    build_color_component_work, cuda_error, enqueue_chunked_htj2k_cleanup_dequant,
+    enqueue_component_classic_batches, host_owners, profile, run_color_component_idwt_batches,
+    ChunkedHtj2kCleanup, CudaHtj2kColorDecodePlans, CudaQueuedIdwtBatch, CudaSession, Error,
 };
 use crate::allocation::HostPhaseBudget;
 use crate::decoder::color_batch::CudaComponentDecodeWork;
@@ -42,32 +41,14 @@ pub(super) fn build_native_color_component_work(
     colors: &Vec<CudaHtj2kColorDecodePlans>,
     source_indices: &[usize],
 ) -> Result<(HostPhaseBudget, Vec<CudaComponentDecodeWork>, Vec<usize>), Error> {
-    let component_count = colors
-        .iter()
-        .try_fold(0usize, |count, color| {
-            count.checked_add(color.components.len())
-        })
-        .ok_or(Error::HostAllocationFailed {
-            bytes: usize::MAX,
-            what: "j2k CUDA exact color component work",
-        })?;
     let context = session.cuda_context()?;
     let pool = session.decode_batch_buffer_pool()?;
     let mut budget = HostPhaseBudget::new("j2k CUDA exact RGB execution graph");
     host_owners::account_colors(&mut budget, colors)?;
-    let mut component_work = budget.try_vec_with_capacity(component_count)?;
-    let mut component_sources = budget.try_vec_with_capacity(component_count)?;
+    let component_work = build_color_component_work(&context, &pool, colors, false, &mut budget)?;
+    let mut component_sources = budget.try_vec_with_capacity(component_work.len())?;
     for (color, source_index) in colors.iter().zip(source_indices.iter().copied()) {
-        for plan in &color.components {
-            component_work.push(decode_cuda_component_subbands_with_resources(
-                &context,
-                plan,
-                &pool,
-                false,
-                &mut budget,
-            )?);
-            component_sources.push(source_index);
-        }
+        component_sources.extend(std::iter::repeat_n(source_index, color.components.len()));
     }
     Ok((budget, component_work, component_sources))
 }
@@ -88,7 +69,7 @@ pub(super) fn enqueue_native_color_entropy(
         .any(|work| !work.pending_classic_bands.is_empty())
     {
         let resources = J2kCudaEngine::new(&context)
-            .upload_j2k_decode_payload_with_pool(shared_payload, &pool)
+            .upload_j2k_decode_payload_with_pool(&[shared_payload], &pool)
             .map_err(cuda_error)?;
         let tables = session.classic_decode_table_resources()?;
         let pending = enqueue_component_classic_batches(
@@ -107,7 +88,7 @@ pub(super) fn enqueue_native_color_entropy(
     let pending_cleanup = Some(enqueue_chunked_htj2k_cleanup_dequant(
         &context,
         table_resources,
-        shared_payload,
+        &[shared_payload],
         component_work,
         component_source_indices,
         &pool,
@@ -141,32 +122,13 @@ pub(super) fn enqueue_native_color_idwt(
     }
     let context = session.cuda_context()?;
     let pool = session.decode_batch_buffer_pool()?;
-    if can_batch_color_idwt(&component_plans) {
-        return run_color_component_idwt_batches(
-            &context,
-            &component_plans,
-            component_work,
-            &pool,
-            false,
-            host_budget.live_bytes(),
-        );
-    }
-    let mut pending: Option<CudaQueuedIdwtBatch> = None;
-    for (plan, work) in component_plans.iter().zip(component_work.iter_mut()) {
-        let plans = [*plan];
-        let next = run_color_component_idwt_batches(
-            &context,
-            &plans,
-            std::slice::from_mut(work),
-            &pool,
-            false,
-            host_budget.live_bytes(),
-        )?;
-        pending = match (pending, next) {
-            (Some(current), Some(next)) => Some(current.merge(next)?),
-            (Some(current), None) => Some(current),
-            (None, next) => next,
-        };
-    }
-    Ok(pending)
+    run_color_component_idwt_batches(
+        &context,
+        &component_plans,
+        component_work,
+        &pool,
+        false,
+        host_budget.live_bytes(),
+        false,
+    )
 }

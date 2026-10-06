@@ -106,14 +106,32 @@ pub(crate) fn store_rgb8_mct_sample(
     let src0 = source_index(job.input_width0, job.source_x0, job.source_y0, row, col);
     let src1 = source_index(job.input_width1, job.source_x1, job.source_y1, row, col);
     let src2 = source_index(job.input_width2, job.source_x2, job.source_y2, row, col);
+    store_rgb8_mct_values(
+        [
+            load_f32(plane0, src0),
+            load_f32(plane1, src1),
+            load_f32(plane2, src2),
+        ],
+        output,
+        mct_job,
+        row,
+        col,
+    );
+}
+
+#[inline(always)]
+pub(crate) fn store_rgb8_mct_values(
+    samples: [f32; 3],
+    output: *mut u8,
+    mct_job: CudaJ2kStoreRgb8MctJob,
+    row: u32,
+    col: u32,
+) {
+    let job = mct_job.store;
     let channels = if job.rgba != 0 { 4 } else { 3 };
     let dst = output_pixel_index(job.output_width, job.output_x, job.output_y, row, col) * channels;
-    let (out0, out1, out2) = inverse_mct_sample(
-        load_f32(plane0, src0),
-        load_f32(plane1, src1),
-        load_f32(plane2, src2),
-        mct_job.irreversible97,
-    );
+    let (out0, out1, out2) =
+        inverse_mct_sample(samples[0], samples[1], samples[2], mct_job.irreversible97);
 
     store_u8(
         output,

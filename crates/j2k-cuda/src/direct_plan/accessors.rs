@@ -48,6 +48,12 @@ impl CudaHtj2kDecodePlan {
         self.transform
     }
 
+    /// Moves the payload out; block offsets stay relative to its start.
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn take_payload(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.payload)
+    }
+
     pub(crate) fn payload(&self) -> &[u8] {
         &self.payload
     }
@@ -80,7 +86,7 @@ impl CudaHtj2kDecodePlan {
             .ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
             ))?;
-        if !shared_payload.is_empty() {
+        if shared_payload.capacity() != 0 {
             host_budget.try_vec_reserve(shared_payload, self.payload.len())?;
         }
         for block in &mut self.code_blocks {
@@ -101,7 +107,7 @@ impl CudaHtj2kDecodePlan {
                         j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
                     ))?;
         }
-        if shared_payload.is_empty() {
+        if shared_payload.capacity() == 0 {
             *shared_payload = core::mem::take(&mut self.payload);
         } else {
             let mut payload = core::mem::take(&mut self.payload);

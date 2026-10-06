@@ -108,68 +108,95 @@ fn j2k_store_rgb8_mct_batch_writes_external_suballocation_when_runtime_required(
 }
 
 #[test]
-fn j2k_native_grayscale_batch_store_preserves_unsigned_and_signed_samples_when_runtime_required() {
+fn j2k_native_grayscale_batch_store_rounds_centered_samples_before_level_shift_when_runtime_required(
+) {
     if !cuda_runtime_gate() {
         return;
     }
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let unsigned = [0.0_f32, 1.0, 2047.0, 4095.0];
-    let signed = [-2048.0_f32, -1.0, 0.0, 2047.0];
-    let unsigned = context
+    let unsigned = [
+        -32_768.0_f32,
+        -32_767.0,
+        -30_721.0,
+        -28_673.0,
+        32_767.0,
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        -0.5,
+    ];
+    let signed = [-2048.0_f32, -1.0, 0.0, 2047.0, -2.5, -1.5, 0.5, 1.5];
+    let unsigned_buffer = context
         .upload(f32_slice_as_bytes(&unsigned))
         .expect("upload unsigned plane");
-    let signed = context
+    let signed_buffer = context
         .upload(f32_slice_as_bytes(&signed))
         .expect("upload signed plane");
-    let job = CudaJ2kStoreGray16Job {
-        input_width: 2,
+    let unsigned_job = CudaJ2kStoreGray16Job {
+        input_width: 5,
         source_x: 0,
         source_y: 0,
-        copy_width: 2,
+        copy_width: 5,
         copy_height: 2,
-        output_width: 2,
+        output_width: 5,
         output_height: 2,
         output_x: 0,
         output_y: 0,
+        addend: 32_768.0,
+        bit_depth: 16,
+    };
+    let signed_job = CudaJ2kStoreGray16Job {
+        input_width: 4,
+        copy_width: 4,
+        output_width: 4,
         addend: 0.0,
         bit_depth: 12,
+        ..unsigned_job
     };
 
     let unsigned_output = crate::J2kCudaEngine::new(&context)
         .j2k_store_gray16_batch_contiguous_device(&[CudaJ2kStoreGray16Target {
             output_index: 0,
-            input: &unsigned,
-            job,
+            input: &unsigned_buffer,
+            job: unsigned_job,
         }])
         .expect("native Gray16 batch store");
     let signed_output = crate::J2kCudaEngine::new(&context)
         .j2k_store_grayi16_batch_contiguous_device(&[CudaJ2kStoreGrayI16Target {
             output_index: 0,
-            input: &signed,
-            job,
+            input: &signed_buffer,
+            job: signed_job,
         }])
         .expect("native GrayI16 batch store");
 
-    let mut unsigned_bytes = vec![0_u8; 8];
+    let mut unsigned_bytes = vec![0_u8; unsigned.len() * 2];
     unsigned_output
         .output()
         .copy_to_host(&mut unsigned_bytes)
         .expect("download unsigned output");
     let unsigned_samples = unsigned_bytes
-        .chunks_exact(2)
-        .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| u16::from_le_bytes(*sample))
         .collect::<Vec<_>>();
-    assert_eq!(unsigned_samples, [0, 1, 2047, 4095]);
+    assert_eq!(
+        unsigned_samples,
+        [0, 1, 2047, 4095, 65_535, 32_768, 32_770, 32_770, 32_772, 32_768]
+    );
 
-    let mut signed_bytes = vec![0_u8; 8];
+    let mut signed_bytes = vec![0_u8; signed.len() * 2];
     signed_output
         .output()
         .copy_to_host(&mut signed_bytes)
         .expect("download signed output");
     let signed_samples = signed_bytes
-        .chunks_exact(2)
-        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| i16::from_le_bytes(*sample))
         .collect::<Vec<_>>();
-    assert_eq!(signed_samples, [-2048, -1, 0, 2047]);
+    assert_eq!(signed_samples, [-2048, -1, 0, 2047, -2, -2, 0, 2]);
 }

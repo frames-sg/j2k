@@ -3,10 +3,11 @@
 //! One-shot classic and HTJ2K color-plan construction.
 
 use super::{
-    flatten_cuda_color_components, native_decode_error, profile, rgba_bit_depths_from_rgb,
-    CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
-    CudaHtj2kProfileReport, CudaHtj2kTransform, DecodeSettings, DeviceDecodePlan, Downscale, Error,
-    NativeDecoderContext, NativeImage, PixelFormat, Rect,
+    flatten_cuda_color_components, flatten_cuda_color_components_with_budget, native_decode_error,
+    parse_with_host_cap, profile, rgba_bit_depths_from_rgb, CudaHtj2kColorDecodePlans,
+    CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, CudaHtj2kTransform,
+    DecodeSettings, DeviceDecodePlan, Downscale, Error, NativeDecoderContext, NativeImage,
+    PixelFormat, Rect,
 };
 
 #[cfg(feature = "cuda-runtime")]
@@ -108,10 +109,29 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'
     fmt: PixelFormat,
     native_context: &mut NativeDecoderContext<'a>,
 ) -> Result<CudaHtj2kColorDecodePlans, Error> {
+    build_cuda_htj2k_color_plans_from_bytes_with_profile_and_cap(
+        input,
+        fmt,
+        native_context,
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    )
+}
+
+pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_bytes_with_profile_and_cap<'a>(
+    input: &'a [u8],
+    fmt: PixelFormat,
+    native_context: &mut NativeDecoderContext<'a>,
+    host_cap: usize,
+) -> Result<CudaHtj2kColorDecodePlans, Error> {
     let total_start = profile::profile_now(true);
 
     let parse_start = profile::profile_now(true);
-    let image = NativeImage::new(input, &DecodeSettings::default()).map_err(native_decode_error)?;
+    let (image, mut host_budget) = parse_with_host_cap(
+        input,
+        &DecodeSettings::default(),
+        host_cap,
+        "j2k CUDA bounded color planning",
+    )?;
     let parse_us = profile::elapsed_us(parse_start);
 
     let plan_start = profile::profile_now(true);
@@ -121,8 +141,19 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'
     let plan_us = profile::elapsed_us(plan_start);
 
     let flatten_start = profile::profile_now(true);
-    let (payload, components) =
-        flatten_cuda_color_components(&native_plan, fmt, None, "j2k CUDA color decode plans")?;
+    host_budget.account_bytes(
+        native_plan
+            .retained_allocation_bytes()
+            .map_err(j2k_native::DecodeError::from)
+            .map_err(native_decode_error)?,
+    )?;
+    let (payload, components) = flatten_cuda_color_components_with_budget(
+        &native_plan,
+        fmt,
+        None,
+        host_cap,
+        &mut host_budget,
+    )?;
     let flatten_us = profile::elapsed_us(flatten_start);
     let block_count = components
         .iter()

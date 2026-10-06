@@ -68,9 +68,28 @@ pub(super) fn append_classic_subbands(
             )),
         )?;
         let allocate_start = profile::profile_now(collect_stage_timings);
-        let buffer = J2kCudaEngine::new(context)
-            .allocate_classic_coefficients_with_pool(output_words, pool)
-            .map_err(cuda_error)?;
+        // `prepare_classic_decode` validates these rectangles as in-bounds and
+        // pairwise disjoint before the coefficients reach IDWT. With those
+        // invariants, matching the plane area means every word is overwritten.
+        let fully_covered = jobs
+            .iter()
+            .try_fold(0usize, |area, job| {
+                (job.width as usize)
+                    .checked_mul(job.height as usize)
+                    .and_then(|job_area| area.checked_add(job_area))
+            })
+            .is_some_and(|area| area == output_words);
+        let buffer = if fully_covered && pool.is_owned_by(context) {
+            let output_bytes = output_words
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(j2k_cuda_runtime::CudaError::LengthTooLarge { len: output_words })
+                .map_err(cuda_error)?;
+            pool.take(output_bytes).map_err(cuda_error)?
+        } else {
+            J2kCudaEngine::new(context)
+                .allocate_classic_coefficients_with_pool(output_words, pool)
+                .map_err(cuda_error)?
+        };
         allocate_us = allocate_us.saturating_add(profile::elapsed_us(allocate_start));
         let band_index = bands.len();
         bands.push(CudaCoefficientBand {

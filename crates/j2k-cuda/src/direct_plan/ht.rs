@@ -41,7 +41,7 @@ pub(super) fn append_ht_subband(
             .ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
             ))?;
-        if expected_len != payload_len {
+        if expected_len != payload_len || (job.number_of_coding_passes == 0 && expected_len != 0) {
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
             ));
@@ -54,6 +54,9 @@ pub(super) fn append_ht_subband(
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::unsupported_bit_depth(PLAN_BITPLANES_UNSUPPORTED),
             ));
+        }
+        if job.number_of_coding_passes == 0 {
+            continue;
         }
         let output_stride = checked_u32(job.output_stride)?;
         owners.payload.extend_from_slice(&job.data);
@@ -91,6 +94,12 @@ pub(super) fn append_ht_subband(
     Ok(())
 }
 
+pub(super) enum ReferencedHtPayloadMode<'a> {
+    Compact(&'a mut Vec<u8>),
+    DirectSource,
+}
+
+#[cfg(test)]
 pub(super) fn append_referenced_ht_subband<'a>(
     owners: &mut CudaPlanOwners,
     subband: &HtOwnedSubBandPlan,
@@ -99,15 +108,37 @@ pub(super) fn append_referenced_ht_subband<'a>(
     encoded: &[u8],
     shared_payload: &mut Vec<u8>,
 ) -> Result<(), Error> {
+    append_referenced_ht_subband_with_mode(
+        owners,
+        subband,
+        required_regions,
+        payloads,
+        encoded,
+        &mut ReferencedHtPayloadMode::Compact(shared_payload),
+    )
+}
+
+pub(super) fn append_referenced_ht_subband_with_mode<'a>(
+    owners: &mut CudaPlanOwners,
+    subband: &HtOwnedSubBandPlan,
+    required_regions: Option<&RequiredBandRegions>,
+    payloads: &mut impl Iterator<Item = &'a HtCodeBlockPayloadRanges>,
+    encoded: &[u8],
+    payload_mode: &mut ReferencedHtPayloadMode<'_>,
+) -> Result<(), Error> {
     let subband_index = checked_u32(owners.subbands.len())?;
     let code_block_start = checked_u32(owners.code_blocks.len())?;
     for job in &subband.jobs {
-        let required = !required_regions.is_some_and(|regions| {
-            !regions.get(subband.band_id).is_some_and(|required| {
-                required.intersects(job.output_x, job.output_y, job.width, job.height)
-            })
-        });
-        if !job.data.is_empty() {
+        let required = job.number_of_coding_passes != 0
+            && !required_regions.is_some_and(|regions| {
+                !regions.get(subband.band_id).is_some_and(|required| {
+                    required.intersects(job.output_x, job.output_y, job.width, job.height)
+                })
+            });
+        if !job.data.is_empty()
+            || (job.number_of_coding_passes == 0
+                && (job.cleanup_length != 0 || job.refinement_length != 0))
+        {
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(PLAN_BLOCK_LENGTH_MISMATCH),
             ));
@@ -121,21 +152,35 @@ pub(super) fn append_referenced_ht_subband<'a>(
                 j2k_core::CapabilityRejection::unsupported_bit_depth(PLAN_BITPLANES_UNSUPPORTED),
             ));
         }
-        let payload_offset = checked_u64(shared_payload.len())?;
-        let (payload_len, _) = consume_referenced_ht_payload(
-            payloads,
-            job,
-            encoded,
-            required.then_some(shared_payload),
-        )?;
+        if matches!(payload_mode, ReferencedHtPayloadMode::DirectSource)
+            && (required_regions.is_some()
+                || job.number_of_coding_passes > 1
+                || job.refinement_length != 0)
+        {
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "direct-source CUDA HTJ2K payloads require full cleanup-only code blocks",
+                ),
+            ));
+        }
+        let compact_offset = match payload_mode {
+            ReferencedHtPayloadMode::Compact(bytes) => Some(bytes.len()),
+            ReferencedHtPayloadMode::DirectSource => None,
+        };
+        let output = match payload_mode {
+            ReferencedHtPayloadMode::Compact(bytes) if required => Some(&mut **bytes),
+            ReferencedHtPayloadMode::Compact(_) | ReferencedHtPayloadMode::DirectSource => None,
+        };
+        let (payload_len, _, source_offset) =
+            consume_referenced_ht_payload(payloads, job, encoded, output)?;
         if !required {
             continue;
         }
-        let payload_len = checked_u32(payload_len)?;
+        let payload_offset = checked_u64(compact_offset.unwrap_or(source_offset))?;
         owners.code_blocks.push(CudaHtj2kCodeBlock {
             subband_index,
             payload_offset,
-            payload_len,
+            payload_len: checked_u32(payload_len)?,
             cleanup_length: job.cleanup_length,
             refinement_length: job.refinement_length,
             output_x: job.output_x,
@@ -171,7 +216,7 @@ fn consume_referenced_ht_payload<'a>(
     job: &HtOwnedCodeBlockBatchJob,
     encoded: &[u8],
     mut output: Option<&mut Vec<u8>>,
-) -> Result<(usize, usize), Error> {
+) -> Result<(usize, usize, usize), Error> {
     let output_start = output.as_ref().map_or(0, |bytes| bytes.len());
     let result = (|| {
         let first = payloads.next().ok_or(Error::capability_rejected(
@@ -248,7 +293,7 @@ fn consume_referenced_ht_payload<'a>(
                 .ok_or(Error::capability_rejected(
                     j2k_core::CapabilityRejection::resource_limit(PLAN_PAYLOAD_TOO_LARGE),
                 ))?;
-        Ok((payload_len, record_count))
+        Ok((payload_len, record_count, first.cleanup.offset))
     })();
     if result.is_err() {
         if let Some(bytes) = output {
@@ -268,7 +313,7 @@ pub(crate) fn referenced_ht_payload_record_count(
     for step in &plan.steps {
         if let J2kDirectGrayscaleStep::HtSubBand(subband) = step {
             for job in &subband.jobs {
-                let (_, consumed) =
+                let (_, consumed, _) =
                     consume_referenced_ht_payload(&mut records, job, encoded, None)?;
                 record_count =
                     record_count

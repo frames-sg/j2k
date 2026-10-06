@@ -11,8 +11,7 @@ mod handles;
 mod interop;
 
 pub use handles::CudaEvent;
-#[cfg(test)]
-use handles::CudaStream;
+pub(crate) use handles::CudaStream;
 
 impl CudaContext {
     fn complete_default_stream_work<T>(
@@ -31,22 +30,7 @@ impl CudaContext {
     /// Create a CUDA stream owned by this context.
     #[cfg(test)]
     pub(crate) fn create_stream(&self) -> Result<CudaStream, CudaError> {
-        let mut stream = std::ptr::null_mut();
-        self.inner.with_current_stateful_operation(|| {
-            // SAFETY: CUDA writes a new stream handle while the context
-            // lifecycle gate is held. CudaStream destroys the handle.
-            self.inner.driver.check("cuStreamCreate", unsafe {
-                (self.inner.driver.cu_stream_create)(&raw mut stream, 0)
-            })?;
-            crate::context::validate_resource_handle(
-                stream,
-                "CUDA returned a null stream after successful creation",
-            )
-        })?;
-        Ok(CudaStream {
-            context: self.clone(),
-            stream,
-        })
+        CudaStream::with_flags(self, handles::CU_STREAM_DEFAULT)
     }
 
     /// Create a CUDA timing event owned by this context.

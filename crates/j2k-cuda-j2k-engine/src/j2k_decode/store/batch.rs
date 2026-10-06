@@ -5,10 +5,17 @@ use crate::{
     bytes::store_rgb8_mct_batch_jobs_as_bytes,
     context::CudaContext,
     error::CudaError,
-    execution::{CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput},
+    execution::{
+        CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput,
+        CudaPooledKernelOutput,
+    },
     kernels::j2k_store_batch_launch_geometry,
-    memory::{checked_image_words, CudaDeviceBufferRange},
+    memory::{
+        checked_image_words, pooled_device_buffer, CudaBufferPool, CudaDeviceBuffer,
+        CudaDeviceBufferRange,
+    },
 };
+use j2k_codec_math::dwt::{FUSED_VERTICAL_TILE_COLUMNS, FUSED_VERTICAL_TILE_ROWS};
 
 use super::{
     destination::{validate_store_destination, zero_unwritten_store_output},
@@ -152,6 +159,39 @@ fn validate_rgb8_mct_targets(
     })
 }
 
+fn validate_final_vertical_targets(
+    targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
+) -> Result<(), CudaError> {
+    if targets.iter().any(|target| {
+        let job = target.job.store;
+        job.copy_height < 2
+            || job.copy_width == 0
+            || job.output_width != job.copy_width
+            || job.output_height != job.copy_height
+            || job.input_width0 != job.copy_width
+            || job.input_width1 != job.copy_width
+            || job.input_width2 != job.copy_width
+            || [
+                job.source_x0,
+                job.source_y0,
+                job.source_x1,
+                job.source_y1,
+                job.source_x2,
+                job.source_y2,
+                job.output_x,
+                job.output_y,
+            ]
+            .iter()
+            .any(|&x| x != 0)
+    }) {
+        return Err(CudaError::InvalidArgument {
+            message: "fused vertical IDWT store requires matching full origin-zero planes"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 impl crate::J2kCudaEngine<'_> {
     /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
     /// in one dispatch.
@@ -251,6 +291,69 @@ impl crate::J2kCudaEngine<'_> {
         live_host_bytes: usize,
     ) -> Result<CudaKernelContiguousBatchOutput, CudaError> {
         let plan = validate_rgb8_mct_targets(self.context, targets, live_host_bytes)?;
+        let output = self.allocate(plan.total_bytes)?;
+        let (ranges, execution) =
+            self.finish_contiguous_store(targets, &plan, &output, live_host_bytes, false, None)?;
+        Ok(CudaKernelContiguousBatchOutput {
+            output,
+            ranges,
+            execution,
+        })
+    }
+
+    /// Store a contiguous color batch into a pooled allocation retained by its surfaces.
+    /// When `final_vertical` is true, planes must contain the final horizontal
+    /// codestream IDWT results for matching, complete, origin-zero images.
+    #[doc(hidden)]
+    pub fn j2k_store_rgb8_mct_batch_contiguous_device_with_pool(
+        &self,
+        targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
+        live_host_bytes: usize,
+        final_vertical: bool,
+        pool: &CudaBufferPool,
+    ) -> Result<(CudaPooledKernelOutput, Vec<CudaDeviceBufferRange>), CudaError> {
+        if !pool.is_owned_by(self.context) {
+            return Err(CudaError::InvalidArgument {
+                message: "color store pool must belong to the launch context".to_string(),
+            });
+        }
+        let plan = validate_rgb8_mct_targets(self.context, targets, live_host_bytes)?;
+        if final_vertical {
+            validate_final_vertical_targets(targets)?;
+        }
+        let output = pool.take(plan.total_bytes)?;
+        let guard = pool.defer_reuse()?;
+        let result = self.finish_contiguous_store(
+            targets,
+            &plan,
+            pooled_device_buffer(&output)?,
+            live_host_bytes,
+            final_vertical,
+            Some(pool),
+        );
+        let (ranges, execution) = match result {
+            Ok(result) => result,
+            Err(error) => return guard.synchronize_then_error(error),
+        };
+        guard.release()?;
+        Ok((
+            CudaPooledKernelOutput {
+                buffer: output,
+                execution,
+            },
+            ranges,
+        ))
+    }
+
+    fn finish_contiguous_store(
+        &self,
+        targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
+        plan: &Rgb8MctBatchPlan,
+        output: &CudaDeviceBuffer,
+        live_host_bytes: usize,
+        final_vertical: bool,
+        pool: Option<&CudaBufferPool>,
+    ) -> Result<(Vec<CudaDeviceBufferRange>, CudaExecutionStats), CudaError> {
         let mut host_budget = HostPhaseBudget::with_live_bytes(
             "CUDA J2K contiguous store batch metadata",
             live_host_bytes,
@@ -273,11 +376,10 @@ impl crate::J2kCudaEngine<'_> {
             "J2K contiguous store output range mismatch",
         )?;
 
-        let output = self.allocate(plan.total_bytes)?;
         let initialize_output = || {
             zero_unwritten_store_output(
                 self.context,
-                &output,
+                output,
                 plan.total_bytes,
                 !plan.requires_zero_fill,
             )
@@ -286,11 +388,7 @@ impl crate::J2kCudaEngine<'_> {
             if initialize_output()? {
                 self.synchronize()?;
             }
-            return Ok(CudaKernelContiguousBatchOutput {
-                output,
-                ranges,
-                execution: CudaExecutionStats::default(),
-            });
+            return Ok((ranges, CudaExecutionStats::default()));
         }
 
         let base_ptr = output.device_ptr();
@@ -318,25 +416,47 @@ impl crate::J2kCudaEngine<'_> {
             plan.active_job_count,
             "J2K contiguous store active-job count mismatch",
         )?;
-        let jobs_buffer = self.upload(store_rgb8_mct_batch_jobs_as_bytes(&kernel_jobs))?;
+        let owned_jobs;
+        let pooled_jobs;
+        let jobs_buffer = if let Some(pool) = pool {
+            pooled_jobs = pool
+                .upload_pinned_parts_enqueue(&[store_rgb8_mct_batch_jobs_as_bytes(&kernel_jobs)])?;
+            pooled_device_buffer(&pooled_jobs)?
+        } else {
+            owned_jobs = self.upload(store_rgb8_mct_batch_jobs_as_bytes(&kernel_jobs))?;
+            &owned_jobs
+        };
         if initialize_output()? {
             self.synchronize()?;
         }
         // SAFETY: this owned path retains every plane, output, and uploaded
         // job buffer through the immediate context completion boundary.
         unsafe {
-            self.launch_j2k_store_rgb8_mct_batch_enqueue(
-                &jobs_buffer,
-                plan.max_pixels,
-                plan.active_job_count,
-            )?;
+            if final_vertical {
+                let max_tiles = targets
+                    .iter()
+                    .map(|target| {
+                        let job = target.job.store;
+                        (job.copy_width as usize).div_ceil(FUSED_VERTICAL_TILE_COLUMNS as usize)
+                            * (job.copy_height as usize).div_ceil(FUSED_VERTICAL_TILE_ROWS as usize)
+                    })
+                    .max()
+                    .unwrap_or(0);
+                self.launch_j2k_idwt_vertical_rgb8_mct_batch_enqueue(
+                    jobs_buffer,
+                    max_tiles,
+                    plan.active_job_count,
+                )?;
+            } else {
+                self.launch_j2k_store_rgb8_mct_batch_enqueue(
+                    jobs_buffer,
+                    plan.max_pixels,
+                    plan.active_job_count,
+                )?;
+            }
         }
         self.synchronize()?;
-        Ok(CudaKernelContiguousBatchOutput {
-            output,
-            ranges,
-            execution: CudaExecutionStats::new(1, 0, 1, false),
-        })
+        Ok((ranges, CudaExecutionStats::new(1, 0, 1, false)))
     }
 }
 

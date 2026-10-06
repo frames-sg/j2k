@@ -1,23 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_cuda_runtime::CudaContext;
+use super::FinishColorBatchRequest;
 
 use super::super::super::{
     finish_color_cuda_resident_surface_with_component_work, host_owners, take_component_work,
-    CudaBufferPool, CudaComponentDecodeWork, CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport,
-    Error, FinishColorCudaResidentSurfaceRequest, HostPhaseBudget, PixelFormat, Surface,
+    CudaHtj2kProfileReport, Error, FinishColorCudaResidentSurfaceRequest, HostPhaseBudget, Surface,
 };
 
+/// Finishes each image's MCT and store separately; IDWT already ran batched.
 pub(super) fn finish_color_cuda_resident_batch_surfaces_individually(
-    context: &CudaContext,
-    pool: &CudaBufferPool,
-    fmt: PixelFormat,
-    colors: Vec<CudaHtj2kColorDecodePlans>,
-    component_work: Vec<CudaComponentDecodeWork>,
-    collect_stage_timings: bool,
-    idwt_batched: bool,
+    request: FinishColorBatchRequest<'_>,
 ) -> Result<(Vec<Surface>, Vec<CudaHtj2kProfileReport>), Error> {
-    let mut output_budget = HostPhaseBudget::new("j2k CUDA color batch output graph");
+    let FinishColorBatchRequest {
+        context,
+        pool,
+        fmt,
+        colors,
+        component_work,
+        collect_stage_timings,
+        external_live_host_bytes,
+    } = request;
+    let mut output_budget = HostPhaseBudget::with_live_bytes(
+        "j2k CUDA color batch output graph",
+        external_live_host_bytes,
+    )?;
     host_owners::account_colors(&mut output_budget, &colors)?;
     host_owners::account_component_work(&mut output_budget, &component_work)?;
     let mut surfaces = output_budget.try_vec_with_capacity(colors.len())?;
@@ -36,8 +42,9 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_individually(
                 component_work,
                 wall_started: None,
                 collect_stage_timings,
-                run_idwt: !idwt_batched,
+                run_idwt: false,
                 emit_report: false,
+                preaccounted_host_bytes: Some(output_budget.live_bytes()),
             },
         )?;
         surfaces.push(surface);

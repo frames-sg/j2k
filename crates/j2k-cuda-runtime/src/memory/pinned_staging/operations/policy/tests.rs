@@ -82,3 +82,34 @@ fn poisoned_operation_gate_surfaces_typed_error() {
         Err(CudaError::StatePoisoned { .. })
     ));
 }
+
+#[test]
+fn reentrant_operation_gate_is_rejected_instead_of_deadlocking() {
+    let gate = Mutex::new(());
+    let held = lock_pinned_upload_operation(&gate).expect("lock operation gate");
+    assert!(matches!(
+        lock_pinned_upload_operation(&gate),
+        Err(CudaError::InvalidArgument { .. })
+    ));
+    let other_gate = Mutex::new(());
+    drop(lock_pinned_upload_operation(&other_gate).expect("independent gate"));
+    drop(held);
+    drop(lock_pinned_upload_operation(&gate).expect("gate reusable after release"));
+}
+
+#[test]
+fn operation_gate_hold_is_tracked_per_thread() {
+    let gate = Arc::new(Mutex::new(()));
+    let held = lock_pinned_upload_operation(&gate).expect("lock operation gate");
+    let peer_gate = Arc::clone(&gate);
+    let peer = std::thread::spawn(move || {
+        // A peer thread blocks on the gate rather than seeing this thread's hold.
+        lock_pinned_upload_operation(&peer_gate).map(drop)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(!peer.is_finished(), "peer must wait for the held gate");
+    drop(held);
+    peer.join()
+        .expect("peer thread")
+        .expect("peer acquires the released gate");
+}

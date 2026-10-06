@@ -178,6 +178,33 @@ impl CudaDecodeStageTimings {
     }
 }
 
+/// Scales per-item parse/plan/flatten times so they sum to the wall time of a
+/// parallel planning phase; batch reports add per-item stages and would
+/// otherwise report summed CPU time.
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn share_plan_wall_time<T>(
+    items: &mut [T],
+    wall_us: u128,
+    report: fn(&mut T) -> &mut CudaHtj2kProfileReport,
+) {
+    let cpu_us: u128 = items
+        .iter_mut()
+        .map(|item| {
+            let report = report(item);
+            report.parse_us + report.plan_us + report.flatten_us
+        })
+        .sum();
+    if cpu_us <= wall_us {
+        return;
+    }
+    for item in items {
+        let report = report(item);
+        report.parse_us = report.parse_us * wall_us / cpu_us;
+        report.plan_us = report.plan_us * wall_us / cpu_us;
+        report.flatten_us = report.flatten_us * wall_us / cpu_us;
+    }
+}
+
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn aggregate_decode_reports(
     reports: &[CudaHtj2kProfileReport],

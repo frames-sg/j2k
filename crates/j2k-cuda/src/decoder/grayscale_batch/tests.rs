@@ -10,7 +10,7 @@ use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions};
 
 use super::completion::{map_grayscale_status_error, GrayscaleJobIdentity};
-use super::{prepare_grayscale_batch, GrayscaleBatchInput};
+use super::{prepare_grayscale_batch, prepare_grayscale_batch_with_cap, GrayscaleBatchInput};
 
 #[test]
 fn grayscale_kernel_failure_maps_to_responsible_source_index() {
@@ -44,24 +44,8 @@ fn grayscale_kernel_failure_maps_to_responsible_source_index() {
 }
 
 #[test]
-fn grayscale_batch_rebases_two_plans_into_one_shared_payload() {
-    let pixels = (0_u16..64)
-        .map(|value| u8::try_from(value).expect("fixture byte"))
-        .collect::<Vec<_>>();
-    let encoded = encode_htj2k(
-        &pixels,
-        8,
-        8,
-        1,
-        8,
-        false,
-        &EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        },
-    )
-    .expect("HTJ2K grayscale fixture");
+fn grayscale_batch_rebases_two_plans_into_one_upload_layout() {
+    let encoded = gray8_fixture();
     let prepared = prepare_grayscale_batch(
         &[
             GrayscaleBatchInput::full(encoded.as_slice()),
@@ -73,7 +57,7 @@ fn grayscale_batch_rebases_two_plans_into_one_shared_payload() {
     .expect("shared grayscale batch plan");
 
     assert_eq!(prepared.plans.len(), 2);
-    assert!(!prepared.shared_payload.is_empty());
+    assert!(prepared.payload_parts.iter().any(|part| !part.is_empty()));
     assert!(prepared.plans.iter().all(|plan| plan.payload().is_empty()));
     let first_max = prepared.plans[0]
         .code_blocks()
@@ -88,25 +72,94 @@ fn grayscale_batch_rebases_two_plans_into_one_shared_payload() {
         .min()
         .expect("second block payload");
     assert!(second_min >= first_max);
+
+    // Both inputs are the same codestream, so each block must resolve to the
+    // same bytes once the parts are uploaded back to back.
+    let uploaded = prepared
+        .payload_parts
+        .iter()
+        .flat_map(|part| part.iter().copied())
+        .collect::<Vec<_>>();
+    let bytes = |offset: u64, len: u32| {
+        let start = usize::try_from(offset).expect("offset fits usize");
+        &uploaded[start..start + len as usize]
+    };
+    let first = prepared.plans[0].code_blocks();
+    let second = prepared.plans[1].code_blocks();
+    assert_eq!(first.len(), second.len());
+    for (a, b) in first.iter().zip(second) {
+        assert_eq!(
+            bytes(a.payload_offset, a.payload_len),
+            bytes(b.payload_offset, b.payload_len)
+        );
+    }
+}
+
+#[test]
+fn grayscale_batch_cap_covers_retained_results_and_one_live_planner() {
+    let encoded = gray8_fixture();
+    let one = [GrayscaleBatchInput::full(encoded.as_slice())];
+    let two = [
+        GrayscaleBatchInput::full(encoded.as_slice()),
+        GrayscaleBatchInput::full(encoded.as_slice()),
+    ];
+    let one_cap = minimum_grayscale_batch_cap(&one);
+    let two_cap = minimum_grayscale_batch_cap(&two);
+
+    assert!(
+        two_cap > one_cap,
+        "the second retained plan must consume aggregate headroom"
+    );
+    let Err(error) = prepare_grayscale_batch_with_cap(
+        &two,
+        PixelFormat::Gray8,
+        DecodeSettings::strict(),
+        two_cap - 1,
+    ) else {
+        panic!("one byte below the discovered aggregate cap must fail");
+    };
+    assert!(
+        error.is_host_planning_limit(),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn parallel_grayscale_planning_returns_the_first_input_error() {
+    let encoded = gray8_fixture();
+    let first_invalid = [0xff_u8, 0x4f, 0x00];
+    let later_invalid = [0x00_u8, 0x01];
+    let expected = prepare_grayscale_batch(
+        &[GrayscaleBatchInput::full(first_invalid.as_slice())],
+        PixelFormat::Gray8,
+        DecodeSettings::strict(),
+    )
+    .err()
+    .expect("first malformed input must fail");
+    let actual = prepare_grayscale_batch(
+        &[
+            GrayscaleBatchInput::full(encoded.as_slice()),
+            GrayscaleBatchInput::full(first_invalid.as_slice()),
+            GrayscaleBatchInput::full(later_invalid.as_slice()),
+        ],
+        PixelFormat::Gray8,
+        DecodeSettings::strict(),
+    )
+    .err()
+    .expect("batch containing malformed inputs must fail");
+
+    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+}
+
+fn minimum_grayscale_batch_cap(inputs: &[GrayscaleBatchInput<'_>]) -> usize {
+    crate::decoder::plan::minimum_planning_cap(|cap| {
+        prepare_grayscale_batch_with_cap(inputs, PixelFormat::Gray8, DecodeSettings::strict(), cap)
+    })
 }
 
 #[test]
 fn prepared_htj2k_batch_uses_retained_offsets_without_reparsing() {
-    let pixels = (0_u8..64).collect::<Vec<_>>();
-    let encoded = encode_htj2k(
-        &pixels,
-        8,
-        8,
-        1,
-        8,
-        false,
-        &EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        },
-    )
-    .expect("HTJ2K retained-plan fixture");
+    let encoded = gray8_fixture();
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(encoded))],
         BatchDecodeOptions::default(),
@@ -141,8 +194,8 @@ fn prepared_htj2k_batch_uses_retained_offsets_without_reparsing() {
 
     assert_eq!(cuda.reports[0].parse_us, 0);
     assert_eq!(cuda.reports[0].plan_us, 0);
-    assert!(cuda.plans[0].payload().is_empty());
-    assert!(!cuda.shared_payload.is_empty());
+    assert_eq!(cuda.plans[0].payload(), [] as [u8; 0]);
+    assert!(cuda.payload_parts.iter().any(|part| !part.is_empty()));
 }
 
 #[test]
@@ -209,5 +262,23 @@ fn grayscale_batch_prepares_roi_and_reduced_requests_in_one_payload_arena() {
     assert_eq!(prepared.plans[0].dimensions(), roi_plan.output_dims());
     assert_eq!(prepared.plans[1].dimensions(), reduced_plan.output_dims());
     assert!(prepared.plans.iter().all(|plan| plan.payload().is_empty()));
-    assert!(!prepared.shared_payload.is_empty());
+    assert!(prepared.payload_parts.iter().any(|part| !part.is_empty()));
+}
+
+fn gray8_fixture() -> Vec<u8> {
+    let pixels = (0_u8..64).collect::<Vec<_>>();
+    encode_htj2k(
+        &pixels,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("HTJ2K grayscale fixture")
 }

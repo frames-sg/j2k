@@ -133,6 +133,7 @@ impl CudaBufferPool {
             inner: Arc::new(CudaBufferPoolInner {
                 context,
                 limits,
+                upload_stream: Mutex::new(None),
                 state: Mutex::new(CudaBufferPoolState {
                     free,
                     deferred: Vec::new(),

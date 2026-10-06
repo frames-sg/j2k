@@ -40,6 +40,9 @@ pub(in crate::direct_plan) fn append_referenced_classic_subband<'a>(
         ))?;
         let fragments = referenced_classic_ranges(encoded, *payload, ranges)?;
         validate_referenced_classic_job(job, payload.combined_length)?;
+        if job.number_of_coding_passes == 0 {
+            continue;
+        }
         if required_regions.is_some_and(|regions| {
             !regions.get(subband.band_id).is_some_and(|required| {
                 required.intersects(job.output_x, job.output_y, job.width, job.height)

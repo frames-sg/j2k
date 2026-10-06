@@ -10,7 +10,7 @@ use super::super::{
     CUDA_HTJ2K_KERNELS_NOT_READY,
 };
 use super::buffer_access::pooled_cuda_buffer;
-use crate::allocation::{try_collect_cuda_results_exact, HostPhaseBudget};
+use crate::allocation::HostPhaseBudget;
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_j2k_engine::{CudaJ2kIdwtBatchStageProfile, CudaJ2kIdwtNormalization};
 
@@ -86,16 +86,6 @@ pub(in crate::decoder) fn run_cuda_component_idwt_steps(
 }
 
 #[cfg(feature = "cuda-runtime")]
-pub(in crate::decoder) fn can_batch_color_idwt(components: &[&CudaHtj2kDecodePlan]) -> bool {
-    let Some(first) = components.first() else {
-        return false;
-    };
-    components
-        .iter()
-        .all(|component| component.idwt_steps().len() == first.idwt_steps().len())
-}
-
-#[cfg(feature = "cuda-runtime")]
 pub(in crate::decoder) fn run_color_component_idwt_batches(
     context: &j2k_cuda_runtime::CudaContext,
     components: &[&CudaHtj2kDecodePlan],
@@ -103,6 +93,7 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
     pool: &CudaBufferPool,
     collect_stage_timings: bool,
     live_host_bytes: usize,
+    defer_final_vertical: bool,
 ) -> Result<Option<CudaQueuedIdwtBatch>, Error> {
     let (queued_batch, idwt_us) = if collect_stage_timings {
         context
@@ -114,6 +105,7 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
                     pool,
                     live_host_bytes,
                     true,
+                    defer_final_vertical,
                 )
             })
             .map_err(cuda_error)?
@@ -130,6 +122,7 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
                     pool,
                     live_host_bytes,
                     false,
+                    defer_final_vertical,
                 )
             })
         }
@@ -167,6 +160,27 @@ pub(in crate::decoder) fn run_color_component_idwt_batches(
 }
 
 #[cfg(feature = "cuda-runtime")]
+fn idwt_target_from_step<'a>(
+    work: &'a CudaComponentDecodeWork,
+    step: &CudaHtj2kIdwtStep,
+) -> Result<CudaJ2kIdwtTarget<'a>, CudaError> {
+    let ll = find_cuda_band(&work.bands, step.ll_band_id).map_err(cuda_invalid_decode_plan)?;
+    let hl = find_cuda_band(&work.bands, step.hl_band_id).map_err(cuda_invalid_decode_plan)?;
+    let lh = find_cuda_band(&work.bands, step.lh_band_id).map_err(cuda_invalid_decode_plan)?;
+    let hh = find_cuda_band(&work.bands, step.hh_band_id).map_err(cuda_invalid_decode_plan)?;
+    let output =
+        find_cuda_band(&work.bands, step.output_band_id).map_err(cuda_invalid_decode_plan)?;
+    Ok(CudaJ2kIdwtTarget {
+        ll: pooled_cuda_buffer(&ll.buffer).map_err(cuda_invalid_decode_plan)?,
+        hl: pooled_cuda_buffer(&hl.buffer).map_err(cuda_invalid_decode_plan)?,
+        lh: pooled_cuda_buffer(&lh.buffer).map_err(cuda_invalid_decode_plan)?,
+        hh: pooled_cuda_buffer(&hh.buffer).map_err(cuda_invalid_decode_plan)?,
+        output: pooled_cuda_buffer(&output.buffer).map_err(cuda_invalid_decode_plan)?,
+        job: cuda_idwt_job_from_step(step),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
 #[expect(
     clippy::too_many_lines,
     reason = "IDWT enqueue keeps per-component plan validation and stream ordering together"
@@ -178,13 +192,14 @@ fn enqueue_color_component_idwt_batches(
     pool: &CudaBufferPool,
     live_host_bytes: usize,
     collect_stage_profile: bool,
+    defer_final_vertical: bool,
 ) -> Result<CudaQueuedIdwtBatch, CudaError> {
     if components.len() != component_work.len() {
         return Err(CudaError::InvalidArgument {
             message: CUDA_HTJ2K_KERNELS_NOT_READY.to_string(),
         });
     }
-    let Some(first) = components.first() else {
+    if components.is_empty() {
         return Ok(CudaQueuedIdwtBatch {
             context: context.clone(),
             queued: Vec::new(),
@@ -193,7 +208,7 @@ fn enqueue_color_component_idwt_batches(
             final_interleave_horizontal_us: 0,
             final_vertical_us: 0,
         });
-    };
+    }
 
     let mut host_budget =
         HostPhaseBudget::with_live_bytes("CUDA color IDWT batch metadata", live_host_bytes)
@@ -204,18 +219,20 @@ fn enqueue_color_component_idwt_batches(
     let mut kernel_dispatches = 0usize;
     let mut decode_dispatches = 0usize;
     let mut final_stage_profile = CudaJ2kIdwtBatchStageProfile::default();
-    let step_count = first.idwt_steps().len();
+    let step_count = components
+        .iter()
+        .map(|component| component.idwt_steps().len())
+        .max()
+        .unwrap_or(0);
     let trace_enabled = cuda_idwt_trace_enabled();
     let enqueue_result = (|| -> Result<(), CudaError> {
         let mut output_pool_trace = CudaIdwtOutputPoolTraceTotals::default();
         let output_alloc_start = trace_enabled.then(std::time::Instant::now);
         for step_index in 0..step_count {
             for (component_index, component) in components.iter().enumerate() {
-                let step = component.idwt_steps().get(step_index).ok_or_else(|| {
-                    CudaError::InvalidArgument {
-                        message: CUDA_HTJ2K_KERNELS_NOT_READY.to_string(),
-                    }
-                })?;
+                let Some(step) = component.idwt_steps().get(step_index) else {
+                    continue;
+                };
                 let output_bytes = {
                     let work = &component_work[component_index];
                     let ll = find_cuda_band(&work.bands, step.ll_band_id)
@@ -256,40 +273,49 @@ fn enqueue_color_component_idwt_batches(
         let mut target_batches = host_budget
             .try_vec_with_capacity(step_count)
             .map_err(CudaError::from)?;
-        for step_index in 0..step_count {
-            let targets = try_collect_cuda_results_exact(
-                &mut host_budget,
-                components
-                    .iter()
-                    .enumerate()
-                    .map(|(component_index, component)| {
-                        let step = component.idwt_steps().get(step_index).ok_or_else(|| {
-                            CudaError::InvalidArgument {
-                                message: CUDA_HTJ2K_KERNELS_NOT_READY.to_string(),
-                            }
-                        })?;
-                        let work = &component_work[component_index];
-                        let ll = find_cuda_band(&work.bands, step.ll_band_id)
-                            .map_err(cuda_invalid_decode_plan)?;
-                        let hl = find_cuda_band(&work.bands, step.hl_band_id)
-                            .map_err(cuda_invalid_decode_plan)?;
-                        let lh = find_cuda_band(&work.bands, step.lh_band_id)
-                            .map_err(cuda_invalid_decode_plan)?;
-                        let hh = find_cuda_band(&work.bands, step.hh_band_id)
-                            .map_err(cuda_invalid_decode_plan)?;
-                        let output = find_cuda_band(&work.bands, step.output_band_id)
-                            .map_err(cuda_invalid_decode_plan)?;
-                        Ok(CudaJ2kIdwtTarget {
-                            ll: pooled_cuda_buffer(&ll.buffer).map_err(cuda_invalid_decode_plan)?,
-                            hl: pooled_cuda_buffer(&hl.buffer).map_err(cuda_invalid_decode_plan)?,
-                            lh: pooled_cuda_buffer(&lh.buffer).map_err(cuda_invalid_decode_plan)?,
-                            hh: pooled_cuda_buffer(&hh.buffer).map_err(cuda_invalid_decode_plan)?,
-                            output: pooled_cuda_buffer(&output.buffer)
-                                .map_err(cuda_invalid_decode_plan)?,
-                            job: cuda_idwt_job_from_step(step),
-                        })
-                    }),
-            )?;
+        // Run every non-final level first, then align each component's final
+        // level in one last batch. This preserves per-component dependencies
+        // while allowing the last vertical pass for every depth to be fused
+        // into one mixed-geometry color store.
+        for step_index in 0..step_count.saturating_sub(1) {
+            let target_count = components
+                .iter()
+                .filter(|component| component.idwt_steps().len() > step_index + 1)
+                .count();
+            if target_count == 0 {
+                continue;
+            }
+            let mut targets = host_budget
+                .try_vec_with_capacity(target_count)
+                .map_err(CudaError::from)?;
+            for (component_index, component) in components.iter().enumerate() {
+                if component.idwt_steps().len() <= step_index + 1 {
+                    continue;
+                }
+                targets.push(idwt_target_from_step(
+                    &component_work[component_index],
+                    &component.idwt_steps()[step_index],
+                )?);
+            }
+            target_batches.push(targets);
+        }
+        let final_target_count = components
+            .iter()
+            .filter(|component| !component.idwt_steps().is_empty())
+            .count();
+        if final_target_count != 0 {
+            let mut targets = host_budget
+                .try_vec_with_capacity(final_target_count)
+                .map_err(CudaError::from)?;
+            for (component_index, component) in components.iter().enumerate() {
+                let Some(step) = component.idwt_steps().last() else {
+                    continue;
+                };
+                targets.push(idwt_target_from_step(
+                    &component_work[component_index],
+                    step,
+                )?);
+            }
             target_batches.push(targets);
         }
         let target_build_us = elapsed_host_us(target_build_start);
@@ -306,7 +332,14 @@ fn enqueue_color_component_idwt_batches(
         // submitted and synchronously completed on that stream.
         let (queued_execution, stage_profile) = unsafe {
             let engine = j2k_cuda_j2k_engine::J2kCudaEngine::new(context);
-            if collect_stage_profile {
+            if defer_final_vertical {
+                engine.j2k_inverse_dwt_batch_sequence_defer_final_vertical_with_pool(
+                    &target_slices,
+                    pool,
+                    host_budget.live_bytes(),
+                    collect_stage_profile,
+                )?
+            } else if collect_stage_profile {
                 engine
                     .j2k_inverse_dwt_batch_sequence_enqueue_profiled_with_pool_and_live_host_bytes_normalized(
                         &target_slices,

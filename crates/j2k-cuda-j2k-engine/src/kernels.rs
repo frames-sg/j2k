@@ -8,6 +8,7 @@ use crate::{
     },
     error::CudaError,
 };
+use j2k_codec_math::dwt;
 use j2k_cuda_runtime::CudaKernelSpec;
 
 pub(crate) use j2k_cuda_runtime::CudaLaunchGeometry;
@@ -18,15 +19,14 @@ const HTJ2K_ENCODE_CODEBLOCK_THREADS: u32 = 128;
 const SAMPLE_THREADS: u32 = 256;
 const J2K_THREADS_X: u32 = 16;
 const J2K_THREADS_Y: u32 = 16;
-#[cfg(test)]
-pub(crate) const CUDA_MAX_GRID_DIM_X: u32 = 2_147_483_647;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CudaKernel {
+    Htj2kDecodeCleanupSymbols,
+    Htj2kDecodeCleanupMagsgn,
+    Htj2kClearCoefficientTargets,
     Htj2kDecodeCodeblocks,
     Htj2kDecodeCodeblocksMulti,
-    Htj2kDecodeCodeblocksMultiCleanupOnly,
-    Htj2kDecodeCodeblocksMultiCleanupDequantize,
     J2kDequantizeHtj2kCodeblocks,
     J2kDequantizeHtj2kCodeblocksMulti,
     J2kDequantizeHtj2kCleanupJobsMulti,
@@ -48,11 +48,14 @@ pub(crate) enum CudaKernel {
     J2kQuantizeSubbandStrided,
     J2kIdwtInterleave,
     J2kIdwtInterleaveHorizontalMulti,
+    J2kIdwtInterleaveHorizontalTiledMulti,
     J2kIdwtInterleaveHorizontal53Multi,
     J2kIdwtInterleaveHorizontal97Multi,
     J2kIdwtHorizontal53,
     J2kIdwtHorizontal97,
     J2kIdwtVerticalMulti,
+    J2kIdwtVerticalStripMulti,
+    J2kIdwtVerticalTallStripMulti,
     J2kIdwtVertical53Multi,
     J2kIdwtVertical97Multi,
     J2kIdwtVertical97MultiCols4,
@@ -68,6 +71,7 @@ pub(crate) enum CudaKernel {
     J2kStoreRgb16Mct,
     J2kStoreRgb8,
     J2kStoreRgb8MctBatch,
+    J2kIdwtVerticalRgb8MctBatch,
     J2kStoreRgb8NativeBatch,
     J2kStoreRgb16NativeBatch,
     J2kStoreRgbI16NativeBatch,
@@ -103,10 +107,11 @@ impl CudaKernel {
     const fn is_htj2k_decode(self) -> bool {
         matches!(
             self,
-            Self::Htj2kDecodeCodeblocks
+            Self::Htj2kDecodeCleanupSymbols
+                | Self::Htj2kDecodeCleanupMagsgn
+                | Self::Htj2kClearCoefficientTargets
+                | Self::Htj2kDecodeCodeblocks
                 | Self::Htj2kDecodeCodeblocksMulti
-                | Self::Htj2kDecodeCodeblocksMultiCleanupOnly
-                | Self::Htj2kDecodeCodeblocksMultiCleanupDequantize
         )
     }
 
@@ -152,11 +157,14 @@ impl CudaKernel {
             self,
             Self::J2kIdwtInterleave
                 | Self::J2kIdwtInterleaveHorizontalMulti
+                | Self::J2kIdwtInterleaveHorizontalTiledMulti
                 | Self::J2kIdwtInterleaveHorizontal53Multi
                 | Self::J2kIdwtInterleaveHorizontal97Multi
                 | Self::J2kIdwtHorizontal53
                 | Self::J2kIdwtHorizontal97
                 | Self::J2kIdwtVerticalMulti
+                | Self::J2kIdwtVerticalStripMulti
+                | Self::J2kIdwtVerticalTallStripMulti
                 | Self::J2kIdwtVertical53Multi
                 | Self::J2kIdwtVertical97Multi
                 | Self::J2kIdwtVertical97MultiCols4
@@ -167,14 +175,11 @@ impl CudaKernel {
 
     const fn entrypoint(self) -> &'static [u8] {
         match self {
+            Self::Htj2kDecodeCleanupSymbols => b"j2k_htj2k_decode_cleanup_symbols\0",
+            Self::Htj2kDecodeCleanupMagsgn => b"j2k_htj2k_decode_cleanup_magsgn\0",
+            Self::Htj2kClearCoefficientTargets => b"j2k_htj2k_clear_coefficient_targets\0",
             Self::Htj2kDecodeCodeblocks => b"j2k_htj2k_decode_codeblocks\0",
             Self::Htj2kDecodeCodeblocksMulti => b"j2k_htj2k_decode_codeblocks_multi\0",
-            Self::Htj2kDecodeCodeblocksMultiCleanupOnly => {
-                b"j2k_htj2k_decode_codeblocks_multi_cleanup_only\0"
-            }
-            Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
-                b"j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize\0"
-            }
             Self::J2kDequantizeHtj2kCodeblocks => b"j2k_dequantize_htj2k_codeblocks\0",
             Self::J2kDequantizeHtj2kCodeblocksMulti => b"j2k_dequantize_htj2k_codeblocks_multi\0",
             Self::J2kDequantizeHtj2kCleanupJobsMulti => {
@@ -202,6 +207,9 @@ impl CudaKernel {
             Self::J2kQuantizeSubbandStrided => b"j2k_quantize_subband_strided\0",
             Self::J2kIdwtInterleave => b"j2k_idwt_interleave\0",
             Self::J2kIdwtInterleaveHorizontalMulti => b"j2k_idwt_interleave_horizontal_multi\0",
+            Self::J2kIdwtInterleaveHorizontalTiledMulti => {
+                b"j2k_idwt_interleave_horizontal_tiled_multi\0"
+            }
             Self::J2kIdwtInterleaveHorizontal53Multi => {
                 b"j2k_idwt_interleave_horizontal_53_multi\0"
             }
@@ -211,6 +219,8 @@ impl CudaKernel {
             Self::J2kIdwtHorizontal53 => b"j2k_idwt_horizontal_53\0",
             Self::J2kIdwtHorizontal97 => b"j2k_idwt_horizontal_97\0",
             Self::J2kIdwtVerticalMulti => b"j2k_idwt_vertical_multi\0",
+            Self::J2kIdwtVerticalStripMulti => b"j2k_idwt_vertical_strip_multi\0",
+            Self::J2kIdwtVerticalTallStripMulti => b"j2k_idwt_vertical_tall_strip_multi\0",
             Self::J2kIdwtVertical53Multi => b"j2k_idwt_vertical_53_multi\0",
             Self::J2kIdwtVertical97Multi => b"j2k_idwt_vertical_97_multi\0",
             Self::J2kIdwtVertical97MultiCols4 => b"j2k_idwt_vertical_97_multi_cols4\0",
@@ -225,6 +235,7 @@ impl CudaKernel {
             Self::J2kStoreRgb16 => b"j2k_store_rgb16\0",
             Self::J2kStoreRgb16Mct => b"j2k_store_rgb16_mct\0",
             Self::J2kStoreRgb8 => b"j2k_store_rgb8\0",
+            Self::J2kIdwtVerticalRgb8MctBatch => b"j2k_idwt_vertical_rgb8_mct_batch\0",
             Self::J2kStoreRgb8MctBatch => b"j2k_store_rgb8_mct_batch\0",
             Self::J2kStoreRgb8NativeBatch => b"j2k_store_rgb8_native_batch\0",
             Self::J2kStoreRgb16NativeBatch => b"j2k_store_rgb16_native_batch\0",
@@ -269,6 +280,25 @@ pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
     x_blocks_launch_geometry(max_len, job_count, SAMPLE_THREADS)
+}
+
+pub(crate) fn j2k_idwt_tiled_horizontal_launch_geometry(
+    blocks: usize,
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    CudaLaunchGeometry::new(
+        (
+            u32::try_from(blocks).ok()?,
+            u32::try_from(job_count).ok()?,
+            1,
+        ),
+        (dwt::IDWT_HORIZONTAL_TILE_THREADS, 1, 1),
+    )
+}
+
+pub(crate) fn j2k_idwt_tiled_horizontal_block_count(width: usize, rows: usize) -> Option<usize> {
+    rows.div_ceil(dwt::IDWT_HORIZONTAL_TILE_ROWS as usize)
+        .checked_mul(width.div_ceil(dwt::IDWT_HORIZONTAL_TILE_COLUMNS as usize))
 }
 
 pub(crate) fn j2k_idwt_multi_coop_axis_launch_geometry(
@@ -436,16 +466,20 @@ mod tests {
                 "j2k_htj2k_decode_codeblocks",
             ),
             (
+                CudaKernel::Htj2kClearCoefficientTargets,
+                "j2k_htj2k_clear_coefficient_targets",
+            ),
+            (
                 CudaKernel::Htj2kDecodeCodeblocksMulti,
                 "j2k_htj2k_decode_codeblocks_multi",
             ),
             (
-                CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly,
-                "j2k_htj2k_decode_codeblocks_multi_cleanup_only",
+                CudaKernel::Htj2kDecodeCleanupSymbols,
+                "j2k_htj2k_decode_cleanup_symbols",
             ),
             (
-                CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize,
-                "j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize",
+                CudaKernel::Htj2kDecodeCleanupMagsgn,
+                "j2k_htj2k_decode_cleanup_magsgn",
             ),
             (
                 CudaKernel::J2kDequantizeHtj2kCodeblocks,
@@ -535,6 +569,10 @@ mod tests {
                 "j2k_idwt_interleave_horizontal_multi",
             ),
             (
+                CudaKernel::J2kIdwtInterleaveHorizontalTiledMulti,
+                "j2k_idwt_interleave_horizontal_tiled_multi",
+            ),
+            (
                 CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
                 "j2k_idwt_interleave_horizontal_53_multi",
             ),
@@ -545,6 +583,14 @@ mod tests {
             (CudaKernel::J2kIdwtHorizontal53, "j2k_idwt_horizontal_53"),
             (CudaKernel::J2kIdwtHorizontal97, "j2k_idwt_horizontal_97"),
             (CudaKernel::J2kIdwtVerticalMulti, "j2k_idwt_vertical_multi"),
+            (
+                CudaKernel::J2kIdwtVerticalStripMulti,
+                "j2k_idwt_vertical_strip_multi",
+            ),
+            (
+                CudaKernel::J2kIdwtVerticalTallStripMulti,
+                "j2k_idwt_vertical_tall_strip_multi",
+            ),
             (
                 CudaKernel::J2kIdwtVertical53Multi,
                 "j2k_idwt_vertical_53_multi",
@@ -612,9 +658,10 @@ mod tests {
             htj2k_decode_ptx(),
             &[
                 CudaKernel::Htj2kDecodeCodeblocks,
+                CudaKernel::Htj2kClearCoefficientTargets,
                 CudaKernel::Htj2kDecodeCodeblocksMulti,
-                CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly,
-                CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize,
+                CudaKernel::Htj2kDecodeCleanupSymbols,
+                CudaKernel::Htj2kDecodeCleanupMagsgn,
             ],
         );
     }
@@ -679,11 +726,14 @@ mod tests {
             &[
                 CudaKernel::J2kIdwtInterleave,
                 CudaKernel::J2kIdwtInterleaveHorizontalMulti,
+                CudaKernel::J2kIdwtInterleaveHorizontalTiledMulti,
                 CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
                 CudaKernel::J2kIdwtInterleaveHorizontal97Multi,
                 CudaKernel::J2kIdwtHorizontal53,
                 CudaKernel::J2kIdwtHorizontal97,
                 CudaKernel::J2kIdwtVerticalMulti,
+                CudaKernel::J2kIdwtVerticalStripMulti,
+                CudaKernel::J2kIdwtVerticalTallStripMulti,
                 CudaKernel::J2kIdwtVertical53Multi,
                 CudaKernel::J2kIdwtVertical97Multi,
                 CudaKernel::J2kIdwtVertical97MultiCols4,
@@ -712,6 +762,7 @@ mod tests {
                 CudaKernel::J2kStoreRgb16Mct,
                 CudaKernel::J2kStoreRgb8,
                 CudaKernel::J2kStoreRgb8MctBatch,
+                CudaKernel::J2kIdwtVerticalRgb8MctBatch,
                 CudaKernel::J2kStoreRgb8NativeBatch,
                 CudaKernel::J2kStoreRgb16NativeBatch,
                 CudaKernel::J2kStoreRgbI16NativeBatch,

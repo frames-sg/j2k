@@ -6,15 +6,15 @@ use super::completion::{finish_submitted_grayscale_batch, finish_synchronous_gra
 use super::preparation::{grayscale_owner_budget, prepare_grayscale_batch, PreparedGrayscaleBatch};
 use super::store::{store_gray16_batch, store_gray8_batch, store_grayi16_batch};
 use super::{
-    can_batch_color_idwt, cuda_error, decode_cuda_component_subbands_with_resources,
-    enqueue_component_classic_batches, enqueue_component_cleanup_dequant_batches,
-    finalize_color_batch_decode_report, finish_cuda_component_decode,
-    grayscale_htj2k_job_identities, profile, run_color_component_idwt_batches,
-    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps, CudaComponentDecodeWork,
-    CudaDecodedComponent, CudaExternalDeviceBufferViewMut, CudaHtj2kProfileReport,
-    CudaQueuedIdwtBatch, CudaSession, DecodeSettings, DeviceSubmitSession, Error,
-    GrayscaleBatchInput, GrayscaleBatchOutput, GrayscaleHtj2kCleanup, GrayscalePendingCompletion,
-    HostPhaseBudget, PixelFormat, StoredGrayscaleBatch, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    cuda_error, decode_cuda_component_subbands_with_resources, enqueue_component_classic_batches,
+    enqueue_component_cleanup_dequant_batches, finalize_color_batch_decode_report,
+    finish_cuda_component_decode, grayscale_htj2k_job_identities, profile,
+    run_color_component_idwt_batches, run_component_cleanup_dequant_batches,
+    CudaComponentDecodeWork, CudaDecodedComponent, CudaExternalDeviceBufferViewMut,
+    CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession, DecodeSettings, DeviceSubmitSession,
+    Error, GrayscaleBatchInput, GrayscaleBatchOutput, GrayscaleHtj2kCleanup,
+    GrayscalePendingCompletion, HostPhaseBudget, PixelFormat, StoredGrayscaleBatch,
+    CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, J2kCudaEngine};
 
@@ -46,7 +46,7 @@ pub(super) fn decode_grayscale_cuda_batch_with_profile(
     let mut prepared = prepare_grayscale_batch(inputs, fmt, settings)?;
     let (decode_resources, table_upload_us, payload_upload_us) =
         upload_grayscale_decode_resources(session, &prepared, collect_stage_timings)?;
-    drop(std::mem::take(&mut prepared.shared_payload));
+    drop(std::mem::take(&mut prepared.payload_parts));
     let (host_budget, mut component_work) =
         build_grayscale_component_work(session, &prepared, collect_stage_timings)?;
     let (pending_cleanup, pending_classic) = enqueue_grayscale_entropy(
@@ -125,14 +125,20 @@ fn upload_grayscale_decode_resources(
     };
     let table_upload_us = profile::elapsed_us(table_upload_start);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
+    let mut payload_budget = grayscale_owner_budget(
+        &prepared.plans,
+        &prepared.reports,
+        &prepared.payload_parts,
+        "j2k CUDA grayscale batch payload upload",
+    )?;
+    let mut payload_parts = payload_budget.try_vec_with_capacity(prepared.payload_parts.len())?;
+    payload_parts.extend(prepared.payload_parts.iter().map(Vec::as_slice));
     let engine = J2kCudaEngine::new(&context);
     let resources = match tables.as_ref() {
-        Some(tables) => engine.upload_htj2k_decode_resources_with_tables_and_pool(
-            &prepared.shared_payload,
-            tables,
-            &pool,
-        ),
-        None => engine.upload_j2k_decode_payload_with_pool(&prepared.shared_payload, &pool),
+        Some(tables) => {
+            engine.upload_htj2k_decode_resources_with_tables_and_pool(&payload_parts, tables, &pool)
+        }
+        None => engine.upload_j2k_decode_payload_with_pool(&payload_parts, &pool),
     }
     .map_err(cuda_error)?;
     Ok((
@@ -152,8 +158,7 @@ fn build_grayscale_component_work(
     let mut budget = grayscale_owner_budget(
         &prepared.plans,
         &prepared.reports,
-        &prepared.shared_payload,
-        None,
+        &prepared.payload_parts,
         "j2k CUDA grayscale batch execution graph",
     )?;
     budget.account_vec(&prepared.output_indices)?;
@@ -239,42 +244,20 @@ fn enqueue_grayscale_idwt(
 ) -> Result<Option<CudaQueuedIdwtBatch>, Error> {
     let context = session.cuda_context()?;
     let pool = session.decode_batch_buffer_pool()?;
-    let plan_refs = plans.iter().collect::<Vec<_>>();
-    if can_batch_color_idwt(&plan_refs) {
-        return run_color_component_idwt_batches(
-            &context,
-            &plan_refs,
-            work,
-            &pool,
-            collect_stage_timings,
-            live_host_bytes,
-        );
-    }
-    if collect_stage_timings {
-        for (plan, component) in plans.iter().zip(work.iter_mut()) {
-            run_cuda_component_idwt_steps(&context, plan.idwt_steps(), component, &pool, true)?;
-        }
-        return Ok(None);
-    }
-
-    let mut pending: Option<CudaQueuedIdwtBatch> = None;
-    for (plan, component) in plans.iter().zip(work.iter_mut()) {
-        let components = [plan];
-        let next = run_color_component_idwt_batches(
-            &context,
-            &components,
-            std::slice::from_mut(component),
-            &pool,
-            false,
-            live_host_bytes,
-        )?;
-        pending = match (pending, next) {
-            (Some(current), Some(next)) => Some(current.merge(next)?),
-            (Some(current), None) => Some(current),
-            (None, next) => next,
-        };
-    }
-    Ok(pending)
+    let mut idwt_budget = HostPhaseBudget::with_live_bytes(
+        "j2k CUDA grayscale IDWT plan references",
+        live_host_bytes,
+    )?;
+    let plan_refs = idwt_budget.try_collect_exact(plans.iter())?;
+    run_color_component_idwt_batches(
+        &context,
+        &plan_refs,
+        work,
+        &pool,
+        collect_stage_timings,
+        idwt_budget.live_bytes(),
+        false,
+    )
 }
 
 fn finish_grayscale_components_and_store(
@@ -334,7 +317,7 @@ fn finish_grayscale_components_and_store(
                 j2k_core::CapabilityRejection::unsupported_format(
                     CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
                 ),
-            ))
+            ));
         }
     };
     let store_us = profile::elapsed_us(store_started);

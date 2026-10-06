@@ -3,12 +3,20 @@
     reason = "CUDA shared-memory statics are accessed through device-scoped references"
 )]
 
-use cuda_device::{kernel, ptx_asm, thread, SharedArray};
+use cuda_device::{SharedArray, kernel, ptx_asm, thread};
 use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
 const IDWT_COOP_SAMPLES: usize = 512;
+const IDWT_VERTICAL_COLUMNS: u32 = j2k_codec_math::dwt::IDWT_VERTICAL_STRIP_COLUMNS;
+const IDWT_VERTICAL_SAMPLES: usize = IDWT_COOP_SAMPLES * IDWT_VERTICAL_COLUMNS as usize;
+const IDWT_HORIZONTAL_TILE: u32 = j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_COLUMNS;
+const IDWT_HORIZONTAL_HALO: u32 = j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_HALO;
+const IDWT_HORIZONTAL_ROWS: u32 = j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_ROWS;
+const IDWT_HORIZONTAL_ROW_SAMPLES: usize =
+    j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_THREADS as usize;
+const IDWT_HORIZONTAL_SAMPLES: usize = IDWT_HORIZONTAL_ROW_SAMPLES * IDWT_HORIZONTAL_ROWS as usize;
 const IDWT_COLS4_COLUMNS: u32 = 4;
 const IDWT_COLS4_SAMPLES: usize = 256 * IDWT_COLS4_COLUMNS as usize;
 const IDWT_NEG_ALPHA: f32 = j2k_codec_math::dwt::IDWT97_NEG_ALPHA_F32;
@@ -18,8 +26,7 @@ const IDWT_NEG_DELTA: f32 = j2k_codec_math::dwt::IDWT97_NEG_DELTA_F32;
 const IDWT_KAPPA: f32 = j2k_codec_math::dwt::DWT97_KAPPA_F32;
 const IDWT_STANDARD_HIGH_PASS: f32 = j2k_codec_math::dwt::DWT97_INV_KAPPA_F32;
 const IDWT_CODESTREAM_97_MODE: u32 = 2;
-const IDWT_CODESTREAM_HIGH_PASS: f32 =
-    j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5;
+const IDWT_CODESTREAM_HIGH_PASS: f32 = j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -555,13 +562,47 @@ fn filter_shared_53(line: SharedLine, index: u32, len: u32, origin: u32) {
 }
 
 #[inline(always)]
-fn scale_shared_97(
-    line: SharedLine,
-    index: u32,
-    len: u32,
-    first_even: u32,
-    high_pass: f32,
-) {
+fn horizontal_tiled_line(samples: *mut f32, row: u32) -> SharedLine {
+    SharedLine {
+        samples: simt_mut_ptr_at(samples, row as usize * IDWT_HORIZONTAL_ROW_SAMPLES),
+        lane: 0,
+        stride: 1,
+        active: true,
+    }
+}
+
+#[inline(always)]
+fn filter_shared_53_rows(samples: *mut f32, index: u32, len: u32, origin: u32, rows: u32) {
+    let first_even = origin & 1;
+    let first_odd = 1 - first_even;
+    let mut row = 0;
+    while row < rows {
+        filter_shared_53_step(
+            horizontal_tiled_line(samples, row),
+            index,
+            len,
+            first_even,
+            true,
+        );
+        row += 1;
+    }
+    thread::sync_threads();
+    row = 0;
+    while row < rows {
+        filter_shared_53_step(
+            horizontal_tiled_line(samples, row),
+            index,
+            len,
+            first_odd,
+            false,
+        );
+        row += 1;
+    }
+    thread::sync_threads();
+}
+
+#[inline(always)]
+fn scale_shared_97(line: SharedLine, index: u32, len: u32, first_even: u32, high_pass: f32) {
     if !line.active || index >= len {
         return;
     }
@@ -615,6 +656,145 @@ fn filter_shared_97(line: SharedLine, index: u32, len: u32, origin: u32, high_pa
     thread::sync_threads();
     filter_shared_97_step(line, index, len, first_odd, IDWT_NEG_ALPHA);
     thread::sync_threads();
+}
+
+#[inline(always)]
+fn filter_shared_97_rows(
+    samples: *mut f32,
+    index: u32,
+    len: u32,
+    origin: u32,
+    high_pass: f32,
+    rows: u32,
+) {
+    let first_even = origin & 1;
+    let first_odd = 1 - first_even;
+    let mut row = 0;
+    while row < rows {
+        scale_shared_97(
+            horizontal_tiled_line(samples, row),
+            index,
+            len,
+            first_even,
+            high_pass,
+        );
+        row += 1;
+    }
+    thread::sync_threads();
+    filter_shared_97_rows_step(samples, index, len, first_even, IDWT_NEG_DELTA, rows);
+    filter_shared_97_rows_step(samples, index, len, first_odd, IDWT_NEG_GAMMA, rows);
+    filter_shared_97_rows_step(samples, index, len, first_even, IDWT_NEG_BETA, rows);
+    filter_shared_97_rows_step(samples, index, len, first_odd, IDWT_NEG_ALPHA, rows);
+}
+
+#[inline(always)]
+fn filter_shared_97_rows_step(
+    samples: *mut f32,
+    index: u32,
+    len: u32,
+    first: u32,
+    coefficient: f32,
+    rows: u32,
+) {
+    let mut row = 0;
+    while row < rows {
+        filter_shared_97_step(
+            horizontal_tiled_line(samples, row),
+            index,
+            len,
+            first,
+            coefficient,
+        );
+        row += 1;
+    }
+    thread::sync_threads();
+}
+
+#[inline(always)]
+fn filter_column_strip_step(
+    line: SharedLine,
+    len: u32,
+    first: u32,
+    coefficient: f32,
+    irreversible: bool,
+    update_even: bool,
+) {
+    let mut row = 2 * thread::threadIdx_y() + first;
+    while row < len {
+        if irreversible {
+            filter_shared_97_step(line, row, len, first, coefficient);
+        } else {
+            filter_shared_53_step(line, row, len, first, update_even);
+        }
+        row += 2 * thread::blockDim_y();
+    }
+    thread::sync_threads();
+}
+
+#[inline(always)]
+fn run_vertical_strip<const MAX_ROWS: u32>(
+    jobs: *const CudaJ2kIdwtMultiJob,
+    samples: *mut f32,
+    irreversible: bool,
+) {
+    let item = load_job(jobs, thread::blockIdx_y());
+    let job = item.job;
+    let width = rect_width(job.rect);
+    let height = rect_height(job.rect);
+    // The host launches strip kernels only for heights within `MAX_ROWS`. This
+    // kernel has no status word, so a routing mistake leaves the job
+    // untransformed here rather than overrunning shared memory.
+    if height > MAX_ROWS {
+        return;
+    }
+    let col = thread::blockIdx_x() * IDWT_VERTICAL_COLUMNS + thread::threadIdx_x();
+    let output = item.output_ptr as usize as *mut f32;
+    let line = SharedLine {
+        samples,
+        lane: thread::threadIdx_x(),
+        stride: IDWT_VERTICAL_COLUMNS,
+        active: col < width,
+    };
+
+    // Each block owns complete columns, so the in-place transform has no
+    // cross-block read/write overlap. Eight adjacent columns fill a 32-byte
+    // memory sector; threads stride over rows to keep the block at 256 threads.
+    let mut row = thread::threadIdx_y();
+    while row < height {
+        if line.active {
+            line.store(row, load_f32(output.cast_const(), row * width + col));
+        }
+        row += thread::blockDim_y();
+    }
+    thread::sync_threads();
+
+    if !filter_shared_single_sample(line, thread::threadIdx_y(), height, job.rect.y0) {
+        let even = job.rect.y0 & 1;
+        let odd = 1 - even;
+        if irreversible {
+            let mut row = thread::threadIdx_y();
+            while row < height {
+                scale_shared_97(line, row, height, even, idwt_high_pass(job.irreversible97));
+                row += thread::blockDim_y();
+            }
+            thread::sync_threads();
+            filter_column_strip_step(line, height, even, IDWT_NEG_DELTA, true, true);
+            filter_column_strip_step(line, height, odd, IDWT_NEG_GAMMA, true, false);
+            filter_column_strip_step(line, height, even, IDWT_NEG_BETA, true, true);
+            filter_column_strip_step(line, height, odd, IDWT_NEG_ALPHA, true, false);
+        } else {
+            filter_column_strip_step(line, height, even, 0.0, false, true);
+            filter_column_strip_step(line, height, odd, 0.0, false, false);
+        }
+    }
+
+    let mut row = thread::threadIdx_y();
+    while row < height {
+        if line.active {
+            store_f32(output, row * width + col, line.load(row));
+        }
+        row += thread::blockDim_y();
+    }
 }
 
 #[cuda_module]
@@ -683,6 +863,110 @@ mod kernels {
             job.rect.x0,
             job.irreversible97,
         );
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_interleave_horizontal_tiled_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut ROW_SAMPLES: SharedArray<f32, IDWT_HORIZONTAL_SAMPLES> = SharedArray::UNINIT;
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let pointers = multi_job_pointers(item);
+        let width = rect_width(job.rect);
+        if width == 0 {
+            return;
+        }
+        let tiles = (width - 1) / IDWT_HORIZONTAL_TILE + 1;
+        let row = thread::blockIdx_x() / tiles * IDWT_HORIZONTAL_ROWS;
+        let start = (thread::blockIdx_x() % tiles) * IDWT_HORIZONTAL_TILE;
+        if row >= rect_height(job.rect) {
+            return;
+        }
+        let lane = thread::threadIdx_x();
+        let rows = (rect_height(job.rect) - row).min(IDWT_HORIZONTAL_ROWS);
+        if width == 1 {
+            if lane == 0 {
+                let mut row_offset = 0;
+                while row_offset < rows {
+                    let value = idwt_interleave_sample(
+                        pointers.ll,
+                        pointers.hl,
+                        pointers.lh,
+                        pointers.hh,
+                        job,
+                        0,
+                        row + row_offset,
+                    );
+                    store_f32(
+                        pointers.output,
+                        row + row_offset,
+                        if job.rect.x0 & 1 == 0 {
+                            value
+                        } else {
+                            value * 0.5
+                        },
+                    );
+                    row_offset += 1;
+                }
+            }
+            return;
+        }
+        let count = (width - start).min(IDWT_HORIZONTAL_TILE);
+        let len = count + 2 * IDWT_HORIZONTAL_HALO;
+        let samples = unsafe { ROW_SAMPLES.as_mut_ptr() };
+        // Input subbands are immutable. Neighboring tiles can therefore load
+        // overlapping halos while writing disjoint output spans. Four halo
+        // samples cover all four lifting steps without changing their order.
+        let x = if lane < len {
+            j2k_codec_math::dwt::reflect_index(
+                start as i64 + lane as i64 - IDWT_HORIZONTAL_HALO as i64,
+                width,
+            )
+        } else {
+            0
+        };
+        let mut row_offset = 0;
+        while row_offset < rows {
+            if lane < len {
+                horizontal_tiled_line(samples, row_offset).store(
+                    lane,
+                    idwt_interleave_sample(
+                        pointers.ll,
+                        pointers.hl,
+                        pointers.lh,
+                        pointers.hh,
+                        job,
+                        x,
+                        row + row_offset,
+                    ),
+                );
+            }
+            row_offset += 1;
+        }
+        thread::sync_threads();
+        // Tile width and halo are both even, preserving the global parity.
+        if job.irreversible97 == 0 {
+            filter_shared_53_rows(samples, lane, len, job.rect.x0, rows);
+        } else {
+            filter_shared_97_rows(
+                samples,
+                lane,
+                len,
+                job.rect.x0,
+                idwt_high_pass(job.irreversible97),
+                rows,
+            );
+        }
+        row_offset = 0;
+        while row_offset < rows {
+            if lane < count {
+                store_f32(
+                    pointers.output,
+                    (row + row_offset) * width + start + lane,
+                    horizontal_tiled_line(samples, row_offset).load(lane + IDWT_HORIZONTAL_HALO),
+                );
+            }
+            row_offset += 1;
+        }
     }
 
     #[kernel]
@@ -842,14 +1126,7 @@ mod kernels {
         if col >= width {
             return;
         }
-        filter_vertical_column(
-            output,
-            width,
-            height,
-            job.rect.y0,
-            col,
-            job.irreversible97,
-        );
+        filter_vertical_column(output, width, height, job.rect.y0, col, job.irreversible97);
     }
 
     #[kernel]
@@ -864,86 +1141,42 @@ mod kernels {
         if col >= width {
             return;
         }
-        filter_vertical_column(
-            output,
-            width,
-            height,
-            job.rect.y0,
-            col,
-            job.irreversible97,
+        filter_vertical_column(output, width, height, job.rect.y0, col, job.irreversible97);
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_vertical_tall_strip_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut COLUMN_SAMPLES: SharedArray<f32, { 1024 * IDWT_VERTICAL_COLUMNS as usize }> =
+            SharedArray::UNINIT;
+        let item = load_job(jobs, thread::blockIdx_y());
+        run_vertical_strip::<1024>(
+            jobs,
+            unsafe { COLUMN_SAMPLES.as_mut_ptr() },
+            item.job.irreversible97 != 0,
+        );
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_vertical_strip_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_VERTICAL_SAMPLES> = SharedArray::UNINIT;
+        let item = load_job(jobs, thread::blockIdx_y());
+        run_vertical_strip::<512>(
+            jobs,
+            unsafe { COLUMN_SAMPLES.as_mut_ptr() },
+            item.job.irreversible97 != 0,
         );
     }
 
     #[kernel]
     pub unsafe fn j2k_idwt_vertical_53_multi(jobs: *const CudaJ2kIdwtMultiJob) {
-        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
-
-        let column_samples = unsafe { COLUMN_SAMPLES.as_mut_ptr() };
-        let shared = SharedLine {
-            samples: column_samples,
-            lane: 0,
-            stride: 1,
-            active: true,
-        };
-        let row = thread::threadIdx_x();
-        let col = thread::blockIdx_x();
-        let item = load_job(jobs, thread::blockIdx_y());
-        let job = item.job;
-        let output = item.output_ptr as usize as *mut f32;
-        let width = rect_width(job.rect);
-        let height = rect_height(job.rect);
-        if col >= width {
-            return;
-        }
-
-        if row < height {
-            shared.store(row, load_f32(output.cast_const(), row * width + col));
-        }
-        thread::sync_threads();
-
-        filter_shared_53(shared, row, height, job.rect.y0);
-        if row < height {
-            store_f32(output, row * width + col, shared.load(row));
-        }
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_VERTICAL_SAMPLES> = SharedArray::UNINIT;
+        run_vertical_strip::<512>(jobs, unsafe { COLUMN_SAMPLES.as_mut_ptr() }, false);
     }
 
     #[kernel]
     pub unsafe fn j2k_idwt_vertical_97_multi(jobs: *const CudaJ2kIdwtMultiJob) {
-        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
-
-        let column_samples = unsafe { COLUMN_SAMPLES.as_mut_ptr() };
-        let shared = SharedLine {
-            samples: column_samples,
-            lane: 0,
-            stride: 1,
-            active: true,
-        };
-        let row = thread::threadIdx_x();
-        let col = thread::blockIdx_x();
-        let item = load_job(jobs, thread::blockIdx_y());
-        let job = item.job;
-        let output = item.output_ptr as usize as *mut f32;
-        let width = rect_width(job.rect);
-        let height = rect_height(job.rect);
-        if col >= width {
-            return;
-        }
-
-        if row < height {
-            shared.store(row, load_f32(output.cast_const(), row * width + col));
-        }
-        thread::sync_threads();
-
-        filter_shared_97(
-            shared,
-            row,
-            height,
-            job.rect.y0,
-            idwt_high_pass(job.irreversible97),
-        );
-        if row < height {
-            store_f32(output, row * width + col, shared.load(row));
-        }
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_VERTICAL_SAMPLES> = SharedArray::UNINIT;
+        run_vertical_strip::<512>(jobs, unsafe { COLUMN_SAMPLES.as_mut_ptr() }, true);
     }
 
     #[kernel]
@@ -986,7 +1219,6 @@ mod kernels {
             store_f32(output, row * width + col, shared.load(row));
         }
     }
-
 }
 
 fn main() {}

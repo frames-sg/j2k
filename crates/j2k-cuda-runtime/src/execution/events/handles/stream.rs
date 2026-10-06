@@ -9,6 +9,39 @@ pub(crate) struct CudaStream {
     pub(crate) stream: CuStream,
 }
 
+/// `CU_STREAM_DEFAULT`: the stream synchronizes with the legacy default stream.
+#[cfg(test)]
+pub(crate) const CU_STREAM_DEFAULT: u32 = 0;
+/// `CU_STREAM_NON_BLOCKING`: work can overlap the legacy default stream.
+const CU_STREAM_NON_BLOCKING: u32 = 1;
+
+impl CudaStream {
+    /// Stream whose transfers can overlap kernels already queued on the legacy
+    /// default stream.
+    pub(crate) fn nonblocking(context: &CudaContext) -> Result<Self, crate::CudaError> {
+        Self::with_flags(context, CU_STREAM_NON_BLOCKING)
+    }
+
+    pub(crate) fn with_flags(context: &CudaContext, flags: u32) -> Result<Self, crate::CudaError> {
+        let mut stream = std::ptr::null_mut();
+        context.inner.with_current_stateful_operation(|| {
+            // SAFETY: CUDA writes a new stream handle while the context
+            // lifecycle gate is held. CudaStream destroys the handle.
+            context.inner.driver.check("cuStreamCreate", unsafe {
+                (context.inner.driver.cu_stream_create)(&raw mut stream, flags)
+            })?;
+            crate::context::validate_resource_handle(
+                stream,
+                "CUDA returned a null stream after successful creation",
+            )
+        })?;
+        Ok(Self {
+            context: context.clone(),
+            stream,
+        })
+    }
+}
+
 impl Drop for CudaStream {
     fn drop(&mut self) {
         if !self.stream.is_null() {

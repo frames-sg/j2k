@@ -7,15 +7,65 @@ use crate::{bytes::htj2k_cleanup_multi_jobs_as_bytes, J2kCudaEngine};
 
 use super::{
     planning::{
-        htj2k_decode_multi_cleanup_dequant_kernel_for_jobs, htj2k_decode_multi_kernel_for_jobs,
+        htj2k_decode_multi_cleanup_dequant_route_for_jobs, htj2k_decode_multi_route_for_jobs,
+        Htj2kMultiDecodeRoute,
     },
     types::CudaHtj2kCleanupMultiKernelJob,
     CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables,
-    CudaHtj2kDequantizeTarget, CudaQueuedHtj2kCleanup,
+    CudaHtj2kDequantizeTarget, CudaQueuedHtj2kCleanup, CudaQueuedHtj2kCleanupGroup,
 };
 
 fn cuda_runtime_gate() -> bool {
     j2k_test_support::cuda_runtime_gate(module_path!())
+}
+
+#[test]
+fn grouped_cleanup_retained_bytes_accumulate_every_guard_when_runtime_required() {
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let first = empty_group_cleanup(&context, 1);
+    let second = empty_group_cleanup(&context, 16);
+    let group_bytes = j2k_core::host_capacity_bytes::<CudaQueuedHtj2kCleanup>(2);
+    let baseline = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
+        .saturating_sub(group_bytes)
+        .saturating_sub(first.retained_host_bytes())
+        .saturating_sub(second.retained_host_bytes())
+        .saturating_add(1);
+    let mut group = CudaQueuedHtj2kCleanupGroup::new(&context, &pool, 0, 2, baseline)
+        .expect("bounded cleanup group");
+    let mut expected = group.retained_host_bytes();
+    expected = expected.saturating_add(first.retained_host_bytes());
+    group.retain(first).expect("retain first cleanup guard");
+    assert_eq!(group.retained_host_bytes(), expected);
+    assert!(matches!(
+        group.retain(second),
+        Err(j2k_cuda_runtime::CudaError::HostAllocationTooLarge {
+            requested,
+            cap,
+            what: "CUDA grouped HTJ2K cleanup retained metadata",
+        }) if requested > cap
+    ));
+    assert_eq!(group.retained_host_bytes(), expected);
+    group.finish().expect("finish empty cleanup group");
+}
+
+fn empty_group_cleanup(context: &CudaContext, resource_capacity: usize) -> CudaQueuedHtj2kCleanup {
+    CudaQueuedHtj2kCleanup {
+        context: context.clone(),
+        resources: Vec::with_capacity(resource_capacity),
+        status_buffer: None,
+        status_count: 0,
+        status_offset: 0,
+        uses_external_status_group: true,
+        kernel_name: "test_grouped_cleanup",
+        execution: CudaExecutionStats::default(),
+        pool_reuse_guard: None,
+        finish_host_live_bytes: 0,
+    }
 }
 
 fn tables<'a>(
@@ -55,36 +105,35 @@ fn cleanup_job() -> CudaHtj2kCleanupMultiKernelJob {
 #[test]
 fn htj2k_decode_multi_kernel_routes_cleanup_only_jobs() {
     let cleanup = cleanup_job();
-    let (_, cleanup_name) = htj2k_decode_multi_kernel_for_jobs(&[cleanup]);
     assert_eq!(
-        cleanup_name,
-        "j2k_htj2k_decode_codeblocks_multi_cleanup_only"
+        htj2k_decode_multi_route_for_jobs(&[cleanup]),
+        Htj2kMultiDecodeRoute::Cleanup { dequantize: false }
     );
 
     let mut refinement = cleanup;
     refinement.refinement_length = 4;
     refinement.number_of_coding_passes = 2;
-    let (_, generic_name) = htj2k_decode_multi_kernel_for_jobs(&[refinement]);
-    assert_eq!(generic_name, "j2k_htj2k_decode_codeblocks_multi");
+    assert_eq!(
+        htj2k_decode_multi_route_for_jobs(&[refinement]),
+        Htj2kMultiDecodeRoute::Full
+    );
 }
 
 #[test]
 fn htj2k_decode_multi_cleanup_dequant_accepts_only_cleanup_jobs() {
     let cleanup = cleanup_job();
-    let (_, kernel_name) = htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[cleanup])
-        .expect("cleanup-only jobs use fused cleanup/dequant kernel");
     assert_eq!(
-        kernel_name,
-        "j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize"
+        htj2k_decode_multi_cleanup_dequant_route_for_jobs(&[cleanup]),
+        Some(Htj2kMultiDecodeRoute::Cleanup { dequantize: true })
     );
 
     let mut refinement = cleanup;
     refinement.coded_len = 12;
     refinement.refinement_length = 4;
     refinement.number_of_coding_passes = 2;
-    assert!(htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement]).is_none());
+    assert!(htj2k_decode_multi_cleanup_dequant_route_for_jobs(&[refinement]).is_none());
     refinement.refinement_length = 0;
-    assert!(htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement]).is_none());
+    assert!(htj2k_decode_multi_cleanup_dequant_route_for_jobs(&[refinement]).is_none());
 }
 
 #[test]

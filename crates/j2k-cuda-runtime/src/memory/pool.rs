@@ -14,7 +14,10 @@ pub use self::cache_policy::{CudaBufferPoolDiagnostics, CudaBufferPoolLimits};
 pub(crate) use self::readback::copy_pooled_bytes_to_vec_uninit;
 pub use self::reuse_guard::CudaBufferPoolReuseGuard;
 use self::size_buckets::CudaBufferPoolSizeBuckets;
-use super::{pinned_staging::select_pinned_upload_result, CudaDeviceBuffer};
+use super::{
+    pinned_staging::{select_pinned_upload_result, PendingUploadRetireError},
+    CudaDeviceBuffer,
+};
 use crate::{
     allocation::host_allocation_error,
     bytes::{f32_slice_as_bytes, i16_slice_as_bytes},
@@ -27,6 +30,12 @@ use std::{
 };
 
 /// Reusable CUDA device-buffer pool for repeated adapter dispatches.
+///
+/// A buffer returns to the reuse cache only after work that used it on this
+/// context's default stream has completed: synchronous paths complete before
+/// dropping, and queued paths hold [`CudaBufferPool::defer_reuse`] or
+/// synchronize first. Uploads on the pool's separate upload stream rely on this
+/// and do not wait for earlier default-stream work on a reused buffer.
 #[derive(Clone, Debug)]
 pub struct CudaBufferPool {
     pub(crate) inner: Arc<CudaBufferPoolInner>,
@@ -37,6 +46,7 @@ pub(crate) struct CudaBufferPoolInner {
     pub(crate) context: CudaContext,
     pub(crate) limits: CudaBufferPoolLimits,
     pub(crate) state: Mutex<CudaBufferPoolState>,
+    pub(crate) upload_stream: Mutex<Option<crate::execution::CudaStream>>,
 }
 
 #[derive(Debug)]
@@ -229,6 +239,7 @@ impl CudaBufferPool {
         };
         Ok(CudaPooledDeviceBuffer {
             buffer: Some(buffer),
+            pending_upload: None,
             requested_len: len,
             pool: self.inner.clone(),
         })
@@ -276,6 +287,7 @@ impl CudaBufferPool {
         Ok((
             CudaPooledDeviceBuffer {
                 buffer: Some(buffer),
+                pending_upload: None,
                 requested_len: len,
                 pool: self.inner.clone(),
             },
@@ -314,14 +326,30 @@ impl CudaBufferPool {
 
     /// Upload host bytes through temporary page-locked staging into a pooled device buffer.
     pub fn upload_pinned(&self, bytes: &[u8]) -> Result<CudaPooledDeviceBuffer, CudaError> {
-        if bytes.is_empty() {
-            return self.upload(bytes);
+        self.upload_pinned_parts(&[bytes])
+    }
+
+    /// Upload `parts` back to back into one pooled device buffer.
+    ///
+    /// Each part is copied once, straight into page-locked staging, so callers
+    /// holding several host buffers need not concatenate them first.
+    #[doc(hidden)]
+    pub fn upload_pinned_parts(
+        &self,
+        parts: &[&[u8]],
+    ) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        let len = parts
+            .iter()
+            .try_fold(0_usize, |total, part| total.checked_add(part.len()))
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if len == 0 {
+            return self.upload(&[]);
         }
 
         let operation = self.inner.context.begin_pinned_upload_operation()?;
-        let buffer = self.take(bytes.len())?;
-        let mut staging = operation.prepare_upload(bytes.len())?;
-        staging.copy_from_slice(bytes)?;
+        let buffer = self.take(len)?;
+        let mut staging = operation.prepare_upload(len)?;
+        staging.copy_from_parts(parts)?;
         let staging_bytes = staging.as_slice()?;
         let upload_result = self
             .inner
@@ -329,13 +357,13 @@ impl CudaBufferPool {
             .inner
             .with_current_resource_operation(|| {
                 // SAFETY: `buffer` is a live device allocation with at least
-                // `bytes.len()` bytes, the pinned staging slice covers that
+                // `len` bytes, the pinned staging slice covers that
                 // range, and the lifecycle gate is held.
                 let result = unsafe {
                     (self.inner.context.inner.driver.cu_memcpy_htod)(
                         buffer.device_ptr(),
                         staging_bytes.as_ptr().cast::<c_void>(),
-                        bytes.len(),
+                        len,
                     )
                 };
                 self.inner
@@ -345,10 +373,64 @@ impl CudaBufferPool {
                     .check("cuMemcpyHtoD_v2", result)
             });
         if upload_result.is_ok() {
-            self.inner.context.record_host_to_device_copy(bytes.len());
+            self.inner.context.record_host_to_device_copy(len);
         }
         let recycle_result = staging.recycle();
         select_pinned_upload_result(upload_result.map(|()| buffer), recycle_result)
+    }
+
+    /// Enqueue pinned payload parts on the pool's upload stream and order all
+    /// subsequent default-stream work after the transfer event. The returned
+    /// buffer retains staging until transfer completion, including early drop.
+    /// The transfer is not ordered after earlier default-stream work, so it
+    /// relies on the pool reusing a buffer only after that work completed.
+    /// Other streams must establish their own dependency on the default stream.
+    #[doc(hidden)]
+    pub fn upload_pinned_parts_enqueue(
+        &self,
+        parts: &[&[u8]],
+    ) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        let len = parts
+            .iter()
+            .try_fold(0usize, |total, part| total.checked_add(part.len()))
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        let mut buffer = self.take(len)?;
+        if len == 0 {
+            return Ok(buffer);
+        }
+        let completion = self.inner.context.create_event()?;
+        let operation = self.inner.context.begin_pinned_upload_operation()?;
+        let mut staging = operation.prepare_upload(len)?;
+        staging.copy_from_parts(parts)?;
+        let mut pending = staging.into_pending(completion)?;
+        // Retirement takes this same transaction gate, so it must not remain
+        // held while enqueue errors or a returned buffer can trigger retirement.
+        drop(operation);
+        let enqueue_result = (|| {
+            let mut stream =
+                self.inner
+                    .upload_stream
+                    .lock()
+                    .map_err(|error| CudaError::StatePoisoned {
+                        message: error.to_string(),
+                    })?;
+            let stream: &crate::execution::CudaStream = match &mut *stream {
+                Some(stream) => stream,
+                empty => empty.insert(crate::execution::CudaStream::nonblocking(
+                    &self.inner.context,
+                )?),
+            };
+            let destination = buffer.buffer.as_ref().ok_or(CudaError::InternalInvariant {
+                what: "CUDA upload destination checkout is empty",
+            })?;
+            pending.enqueue(destination, stream)
+        })();
+        buffer.pending_upload = Some(pending);
+        if let Err(error) = enqueue_result {
+            let retirement = buffer.finish_pending_upload();
+            return select_pinned_upload_result(Err(error), retirement);
+        }
+        Ok(buffer)
     }
 
     /// Upload host `f32` samples into a pooled device buffer.
@@ -476,6 +558,7 @@ where
 #[derive(Debug)]
 pub struct CudaPooledDeviceBuffer {
     pub(crate) buffer: Option<CudaDeviceBuffer>,
+    pending_upload: Option<super::pinned_staging::PendingPinnedUpload>,
     pub(crate) requested_len: usize,
     pub(crate) pool: Arc<CudaBufferPoolInner>,
 }
@@ -504,11 +587,27 @@ impl CudaPooledDeviceBuffer {
     /// Detach and return the underlying device buffer instead of recycling it
     /// when this checkout is dropped.
     pub fn into_device_buffer(mut self) -> Result<CudaDeviceBuffer, CudaError> {
+        self.finish_pending_upload()?;
         self.buffer
             .take()
             .ok_or_else(|| CudaError::InvalidArgument {
                 message: "pooled CUDA buffer checkout is empty".to_string(),
             })
+    }
+
+    fn finish_pending_upload(&mut self) -> Result<(), CudaError> {
+        let Some(mut pending) = self.pending_upload.take() else {
+            return Ok(());
+        };
+        pending.finish().map_err(|error| match error {
+            PendingUploadRetireError::CompletionUncertain(error) => {
+                // CUDA may still write the destination. Never recycle or
+                // release it.
+                std::mem::forget(self.buffer.take());
+                error
+            }
+            PendingUploadRetireError::RecycleFailed(error) => error,
+        })
     }
 
     /// Copy the requested bytes for this checkout into caller-owned host output.
@@ -550,6 +649,9 @@ impl CudaPooledDeviceBuffer {
 
 impl Drop for CudaPooledDeviceBuffer {
     fn drop(&mut self) {
+        // Uncertain DMA completion forgets the destination inside
+        // `finish_pending_upload`; a completed transfer can always be recycled.
+        let _ = self.finish_pending_upload();
         if let Some(buffer) = self.buffer.take() {
             let _ = self.pool.recycle_buffer(buffer);
         }

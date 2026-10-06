@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::CudaPinnedUploadStagingPoolDiagnostics;
+use super::gate::held_by_current_thread;
 #[cfg(test)]
 use crate::bytes::i32_slice_as_bytes;
 use crate::{bytes::f32_slice_as_bytes, context::CudaContext, memory::CudaDeviceBuffer, CudaError};
@@ -28,6 +29,10 @@ impl CudaContext {
     pub fn pinned_upload_staging_pool_diagnostics(
         &self,
     ) -> Result<CudaPinnedUploadStagingPoolDiagnostics, CudaError> {
+        if held_by_current_thread(&self.inner.pinned_upload_operation) {
+            // This thread's own transaction already excludes peer uploads.
+            return pinned_upload_staging_pool_diagnostics(self);
+        }
         let _operation = match self.inner.pinned_upload_operation.lock() {
             Ok(operation) => operation,
             Err(poisoned) => poisoned.into_inner(),

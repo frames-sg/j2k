@@ -1,5 +1,12 @@
-use cuda_device::{kernel, thread};
+#![allow(
+    static_mut_refs,
+    reason = "CUDA shared-memory statics are accessed through device-scoped references"
+)]
+
+use cuda_device::atomic::{AtomicOrdering, BlockAtomicU32};
+use cuda_device::{kernel, thread, warp, SharedArray};
 use cuda_host::cuda_module;
+use j2k_codec_math::htj2k::HT_MAX_SCRATCH;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
@@ -13,7 +20,6 @@ const HT_MAX_WIDTH: u32 = 256;
 const HT_MAX_HEIGHT: u32 = 256;
 const HT_MAX_COEFFICIENTS: u32 = 4096;
 const HT_MAX_SSTR: u32 = 264;
-const HT_MAX_SCRATCH: usize = 3096;
 const HT_MAX_VN: usize = 130;
 const HT_MAX_MSTR: u32 = 72;
 const HT_MAX_SIGMA: usize = 528;
@@ -90,6 +96,23 @@ struct J2kHtStatus {
     reserved1: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kCoefficientClearTarget {
+    output_ptr: u64,
+    words: u64,
+}
+
+const COEFFICIENT_CLEAR_TARGETS_PER_BATCH: usize = 32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kCoefficientClearBatch {
+    targets: [J2kCoefficientClearTarget; COEFFICIENT_CLEAR_TARGETS_PER_BATCH],
+    target_count: u32,
+    blocks_per_target: u32,
+}
+
 #[derive(Clone, Copy)]
 struct MelDecoder {
     data: *const u8,
@@ -159,34 +182,18 @@ fn store_status(status: *mut J2kHtStatus, code: u32, detail: u32) {
 }
 
 #[inline(always)]
-fn popcount32(mut value: u32) -> u32 {
-    let mut count = 0;
-    while value != 0 {
-        value &= value - 1;
-        count += 1;
-    }
-    count
+fn popcount32(value: u32) -> u32 {
+    value.count_ones()
 }
 
 #[inline(always)]
 fn trailing_zeros32(value: u32) -> u32 {
-    let mut count = 0;
-    let mut bits = value;
-    while count < 32 && (bits & 1) == 0 {
-        count += 1;
-        bits >>= 1;
-    }
-    count
+    value.trailing_zeros()
 }
 
 #[inline(always)]
-fn floor_log2_nonzero(mut value: u32) -> u32 {
-    let mut log = 0;
-    while value > 1 {
-        value >>= 1;
-        log += 1;
-    }
-    log
+fn floor_log2_nonzero(value: u32) -> u32 {
+    31 - value.max(1).leading_zeros()
 }
 
 #[inline(always)]
@@ -506,13 +513,16 @@ fn decode_mag_sgn_sample_with_vn(
     let ms_val = forward_reader_fetch(magsgn);
     let m_n = uq - ((inf >> (12 + bit)) & 1);
     forward_reader_advance(magsgn, m_n);
+    (*value, *v_n) = mag_sgn_value(ms_val, m_n, inf, bit, p);
+}
 
-    *value = ms_val << 31;
+/// Decoded sample bits and `v_n` for one significant sample from its `m_n`
+/// MagSgn bits `ms`. Both cleanup routes use this so they stay bit-exact.
+#[inline(always)]
+fn mag_sgn_value(ms: u32, m_n: u32, inf: u32, bit: u32, p: u32) -> (u32, u32) {
     let mask = if m_n == 0 { 0 } else { (1 << m_n) - 1 };
-    *v_n = ms_val & mask;
-    *v_n |= ((inf >> (8 + bit)) & 1) << m_n;
-    *v_n |= 1;
-    *value |= (*v_n + 2) << (p - 1);
+    let v_n = (ms & mask) | (((inf >> (8 + bit)) & 1) << m_n) | 1;
+    ((ms << 31) | ((v_n + 2) << (p - 1)), v_n)
 }
 
 #[inline(always)]
@@ -520,7 +530,7 @@ fn decode_cleanup_symbols_first_row(
     mel: &mut MelDecoder,
     vlc: &mut ReverseBitReader,
     run: &mut i32,
-    scratch: &mut [u16; HT_MAX_SCRATCH],
+    scratch: &mut [u16],
     width: u32,
     vlc_table0: *const u16,
     uvlc_table0: *const u16,
@@ -589,6 +599,81 @@ fn decode_cleanup_symbols_first_row(
 }
 
 #[inline(always)]
+fn decode_cleanup_symbols_row(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    scratch: &mut [u16],
+    width: u32,
+    row_base: u32,
+    prev_base: u32,
+    vlc_table1: *const u16,
+    uvlc_table1: *const u16,
+) -> u32 {
+    let mut local_x = 0;
+    let mut local_c_q = 0;
+    let mut row_offset = row_base;
+    while local_x < width {
+        let delta = row_offset - row_base;
+        local_c_q |= (scratch[(prev_base + delta) as usize] as u32 & 0xa0) << 2;
+        local_c_q |= (scratch[(prev_base + delta + 2) as usize] as u32 & 0x20) << 4;
+
+        let mut vlc_val = reverse_reader_fetch(vlc);
+        let mut t0 = load_u16(vlc_table1, local_c_q + (vlc_val & 0x7f)) as u32;
+        if local_c_q == 0 {
+            *run -= 2;
+            t0 = if *run == -1 { t0 } else { 0 };
+            if *run < 0 && !mel_get_run(mel, run) {
+                return 10;
+            }
+        }
+        scratch[row_offset as usize] = t0 as u16;
+        local_x += 2;
+
+        local_c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+        local_c_q |= scratch[(prev_base + delta) as usize] as u32 & 0x80;
+        local_c_q |= (scratch[(prev_base + delta + 2) as usize] as u32 & 0xa0) << 2;
+        local_c_q |= (scratch[(prev_base + delta + 4) as usize] as u32 & 0x20) << 4;
+        vlc_val = reverse_reader_advance(vlc, t0 & 0x7);
+
+        let mut t1 = load_u16(vlc_table1, local_c_q + (vlc_val & 0x7f)) as u32;
+        if local_c_q == 0 && local_x < width {
+            *run -= 2;
+            t1 = if *run == -1 { t1 } else { 0 };
+            if *run < 0 && !mel_get_run(mel, run) {
+                return 11;
+            }
+        }
+        if local_x >= width {
+            t1 = 0;
+        }
+        scratch[row_offset as usize + 2] = t1 as u16;
+        local_x += 2;
+
+        local_c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+        local_c_q |= scratch[(prev_base + delta + 2) as usize] as u32 & 0x80;
+        vlc_val = reverse_reader_advance(vlc, t1 & 0x7);
+
+        let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+        let mut uvlc_entry = load_u16(uvlc_table1, uvlc_mode + (vlc_val & 0x3f)) as u32;
+        vlc_val = reverse_reader_advance(vlc, uvlc_entry & 0x7);
+        uvlc_entry >>= 3;
+        let mut len = uvlc_entry & 0xf;
+        let tmp = vlc_val & ((1 << len) - 1);
+        let _ = reverse_reader_advance(vlc, len);
+        uvlc_entry >>= 4;
+        len = uvlc_entry & 0x7;
+        uvlc_entry >>= 3;
+        scratch[row_offset as usize + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
+        scratch[row_offset as usize + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+        row_offset += 4;
+    }
+    scratch[row_offset as usize] = 0;
+    scratch[row_offset as usize + 1] = 0;
+    0
+}
+
+#[inline(always)]
 fn decode_cleanup_symbols_remaining_rows(
     coded_data: *const u8,
     lcup: u32,
@@ -625,66 +710,20 @@ fn decode_cleanup_symbols_remaining_rows(
     while y < height {
         let row_base = (y >> 1) * sstr;
         let prev_base = row_base - sstr;
-        let mut local_x = 0;
-        let mut local_c_q = 0;
-        let mut row_offset = row_base;
-        while local_x < width {
-            let delta = row_offset - row_base;
-            local_c_q |= (scratch[(prev_base + delta) as usize] as u32 & 0xa0) << 2;
-            local_c_q |= (scratch[(prev_base + delta + 2) as usize] as u32 & 0x20) << 4;
-
-            let mut vlc_val = reverse_reader_fetch(&mut vlc);
-            let mut t0 = load_u16(vlc_table1, local_c_q + (vlc_val & 0x7f)) as u32;
-            if local_c_q == 0 {
-                run -= 2;
-                t0 = if run == -1 { t0 } else { 0 };
-                if run < 0 && !mel_get_run(&mut mel, &mut run) {
-                    return 10;
-                }
-            }
-            scratch[row_offset as usize] = t0 as u16;
-            local_x += 2;
-
-            local_c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-            local_c_q |= scratch[(prev_base + delta) as usize] as u32 & 0x80;
-            local_c_q |= (scratch[(prev_base + delta + 2) as usize] as u32 & 0xa0) << 2;
-            local_c_q |= (scratch[(prev_base + delta + 4) as usize] as u32 & 0x20) << 4;
-            vlc_val = reverse_reader_advance(&mut vlc, t0 & 0x7);
-
-            let mut t1 = load_u16(vlc_table1, local_c_q + (vlc_val & 0x7f)) as u32;
-            if local_c_q == 0 && local_x < width {
-                run -= 2;
-                t1 = if run == -1 { t1 } else { 0 };
-                if run < 0 && !mel_get_run(&mut mel, &mut run) {
-                    return 11;
-                }
-            }
-            if local_x >= width {
-                t1 = 0;
-            }
-            scratch[row_offset as usize + 2] = t1 as u16;
-            local_x += 2;
-
-            local_c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-            local_c_q |= scratch[(prev_base + delta + 2) as usize] as u32 & 0x80;
-            vlc_val = reverse_reader_advance(&mut vlc, t1 & 0x7);
-
-            let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-            let mut uvlc_entry = load_u16(uvlc_table1, uvlc_mode + (vlc_val & 0x3f)) as u32;
-            vlc_val = reverse_reader_advance(&mut vlc, uvlc_entry & 0x7);
-            uvlc_entry >>= 3;
-            let mut len = uvlc_entry & 0xf;
-            let tmp = vlc_val & ((1 << len) - 1);
-            let _ = reverse_reader_advance(&mut vlc, len);
-            uvlc_entry >>= 4;
-            len = uvlc_entry & 0x7;
-            uvlc_entry >>= 3;
-            scratch[row_offset as usize + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
-            scratch[row_offset as usize + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-            row_offset += 4;
+        let detail = decode_cleanup_symbols_row(
+            &mut mel,
+            &mut vlc,
+            &mut run,
+            scratch,
+            width,
+            row_base,
+            prev_base,
+            vlc_table1,
+            uvlc_table1,
+        );
+        if detail != 0 {
+            return detail;
         }
-        scratch[row_offset as usize] = 0;
-        scratch[row_offset as usize + 1] = 0;
         y += 2;
     }
     0
@@ -757,6 +796,56 @@ fn decode_magnitude_sign_pair(
 }
 
 #[inline(always)]
+fn decode_magnitude_sign_row(
+    magsgn: &mut ForwardBitReader,
+    scratch: &[u16],
+    row_base: u32,
+    y: u32,
+    decoded_data: *mut u32,
+    params: J2kHtCleanupParams,
+    v_n_scratch: &mut [u32; HT_MAX_VN],
+    dequantize: bool,
+) -> u32 {
+    let p = 30 - params.missing_msbs;
+    let mut x = 0;
+    let mut sp = row_base;
+    let mut vp = 0;
+    let mut dp = params.output_offset + y * params.output_stride;
+    let mut prev_v_n = 0;
+    while x < params.width {
+        let inf = scratch[sp as usize] as u32;
+        let mut uq = scratch[sp as usize + 1] as u32;
+        if y != 0 {
+            let mut gamma = inf & 0xf0;
+            gamma &= gamma.wrapping_sub(0x10);
+            let emax =
+                floor_log2_nonzero((v_n_scratch[vp as usize] | v_n_scratch[vp as usize + 1]) | 2);
+            uq += if gamma != 0 { emax } else { 1 };
+        }
+        if !decode_magnitude_sign_pair(
+            magsgn,
+            decoded_data,
+            v_n_scratch,
+            inf,
+            uq,
+            p,
+            params,
+            y + 1 < params.height,
+            &mut x,
+            &mut dp,
+            &mut vp,
+            &mut prev_v_n,
+            dequantize,
+        ) {
+            return if y == 0 { 13 } else { 14 };
+        }
+        sp += 2;
+    }
+    v_n_scratch[vp as usize] = prev_v_n;
+    0
+}
+
+#[inline(always)]
 fn decode_magnitude_sign_phase(
     coded_data: *const u8,
     lcup: u32,
@@ -777,80 +866,22 @@ fn decode_magnitude_sign_phase(
         v_n_scratch[clear as usize] = 0;
         clear += 1;
     }
-
-    let p = 30 - params.missing_msbs;
     let mut magsgn = forward_reader_new(coded_data, lcup - scup, 0xff);
-    let mut prev_v_n = 0;
-    let mut x = 0;
-    let mut sp = 0;
-    let mut vp = 0;
-    let mut dp = params.output_offset;
-    let second_row_present = params.height > 1;
-
-    while x < params.width {
-        let inf = scratch[sp as usize] as u32;
-        let uq = scratch[sp as usize + 1] as u32;
-        if !decode_magnitude_sign_pair(
-            &mut magsgn,
-            decoded_data,
-            v_n_scratch,
-            inf,
-            uq,
-            p,
-            params,
-            second_row_present,
-            &mut x,
-            &mut dp,
-            &mut vp,
-            &mut prev_v_n,
-            dequantize,
-        ) {
-            return 13;
-        }
-        sp += 2;
-    }
-    v_n_scratch[vp as usize] = prev_v_n;
-
-    let mut y = 2;
+    let mut y = 0;
     while y < params.height {
-        let row_base = (y >> 1) * sstr;
-        let mut local_x = 0;
-        let mut local_sp = row_base;
-        let mut local_vp = 0;
-        let mut local_dp = params.output_offset + y * params.output_stride;
-        let mut local_prev_v_n = 0;
-        let local_second_row_present = y + 1 < params.height;
-
-        while local_x < params.width {
-            let inf = scratch[local_sp as usize] as u32;
-            let u_q = scratch[local_sp as usize + 1] as u32;
-            let mut gamma = inf & 0xf0;
-            gamma &= gamma.wrapping_sub(0x10);
-            let emax = floor_log2_nonzero(
-                (v_n_scratch[local_vp as usize] | v_n_scratch[local_vp as usize + 1]) | 2,
-            );
-            let kappa = if gamma != 0 { emax } else { 1 };
-            let uq = u_q + kappa;
-            if !decode_magnitude_sign_pair(
-                &mut magsgn,
-                decoded_data,
-                v_n_scratch,
-                inf,
-                uq,
-                p,
-                params,
-                local_second_row_present,
-                &mut local_x,
-                &mut local_dp,
-                &mut local_vp,
-                &mut local_prev_v_n,
-                dequantize,
-            ) {
-                return 14;
-            }
-            local_sp += 2;
+        let detail = decode_magnitude_sign_row(
+            &mut magsgn,
+            scratch,
+            (y >> 1) * sstr,
+            y,
+            decoded_data,
+            params,
+            v_n_scratch,
+            dequantize,
+        );
+        if detail != 0 {
+            return detail;
         }
-        v_n_scratch[local_vp as usize] = local_prev_v_n;
         y += 2;
     }
     0
@@ -1081,6 +1112,74 @@ fn apply_magnitude_refinement(
 }
 
 #[inline(always)]
+fn cleanup_scup(
+    coded_data: *const u8,
+    params: J2kHtCleanupParams,
+    status: *mut J2kHtStatus,
+    cleanup_only: bool,
+    dequantize: bool,
+) -> u32 {
+    store_status(status, HT_STATUS_OK, 0);
+
+    let mut num_passes = params.number_of_coding_passes;
+    if num_passes > 1 && params.refinement_length == 0 {
+        num_passes = 1;
+    }
+    if cleanup_only && params.refinement_length != 0 {
+        store_status(status, HT_STATUS_UNSUPPORTED, 17);
+        return 0;
+    }
+    if dequantize
+        && (!cleanup_only || params.number_of_coding_passes > 1 || params.refinement_length != 0)
+    {
+        store_status(status, HT_STATUS_UNSUPPORTED, 18);
+        return 0;
+    }
+    if params.width == 0 || params.height == 0 {
+        return 0;
+    }
+    if params.width > HT_MAX_WIDTH
+        || params.height > HT_MAX_HEIGHT
+        || params.width * params.height > HT_MAX_COEFFICIENTS
+    {
+        store_status(status, HT_STATUS_UNSUPPORTED, 1);
+        return 0;
+    }
+    let roi_shift = params.reconstruction & HT_ROI_SHIFT_MASK;
+    if params.num_bitplanes == 0
+        || params.num_bitplanes > 31
+        || roi_shift > 31 - params.num_bitplanes
+    {
+        store_status(status, HT_STATUS_FAIL, 2);
+        return 0;
+    }
+    if num_passes > 3 || params.missing_msbs >= 30 {
+        store_status(status, HT_STATUS_FAIL, 3);
+        return 0;
+    }
+    let lcup = params.cleanup_length;
+    if lcup < 2 || params.coded_len < lcup + params.refinement_length {
+        store_status(status, HT_STATUS_FAIL, 4);
+        return 0;
+    }
+    let scup = ((load_u8(coded_data, lcup - 1) as u32) << 4)
+        + (load_u8(coded_data, lcup - 2) as u32 & 0x0f);
+    if scup < 2 || scup > lcup || scup > 4079 {
+        store_status(status, HT_STATUS_FAIL, 5);
+        return 0;
+    }
+
+    let quad_rows = (params.height + 1) / 2;
+    let sstr = (params.width + 9) & !7;
+    if sstr > HT_MAX_SSTR || (sstr * (quad_rows + 1)) as usize > HT_MAX_SCRATCH {
+        store_status(status, HT_STATUS_UNSUPPORTED, 6);
+        return 0;
+    }
+
+    scup
+}
+
+#[inline(always)]
 fn decode_ht_cleanup_impl(
     coded_data: *const u8,
     decoded_data: *mut u32,
@@ -1090,69 +1189,17 @@ fn decode_ht_cleanup_impl(
     uvlc_table0: *const u16,
     uvlc_table1: *const u16,
     status: *mut J2kHtStatus,
-    cleanup_only: bool,
-    dequantize: bool,
 ) {
-    store_status(status, HT_STATUS_OK, 0);
-
+    let scup = cleanup_scup(coded_data, params, status, false, false);
+    if scup == 0 {
+        return;
+    }
     let mut num_passes = params.number_of_coding_passes;
-    if num_passes > 1 && params.refinement_length == 0 {
+    if num_passes > 1 && (params.refinement_length == 0 || params.missing_msbs == 29) {
         num_passes = 1;
     }
-    if cleanup_only && params.refinement_length != 0 {
-        store_status(status, HT_STATUS_UNSUPPORTED, 17);
-        return;
-    }
-    if dequantize
-        && (!cleanup_only || params.number_of_coding_passes > 1 || params.refinement_length != 0)
-    {
-        store_status(status, HT_STATUS_UNSUPPORTED, 18);
-        return;
-    }
-    if params.width == 0 || params.height == 0 {
-        return;
-    }
-    if params.width > HT_MAX_WIDTH
-        || params.height > HT_MAX_HEIGHT
-        || params.width * params.height > HT_MAX_COEFFICIENTS
-    {
-        store_status(status, HT_STATUS_UNSUPPORTED, 1);
-        return;
-    }
-    let roi_shift = params.reconstruction & HT_ROI_SHIFT_MASK;
-    if params.num_bitplanes == 0
-        || params.num_bitplanes > 31
-        || roi_shift > 31 - params.num_bitplanes
-    {
-        store_status(status, HT_STATUS_FAIL, 2);
-        return;
-    }
-    if num_passes > 3 || params.missing_msbs >= 30 {
-        store_status(status, HT_STATUS_FAIL, 3);
-        return;
-    }
-    if params.missing_msbs == 29 && num_passes > 1 {
-        num_passes = 1;
-    }
-
     let lcup = params.cleanup_length;
-    if lcup < 2 || params.coded_len < lcup + params.refinement_length {
-        store_status(status, HT_STATUS_FAIL, 4);
-        return;
-    }
-    let scup = ((load_u8(coded_data, lcup - 1) as u32) << 4)
-        + (load_u8(coded_data, lcup - 2) as u32 & 0x0f);
-    if scup < 2 || scup > lcup || scup > 4079 {
-        store_status(status, HT_STATUS_FAIL, 5);
-        return;
-    }
-
-    let quad_rows = (params.height + 1) / 2;
     let sstr = (params.width + 9) & !7;
-    if sstr > HT_MAX_SSTR || (sstr * (quad_rows + 1)) as usize > HT_MAX_SCRATCH {
-        store_status(status, HT_STATUS_UNSUPPORTED, 6);
-        return;
-    }
 
     let mut scratch = [0u16; HT_MAX_SCRATCH];
     let cleanup_detail = decode_cleanup_symbols_remaining_rows(
@@ -1183,13 +1230,13 @@ fn decode_ht_cleanup_impl(
         params,
         sstr,
         &mut v_n_scratch,
-        dequantize,
+        false,
     );
     if magsgn_detail != 0 {
         store_status(status, HT_STATUS_FAIL, magsgn_detail);
         return;
     }
-    if cleanup_only || num_passes == 1 {
+    if num_passes == 1 {
         return;
     }
 
@@ -1227,6 +1274,216 @@ fn decode_ht_cleanup_impl(
 
     if num_passes > 2 {
         apply_magnitude_refinement(coded_data, &sigma, decoded_data, params, mstr, p);
+    }
+}
+
+// One warp consumes at most 32 quads (3968 bits) per prefix sum. A circular
+// 8192-bit window retains that chunk, fetch lookahead, and the final byte group
+// without storing the entire MagSgn segment in shared memory.
+const HT_MAG_WORDS: usize = 256;
+const HT_VN_ROW: usize = HT_MAX_WIDTH as usize + 2;
+
+#[inline(always)]
+fn warp_prefix_sum(mut value: u32, lane: u32) -> u32 {
+    let mut delta = 1;
+    while delta < 32 {
+        let previous = warp::shuffle_up(value, delta);
+        if lane >= delta {
+            value += previous;
+        }
+        delta *= 2;
+    }
+    value
+}
+
+#[inline(always)]
+fn fill_magsgn_window(
+    data: *const u8,
+    data_len: u32,
+    words: *mut u32,
+    byte_cursor: &mut u32,
+    loaded_bits: &mut u32,
+    needed_bits: u32,
+    lane: u32,
+) {
+    while *byte_cursor < data_len && *loaded_bits < needed_bits {
+        let byte_index = *byte_cursor + lane;
+        let present = byte_index < data_len;
+        let stuffed = present && byte_index != 0 && load_u8(data, byte_index - 1) == 0xff;
+        let stuffed_mask = warp::ballot(stuffed);
+        let offset = *loaded_bits + lane * 8 - (stuffed_mask & warp::lanemask_lt()).count_ones();
+        let end = *loaded_bits + 8 * (data_len - *byte_cursor).min(32) - stuffed_mask.count_ones();
+        // Each lane clears a distinct new word; preserve the partial word from
+        // the previous group, then merge adjacent bytes atomically.
+        let clear = (*loaded_bits + 31) / 32 + lane;
+        if clear < (end + 31) / 32 {
+            simt_store(words, clear as usize % HT_MAG_WORDS, 0);
+        }
+        warp::sync_mask(u32::MAX);
+        if present {
+            let byte = load_u8(data, byte_index) as u32 & if stuffed { 0x7f } else { 0xff };
+            let word = (offset / 32) as usize;
+            let shift = offset % 32;
+            // SAFETY: `words` is this block's `HT_MAG_WORDS` shared-memory
+            // window; the index is reduced modulo its length and is only ever
+            // accessed atomically while lanes merge bytes into shared words.
+            unsafe {
+                BlockAtomicU32::from_ptr(simt_mut_ptr_at(words, word % HT_MAG_WORDS))
+                    .fetch_or(byte << shift, AtomicOrdering::Relaxed);
+            }
+            if shift + 8 - stuffed as u32 > 32 {
+                // SAFETY: as above, the wrapped index stays inside the window.
+                unsafe {
+                    BlockAtomicU32::from_ptr(simt_mut_ptr_at(words, (word + 1) % HT_MAG_WORDS))
+                        .fetch_or(byte >> (32 - shift), AtomicOrdering::Relaxed);
+                }
+            }
+        }
+        warp::sync_mask(u32::MAX);
+        *loaded_bits = end;
+        *byte_cursor += 32;
+    }
+}
+
+#[inline(always)]
+fn magsgn_word(words: *const u32, index: u32, valid_bits: u32) -> u32 {
+    let start = index * 32;
+    if start >= valid_bits {
+        return u32::MAX;
+    }
+    let value = simt_load(words, index as usize % HT_MAG_WORDS);
+    if valid_bits - start < 32 {
+        value | (u32::MAX << (valid_bits - start))
+    } else {
+        value
+    }
+}
+
+#[inline(always)]
+fn magsgn_fetch(words: *const u32, offset: u32, valid_bits: u32) -> u32 {
+    let word = offset / 32;
+    let shift = offset % 32;
+    let value = magsgn_word(words, word, valid_bits) >> shift;
+    if shift == 0 {
+        value
+    } else {
+        value | (magsgn_word(words, word + 1, valid_bits) << (32 - shift))
+    }
+}
+
+#[inline(always)]
+fn decode_cleanup_magsgn_warp(
+    coded_data: *const u8,
+    symbols: *const u16,
+    words: *mut u32,
+    vn_rows: *mut u32,
+    params: J2kHtCleanupParams,
+    status: *mut J2kHtStatus,
+    output: *mut u32,
+    dequantize: bool,
+) {
+    let lane = thread::threadIdx_x();
+    let scup = ((load_u8(coded_data, params.cleanup_length - 1) as u32) << 4)
+        + (load_u8(coded_data, params.cleanup_length - 2) as u32 & 0xf);
+    let mut byte_cursor = 0;
+    let mut valid_bits = 0;
+    let mut index = lane as usize;
+    while index < 2 * HT_VN_ROW {
+        simt_store(vn_rows, index, 0);
+        index += 32;
+    }
+    warp::sync_mask(u32::MAX);
+    let p = 30 - params.missing_msbs;
+    let sstr = (params.width + 9) & !7;
+    let quads = (params.width + 1) / 2;
+    let mut bit_base = 0;
+    let mut y = 0;
+    while y < params.height {
+        let row = ((y / 2) & 1) as usize * HT_VN_ROW;
+        let prev = HT_VN_ROW - row;
+        let mut quad_base = 0;
+        while quad_base < quads {
+            let quad = quad_base + lane;
+            let x = quad * 2;
+            let active = quad < quads;
+            let mut inf = 0;
+            let mut uq = 0;
+            if active {
+                let symbol = (y / 2 * sstr + quad * 2) as usize;
+                inf = simt_load(symbols, symbol) as u32;
+                uq = simt_load(symbols, symbol + 1) as u32;
+                if y != 0 {
+                    let previous = simt_load(vn_rows.cast_const(), prev + x as usize)
+                        | simt_load(vn_rows.cast_const(), prev + x as usize + 1)
+                        | simt_load(vn_rows.cast_const(), prev + x as usize + 2)
+                        | simt_load(vn_rows.cast_const(), prev + x as usize + 3);
+                    let gamma = inf & 0xf0;
+                    uq += if gamma & gamma.wrapping_sub(0x10) != 0 {
+                        floor_log2_nonzero(previous | 2)
+                    } else {
+                        1
+                    };
+                }
+            }
+            if warp::ballot(active && uq > params.missing_msbs + 2) != 0 {
+                if lane == 0 {
+                    store_status(status, HT_STATUS_FAIL, if y == 0 { 13 } else { 14 });
+                }
+                return;
+            }
+            let sample_count = if x + 1 < params.width { 4 } else { 2 };
+            let mut count = 0;
+            let mut bit = 0;
+            while bit < sample_count {
+                if inf & sample_mask(bit) != 0 {
+                    count += uq - ((inf >> (12 + bit)) & 1);
+                }
+                bit += 1;
+            }
+            let prefix = warp_prefix_sum(count, lane);
+            let mut offset = bit_base + prefix - count;
+            bit_base += warp::shuffle(prefix, 31);
+            fill_magsgn_window(
+                coded_data,
+                params.cleanup_length - scup,
+                words,
+                &mut byte_cursor,
+                &mut valid_bits,
+                bit_base + 32,
+                lane,
+            );
+            if active {
+                bit = 0;
+                while bit < sample_count {
+                    let mut value = 0;
+                    let mut vn = 0;
+                    if inf & sample_mask(bit) != 0 {
+                        let ms = magsgn_fetch(words.cast_const(), offset, valid_bits);
+                        let length = uq - ((inf >> (12 + bit)) & 1);
+                        offset += length;
+                        (value, vn) = mag_sgn_value(ms, length, inf, bit, p);
+                    }
+                    let sample_x = x + bit / 2;
+                    let sample_y = y + bit % 2;
+                    if sample_y < params.height {
+                        store_decoded_sample(
+                            output,
+                            params.output_offset + sample_y * params.output_stride + sample_x,
+                            value,
+                            params,
+                            dequantize,
+                        );
+                    }
+                    if bit & 1 != 0 {
+                        simt_store(vn_rows, row + sample_x as usize + 1, vn);
+                    }
+                    bit += 1;
+                }
+            }
+            quad_base += 32;
+        }
+        warp::sync_mask(u32::MAX);
+        y += 2;
     }
 }
 
@@ -1273,6 +1530,106 @@ mod kernels {
     use super::*;
 
     #[kernel]
+    pub unsafe fn j2k_htj2k_decode_cleanup_symbols(
+        coded_data: *const u8,
+        jobs: *const J2kHtCleanupMultiBatchJob,
+        vlc_table0: *const u16,
+        vlc_table1: *const u16,
+        uvlc_table0: *const u16,
+        uvlc_table1: *const u16,
+        status: *mut J2kHtStatus,
+        job_count: u32,
+        scratch: *mut u16,
+        dequantize: u32,
+        jobs_per_block: u32,
+    ) {
+        static mut TABLES: SharedArray<u16, 2624> = SharedArray::UNINIT;
+        let lane = thread::threadIdx_x();
+        let tables = unsafe { TABLES.as_mut_ptr() };
+        let mut index = lane;
+        while index < 2624 {
+            let value = if index < 1024 {
+                load_u16(vlc_table0, index)
+            } else if index < 2048 {
+                load_u16(vlc_table1, index - 1024)
+            } else if index < 2368 {
+                load_u16(uvlc_table0, index - 2048)
+            } else {
+                load_u16(uvlc_table1, index - 2368)
+            };
+            simt_store(tables, index as usize, value);
+            index += 32;
+        }
+        thread::sync_threads();
+        let gid = thread::blockIdx_x() * jobs_per_block + lane;
+        if lane >= jobs_per_block || gid >= job_count {
+            return;
+        }
+        let job = load_job(jobs, gid);
+        let params = params_from_multi_job(job);
+        let data = simt_const_ptr_at(coded_data, job.coded_offset as usize);
+        let status = simt_mut_ptr_at(status, gid as usize);
+        let scup = cleanup_scup(data, params, status, true, dequantize != 0);
+        if scup == 0 {
+            return;
+        }
+        // SAFETY: the host allocates `HT_MAX_SCRATCH` u16 entries per job
+        // (`cleanup_scratch`), `gid < job_count`, and only this thread touches
+        // job `gid`'s slice.
+        let scratch = unsafe {
+            &mut *simt_mut_ptr_at(scratch, gid as usize * HT_MAX_SCRATCH)
+                .cast::<[u16; HT_MAX_SCRATCH]>()
+        };
+        let detail = decode_cleanup_symbols_remaining_rows(
+            data,
+            params.cleanup_length,
+            scup,
+            scratch,
+            params.width,
+            params.height,
+            (params.width + 9) & !7,
+            tables,
+            simt_const_ptr_at(tables, 1024),
+            simt_const_ptr_at(tables, 2048),
+            simt_const_ptr_at(tables, 2368),
+        );
+        if detail != 0 {
+            store_status(status, HT_STATUS_FAIL, detail);
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_htj2k_decode_cleanup_magsgn(
+        coded_data: *const u8,
+        jobs: *const J2kHtCleanupMultiBatchJob,
+        statuses: *mut J2kHtStatus,
+        job_count: u32,
+        scratch: *const u16,
+        dequantize: u32,
+    ) {
+        static mut WORDS: SharedArray<u32, HT_MAG_WORDS> = SharedArray::UNINIT;
+        static mut VN: SharedArray<u32, { 2 * HT_VN_ROW }> = SharedArray::UNINIT;
+        let gid = thread::blockIdx_x();
+        if gid >= job_count || simt_load(statuses.cast_const(), gid as usize).code != HT_STATUS_OK {
+            return;
+        }
+        let job = load_job(jobs, gid);
+        if job.width == 0 || job.height == 0 {
+            return;
+        }
+        decode_cleanup_magsgn_warp(
+            simt_const_ptr_at(coded_data, job.coded_offset as usize),
+            simt_const_ptr_at(scratch, gid as usize * HT_MAX_SCRATCH),
+            unsafe { WORDS.as_mut_ptr() },
+            unsafe { VN.as_mut_ptr() },
+            params_from_multi_job(job),
+            simt_mut_ptr_at(statuses, gid as usize),
+            job.output_ptr as usize as *mut u32,
+            dequantize != 0,
+        );
+    }
+
+    #[kernel]
     pub unsafe fn j2k_htj2k_decode_codeblocks(
         coded_data: *const u8,
         decoded_data: *mut u32,
@@ -1298,8 +1655,6 @@ mod kernels {
             uvlc_table0,
             uvlc_table1,
             simt_mut_ptr_at(status, gid as usize),
-            false,
-            false,
         );
     }
 
@@ -1328,69 +1683,24 @@ mod kernels {
             uvlc_table0,
             uvlc_table1,
             simt_mut_ptr_at(status, gid as usize),
-            false,
-            false,
         );
     }
 
     #[kernel]
-    pub unsafe fn j2k_htj2k_decode_codeblocks_multi_cleanup_only(
-        coded_data: *const u8,
-        jobs: *const J2kHtCleanupMultiBatchJob,
-        vlc_table0: *const u16,
-        vlc_table1: *const u16,
-        uvlc_table0: *const u16,
-        uvlc_table1: *const u16,
-        status: *mut J2kHtStatus,
-        job_count: u32,
-    ) {
-        let gid = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
-        if gid >= job_count {
+    pub unsafe fn j2k_htj2k_clear_coefficient_targets(params: J2kCoefficientClearBatch) {
+        let target_index = thread::blockIdx_y();
+        if target_index >= params.target_count {
             return;
         }
-        let job = load_job(jobs, gid);
-        decode_ht_cleanup_impl(
-            simt_const_ptr_at(coded_data, job.coded_offset as usize),
-            job.output_ptr as usize as *mut u32,
-            params_from_multi_job(job),
-            vlc_table0,
-            vlc_table1,
-            uvlc_table0,
-            uvlc_table1,
-            simt_mut_ptr_at(status, gid as usize),
-            true,
-            false,
-        );
-    }
-
-    #[kernel]
-    pub unsafe fn j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize(
-        coded_data: *const u8,
-        jobs: *const J2kHtCleanupMultiBatchJob,
-        vlc_table0: *const u16,
-        vlc_table1: *const u16,
-        uvlc_table0: *const u16,
-        uvlc_table1: *const u16,
-        status: *mut J2kHtStatus,
-        job_count: u32,
-    ) {
-        let gid = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
-        if gid >= job_count {
-            return;
+        let target = params.targets[target_index as usize];
+        let output = target.output_ptr as usize as *mut u32;
+        let mut word = u64::from(thread::blockIdx_x() * thread::blockDim_x())
+            + u64::from(thread::threadIdx_x());
+        let stride = u64::from(params.blocks_per_target * thread::blockDim_x());
+        while word < target.words {
+            simt_store(output, word as usize, 0);
+            word += stride;
         }
-        let job = load_job(jobs, gid);
-        decode_ht_cleanup_impl(
-            simt_const_ptr_at(coded_data, job.coded_offset as usize),
-            job.output_ptr as usize as *mut u32,
-            params_from_multi_job(job),
-            vlc_table0,
-            vlc_table1,
-            uvlc_table0,
-            uvlc_table1,
-            simt_mut_ptr_at(status, gid as usize),
-            true,
-            true,
-        );
     }
 }
 

@@ -4,8 +4,6 @@ use crate::Error;
 #[cfg(any(feature = "cuda-runtime", test))]
 use j2k_core::HostAllocationError;
 pub(crate) use j2k_core::HostPhaseBudget;
-#[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::CudaError;
 
 pub(crate) fn try_vec_with_capacity<T>(
     capacity: usize,
@@ -84,23 +82,6 @@ pub(crate) fn try_vec_extend_from_slice<T: Copy>(
     try_vec_reserve(values, source.len(), what)?;
     values.extend_from_slice(source);
     Ok(())
-}
-
-#[cfg(feature = "cuda-runtime")]
-pub(crate) fn try_collect_cuda_results_exact<T, I>(
-    budget: &mut HostPhaseBudget,
-    iter: I,
-) -> Result<Vec<T>, CudaError>
-where
-    I: ExactSizeIterator<Item = Result<T, CudaError>>,
-{
-    let mut values = budget
-        .try_vec_with_capacity(iter.len())
-        .map_err(CudaError::from)?;
-    for value in iter {
-        values.push(value?);
-    }
-    Ok(values)
 }
 
 #[cfg(any(feature = "cuda-runtime", test))]

@@ -28,6 +28,15 @@ impl NativeBackendError {
     pub(crate) fn is_unsupported(&self) -> bool {
         matches!(self.source.classify(), DecodeErrorClass::Unsupported { .. })
     }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn is_allocation_limit(&self) -> bool {
+        matches!(
+            self.source,
+            DecodeError::AllocationTooLarge { .. }
+                | DecodeError::Validation(j2k_native::ValidationError::ImageTooLarge)
+        )
+    }
 }
 
 impl core::fmt::Display for NativeBackendError {
