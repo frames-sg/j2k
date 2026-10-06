@@ -258,10 +258,11 @@ impl J2kCudaEngine<'_> {
             .enumerate()
             .find(|(_, status)| status.code != 0)
         {
-            return Err(CudaError::KernelStatus {
+            return Err(CudaError::KernelJobStatus {
                 kernel: CLASSIC_KERNEL_NAME,
+                job_index: index,
                 code: status.code,
-                detail: ((u32::try_from(index).unwrap_or(u32::MAX)) << 8) | (status.detail & 0xff),
+                detail: status.detail,
             });
         }
         Ok((

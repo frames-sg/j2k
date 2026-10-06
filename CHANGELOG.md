@@ -3,7 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [0.12.0] - 2026-10-05
+## [0.12.0] - 2026-10-06
 
 - Breaking (experimental `j2k-cuda-j2k-engine`):
   `J2kCudaEngine::upload_j2k_decode_payload_with_pool` and
