@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 use crate::metal_types::prelude::*;
 
+use super::super::{ClassicTier1Buffers, ClassicTier1Inputs};
 use super::{
     classic_batch_is_plain_arithmetic, classic_batch_uses_plain_fast_path,
     classic_repeated_uses_plain_fast_path, dispatch_classic_cleanup_batched_in_encoder,
@@ -20,9 +21,8 @@ use super::{
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct ClassicBatchView<'a> {
-    coded_buffer: &'a Buffer,
-    jobs_buffer: &'a Buffer,
-    segments_buffer: &'a Buffer,
+    tier1_inputs: &'a ClassicTier1Inputs,
+    coded_data: &'a [u8],
     jobs: &'a [J2kClassicCleanupBatchJob],
     segments: &'a [J2kClassicSegment],
     output_plane_len: usize,
@@ -34,9 +34,8 @@ struct ClassicBatchView<'a> {
 impl<'a> ClassicBatchView<'a> {
     fn from_sub_band(job: &'a PreparedClassicSubBand) -> Self {
         Self {
-            coded_buffer: &job.coded_buffer,
-            jobs_buffer: &job.jobs_buffer,
-            segments_buffer: &job.segments_buffer,
+            tier1_inputs: &job.tier1_inputs,
+            coded_data: &job.coded_data,
             jobs: &job.jobs,
             segments: &job.segments,
             output_plane_len: job.width as usize * job.height as usize,
@@ -47,9 +46,8 @@ impl<'a> ClassicBatchView<'a> {
 
     fn from_group(group: &'a PreparedClassicSubBandGroup) -> Self {
         Self {
-            coded_buffer: &group.coded_buffer,
-            jobs_buffer: &group.jobs_buffer,
-            segments_buffer: &group.segments_buffer,
+            tier1_inputs: &group.tier1_inputs,
+            coded_data: &group.coded_data,
             jobs: &group.jobs,
             segments: &group.segments,
             output_plane_len: group.total_coefficients,
@@ -57,6 +55,11 @@ impl<'a> ClassicBatchView<'a> {
             repeated_overflow_message:
                 "classic J2K MetalDirect repeated grouped job count overflow",
         }
+    }
+
+    fn tier1_buffers(&self, runtime: &MetalRuntime) -> Result<&'a ClassicTier1Buffers, Error> {
+        self.tier1_inputs
+            .get_or_create(runtime, self.coded_data, self.jobs, self.segments)
     }
 }
 
@@ -94,6 +97,7 @@ struct RepeatedClassicCleanupRequest<'r, 'p> {
     runtime: &'r MetalRuntime,
     command_buffer: &'r CommandBufferRef,
     batch: ClassicBatchView<'p>,
+    buffers: &'p ClassicTier1Buffers,
     total_jobs: usize,
     output: &'r Buffer,
     coefficients_scratch: &'r Buffer,
@@ -109,6 +113,7 @@ fn dispatch_repeated_classic_cleanup(
         runtime,
         command_buffer,
         batch,
+        buffers,
         total_jobs,
         output,
         coefficients_scratch,
@@ -120,13 +125,13 @@ fn dispatch_repeated_classic_cleanup(
                 ClassicRepeatedCleanupDispatch {
                     runtime,
                     command_buffer,
-                    coded_data: batch.coded_buffer,
-                    jobs: batch.jobs_buffer,
+                    coded_data: &buffers.coded,
+                    jobs: &buffers.jobs,
                     job_count: batch.jobs.len(),
                     total_job_count: total_jobs,
                     output_plane_len: batch.output_plane_len,
                     use_plain_fast_path: kernel == RepeatedClassicKernel::PlainFast,
-                    segments: batch.segments_buffer,
+                    segments: &buffers.segments,
                     decoded: output,
                     coefficients_scratch,
                 },
@@ -141,12 +146,12 @@ fn dispatch_repeated_classic_cleanup(
                 ClassicPlainDevRepeatedCleanupDispatch {
                     runtime,
                     command_buffer,
-                    coded_data: batch.coded_buffer,
-                    jobs: batch.jobs_buffer,
+                    coded_data: &buffers.coded,
+                    jobs: &buffers.jobs,
                     job_count: batch.jobs.len(),
                     total_job_count: total_jobs,
                     output_plane_len: batch.output_plane_len,
-                    segments: batch.segments_buffer,
+                    segments: &buffers.segments,
                     decoded: output,
                     coefficients_scratch,
                     states_scratch,
@@ -219,6 +224,7 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: batch.repeated_overflow_message.to_string(),
         })?;
+    let buffers = batch.tier1_buffers(runtime)?;
     let kernel = select_repeated_classic_kernel(runtime.decode()?, count, batch);
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, total_jobs)?;
     let states_scratch = if kernel == RepeatedClassicKernel::PlainDeviceState {
@@ -231,6 +237,7 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
             runtime,
             command_buffer,
             batch,
+            buffers,
             total_jobs,
             output,
             coefficients_scratch: &coefficients_scratch.buffer,
@@ -244,7 +251,7 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
         dispatch_classic_store_repeated_batched_in_command_buffer(ClassicRepeatedStoreDispatch {
             runtime,
             command_buffer,
-            jobs: batch.jobs_buffer,
+            jobs: &buffers.jobs,
             job_count: batch.jobs.len(),
             total_job_count: total_jobs,
             output_plane_len: batch.output_plane_len,
@@ -259,9 +266,9 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
     Ok((
         crate::batch_allocation::try_vec_from_array(
             [
-                batch.coded_buffer.clone(),
-                batch.jobs_buffer.clone(),
-                batch.segments_buffer.clone(),
+                buffers.coded.clone(),
+                buffers.jobs.clone(),
+                buffers.segments.clone(),
             ],
             "J2K Metal repeated classic retained buffers",
         )?,
@@ -336,9 +343,10 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
         ));
     }
 
-    let coded_buffer = job.coded_buffer.clone();
-    let jobs_buffer = job.jobs_buffer.clone();
-    let segments_buffer = job.segments_buffer.clone();
+    let buffers = job.tier1_buffers(runtime)?;
+    let coded_buffer = buffers.coded.clone();
+    let jobs_buffer = buffers.jobs.clone();
+    let segments_buffer = buffers.segments.clone();
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&job.jobs, &job.segments)
         && runtime
             .decode()?
@@ -404,9 +412,10 @@ pub(in crate::engine) fn encode_prepared_classic_sub_band_group_to_buffer_in_enc
         ));
     }
 
-    let coded_buffer = group.coded_buffer.clone();
-    let jobs_buffer = group.jobs_buffer.clone();
-    let segments_buffer = group.segments_buffer.clone();
+    let buffers = group.tier1_buffers(runtime)?;
+    let coded_buffer = buffers.coded.clone();
+    let jobs_buffer = buffers.jobs.clone();
+    let segments_buffer = buffers.segments.clone();
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&group.jobs, &group.segments)
         && runtime
             .decode()?

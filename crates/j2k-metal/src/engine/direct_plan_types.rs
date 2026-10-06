@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, OnceLock},
+};
 
 use crate::metal_types::Buffer;
 use j2k_native::{
@@ -29,12 +32,16 @@ pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) cpu_tier1_cache: Arc<CpuTier1CoefficientCache>,
 }
 
-// SAFETY: A prepared plan is immutable after construction. Its retained Metal
-// buffers are cross-thread resources and are bound only for read access; all
-// host-owned vectors and the coefficient cache are immutable through this API.
+// SAFETY: A prepared plan is immutable after construction, except that each
+// classic sub-band and group fills its Tier-1 input buffers on first use. The
+// `OnceLock` holding them synchronizes that first fill, and the buffers are
+// immutable afterwards. Retained Metal buffers are cross-thread resources and
+// are bound only for read access; all host-owned vectors and the coefficient
+// cache are immutable through this API.
 unsafe impl Send for PreparedDirectGrayscalePlan {}
-// SAFETY: The same immutable-plan contract permits concurrent readers; GPU
-// writes target per-submission scratch rather than these cached buffers.
+// SAFETY: The same contract permits concurrent readers: they observe either an
+// empty `OnceLock` or fully built buffers, and GPU writes target per-submission
+// scratch rather than these cached buffers.
 unsafe impl Sync for PreparedDirectGrayscalePlan {}
 
 pub(crate) struct PreparedDirectColorPlan {
@@ -85,11 +92,9 @@ pub(super) struct PreparedClassicSubBand {
     pub(super) height: u32,
     pub(super) zero_fill: bool,
     pub(super) coded_data: Vec<u8>,
-    pub(super) coded_buffer: Buffer,
     pub(super) jobs: Vec<J2kClassicCleanupBatchJob>,
-    pub(super) jobs_buffer: Buffer,
     pub(super) segments: Vec<J2kClassicSegment>,
-    pub(super) segments_buffer: Buffer,
+    pub(super) tier1_inputs: ClassicTier1Inputs,
 }
 
 pub(super) struct PreparedClassicSubBandGroup {
@@ -98,12 +103,27 @@ pub(super) struct PreparedClassicSubBandGroup {
     pub(super) total_coefficients: usize,
     pub(super) zero_fill: bool,
     pub(super) coded_data: Vec<u8>,
-    pub(super) coded_buffer: Buffer,
     pub(super) jobs: Vec<J2kClassicCleanupBatchJob>,
-    pub(super) jobs_buffer: Buffer,
     pub(super) segments: Vec<J2kClassicSegment>,
-    pub(super) segments_buffer: Buffer,
+    pub(super) tier1_inputs: ClassicTier1Inputs,
     pub(super) members: Vec<PreparedClassicSubBandGroupMember>,
+}
+
+/// Device copies of a classic sub-band's or group's `coded_data`, `jobs` and
+/// `segments`.
+pub(super) struct ClassicTier1Buffers {
+    pub(super) coded: Buffer,
+    pub(super) jobs: Buffer,
+    pub(super) segments: Buffer,
+}
+
+/// The Tier-1 input buffers of a classic sub-band or group, built from its
+/// host vectors the first time a dispatch binds them. The batch RGB routes
+/// upload their own concatenated copies, so plans decoded only through them
+/// never build these.
+pub(super) struct ClassicTier1Inputs {
+    pub(super) mode: DirectTier1Mode,
+    pub(super) buffers: OnceLock<ClassicTier1Buffers>,
 }
 
 pub(super) struct PreparedClassicSubBandGroupMember {

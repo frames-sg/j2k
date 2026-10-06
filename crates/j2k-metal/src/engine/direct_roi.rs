@@ -6,10 +6,10 @@ use super::abi::{
 };
 use super::direct_prepare::{prepare_classic_sub_band_groups, prepare_ht_sub_band_groups};
 use super::{
-    copied_slice_buffer, idwt_required_input_windows, idwt_required_output_margin, with_runtime,
-    DirectBandSlice, DirectTier1Mode, Error, J2kDirectBandId, J2kDirectIdwtStep,
-    J2kDirectStoreStep, J2kRequiredBandRegion, PreparedDirectGrayscalePlan,
-    PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtSubBand, Rect,
+    idwt_required_input_windows, idwt_required_output_margin, DirectBandSlice, DirectTier1Mode,
+    Error, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRequiredBandRegion,
+    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
+    PreparedHtSubBand, Rect,
 };
 
 #[cfg(target_os = "macos")]
@@ -192,13 +192,7 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
                 );
                 if sub_band.jobs.len() != before {
                     sub_band.zero_fill = true;
-                    if plan.tier1_prepare_mode == DirectTier1Mode::Metal {
-                        with_runtime(|runtime| {
-                            sub_band.jobs_buffer =
-                                copied_slice_buffer(&runtime.device, &sub_band.jobs)?;
-                            Ok(())
-                        })?;
-                    }
+                    sub_band.tier1_inputs.reset();
                 }
             }
             PreparedDirectGrayscaleStep::HtSubBand(sub_band) => {

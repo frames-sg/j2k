@@ -68,20 +68,27 @@ fn session_runtime_fixture() -> Option<(Device, MetalBackendSession, usize, Rect
     ))
 }
 
+/// Runs `decode` under an unrelated ambient runtime and returns how many
+/// classic Tier-1 input buffers it built. Any it built must come from the
+/// explicit session runtime.
 #[cfg(target_os = "macos")]
-fn assert_plan_build_uses_runtime(
+fn tier1_buffers_built_by_session_runtime(
     device: &Device,
     expected_runtime: usize,
     label: &str,
     decode: impl FnOnce() -> Result<(), Error>,
-) {
+) -> usize {
     crate::engine::reset_direct_tier1_input_buffer_prepares_for_test();
     crate::engine::with_isolated_runtime_for_device_for_test(device, decode).expect(label);
-    assert_eq!(
-        crate::engine::direct_tier1_input_buffer_runtime_for_test(),
-        expected_runtime,
-        "{label} must prepare with the explicit session runtime"
-    );
+    let built = crate::engine::direct_tier1_input_buffer_prepares_for_test();
+    if built > 0 {
+        assert_eq!(
+            crate::engine::direct_tier1_input_buffer_runtime_for_test(),
+            expected_runtime,
+            "{label} must build Tier-1 input buffers with the explicit session runtime"
+        );
+    }
+    built
 }
 
 #[cfg(target_os = "macos")]
@@ -107,24 +114,42 @@ fn explicit_session_gray_region_scaled_plans_use_session_runtime() {
         .expect("encode gray8 region-scaled session fixture"),
     );
 
-    assert_plan_build_uses_runtime(&device, expected_runtime, "single grayscale plan", || {
-        decode_region_scaled_direct_to_surface_with_session(
-            gray.as_ref(),
-            PixelFormat::Gray8,
-            roi,
-            Downscale::Half,
-            &session,
-        )
-        .map(drop)
-    });
-    assert_plan_build_uses_runtime(&device, expected_runtime, "grayscale batch plan", || {
-        decode_region_scaled_grayscale_batch_direct_to_device_routed(
-            &[(gray, roi, Downscale::Half)],
-            PixelFormat::Gray8,
-            Some(&session),
-        )
-        .map(drop)
-    });
+    let built = tier1_buffers_built_by_session_runtime(
+        &device,
+        expected_runtime,
+        "single grayscale plan",
+        || {
+            decode_region_scaled_direct_to_surface_with_session(
+                gray.as_ref(),
+                PixelFormat::Gray8,
+                roi,
+                Downscale::Half,
+                &session,
+            )
+            .map(drop)
+        },
+    );
+    assert!(
+        built > 0,
+        "single grayscale plan reads per-plan Tier-1 buffers"
+    );
+    let built = tier1_buffers_built_by_session_runtime(
+        &device,
+        expected_runtime,
+        "grayscale batch plan",
+        || {
+            decode_region_scaled_grayscale_batch_direct_to_device_routed(
+                &[(gray, roi, Downscale::Half)],
+                PixelFormat::Gray8,
+                Some(&session),
+            )
+            .map(drop)
+        },
+    );
+    assert!(
+        built > 0,
+        "grayscale batch plan reads per-plan Tier-1 buffers"
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -134,16 +159,22 @@ fn explicit_session_color_region_scaled_plans_use_session_runtime() {
         return;
     };
     let color = encoded_rgb8_tile_for_region_scaled_plan_cache(71);
-    assert_plan_build_uses_runtime(&device, expected_runtime, "single color plan", || {
-        decode_region_scaled_direct_to_surface_with_session(
-            color.as_ref(),
-            PixelFormat::Rgb8,
-            roi,
-            Downscale::Half,
-            &session,
-        )
-        .map(drop)
-    });
+    let built = tier1_buffers_built_by_session_runtime(
+        &device,
+        expected_runtime,
+        "single color plan",
+        || {
+            decode_region_scaled_direct_to_surface_with_session(
+                color.as_ref(),
+                PixelFormat::Rgb8,
+                roi,
+                Downscale::Half,
+                &session,
+            )
+            .map(drop)
+        },
+    );
+    assert_eq!(built, 0, "single color plan uploads its own Tier-1 copies");
 }
 
 #[cfg(target_os = "macos")]
@@ -158,28 +189,46 @@ fn explicit_session_color_batches_use_session_runtime() {
         (first, roi, Downscale::Half),
         (second, roi, Downscale::Half),
     ];
-    assert_plan_build_uses_runtime(&device, expected_runtime, "distinct color batch", || {
-        decode_region_scaled_color_batch_direct_to_device_routed(
-            &distinct,
-            PixelFormat::Rgb8,
-            Some(&session),
-        )
-        .map(drop)
-    });
+    let built = tier1_buffers_built_by_session_runtime(
+        &device,
+        expected_runtime,
+        "distinct color batch",
+        || {
+            decode_region_scaled_color_batch_direct_to_device_routed(
+                &distinct,
+                PixelFormat::Rgb8,
+                Some(&session),
+            )
+            .map(drop)
+        },
+    );
+    assert_eq!(
+        built, 0,
+        "distinct color batch uploads its own Tier-1 copies"
+    );
 
     let repeated_input = encoded_rgb8_tile_for_region_scaled_plan_cache(101);
     let repeated = [
         (repeated_input.clone(), roi, Downscale::Half),
         (repeated_input, roi, Downscale::Half),
     ];
-    assert_plan_build_uses_runtime(&device, expected_runtime, "repeated color batch", || {
-        decode_region_scaled_color_batch_direct_to_device_routed(
-            &repeated,
-            PixelFormat::Rgb8,
-            Some(&session),
-        )
-        .map(drop)
-    });
+    let built = tier1_buffers_built_by_session_runtime(
+        &device,
+        expected_runtime,
+        "repeated color batch",
+        || {
+            decode_region_scaled_color_batch_direct_to_device_routed(
+                &repeated,
+                PixelFormat::Rgb8,
+                Some(&session),
+            )
+            .map(drop)
+        },
+    );
+    assert_eq!(
+        built, 0,
+        "repeated color batch uploads its own Tier-1 copies"
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -189,7 +238,7 @@ fn explicit_session_repeated_color_plan_uses_session_runtime() {
         return;
     };
     let color = encoded_rgb8_tile_for_region_scaled_plan_cache(97);
-    assert_plan_build_uses_runtime(
+    let built = tier1_buffers_built_by_session_runtime(
         &device,
         expected_runtime,
         "explicit repeated color plan",
@@ -204,6 +253,10 @@ fn explicit_session_repeated_color_plan_uses_session_runtime() {
             )
             .map(drop)
         },
+    );
+    assert_eq!(
+        built, 0,
+        "explicit repeated color plan uploads its own Tier-1 copies"
     );
 }
 

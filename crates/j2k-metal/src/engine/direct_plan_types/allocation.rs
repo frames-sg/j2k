@@ -2,19 +2,15 @@
 
 //! Actual retained host/device accounting for prepared direct-plan owners.
 
-#[cfg(target_os = "macos")]
-use crate::metal_types::prelude::*;
-
 use core::mem::size_of;
 
-use crate::metal_types::BufferRef;
-
 use super::{
-    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
-    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedHtExecutionOwner,
-    PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
+    ClassicTier1Inputs, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedDirectColorPlan, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    PreparedHtExecutionOwner, PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 use crate::engine::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
+use crate::engine::direct_tier1_input_buffer_bytes;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PreparedPlanRetainedBytes {
@@ -42,13 +38,27 @@ impl PreparedPlanRetainedBytes {
         Ok(())
     }
 
-    fn include_buffer(&mut self, buffer: &BufferRef) -> Result<(), &'static str> {
-        let bytes = buffer.length();
+    fn include_device_bytes(&mut self, bytes: usize) -> Result<(), &'static str> {
         self.device = self
             .device
             .checked_add(bytes)
             .ok_or("prepared-plan aggregate device byte overflow")?;
         Ok(())
+    }
+
+    /// Charges the Tier-1 input buffers whether or not a reader has built them
+    /// yet. The cache weighs a plan once, at insertion, so this keeps buffers
+    /// built later inside its device cap.
+    fn include_classic_tier1_inputs(
+        &mut self,
+        inputs: &ClassicTier1Inputs,
+        coded_data: &[u8],
+        jobs: &[J2kClassicCleanupBatchJob],
+        segments: &[J2kClassicSegment],
+    ) -> Result<(), &'static str> {
+        self.include_device_bytes(direct_tier1_input_buffer_bytes(coded_data, inputs.mode))?;
+        self.include_device_bytes(direct_tier1_input_buffer_bytes(jobs, inputs.mode))?;
+        self.include_device_bytes(direct_tier1_input_buffer_bytes(segments, inputs.mode))
     }
 }
 
@@ -120,9 +130,12 @@ fn include_classic_sub_band(
     retained.include_host_capacity::<u8>(sub_band.coded_data.capacity())?;
     retained.include_host_capacity::<J2kClassicCleanupBatchJob>(sub_band.jobs.capacity())?;
     retained.include_host_capacity::<J2kClassicSegment>(sub_band.segments.capacity())?;
-    retained.include_buffer(&sub_band.coded_buffer)?;
-    retained.include_buffer(&sub_band.jobs_buffer)?;
-    retained.include_buffer(&sub_band.segments_buffer)
+    retained.include_classic_tier1_inputs(
+        &sub_band.tier1_inputs,
+        &sub_band.coded_data,
+        &sub_band.jobs,
+        &sub_band.segments,
+    )
 }
 
 fn include_classic_group(
@@ -135,9 +148,12 @@ fn include_classic_group(
     retained.include_host_capacity::<super::PreparedClassicSubBandGroupMember>(
         group.members.capacity(),
     )?;
-    retained.include_buffer(&group.coded_buffer)?;
-    retained.include_buffer(&group.jobs_buffer)?;
-    retained.include_buffer(&group.segments_buffer)
+    retained.include_classic_tier1_inputs(
+        &group.tier1_inputs,
+        &group.coded_data,
+        &group.jobs,
+        &group.segments,
+    )
 }
 
 fn include_ht_sub_band(

@@ -138,7 +138,7 @@ use self::direct_status::{
 mod direct_tier1;
 #[cfg(target_os = "macos")]
 use self::direct_tier1::{
-    flattened_hybrid_cpu_tier1_enabled, prepare_direct_tier1_input_buffer,
+    direct_tier1_input_buffer_bytes, flattened_hybrid_cpu_tier1_enabled,
     record_flattened_hybrid_cpu_decode_batch, record_hybrid_cpu_decode_inputs,
     record_hybrid_cpu_decode_worker_init, record_hybrid_repeated_output_blit,
     record_hybrid_stacked_component_batch, record_stacked_component_batch,
@@ -254,9 +254,9 @@ pub(crate) use j2k_metal_support::MetalSupportError;
 mod direct_plan_types;
 #[cfg(target_os = "macos")]
 use self::direct_plan_types::{
-    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember,
-    PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtExecutionOwner,
-    PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
+    ClassicTier1Buffers, ClassicTier1Inputs, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
+    PreparedHtExecutionOwner, PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
     PreparedHtSubBandGroupMember,
 };
 #[cfg(target_os = "macos")]

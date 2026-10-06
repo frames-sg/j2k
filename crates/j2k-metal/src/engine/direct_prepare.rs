@@ -5,8 +5,8 @@ use std::sync::Arc;
 use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
 use super::direct_roi::BandRequiredRegion;
 use super::{
-    classic_style_flags, prepare_direct_tier1_input_buffer, with_runtime, CpuTier1CoefficientCache,
-    DirectTier1Mode, Error, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, PreparedClassicSubBand,
+    classic_style_flags, ClassicTier1Inputs, CpuTier1CoefficientCache, DirectTier1Mode, Error,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, PreparedClassicSubBand,
     PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember, PreparedDirectColorPlan,
     PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
     PreparedHtPayloadSource, PreparedHtSubBand, PreparedHtSubBandGroup,
