@@ -1,6 +1,6 @@
 # Release Policy
 
-The `j2k` 0.11.3 public crate release is published and security-supported.
+The `j2k` 0.12.0 public crate release is published and security-supported.
 Its T.803 decoder conformance results are in
 [`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
@@ -8,12 +8,17 @@ used only for shapes where it was tested and measured faster.
 
 ## Release status
 
-Version `0.12.0` is the current release candidate. Its
+Version `0.12.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md)
 compares with `v0.11.3`; the
 [review](release-evidence/public-api/public-api-review-0.12.0.yml) records
 CUDA upload and pooled-surface lifetime changes and new Metal batch APIs.
-Publishing requires the hosted and full CUDA/Metal gates below.
+The [hosted checks](https://github.com/frames-sg/j2k/actions/runs/37427079958)
+and [full CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/37431440941)
+passed for the tagged source. The release verifier checked all five T.803
+reports, and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/37443691186)
+published all 25 crates. The reports are attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.12.0).
 
 Version `0.11.3` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md)
@@ -40,6 +45,7 @@ published all 25 crates. The reports are attached to the
 
 | Version | Distribution | Security support |
 | --- | --- | --- |
+| `0.12.0` | [crates.io](https://crates.io/crates/j2k/0.12.0), annotated tag `v0.12.0`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.12.0). | Yes |
 | `0.11.3` | [crates.io](https://crates.io/crates/j2k/0.11.3), annotated tag `v0.11.3`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Yes |
 | `0.11.2` | [crates.io](https://crates.io/crates/j2k/0.11.2), annotated tag `v0.11.2`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). | Yes |
 | `0.11.1` | [crates.io](https://crates.io/crates/j2k/0.11.1), tag `v0.11.1`; notes in the [changelog](../CHANGELOG.md). | Yes |

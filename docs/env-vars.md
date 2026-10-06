@@ -5,7 +5,7 @@ internal and can change without notice.
 
 Stability values:
 
-- Stable: supported for the published v0.11.x contract.
+- Stable: supported for the published v0.12.x contract.
 - Experimental: diagnostics and adapter tuning; may change before 1.0.
 - Test/CI: repository tests, CI, and release validation only.
 - Benchmark: benchmark harnesses only.
