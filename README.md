@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/j2k.svg)](https://crates.io/crates/j2k)
 [![docs.rs](https://img.shields.io/docsrs/j2k)](https://docs.rs/j2k)
-[![CI](https://github.com/frames-sg/j2k/actions/workflows/ci.yml/badge.svg)](https://github.com/frames-sg/j2k/actions/workflows/ci.yml)
+[![Full validation](https://github.com/frames-sg/j2k/actions/workflows/full-validation.yml/badge.svg?branch=main&event=push)](https://github.com/frames-sg/j2k/actions/workflows/full-validation.yml?query=branch%3Amain+event%3Apush)
 [![downloads](https://img.shields.io/crates/d/j2k.svg)](https://crates.io/crates/j2k)
 [![license](https://img.shields.io/crates/l/j2k.svg)](#license)
 
