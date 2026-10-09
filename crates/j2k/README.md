@@ -42,6 +42,6 @@ only when one of those recoveries was actually used.
 ## Links
 
 - API docs: <https://docs.rs/j2k>
-- [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
+- [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

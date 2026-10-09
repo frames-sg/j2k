@@ -219,7 +219,7 @@ The minimum supported Rust version is 1.99.0.
 ## Documentation
 
 - [API docs on docs.rs](https://docs.rs/j2k)
-- [Project website](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
+- [Project website](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
 - [docs/public-support.md](docs/public-support.md): every supported and
   unsupported feature of the format
 - [docs/architecture.md](docs/architecture.md): how the crates fit together
