@@ -88,6 +88,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
             sstr,
             scratch,
             v_n_scratch,
+            &mut scratch_buffers.magsgn,
             observer,
         )?;
     } else {
@@ -108,6 +109,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
             stride,
             sstr,
             v_n_scratch,
+            &mut scratch_buffers.magsgn,
         )?;
         observer.add_mag_sgn_us(phase_start);
     }

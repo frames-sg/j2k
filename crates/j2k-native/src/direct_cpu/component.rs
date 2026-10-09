@@ -28,7 +28,7 @@ pub(super) fn execute_component_plan(
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
                 execute_ht_sub_band(sub_band, bands, workspace_budget)?;
             }
-            J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
+            J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands, false)?,
             J2kDirectGrayscaleStep::Store(store) => {
                 store_component(
                     store,
@@ -188,6 +188,7 @@ pub(super) fn prepare_sub_band_output(
 pub(super) fn execute_idwt_step(
     step: &J2kDirectIdwtStep,
     bands: &mut DirectComponentBandScratch,
+    parallel: bool,
 ) -> Result<()> {
     let output_index = bands.prepare_band(step.output_band_id, step.rect, 0)?;
     let (input_bands, output_bands) = bands.bands.split_at_mut(output_index);
@@ -204,7 +205,7 @@ pub(super) fn execute_idwt_step(
         lh,
         hh,
     };
-    idwt::apply_codestream_single_decomposition_idwt_job(job, output)
+    idwt::apply_codestream_single_decomposition_idwt_job(job, output, parallel)
 }
 
 fn find_idwt_band(bands: &[DirectCpuBand], band_id: J2kDirectBandId) -> Result<J2kIdwtBand<'_>> {

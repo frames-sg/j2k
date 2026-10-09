@@ -39,6 +39,15 @@ pub(super) trait HtDecodeObserver {
         None
     }
 
+    /// Whether phase timings are recorded. Decoders that fuse phases run them
+    /// separately while this holds so each phase can still be timed.
+    #[cfg(feature = "simd")]
+    #[expect(clippy::inline_always, reason = "erase the unprofiled observer hook")]
+    #[inline(always)]
+    fn times_phases(&self) -> bool {
+        false
+    }
+
     #[inline(always)]
     fn add_cleanup_us(&mut self, _start: Option<profile::ProfileInstant>) {}
 
@@ -69,6 +78,13 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
     #[inline(always)]
     fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
         self.stats.record_block(cleanup_bytes, refinement_bytes);
+    }
+
+    #[cfg(feature = "simd")]
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
+    #[inline(always)]
+    fn times_phases(&self) -> bool {
+        self.profile_enabled
     }
 
     #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]

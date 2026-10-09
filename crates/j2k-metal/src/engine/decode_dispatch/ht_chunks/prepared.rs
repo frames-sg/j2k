@@ -8,8 +8,8 @@ use crate::metal_types::{Buffer, Device};
 use j2k_core::HtGpuJobChunkLimits;
 
 use super::{
-    execution::validate_pass_homogeneous_chunk, HtBatchInput, J2kHtCleanupBatchJob,
-    PackedMetalHtChunk,
+    execution::validate_pass_homogeneous_jobs, HtBatchInput, J2kHtCleanupBatchJob,
+    PackedMetalHtChunkJobs,
 };
 use crate::engine::{copied_slice_buffer, Error};
 
@@ -20,7 +20,6 @@ pub(in crate::engine) struct PreparedMetalHtExecution {
 
 pub(in crate::engine) struct PreparedMetalHtChunk {
     pub(in crate::engine) bucket: j2k_core::HtGpuJobPassBucket,
-    coded_data: Vec<u8>,
     jobs: Vec<J2kHtCleanupBatchJob>,
     pub(in crate::engine) source_indices: Vec<usize>,
     pub(in crate::engine) coded_buffer: Buffer,
@@ -50,11 +49,12 @@ impl PreparedMetalHtExecution {
                 source,
             })?;
         for chunk_index in 0..plan.chunk_count() {
-            let packed = plan.pack_chunk(chunk_index)?;
-            validate_pass_homogeneous_chunk(&packed)?;
+            // Payload bytes are written once, straight into the shared buffer
+            // the kernels read; no host copy is packed or retained.
+            let (packed, coded_buffer) = plan.pack_chunk_into_buffer(chunk_index, device)?;
+            validate_pass_homogeneous_jobs(packed.bucket, &packed.jobs)?;
             #[cfg(test)]
             crate::engine::test_counters::record_ht_immutable_payload_upload();
-            let coded_buffer = copied_slice_buffer(device, &packed.coded_data)?;
             #[cfg(test)]
             crate::engine::test_counters::record_ht_immutable_job_upload();
             let jobs_buffer = copied_slice_buffer(device, &packed.jobs)?;
@@ -76,10 +76,9 @@ impl PreparedMetalHtExecution {
 }
 
 impl PreparedMetalHtChunk {
-    fn new(packed: PackedMetalHtChunk, coded_buffer: Buffer, jobs_buffer: Buffer) -> Self {
+    fn new(packed: PackedMetalHtChunkJobs, coded_buffer: Buffer, jobs_buffer: Buffer) -> Self {
         Self {
             bucket: packed.bucket,
-            coded_data: packed.coded_data,
             jobs: packed.jobs,
             source_indices: packed.source_indices,
             coded_buffer,

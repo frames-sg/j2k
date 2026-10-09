@@ -374,6 +374,37 @@ kernel void j2k_store_component_gray_u16(
     output[indices.dst_idx] = pack_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale);
 }
 
+// Signed sources of at most eight bits written to Gray16: the CPU takes the
+// sample's two's-complement byte and widens it like any eight-bit sample
+// (x * 257), so -128 becomes 0x8080.
+kernel void j2k_store_component_gray_i8_widened_u16(
+    device const float *input [[buffer(0)]],
+    device ushort *output [[buffer(1)]],
+    constant J2kGrayStoreParams &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.copy_width || gid.y >= params.copy_height) {
+        return;
+    }
+
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_stride,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid,
+        0u,
+        params.output_item_offset
+    );
+    const short sample = j2k_pack_native_i16(
+        j2k_shift_centered_sample(input[indices.src_idx], params.addend, true),
+        params.max_value
+    );
+    output[indices.dst_idx] = ushort(uchar(char(sample))) * 257u;
+}
+
 kernel void j2k_store_component_gray_i16(
     device const float *input [[buffer(0)]],
     device short *output [[buffer(1)]],

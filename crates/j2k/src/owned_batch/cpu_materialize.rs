@@ -182,13 +182,19 @@ fn write_samples<T: Copy>(
 ) {
     let pixels = info.dimensions.0 as usize * info.dimensions.1 as usize;
     let channels = info.color.channels();
-    for pixel in 0..pixels {
-        for (channel, plane) in components.planes().iter().enumerate() {
-            let destination = match info.layout {
-                BatchLayout::Nchw => channel * pixels + pixel,
-                BatchLayout::Nhwc => pixel * channels + channel,
-            };
-            out[destination] = convert(plane.samples()[pixel], info.precision);
+    let precision = info.precision;
+    for (channel, plane) in components.planes().iter().enumerate() {
+        let samples = &plane.samples()[..pixels];
+        if info.layout == BatchLayout::Nchw || channels == 1 {
+            // One contiguous plane per channel.
+            let destination = &mut out[channel * pixels..][..pixels];
+            for (destination, &sample) in destination.iter_mut().zip(samples) {
+                *destination = convert(sample, precision);
+            }
+        } else {
+            for (pixel, &sample) in out.chunks_exact_mut(channels).zip(samples) {
+                pixel[channel] = convert(sample, precision);
+            }
         }
     }
 }

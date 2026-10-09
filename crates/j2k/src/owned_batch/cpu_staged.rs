@@ -9,10 +9,12 @@ use std::sync::Mutex;
 use j2k_core::BatchInfrastructureError;
 
 use super::cpu_fast::{CpuFlattenedPayloadJob, CpuGroupFastWorkspace};
-use crate::batch::allocation::{J2K_BATCH_METADATA_ALLOWANCE_BYTES, MAX_GENERIC_BATCH_WORKERS};
+use crate::batch::allocation::{
+    BASELINE_GENERIC_BATCH_WORKERS, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+};
 use crate::J2kError;
 
-pub(super) const CPU_ENTROPY_IMAGES_PER_WINDOW: usize = MAX_GENERIC_BATCH_WORKERS * 2;
+pub(super) const CPU_ENTROPY_IMAGES_PER_WINDOW: usize = BASELINE_GENERIC_BATCH_WORKERS * 2;
 
 #[derive(Debug, Default)]
 pub(super) struct CpuStagedWorkspace {

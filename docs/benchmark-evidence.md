@@ -19,6 +19,251 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## HTJ2K DICOM decode development run - 2026-10-09
+
+This run measured the CPU decode, tile-batch, owned-batch, and Metal changes
+listed under Unreleased in the changelog, against an export of `8b608120`
+(0.12.0 code; later commits changed only links) built the same way. Both used Cargo `release`, Rust 1.99.0, on an
+Apple M4 Pro (12 CPU cores, 16 GPU cores, 48 GB) running macOS 27.0. The
+candidate was an uncommitted working tree. Each cell is the minimum of three
+interleaved baseline/candidate rounds; the host was otherwise busy during
+part of the run, so absolute times are noisy, but every comparison ran both
+builds back to back.
+
+Inputs:
+
+- 16 HTJ2K codestreams from the `openjphjs` test fixtures of
+  `cornerstonejs/codecs` (MIT), encoded by OpenJPH from DICOM sample images:
+  CT, MR, NM, XA, CR/DX (RG), secondary capture, mammography (MG1), and
+  ultrasound. Eleven have raw reference pixels. The other ten decoded outputs
+  matched theirs byte for byte; MG1's reference has a different height from
+  its codestream and was not compared.
+- 58 tiles (512 x 512 RGB, 8-bit, HTJ2K lossless RPCL, 4 levels) extracted
+  from a local WSI DICOM that an older j2k build wrote. That build left
+  `Rsiz` bit 14 clear, which OpenJPH rejects, so the extracted copies set it.
+- OpenHTJ2K 0.19.0 and OpenJPH 0.31.0 from the pinned reference scripts.
+
+Commands:
+
+```bash
+J2K_DICOM_BENCH_REPEATS=21 J2K_DICOM_BENCH_RAW_DIR=<raw-dir> \
+  cargo run --release -p j2k-compare --bin jp2k_dicom_bench -- <codestream-dir>
+J2K_BATCH_COMPARE_MAX_ABS_DIFF=0 J2K_BATCH_COMPARE_REPEATS=5 [J2K_BATCH_COMPARE_THREADS=1] \
+  cargo run --release -p j2k-compare --bin jp2k_batch_compare -- <wsi-tile-dir> 58
+J2K_METAL_BENCH_REPEATS=9 \
+  cargo run --release -p j2k-metal --example dicom_decode_bench -- <codestream-dir>
+open_htj2k_dec -i <file> -o <out>.pgx -iter 21 -num_threads {1,12}
+```
+
+`jp2k_dicom_bench` parses each codestream into a new `J2kDecoder` and calls
+`decode_native_components`, with `CpuDecodeParallelism::Serial` and then
+`Auto`. OpenHTJ2K's `-iter` timing also parses each iteration and writes
+its output once. Times are milliseconds.
+
+| File | Size | Serial before | Serial now | OpenHTJ2K 1 thread | `Auto` before | `Auto` now | OpenHTJ2K 12 threads |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CT1 | 512 x 512, 16-bit | 1.61 | 0.85 | 0.79 | 1.31 | 0.45 | 0.76 |
+| CT2 | 512 x 512, 16-bit | 1.63 | 0.85 | 0.77 | 1.34 | 0.44 | 0.72 |
+| MR1 | 512 x 512, 16-bit | 1.67 | 0.87 | 0.80 | 1.33 | 0.46 | 0.75 |
+| NM1 | 256 x 1024, 16-bit | 1.56 | 0.79 | 0.73 | 1.30 | 0.43 | 0.72 |
+| MR2 | 1024 x 1024, 16-bit | 6.33 | 3.44 | 2.97 | 4.32 | 1.09 | 1.55 |
+| XA1 | 1024 x 1024, 16-bit | 6.29 | 3.31 | 2.85 | 4.11 | 1.02 | 1.58 |
+| RG1 | 1841 x 1955, 16-bit | 23.31 | 12.93 | 10.98 | 14.20 | 2.74 | 4.46 |
+| SC1 | 2048 x 2487, 16-bit | 31.58 | 18.10 | 15.24 | 18.02 | 3.81 | 5.39 |
+| MG1 | 3064 x 4774, 16-bit | 94.69 | 52.19 | 43.39 | 56.02 | 9.57 | 14.60 |
+| US1 (RCT) | 640 x 480 RGB, 8-bit | 3.93 | 2.26 | 1.38 | 3.55 | 1.17 | 1.32 |
+
+Decoding all 16 files 8 times each on 12 threads, one frame per thread with
+serial decode, took 221 ms before and 133 ms now.
+
+The 58 WSI tiles through `decode_tiles_into` (Rgb8) took 212 ms before and
+153 ms now on one worker (OpenHTJ2K 152 ms, OpenJPH 225 ms), and 60 ms before
+and 30 ms now with the default worker count (OpenHTJ2K 21 ms, OpenJPH 26 ms).
+The external decoders run one tile per thread. In this run j2k still admitted
+at most four concurrent decodes and parallelized inside each.
+
+A follow-up run the same day replaced that fixed four with a limit scaled to
+host memory (48 on this host, so the default worker count became the 12
+threads). Another build was compiling throughout (load average 9 to 13), so it
+was compared only with an otherwise identical four-worker build, interleaved,
+minimum of three rounds. The 58 WSI tiles took 39.2 ms with four workers and
+29.0 ms scaled (OpenHTJ2K 27.6 ms, OpenJPH 36.7 ms in the same run).
+`CpuBatchDecoder` batches of 16 copies went from 5.5 to 4.3 ms (CT1), 5.6 to
+3.6 ms (MR1), 19.1 to 13.3 ms (US1), 19.5 to 14.1 ms (WSI tile), 85.6 to
+75.0 ms (SC1), and 191 to 174 ms (MG1). RG1 to RG3 measured 3 to 11% slower,
+within the up to 25% spread of the unchanged single-image decodes in the same
+run. Images large enough to fill every core by themselves gain little from
+more workers. The CPU batch output equaled the Metal batch output byte for
+byte for every file.
+
+`dicom_decode_bench` decodes to `Gray16` or `Rgb8` with `J2kDecoder`
+(`decode_into`), with explicit Metal (`decode_request_to_device`), and as
+owned batches of 16 copies of the same input with `CpuBatchDecoder` and
+`MetalBatchDecoder` (preparation excluded). Metal output was read back outside
+the timers and equaled the CPU output byte for byte for every file, single
+and batch.
+
+| File | CPU before | CPU now | Metal before | Metal now | CPU batch before | CPU batch now | Metal batch before | Metal batch now |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| CT2 | 1.37 | 0.48 | 0.54 | 0.58 | 7.21 | 4.63 | 2.37 | 0.98 |
+| MR2 | 4.60 | 1.15 | 1.03 | 0.97 | 27.20 | 13.63 | 1.79 | 1.80 |
+| XA1 | 4.38 | 1.06 | 1.43 | 0.84 | 25.87 | 13.22 | 1.84 | 1.70 |
+| RG1 | 15.53 | 3.01 | 2.54 | 2.42 | 103.46 | 42.47 | 5.27 | 5.15 |
+| SC1 | 20.73 | 3.91 | 2.83 | 2.58 | 133.40 | 57.38 | 7.11 | 7.42 |
+| MG1 | 60.28 | 10.78 | 7.55 | 7.29 | 402.47 | 154.47 | 22.94 | 23.07 |
+| US1 (RCT) | 2.00 | 1.15 | 1.89 | 1.76 | 20.96 | 12.78 | 1.20 | 1.85 |
+| WSI tile | 2.12 | 1.08 | 1.33 | 1.28 | 20.69 | 13.75 | 2.46 | 1.92 |
+
+The Metal batch route did not change; its small-image cells moved between
+about 1.0 and 2.4 ms in both builds from run to run. Before this change the
+explicit Metal `Gray16` decode of the signed CT1 and CT2 inputs did not match
+the CPU (see the changelog), so the "Metal before" CT2 time is for that wrong
+output. The batch route was already correct for them.
+
+These results are from a development tree and have not been reproduced on the
+release runners. The `Auto` routing tables were measured against the 0.12.0
+CPU decoder, so some Metal routes they select may now be slower than the CPU;
+rerun the routing suite before relying on them.
+
+## HTJ2K block decoder and streamed wavelet run - 2026-10-09
+
+A second run the same day measured the changes made after the section above:
+the vector `MagSgn` step, the fused per-pair VLC and `MagSgn` decode, the
+skipped empty quads, the vectorized coefficient conversion, and the streamed
+inverse wavelet transform. Same host, toolchain, and inputs as above. Other
+work kept the host busy (load average 9 to 14 in these runs, briefly far
+higher earlier), so builds were compared interleaved, minimum of five rounds
+of 15 repeats per file, rather than against the absolute times above.
+
+`jp2k_dicom_bench`, serial decode, sum over the 16 files, milliseconds. The
+first step starts from the build the section above calls "now".
+
+| Step | Serial total | Step change |
+| --- | ---: | ---: |
+| Skip quads with no significant sample | 143.7 / 148.3 | -3.1% |
+| Vector `MagSgn` (two quads per step) | 129.5 / 146.9 | -11.8% |
+| Vectorized conversion, no per-block zeroing | 132.6 / 134.6 | -1.5% |
+| VLC and `MagSgn` fused per quad pair | 111.2 / 129.7 | -14.3% |
+| Streamed single-thread wavelet transform | 108.4 / 113.1 | -4.2% |
+
+Each row shows the new and the previous build from that step's own
+interleaved run; load differed between runs, so totals differ between rows.
+Most files improved at each step; the few that did not moved by about 2% at
+most, within run-to-run noise. Every lossless output still matched its
+reference.
+
+The final build, the build before the first step, and OpenHTJ2K 0.19.0
+(`-iter 11 -num_threads 1`) measured alternately at one thread under the
+same load, minimum of five rounds, milliseconds:
+
+| File | Before | Now | OpenHTJ2K |
+| --- | ---: | ---: | ---: |
+| MG1 | 63.03 | 42.42 | 47.61 |
+| RG1 | 15.70 | 10.69 | 13.68 |
+| SC1 | 21.75 | 14.85 | 18.80 |
+| MR2 | 4.17 | 2.81 | 3.82 |
+| CT1 | 1.08 | 0.70 | 1.09 |
+| US1 (RCT) | 2.87 | 1.96 | 2.07 |
+
+Before these steps j2k was 16 to 20% behind OpenHTJ2K on the largest files.
+Under `Auto` the 16-file total went from 39.5 to 34.0 ms (MG1 12.7 to 11.1
+ms); streaming the parallel wavelet bands as per-thread strips was neutral
+there (34.8 against 35.2 ms) and is kept because it shares the serial kernel
+and needs a quarter of the scratch or less.
+
+The 58 WSI tiles through `decode_tiles_into` with the default worker count,
+interleaved against the build before the memory-scaled worker limit: 43.5 ms
+before, 21.3 ms now; OpenHTJ2K took 28.2 and 30.2 ms and OpenJPH 37.1 and
+36.6 ms in the same rounds. `CpuBatchDecoder` batches of 16 copies against
+that same build: CT1 6.5 to 4.0 ms, US1 17.8 to 10.4 ms, RG1 59.5 to 44.7 ms,
+MG1 228 to 177 ms. Explicit Metal decodes did not change, and Metal and CPU
+outputs matched byte for byte, single and batch, for every file.
+
+Two experiments were measured and not kept: wavelet bands four times larger
+(8.6% slower; the 128 KiB band stays in L1) or half as large (no change),
+and allocating fresh buffers from the zeroed allocator instead of filling
+them (no measurable change, since freed blocks are recycled and must be
+cleared anyway).
+
+### Follow-up measurements, same day
+
+Three more changes were measured and not kept:
+
+- `MagSgn` in 16-bit lanes, both quads in one vector, for blocks whose
+  samples code at most 14 bits: 16-file serial total 99.5 against 99.6 ms,
+  and US1 (all blocks eligible) 4% slower. With the fused decode the vector
+  step already overlaps the VLC chain, and widening results back to 32 bits
+  cost what the narrower arithmetic saved.
+- Filling large decode buffers from every Rayon thread (`par_extend`)
+  instead of `resize`: `Auto` total 33.7 against 39.9 ms, 18% slower.
+  Decoding through one reused decoder instead of a new one per frame changes
+  `Auto` and serial totals by under 1%, so these fills are memory traffic,
+  not first-touch page faults, and one thread's `memset` already runs near
+  memory bandwidth. Packing MG1's 14.6 million samples to native bytes alone
+  takes 1.47 ms on one thread and 1.26 ms on all of them.
+- Reusing the HT payload buffer between one-shot Metal decodes: MG1 6%
+  faster, RG1 and SC1 29 to 40% slower, interleaved.
+
+Explicit Metal single-image decode (`J2K_METAL_BENCH_ONLY=metal-single` in
+`dicom_decode_bench`), a new `J2kDecoder` per frame against one decoder
+reused across frames, interleaved, minimum of five rounds of 21, ms:
+
+| File | New decoder | Reused decoder |
+| --- | ---: | ---: |
+| CT1 | 0.63 | 0.71 |
+| MR2 | 0.99 | 1.07 |
+| RG1 | 2.65 | 2.15 |
+| SC1 | 2.88 | 2.33 |
+| MG1 | 9.04 | 4.90 |
+| US1 (RCT) | 1.83 | 1.21 |
+
+The reused decoder keeps its prepared plan and the cached device payloads,
+so the difference is per-plan setup, which grows with the coded payload:
+MG1's is 12.9 MB. On the host it is copied three times before the GPU reads
+it (per-block collection in the native plan, per-group concatenation in
+`prepare_ht_sub_band_groups`, which also leaves the plan holding the payload
+twice, and the upload into a new shared buffer). The ignored test
+`single_image_step_profile` attributes GPU time by encoding one step kind
+five times: a 3072 x 4096 16-bit image spends about 1.4 ms in HT decode,
+1.1 ms in the inverse wavelet transform, and 0.3 ms in the store; a
+512 x 512 one about 0.26, 0.03, and 0.0 ms, the rest being per-decode setup
+and submission.
+
+`BackendRequest::Auto` sent US1 (640 x 480 `Rgb8`) to Metal at 1.8 to 2.0
+ms while the CPU took 1.4 to 1.5 ms, and kept every `Gray16` image on the
+CPU, including SC1 and MG1, where one-shot Metal measured faster under the
+same load. The routing tables predate these CPU changes; regenerate them
+through the hardware routing run described below before relying on them.
+
+## Metal decode into a caller-owned buffer - 2026-10-09
+
+`J2K_METAL_BENCH_ONLY=metal-into` in `dicom_decode_bench` decodes each file
+through one `J2kDecoder` and one `MetalBackendSession`, alternating a
+`decode_request_to_device_with_session` into a new surface with a
+`decode_into_metal_with_session` into one reused shared buffer of the exact
+image size. Same machine and corpus as above, load average 10 to 20 from
+other work, minimum over five runs of 21 decodes each, ms. The reused buffer
+equaled the surface's bytes in every run.
+
+```bash
+J2K_METAL_BENCH_ONLY=metal-into J2K_METAL_BENCH_REPEATS=21 \
+  cargo run --release -p j2k-metal --example dicom_decode_bench -- <codestreams>
+```
+
+| File | Format | New surface | Reused buffer |
+| --- | --- | ---: | ---: |
+| CT1 | `Gray16` | 0.51 | 0.47 |
+| MR2 | `Gray16` | 0.73 | 0.65 |
+| RG1 | `Gray16` | 1.52 | 1.31 |
+| SC1 | `Gray16` | 1.89 | 1.63 |
+| MG1 | `Gray16` | 4.75 | 4.04 |
+| US1 (RCT) | `Rgb8` | 1.19 | 0.60 |
+
+Into a buffer, `Rgb8` goes through the color store that batch destinations
+use, not the surface route's color execution. A first version that ran session decodes
+outside the session's runtime built a new runtime per call, with empty
+buffer pools, and took 9.2 ms for MG1.
+
 ## CPU JPEG safe-SIMD development run - 2026-08-12
 
 The CPU JPEG safe-SIMD refactor was measured before and after on the same Apple

@@ -54,6 +54,11 @@ pub struct J2kDirectCpuScratch {
     compressed_payload: Vec<u8>,
     classic_workspace: J2kCodeBlockDecodeWorkspace,
     ht_workspace: HtCodeBlockDecodeWorkspace,
+    /// Extra HT workspaces for parallel referenced execution, one per
+    /// additional Rayon worker.
+    ht_task_workspaces: Vec<HtCodeBlockDecodeWorkspace>,
+    /// Whether referenced execution may spread work over the Rayon pool.
+    parallel: bool,
     staged_state: Option<StagedDirectState>,
 }
 
@@ -81,20 +86,40 @@ impl J2kDirectCpuScratch {
             compressed_payload: Vec::new(),
             classic_workspace: J2kCodeBlockDecodeWorkspace::empty(),
             ht_workspace: HtCodeBlockDecodeWorkspace::empty(),
+            ht_task_workspaces: Vec::new(),
+            parallel: false,
             staged_state: None,
         }
     }
 
-    /// Release retained scratch allocations.
+    /// Let referenced plan execution decode code-block rows and wavelet bands
+    /// on the shared Rayon pool. Off by default; batch workers enable it when
+    /// fewer workers than host threads are running.
+    #[doc(hidden)]
+    pub fn set_parallel_decode(&mut self, parallel: bool) {
+        self.parallel = parallel;
+    }
+
+    /// Release retained scratch allocations. The parallel-decode setting is
+    /// kept.
     pub fn clear(&mut self) {
+        let parallel = self.parallel;
         *self = Self::new();
+        self.parallel = parallel;
     }
 
     /// Bytes retained by the parse-free HT code-block workspace.
     #[doc(hidden)]
     #[must_use]
     pub fn retained_ht_workspace_bytes(&self) -> usize {
-        self.ht_workspace.allocated_bytes().unwrap_or(usize::MAX)
+        self.ht_task_workspaces
+            .iter()
+            .try_fold(
+                self.ht_workspace.allocated_bytes().ok(),
+                |bytes, workspace| Some(bytes?.checked_add(workspace.allocated_bytes().ok()?)),
+            )
+            .flatten()
+            .unwrap_or(usize::MAX)
     }
 
     /// Bytes retained by the parse-free classic code-block workspace.

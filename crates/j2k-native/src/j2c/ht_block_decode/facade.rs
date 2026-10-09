@@ -5,9 +5,11 @@ use super::super::decode::DecompositionStorage;
 use super::pipeline::PHASE_LIMIT_MAGREF;
 use super::state::HtBlockDecodeContext;
 use super::stats::HtBlockDecodeStats;
-use super::validation::decode_segments_validated_with_scratch_for_phase;
+use super::validation::{
+    decode_segments_validated_with_scratch_for_phase, validate_combined_decode,
+};
 use super::{collect_code_block_data_into, HtCodeBlockSegments};
-use crate::error::{bail, DecodingError, Result};
+use crate::error::Result;
 
 #[expect(
     clippy::too_many_arguments,
@@ -23,35 +25,16 @@ pub(crate) fn decode_with_stats(
     stats: Option<&mut HtBlockDecodeStats>,
     profile_enabled: bool,
 ) -> Result<()> {
-    ctx.reset(code_block)?;
+    ctx.reset_for_overwrite(code_block)?;
 
-    if total_bitplanes == 0 {
-        return Ok(());
-    }
-
-    if total_bitplanes > 31 {
-        bail!(DecodingError::TooManyBitplanes);
-    }
-
-    let actual_bitplanes = if strict {
-        total_bitplanes
-            .checked_sub(code_block.missing_bit_planes)
-            .ok_or(DecodingError::InvalidBitplaneCount)?
-    } else {
-        total_bitplanes.saturating_sub(code_block.missing_bit_planes)
-    };
-
-    let max_coding_passes = if actual_bitplanes == 0 {
-        0
-    } else {
-        1 + 3 * (actual_bitplanes - 1)
-    };
-
-    if code_block.number_of_coding_passes > max_coding_passes && strict {
-        bail!(DecodingError::TooManyCodingPasses);
-    }
-
-    if code_block.number_of_coding_passes == 0 || actual_bitplanes == 0 {
+    // The same validation runs again below; a block it skips decodes to zeros.
+    if !validate_combined_decode(
+        code_block.missing_bit_planes,
+        total_bitplanes,
+        code_block.number_of_coding_passes,
+        strict,
+    )? {
+        ctx.zero_coefficients();
         return Ok(());
     }
 

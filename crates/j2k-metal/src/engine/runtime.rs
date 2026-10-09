@@ -215,6 +215,31 @@ pub(super) fn with_runtime<R>(
     })
 }
 
+/// The runtime [`with_runtime`] would run on: the test override, or the
+/// thread's default session, which this initializes on first use.
+pub(crate) fn current_runtime() -> Result<Arc<MetalRuntime>, Error> {
+    let override_runtime = METAL_RUNTIME_OVERRIDE.with(|slot| slot.borrow().clone());
+    if let Some(runtime) = override_runtime {
+        return Ok(runtime);
+    }
+
+    DEFAULT_METAL_SESSION.with(|session| {
+        let mut session = session.borrow_mut();
+        if session.is_none() {
+            *session = Some(
+                j2k_metal_support::system_default_device().map(crate::MetalBackendSession::new),
+            );
+        }
+        match session.as_ref() {
+            Some(Ok(session)) => session.runtime(),
+            Some(Err(error)) => Err(runtime_initialization_error(error)),
+            None => Err(Error::MetalRuntime {
+                message: "J2K Metal default session was not initialized".to_string(),
+            }),
+        }
+    })
+}
+
 pub(crate) fn current_runtime_device_registry_id() -> Result<u64, Error> {
     with_runtime(|runtime| Ok(runtime.device.registryID()))
 }

@@ -184,6 +184,7 @@ fn normalize_retained_scratch(
     }
     if !retain_ht_workspace {
         scratch.ht_workspace = crate::HtCodeBlockDecodeWorkspace::default();
+        scratch.ht_task_workspaces = Vec::new();
     }
     Ok(())
 }
@@ -356,7 +357,62 @@ fn include_scratch_allocations(
             ht_block_decode::ht_decode_workspace_bytes(width, height)
         })?;
     budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))?;
+    include_ht_task_workspaces(budget, retained_ht_workspace_dimensions, scratch)
+}
+
+/// Charge the extra HT workspaces of parallel referenced execution.
+fn include_ht_task_workspaces(
+    budget: &mut DirectAllocationBudget,
+    ht_workspace_dimensions: Option<(u32, u32)>,
+    scratch: &J2kDirectCpuScratch,
+) -> Result<()> {
+    let target_bytes = ht_workspace_dimensions.map_or(Ok(0), |(width, height)| {
+        ht_block_decode::ht_decode_workspace_bytes(width, height)
+    })?;
+    for index in 0..parallel_ht_task_workspace_count(scratch.parallel, ht_workspace_dimensions) {
+        let retained = scratch
+            .ht_task_workspaces
+            .get(index)
+            .map_or(Ok(0), crate::HtCodeBlockDecodeWorkspace::allocated_bytes)?;
+        budget.include_bytes(retained.max(target_bytes))?;
+    }
     Ok(())
+}
+
+/// Keep exactly the extra HT workspaces parallel referenced execution uses,
+/// each prepared for the plan's largest code block.
+fn reserve_ht_task_workspaces(
+    ht_workspace_dimensions: Option<(u32, u32)>,
+    scratch: &mut J2kDirectCpuScratch,
+) -> Result<()> {
+    let count = parallel_ht_task_workspace_count(scratch.parallel, ht_workspace_dimensions);
+    scratch.ht_task_workspaces.truncate(count);
+    try_reserve_decode_elements(&mut scratch.ht_task_workspaces, count)?;
+    while scratch.ht_task_workspaces.len() < count {
+        scratch
+            .ht_task_workspaces
+            .push(crate::HtCodeBlockDecodeWorkspace::default());
+    }
+    if let Some((width, height)) = ht_workspace_dimensions {
+        for workspace in &mut scratch.ht_task_workspaces {
+            workspace.prepare(width, height)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extra HT workspaces parallel referenced execution keeps beside the main
+/// one: one per additional Rayon worker, or none when serial.
+fn parallel_ht_task_workspace_count(
+    parallel: bool,
+    ht_workspace_dimensions: Option<(u32, u32)>,
+) -> usize {
+    #[cfg(feature = "parallel")]
+    if parallel && ht_workspace_dimensions.is_some() {
+        return rayon::current_num_threads().saturating_sub(1);
+    }
+    let _ = (parallel, ht_workspace_dimensions);
+    0
 }
 
 fn reserve_scratch(
@@ -404,7 +460,7 @@ fn reserve_scratch(
     if let Some((width, height)) = retained_ht_workspace_dimensions {
         scratch.ht_workspace.prepare(width, height)?;
     }
-    Ok(())
+    reserve_ht_task_workspaces(retained_ht_workspace_dimensions, scratch)
 }
 
 fn component_band_count(plan: &J2kDirectGrayscalePlan) -> Result<usize> {

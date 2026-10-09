@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
-    apply_roi_maxshift_inverse_i64, bitplane, classic_decode_job_parameters,
-    collect_classic_code_block_data, decode_j2k_code_block_scalar_with_workspace,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, bitplane,
+    classic_decode_job_parameters, collect_classic_code_block_data,
+    decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint, ht_block_decode,
     ht_code_block_has_decodable_passes, sub_band_decode_parameters, CodeBlock, ComponentInfo,
     CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
@@ -17,6 +17,8 @@ mod ht;
 #[cfg(feature = "parallel")]
 mod parallel;
 mod pending;
+#[cfg(feature = "parallel")]
+mod tile_parallel;
 use self::classic::decode_sub_band_classic_blocks;
 use self::ht::{decode_sub_band_ht_blocks, decode_sub_band_ht_blocks_i64};
 #[cfg(all(feature = "parallel", not(test)))]
@@ -42,6 +44,21 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
 ) -> Result<()> {
+    #[cfg(feature = "parallel")]
+    let cpu_decode_parallelism = match tile_parallel::plan_tile_ht_route(
+        tile,
+        tile_ctx,
+        storage,
+        header,
+        ht_decoder,
+        cpu_decode_parallelism,
+        profile_enabled,
+    )? {
+        tile_parallel::TileHtRoute::Decoded => return Ok(()),
+        tile_parallel::TileHtRoute::Serial => CpuDecodeParallelism::Serial,
+        tile_parallel::TileHtRoute::PerSubBand => cpu_decode_parallelism,
+    };
+
     for (tile_decompositions_idx, component_info) in tile.component_infos.iter().enumerate() {
         // Only decode the resolution levels we actually care about.
         for resolution in

@@ -3,10 +3,10 @@
 //! Concurrent inspection, representability validation, and homogeneous grouping.
 
 use super::{
-    run_retained_chunks, size_of, Arc, BatchDecodeOptions, BatchInfrastructureError,
-    BatchItemError, BatchWorker, EncodedImage, IndexedBatchError, NonZeroUsize, PrepareImageResult,
-    PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
-    J2K_BATCH_METADATA_ALLOWANCE_BYTES, MAX_GENERIC_BATCH_WORKERS,
+    generic_batch_worker_limit, run_retained_chunks, size_of, Arc, BatchDecodeOptions,
+    BatchInfrastructureError, BatchItemError, BatchWorker, EncodedImage, IndexedBatchError,
+    NonZeroUsize, PrepareImageResult, PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage,
+    TileBatchOptions, Vec, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 
 mod image;
@@ -27,7 +27,7 @@ pub fn prepare_batch(
     let worker_count = options
         .workers
         .map_or(available, NonZeroUsize::get)
-        .clamp(1, MAX_GENERIC_BATCH_WORKERS)
+        .clamp(1, generic_batch_worker_limit())
         .min(input_count.max(1));
     let mut workers = try_prepare_vec(worker_count, "J2K preparation workers")?;
     for _ in 0..worker_count {

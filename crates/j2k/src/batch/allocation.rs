@@ -11,17 +11,13 @@ use super::planning::BatchPlan;
 use super::J2kBatchResultSlot;
 use crate::J2kDecodeWarning;
 
-/// Maximum number of generic native-decode claims admitted concurrently.
-///
-/// This is a 0.7 safety/performance policy, not an estimate of a particular
-/// image. Requested concurrency above four is reduced before spawning.
-pub(crate) const MAX_GENERIC_BATCH_WORKERS: usize = 4;
+/// Generic native-decode claims admitted concurrently when the host does not
+/// report its memory, and the floor on every host.
+pub(crate) const BASELINE_GENERIC_BATCH_WORKERS: usize = 4;
 
-/// Maximum number of scheduled region-scaled workers when weighted runtime
-/// admission is active. At most four worst-case generic claims execute at once;
-/// the wider bound permits eight independently accounted small direct ROIs
-/// without creating an unbounded number of blocked operating-system threads.
-pub(super) const MAX_ADMITTED_BATCH_WORKERS: usize = MAX_GENERIC_BATCH_WORKERS * 2;
+/// Worst-case native claims may together account for `1 / divisor` of the
+/// memory available to the process.
+const HOST_MEMORY_SHARE_DIVISOR: u64 = 2;
 
 /// Fixed ceiling for batch-owned slots, handles, outcomes, and warnings.
 ///
@@ -31,21 +27,58 @@ pub(crate) const J2K_BATCH_METADATA_ALLOWANCE_BYTES: usize = 64 * 1024 * 1024;
 /// Authoritative worst-case claim for one generic native decoder worker.
 pub(super) const GENERIC_WORKER_CLAIM_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES;
 
-const _: [(); 1] = [(); GENERIC_WORKER_CLAIM_BYTES
-    .checked_mul(MAX_GENERIC_BATCH_WORKERS)
-    .is_some() as usize];
-pub(super) const J2K_BATCH_EXECUTION_CAP_BYTES: usize =
-    GENERIC_WORKER_CLAIM_BYTES * MAX_GENERIC_BATCH_WORKERS;
+/// Largest claim count whose execution cap plus metadata still fits `usize`.
+const MAX_SCALED_GENERIC_BATCH_WORKERS: usize =
+    (usize::MAX - J2K_BATCH_METADATA_ALLOWANCE_BYTES) / GENERIC_WORKER_CLAIM_BYTES;
 
-/// Fixed aggregate execution cap: four native claims plus bounded metadata.
+const _: [(); 1] =
+    [(); (BASELINE_GENERIC_BATCH_WORKERS <= MAX_SCALED_GENERIC_BATCH_WORKERS) as usize];
+
+/// Maximum number of generic native-decode claims admitted concurrently.
 ///
-/// A claim reserves no host memory by itself. It is conservative accounting
-/// for native ownership that cannot be estimated soundly before packet parsing.
-const _: [(); 1] = [(); J2K_BATCH_EXECUTION_CAP_BYTES
-    .checked_add(J2K_BATCH_METADATA_ALLOWANCE_BYTES)
-    .is_some() as usize];
-pub(super) const J2K_BATCH_HOST_CAP_BYTES: usize =
-    J2K_BATCH_EXECUTION_CAP_BYTES + J2K_BATCH_METADATA_ALLOWANCE_BYTES;
+/// Each claim accounts for one worst-case native decode. Claims may together
+/// account for half of the memory available to the process (physical memory,
+/// lowered by a Linux cgroup limit), and never fewer than
+/// [`BASELINE_GENERIC_BATCH_WORKERS`]. A claim reserves no memory by itself;
+/// requested concurrency above the limit is reduced before spawning.
+pub(crate) fn generic_batch_worker_limit() -> usize {
+    generic_worker_limit_for_memory(super::host_memory::process_memory_limit_bytes())
+}
+
+fn generic_worker_limit_for_memory(memory_bytes: Option<u64>) -> usize {
+    let Some(memory_bytes) = memory_bytes else {
+        return BASELINE_GENERIC_BATCH_WORKERS;
+    };
+    let claim_bytes = u64::try_from(GENERIC_WORKER_CLAIM_BYTES).unwrap_or(u64::MAX);
+    let claims = memory_bytes / HOST_MEMORY_SHARE_DIVISOR / claim_bytes;
+    usize::try_from(claims).unwrap_or(usize::MAX).clamp(
+        BASELINE_GENERIC_BATCH_WORKERS,
+        MAX_SCALED_GENERIC_BATCH_WORKERS,
+    )
+}
+
+/// Maximum number of scheduled region-scaled workers when weighted runtime
+/// admission is active. At most [`generic_batch_worker_limit`] worst-case
+/// generic claims execute at once; twice as many workers may hold
+/// independently accounted small direct ROIs without creating an unbounded
+/// number of blocked operating-system threads.
+pub(super) fn admitted_batch_worker_limit() -> usize {
+    generic_batch_worker_limit().saturating_mul(2)
+}
+
+/// Aggregate execution cap: the admitted generic native claims.
+///
+/// A claim is conservative accounting for native ownership that cannot be
+/// estimated soundly before packet parsing.
+pub(super) fn batch_execution_cap_bytes() -> usize {
+    // Cannot saturate: the worker limit is at most MAX_SCALED_GENERIC_BATCH_WORKERS.
+    generic_batch_worker_limit().saturating_mul(GENERIC_WORKER_CLAIM_BYTES)
+}
+
+/// Aggregate host cap: the execution cap plus bounded batch metadata.
+pub(super) fn batch_host_cap_bytes() -> usize {
+    batch_execution_cap_bytes().saturating_add(J2K_BATCH_METADATA_ALLOWANCE_BYTES)
+}
 
 pub(super) fn ensure_execution_capacity(
     plan: BatchPlan,
@@ -79,21 +112,21 @@ pub(super) fn ensure_execution_capacity(
         BatchInfrastructureError::AllocationTooLarge {
             what: "J2K batch live set",
             requested: usize::MAX,
-            cap: J2K_BATCH_HOST_CAP_BYTES,
+            cap: batch_host_cap_bytes(),
         },
     )?;
     let actual_live = planned_worker_bytes.checked_add(actual_metadata).ok_or(
         BatchInfrastructureError::AllocationTooLarge {
             what: "J2K batch live set",
             requested: usize::MAX,
-            cap: J2K_BATCH_HOST_CAP_BYTES,
+            cap: batch_host_cap_bytes(),
         },
     )?;
-    if actual_live > J2K_BATCH_HOST_CAP_BYTES {
+    if actual_live > batch_host_cap_bytes() {
         return Err(BatchInfrastructureError::AllocationTooLarge {
             what: "J2K batch live set",
             requested: actual_live,
-            cap: J2K_BATCH_HOST_CAP_BYTES,
+            cap: batch_host_cap_bytes(),
         });
     }
     Ok(())
@@ -222,5 +255,59 @@ fn host_allocation_error(
     BatchInfrastructureError::HostAllocationFailed {
         what,
         bytes: error.requested_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn generic_worker_limit_scales_with_host_memory() {
+        // Half of the memory, in 512 MiB worst-case claims.
+        assert_eq!(generic_worker_limit_for_memory(Some(48 * GIB)), 48);
+        assert_eq!(generic_worker_limit_for_memory(Some(16 * GIB)), 16);
+        assert_eq!(generic_worker_limit_for_memory(Some(8 * GIB)), 8);
+        assert_eq!(generic_worker_limit_for_memory(Some(5 * GIB)), 5);
+    }
+
+    #[test]
+    fn small_or_unknown_hosts_keep_the_baseline_limit() {
+        for memory in [None, Some(0), Some(GIB), Some(4 * GIB - 1)] {
+            assert_eq!(
+                generic_worker_limit_for_memory(memory),
+                BASELINE_GENERIC_BATCH_WORKERS,
+                "{memory:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scaled_execution_cap_cannot_overflow() {
+        let limit = generic_worker_limit_for_memory(Some(u64::MAX));
+        assert!(limit <= MAX_SCALED_GENERIC_BATCH_WORKERS);
+        let execution = limit
+            .checked_mul(GENERIC_WORKER_CLAIM_BYTES)
+            .expect("execution cap fits usize");
+        assert!(execution
+            .checked_add(J2K_BATCH_METADATA_ALLOWANCE_BYTES)
+            .is_some());
+    }
+
+    #[test]
+    fn host_caps_follow_the_detected_worker_limit() {
+        let limit = generic_batch_worker_limit();
+        assert!(limit >= BASELINE_GENERIC_BATCH_WORKERS);
+        assert_eq!(
+            batch_execution_cap_bytes(),
+            limit * GENERIC_WORKER_CLAIM_BYTES
+        );
+        assert_eq!(
+            batch_host_cap_bytes(),
+            batch_execution_cap_bytes() + J2K_BATCH_METADATA_ALLOWANCE_BYTES
+        );
+        assert_eq!(admitted_batch_worker_limit(), limit * 2);
     }
 }

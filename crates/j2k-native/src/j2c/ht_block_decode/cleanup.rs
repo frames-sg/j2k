@@ -20,13 +20,86 @@ pub(super) fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> O
     Some(scup)
 }
 
-/// Decodes the first (initial) cleanup quad row into `scratch`, advancing the
-/// shared MEL/VLC state; the trailing sentinel pair is written after the row.
+/// Decodes the initial-row quad pair whose first quad starts at column `x`,
+/// stores its symbols at `scratch[row_offset..row_offset + 4]`, and returns
+/// them as `[t0, u0, t1, u1]`. `c_q` carries the context between pairs.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::inline_always,
-    reason = "VLC table fields are defined as 16-bit values and this per-row decoder is a hot path"
+    clippy::too_many_arguments,
+    reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
+#[inline(always)]
+pub(super) fn decode_cleanup_first_row_pair(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    scratch: &mut [u16],
+    row_offset: usize,
+    c_q: &mut u32,
+    x: u32,
+    width: u32,
+) -> Option<[u32; 4]> {
+    let mut vlc_val = vlc.fetch();
+    let mut t0 = u32::from(VLC_TABLE0[(*c_q + (vlc_val & 0x7F)) as usize]);
+    if *c_q == 0 {
+        *run -= 2;
+        t0 = if *run == -1 { t0 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run()?;
+        }
+    }
+    scratch[row_offset] = t0 as u16;
+    let x = x + 2;
+    *c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
+    vlc_val = vlc.advance(t0 & 0x7);
+
+    let mut t1 = u32::from(VLC_TABLE0[(*c_q + (vlc_val & 0x7F)) as usize]);
+    if *c_q == 0 && x < width {
+        *run -= 2;
+        t1 = if *run == -1 { t1 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run()?;
+        }
+    }
+    if x >= width {
+        t1 = 0;
+    }
+    scratch[row_offset + 2] = t1 as u16;
+    *c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
+    vlc_val = vlc.advance(t1 & 0x7);
+
+    let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+    if uvlc_mode == 0xC0 {
+        *run -= 2;
+        if *run == -1 {
+            uvlc_mode += 0x40;
+        }
+        if *run < 0 {
+            *run = mel.get_run()?;
+        }
+    }
+
+    let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+    vlc_val = vlc.advance(uvlc_entry & 0x7);
+    uvlc_entry >>= 3;
+    let mut len = uvlc_entry & 0xF;
+    let tmp = vlc_val & ((1_u32 << len) - 1);
+    let _ = vlc.advance(len);
+    uvlc_entry >>= 4;
+    len = uvlc_entry & 0x7;
+    uvlc_entry >>= 3;
+    let u0 = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+    let u1 = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
+    scratch[row_offset + 1] = u0;
+    scratch[row_offset + 3] = u1;
+
+    Some([t0, u32::from(u0), t1, u32::from(u1)])
+}
+
+/// Decodes the first (initial) cleanup quad row into `scratch`, advancing the
+/// shared MEL/VLC state; the trailing sentinel pair is written after the row.
+#[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
 pub(super) fn decode_cleanup_symbols_first_row(
     mel: &mut MelDecoder,
@@ -40,59 +113,8 @@ pub(super) fn decode_cleanup_symbols_first_row(
     let mut x = 0u32;
 
     while x < width {
-        let mut vlc_val = vlc.fetch();
-        let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 {
-            *run -= 2;
-            t0 = if *run == -1 { t0 } else { 0 };
-            if *run < 0 {
-                *run = mel.get_run()?;
-            }
-        }
-        scratch[row_offset] = t0 as u16;
-        x += 2;
-        c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
-        vlc_val = vlc.advance(t0 & 0x7);
-
-        let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 && x < width {
-            *run -= 2;
-            t1 = if *run == -1 { t1 } else { 0 };
-            if *run < 0 {
-                *run = mel.get_run()?;
-            }
-        }
-        if x >= width {
-            t1 = 0;
-        }
-        scratch[row_offset + 2] = t1 as u16;
-        x += 2;
-        c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
-        vlc_val = vlc.advance(t1 & 0x7);
-
-        let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-        if uvlc_mode == 0xC0 {
-            *run -= 2;
-            if *run == -1 {
-                uvlc_mode += 0x40;
-            }
-            if *run < 0 {
-                *run = mel.get_run()?;
-            }
-        }
-
-        let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-        vlc_val = vlc.advance(uvlc_entry & 0x7);
-        uvlc_entry >>= 3;
-        let mut len = uvlc_entry & 0xF;
-        let tmp = vlc_val & ((1_u32 << len) - 1);
-        let _ = vlc.advance(len);
-        uvlc_entry >>= 4;
-        len = uvlc_entry & 0x7;
-        uvlc_entry >>= 3;
-        scratch[row_offset + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-        scratch[row_offset + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
-
+        decode_cleanup_first_row_pair(mel, vlc, run, scratch, row_offset, &mut c_q, x, width)?;
+        x += 4;
         row_offset += 4;
     }
     scratch[row_offset] = 0;
@@ -101,14 +123,89 @@ pub(super) fn decode_cleanup_symbols_first_row(
     Some(())
 }
 
-/// Decodes one non-initial cleanup quad row (`y >= 2`, even) into `scratch`,
-/// reading the previous quad row's context and advancing the shared MEL/VLC
-/// state; the trailing sentinel pair is written after the row.
+/// Decodes the non-initial-row quad pair whose first quad starts at column
+/// `x`, reading the previous quad row's symbols `sstr` entries back, stores
+/// its symbols at `scratch[row_offset..row_offset + 4]`, and returns them as
+/// `[t0, u0, t1, u1]`. `c_q` carries the context between pairs.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::inline_always,
-    reason = "VLC table fields are defined as 16-bit values and this per-row decoder is a hot path"
+    clippy::too_many_arguments,
+    reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
+#[inline(always)]
+pub(super) fn decode_cleanup_row_pair(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    scratch: &mut [u16],
+    row_offset: usize,
+    sstr: usize,
+    c_q: &mut u32,
+    x: u32,
+    width: u32,
+) -> Option<[u32; 4]> {
+    let prev = row_offset - sstr;
+    *c_q |= (u32::from(scratch[prev]) & 0xA0) << 2;
+    *c_q |= (u32::from(scratch[prev + 2]) & 0x20) << 4;
+
+    let mut vlc_val = vlc.fetch();
+    let mut t0 = u32::from(VLC_TABLE1[(*c_q + (vlc_val & 0x7F)) as usize]);
+    if *c_q == 0 {
+        *run -= 2;
+        t0 = if *run == -1 { t0 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run()?;
+        }
+    }
+    scratch[row_offset] = t0 as u16;
+    let x = x + 2;
+
+    *c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+    *c_q |= u32::from(scratch[prev]) & 0x80;
+    *c_q |= (u32::from(scratch[prev + 2]) & 0xA0) << 2;
+    *c_q |= (u32::from(scratch[prev + 4]) & 0x20) << 4;
+    vlc_val = vlc.advance(t0 & 0x7);
+
+    let mut t1 = u32::from(VLC_TABLE1[(*c_q + (vlc_val & 0x7F)) as usize]);
+    if *c_q == 0 && x < width {
+        *run -= 2;
+        t1 = if *run == -1 { t1 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run()?;
+        }
+    }
+    if x >= width {
+        t1 = 0;
+    }
+    scratch[row_offset + 2] = t1 as u16;
+
+    *c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+    *c_q |= u32::from(scratch[prev + 2]) & 0x80;
+    vlc_val = vlc.advance(t1 & 0x7);
+
+    let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+    let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+    vlc_val = vlc.advance(uvlc_entry & 0x7);
+    uvlc_entry >>= 3;
+    let mut len = uvlc_entry & 0xF;
+    let tmp = vlc_val & ((1_u32 << len) - 1);
+    let _ = vlc.advance(len);
+    uvlc_entry >>= 4;
+    len = uvlc_entry & 0x7;
+    uvlc_entry >>= 3;
+    let u0 = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+    let u1 = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+    scratch[row_offset + 1] = u0;
+    scratch[row_offset + 3] = u1;
+
+    Some([t0, u32::from(u0), t1, u32::from(u1)])
+}
+
+/// Decodes one non-initial cleanup quad row (`y >= 2`, even) into `scratch`,
+/// reading the previous quad row's context and advancing the shared MEL/VLC
+/// state; the trailing sentinel pair is written after the row.
+#[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
 pub(super) fn decode_cleanup_symbols_row(
     mel: &mut MelDecoder,
@@ -119,65 +216,13 @@ pub(super) fn decode_cleanup_symbols_row(
     y: u32,
     sstr: usize,
 ) -> Option<()> {
-    let row_base = (y >> 1) as usize * sstr;
-    let prev_base = row_base - sstr;
     let mut x = 0u32;
     let mut c_q = 0u32;
-    let mut row_offset = row_base;
+    let mut row_offset = (y >> 1) as usize * sstr;
 
     while x < width {
-        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
-        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
-
-        let mut vlc_val = vlc.fetch();
-        let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 {
-            *run -= 2;
-            t0 = if *run == -1 { t0 } else { 0 };
-            if *run < 0 {
-                *run = mel.get_run()?;
-            }
-        }
-        scratch[row_offset] = t0 as u16;
-        x += 2;
-
-        c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-        c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
-        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
-        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
-        vlc_val = vlc.advance(t0 & 0x7);
-
-        let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 && x < width {
-            *run -= 2;
-            t1 = if *run == -1 { t1 } else { 0 };
-            if *run < 0 {
-                *run = mel.get_run()?;
-            }
-        }
-        if x >= width {
-            t1 = 0;
-        }
-        scratch[row_offset + 2] = t1 as u16;
-        x += 2;
-
-        c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-        c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
-        vlc_val = vlc.advance(t1 & 0x7);
-
-        let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-        let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-        vlc_val = vlc.advance(uvlc_entry & 0x7);
-        uvlc_entry >>= 3;
-        let mut len = uvlc_entry & 0xF;
-        let tmp = vlc_val & ((1_u32 << len) - 1);
-        let _ = vlc.advance(len);
-        uvlc_entry >>= 4;
-        len = uvlc_entry & 0x7;
-        uvlc_entry >>= 3;
-        scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-        scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-
+        decode_cleanup_row_pair(mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width)?;
+        x += 4;
         row_offset += 4;
     }
 

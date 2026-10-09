@@ -290,7 +290,7 @@ fn parallel_workspace_measurements(context: &DecoderContext<'_>) -> (usize, usiz
 #[cfg(feature = "parallel")]
 #[test]
 fn ht_task_workspaces_match_serial_and_reuse_capacity() {
-    for reversible in [false, true] {
+    for (reversible, per_sub_band) in [(false, false), (true, false), (false, true), (true, true)] {
         let bytes = parallel_gray_fixture(257, 263, true, reversible);
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("odd image");
         let mut serial = DecoderContext::default();
@@ -308,6 +308,7 @@ fn ht_task_workspaces_match_serial_and_reuse_capacity() {
                 .expect("test pool");
             pool.install(|| {
                 let mut context = DecoderContext::default();
+                context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
                 let first = image
                     .decode_with_context(&mut context)
                     .expect("first decode");
@@ -348,70 +349,74 @@ fn ht_task_workspaces_survive_input_lifetimes_and_region_errors() {
         .num_threads(4)
         .build()
         .expect("test pool");
-    pool.install(|| {
-        let (workspace, retained_bank_bytes) = {
-            let bytes = parallel_gray_fixture(257, 263, true, true);
-            let image = Image::new(&bytes, &DecodeSettings::default()).expect("first image");
-            let mut context = DecoderContext::default();
+    for per_sub_band in [false, true] {
+        pool.install(|| {
+            let (workspace, retained_bank_bytes) = {
+                let bytes = parallel_gray_fixture(257, 263, true, true);
+                let image = Image::new(&bytes, &DecodeSettings::default()).expect("first image");
+                let mut context = DecoderContext::default();
+                context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
+                let decoded = image
+                    .decode_with_context(&mut context)
+                    .expect("first decode");
+                assert_eq!(decoded.data, super::gradient_pixels(257, 263, 1));
+                let (_, bank_bytes, tasks, _) = parallel_workspace_measurements(&context);
+                assert!(tasks > 0);
+                (context.into_workspace(), bank_bytes)
+            };
+            // The original codestream and all borrowed parsing state are gone.
+            let bytes = parallel_gray_fixture(241, 127, true, true);
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("second image");
+            let mut context = DecoderContext::from_workspace(workspace);
+            context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
             let decoded = image
                 .decode_with_context(&mut context)
-                .expect("first decode");
-            assert_eq!(decoded.data, super::gradient_pixels(257, 263, 1));
-            let (_, bank_bytes, tasks, _) = parallel_workspace_measurements(&context);
-            assert!(tasks > 0);
-            (context.into_workspace(), bank_bytes)
-        };
-        // The original codestream and all borrowed parsing state are gone.
-        let bytes = parallel_gray_fixture(241, 127, true, true);
-        let image = Image::new(&bytes, &DecodeSettings::default()).expect("second image");
-        let mut context = DecoderContext::from_workspace(workspace);
-        let decoded = image
-            .decode_with_context(&mut context)
-            .expect("second decode");
-        assert_eq!(decoded.data, super::gradient_pixels(241, 127, 1));
-        let (_, bank_bytes, _, growths) = parallel_workspace_measurements(&context);
-        assert!(bank_bytes <= retained_bank_bytes);
-        assert_eq!(growths, 0);
+                .expect("second decode");
+            assert_eq!(decoded.data, super::gradient_pixels(241, 127, 1));
+            let (_, bank_bytes, _, growths) = parallel_workspace_measurements(&context);
+            assert!(bank_bytes <= retained_bank_bytes);
+            assert_eq!(growths, 0);
 
-        let roi = (7, 9, 53, 47);
-        let region = image
-            .decode_region_with_context(roi, &mut context)
-            .expect("ROI");
-        assert_eq!(
-            region.data,
-            super::crop_interleaved(&decoded.data, 241, 1, roi)
-        );
-        assert!(image
-            .decode_region_with_context((242, 0, 1, 1), &mut context)
-            .is_err());
-        let recovered = image
-            .decode_with_context(&mut context)
-            .expect("reuse after error");
-        assert_eq!(recovered.data, decoded.data);
+            let roi = (7, 9, 53, 47);
+            let region = image
+                .decode_region_with_context(roi, &mut context)
+                .expect("ROI");
+            assert_eq!(
+                region.data,
+                super::crop_interleaved(&decoded.data, 241, 1, roi)
+            );
+            assert!(image
+                .decode_region_with_context((242, 0, 1, 1), &mut context)
+                .is_err());
+            let recovered = image
+                .decode_with_context(&mut context)
+                .expect("reuse after error");
+            assert_eq!(recovered.data, decoded.data);
 
-        let reduced = Image::new(
-            &bytes,
-            &DecodeSettings {
-                target_resolution: Some((121, 64)),
-                ..DecodeSettings::default()
-            },
-        )
-        .expect("reduced image");
-        let mut serial = DecoderContext::default();
-        serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
-        let expected = reduced
-            .decode_with_context(&mut serial)
-            .expect("serial reduced");
-        let actual = reduced
-            .decode_with_context(&mut context)
-            .expect("reused reduced");
-        assert_eq!(actual.data, expected.data);
-        assert_eq!(
-            (actual.width, actual.height),
-            (expected.width, expected.height)
-        );
-        assert_eq!(parallel_workspace_measurements(&context).3, 0);
-    });
+            let reduced = Image::new(
+                &bytes,
+                &DecodeSettings {
+                    target_resolution: Some((121, 64)),
+                    ..DecodeSettings::default()
+                },
+            )
+            .expect("reduced image");
+            let mut serial = DecoderContext::default();
+            serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+            let expected = reduced
+                .decode_with_context(&mut serial)
+                .expect("serial reduced");
+            let actual = reduced
+                .decode_with_context(&mut context)
+                .expect("reused reduced");
+            assert_eq!(actual.data, expected.data);
+            assert_eq!(
+                (actual.width, actual.height),
+                (expected.width, expected.height)
+            );
+            assert_eq!(parallel_workspace_measurements(&context).3, 0);
+        });
+    }
 }
 
 #[cfg(feature = "parallel")]
@@ -421,7 +426,7 @@ fn ht_task_workspaces_remain_reusable_across_classic_decode() {
         .num_threads(2)
         .build()
         .expect("test pool");
-    for reversible in [true, false] {
+    for (reversible, per_sub_band) in [(true, false), (false, false), (true, true), (false, true)] {
         let ht_bytes = parallel_gray_fixture(257, 263, true, reversible);
         let classic_bytes = parallel_gray_fixture(241, 127, false, reversible);
         let ht = Image::new(&ht_bytes, &DecodeSettings::default()).expect("HT image");
@@ -429,6 +434,7 @@ fn ht_task_workspaces_remain_reusable_across_classic_decode() {
             Image::new(&classic_bytes, &DecodeSettings::default()).expect("classic image");
         pool.install(|| {
             let mut context = DecoderContext::default();
+            context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
             let first = ht
                 .decode_with_context(&mut context)
                 .expect("first HT decode");
@@ -481,6 +487,7 @@ fn parallel_coefficient_allocation_report() {
             let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
             pool.install(|| {
                 let mut context = DecoderContext::default();
+                context.tile_decode_context.force_per_sub_band_ht = true;
                 let cold = image.decode_with_context(&mut context).expect("cold decode");
                 let cold_stats = context.tile_decode_context.debug_counters.parallel_coefficients;
                 let cold_retained = context.tile_decode_context.tier1_capacity_bytes().expect("retained bytes");
@@ -513,6 +520,9 @@ fn parallel_coefficient_buffers_reuse_capacity_across_fitting_images() {
                 Image::new(&second_bytes, &DecodeSettings::default()).expect("second image");
             pool.install(|| {
                 let mut context = DecoderContext::default();
+                // The slab belongs to the per-sub-band path; tile-wide HT
+                // decode writes code blocks in place.
+                context.tile_decode_context.force_per_sub_band_ht = true;
                 first.decode_with_context(&mut context).expect("reserve coefficient buffers");
                 assert!(context.tile_decode_context.debug_counters.parallel_coefficients.allocations > 0);
                 for image in [&first, &second, &first] {

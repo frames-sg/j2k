@@ -215,17 +215,9 @@ impl PreparedMetalHtExecution {
 
 impl PreparedMetalHtChunk {
     fn host_bytes(&self) -> Result<usize, Error> {
-        self.coded_data
+        self.jobs
             .capacity()
-            .checked_add(
-                self.jobs
-                    .capacity()
-                    .checked_mul(size_of::<J2kHtCleanupBatchJob>())
-                    .ok_or(Error::MetalStateInvariant {
-                        state: "J2K Metal prepared HT execution cache",
-                        reason: "job arena host byte count overflow",
-                    })?,
-            )
+            .checked_mul(size_of::<J2kHtCleanupBatchJob>())
             .and_then(|bytes| {
                 self.source_indices
                     .capacity()

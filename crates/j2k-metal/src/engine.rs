@@ -244,8 +244,8 @@ use self::runtime::{
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::runtime::{
-    current_runtime_device_registry_id, runtime_initialization_error, with_runtime_for_session,
-    MetalRuntime,
+    current_runtime, current_runtime_device_registry_id, runtime_initialization_error,
+    with_runtime_for_session, MetalRuntime,
 };
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use j2k_metal_support::MetalSupportError;
@@ -279,6 +279,7 @@ pub(crate) use self::direct_grayscale_execute::{
     execute_hybrid_cpu_tier1_direct_color_plan_with_device, execute_prepared_direct_color_plan,
     execute_prepared_direct_color_plan_batch, execute_prepared_direct_color_plan_with_device,
     execute_prepared_direct_grayscale_plan, execute_prepared_direct_grayscale_plan_batch,
+    execute_prepared_direct_grayscale_plan_into,
     execute_prepared_direct_grayscale_plan_with_device,
     execute_repeated_prepared_direct_grayscale_plan, submit_cooperative_cpu_color_group,
     submit_prepared_direct_color_plan_batch_into_group,

@@ -8,6 +8,7 @@ use crate::color::{ComponentPlane, DecodedComponents, DecodedNativeComponents, R
 use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::j2c::{self, ComponentData, DecoderContext, Reversible53CoefficientImage};
 use crate::jp2::DecodedImage;
+use crate::CpuDecodeParallelism;
 use crate::{
     checked_decode_byte_len3, checked_decode_byte_len4, checked_decode_sample_count,
     native_bytes_per_sample, try_reserve_decode_elements, validate_roi, HtCodeBlockDecoder,
@@ -132,6 +133,7 @@ impl<'a> Image<'a> {
     ) -> Result<RawBitmap> {
         let bit_depth = self.uniform_header_bit_depth()?;
         let mut ht_decoder = None;
+        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(true);
         let decode_result = j2c::decode(
@@ -168,9 +170,21 @@ impl<'a> Image<'a> {
         let mut data = Vec::new();
         try_reserve_decode_elements(&mut data, capacity)?;
         budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
-        for index in 0..pixel_count {
-            for component in components {
-                Self::push_component_native_sample_bytes(&mut data, component, index, bit_depth);
+        if let [component] = components.as_slice() {
+            Self::extend_component_native_sample_bytes(
+                &mut data,
+                component,
+                0..pixel_count,
+                bit_depth,
+                parallel,
+            );
+        } else {
+            for index in 0..pixel_count {
+                for component in components {
+                    Self::push_component_native_sample_bytes(
+                        &mut data, component, index, bit_depth,
+                    );
+                }
             }
         }
         if data.len() != capacity {
@@ -214,6 +228,7 @@ impl<'a> Image<'a> {
         let bit_depth = self.uniform_header_bit_depth()?;
         let retained_image_bytes = self.retained_metadata_bytes()?;
         let mut ht_decoder = None;
+        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         decoder_context.set_output_region(Some(roi));
         decoder_context.set_round_irreversible_output(true);
         let decode_result = j2c::decode(
@@ -253,9 +268,17 @@ impl<'a> Image<'a> {
         budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
         let signed = component_signed.iter().all(|signed| *signed);
 
-        for row in 0..height as usize {
-            for col in 0..width as usize {
-                let index = row * width as usize + col;
+        let pixel_count = width as usize * height as usize;
+        if let [component] = components.as_slice() {
+            Self::extend_component_native_sample_bytes(
+                &mut data,
+                component,
+                0..pixel_count,
+                bit_depth,
+                parallel,
+            );
+        } else {
+            for index in 0..pixel_count {
                 for component in components {
                     Self::push_component_native_sample_bytes(
                         &mut data, component, index, bit_depth,

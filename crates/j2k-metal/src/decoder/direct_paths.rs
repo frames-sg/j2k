@@ -68,7 +68,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         }
 
         #[cfg(target_os = "macos")]
-        fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
+        pub(super) fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
             let device_registry_id = crate::engine::current_runtime_device_registry_id()?;
             if self.$prepared_field.is_some()
                 && self.$prepared_device_field != Some(device_registry_id)

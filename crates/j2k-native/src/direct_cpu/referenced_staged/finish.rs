@@ -120,7 +120,7 @@ pub(super) fn finish_tile_components(
             match step {
                 J2kDirectGrayscaleStep::ClassicSubBand(_)
                 | J2kDirectGrayscaleStep::HtSubBand(_) => {}
-                J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
+                J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands, false)?,
                 J2kDirectGrayscaleStep::Store(store) => {
                     store_component(
                         store,

@@ -6,6 +6,7 @@ use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
+use super::banded::{filter_2d_banded, filter_2d_banded_from_bands, packed_band_rects, use_banded};
 use super::horizontal::{filter_horizontal, filter_horizontal_codestream};
 use super::interleave::interleave_samples;
 use super::model::{CoefficientSource, IDWTInput, IDWTTempOutput};
@@ -17,13 +18,19 @@ use crate::{
     J2kIdwtNormalization, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform, Result,
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the level driver keeps both IDWT buffers, the band scratch, and the backend hook explicit"
+)]
 pub(super) fn apply_level(
     input: IDWTInput<'_>,
     target: &mut Vec<f32>,
+    band_scratch: &mut Vec<f32>,
     decomposition: &Decomposition,
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    parallel: bool,
 ) -> Result<IDWTTempOutput> {
     let handled = if let Some(backend) = backend.as_deref_mut() {
         let required_len = checked_decode_usize_product2(
@@ -47,6 +54,19 @@ pub(super) fn apply_level(
         Ok(IDWTTempOutput {
             rect: decomposition.rect,
         })
+    } else if use_banded(
+        decomposition.rect.width() as usize,
+        decomposition.rect.height() as usize,
+    ) {
+        filter_2d_banded(
+            input,
+            decomposition,
+            target,
+            band_scratch,
+            transform,
+            storage,
+            parallel,
+        )
     } else {
         filter_2d(input, target, decomposition, transform, storage)
     }
@@ -57,20 +77,22 @@ pub(crate) fn apply_single_decomposition_idwt_job(
     job: J2kSingleDecompositionIdwtJob<'_>,
     target: &mut Vec<f32>,
 ) -> Result<()> {
-    apply_single_decomposition_idwt_job_with_normalization(job, target, false)
+    apply_single_decomposition_idwt_job_with_normalization(job, target, false, false)
 }
 
 pub(crate) fn apply_codestream_single_decomposition_idwt_job(
     job: J2kSingleDecompositionIdwtJob<'_>,
     target: &mut Vec<f32>,
+    parallel: bool,
 ) -> Result<()> {
-    apply_single_decomposition_idwt_job_with_normalization(job, target, true)
+    apply_single_decomposition_idwt_job_with_normalization(job, target, true, parallel)
 }
 
 fn apply_single_decomposition_idwt_job_with_normalization(
     job: J2kSingleDecompositionIdwtJob<'_>,
     target: &mut Vec<f32>,
     openjpeg_codestream: bool,
+    parallel: bool,
 ) -> Result<()> {
     let rect = int_rect_from_public(job.rect);
     validate_direct_band(job.ll)?;
@@ -83,6 +105,35 @@ fn apply_single_decomposition_idwt_job_with_normalization(
         checked_decode_usize_product2(rect.width() as usize, rect.height() as usize)?;
     try_resize_decode_elements(target, required_len, 0.0)?;
 
+    let transform = wavelet_transform_from_public(job.transform);
+    if use_banded(rect.width() as usize, rect.height() as usize) {
+        let bands = [job.ll, job.hl, job.lh, job.hh];
+        let packed = packed_band_rects(rect);
+        if bands
+            .iter()
+            .zip(packed)
+            .all(|(band, packed)| int_rect_from_public(band.rect) == packed)
+        {
+            // Every band is exactly the packed sub-band of this level, so
+            // the windowed interleave below reads the same samples the
+            // banded reconstruction does.
+            let high_pass = if openjpeg_codestream {
+                super::OPENJPEG_NORMALIZED_HIGH_PASS_F32
+            } else {
+                j2k_codec_math::dwt::DWT97_INV_KAPPA_F32
+            };
+            let mut band_scratch = Vec::new();
+            return filter_2d_banded_from_bands(
+                rect,
+                bands.map(|band| band.coefficients),
+                target,
+                &mut band_scratch,
+                transform,
+                high_pass,
+                parallel,
+            );
+        }
+    }
     interleave_samples_roi(
         direct_coefficient_source(job.ll),
         direct_coefficient_source(job.hl),
@@ -92,7 +143,6 @@ fn apply_single_decomposition_idwt_job_with_normalization(
         rect,
     );
     if rect.width() > 0 && rect.height() > 0 {
-        let transform = wavelet_transform_from_public(job.transform);
         if openjpeg_codestream && transform == WaveletTransform::Irreversible97 {
             filter_horizontal_codestream(target, rect, transform);
             filter_vertical_codestream(target, rect, transform);
@@ -165,7 +215,7 @@ fn single_decomposition_job<'a>(
 }
 
 /// The `2D_SR` procedure illustrated in Figure F.6.
-fn filter_2d(
+pub(super) fn filter_2d(
     // The LL sub band of the given decomposition level.
     input: IDWTInput<'_>,
     coefficients: &mut Vec<f32>,

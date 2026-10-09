@@ -819,6 +819,69 @@ fn native_sample_packing_writes_high_bit_signed_little_endian_bytes() {
     assert_eq!(out, [0x00, 0x00, 0x00, 0x00, 0xe0]);
 }
 
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample magnitudes stay below 2^17 and are exact in f32"
+)]
+fn chunked_native_sample_packing_matches_per_sample_packing() {
+    let mut samples = vec![
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        -0.0,
+        f32::MIN_POSITIVE,
+        -f32::MIN_POSITIVE,
+        0.499_999_97,
+        -0.499_999_97,
+        f32::MAX,
+        f32::MIN,
+    ];
+    for whole in -70_000_i32..=70_000 {
+        if whole.unsigned_abs() > 300 && whole % 97 != 0 && whole.unsigned_abs() < 32_000 {
+            continue;
+        }
+        let whole = whole as f32;
+        samples.extend([whole, whole + 0.5, whole - 0.5, whole + 0.25, whole - 0.75]);
+        samples.extend([whole.next_up(), whole.next_down()]);
+        samples.extend([(whole + 0.5).next_down(), (whole - 0.5).next_up()]);
+    }
+    for bit_depth in 1_u8..=20 {
+        for signed in [false, true] {
+            let component = crate::j2c::ComponentData {
+                container: crate::math::SimdBuffer::new(samples.clone()),
+                integer_container: None,
+                bit_depth,
+                signed,
+            };
+            let mut expected = Vec::new();
+            for index in 0..samples.len() {
+                Image::push_component_native_sample_bytes(
+                    &mut expected,
+                    &component,
+                    index,
+                    bit_depth,
+                );
+            }
+            for parallel in [false, true] {
+                let mut actual = Vec::with_capacity(expected.len());
+                Image::extend_component_native_sample_bytes(
+                    &mut actual,
+                    &component,
+                    0..samples.len(),
+                    bit_depth,
+                    parallel,
+                );
+                assert_eq!(
+                    actual, expected,
+                    "bit_depth={bit_depth} signed={signed} parallel={parallel}"
+                );
+            }
+        }
+    }
+}
+
 fn rewrite_siz_to_single_large_tile(codestream: &mut [u8], dimensions: u32) {
     let siz = codestream
         .windows(2)

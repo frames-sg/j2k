@@ -3,11 +3,11 @@
 //! Persistent CPU batch session and public native output owners.
 
 use super::{
-    decode_cpu_group, fmt, prepare_batch_from_images, prepare_batch_with_workers,
-    BatchDecodeOptions, BatchDecoder, BatchGroupInfo, BatchInfrastructureError, BatchWorker,
-    CpuBatchWorkspaceStats, CpuGroupFastWorkspace, CpuStagedWorkspace, EncodedImage,
-    IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType, NonZeroUsize, PreparedBatch,
-    PreparedImage, Rect, Vec, MAX_GENERIC_BATCH_WORKERS,
+    decode_cpu_group, fmt, generic_batch_worker_limit, prepare_batch_from_images,
+    prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
+    BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
+    CpuStagedWorkspace, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType,
+    NonZeroUsize, PreparedBatch, PreparedImage, Rect, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
 
@@ -190,7 +190,7 @@ impl CpuBatchDecoder {
         let worker_count = options
             .workers
             .map_or(available, NonZeroUsize::get)
-            .clamp(1, MAX_GENERIC_BATCH_WORKERS);
+            .clamp(1, generic_batch_worker_limit());
         let workers = (0..worker_count)
             .map(|_| BatchWorker::new_owned(worker_count.max(2)))
             .collect();

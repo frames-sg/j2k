@@ -13,17 +13,18 @@ use j2k_core::{
 
 use super::admission::BatchAllocationBudget;
 use super::allocation::{
-    actual_warning_owner_bytes, capacity_extra_bytes, ensure_execution_capacity,
-    ensure_pre_execution_capacity, try_vec_with_capacity, J2K_BATCH_HOST_CAP_BYTES,
+    actual_warning_owner_bytes, batch_host_cap_bytes, capacity_extra_bytes,
+    ensure_execution_capacity, ensure_pre_execution_capacity, try_vec_with_capacity,
     J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 use super::planning::{select_batch_plan, select_direct_batch_plan, BatchPlan};
 use super::worker::BatchWorker;
 use super::{BatchOutcome, J2kBatchResultSlot, TileBatchError};
+use crate::CpuDecodeParallelism;
 
 mod retained;
 
-pub(crate) use self::retained::run_retained_chunks;
+pub(crate) use self::retained::{retained_inner_parallelism, run_retained_chunks};
 
 pub(super) type ScopedWorkerHandle<'scope> = (
     usize,
@@ -56,18 +57,40 @@ pub(super) fn plan_direct_batch(
     job_count: usize,
     options: TileBatchOptions,
 ) -> Result<BatchPlan, BatchInfrastructureError> {
-    let desired_workers =
-        tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    select_direct_batch_plan(job_count, desired_workers)
+    let available = available_tile_batch_workers();
+    let desired_workers = tile_batch_worker_count(job_count, options, available);
+    let plan = select_direct_batch_plan(job_count, desired_workers)?;
+    Ok(with_inner_parallelism(plan, job_count, options, available))
 }
 
 pub(super) fn plan_batch(
     job_count: usize,
     options: TileBatchOptions,
 ) -> Result<BatchPlan, BatchInfrastructureError> {
-    let desired_workers =
-        tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    select_batch_plan(job_count, desired_workers)
+    let available = available_tile_batch_workers();
+    let desired_workers = tile_batch_worker_count(job_count, options, available);
+    let plan = select_batch_plan(job_count, desired_workers)?;
+    Ok(with_inner_parallelism(plan, job_count, options, available))
+}
+
+/// A lone job always may parallelize internally. Otherwise, when the caller
+/// left the worker count to the codec and memory admission granted fewer
+/// workers than the host has threads, each worker spreads one decode's code
+/// blocks and wavelet bands over the shared pool so the remaining cores work
+/// too. An explicit worker count keeps every decode on its worker's thread.
+fn with_inner_parallelism(
+    mut plan: BatchPlan,
+    job_count: usize,
+    options: TileBatchOptions,
+    available_workers: usize,
+) -> BatchPlan {
+    plan.inner_parallelism =
+        if job_count <= 1 || (options.workers.is_none() && plan.worker_count < available_workers) {
+            CpuDecodeParallelism::Auto
+        } else {
+            CpuDecodeParallelism::Serial
+        };
+    plan
 }
 
 pub(super) fn run_chunks_scoped<J, F>(
@@ -89,7 +112,7 @@ where
     ensure_pre_execution_capacity(plan, result_capacity_extra)?;
 
     let handle_capacity_extra = if plan.worker_count == 1 {
-        let mut worker = BatchWorker::new(jobs.len(), allocation_budget);
+        let mut worker = BatchWorker::new(plan.inner_parallelism, allocation_budget);
         let decode_result = decode_chunk(&mut worker, jobs, &mut results);
         // Worker contexts and both scratch owners end before collection.
         drop(worker);
@@ -135,7 +158,7 @@ where
         ) -> Result<(), BatchInfrastructureError>
         + Sync,
 {
-    let job_count = jobs.len();
+    let inner_parallelism = plan.inner_parallelism;
     std::thread::scope(|scope| {
         let mut handles = try_vec_with_capacity::<ScopedWorkerHandle<'_>>(
             plan.worker_count,
@@ -167,7 +190,7 @@ where
             }
             let worker_budget = allocation_budget.cloned();
             let Ok(handle) = std::thread::Builder::new().spawn_scoped(scope, move || {
-                let mut worker = BatchWorker::new(job_count, worker_budget);
+                let mut worker = BatchWorker::new(inner_parallelism, worker_budget);
                 let result = decode_chunk(&mut worker, job_chunk, result_chunk);
                 drop(worker);
                 result
@@ -196,7 +219,7 @@ pub(super) fn collect_results(
         job_count,
         results,
         warning_bytes,
-        J2K_BATCH_HOST_CAP_BYTES,
+        batch_host_cap_bytes(),
         warning_bytes,
         J2K_BATCH_METADATA_ALLOWANCE_BYTES,
     )

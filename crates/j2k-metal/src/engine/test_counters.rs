@@ -357,6 +357,36 @@ pub(crate) fn record_idwt97_logical_dispatch(grid: (u32, u32, u32)) {
     IDWT97_STAGE_DISPATCHES.set(IDWT97_STAGE_DISPATCHES.get().saturating_add(1));
 }
 
+/// Step kinds of the single-image grayscale route that
+/// `single_image_step_profile` can encode repeatedly.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SingleStepKind {
+    Tier1 = 0,
+    Idwt = 1,
+    Store = 2,
+}
+
+#[cfg(test)]
+static SINGLE_STEP_REPEATS: [std::sync::atomic::AtomicU8; 3] = [
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+];
+
+/// Encode every single-image grayscale step of `kind` `repeats` times, so the
+/// GPU-time difference attributes that step's cost. Outputs are unchanged:
+/// the repeated dispatches recompute the same values.
+#[cfg(test)]
+pub(crate) fn set_single_step_repeats_for_test(kind: SingleStepKind, repeats: u8) {
+    SINGLE_STEP_REPEATS[kind as usize].store(repeats.max(1), Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn single_step_repeats_for_test(kind: SingleStepKind) -> u8 {
+    SINGLE_STEP_REPEATS[kind as usize].load(Ordering::Relaxed)
+}
+
 /// Last decode stage whose GPU dispatches are encoded, for attributing GPU time
 /// by truncation (`decode_stage_profile`). Stages keep their buffers and host
 /// bookkeeping; only the dispatches of later stages are skipped, so outputs

@@ -16,9 +16,11 @@ use super::super::{
     size_of as abi_size_of, Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck,
     Error, J2kHtRepeatedBatchParams, MetalRuntime,
 };
+#[cfg(test)]
+use super::PackedMetalHtChunk;
 use super::{
     metal_ht_pipeline_kind_for_bucket, prepared::PreparedMetalHtExecution,
-    prepared_metal_ht_execution, HtBatchInput, PackedMetalHtChunk,
+    prepared_metal_ht_execution, HtBatchInput,
 };
 
 #[expect(
@@ -317,15 +319,23 @@ impl RepeatedHtChunkEncoder<'_, '_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn validate_pass_homogeneous_chunk(chunk: &PackedMetalHtChunk) -> Result<(), Error> {
-    if chunk.jobs.iter().any(|job| job.number_of_coding_passes > 3) {
+    validate_pass_homogeneous_jobs(chunk.bucket, &chunk.jobs)
+}
+
+pub(super) fn validate_pass_homogeneous_jobs(
+    bucket: HtGpuJobPassBucket,
+    jobs: &[super::J2kHtCleanupBatchJob],
+) -> Result<(), Error> {
+    if jobs.iter().any(|job| job.number_of_coding_passes > 3) {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::resource_limit(
                 "HTJ2K Metal decoding supports at most three coding passes per code block",
             ),
         ));
     }
-    let matches_bucket = chunk.jobs.iter().all(|job| match chunk.bucket {
+    let matches_bucket = jobs.iter().all(|job| match bucket {
         HtGpuJobPassBucket::CleanupOnly => job.number_of_coding_passes == 1,
         HtGpuJobPassBucket::SigProp => job.number_of_coding_passes == 2,
         HtGpuJobPassBucket::MagRef => job.number_of_coding_passes == 3,

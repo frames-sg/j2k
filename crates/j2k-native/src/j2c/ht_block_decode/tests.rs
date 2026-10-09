@@ -19,7 +19,7 @@ use super::stats::{HtBlockDecodeStats, NoHtDecodeStats};
 use super::validation::{
     decode_combined_validated_with_scratch, decode_segments_validated_with_scratch,
 };
-use super::{coefficient_to_f32, coefficient_to_i32};
+use super::{coefficient_to_f32, coefficient_to_i32, store_coefficient_row};
 use super::{
     decode_combined_validated, decode_segments_validated_for_phase,
     decode_segments_validated_with_scratch_for_phase,
@@ -205,6 +205,9 @@ fn cleanup_and_magnitude_sign_phases_decode_odd_sized_block() {
 
     let mut decoded = vec![0u32; original.len()];
     let mut v_n_scratch = vec![0u32; width.div_ceil(2) as usize + 2];
+    let mut magsgn = Vec::with_capacity(
+        super::readers::flat_magsgn_capacity(original.len()).expect("MagSgn capacity"),
+    );
     decode_magnitude_sign_phase(
         &encoded.data,
         lcup,
@@ -217,6 +220,7 @@ fn cleanup_and_magnitude_sign_phases_decode_odd_sized_block() {
         width,
         sstr,
         &mut v_n_scratch,
+        &mut magsgn,
     )
     .expect("decode magnitude/sign phase");
 
@@ -654,4 +658,56 @@ fn decode_stats_preserve_cleanup_counts_and_disabled_timing() {
         ),
         (0, 0, 0, 0, 0)
     );
+}
+
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "mirrors the per-sample conversion"
+)]
+fn coefficient_rows_match_the_per_sample_conversion() {
+    let mut coefficients = vec![0, 1, 0x8000_0000, 0x8000_0001, 0x7FFF_FFFF, 0xFFFF_FFFF];
+    let mut state = 0x1234_5678_u32;
+    for _ in 0..200 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        coefficients.push(state);
+    }
+    for k_max in [1_u8, 6, 16, 17, 30, 31] {
+        for roi_shift in [0_u8, 3] {
+            for irreversible_midpoint in [false, true] {
+                for step in [1.0_f32, 0.375] {
+                    let mut actual = vec![f32::NAN; coefficients.len()];
+                    store_coefficient_row(
+                        &coefficients,
+                        &mut actual,
+                        k_max,
+                        roi_shift,
+                        irreversible_midpoint,
+                        step,
+                    );
+                    for (&coefficient, sample) in coefficients.iter().zip(&actual) {
+                        let expected = if irreversible_midpoint {
+                            crate::apply_roi_maxshift_inverse_f32(
+                                coefficient_to_f32(coefficient, k_max),
+                                roi_shift,
+                            )
+                        } else {
+                            crate::apply_roi_maxshift_inverse_i32(
+                                coefficient_to_i32(coefficient, k_max),
+                                roi_shift,
+                            ) as f32
+                        } * step;
+                        assert_eq!(
+                            sample.to_bits(),
+                            expected.to_bits(),
+                            "coefficient={coefficient:#x} k_max={k_max} roi={roi_shift} \
+                             midpoint={irreversible_midpoint} step={step}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

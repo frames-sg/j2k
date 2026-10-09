@@ -306,7 +306,70 @@ pub(in crate::engine) fn encode_repeated_gray_store_to_surfaces_in_command_buffe
     Ok(surfaces)
 }
 
+/// How a grayscale source maps to its output samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::engine) enum GraySourceSigning {
+    /// Unsigned source, or Gray8 output (which clamps on both backends).
+    Unsigned,
+    /// Signed source of more than eight bits to Gray16: two's complement.
+    SignedWide,
+    /// Signed source of at most eight bits to Gray16: the two's-complement
+    /// byte widened as an eight-bit sample.
+    SignedNarrow,
+}
+
+impl GraySourceSigning {
+    /// Mirror the CPU's Gray8/Gray16 conversion for a single-component plan.
+    /// Such a plan level-shifts unsigned samples by `2^(bit_depth - 1) >= 1`
+    /// and signed samples by zero.
+    pub(in crate::engine) fn for_store(fmt: PixelFormat, bit_depth: u8, addend: f32) -> Self {
+        if fmt != PixelFormat::Gray16 || addend != 0.0 {
+            Self::Unsigned
+        } else if bit_depth > 8 {
+            Self::SignedWide
+        } else {
+            Self::SignedNarrow
+        }
+    }
+}
+
+/// The fused grayscale store kernel for `fmt` and source signing.
 #[cfg(target_os = "macos")]
+pub(in crate::engine) fn gray_store_pipeline(
+    runtime: &MetalRuntime,
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<&crate::metal_types::ComputePipelineState, Error> {
+    let decode = runtime.decode()?;
+    Ok(match (fmt, signing) {
+        (PixelFormat::Gray8, _) => &decode.store_component_gray_u8,
+        (PixelFormat::Gray16, GraySourceSigning::Unsigned) => &decode.store_component_gray_u16,
+        (PixelFormat::Gray16, GraySourceSigning::SignedNarrow) => {
+            &decode.store_component_gray_i8_widened_u16
+        }
+        (PixelFormat::Gray16, GraySourceSigning::SignedWide) | (PixelFormat::GrayI16, _) => {
+            &decode.store_component_gray_i16
+        }
+        _ => {
+            return Err(Error::MetalKernel {
+                message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),
+            })
+        }
+    })
+}
+
+/// Largest positive sample of a signed `bit_depth` component, as the signed
+/// store kernels' clamp bound.
+pub(in crate::engine) fn signed_store_max_value(bit_depth: u8) -> f32 {
+    let signed_bits = u32::from(bit_depth).clamp(1, 16);
+    f32::from(u16::try_from((1_u32 << (signed_bits - 1)) - 1).unwrap_or(u16::MAX))
+}
+
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fused store keeps buffers, geometry, format, and source signing explicit"
+)]
 pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
@@ -315,6 +378,7 @@ pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
     params: J2kGrayStoreParams,
     dims: (u32, u32),
     fmt: PixelFormat,
+    signing: GraySourceSigning,
 ) -> Result<Surface, Error> {
     let (_pitch_bytes, surface_bytes) = checked_metal_surface_len(
         dims,
@@ -322,16 +386,7 @@ pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
         "J2K Metal grayscale fused store size overflow",
     )?;
     let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
-    let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.decode()?.store_component_gray_u8,
-        PixelFormat::Gray16 => &runtime.decode()?.store_component_gray_u16,
-        PixelFormat::GrayI16 => &runtime.decode()?.store_component_gray_i16,
-        _ => {
-            return Err(Error::MetalKernel {
-                message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),
-            })
-        }
-    };
+    let pipeline = gray_store_pipeline(runtime, fmt, signing)?;
 
     encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);

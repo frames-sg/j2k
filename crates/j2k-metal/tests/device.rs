@@ -481,6 +481,8 @@ mod color_mct_group;
 mod cooperative_batch;
 #[path = "device/decode.rs"]
 mod decode;
+#[path = "device/decode_into.rs"]
+mod decode_into;
 #[path = "device/direct_gray_requests.rs"]
 mod direct_gray_requests;
 #[path = "device/direct_repeated.rs"]
@@ -503,5 +505,7 @@ mod multitile_color;
 mod resident_batch;
 #[path = "device/reversible_early_stop.rs"]
 mod reversible_early_stop;
+#[path = "device/signed_grayscale.rs"]
+mod signed_grayscale;
 #[path = "device/tile_batch.rs"]
 mod tile_batch;

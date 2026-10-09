@@ -6,6 +6,7 @@ use crate::error::{err, ValidationError};
 use crate::j2c::{self, Header};
 use crate::jp2::colr::EnumeratedColorspace;
 use crate::jp2::{self, DecodedImage, ImageBoxes};
+use crate::CpuDecodeParallelism;
 use crate::{
     checked_decode_byte_len3, convert_color_space, interleave_and_convert,
     interleave_and_convert_region, resolve_palette_indices, try_resize_decode_elements,
@@ -560,6 +561,7 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedNativeComponents> {
+        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         let decoded_image =
             self.decode_image(decoder_context, None, None, true, retained_baseline_bytes)?;
         let DecodedImage {
@@ -572,6 +574,7 @@ impl<'a> Image<'a> {
             component_owner_capacity,
             (self.width(), self.height()),
             retained_baseline_bytes,
+            parallel,
         )
     }
 
@@ -616,6 +619,7 @@ impl<'a> Image<'a> {
         }
         let (_x, _y, width, height) = roi;
         let retained_image_bytes = self.retained_metadata_bytes()?;
+        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         let decoded_image =
             self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
         let DecodedImage {
@@ -628,6 +632,7 @@ impl<'a> Image<'a> {
             component_owner_capacity,
             (width, height),
             retained_image_bytes,
+            parallel,
         )
     }
 

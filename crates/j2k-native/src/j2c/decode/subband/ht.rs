@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
-    apply_roi_maxshift_inverse_i64, code_block_required_by_index, collect_pending_ht_blocks,
-    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes,
-    should_decode_ht_sub_band_in_parallel, ComponentInfo, CpuDecodeParallelism,
-    DecodeAllocationBudget, DecodingError, DecompositionStorage, Header, HtCodeBlockBatchJob,
-    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result, SubBand,
-    TileDecodeContext, Vec,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, code_block_required_by_index,
+    collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
+    ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, ComponentInfo,
+    CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
+    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result,
+    SubBand, TileDecodeContext, Vec,
 };
 use crate::j2c::build::CodeBlockCoding;
 
@@ -98,10 +97,6 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
     Ok(())
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
-)]
 #[expect(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
@@ -325,18 +320,14 @@ pub(super) fn decode_sub_band_ht_blocks(
             for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
                 let out_row = &mut base_store[base_idx..];
 
-                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output = if irreversible_midpoint {
-                        let coefficient =
-                            ht_block_decode::coefficient_to_f32(coefficient, coded_bitplanes);
-                        apply_roi_maxshift_inverse_f32(coefficient, component_info.roi_shift)
-                    } else {
-                        let coefficient =
-                            ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
-                        apply_roi_maxshift_inverse_i32(coefficient, component_info.roi_shift) as f32
-                    };
-                    *output *= dequantization_step;
-                }
+                ht_block_decode::store_coefficient_row(
+                    coefficients,
+                    out_row,
+                    coded_bitplanes,
+                    component_info.roi_shift,
+                    irreversible_midpoint,
+                    dequantization_step,
+                );
 
                 base_idx += output_stride;
             }

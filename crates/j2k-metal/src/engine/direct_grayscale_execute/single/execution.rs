@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 use crate::metal_types::prelude::*;
 
+use crate::engine::decode_dispatch::store::GraySourceSigning;
 use crate::metal_types::ComputeCommandEncoderRef;
 use j2k_metal_support::MetalImageDestination;
 use j2k_native::J2kDirectStoreStep;
@@ -41,6 +42,9 @@ pub(super) struct SingleGrayscaleExecution<'a> {
     pub(super) bands: Vec<DirectBandSlice>,
     pub(super) final_surface: Option<Surface>,
     pub(super) destination: Option<&'a MetalImageDestination>,
+    /// Whether a destination receives native-precision samples (batch
+    /// contracts) instead of the surface store's format conversion.
+    pub(super) native_destination: bool,
     pub(super) destination_item_index: usize,
     pub(super) destination_written: bool,
     pub(super) round_centered_store: bool,
@@ -233,14 +237,13 @@ impl SingleGrayscaleExecution<'_> {
             PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16
         ) {
             let scale = j2k_scalar_pack_params(u32::from(self.bit_depth));
-            let max_value = if self.fmt == PixelFormat::GrayI16 {
-                let signed_bits = u32::from(self.bit_depth).clamp(1, 16);
-                let positive_max =
-                    u16::try_from((1_u32 << (signed_bits - 1)) - 1).unwrap_or(u16::MAX);
-                f32::from(positive_max)
-            } else {
-                scale.max_value
-            };
+            let signing = GraySourceSigning::for_store(self.fmt, self.bit_depth, store.addend);
+            let max_value =
+                if self.fmt == PixelFormat::GrayI16 || signing != GraySourceSigning::Unsigned {
+                    crate::engine::decode_dispatch::store::signed_store_max_value(self.bit_depth)
+                } else {
+                    scale.max_value
+                };
             let params = J2kGrayStoreParams {
                 input_width: store.input_rect.width(),
                 source_x: store.source_x,
@@ -254,7 +257,7 @@ impl SingleGrayscaleExecution<'_> {
                 output_y: store.output_y,
                 addend: store.addend,
                 max_value,
-                u8_scale: if self.destination.is_some() {
+                u8_scale: if self.destination.is_some() && self.native_destination {
                     1.0
                 } else {
                     scale.u8_scale
@@ -272,6 +275,7 @@ impl SingleGrayscaleExecution<'_> {
                     fmt: self.fmt,
                     destination,
                     destination_item_index: self.destination_item_index,
+                    signing,
                 })?;
                 self.destination_written = true;
             } else {
@@ -283,6 +287,7 @@ impl SingleGrayscaleExecution<'_> {
                     params,
                     self.dimensions,
                     self.fmt,
+                    signing,
                 )?);
             }
         } else {

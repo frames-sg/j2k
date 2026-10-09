@@ -51,6 +51,7 @@ mod device;
 /// Common error classifications and helper error types.
 mod error;
 mod host_allocation;
+mod host_memory;
 mod passthrough;
 /// Pixel layout and format descriptors.
 mod pixel;
@@ -100,6 +101,8 @@ pub use host_allocation::{
     try_host_vec_from_slice, try_host_vec_resize, try_host_vec_with_capacity, HostAllocationBudget,
     HostAllocationError, HostAllocationLimitError, HostPhaseBudget, HostPhaseError,
 };
+#[doc(hidden)]
+pub use host_memory::host_physical_memory_bytes;
 pub use passthrough::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements,

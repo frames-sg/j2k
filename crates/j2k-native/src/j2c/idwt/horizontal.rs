@@ -53,7 +53,7 @@ fn filter_horizontal_with_high_pass(
 }
 
 /// The `1D_SR` procedure from F.3.6.
-fn filter_row(
+pub(super) fn filter_row(
     scanline: &mut [f32],
     width: usize,
     x0: usize,

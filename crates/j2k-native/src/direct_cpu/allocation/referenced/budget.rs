@@ -91,5 +91,6 @@ fn include_referenced_scratch_allocations(
         .map_or(Ok(0), |(width, height)| {
             ht_block_decode::ht_decode_workspace_bytes(width, height)
         })?;
-    budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))
+    budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))?;
+    super::super::include_ht_task_workspaces(budget, retained_ht_workspace_dimensions, scratch)
 }

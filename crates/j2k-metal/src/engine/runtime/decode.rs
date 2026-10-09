@@ -57,6 +57,7 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) store_component_gray_u8: ComputePipelineState,
     pub(in crate::engine) store_component_gray_u16: ComputePipelineState,
     pub(in crate::engine) store_component_gray_i16: ComputePipelineState,
+    pub(in crate::engine) store_component_gray_i8_widened_u16: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_u8: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_u16: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_i16: ComputePipelineState,
@@ -164,6 +165,8 @@ impl DecodeKernels {
             store_component_gray_u8: loader.pipeline("j2k_store_component_gray_u8")?,
             store_component_gray_u16: loader.pipeline("j2k_store_component_gray_u16")?,
             store_component_gray_i16: loader.pipeline("j2k_store_component_gray_i16")?,
+            store_component_gray_i8_widened_u16: loader
+                .pipeline("j2k_store_component_gray_i8_widened_u16")?,
             store_native_rgb_batch_u8: loader.pipeline("j2k_store_native_rgb_batch_u8")?,
             store_native_rgb_batch_u16: loader.pipeline("j2k_store_native_rgb_batch_u16")?,
             store_native_rgb_batch_i16: loader.pipeline("j2k_store_native_rgb_batch_i16")?,

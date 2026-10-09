@@ -154,7 +154,7 @@ fn interleave_rows<S: Simd>(
     reason = "the SIMD interleave primitive is intentionally inlined into the IDWT row kernel"
 )]
 #[inline(always)]
-fn interleave_row<S: Simd>(simd: S, first: &[f32], second: &[f32], output: &mut [f32]) {
+pub(super) fn interleave_row<S: Simd>(simd: S, first: &[f32], second: &[f32], output: &mut [f32]) {
     let num_pairs = first.len().min(second.len());
     let simd_chunks = num_pairs / SIMD_WIDTH;
 

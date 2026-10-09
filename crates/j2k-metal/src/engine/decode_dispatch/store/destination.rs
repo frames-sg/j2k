@@ -20,6 +20,8 @@ pub(in crate::engine) struct GrayStoreDestinationRequest<'a> {
     pub(in crate::engine) fmt: PixelFormat,
     pub(in crate::engine) destination: &'a MetalImageDestination,
     pub(in crate::engine) destination_item_index: usize,
+    /// How the source maps to output samples; see `gray_store_pipeline`.
+    pub(in crate::engine) signing: super::GraySourceSigning,
 }
 
 pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
@@ -33,6 +35,7 @@ pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
         mut params,
         dims,
         fmt,
+        signing,
         destination,
         destination_item_index,
     } = request;
@@ -72,9 +75,9 @@ pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
             message: "J2K Metal grayscale destination item offset exceeds u32".to_string(),
         })?;
     let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.decode()?.store_component_gray_u8,
-        PixelFormat::Gray16 => &runtime.decode()?.store_component_gray_u16,
-        PixelFormat::GrayI16 => &runtime.decode()?.store_component_gray_i16,
+        PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16 => {
+            super::gray_store_pipeline(runtime, fmt, signing)?
+        }
         _ => {
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::unsupported_format(

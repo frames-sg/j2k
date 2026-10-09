@@ -84,6 +84,8 @@ fn execute_referenced_classic_plan_with_payloads<'scratch>(
             compressed_payload,
             classic_workspace,
             ht_workspace: _,
+            ht_task_workspaces: _,
+            parallel: _,
             staged_state: _,
         } = scratch;
         let mut payloads =
@@ -240,7 +242,7 @@ fn execute_component_plan_referenced(
                     "referenced classic CPU plan encountered HT code blocks"
                 ));
             }
-            J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands)?,
+            J2kDirectGrayscaleStep::Idwt(step) => execute_idwt_step(step, bands, false)?,
             J2kDirectGrayscaleStep::Store(store) => {
                 store_component(
                     store,

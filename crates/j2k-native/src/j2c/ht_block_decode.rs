@@ -25,8 +25,10 @@ pub(crate) use segments::{
     visit_code_block_segments, CombinedCodeBlockData, HtCodeBlockSegmentKind, HtCodeBlockSegments,
 };
 pub(crate) use significance::sigma_stride;
+#[cfg(test)]
+pub(crate) use state::coefficient_to_f32;
 pub(crate) use state::{
-    coefficient_to_f32, coefficient_to_i32, HtBlockDecodeContext, HtBlockDecodeScratch,
+    coefficient_to_i32, store_coefficient_row, HtBlockDecodeContext, HtBlockDecodeScratch,
 };
 pub(crate) use stats::HtBlockDecodeStats;
 pub(crate) use validation::decode_segments_validated_with_scratch_for_phase;

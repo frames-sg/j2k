@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
-    checked_code_block_output_layout, j2c, CodeBlockOutputLayout, HtCodeBlockDecodeJob,
-    HtCodeBlockDecodePhaseLimit, Result, Vec,
+    add_roi_shift_to_bitplanes, checked_code_block_output_layout, j2c, CodeBlockOutputLayout,
+    HtCodeBlockDecodeJob, HtCodeBlockDecodePhaseLimit, Result, Vec,
 };
 use crate::try_reserve_decode_elements;
 
@@ -306,10 +305,6 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     Ok(())
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the public scalar adapter intentionally emits f32 coefficients"
-)]
 fn write_ht_code_block_output(
     coefficients: &[u32],
     job: HtCodeBlockDecodeJob<'_>,
@@ -325,17 +320,14 @@ fn write_ht_code_block_output(
     {
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + layout.stride];
-        for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
-            *sample = if irreversible_midpoint {
-                let coefficient =
-                    j2c::ht_block_decode::coefficient_to_f32(coefficient, coded_bitplanes);
-                apply_roi_maxshift_inverse_f32(coefficient, job.roi_shift)
-            } else {
-                let coefficient =
-                    j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
-                apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift) as f32
-            } * job.dequantization_step;
-        }
+        j2c::ht_block_decode::store_coefficient_row(
+            coeff_row,
+            output_row,
+            coded_bitplanes,
+            job.roi_shift,
+            irreversible_midpoint,
+            job.dequantization_step,
+        );
     }
 }
 

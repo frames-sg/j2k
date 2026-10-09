@@ -340,8 +340,13 @@ impl IdwtWorkspaceTracker {
                     .map(|rect| idwt_buffer_size(rect).map(|(_, maximum)| maximum))
                     .transpose()?
                     .unwrap_or(0);
+                let band_scratch = crate::j2c::idwt::planned_band_scratch_elements(
+                    highest_rect.width() as usize,
+                    highest_rect.height() as usize,
+                )?;
                 output
                     .checked_add(scratch)
+                    .and_then(|elements| elements.checked_add(band_scratch))
                     .ok_or(ValidationError::ImageTooLarge)?
             }
             None => checked_rect_elements(ll_rect)?,

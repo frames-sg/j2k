@@ -2308,6 +2308,7 @@ impl j2k::owned_batch::prepared::BatchDecoder for j2k_metal::MetalBatchDecoder
 impl j2k_core::traits::DeviceCodestream for j2k_metal::MetalEncodedJ2k
 impl j2k_core::traits::DeviceSubmission for j2k_metal::SubmittedMetalGroupDecodeInto
 impl j2k_core::traits::DeviceSubmission for j2k_metal::SubmittedMetalPreparedBatch
+impl j2k_metal::J2kDecoder<'_>
 impl j2k_metal::MetalBackendSession
 impl j2k_metal::MetalBatchDecodeResult
 impl j2k_metal::MetalBatchDecoder
@@ -2337,6 +2338,8 @@ pub const fn j2k_metal::MetalResidentBatch::image_stride_bytes(&self) -> usize
 pub enum j2k_metal::Error
 pub enum j2k_metal::MetalDecodeOp
 pub enum j2k_metal::MetalEncodeInputStaging
+pub fn j2k_metal::J2kDecoder<'_>::decode_into_metal(&mut self, &j2k_metal_support::resident::destination::MetalImageDestination) -> core::result::Result<(), j2k_metal::Error>
+pub fn j2k_metal::J2kDecoder<'_>::decode_into_metal_with_session(&mut self, &j2k_metal_support::resident::destination::MetalImageDestination, &j2k_metal::MetalBackendSession) -> core::result::Result<(), j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_request_to_cpu_staged_metal_surface_with_session(&mut self, j2k_metal::MetalDecodeRequest, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_request_to_device(&mut self, j2k_metal::MetalDecodeRequest) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_request_to_device_with_session(&mut self, j2k_metal::MetalDecodeRequest, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>

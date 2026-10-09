@@ -5,6 +5,9 @@ use crate::metal_types::prelude::*;
 
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use j2k_metal_support::MetalImageDestination;
+
 use crate::profile_env::{label_command_buffer, metal_profile_decode_split_commands_enabled};
 
 use super::abi::{J2kGrayStoreParams, J2kStoreParams};
@@ -81,6 +84,7 @@ pub(crate) use self::grayscale_batch::{
 };
 pub(in crate::engine) use self::single::encode_prepared_direct_grayscale_plan_in_command_buffer;
 pub(in crate::engine) use self::single::{
+    encode_prepared_direct_grayscale_plan_as_surface_into_command_buffer,
     encode_prepared_direct_grayscale_plan_into_in_encoder,
     DirectGrayscaleDestinationExecutionRequest,
 };
@@ -127,6 +131,58 @@ pub(crate) fn execute_prepared_direct_grayscale_plan(
         let scratch_retirement = recycle_scratch_buffers(runtime, scratch_buffers);
         completion.and(status_retirement).and(scratch_retirement)?;
         Ok(surface)
+    })
+}
+
+/// [`execute_prepared_direct_grayscale_plan`], storing into `destination`
+/// with the same format conversion instead of a new surface. Returns once
+/// the GPU work has completed.
+#[cfg(target_os = "macos")]
+pub(crate) fn execute_prepared_direct_grayscale_plan_into(
+    plan: &PreparedDirectGrayscalePlan,
+    fmt: PixelFormat,
+    destination: &MetalImageDestination,
+) -> Result<(), Error> {
+    with_runtime(|runtime| {
+        let DirectExecutionMetadata {
+            mut retained_buffers,
+            mut status_checks,
+            mut scratch_buffers,
+            dispatch_report: _,
+        } = allocate_direct_execution_metadata(
+            plan.steps.len(),
+            direct_ht_job_count([plan], "J2K Metal direct grayscale execution HT jobs")?,
+            crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal direct grayscale execution resources",
+            ),
+        )?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        encode_prepared_direct_grayscale_plan_as_surface_into_command_buffer(
+            DirectGrayscaleDestinationExecutionRequest {
+                runtime,
+                command_buffer: &command_buffer,
+                plan,
+                fmt,
+                destination,
+                destination_item_index: 0,
+                retained_buffers: &mut retained_buffers,
+                status_checks: &mut status_checks,
+                scratch_buffers: &mut scratch_buffers,
+            },
+        )?;
+        let completion = commit_and_wait_metal(&command_buffer);
+        let status_retirement = retire_direct_status_checks(
+            runtime,
+            status_checks,
+            if completion.is_ok() {
+                DirectStatusRetirementMode::Validate
+            } else {
+                DirectStatusRetirementMode::RecycleWithoutRead
+            },
+        );
+        drop(retained_buffers);
+        let scratch_retirement = recycle_scratch_buffers(runtime, scratch_buffers);
+        completion.and(status_retirement).and(scratch_retirement)
     })
 }
 

@@ -35,7 +35,9 @@ fn default_gpu_encode_memory_budget_bytes_for_hw_mem_inner(hw_memsize: usize) ->
 }
 
 fn default_gpu_encode_memory_budget_bytes() -> usize {
-    let hw_memsize = host_memory_bytes().unwrap_or(GPU_ENCODE_FALLBACK_HW_MEM_BYTES);
+    let hw_memsize = j2k_core::host_physical_memory_bytes()
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(GPU_ENCODE_FALLBACK_HW_MEM_BYTES);
     default_gpu_encode_memory_budget_bytes_for_hw_mem_inner(hw_memsize)
 }
 
@@ -73,31 +75,6 @@ pub(super) fn resident_lossless_encode_config_for_mode(
     } else {
         config
     }
-}
-
-#[cfg(target_os = "macos")]
-fn host_memory_bytes() -> Option<usize> {
-    let mut value = 0u64;
-    let mut len = core::mem::size_of::<u64>();
-    let name = b"hw.memsize\0";
-    // SAFETY: `sysctlbyname` writes a u64 into the provided buffer when the name is supported.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr().cast(),
-            (&raw mut value).cast(),
-            &raw mut len,
-            core::ptr::null_mut(),
-            0,
-        )
-    };
-    (rc == 0 && len == core::mem::size_of::<u64>())
-        .then(|| usize::try_from(value).ok())
-        .flatten()
-}
-
-#[cfg(all(test, not(target_os = "macos")))]
-fn host_memory_bytes() -> Option<usize> {
-    None
 }
 
 pub(super) fn resolve_lossless_encode_config(

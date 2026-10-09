@@ -269,7 +269,9 @@ mod inner {
     use core::marker::PhantomData;
     use core::ops::{Add, AddAssign, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-    pub(crate) trait Simd: Copy + Clone {}
+    /// Mirrors `fearless_simd::Simd`, whose tokens are `Send + Sync` so
+    /// transform kernels can run on worker threads.
+    pub(crate) trait Simd: Copy + Clone + Send + Sync {}
 
     #[derive(Copy, Clone)]
     pub(crate) struct ScalarSimd;

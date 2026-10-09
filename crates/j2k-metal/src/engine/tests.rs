@@ -11,3 +11,4 @@ mod reuse;
 mod roi;
 mod runtime;
 mod shared_tier1;
+mod single_image_step_profile;

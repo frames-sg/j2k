@@ -6,13 +6,13 @@ use super::*;
 fn reconciling_actual_capacity_releases_admission_headroom() {
     let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
     let mut claim = budget
-        .claim(J2K_BATCH_EXECUTION_CAP_BYTES)
+        .claim(batch_execution_cap_bytes())
         .expect("full claim");
     claim
-        .reconcile(J2K_BATCH_EXECUTION_CAP_BYTES / 2)
+        .reconcile(batch_execution_cap_bytes() / 2)
         .expect("shrink claim");
     let second = budget
-        .claim(J2K_BATCH_EXECUTION_CAP_BYTES / 2)
+        .claim(batch_execution_cap_bytes() / 2)
         .expect("released half is immediately admissible");
     drop((claim, second));
     assert_eq!(budget.lock_state().live, 0);
@@ -23,7 +23,7 @@ fn shared_baseline_is_subtracted_from_each_initial_worker_claim() {
     let shared = super::super::allocation::GENERIC_WORKER_CLAIM_BYTES / 8;
     let worker = super::super::allocation::GENERIC_WORKER_CLAIM_BYTES - shared;
     let budget = BatchAllocationBudget::with_baseline(shared).expect("shared-plan budget");
-    let claims = (0..super::super::allocation::MAX_GENERIC_BATCH_WORKERS)
+    let claims = (0..super::super::allocation::generic_batch_worker_limit())
         .map(|_| {
             budget
                 .claim(worker)
@@ -37,7 +37,7 @@ fn shared_baseline_is_subtracted_from_each_initial_worker_claim() {
 #[test]
 fn waiting_claim_resumes_after_an_owner_reconciles() {
     let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
-    let mut owners = (0..super::super::allocation::MAX_GENERIC_BATCH_WORKERS)
+    let mut owners = (0..super::super::allocation::generic_batch_worker_limit())
         .map(|_| {
             budget
                 .claim(super::super::allocation::GENERIC_WORKER_CLAIM_BYTES)
@@ -65,13 +65,13 @@ fn unwinding_owner_releases_its_admission_claim() {
     let unwind_budget = Arc::clone(&budget);
     assert!(std::panic::catch_unwind(move || {
         let _claim = unwind_budget
-            .claim(J2K_BATCH_EXECUTION_CAP_BYTES)
+            .claim(batch_execution_cap_bytes())
             .expect("full claim");
         panic!("unwind admitted owner");
     })
     .is_err());
     let replacement = budget
-        .claim(J2K_BATCH_EXECUTION_CAP_BYTES)
+        .claim(batch_execution_cap_bytes())
         .expect("unwound claim was released");
     drop(replacement);
     assert_eq!(budget.lock_state().live, 0);
@@ -82,15 +82,15 @@ fn failed_reconciliation_releases_the_original_claim_on_drop() {
     let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
     {
         let mut claim = budget
-            .claim(J2K_BATCH_EXECUTION_CAP_BYTES)
+            .claim(batch_execution_cap_bytes())
             .expect("full claim");
         assert!(matches!(
-            claim.reconcile(J2K_BATCH_EXECUTION_CAP_BYTES + 1),
+            claim.reconcile(batch_execution_cap_bytes() + 1),
             Err(BatchInfrastructureError::AllocationTooLarge { .. })
         ));
     }
     let replacement = budget
-        .claim(J2K_BATCH_EXECUTION_CAP_BYTES)
+        .claim(batch_execution_cap_bytes())
         .expect("failed reconciliation did not leak its claim");
     drop(replacement);
     assert_eq!(budget.lock_state().live, 0);

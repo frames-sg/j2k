@@ -13,8 +13,8 @@ pub use j2k_core::{PixelLayout as BatchColor, SampleType as NativeSampleType};
 use crate::{
     backend,
     batch::{
-        allocation::{J2K_BATCH_METADATA_ALLOWANCE_BYTES, MAX_GENERIC_BATCH_WORKERS},
-        scheduler::run_retained_chunks,
+        allocation::{generic_batch_worker_limit, J2K_BATCH_METADATA_ALLOWANCE_BYTES},
+        scheduler::{retained_inner_parallelism, run_retained_chunks},
         worker::BatchWorker,
     },
     decode::decode_warnings_for_recovery,
