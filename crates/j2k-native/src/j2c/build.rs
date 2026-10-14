@@ -9,11 +9,13 @@ use crate::try_resize_decode_elements;
 use core::{iter, ops::Range};
 
 mod allocation;
+pub(crate) use allocation::{
+    allocate_deferred_coefficients, release_unused_roi_workspace, BuildWorkspace,
+};
 use allocation::{
     code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,
     DecompositionAllocationPlan,
 };
-pub(crate) use allocation::{release_unused_roi_workspace, BuildWorkspace};
 
 /// Build and allocate all necessary structures to process the code-blocks
 /// for a specific tile. Also parses the segments for each code-block.
@@ -115,6 +117,7 @@ fn build_decompositions(
                     rect: sub_band_rect,
                     precincts: precincts.clone(),
                     coefficients,
+                    storage_rect: sub_band_rect,
                 },
             )?;
 
@@ -360,7 +363,12 @@ pub(crate) struct SubBand {
     pub(crate) sub_band_type: SubBandType,
     pub(crate) rect: IntRect,
     pub(crate) precincts: Range<usize>,
+    /// Row-major coefficients covering `storage_rect`.
     pub(crate) coefficients: Range<usize>,
+    /// The part of `rect` held in `coefficients`. It is the whole sub-band,
+    /// except in region decode, where it covers only the code-blocks the
+    /// region needs.
+    pub(crate) storage_rect: IntRect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

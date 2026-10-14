@@ -90,8 +90,8 @@ pub(super) fn collect_pending_classic_blocks(
             pending_blocks.push(PendingClassicBlock {
                 combined_data,
                 segments,
-                output_x: code_block.rect.x0 - sub_band.rect.x0,
-                output_y: code_block.rect.y0 - sub_band.rect.y0,
+                output_x: code_block.rect.x0 - sub_band.storage_rect.x0,
+                output_y: code_block.rect.y0 - sub_band.storage_rect.y0,
                 width: code_block.rect.width(),
                 height: code_block.rect.height(),
                 missing_bit_planes: code_block.missing_bit_planes,
@@ -161,8 +161,8 @@ pub(super) fn collect_pending_ht_blocks(
 
             pending_blocks.push(PendingHtBlock {
                 combined: ht_block_decode::collect_code_block_data(code_block, storage, budget)?,
-                output_x: code_block.rect.x0 - sub_band.rect.x0,
-                output_y: code_block.rect.y0 - sub_band.rect.y0,
+                output_x: code_block.rect.x0 - sub_band.storage_rect.x0,
+                output_y: code_block.rect.y0 - sub_band.storage_rect.y0,
                 width: code_block.rect.width(),
                 height: code_block.rect.height(),
                 missing_bit_planes: code_block.missing_bit_planes,

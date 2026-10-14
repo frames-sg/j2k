@@ -81,7 +81,7 @@ pub(super) fn decode_sub_band_classic_blocks(
                     segments: &pending.segments,
                     width: pending.width,
                     height: pending.height,
-                    output_stride: sub_band.rect.width() as usize,
+                    output_stride: sub_band.storage_rect.width() as usize,
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     total_bitplanes: num_bitplanes,
@@ -97,8 +97,8 @@ pub(super) fn decode_sub_band_classic_blocks(
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
         if decoder.decode_j2k_sub_band_with_midpoint(
             J2kSubBandDecodeJob {
-                width: sub_band.rect.width(),
-                height: sub_band.rect.height(),
+                width: sub_band.storage_rect.width(),
+                height: sub_band.storage_rect.height(),
                 jobs: &batch_jobs,
             },
             base_store,
@@ -127,10 +127,11 @@ pub(super) fn decode_sub_band_classic_blocks(
             budget.include_bytes(actual_workspace - planned_workspace)?;
         }
 
-        let output_stride = sub_band.rect.width() as usize;
+        let output_stride = sub_band.storage_rect.width() as usize;
         for job in batch_jobs {
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let base_idx = (job.output_y * sub_band.rect.width()) as usize + job.output_x as usize;
+            let base_idx =
+                (job.output_y * sub_band.storage_rect.width()) as usize + job.output_x as usize;
             let output_len = if job.code_block.height == 0 {
                 0
             } else {
@@ -247,10 +248,11 @@ pub(super) fn decode_sub_band_classic_blocks(
                 continue;
             }
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
-            let output_stride = sub_band.rect.width() as usize;
-            let mut base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
+            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
+            let output_stride = sub_band.storage_rect.width() as usize;
+            let mut base_idx =
+                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
 
             bitplane::decode(
                 code_block,
@@ -313,10 +315,11 @@ fn decode_sub_band_classic_blocks_i64(
                 continue;
             }
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
-            let output_stride = sub_band.rect.width() as usize;
-            let mut base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
+            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
+            let output_stride = sub_band.storage_rect.width() as usize;
+            let mut base_idx =
+                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
 
             bitplane::decode(
                 code_block,

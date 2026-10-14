@@ -79,8 +79,8 @@ impl<'a> CoefficientSource<'a> {
     ) -> Self {
         Self {
             coefficients: &storage.coefficients[sub_band.coefficients.clone()],
-            rect: sub_band.rect,
-            stride: sub_band.rect.width(),
+            rect: sub_band.storage_rect,
+            stride: sub_band.storage_rect.width(),
         }
     }
 

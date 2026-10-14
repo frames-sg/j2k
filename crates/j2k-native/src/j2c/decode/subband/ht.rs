@@ -72,11 +72,12 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
                 profile_enabled,
             )?;
 
-            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
+            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
             let base_store = &mut storage.coefficients_i64[sub_band.coefficients.clone()];
-            let mut base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
-            let output_stride = sub_band.rect.width() as usize;
+            let mut base_idx =
+                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
+            let output_stride = sub_band.storage_rect.width() as usize;
 
             for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
                 let out_row = &mut base_store[base_idx..];
@@ -154,7 +155,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                     refinement_length: pending.combined.refinement_length,
                     width: pending.width,
                     height: pending.height,
-                    output_stride: sub_band.rect.width() as usize,
+                    output_stride: sub_band.storage_rect.width() as usize,
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     num_bitplanes,
@@ -169,8 +170,8 @@ pub(super) fn decode_sub_band_ht_blocks(
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
         if ht_decoder.decode_sub_band_with_midpoint(
             HtSubBandDecodeJob {
-                width: sub_band.rect.width(),
-                height: sub_band.rect.height(),
+                width: sub_band.storage_rect.width(),
+                height: sub_band.storage_rect.height(),
                 jobs: &batch_jobs,
             },
             base_store,
@@ -180,10 +181,11 @@ pub(super) fn decode_sub_band_ht_blocks(
             return Ok(());
         }
 
-        let output_stride = sub_band.rect.width() as usize;
+        let output_stride = sub_band.storage_rect.width() as usize;
         for job in batch_jobs {
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let base_idx = (job.output_y * sub_band.rect.width()) as usize + job.output_x as usize;
+            let base_idx =
+                (job.output_y * sub_band.storage_rect.width()) as usize + job.output_x as usize;
             let output_len = if job.code_block.height == 0 {
                 0
             } else {
@@ -313,11 +315,12 @@ pub(super) fn decode_sub_band_ht_blocks(
                 profile_enabled,
             )?;
 
-            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
+            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
             let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-            let mut base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
-            let output_stride = sub_band.rect.width() as usize;
+            let mut base_idx =
+                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
+            let output_stride = sub_band.storage_rect.width() as usize;
 
             for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
                 let out_row = &mut base_store[base_idx..];
