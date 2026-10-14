@@ -237,6 +237,7 @@ pub(super) fn prepare_decomposition_storage(
     retained_baseline_bytes: usize,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&super::PrecinctSelection>,
 ) -> Result<DecompositionAllocationPlan> {
     let (mut plan, idwt_workspace_elements) = plan::build_allocation_plan(
         tile,
@@ -244,6 +245,7 @@ pub(super) fn prepare_decomposition_storage(
         storage.exact_integer_decode,
         include_roi_workspace,
         workspace,
+        selection,
     )?;
 
     // Capacity retention must never make a smaller valid tile fail in a later

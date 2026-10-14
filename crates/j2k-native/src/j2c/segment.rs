@@ -7,7 +7,7 @@ use core::mem::size_of;
 use super::build::{CodeBlock, Precinct, Segment};
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
-use super::decode::DecompositionStorage;
+use super::decode::{DecodeAllocationBudget, DecompositionStorage, SubBandIter};
 use super::progression::ProgressionData;
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePartCursor};
@@ -27,7 +27,16 @@ pub(crate) fn parse<'a, 'b>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
+    let mut relevance = PacketRelevance::new(tile, storage)?;
     for tile_part in &tile.tile_parts {
+        if relevance
+            .as_ref()
+            .is_some_and(|relevance| relevance.remaining_packets == 0)
+        {
+            // Every packet the ROI plan needs has been read; the rest of the
+            // tile can only hold code-blocks the region does not use.
+            break;
+        }
         let parsed = tile_part
             .cursor()
             .ok_or("tile-part cursor is inconsistent")
@@ -37,6 +46,7 @@ pub(crate) fn parse<'a, 'b>(
                     &mut progression_iterator,
                     &tile.component_infos,
                     storage,
+                    &mut relevance,
                 )
             });
         if let Some(error) = storage.packet_workspace_error.take() {
@@ -52,12 +62,113 @@ pub(crate) fn parse<'a, 'b>(
     Ok(())
 }
 
+/// Packets a region decode still needs.
+///
+/// A packet carries one precinct of one component and resolution for one
+/// layer. It matters only if one of that precinct's code-blocks is required by
+/// the ROI plan, independent of the layer, so an unneeded precinct's packets
+/// can be skipped without ever updating its tag trees.
+struct PacketRelevance {
+    /// Indexed like `DecompositionStorage::precincts`.
+    precinct_required: Vec<bool>,
+    remaining_packets: usize,
+}
+
+impl PacketRelevance {
+    fn new(tile: &Tile<'_>, storage: &DecompositionStorage<'_>) -> Result<Option<Self>> {
+        let Some(plan) = storage.roi_plan.as_ref() else {
+            return Ok(None);
+        };
+        let mut precinct_required = Vec::new();
+        DecodeAllocationBudget::for_storage(storage)?
+            .reserve_new(&mut precinct_required, storage.precincts.len())?;
+        crate::try_resize_decode_elements(&mut precinct_required, storage.precincts.len(), false)?;
+        for (sub_band_idx, sub_band) in storage.sub_bands.iter().enumerate() {
+            for precinct_idx in sub_band.precincts.clone() {
+                precinct_required[precinct_idx] = storage.precincts[precinct_idx]
+                    .code_blocks
+                    .clone()
+                    .any(|code_block| {
+                        plan.code_block_required(sub_band_idx, storage.code_blocks[code_block].rect)
+                    });
+            }
+        }
+
+        let mut relevance = Self {
+            precinct_required,
+            remaining_packets: 0,
+        };
+        let layers = usize::from(tile.num_layers);
+        for tile_decompositions in &storage.tile_decompositions {
+            for resolution in 0..=tile_decompositions.decompositions.len() {
+                let resolution =
+                    u8::try_from(resolution).map_err(|_| ValidationError::ImageTooLarge)?;
+                let sub_bands =
+                    tile_decompositions.sub_band_iter(resolution, &storage.decompositions);
+                let precincts = sub_bands
+                    .clone()
+                    .next()
+                    .map_or(0, |sub_band| storage.sub_bands[sub_band].precincts.len());
+                for precinct in 0..precincts {
+                    if relevance.packet_required(sub_bands.clone(), precinct, storage) {
+                        relevance.remaining_packets = relevance
+                            .remaining_packets
+                            .checked_add(layers)
+                            .ok_or(ValidationError::ImageTooLarge)?;
+                    }
+                }
+            }
+        }
+        Ok(Some(relevance))
+    }
+
+    /// Whether a packet must be parsed: always without an ROI plan.
+    fn requires(
+        relevance: Option<&Self>,
+        sub_bands: SubBandIter,
+        precinct: usize,
+        storage: &DecompositionStorage<'_>,
+    ) -> bool {
+        relevance.is_none_or(|relevance| relevance.packet_required(sub_bands, precinct, storage))
+    }
+
+    /// Count one parsed required packet. Returns whether it was the last.
+    fn record_required(relevance: Option<&mut Self>) -> bool {
+        relevance.is_some_and(|relevance| {
+            relevance.remaining_packets = relevance.remaining_packets.saturating_sub(1);
+            relevance.remaining_packets == 0
+        })
+    }
+
+    /// Whether any sub-band of the packet's resolution has a required
+    /// code-block in this precinct. Out-of-range indices count as required so
+    /// the parser reports them.
+    fn packet_required(
+        &self,
+        mut sub_bands: SubBandIter,
+        precinct: usize,
+        storage: &DecompositionStorage<'_>,
+    ) -> bool {
+        sub_bands.any(|sub_band| {
+            let precincts = &storage.sub_bands[sub_band].precincts;
+            precinct >= precincts.len() || self.precinct_required[precincts.start + precinct]
+        })
+    }
+}
+
+/// Parse packets until the tile-part ends, or until `relevance` has seen
+/// every packet the ROI plan needs, which returns `Ok(true)`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered pass keeps packet skipping, header parsing, body reads, and length checks together"
+)]
 fn parse_inner<'a>(
     mut tile_part: TilePartCursor<'_, 'a>,
     progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
     component_infos: &[ComponentInfo],
     storage: &mut DecompositionStorage<'a>,
-) -> PacketResult {
+    relevance: &mut Option<PacketRelevance>,
+) -> PacketResult<bool> {
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator
             .next()
@@ -74,6 +185,17 @@ fn parse_inner<'a>(
             .get_mut(component_index)
             .ok_or("packet storage has no matching component")?;
         let sub_band_iter = tile_decompositions.sub_band_iter(resolution, &storage.decompositions);
+        let packet_required = PacketRelevance::requires(
+            relevance.as_ref(),
+            sub_band_iter.clone(),
+            precinct_index,
+            storage,
+        );
+        // With PLT lengths, an unneeded packet is skipped without parsing its
+        // header. Otherwise it is parsed to find where the next one starts.
+        if !packet_required && tile_part.skip_packet() {
+            continue;
+        }
 
         let packet_start = tile_part.packet_start_offset();
         let body_reader = tile_part.body();
@@ -162,13 +284,17 @@ fn parse_inner<'a>(
         tile_part
             .validate_packet_length(packet_start)
             .ok_or("packet length marker disagrees with consumed bytes")?;
+
+        if packet_required && PacketRelevance::record_required(relevance.as_mut()) {
+            return Ok(true);
+        }
     }
 
     tile_part
         .validate_all_packet_lengths_consumed()
         .ok_or("packet length markers contain unused entries")?;
 
-    Ok(())
+    Ok(false)
 }
 
 fn try_push_segment_with_budget<'a>(

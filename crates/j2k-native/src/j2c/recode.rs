@@ -136,6 +136,7 @@ fn extract_reversible_53_coefficients_inner<'a>(
         tiles.structural_workspace_bytes(),
         false,
         build::BuildWorkspace::CoefficientsOnly,
+        None,
     )?;
     segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 

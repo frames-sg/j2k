@@ -419,6 +419,14 @@ fn decode_tile<'a, 'b>(
     // First, we build the decompositions, including their sub-bands, precincts
     // and code blocks.
     let stage_start = profile::profile_now(profile_enabled);
+    // Region decode builds its ROI plan first so that precincts the decode
+    // will never parse get no code-blocks or tag trees.
+    let selection = match tile_ctx.output_region {
+        Some(output_region) => {
+            build::select_region_precincts(tile, header, storage, output_region)?
+        }
+        None => None,
+    };
     build::build(
         tile,
         storage,
@@ -427,9 +435,10 @@ fn decode_tile<'a, 'b>(
         build::BuildWorkspace::DecodePixels {
             skipped_resolution_levels: header.skipped_resolution_levels,
         },
+        selection.as_ref(),
     )?;
-    if let Some(output_region) = tile_ctx.output_region {
-        storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
+    drop(selection);
+    if tile_ctx.output_region.is_some() {
         if storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }

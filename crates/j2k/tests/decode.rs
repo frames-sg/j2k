@@ -13,8 +13,8 @@ use j2k_core::{
 };
 use j2k_native::{
     encode, encode_htj2k, encode_precomputed_htj2k_53, DecodeError, DecodeSettings, EncodeOptions,
-    Image, J2kForwardDwt53Level, J2kForwardDwt53Output, MarkerError, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k53Image,
+    EncodeProgressionOrder, Image, J2kForwardDwt53Level, J2kForwardDwt53Output, MarkerError,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
 };
 use j2k_test_support::{
     crop_interleaved_bytes, openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
@@ -2015,6 +2015,100 @@ fn region_decode_flush_with_right_and_bottom_edges_matches_scaled_whole_decode_c
                                 roi.h,
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn region_decode_matches_whole_decode_for_every_progression_with_and_without_plt() {
+    // Region decode skips packets of precincts it does not need (by PLT
+    // length when present), stops after the last packet it needs, and builds
+    // no code-blocks for precincts it never parses. Each progression order
+    // places needed and unneeded packets differently. The encoder writes
+    // position-major orders (PCRL, CPRL) correctly only with one precinct per
+    // resolution, so those use the default precincts.
+    let fmt = PixelFormat::Rgb8;
+    let (width, height) = (301_u32, 203_u32);
+    let pixels = edge_fixture_pixels(width, height);
+    let rois = [
+        Rect {
+            x: 120,
+            y: 80,
+            w: 40,
+            h: 30,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 20,
+        },
+        Rect {
+            x: width - 25,
+            y: height - 15,
+            w: 25,
+            h: 15,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: width,
+            h: height,
+        },
+    ];
+    for progression_order in [
+        EncodeProgressionOrder::Lrcp,
+        EncodeProgressionOrder::Rlcp,
+        EncodeProgressionOrder::Rpcl,
+        EncodeProgressionOrder::Pcrl,
+        EncodeProgressionOrder::Cprl,
+    ] {
+        for write_plt in [false, true] {
+            for (tile_size, num_layers) in [(None, 1_u8), (None, 3), (Some((128, 128)), 3)] {
+                let options = EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 3,
+                    code_block_width_exp: 3,
+                    code_block_height_exp: 3,
+                    precinct_exponents: if matches!(
+                        progression_order,
+                        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl
+                    ) {
+                        Vec::new()
+                    } else {
+                        vec![(5, 5), (6, 6), (6, 6), (6, 6)]
+                    },
+                    progression_order,
+                    write_plt,
+                    num_layers,
+                    tile_size,
+                    ..EncodeOptions::default()
+                };
+                let bytes = encode(&pixels, width, height, 3, 8, false, &options)
+                    .expect("encode progression fixture");
+                for scale in [Downscale::None, Downscale::Quarter] {
+                    let denominator = scale.denominator();
+                    let whole = scaled_whole_decode(&bytes, (width, height), fmt, scale);
+                    for roi in rois {
+                        let scaled_roi = roi.scaled_covering(scale);
+                        assert_eq!(
+                            scaled_region_decode(&bytes, fmt, roi, scale),
+                            crop_bytes(
+                                &whole,
+                                width.div_ceil(denominator) as usize,
+                                fmt.bytes_per_pixel(),
+                                scaled_roi,
+                            ),
+                            "{progression_order:?} plt={write_plt} tiles={tile_size:?} \
+                             layers={num_layers} region {},{} {}x{} at 1/{denominator}",
+                            roi.x,
+                            roi.y,
+                            roi.w,
+                            roi.h,
+                        );
                     }
                 }
             }

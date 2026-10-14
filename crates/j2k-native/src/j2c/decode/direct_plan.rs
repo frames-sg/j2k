@@ -164,6 +164,7 @@ fn build_direct_grayscale_tile_plan<'a>(
         structural_workspace_bytes,
         decode_region.is_some(),
         build::BuildWorkspace::MetadataOnly,
+        None,
     )?;
     if let Some(output_region) = decode_region {
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;

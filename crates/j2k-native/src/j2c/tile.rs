@@ -121,6 +121,19 @@ impl PacketLengthMetadata {
     }
 }
 
+impl TilePart<'_> {
+    /// The number of PLT packet lengths when this tile-part's packets can be
+    /// skipped whole by length: headers in-band and lengths signalled.
+    pub(crate) fn skippable_packet_count(&self) -> Option<usize> {
+        match self {
+            Self::Merged(part) if part.packet_lengths.present => {
+                Some(part.packet_lengths.lengths.len())
+            }
+            Self::Merged(_) | Self::Separated(_) => None,
+        }
+    }
+}
+
 impl Tile<'_> {
     fn new(idx: u32, header: &Header<'_>) -> Self {
         let rect = {
