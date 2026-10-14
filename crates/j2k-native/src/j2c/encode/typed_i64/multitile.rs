@@ -10,6 +10,7 @@ use super::super::multitile::{
     quantization_retained_bytes, reserve_tile_parts,
 };
 use super::super::single_tile::ownership::encode_params_retained_bytes;
+use super::super::tile_grid::validate_tile_grid;
 use super::super::tile_parts::{
     consume_packetized_tile_into_tile_parts, encoded_tile_parts_retained_bytes,
 };
@@ -64,6 +65,7 @@ pub(super) fn encode_typed_component_planes_53_i64_multitile(
     )
     .map_err(NativeEncodePipelineError::arithmetic_overflow)?
     .min(request.options.num_decomposition_levels);
+    validate_typed_tile_grid(request, num_levels)?;
     let plan = TypedI64HighBitPlan::try_new(
         request.planes,
         request.options,
@@ -254,4 +256,27 @@ fn encode_one_tile(
         request.session,
     )?;
     append_encoded_tile_parts(tile_bodies, new_parts, planning_bytes, 0, request.session)
+}
+
+/// Reject tile grids that tile-at-a-time encode would code inconsistently
+/// with the image grid, for every component's sampling.
+fn validate_typed_tile_grid(
+    request: &TypedI64MultiTileRequest<'_, '_>,
+    num_levels: u8,
+) -> NativeEncodePipelineResult<()> {
+    validate_tile_grid(
+        (request.width, request.height),
+        (request.tile_width, request.tile_height),
+        request
+            .planes
+            .iter()
+            .map(|plane| (u32::from(plane.x_rsiz), u32::from(plane.y_rsiz))),
+        num_levels,
+        (
+            request.options.code_block_width_exp,
+            request.options.code_block_height_exp,
+        ),
+        &request.options.precinct_exponents,
+    )
+    .map_err(NativeEncodePipelineError::unsupported)
 }
