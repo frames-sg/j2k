@@ -115,11 +115,6 @@ impl RoiPlan {
             if final_window.is_empty() {
                 continue;
             }
-            if final_window.x1 == resolution_tile.rect.x1
-                || final_window.y1 == resolution_tile.rect.y1
-            {
-                return Ok(None);
-            }
             plan.final_windows[component_idx] = Some(final_window);
 
             let tile_decompositions = &storage.tile_decompositions[component_idx];

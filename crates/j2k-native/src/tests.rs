@@ -1260,6 +1260,47 @@ fn roi_decode_prunes_code_blocks_and_idwt_work_for_classic_and_htj2k() {
 }
 
 #[test]
+fn roi_decode_prunes_work_for_regions_touching_right_and_bottom_tile_edges() {
+    // Regions flush with the right or bottom edge of a tile (for an untiled
+    // image, the image itself) must keep the ROI plan instead of decoding
+    // every code-block and running the full-plane IDWT.
+    for reversible in [true, false] {
+        let pixels = gradient_pixels(128, 128, 1);
+        let options = EncodeOptions {
+            reversible,
+            num_decomposition_levels: 3,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&pixels, 128, 128, 1, 8, false, &options).expect("encode work fixture");
+        let full = count_decode_work(&bytes, None);
+        for roi in [
+            (112, 48, 16, 16),
+            (48, 112, 16, 16),
+            (112, 112, 16, 16),
+            (127, 0, 1, 128),
+            (0, 127, 128, 1),
+        ] {
+            let region = count_decode_work(&bytes, Some(roi));
+            assert!(
+                region.code_blocks() > 0 && region.code_blocks() < full.code_blocks(),
+                "edge ROI {roi:?} should decode fewer code-blocks (reversible={reversible}); full={}, region={}",
+                full.code_blocks(),
+                region.code_blocks()
+            );
+            assert!(
+                region.idwt_output_samples > 0
+                    && region.idwt_output_samples < full.idwt_output_samples,
+                "edge ROI {roi:?} should produce fewer IDWT output samples (reversible={reversible}); full={}, region={}",
+                full.idwt_output_samples,
+                region.idwt_output_samples
+            );
+        }
+    }
+}
+
+#[test]
 fn region_decode_reuses_region_sized_component_storage() {
     let bytes = fixture();
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
