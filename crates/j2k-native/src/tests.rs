@@ -1043,6 +1043,38 @@ fn decode_region_budgets_coefficients_for_the_requested_region() {
 }
 
 #[test]
+fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
+    // One component, one decomposition level, one tile. A full-image region
+    // keeps an f32 decoded-component buffer and f32 coefficients for the
+    // whole image, and the single IDWT level allocates an f32 output window
+    // of the same size while both are live.
+    let mut codestream = fixture_gray();
+    rewrite_siz_to_single_large_tile(&mut codestream, 7_168);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+
+    // 196 MiB of output plus 196 MiB of coefficients fit under the 512 MiB
+    // cap, but the 196 MiB reconstruction window does not.
+    let Err(full) = image.decode_region((0, 0, 7_168, 7_168)) else {
+        panic!("rewritten fixture has no packet data for a 7168x7168 tile");
+    };
+    assert_eq!(
+        full,
+        DecodeError::Validation(ValidationError::ImageTooLarge),
+        "the windowed IDWT peak must be charged before packet parsing"
+    );
+
+    // About 412 MiB for all three fits, so the request gets past the budget
+    // and fails in packet parsing instead.
+    let Err(smaller) = image.decode_region((0, 0, 6_000, 6_000)) else {
+        panic!("rewritten fixture has no packet data for a 6000x6000 region");
+    };
+    assert!(
+        matches!(smaller, DecodeError::Decoding(_)),
+        "a region whose IDWT peak fits must get past the budget: {smaller:?}"
+    );
+}
+
+#[test]
 fn decode_region_rejects_code_block_layer_metadata_amplification() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {

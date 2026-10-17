@@ -264,14 +264,28 @@ pub(super) fn prepare_decomposition_storage(
 /// With a plan, each sub-band stores only the union of the code-blocks the
 /// plan requires; every other code-block would be left zero anyway, and
 /// [`super::SubBand::storage_rect`] readers treat samples outside the stored
-/// rectangle as zero. Without a plan, the whole tile is stored and the
+/// rectangle as zero. The windowed IDWT's peak buffers are charged in place of
+/// the whole-plane workspace. Without a plan, the whole tile is stored and the
 /// whole-plane IDWT workspace is charged as an ordinary decode would.
-pub(crate) fn allocate_deferred_coefficients(storage: &mut DecompositionStorage<'_>) -> Result<()> {
+///
+/// Like the whole-plane workspace, the windowed IDWT charge stays in
+/// `structural_workspace_bytes` for the rest of the tile, so packet parsing
+/// and Tier-1 budget against it before any IDWT buffer exists.
+pub(crate) fn allocate_deferred_coefficients(
+    storage: &mut DecompositionStorage<'_>,
+    skipped_resolution_levels: u8,
+) -> Result<()> {
     let Some(idwt_workspace_elements) = storage.deferred_idwt_workspace_elements.take() else {
         return Ok(());
     };
     let mut live_bytes = storage.structural_workspace_bytes;
     let mut coefficient_count = 0usize;
+    if storage.roi_plan.is_some() {
+        checked_include_elements::<f32>(
+            &mut live_bytes,
+            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?,
+        )?;
+    }
     if let Some(roi_plan) = storage.roi_plan.as_ref() {
         for (sub_band_idx, sub_band) in storage.sub_bands.iter_mut().enumerate() {
             let mut stored: Option<IntRect> = None;

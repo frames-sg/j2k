@@ -435,7 +435,7 @@ fn decode_tile<'a, 'b>(
         }
         // Region decode sizes coefficient storage to the code-blocks the ROI
         // plan keeps, or to the whole tile when there is no plan.
-        build::allocate_deferred_coefficients(storage)?;
+        build::allocate_deferred_coefficients(storage, header.skipped_resolution_levels)?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
     profile_timings.build_us += profile::elapsed_us(stage_start);
