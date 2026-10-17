@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 
 use super::super::allocation::{checked_add_bytes, checked_element_bytes, host_allocation_failed};
 use super::super::single_tile::ownership::encode_params_retained_bytes;
+use super::super::tile_grid::validate_tile_grid;
 use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePart};
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
@@ -101,6 +102,7 @@ pub(super) fn build_loop_plan(
         ));
     validate_precinct_exponents_for_options(request.options, num_levels)
         .map_err(NativeEncodePipelineError::invalid_input)?;
+    validate_loop_plan_tile_grid(request, num_levels)?;
     let use_mct = request.options.use_mct && matches!(request.num_components, 3 | 4);
     let requested_guard_bits = requested_guard_bits(
         request.options,
@@ -181,6 +183,26 @@ pub(super) fn build_loop_plan(
         child_options,
         retained_bytes,
     })
+}
+
+/// Reject tile grids that tile-at-a-time encode would code inconsistently
+/// with the image grid; see [`validate_tile_grid`].
+fn validate_loop_plan_tile_grid(
+    request: &LoopPlanRequest<'_, '_>,
+    num_levels: u8,
+) -> NativeEncodePipelineResult<()> {
+    validate_tile_grid(
+        (request.width, request.height),
+        (request.tile_width, request.tile_height),
+        [(1, 1)],
+        num_levels,
+        (
+            request.options.code_block_width_exp,
+            request.options.code_block_height_exp,
+        ),
+        &request.options.precinct_exponents,
+    )
+    .map_err(NativeEncodePipelineError::unsupported)
 }
 
 impl MultiTileLoopPlan {

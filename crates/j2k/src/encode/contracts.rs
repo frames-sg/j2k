@@ -145,6 +145,11 @@ pub struct J2kLosslessEncodeOptions {
     /// Requests are clamped to the geometry-safe maximum for the tile.
     pub max_decomposition_levels: Option<u8>,
     /// Optional tile width and height.
+    ///
+    /// Tile origins must sit on the wavelet, code-block, and precinct grids.
+    /// Without component subsampling, power-of-two tile sizes at least as
+    /// large as the code-block size always qualify. Other grids are rejected
+    /// as unsupported.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
     pub tile_part_packet_limit: Option<u16>,
@@ -276,7 +281,8 @@ impl J2kLosslessEncodeOptions {
         self
     }
 
-    /// Return options with a different tile size.
+    /// Return options with a different tile size. See the `tile_size` field
+    /// for the tile grids multi-tile encode supports.
     #[must_use]
     pub const fn with_tile_size(mut self, tile_size: Option<(u32, u32)>) -> Self {
         self.tile_size = tile_size;
@@ -410,6 +416,11 @@ pub struct J2kLossyEncodeOptions {
     /// the established quantization and rate-control behavior.
     pub qfactor: Option<u8>,
     /// Optional tile width and height.
+    ///
+    /// Tile origins must sit on the wavelet, code-block, and precinct grids.
+    /// Without component subsampling, power-of-two tile sizes at least as
+    /// large as the code-block size always qualify. Other grids are rejected
+    /// as unsupported.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
     pub tile_part_packet_limit: Option<u16>,
@@ -514,7 +525,8 @@ impl J2kLossyEncodeOptions {
         self
     }
 
-    /// Return options with a different tile size.
+    /// Return options with a different tile size. See the `tile_size` field
+    /// for the tile grids multi-tile encode supports.
     #[must_use]
     pub fn with_tile_size(mut self, tile_size: Option<(u32, u32)>) -> Self {
         self.tile_size = tile_size;
