@@ -4,7 +4,6 @@
 //! stages in such a way that a given codestream is decoded into its
 //! component channels.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
@@ -12,7 +11,6 @@ use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, 
 use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
-use super::progression::{progression_iterator, ProgressionData};
 use super::roi::{tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ParsedTiles, ResolutionTile, Tile};
@@ -278,7 +276,6 @@ fn decode_parsed_tiles<'a>(
         decode_tile(
             tile,
             header,
-            progression_iterator(tile)?,
             tile_ctx,
             storage,
             ht_decoder,
@@ -342,6 +339,11 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) idwt_output_samples: usize,
     /// Sub-band coefficients held in storage, summed over decoded tiles.
     pub(crate) stored_coefficients: usize,
+    /// Progression positions region precinct selection walked, summed over
+    /// decoded tiles.
+    pub(crate) selection_scanned_packets: usize,
+    /// Empty decomposition capacity discarded before region selection.
+    pub(crate) selection_released_storage_bytes: usize,
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) ht_parallel_tasks: usize,
@@ -384,10 +386,9 @@ impl ParallelCoefficientStats {
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
 )]
-fn decode_tile<'a, 'b>(
-    tile: &'b Tile<'a>,
+fn decode_tile<'a>(
+    tile: &Tile<'a>,
     header: &Header<'_>,
-    progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
@@ -419,17 +420,42 @@ fn decode_tile<'a, 'b>(
     // First, we build the decompositions, including their sub-bands, precincts
     // and code blocks.
     let stage_start = profile::profile_now(profile_enabled);
+    // Region decode builds its ROI plan first so that precincts the decode
+    // will never parse get no code-blocks or tag trees.
+    let selection = match tile_ctx.output_region {
+        Some(output_region) => build::select_region_precincts(
+            tile,
+            header,
+            storage,
+            output_region,
+            retained_decode_baseline,
+        )?,
+        None => None,
+    };
+    // The selection stays live through packet parsing, so its bytes are part
+    // of the baseline every later phase budgets against until it is dropped.
+    let selection_bytes = selection
+        .as_ref()
+        .map_or(0, build::PrecinctSelection::owned_bytes);
+    tile_ctx.debug_counters.selection_scanned_packets += selection
+        .as_ref()
+        .map_or(0, build::PrecinctSelection::scanned_packets);
+    tile_ctx.debug_counters.selection_released_storage_bytes += selection
+        .as_ref()
+        .map_or(0, build::PrecinctSelection::released_storage_bytes);
     build::build(
         tile,
         storage,
-        retained_decode_baseline,
+        retained_decode_baseline
+            .checked_add(selection_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?,
         tile_ctx.output_region.is_some(),
         build::BuildWorkspace::DecodePixels {
             skipped_resolution_levels: header.skipped_resolution_levels,
         },
+        selection.as_ref(),
     )?;
-    if let Some(output_region) = tile_ctx.output_region {
-        storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
+    if tile_ctx.output_region.is_some() {
         if storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
@@ -441,7 +467,12 @@ fn decode_tile<'a, 'b>(
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
-    segment::parse(tile, progression_iterator, header, storage)?;
+    segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    drop(selection);
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_sub(selection_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
     profile_timings.segment_us += profile::elapsed_us(stage_start);
     // We then decode the bitplanes of each code block, yielding the
     // (possibly dequantized) coefficients of each code block.

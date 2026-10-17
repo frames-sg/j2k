@@ -3,11 +3,11 @@
 //! Direct RGB/RGBA plan construction.
 
 use super::{
-    bail, build, build_component_plan_from_storage, component_unsigned_level_shift,
-    progression_iterator, segment, tile, BitReader, ClassicPayloadCollector, ColorError,
+    bail, build_and_parse_direct_tile_metadata, build_component_plan_from_storage,
+    component_unsigned_level_shift, tile, BitReader, ClassicPayloadCollector, ColorError,
     DecodeAllocationBudget, DecoderContext, DecodingError, DirectPlanUnsupportedReason, Header,
     HtCodeBlockPayloadRanges, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectRgbaPlan, J2kWaveletTransform, PayloadRangeOwner, Result, RoiPlan, Tile, Vec,
+    J2kDirectRgbaPlan, J2kWaveletTransform, PayloadRangeOwner, Result, Tile, Vec,
 };
 
 pub(crate) fn build_direct_color_plan<'a>(
@@ -181,21 +181,17 @@ pub(super) fn build_direct_color_tile_components_plan<'a, const COMPONENT_COUNT:
     ctx.tile_decode_context.channel_data.clear();
     ctx.storage.reset_for_next_tile();
 
-    build::build(
+    build_and_parse_direct_tile_metadata(
         tile,
-        &mut ctx.storage,
+        header,
         structural_workspace_bytes,
-        decode_region.is_some(),
-        build::BuildWorkspace::MetadataOnly,
+        &mut ctx.storage,
+        decode_region,
     )?;
-    if let Some(output_region) = decode_region {
-        ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;
-        if ctx.storage.roi_plan.is_none() {
-            build::release_unused_roi_workspace(&mut ctx.storage, tile.component_infos.len())?;
-        }
+    #[cfg(test)]
+    {
+        ctx.direct_plan_code_blocks = ctx.storage.code_blocks.len();
     }
-
-    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 
     let mut bit_depths = [0_u8; COMPONENT_COUNT];
     let mut sampling = [(1, 1); COMPONENT_COUNT];
