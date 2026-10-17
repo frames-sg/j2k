@@ -1863,6 +1863,165 @@ fn region_decode_inside_tiles_matches_whole_decode_crop() {
     }
 }
 
+fn edge_fixture_pixels(width: u32, height: u32) -> Vec<u8> {
+    (0..height)
+        .flat_map(|y| {
+            (0..width).flat_map(move |x| {
+                [
+                    masked_fixture_byte(x * 3 + y),
+                    masked_fixture_byte((y * 5) ^ x),
+                    masked_fixture_byte((x / 4) * (y / 4)),
+                ]
+            })
+        })
+        .collect()
+}
+
+fn scaled_whole_decode(
+    bytes: &[u8],
+    dims: (u32, u32),
+    fmt: PixelFormat,
+    scale: Downscale,
+) -> Vec<u8> {
+    let denominator = scale.denominator();
+    let (scaled_width, scaled_height) =
+        (dims.0.div_ceil(denominator), dims.1.div_ceil(denominator));
+    let stride = scaled_width as usize * fmt.bytes_per_pixel();
+    let mut whole = vec![0_u8; stride * scaled_height as usize];
+    J2kDecoder::new(bytes)
+        .expect("whole decoder")
+        .decode_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut whole,
+            stride,
+            fmt,
+            scale,
+        )
+        .expect("scaled whole decode");
+    whole
+}
+
+fn scaled_region_decode(bytes: &[u8], fmt: PixelFormat, roi: Rect, scale: Downscale) -> Vec<u8> {
+    let scaled_roi = roi.scaled_covering(scale);
+    let stride = scaled_roi.w as usize * fmt.bytes_per_pixel();
+    let mut region = vec![0_u8; stride * scaled_roi.h as usize];
+    let outcome = J2kDecoder::new(bytes)
+        .expect("region decoder")
+        .decode_region_scaled_into(
+            &mut j2k::J2kScratchPool::new(),
+            &mut region,
+            stride,
+            fmt,
+            roi,
+            scale,
+        )
+        .expect("scaled region decode");
+    assert_eq!(outcome.decoded, scaled_roi);
+    region
+}
+
+#[test]
+fn region_decode_flush_with_right_and_bottom_edges_matches_scaled_whole_decode_crop() {
+    // Regions that reach the right or bottom edge of a tile (for an untiled
+    // image, the image edge) use the windowed region IDWT, whose symmetric
+    // extension must match the whole-plane IDWT at the true tile boundary.
+    // Cover odd and even sizes, untiled and partial edge tiles, both
+    // wavelets, shallow and deep decompositions, and every downscale.
+    let fmt = PixelFormat::Rgb8;
+    for (width, height) in [(97_u32, 61_u32), (128, 96), (301, 203)] {
+        let pixels = edge_fixture_pixels(width, height);
+        let rois = [
+            Rect {
+                x: width - 17,
+                y: 5,
+                w: 17,
+                h: 30,
+            },
+            Rect {
+                x: 3,
+                y: height - 13,
+                w: 40,
+                h: 13,
+            },
+            Rect {
+                x: width - 33,
+                y: height - 21,
+                w: 33,
+                h: 21,
+            },
+            Rect {
+                x: width - 1,
+                y: 0,
+                w: 1,
+                h: height,
+            },
+            Rect {
+                x: 0,
+                y: height - 1,
+                w: width,
+                h: 1,
+            },
+            Rect {
+                x: 0,
+                y: 7,
+                w: width,
+                h: 20,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                w: width,
+                h: height,
+            },
+        ];
+        for tile_size in [None, Some((64, 64))] {
+            for reversible in [true, false] {
+                for levels in [1_u8, 3, 5] {
+                    let options = EncodeOptions {
+                        reversible,
+                        num_decomposition_levels: levels,
+                        tile_size,
+                        ..EncodeOptions::default()
+                    };
+                    let bytes = encode(&pixels, width, height, 3, 8, false, &options)
+                        .expect("encode edge fixture");
+                    for scale in [
+                        Downscale::None,
+                        Downscale::Half,
+                        Downscale::Quarter,
+                        Downscale::Eighth,
+                    ] {
+                        let denominator = scale.denominator();
+                        if denominator > 1 << levels {
+                            continue;
+                        }
+                        let whole = scaled_whole_decode(&bytes, (width, height), fmt, scale);
+                        for roi in rois {
+                            let scaled_roi = roi.scaled_covering(scale);
+                            assert_eq!(
+                                scaled_region_decode(&bytes, fmt, roi, scale),
+                                crop_bytes(
+                                    &whole,
+                                    width.div_ceil(denominator) as usize,
+                                    fmt.bytes_per_pixel(),
+                                    scaled_roi,
+                                ),
+                                "{width}x{height} tiles={tile_size:?} reversible={reversible} \
+                                 levels={levels} region {},{} {}x{} at 1/{denominator} disagrees \
+                                 with scaled whole decode",
+                                roi.x,
+                                roi.y,
+                                roi.w,
+                                roi.h,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn scaled_region_decode_on_multi_tile_codestream_matches_scaled_whole_decode_crop() {
     // Reduced-resolution region decode on a multi-tile codestream: the
