@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_native::{
-    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kIdwtNormalization, J2kInverseMctJob, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
-    J2kSubBandDecodeJob,
+    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, J2kClassicReconstruction,
+    J2kCodeBlockDecodeJob, J2kIdwtNormalization, J2kInverseMctJob, J2kSingleDecompositionIdwtJob,
+    J2kStoreComponentJob, J2kSubBandDecodeJob,
 };
 
 use crate::{
@@ -39,6 +39,16 @@ impl HtCodeBlockDecoder for MetalCodeBlockDecoder {
             .decode_j2k_sub_band_with_midpoint(job, output, irreversible_midpoint)
     }
 
+    fn decode_j2k_sub_band_with_reconstruction(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> j2k_native::Result<bool> {
+        self.classic
+            .decode_j2k_sub_band_with_reconstruction(job, output, reconstruction)
+    }
+
     fn decode_j2k_code_block(
         &mut self,
         job: J2kCodeBlockDecodeJob<'_>,
@@ -55,6 +65,16 @@ impl HtCodeBlockDecoder for MetalCodeBlockDecoder {
     ) -> j2k_native::Result<bool> {
         self.classic
             .decode_j2k_code_block_with_midpoint(job, output, irreversible_midpoint)
+    }
+
+    fn decode_j2k_code_block_with_reconstruction(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> j2k_native::Result<bool> {
+        self.classic
+            .decode_j2k_code_block_with_reconstruction(job, output, reconstruction)
     }
 
     fn decode_sub_band(
