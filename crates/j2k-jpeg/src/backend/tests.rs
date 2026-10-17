@@ -1058,43 +1058,55 @@ fn neon_420_row_pair_matches_scalar_reference_for_tail_widths() {
     reason = "the synthetic byte pattern intentionally wraps the bounded row index"
 )]
 fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
-    let len = 31usize;
-    let y_top: Vec<u8> = (0..len)
-        .map(|i| ((i as u8).wrapping_mul(37)).wrapping_add(11))
-        .collect();
-    let y_bot: Vec<u8> = (0..len)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(19)))
-        .collect();
-    let chroma_len = len.div_ceil(2);
-    let prev_cb: Vec<u8> = (0..chroma_len)
-        .map(|i| ((i as u8).wrapping_mul(17)).wrapping_add(41))
-        .collect();
-    let curr_cb: Vec<u8> = (0..chroma_len)
-        .map(|i| ((i as u8).wrapping_mul(29)).wrapping_add(13))
-        .collect();
-    let next_cb: Vec<u8> = (0..chroma_len)
-        .map(|i| ((i as u8).wrapping_mul(43)).wrapping_add(7))
-        .collect();
-    let prev_cr: Vec<u8> = (0..chroma_len)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(11)))
-        .collect();
-    let curr_cr: Vec<u8> = (0..chroma_len)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(23)))
-        .collect();
-    let next_cr: Vec<u8> = (0..chroma_len)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(31)))
-        .collect();
-
-    assert_rgb420_pair_matches_scalar(
-        "NEON multi-chunk 4:2:0 pair",
-        super::BackendKind::Neon,
-        Rgb420Fixture::new(
+    for len in [31usize, 63, 127, 257, 511] {
+        let y_top: Vec<u8> = (0..len)
+            .map(|i| ((i as u8).wrapping_mul(37)).wrapping_add(11))
+            .collect();
+        let y_bot: Vec<u8> = (0..len)
+            .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(19)))
+            .collect();
+        let chroma_len = len.div_ceil(2);
+        let prev_cb: Vec<u8> = (0..chroma_len)
+            .map(|i| ((i as u8).wrapping_mul(17)).wrapping_add(41))
+            .collect();
+        let curr_cb: Vec<u8> = (0..chroma_len)
+            .map(|i| ((i as u8).wrapping_mul(29)).wrapping_add(13))
+            .collect();
+        let next_cb: Vec<u8> = (0..chroma_len)
+            .map(|i| ((i as u8).wrapping_mul(43)).wrapping_add(7))
+            .collect();
+        let prev_cr: Vec<u8> = (0..chroma_len)
+            .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(11)))
+            .collect();
+        let curr_cr: Vec<u8> = (0..chroma_len)
+            .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(23)))
+            .collect();
+        let next_cr: Vec<u8> = (0..chroma_len)
+            .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(31)))
+            .collect();
+        let fixture = Rgb420Fixture::new(
             &y_top,
             Some(&y_bot),
             [&prev_cb, &curr_cb, &next_cb],
             [&prev_cr, &curr_cr, &next_cr],
-        ),
-    );
+        );
+        assert_rgb420_pair_matches_scalar(
+            "NEON 16k-1 multi-chunk 4:2:0 pair",
+            super::BackendKind::Neon,
+            fixture,
+        );
+
+        let mut dst_top = vec![0xA5; len * 3 + 7];
+        let mut dst_bottom = vec![0xA5; len * 3 + 7];
+        backend_for_kind(super::BackendKind::Neon)
+            .fill_rgb_row_pair_from_420(fixture.request(&mut dst_top, Some(&mut dst_bottom)));
+        assert_eq!(&dst_top[len * 3..], &[0xA5; 7], "top suffix width {len}");
+        assert_eq!(
+            &dst_bottom[len * 3..],
+            &[0xA5; 7],
+            "bottom suffix width {len}"
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1277,6 +1289,69 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
                         "{kind:?} wrote past width"
                     );
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_backend_fused_422_matches_separate_fancy_upsample_and_color_conversion() {
+    let kinds = [
+        super::BackendKind::Scalar,
+        #[cfg(target_arch = "aarch64")]
+        super::BackendKind::Neon,
+        #[cfg(target_arch = "x86_64")]
+        super::BackendKind::Avx2,
+    ];
+    let widths = [
+        1usize, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, 1025,
+    ];
+    for kind in kinds {
+        let Some(backend) = super::Backend::for_test_kind(kind) else {
+            continue;
+        };
+        for width in widths {
+            let chroma_width = width.div_ceil(2);
+            for prefix in [0usize, 1, 3] {
+                let y_storage = (0..width + prefix)
+                    .map(|i| {
+                        u8::try_from(i.wrapping_mul(37).wrapping_add(5) & 0xff).expect("masked")
+                    })
+                    .collect::<Vec<_>>();
+                let cb_storage = (0..chroma_width + prefix)
+                    .map(|i| {
+                        u8::try_from(i.wrapping_mul(17).wrapping_add(41) & 0xff).expect("masked")
+                    })
+                    .collect::<Vec<_>>();
+                let cr_storage = (0..chroma_width + prefix)
+                    .map(|i| {
+                        u8::try_from(i.wrapping_mul(29).wrapping_add(173) & 0xff).expect("masked")
+                    })
+                    .collect::<Vec<_>>();
+                let y = &y_storage[prefix..];
+                let cb = &cb_storage[prefix..];
+                let cr = &cr_storage[prefix..];
+
+                let mut cb_up = vec![0u8; width];
+                let mut cr_up = vec![0u8; width];
+                crate::color::upsample::upsample_h2v1_fancy_row(cb, width, &mut cb_up);
+                crate::color::upsample::upsample_h2v1_fancy_row(cr, width, &mut cr_up);
+                let mut expected = vec![0u8; width * 3];
+                scalar::fill_rgb_row_from_ycbcr(y, &cb_up, &cr_up, &mut expected);
+
+                let mut actual = vec![0xA5; width * 3 + 7];
+                backend.fill_rgb_row_from_422(super::Rgb422Row::new(
+                    y,
+                    cb,
+                    cr,
+                    &mut actual[..width * 3],
+                ));
+                assert_eq!(
+                    &actual[..width * 3],
+                    expected,
+                    "{kind:?} width={width} prefix={prefix}"
+                );
+                assert_eq!(&actual[width * 3..], &[0xA5; 7]);
             }
         }
     }

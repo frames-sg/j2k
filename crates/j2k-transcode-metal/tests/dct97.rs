@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use j2k_transcode_test_support::max_abs_diff_97 as max_abs_diff;
+
+#[cfg(target_os = "macos")]
 use j2k_transcode::accelerator::PrequantizedHtj2k97Component;
 use j2k_transcode::accelerator::TranscodeStageError;
 use j2k_transcode::accelerator::{
@@ -8,7 +11,7 @@ use j2k_transcode::accelerator::{
     Htj2k97CodeBlockOptions, IrreversibleQuantizationSubbandScales,
 };
 #[cfg(target_os = "macos")]
-use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
+use j2k_transcode::dct8x8_blocks_then_dwt97_float;
 use j2k_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(target_os = "macos")]
@@ -484,24 +487,6 @@ fn reconstruct_sparse_rows(
             dense
         })
         .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensional<f64>) -> f64 {
-    assert_eq!(actual.low_width, expected.low_width);
-    assert_eq!(actual.low_height, expected.low_height);
-    assert_eq!(actual.high_width, expected.high_width);
-    assert_eq!(actual.high_height, expected.high_height);
-
-    actual
-        .ll
-        .iter()
-        .zip(expected.ll.iter())
-        .chain(actual.hl.iter().zip(expected.hl.iter()))
-        .chain(actual.lh.iter().zip(expected.lh.iter()))
-        .chain(actual.hh.iter().zip(expected.hh.iter()))
-        .map(|(actual, expected)| (actual - expected).abs())
-        .fold(0.0, f64::max)
 }
 
 #[cfg(target_os = "macos")]

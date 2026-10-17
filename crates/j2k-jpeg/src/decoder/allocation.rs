@@ -97,7 +97,7 @@ pub(super) fn progressive_prepared_allocation_bytes(
     )?;
     total = checked_add_allocation_bytes(
         total,
-        PreparedHuffmanTables::allocation_bytes_for_capacity(huffman_table_count)?,
+        PreparedHuffmanTables::maximum_allocation_bytes_for_capacity(huffman_table_count)?,
     )?;
     total = checked_add_allocation_bytes(
         total,
@@ -162,10 +162,8 @@ pub(super) fn compute_progressive_scratch_bytes(
     )?;
     let image_outer =
         checked_usize_product(&[components.len(), COMPONENT_IMAGE_METADATA_BYTES], cap)?;
-    let dc_predictors =
-        checked_usize_product(&[components.len(), core::mem::size_of::<i32>()], cap)?;
     // Scan-phase nonzero masks: one outer vector per component and one u64
-    // per block, live next to the DC predictors.
+    // per block. The at-most-four DC predictors stay in a fixed stack array.
     let mask_outer =
         checked_usize_product(&[components.len(), core::mem::size_of::<Vec<u64>>()], cap)?;
     let mut mask_payload = 0usize;
@@ -206,11 +204,7 @@ pub(super) fn compute_progressive_scratch_bytes(
     } else {
         eight_bit_render
     };
-    let scan_phase = checked_workspace_add(
-        checked_workspace_add(mask_outer, mask_payload, cap)?,
-        dc_predictors,
-        cap,
-    )?;
+    let scan_phase = checked_workspace_add(mask_outer, mask_payload, cap)?;
     let phase_peak = scan_phase.max(render_phase);
     checked_workspace_add(
         checked_workspace_add(coefficient_outer, coefficient_payload, cap)?,
@@ -260,9 +254,8 @@ mod tests {
         let huffman_tables = 7usize;
         let expected = components * size_of::<PreparedProgressiveComponentPlan>()
             + scan_components * size_of::<PreparedProgressiveScanComponent>()
-            + huffman_tables * size_of::<crate::entropy::huffman::HuffmanTable>()
-            + 2 * (size_of::<Vec<crate::entropy::huffman::HuffmanTable>>()
-                + 2 * size_of::<usize>())
+            + PreparedHuffmanTables::maximum_allocation_bytes_for_capacity(huffman_tables).unwrap()
+            + PreparedHuffmanTables::allocation_bytes_for_capacity(0).unwrap()
             + scans * size_of::<PreparedProgressiveScan>()
             + components * size_of::<PreparedComponentPlan>();
         assert_eq!(
@@ -280,9 +273,7 @@ mod tests {
     #[test]
     fn prepared_decode_formula_counts_shared_arena_and_owner() {
         let expected = size_of::<PreparedComponentPlan>()
-            + 2 * size_of::<crate::entropy::huffman::HuffmanTable>()
-            + size_of::<Vec<crate::entropy::huffman::HuffmanTable>>()
-            + 2 * size_of::<usize>();
+            + PreparedHuffmanTables::maximum_allocation_bytes_for_capacity(2).unwrap();
         assert_eq!(
             prepared_decode_plan_allocation_bytes(1, 2).unwrap(),
             expected
@@ -355,7 +346,7 @@ mod tests {
         let expected = size_of::<Vec<[i32; 64]>>()
             + size_of::<[i32; 64]>()
             + (COMPONENT_IMAGE_METADATA_BYTES + 64 + 8 * 7)
-                .max(size_of::<Vec<u64>>() + size_of::<u64>() + size_of::<i32>());
+                .max(size_of::<Vec<u64>>() + size_of::<u64>());
         assert_eq!(
             compute_progressive_scratch_bytes(
                 &[progressive_component()],

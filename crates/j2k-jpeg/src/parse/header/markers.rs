@@ -49,7 +49,7 @@ pub(super) fn marker_payload(
     Ok((&bytes[payload_start..payload_end], payload_end))
 }
 
-pub(super) fn count_scan_markers(bytes: &[u8], mut position: usize) -> u16 {
+pub(crate) fn count_scan_markers(bytes: &[u8], mut position: usize) -> u16 {
     let mut count = 1u16;
     while position < bytes.len() {
         let Some(relative) = memchr(0xff, &bytes[position..]) else {

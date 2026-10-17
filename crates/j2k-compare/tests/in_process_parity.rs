@@ -19,6 +19,27 @@ const APERIO_TILE_BYTES: usize = 23_080;
 const APERIO_TILE_FNV1A64: &str = "36dc1f181d439cd5";
 
 #[test]
+fn required_openjpeg_rejects_an_unexecutable_compressor() {
+    let output = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "openjpeg_in_process_matches_j2k_rgb_fixture",
+            "--nocapture",
+        ])
+        .env("J2K_REQUIRE_OPENJPEG", "1")
+        .env("J2K_OPENJPEG_COMPRESS_BIN", std::env::temp_dir())
+        .output()
+        .expect("run required OpenJPEG parity with an unexecutable compressor");
+
+    assert!(
+        !output.status.success(),
+        "required parity passed without launching OpenJPEG: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launch OpenJPEG compressor"));
+}
+
+#[test]
 fn aperio_lossy_wsi_tile_matches_openjpeg() {
     let Some(path) = std::env::var_os("J2K_WSI_SVS_PATH") else {
         eprintln!("J2K_WSI_SVS_PATH is unset; skipping external Aperio parity fixture");
@@ -336,24 +357,19 @@ fn openjpeg_encode_jp2(name: &str, pixels: &[u8], width: u32, height: u32) -> Op
     };
     let dir = openjpeg_temp_dir();
     let unique = next_temp_suffix();
-    let src_path = dir.join(format!("{name}-{unique}.ppm"));
-    let out_path = dir.join(format!("{name}-{unique}.jp2"));
-    write_pnm(&src_path, pixels, width, height, 3).ok()?;
+    let process = std::process::id();
+    let src_path = dir.join(format!("{name}-{process}-{unique}.ppm"));
+    let out_path = dir.join(format!("{name}-{process}-{unique}.jp2"));
+    write_pnm(&src_path, pixels, width, height, 3).expect("write OpenJPEG input fixture");
     let status = Command::new(bin)
         .arg("-i")
         .arg(&src_path)
         .arg("-o")
         .arg(&out_path)
         .status()
-        .ok()?;
-    if !status.success() {
-        assert!(
-            !require_openjpeg(),
-            "J2K_REQUIRE_OPENJPEG is set but opj_compress failed"
-        );
-        return None;
-    }
-    fs::read(out_path).ok()
+        .expect("launch OpenJPEG compressor");
+    assert!(status.success(), "OpenJPEG compressor failed: {status}");
+    Some(fs::read(out_path).expect("read OpenJPEG output fixture"))
 }
 
 fn next_temp_suffix() -> usize {

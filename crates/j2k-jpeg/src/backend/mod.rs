@@ -43,6 +43,19 @@ pub(crate) enum Backend {
     Neon(fearless_simd::Neon),
 }
 
+pub(crate) struct Rgb422Row<'a> {
+    pub(crate) y: &'a [u8],
+    pub(crate) cb: &'a [u8],
+    pub(crate) cr: &'a [u8],
+    pub(crate) dst: &'a mut [u8],
+}
+
+impl<'a> Rgb422Row<'a> {
+    pub(crate) fn new(y: &'a [u8], cb: &'a [u8], cr: &'a [u8], dst: &'a mut [u8]) -> Self {
+        Self { y, cb, cr, dst }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Rgb420ChromaRows<'a> {
     pub(crate) prev_cb: &'a [u8],
@@ -276,6 +289,27 @@ impl Backend {
     }
 
     #[inline]
+    pub(crate) fn fill_rgb_row_from_422(self, request: Rgb422Row<'_>) {
+        match self {
+            Self::Scalar => scalar::fill_rgb_row_from_422(request),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(_) => scalar::fill_rgb_row_from_422(request),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => neon::fill_rgb_row_from_422(neon, request),
+        }
+    }
+
+    pub(crate) const fn prefers_fused_422(self) -> bool {
+        match self {
+            Self::Scalar => false,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(_) => false,
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(_) => true,
+        }
+    }
+
+    #[inline]
     pub(crate) fn fill_rgb_row_pair_from_420(self, request: Rgb420RowPair<'_>) {
         match self {
             Self::Scalar => scalar::fill_rgb_row_pair_from_420(request),
@@ -378,6 +412,36 @@ impl Backend {
             Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow_bottom_half_zero(neon, input, output),
+        }
+    }
+
+    pub(crate) fn idct_right_half_zero(self, input: &[i16; 64], output: &mut [u8; 64]) {
+        match self {
+            Self::Scalar => idct::scalar::idct_islow(input, output),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => idct::neon::idct_islow_right_half_zero(neon, input, output),
+        }
+    }
+
+    pub(crate) fn idct_top_left_quadrant(self, input: &[i16; 64], output: &mut [u8; 64]) {
+        match self {
+            Self::Scalar => idct::scalar::idct_islow(input, output),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => idct::neon::idct_islow_top_left_quadrant(neon, input, output),
+        }
+    }
+
+    pub(crate) fn idct_top_left_2x2(self, input: &[i16; 64], output: &mut [u8; 64]) {
+        match self {
+            Self::Scalar => idct::scalar::idct_islow(input, output),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(neon) => idct::neon::idct_islow_top_left_2x2(neon, input, output),
         }
     }
 }

@@ -52,7 +52,6 @@ pub(crate) struct ProgressiveTableState {
 
 #[derive(Debug, Default)]
 pub(crate) struct QuantTables {
-    pub(crate) entries: [Option<[u16; 64]>; TABLE_SLOTS],
     active: [Option<RawQuantTableId>; TABLE_SLOTS],
     pub(crate) versions: Vec<[u16; 64]>,
 }
@@ -71,9 +70,17 @@ impl QuantTables {
         }
         let id = RawQuantTableId::for_next_index(self.versions.len())?;
         budget.try_push(&mut self.versions, table)?;
-        self.entries[slot] = Some(table);
         self.active[slot] = Some(id);
         Ok(())
+    }
+
+    pub(crate) fn active(&self, slot: u8) -> Option<&[u16; 64]> {
+        self.active
+            .get(usize::from(slot))
+            .copied()
+            .flatten()
+            .and_then(RawQuantTableId::index)
+            .and_then(|index| self.versions.get(index))
     }
 
     pub(crate) fn resolve(&self, state: &ProgressiveTableState, slot: u8) -> Option<&[u16; 64]> {
@@ -93,8 +100,6 @@ impl QuantTables {
 
 #[derive(Debug, Default)]
 pub(crate) struct HuffmanTables {
-    pub(crate) dc: [Option<RawHuffmanTable>; TABLE_SLOTS],
-    pub(crate) ac: [Option<RawHuffmanTable>; TABLE_SLOTS],
     active_dc: [Option<RawHuffmanTableId>; TABLE_SLOTS],
     active_ac: [Option<RawHuffmanTableId>; TABLE_SLOTS],
     pub(crate) versions: Vec<RawHuffmanVersion>,
@@ -130,18 +135,10 @@ impl HuffmanTables {
         } else {
             HuffmanTableRole::Ac
         };
-        budget.try_push(
-            &mut self.versions,
-            RawHuffmanVersion {
-                role,
-                raw: table.clone(),
-            },
-        )?;
+        budget.try_push(&mut self.versions, RawHuffmanVersion { role, raw: table })?;
         if class == 0 {
-            self.dc[slot] = Some(table);
             self.active_dc[slot] = Some(id);
         } else {
-            self.ac[slot] = Some(table);
             self.active_ac[slot] = Some(id);
         }
         Ok(())
@@ -173,12 +170,20 @@ impl HuffmanTables {
             .and_then(RawHuffmanTableId::index)
     }
 
+    pub(crate) fn active_dc(&self, slot: u8) -> Option<&RawHuffmanTable> {
+        resolve_huffman(&self.versions, &self.active_dc, slot)
+    }
+
     pub(crate) fn active_ac_version_index(&self, slot: u8) -> Option<usize> {
         self.active_ac
             .get(usize::from(slot))
             .copied()
             .flatten()
             .and_then(RawHuffmanTableId::index)
+    }
+
+    pub(crate) fn active_ac(&self, slot: u8) -> Option<&RawHuffmanTable> {
+        resolve_huffman(&self.versions, &self.active_ac, slot)
     }
 
     pub(crate) fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
@@ -212,7 +217,6 @@ impl ProgressiveTableState {
     }
 }
 
-#[cfg(test)]
 fn resolve_huffman<'a>(
     versions: &'a [RawHuffmanVersion],
     slots: &[Option<RawHuffmanTableId>; TABLE_SLOTS],

@@ -111,15 +111,18 @@ pub(super) fn restart_seek_for_mcu(
     None
 }
 
-pub(super) fn skip_mcu(
+pub(super) fn skip_mcu<const N: usize>(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
     prev_dc: &mut [i32],
+    wide_huffman: bool,
 ) -> Result<(), JpegError> {
     for comp in &plan.components {
         let plane_idx = comp.output_index;
-        let dc_table = plan.dc_table(comp)?;
-        let ac_table = plan.ac_table(comp)?;
+        let dc_table = plan.dc_table_with_entries::<N>(comp)?;
+        let ac_table = plan
+            .ac_table_with_entries::<N>(comp)?
+            .with_wide_lookup(wide_huffman);
         for _ in 0..u32::from(comp.h) * u32::from(comp.v) {
             skip_block(br, dc_table, ac_table, &mut prev_dc[plane_idx])?;
         }
@@ -132,6 +135,7 @@ pub(super) struct McuSkipTarget {
     pub(super) target_mcu: u32,
     pub(super) total_mcus: u32,
     pub(super) restart: u16,
+    pub(super) wide_huffman: bool,
 }
 
 pub(super) struct McuSkipState<'a, 'b> {
@@ -172,7 +176,7 @@ pub(super) fn consume_restart_marker_if_due(
     Ok(true)
 }
 
-pub(super) fn skip_to_mcu(
+pub(super) fn skip_to_mcu<const N: usize>(
     plan: &PreparedDecodePlan,
     target: McuSkipTarget,
     state: &mut McuSkipState<'_, '_>,
@@ -192,7 +196,7 @@ pub(super) fn skip_to_mcu(
             *state.mcus_since_restart = 0;
         }
 
-        skip_mcu(plan, state.br, state.prev_dc)?;
+        skip_mcu::<N>(plan, state.br, state.prev_dc, target.wide_huffman)?;
         *state.mcus_since_restart += 1;
         *state.current_mcu += 1;
     }

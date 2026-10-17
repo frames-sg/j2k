@@ -446,8 +446,7 @@ fn large_fast_420_region_decode_populates_cpu_entropy_checkpoints() {
 
 #[test]
 fn decoder_retained_bytes_are_owned_metadata_without_the_context_reserve() {
-    use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
-
+    let mut retained_for_first_dimensions = None;
     for bytes in [dc_only_420_jpeg(16, 16), dc_only_420_jpeg(1024, 2048)] {
         let dec = Decoder::new(&bytes).expect("decoder");
         let expected = dec.plan.retained_allocation_bytes().expect("plan bytes")
@@ -456,7 +455,14 @@ fn decoder_retained_bytes_are_owned_metadata_without_the_context_reserve() {
             .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
             .expect("retained bytes");
         assert_eq!(retained, expected);
-        assert!(retained < MAX_DECODER_CONTEXT_ALLOCATION_BYTES / 64);
+        if let Some(first) = retained_for_first_dimensions {
+            assert_eq!(
+                retained, first,
+                "pixel dimensions must not retain context storage"
+            );
+        } else {
+            retained_for_first_dimensions = Some(retained);
+        }
     }
 }
 

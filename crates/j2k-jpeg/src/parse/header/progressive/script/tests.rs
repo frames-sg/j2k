@@ -122,6 +122,26 @@ fn skipped_refinement_reports_previous_and_requested_levels() {
 }
 
 #[test]
+fn failed_multicomponent_scan_does_not_partially_advance_state() {
+    let sof = three_component_sof();
+    let mut state = ProgressiveScriptState::new(&sof);
+    state.record_scan(100, &scan(&[1], 0, 0, 0, 3)).unwrap();
+
+    assert!(matches!(
+        state.record_scan(120, &scan(&[1, 2], 0, 0, 3, 2)),
+        Err(JpegError::InvalidProgressiveScanState {
+            component: 2,
+            coefficient: 0,
+            state: ProgressiveScanStateError::RefinementBeforeInitial { .. },
+            ..
+        })
+    ));
+    state
+        .record_scan(140, &scan(&[1], 0, 0, 3, 2))
+        .expect("failed scan must leave the first component at approximation level three");
+}
+
+#[test]
 fn eoi_requires_initial_dc_for_each_frame_component_only() {
     let sof = three_component_sof();
     let mut state = ProgressiveScriptState::new(&sof);

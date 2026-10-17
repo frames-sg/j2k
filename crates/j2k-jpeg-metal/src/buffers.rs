@@ -5,8 +5,9 @@ use j2k_core::accelerator::GpuAbi;
 use j2k_metal_support::{
     checked_buffer_fill_bytes, checked_buffer_read as support_checked_buffer_read,
     checked_buffer_read_vec, checked_buffer_write, checked_private_buffer, checked_shared_buffer,
-    checked_shared_buffer_with_bytes, checked_shared_buffer_with_slice, MetalSupportError,
+    checked_shared_buffer_with_bytes, MetalSupportError,
 };
+use objc2_metal::{MTLBuffer as _, MTLResource as _, MTLStorageMode};
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -51,15 +52,6 @@ pub(crate) fn new_shared_buffer_with_data(
     #[cfg(test)]
     JPEG_SHARED_BUFFER_ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
     checked_shared_buffer_with_bytes(device, bytes).map_err(buffer_allocation_error)
-}
-
-pub(crate) fn new_shared_buffer_with_slice<T: GpuAbi>(
-    device: &DeviceRef,
-    values: &[T],
-) -> Result<Buffer, Error> {
-    #[cfg(test)]
-    JPEG_SHARED_BUFFER_ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
-    checked_shared_buffer_with_slice(device, values).map_err(buffer_allocation_error)
 }
 
 pub(crate) fn new_private_buffer(device: &DeviceRef, bytes: usize) -> Result<Buffer, Error> {
@@ -114,6 +106,67 @@ pub(crate) fn checked_buffer_slice_at<T: GpuAbi>(
     // or after `commit_and_wait_jpeg` has completed the producing commands.
     unsafe { checked_buffer_read_vec::<T>(buffer, byte_offset, len) }
         .map_err(|error| buffer_readback_error(context, error))
+}
+
+/// Borrow bytes from a completed, logically immutable CPU-visible Metal buffer.
+///
+/// # Safety
+///
+/// Every Metal writer must have completed, and no CPU or GPU writer may access
+/// the range for the returned slice's lifetime.
+pub(crate) unsafe fn checked_buffer_borrow_slice_at<'a>(
+    buffer: &'a BufferRef,
+    byte_offset: usize,
+    len: usize,
+    context: &str,
+) -> Result<&'a [u8], Error> {
+    let buffer_len = buffer.length();
+    let end = byte_offset.checked_add(len).ok_or_else(|| {
+        buffer_access_error(
+            context,
+            MetalSupportError::BufferBounds {
+                offset_bytes: byte_offset,
+                byte_len: len,
+                buffer_len,
+            },
+        )
+    })?;
+    if end > buffer_len {
+        return Err(buffer_access_error(
+            context,
+            MetalSupportError::BufferBounds {
+                offset_bytes: byte_offset,
+                byte_len: len,
+                buffer_len,
+            },
+        ));
+    }
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if !matches!(
+        buffer.storageMode(),
+        MTLStorageMode::Shared | MTLStorageMode::Managed
+    ) {
+        return Err(buffer_access_error(
+            context,
+            MetalSupportError::BufferContentsUnavailable,
+        ));
+    }
+    let base = buffer.contents().as_ptr().cast::<u8>();
+    (base as usize).checked_add(byte_offset).ok_or_else(|| {
+        buffer_access_error(
+            context,
+            MetalSupportError::BufferBounds {
+                offset_bytes: byte_offset,
+                byte_len: len,
+                buffer_len,
+            },
+        )
+    })?;
+    // SAFETY: The allocation is CPU-visible, the range is in bounds, and the
+    // caller guarantees completed production plus lifetime-long immutability.
+    Ok(unsafe { std::slice::from_raw_parts(base.add(byte_offset), len) })
 }
 
 pub(crate) fn checked_copy_bytes_to_buffer_at(

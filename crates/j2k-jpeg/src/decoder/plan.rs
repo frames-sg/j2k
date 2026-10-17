@@ -8,6 +8,8 @@ mod progressive_quant;
 #[cfg(test)]
 mod tests;
 
+use crate::entropy::huffman::HuffmanLookupRequirement;
+use crate::entropy::sequential::HuffmanPrimaryWidth;
 use construction::PreparedConstructionBudget;
 use progressive_quant::latch_progressive_quant_tables;
 
@@ -79,8 +81,14 @@ impl Decoder<'_> {
                         .ok_or(JpegError::InternalInvariant {
                             reason: "parsed SOS offset is outside the JPEG input",
                         })?;
-                let plan = ctx.resolve_decode_plan(
+                let plan = ctx.resolve_decode_plan_with_template(
                     header_prefix,
+                    (
+                        &info,
+                        &header.warnings,
+                        header.warnings.capacity(),
+                        retained_parsed_bytes,
+                    ),
                     crate::allocation::checked_add_allocation_bytes(
                         external_live_bytes,
                         retained_parsed_bytes,
@@ -183,7 +191,9 @@ impl Decoder<'_> {
             header.huffman_tables.versions.len(),
         )?;
         ensure_prepared_construction_fits(header, prepared_bytes)?;
-        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let huffman_requirement = sequential_huffman_requirement(info);
+        let huffman_tables =
+            compile_huffman_versions(header, ctx, construction, huffman_requirement)?;
         let prepared_bytes = prepared_decode_plan_allocation_bytes(
             scan.components.len(),
             huffman_tables.capacity(),
@@ -195,8 +205,8 @@ impl Decoder<'_> {
             header,
             info,
             huffman_tables,
+            huffman_requirement,
             workspace_cap,
-            ctx,
             construction,
         )
     }
@@ -204,6 +214,10 @@ impl Decoder<'_> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "JPEG component counts are validated against the eight-bit SOF field"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lossless validation and prepared plan construction are one ordered operation"
     )]
     pub(super) fn build_lossless_plan(
         header: &ParsedHeader,
@@ -241,7 +255,12 @@ impl Decoder<'_> {
             header.huffman_tables.versions.len(),
         )?;
         ensure_prepared_construction_fits(header, prepared_bytes)?;
-        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let huffman_tables = compile_huffman_versions(
+            header,
+            ctx,
+            construction,
+            HuffmanLookupRequirement::FusedFull,
+        )?;
         let prepared_bytes = prepared_decode_plan_allocation_bytes(
             scan.components.len(),
             huffman_tables.capacity(),
@@ -290,6 +309,7 @@ impl Decoder<'_> {
         let plan = PreparedDecodePlan {
             components,
             huffman_tables,
+            huffman_primary_width: HuffmanPrimaryWidth::Full12,
             sampling: info.sampling,
             color_space: info.color_space,
             restart_interval: header.restart_interval,
@@ -364,7 +384,8 @@ impl Decoder<'_> {
             header.huffman_tables.versions.len(),
         )?;
         ensure_prepared_construction_fits(header, prepared_bytes)?;
-        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let huffman_tables =
+            compile_huffman_versions(header, ctx, construction, HuffmanLookupRequirement::Raw)?;
         let prepared_bytes = progressive_prepared_allocation_bytes(
             header.component_ids.len(),
             header.progressive_scans.len(),
@@ -401,7 +422,7 @@ impl Decoder<'_> {
                 h,
                 v,
                 output_index,
-                quant: ctx.resolve_quant_table(quant),
+                quant,
                 block_cols: mcu_cols * u32::from(h),
                 block_rows: mcu_rows * u32::from(v),
                 sample_width: info
@@ -509,6 +530,7 @@ impl Decoder<'_> {
         Ok(PreparedDecodePlan {
             components,
             huffman_tables: construction.try_huffman_tables(0)?,
+            huffman_primary_width: HuffmanPrimaryWidth::Full12,
             sampling: info.sampling,
             color_space: info.color_space,
             restart_interval: header.restart_interval,
@@ -524,16 +546,12 @@ impl Decoder<'_> {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "JPEG scan component counts are validated against the eight-bit SOS field"
-)]
 fn build_decode_plan(
     header: &ParsedHeader,
     info: &Info,
     huffman_tables: PreparedHuffmanTables,
+    huffman_requirement: HuffmanLookupRequirement,
     workspace_cap: usize,
-    ctx: &mut DecoderContext,
     construction: &mut PreparedConstructionBudget,
 ) -> Result<PreparedDecodePlan, JpegError> {
     let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
@@ -563,15 +581,13 @@ fn build_decode_plan(
                 .get(output_index)
                 .ok_or(JpegError::MissingMarker {
                     marker: MarkerKind::Sof,
-                })? as usize;
+                })?;
         let quant = *header
             .quant_tables
-            .entries
-            .get(quant_id)
-            .and_then(|q| q.as_ref())
+            .active(quant_id)
             .ok_or(JpegError::MissingQuantTable {
                 component: scan_comp.id,
-                table_id: quant_id as u8,
+                table_id: quant_id,
             })?;
         let dc_table = prepared_active_huffman_id(
             &header.huffman_tables,
@@ -599,7 +615,7 @@ fn build_decode_plan(
             h,
             v,
             output_index,
-            quant: ctx.resolve_quant_table(quant),
+            quant,
             dc_table: Some(dc_table),
             ac_table: Some(ac_table),
         });
@@ -618,9 +634,12 @@ fn build_decode_plan(
         )?);
     }
 
+    let huffman_primary_width =
+        PreparedDecodePlan::huffman_primary_width_for_tables(huffman_requirement, &huffman_tables);
     Ok(PreparedDecodePlan {
         components,
         huffman_tables,
+        huffman_primary_width,
         sampling: info.sampling,
         color_space: info.color_space,
         restart_interval: header.restart_interval,
@@ -686,12 +705,42 @@ fn compile_huffman_versions(
     header: &ParsedHeader,
     ctx: &mut DecoderContext,
     construction: &mut PreparedConstructionBudget,
+    requirement: HuffmanLookupRequirement,
 ) -> Result<PreparedHuffmanTables, JpegError> {
     let mut prepared = construction.try_huffman_tables(header.huffman_tables.versions.len())?;
     for version in &header.huffman_tables.versions {
-        prepared.push(construction.resolve_huffman_table(ctx, &version.raw, version.role)?)?;
+        if requirement == HuffmanLookupRequirement::FusedFull {
+            construction.push_huffman_table(ctx, &version.raw, version.role, &mut prepared)?;
+        } else {
+            construction.push_huffman_table_with_requirement(
+                ctx,
+                &version.raw,
+                version.role,
+                requirement,
+                &mut prepared,
+            )?;
+        }
     }
     Ok(prepared)
+}
+
+fn sequential_huffman_requirement(info: &Info) -> HuffmanLookupRequirement {
+    let blocks_per_mcu = info
+        .sampling
+        .iter()
+        .map(|(h, v)| u64::from(h) * u64::from(v))
+        .sum();
+    if info.sof_kind != SofKind::Baseline8
+        || PreparedDecodePlan::can_select_wide_huffman(
+            info.dimensions,
+            info.sampling,
+            blocks_per_mcu,
+        )
+    {
+        HuffmanLookupRequirement::FusedFull
+    } else {
+        HuffmanLookupRequirement::FusedNarrow
+    }
 }
 
 fn prepared_active_huffman_id(

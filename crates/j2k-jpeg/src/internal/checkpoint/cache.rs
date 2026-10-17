@@ -5,9 +5,10 @@
 use alloc::vec::Vec;
 
 use super::allocation::checkpoint_allocation_bytes;
-use super::build::{skip_one_mcu, snapshot_checkpoint};
+use super::build::{skip_one_mcu_with_entries, snapshot_checkpoint};
 use super::{total_mcus, DeviceCheckpoint};
-use crate::entropy::sequential::PreparedDecodePlan;
+use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+use crate::entropy::sequential::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::error::JpegError;
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
 use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
@@ -82,13 +83,24 @@ pub(crate) fn checkpoint_before_mcu(
         .last()
         .map_or(0, |checkpoint| checkpoint.mcu_index);
     if last_mcu < target_checkpoint_mcu {
-        extend_non_restart_checkpoints(
-            plan,
-            scan_bytes,
-            cadence_mcus,
-            target_checkpoint_mcu,
-            cache,
-        )?;
+        match plan.huffman_primary_width {
+            HuffmanPrimaryWidth::Narrow8 => {
+                extend_non_restart_checkpoints::<NARROW_PRIMARY_ENTRIES>(
+                    plan,
+                    scan_bytes,
+                    cadence_mcus,
+                    target_checkpoint_mcu,
+                    cache,
+                )?;
+            }
+            HuffmanPrimaryWidth::Full12 => extend_non_restart_checkpoints::<FULL_PRIMARY_ENTRIES>(
+                plan,
+                scan_bytes,
+                cadence_mcus,
+                target_checkpoint_mcu,
+                cache,
+            )?,
+        }
     }
 
     Ok(cache
@@ -99,7 +111,7 @@ pub(crate) fn checkpoint_before_mcu(
         .copied())
 }
 
-fn extend_non_restart_checkpoints(
+fn extend_non_restart_checkpoints<const N: usize>(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     cadence_mcus: u32,
@@ -123,7 +135,7 @@ fn extend_non_restart_checkpoints(
     let mut mcu_index = start.mcu_index;
 
     while mcu_index < target_checkpoint_mcu {
-        skip_one_mcu(plan, &mut br, &mut prev_dc)?;
+        skip_one_mcu_with_entries::<N>(plan, &mut br, &mut prev_dc)?;
         mcu_index += 1;
         if mcu_index.is_multiple_of(cadence_mcus) {
             cache

@@ -15,6 +15,9 @@ mod profile;
 mod sample_planes;
 mod transform;
 
+#[cfg(all(test, target_arch = "aarch64"))]
+pub(crate) use self::transform::prepare_entropy_ac_for_test;
+
 pub use self::api::{
     EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -84,6 +87,7 @@ fn encode_jpeg_baseline_cpu(
     let planes = component_planes(
         samples,
         options.subsampling,
+        sampling,
         capacity_plan.plane_capacity_limit,
     )?;
     let plane_live_bytes = component_plane_capacity_bytes(planes.capacity(), &planes)?;
@@ -102,7 +106,7 @@ fn encode_jpeg_baseline_cpu(
         &tables.q_chroma,
         [&tables.huff_dc_luma, &tables.huff_dc_chroma],
         [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-        &cosine,
+        cosine,
         options.restart_interval,
         capacity_plan.entropy_capacity,
         plane_live_bytes,

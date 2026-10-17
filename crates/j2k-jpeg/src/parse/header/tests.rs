@@ -80,9 +80,9 @@ fn parses_minimal_baseline_jpeg() {
     assert_eq!(header.color_space(), ColorSpace::YCbCr);
     assert_eq!(header.bit_depth, 8);
     assert_eq!(header.sampling.components(), &[(2, 2), (1, 1), (1, 1)]);
-    assert!(header.quant_tables.entries[0].is_some());
-    assert!(header.huffman_tables.dc[0].is_some());
-    assert!(header.huffman_tables.ac[0].is_some());
+    assert!(header.quant_tables.active(0).is_some());
+    assert!(header.huffman_tables.active_dc(0).is_some());
+    assert!(header.huffman_tables.active_ac(0).is_some());
     assert!(header.sos_offset.is_some());
     assert_eq!(header.scan_count, 1);
 }

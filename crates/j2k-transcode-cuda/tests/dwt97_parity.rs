@@ -10,8 +10,9 @@
 
 use j2k_test_support::cuda_runtime_gate;
 use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
-use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
+use j2k_transcode::dct8x8_blocks_then_dwt97_float;
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
+use j2k_transcode_test_support::max_abs_diff_97 as max_abs_diff;
 
 const TOLERANCE: f64 = 2.0e-2;
 
@@ -30,21 +31,6 @@ fn make_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
         }
     }
     blocks
-}
-
-fn band_max_diff(actual: &[f64], expected: &[f64]) -> f64 {
-    actual
-        .iter()
-        .zip(expected.iter())
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max)
-}
-
-fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensional<f64>) -> f64 {
-    band_max_diff(&actual.ll, &expected.ll)
-        .max(band_max_diff(&actual.hl, &expected.hl))
-        .max(band_max_diff(&actual.lh, &expected.lh))
-        .max(band_max_diff(&actual.hh, &expected.hh))
 }
 
 #[test]

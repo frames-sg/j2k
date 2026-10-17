@@ -101,7 +101,12 @@ pub(in crate::compute) const SHADER_SOURCE: &str = concat!(
 pub(in crate::compute) struct JpegPipelineRegistry {
     pub(in crate::compute) pack: ComputePipelineState,
     pub(in crate::compute) jpeg_baseline_encode_precompute_batch: ComputePipelineState,
-    pub(in crate::compute) jpeg_baseline_encode_entropy_from_coeffs_batch: ComputePipelineState,
+    pub(in crate::compute) jpeg_baseline_encode_entropy_segments_batch: ComputePipelineState,
+    pub(in crate::compute) jpeg_baseline_encode_prepare_segments_batch: ComputePipelineState,
+    pub(in crate::compute) jpeg_baseline_encode_count_stuffed_segments_batch: ComputePipelineState,
+    pub(in crate::compute) jpeg_baseline_encode_offset_stuffed_segments_batch: ComputePipelineState,
+    pub(in crate::compute) jpeg_baseline_encode_scatter_stuffed_segments_batch:
+        ComputePipelineState,
     pub(in crate::compute) pack_420: ComputePipelineState,
     pub(in crate::compute) pack_420_rgb: ComputePipelineState,
     pub(in crate::compute) pack_420_rgba: ComputePipelineState,
@@ -183,8 +188,20 @@ impl JpegPipelineRegistry {
             jpeg_baseline_encode_precompute_batch: pipeline(
                 "jpeg_encode_baseline_precompute_batch",
             )?,
-            jpeg_baseline_encode_entropy_from_coeffs_batch: pipeline(
-                "jpeg_encode_baseline_entropy_from_coeffs_batch",
+            jpeg_baseline_encode_entropy_segments_batch: pipeline(
+                "jpeg_encode_baseline_entropy_segments_batch",
+            )?,
+            jpeg_baseline_encode_prepare_segments_batch: pipeline(
+                "jpeg_encode_baseline_prepare_segments_batch",
+            )?,
+            jpeg_baseline_encode_count_stuffed_segments_batch: pipeline(
+                "jpeg_encode_baseline_count_stuffed_segments_batch",
+            )?,
+            jpeg_baseline_encode_offset_stuffed_segments_batch: pipeline(
+                "jpeg_encode_baseline_offset_stuffed_segments_batch",
+            )?,
+            jpeg_baseline_encode_scatter_stuffed_segments_batch: pipeline(
+                "jpeg_encode_baseline_scatter_stuffed_segments_batch",
             )?,
             pack_420: pipeline("jpeg_pack_420")?,
             pack_420_rgb: pipeline("jpeg_pack_420_rgb")?,

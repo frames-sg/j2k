@@ -10,6 +10,7 @@ mod validation;
 mod walk;
 
 pub(crate) use inspect::parse_info;
+pub(crate) use markers::count_scan_markers;
 pub(crate) use types::ParsedHeader;
 pub(crate) use walk::{parse_header, parse_header_with_external_live};
 

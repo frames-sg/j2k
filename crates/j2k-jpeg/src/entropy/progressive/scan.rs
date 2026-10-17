@@ -4,8 +4,7 @@
 
 use alloc::vec::Vec;
 
-use crate::allocation::try_reserve_for_len_with_live_budget;
-use crate::entropy::huffman::{AcHuffmanTable, DcHuffmanTable};
+use crate::entropy::huffman::RawHuffmanDecoder;
 use crate::entropy::ZIGZAG;
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
@@ -32,8 +31,8 @@ struct ProgressiveBlockTarget<'a, 't> {
 /// scans need the DC table, AC scans the AC table, DC refinement neither.
 #[derive(Clone, Copy, Default)]
 struct ScanTables<'t> {
-    dc: Option<DcHuffmanTable<'t>>,
-    ac: Option<AcHuffmanTable<'t>>,
+    dc: Option<RawHuffmanDecoder<'t>>,
+    ac: Option<RawHuffmanDecoder<'t>>,
 }
 
 /// Largest component count of one JPEG scan (T.81 B.2.3).
@@ -77,14 +76,13 @@ pub(crate) fn decode_progressive_dct_blocks(
         coefficient_capacity_bytes(coeffs.capacity(), &coeffs)?,
         plan.scratch_bytes,
     )?;
-    let (mut nonzero, scan_live_bytes) =
-        allocate_nonzero_masks(plan, &coeffs, coefficient_live_bytes)?;
+    let (mut nonzero, _) = allocate_nonzero_masks(plan, &coeffs, coefficient_live_bytes)?;
     for scan in &plan.scans {
         let mut state = CoefficientState {
             blocks: &mut coeffs,
             nonzero: &mut nonzero,
         };
-        decode_progressive_scan(plan, scan, bytes, &mut state, scan_live_bytes)?;
+        decode_progressive_scan(plan, scan, bytes, &mut state)?;
     }
     Ok(ProgressiveDctBlocks { quantized: coeffs })
 }
@@ -102,7 +100,6 @@ fn decode_progressive_scan(
     scan: &PreparedProgressiveScan,
     bytes: &[u8],
     coeffs: &mut CoefficientState<'_>,
-    scan_live_bytes: usize,
 ) -> Result<(), JpegError> {
     let scan_bytes = bytes
         .get(scan.entropy_offset..)
@@ -111,15 +108,12 @@ fn decode_progressive_scan(
             expected: 1,
         })?;
     let mut br = BitReader::new_with_eof_padding(scan_bytes, scan.terminal_code == 0);
-    let mut live_bytes = scan_live_bytes;
-    let mut dc_predictors = Vec::new();
-    try_reserve_for_len_with_live_budget(
-        &mut dc_predictors,
-        plan.components.len(),
-        &mut live_bytes,
-        plan.scratch_bytes,
-    )?;
-    dc_predictors.resize(plan.components.len(), 0i32);
+    if plan.components.len() > MAX_SCAN_COMPONENTS {
+        return Err(JpegError::InternalInvariant {
+            reason: "prepared progressive plan has more than four components",
+        });
+    }
+    let mut dc_predictors = [0i32; MAX_SCAN_COMPONENTS];
     let mut eob_run = 0u32;
     let restart = u32::from(scan.restart_interval.unwrap_or(0));
     let total_mcus = scan_mcu_count(plan, scan)?;
@@ -136,7 +130,7 @@ fn decode_progressive_scan(
         tables,
     };
 
-    let state = (&mut dc_predictors[..], &mut eob_run);
+    let state = (&mut dc_predictors[..plan.components.len()], &mut eob_run);
     let counts = (restart, total_mcus);
     match (scan.ss == 0, scan.ah == 0) {
         (true, true) => decode_scan_mcus::<DC_FIRST>(&context, &mut br, coeffs, state, counts),
@@ -698,13 +692,13 @@ pub(super) fn refine_band(
         let k = pending.trailing_zeros() as usize;
         pending &= pending - 1;
         let coeff = &mut block[usize::from(ZIGZAG[k]) & 63];
-        if br.read_bit_deferred()? && (*coeff & bit) == 0 {
-            if *coeff > 0 {
-                *coeff = coeff.wrapping_add(bit);
-            } else {
-                *coeff = coeff.wrapping_sub(bit);
-            }
-        }
+        let correction = i32::from(br.read_bit_deferred()?).wrapping_neg() & bit & !*coeff;
+        let signed_correction = if *coeff > 0 {
+            correction
+        } else {
+            correction.wrapping_neg()
+        };
+        *coeff = coeff.wrapping_add(signed_correction);
     }
     Ok(stop.map_or(end, |position| band_offset(position as usize)))
 }

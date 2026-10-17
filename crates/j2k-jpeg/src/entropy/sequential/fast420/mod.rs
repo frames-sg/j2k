@@ -15,12 +15,16 @@ use super::layout::{
 };
 use super::profile::{Fast420ScanProfiler, NoopFast420Profiler, NoopFast420ScanProfile};
 use super::restart::{finish_scan, reader_from_checkpoint};
-use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, RgbOutputScratch, StripeBuffer};
+use super::{
+    HuffmanPrimaryWidth, PreparedDecodePlan, ResolvedPreparedComponentPlan, RgbOutputScratch,
+    StripeBuffer,
+};
 use crate::backend::Backend;
 #[cfg(feature = "bench-internals")]
 use crate::bench_support::BenchFast420Profile;
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::block::CoefficientBlock;
+use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::{JpegError, Warning};
 use crate::info::{DownscaleFactor, Rect};
 use crate::internal::bit_reader::BitReader;
@@ -34,21 +38,25 @@ mod rows;
 pub(super) use self::rows::decode_mcu_row_fast_tile_420;
 use self::rows::skip_mcu_fast_tile_420;
 
-fn fast_tile_components(
+fn fast_tile_components<const N: usize>(
     plan: &PreparedDecodePlan,
+    wide_huffman: bool,
 ) -> Result<
     (
-        ResolvedPreparedComponentPlan<'_>,
-        ResolvedPreparedComponentPlan<'_>,
-        ResolvedPreparedComponentPlan<'_>,
+        ResolvedPreparedComponentPlan<'_, N>,
+        ResolvedPreparedComponentPlan<'_, N>,
+        ResolvedPreparedComponentPlan<'_, N>,
     ),
     JpegError,
 > {
     debug_assert!(plan.matches_fast_tile_shape());
     Ok((
-        plan.resolved_component(0)?,
-        plan.resolved_component(1)?,
-        plan.resolved_component(2)?,
+        plan.resolved_component_with_entries::<N>(0)?
+            .with_wide_huffman(wide_huffman),
+        plan.resolved_component_with_entries::<N>(1)?
+            .with_wide_huffman(wide_huffman),
+        plan.resolved_component_with_entries::<N>(2)?
+            .with_wide_huffman(wide_huffman),
     ))
 }
 
@@ -60,14 +68,32 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
     writer: &mut W,
 ) -> Result<Vec<Warning>, JpegError> {
     let mut profile = NoopFast420ScanProfile::default();
-    decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, &mut profile)
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => decode_scan_fast_tile_rgb_impl::<
+            NARROW_PRIMARY_ENTRIES,
+            W,
+            _,
+        >(
+            plan, backend, scan_bytes, pool, writer, &mut profile
+        ),
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_fast_tile_rgb_impl::<FULL_PRIMARY_ENTRIES, W, _>(
+                plan,
+                backend,
+                scan_bytes,
+                pool,
+                writer,
+                &mut profile,
+            )
+        }
+    }
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "the fused 4:2:0 scan loop keeps predictor, restart, stripe, and writer state together for hot-path codegen"
 )]
-fn decode_scan_fast_tile_rgb_impl<W, P>(
+fn decode_scan_fast_tile_rgb_impl<const N: usize, W, P>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -102,7 +128,8 @@ where
     let mut br = BitReader::new(scan_bytes);
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan)?;
+    let (y_comp, cb_comp, cr_comp) =
+        fast_tile_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
     let components = FastTile420Components {
         y: y_comp,
         cb: cb_comp,
@@ -112,6 +139,8 @@ where
         mcus_per_row,
         stripe_mcu_start: 0,
         stripe_mcus_per_row: mcus_per_row,
+        right_luma: width % 16 == 0 || width % 16 > 8,
+        bottom_luma: height > 8,
     };
     let mut y_dc = 0i32;
     let mut cb_dc = 0i32;
@@ -164,7 +193,10 @@ where
                 coeff: &mut coeff,
             },
             &mut pixels,
-            window,
+            FastTile420Window {
+                bottom_luma: height.saturating_sub(my * 16) > 8,
+                ..window
+            },
             next_stripe,
             profile.activity_profiler(),
         )?;
@@ -224,14 +256,51 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
     writer: &mut W,
     profile: &mut BenchFast420Profile,
 ) -> Result<Vec<Warning>, JpegError> {
-    decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, profile)
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_fast_tile_rgb_impl::<NARROW_PRIMARY_ENTRIES, W, _>(
+                plan, backend, scan_bytes, pool, writer, profile,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_fast_tile_rgb_impl::<FULL_PRIMARY_ENTRIES, W, _>(
+                plan, backend, scan_bytes, pool, writer, profile,
+            )
+        }
+    }
+}
+
+pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbWriter>(
+    plan: &PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &[u8],
+    pool: &mut ScratchPool,
+    writer: &mut W,
+    roi: Rect,
+    checkpoint: Option<&DeviceCheckpoint>,
+) -> Result<Vec<Warning>, JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_fast_tile_rgb_region_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_fast_tile_rgb_region_with_entries::<FULL_PRIMARY_ENTRIES, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
+    }
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "the fused region loop keeps ROI seek, restart, stripe, and writer state together for hot-path codegen"
 )]
-pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbWriter>(
+fn decode_scan_fast_tile_rgb_region_with_entries<
+    const N: usize,
+    W: OutputWriter + InterleavedRgbWriter,
+>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -272,7 +341,8 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
     let result = (|| {
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u8; 64];
-        let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan)?;
+        let (y_comp, cb_comp, cr_comp) =
+            fast_tile_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
         let components = FastTile420Components {
             y: y_comp,
             cb: cb_comp,
@@ -282,6 +352,8 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
             mcus_per_row,
             stripe_mcu_start: region_layout.stripe_mcu_start,
             stripe_mcus_per_row: region_layout.stripe_mcus_per_row,
+            right_luma: true,
+            bottom_luma: true,
         };
         let target_mcu = first_decode_mcu_row * mcus_per_row;
         let (mut br, prev_dc, start_mcu) =

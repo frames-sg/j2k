@@ -70,6 +70,21 @@ pub(super) struct BatchPlan {
     pub(super) codec_bytes: usize,
 }
 
+pub(super) fn accept_prepared_batch_plan(
+    attempt: Result<BatchPlan, BatchInfrastructureError>,
+    expected_worker_count: usize,
+) -> Result<Option<BatchPlan>, BatchInfrastructureError> {
+    match attempt {
+        Ok(plan) if plan.worker_count == expected_worker_count => Ok(Some(plan)),
+        Ok(_)
+        | Err(
+            BatchInfrastructureError::AllocationTooLarge { .. }
+            | BatchInfrastructureError::HostAllocationFailed { .. },
+        ) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PlannedLiveBytes {
     metadata: usize,
@@ -88,12 +103,14 @@ pub(super) fn select_batch_plan(
     jobs: &[PlannedJob],
     desired_workers: usize,
     metadata: BatchMetadataLayout,
+    shared_codec_bytes: usize,
     retained_worker_bytes: impl Fn(usize) -> usize,
 ) -> Result<BatchPlan, BatchInfrastructureError> {
-    select_batch_plan_with_limits(
+    select_batch_plan_with_shared_codec_bytes_and_limits(
         jobs,
         desired_workers,
         metadata,
+        shared_codec_bytes,
         retained_worker_bytes,
         BatchPlanLimits {
             metadata: JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
@@ -103,10 +120,29 @@ pub(super) fn select_batch_plan(
     )
 }
 
+#[cfg(test)]
 fn select_batch_plan_with_limits(
     jobs: &[PlannedJob],
     desired_workers: usize,
     metadata: BatchMetadataLayout,
+    retained_worker_bytes: impl Fn(usize) -> usize,
+    limits: BatchPlanLimits,
+) -> Result<BatchPlan, BatchInfrastructureError> {
+    select_batch_plan_with_shared_codec_bytes_and_limits(
+        jobs,
+        desired_workers,
+        metadata,
+        0,
+        retained_worker_bytes,
+        limits,
+    )
+}
+
+fn select_batch_plan_with_shared_codec_bytes_and_limits(
+    jobs: &[PlannedJob],
+    desired_workers: usize,
+    metadata: BatchMetadataLayout,
+    shared_codec_bytes: usize,
     retained_worker_bytes: impl Fn(usize) -> usize,
     limits: BatchPlanLimits,
 ) -> Result<BatchPlan, BatchInfrastructureError> {
@@ -128,6 +164,7 @@ fn select_batch_plan_with_limits(
             worker_count,
             chunk_size,
             metadata,
+            shared_codec_bytes,
             &retained_worker_bytes,
             limits,
         ) {
@@ -155,6 +192,7 @@ fn planned_live_bytes(
     worker_count: usize,
     chunk_size: usize,
     metadata: BatchMetadataLayout,
+    shared_codec_bytes: usize,
     retained_worker_bytes: &impl Fn(usize) -> usize,
     limits: BatchPlanLimits,
 ) -> Result<PlannedLiveBytes, BatchInfrastructureError> {
@@ -213,7 +251,12 @@ fn planned_live_bytes(
     )?;
     ensure_within(metadata_bytes, limits.metadata, "JPEG batch metadata")?;
 
-    let mut codec_bytes = 0usize;
+    let mut codec_bytes = shared_codec_bytes;
+    ensure_within(
+        codec_bytes,
+        limits.codec,
+        "JPEG shared prepared codec claims",
+    )?;
     for (worker_index, chunk) in jobs.chunks(chunk_size).enumerate() {
         if worker_index >= worker_count {
             return Err(BatchInfrastructureError::WorkerSlotMissing {

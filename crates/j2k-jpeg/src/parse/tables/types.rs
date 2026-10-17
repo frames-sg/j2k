@@ -22,6 +22,24 @@ impl HuffmanValues {
         clippy::cast_possible_truncation,
         reason = "JPEG Huffman value arrays contain at most 256 symbols"
     )]
+    pub(crate) const fn from_array<const N: usize>(values: &[u8; N]) -> Self {
+        assert!(N <= 256);
+        let mut out = Self {
+            bytes: [0; 256],
+            len: N as u16,
+        };
+        let mut index = 0;
+        while index < N {
+            out.bytes[index] = values[index];
+            index += 1;
+        }
+        out
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG Huffman value arrays contain at most 256 symbols"
+    )]
     pub(crate) fn from_slice(values: &[u8]) -> Self {
         debug_assert!(values.len() <= 256);
         let mut out = Self::default();

@@ -424,6 +424,107 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
 }
 
 #[cfg(target_os = "macos")]
+#[test]
+fn shared_session_concurrent_encodes_keep_scratch_isolated() {
+    use j2k_core::PixelFormat;
+    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg_metal::{
+        encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
+    };
+    use std::sync::{Arc, Barrier};
+
+    const WIDTH: u32 = 96;
+    const HEIGHT: u32 = 80;
+    const WORKERS: usize = 4;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let inputs = (0..WORKERS)
+        .map(|worker| {
+            let mut rgb = j2k_test_support::patterned_rgb8(WIDTH, HEIGHT);
+            let worker = u8::try_from(worker).expect("worker index fits u8");
+            for (index, sample) in rgb.iter_mut().enumerate() {
+                let position = u8::try_from(index % 251).expect("pixel position fits u8");
+                *sample = sample.wrapping_add(position.wrapping_mul(worker));
+            }
+            rgb
+        })
+        .collect::<Vec<_>>();
+    let options = JpegEncodeOptions {
+        quality: 90,
+        subsampling: JpegSubsampling::Ybr422,
+        restart_interval: None,
+        backend: JpegBackend::Metal,
+    };
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let expected = inputs
+        .iter()
+        .map(|rgb| {
+            let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), rgb)
+                .expect("upload reference RGB pixels");
+            // SAFETY: the buffer is initialized and remains immutable through
+            // the synchronous reference encode.
+            let tile = unsafe {
+                JpegBaselineMetalEncodeTile::new(
+                    &buffer,
+                    0,
+                    (WIDTH, HEIGHT),
+                    WIDTH as usize * 3,
+                    (WIDTH, HEIGHT),
+                    PixelFormat::Rgb8,
+                )
+            };
+            encode_jpeg_baseline_from_metal_buffer(tile, options, &session)
+                .expect("reference Metal encode")
+                .data
+        })
+        .collect::<Vec<_>>();
+
+    let barrier = Arc::new(Barrier::new(WORKERS));
+    let outputs = std::thread::scope(|scope| {
+        let handles = inputs
+            .iter()
+            .map(|rgb| {
+                let session = session.clone();
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    let buffer =
+                        j2k_metal_support::checked_shared_buffer_with_slice(session.device(), rgb)
+                            .expect("upload concurrent RGB pixels");
+                    // SAFETY: each thread owns an initialized buffer and keeps
+                    // it immutable through its synchronous encode.
+                    let tile = unsafe {
+                        JpegBaselineMetalEncodeTile::new(
+                            &buffer,
+                            0,
+                            (WIDTH, HEIGHT),
+                            WIDTH as usize * 3,
+                            (WIDTH, HEIGHT),
+                            PixelFormat::Rgb8,
+                        )
+                    };
+                    barrier.wait();
+                    encode_jpeg_baseline_from_metal_buffer(tile, options, &session)
+                        .expect("concurrent Metal encode")
+                        .data
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("concurrent encode thread"))
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(outputs.len(), WORKERS);
+    for (output, expected) in outputs.into_iter().zip(expected) {
+        assert_eq!(output, expected);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn update_staged_rgb_matrix_digest(
     session: &j2k_jpeg_metal::MetalBackendSession,
     digest: &mut sha2::Sha256,

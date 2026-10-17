@@ -46,4 +46,27 @@ fn allocator_reported_capacity_is_checked_after_reservation() {
             cap: 64,
         })
     ));
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut exact = CappedBytes {
+            bytes: Vec::with_capacity(512),
+            max_len: 512,
+        };
+        assert!(exact.has_existing_spare::<512>());
+        exact.bytes.push(1);
+        assert!(!exact.has_existing_spare::<512>());
+
+        let logical_short = CappedBytes {
+            bytes: Vec::with_capacity(512),
+            max_len: 511,
+        };
+        assert!(!logical_short.has_existing_spare::<512>());
+
+        let physical_short = CappedBytes {
+            bytes: Vec::new(),
+            max_len: 512,
+        };
+        assert!(!physical_short.has_existing_spare::<512>());
+    }
 }

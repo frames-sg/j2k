@@ -162,7 +162,11 @@ impl<'a> JpegView<'a> {
 
         scan.components.iter().all(|scan_component| {
             find_component_index(&self.header.component_ids, scan_component.id).is_some()
-                && self.header.huffman_tables.dc[scan_component.dc_table as usize].is_some()
+                && self
+                    .header
+                    .huffman_tables
+                    .active_dc(scan_component.dc_table)
+                    .is_some()
         })
     }
 }

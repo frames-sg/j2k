@@ -14,6 +14,7 @@ use j2k_test_support::JPEG_BASELINE_420_16X16;
 fn fast_tile_rgb_matches_generic_baseline_decode() {
     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
     assert!(dec.plan.matches_fast_tile_shape());
+    assert_eq!(dec.plan.huffman_primary_width, HuffmanPrimaryWidth::Narrow8);
 
     let mut generic = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
     let mut fast = vec![0u8; generic.len()];
@@ -135,6 +136,7 @@ fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
     let plan = PreparedDecodePlan {
         components: vec![y_comp, cb_comp, cr_comp],
         huffman_tables,
+        huffman_primary_width: HuffmanPrimaryWidth::Full12,
         sampling: SamplingFactors::from_validated_components(&[(2, 2), (1, 1), (1, 1)]),
         color_space: ColorSpace::YCbCr,
         restart_interval: None,
@@ -177,6 +179,8 @@ fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
             mcus_per_row: 1,
             stripe_mcu_start: 0,
             stripe_mcus_per_row: 1,
+            right_luma: true,
+            bottom_luma: true,
         },
         &mut stripe,
         &mut profiler,
@@ -435,6 +439,7 @@ fn emit_final_420_stripe(
     let plan = PreparedDecodePlan {
         components: vec![],
         huffman_tables: PreparedHuffmanTables::try_with_capacity(0).expect("empty test arena"),
+        huffman_primary_width: HuffmanPrimaryWidth::Full12,
         sampling,
         color_space,
         restart_interval: None,
@@ -581,6 +586,7 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
     let plan = PreparedDecodePlan {
         components: vec![],
         huffman_tables: PreparedHuffmanTables::try_with_capacity(0).expect("empty test arena"),
+        huffman_primary_width: HuffmanPrimaryWidth::Full12,
         sampling: SamplingFactors::from_validated_components(&[(1, 1), (1, 1), (1, 1)]),
         color_space: ColorSpace::YCbCr,
         restart_interval: None,

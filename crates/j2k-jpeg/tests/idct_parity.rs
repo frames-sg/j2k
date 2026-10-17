@@ -71,6 +71,28 @@ fn bottom_half_zero_blocks() -> impl Strategy<Value = [i16; 64]> {
     })
 }
 
+#[cfg(target_arch = "aarch64")]
+fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
+    prop_oneof![
+        4 => prop::array::uniform4(any::<i16>()),
+        2 => (any::<i16>(), any::<i16>()).prop_map(|(a, b)| [a, 0, b, 0]),
+        2 => (any::<i16>(), any::<i16>()).prop_map(|(a, b)| [a, b, 0, 0]),
+        1 => (any::<i16>(), any::<i16>()).prop_map(|(a, b)| [0, a, 0, b]),
+        1 => (any::<i16>(), any::<i16>()).prop_map(|(a, b)| [0, 0, a, b]),
+        1 => Just([i16::MAX, 0, i16::MAX, 0]),
+        1 => Just([i16::MIN, 0, i16::MIN, 0]),
+        1 => Just([i16::MAX, 0, i16::MIN, 0]),
+        1 => Just([i16::MIN, 0, i16::MAX, 0]),
+    ]
+    .prop_map(|coefficients| {
+        let mut block = [0i16; 64];
+        for (index, coefficient) in [0, 1, 8, 9].into_iter().zip(coefficients) {
+            block[index] = coefficient;
+        }
+        block
+    })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 2_000,
@@ -99,6 +121,15 @@ proptest! {
     #[test]
     fn neon_matches_scalar_on_bottom_half_zero_blocks(block in bottom_half_zero_blocks()) {
         assert_neon_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_top_left_2x2_matches_scalar_on_full_i16_coefficients(block in top_left_2x2_blocks()) {
+        let expected = scalar(&block);
+        let mut actual = [0u8; 64];
+        j2k_jpeg::bench_support::bench_idct_neon_top_left_2x2_block(&block, &mut actual);
+        prop_assert_eq!(actual, expected);
     }
 
     #[cfg(target_arch = "x86_64")]

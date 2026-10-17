@@ -4,6 +4,24 @@ use super::*;
 use j2k_metal_support::MetalSupportError;
 
 #[test]
+fn immutable_shared_resident_surface_borrows_completed_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let expected = [1_u8, 2, 3, 4, 5, 6];
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &expected)
+        .expect("shared resident bytes");
+    let surface = Surface::from_cpu_staged_metal_buffer(buffer, (2, 1), PixelFormat::Rgb8)
+        .expect("immutable resident surface");
+
+    let bytes = surface.as_bytes().expect("borrow resident bytes");
+    assert!(matches!(&bytes, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(bytes.as_ref(), expected);
+}
+
+#[test]
 fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacity() {
     if !should_run_metal_runtime() {
         return;

@@ -61,6 +61,22 @@ fn turbojpeg_rgb_and_region_match_j2k_fixtures() {
         .decode_gray(JPEG_GRAYSCALE_8X8)
         .expect("turbojpeg grayscale");
     assert_eq!(turbo_gray, gray);
+    let prepared_gray = turbo
+        .prepare_rgb(JPEG_GRAYSCALE_8X8)
+        .expect("turbojpeg prepare grayscale");
+    assert_eq!((prepared_gray.width, prepared_gray.height), (8, 8));
+    let gray_stride = prepared_gray.width as usize;
+    let mut prepared_gray_pixels = vec![0_u8; gray_stride * prepared_gray.height as usize];
+    turbo
+        .decode_prepared_gray_into(
+            JPEG_GRAYSCALE_8X8,
+            &mut prepared_gray_pixels,
+            gray_stride,
+            prepared_gray.width as usize,
+            prepared_gray.height as usize,
+        )
+        .expect("turbojpeg prepared grayscale");
+    assert_eq!(prepared_gray_pixels, turbo_gray);
 
     let (scaled, _) = dec
         .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, Downscale::Quarter))
@@ -186,68 +202,166 @@ fn crop_rgb(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
 }
 
 #[test]
-fn rgba420_and_non_row_aligned_restarts_match_turbo_with_padded_output() {
+fn rgba_subsampled_and_non_row_aligned_restarts_match_turbo_with_padded_output() {
     use j2k_jpeg::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples, JpegSubsampling};
     if !turbo_available() {
         return;
     }
-    let (width, height) = (35, 33);
-    let pixels = j2k_test_support::patterned_rgb8(width, height);
     let mut turbo = libjpeg_turbo::TurboJpegDecoder::new().unwrap();
-    for restart_interval in [None, Some(1), Some(7)] {
-        let encoded = encode_jpeg_baseline(
-            JpegSamples::Rgb8 {
-                data: &pixels,
-                width,
-                height,
-            },
-            JpegEncodeOptions {
-                subsampling: JpegSubsampling::Ybr420,
-                restart_interval,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let reference = turbo.decode_rgb(&encoded.data).unwrap();
-        let decoder = Decoder::new(&encoded.data).unwrap();
-        let stride = width as usize * 4 + 5;
-        let mut output = vec![0xa5; stride * height as usize];
-        decoder
-            .decode_into(&mut output, stride, PixelFormat::Rgba8)
-            .unwrap();
-        for (row, rgb) in output
-            .chunks_exact(stride)
-            .zip(reference.chunks_exact(width as usize * 3))
-        {
-            for (rgba, expected) in row[..width as usize * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(rgb.as_chunks::<3>().0.iter())
-            {
-                assert_eq!(&rgba[..3], expected, "restart {restart_interval:?}");
-                assert_eq!(rgba[3], 255);
-            }
-            assert_eq!(&row[width as usize * 4..], &[0xa5; 5]);
-        }
-        let roi = Rect {
-            x: 17,
-            y: 15,
-            w: 13,
-            h: 17,
+    // A dense q=100 scan exercises the wider entropy lookup, including
+    // non-row-aligned restarts and ROI skips that use the original scan size.
+    for (width, height, dense) in [
+        (35u32, 33u32, false),
+        (65, 67, true),
+        (1, 1, true),
+        (8, 8, true),
+        (9, 9, true),
+        (15, 15, true),
+        (17, 24, true),
+        (24, 17, true),
+        (25, 31, true),
+        (31, 25, true),
+    ] {
+        let pixels = if dense {
+            let mut seed = 0x1f4a_39c7u32;
+            (0..width * height * 3)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed.to_le_bytes()[0]
+                })
+                .collect()
+        } else {
+            j2k_test_support::patterned_rgb8(width, height)
         };
-        let (region, _) = decoder
-            .decode_request(DecodeRequest::region(PixelFormat::Rgba8, roi))
-            .unwrap();
-        let expected = crop_rgb(&reference, width as usize, roi);
-        for (rgba, rgb) in region
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(expected.as_chunks::<3>().0.iter())
-        {
-            assert_eq!(&rgba[..3], rgb);
-            assert_eq!(rgba[3], 255);
+        for subsampling in [JpegSubsampling::Ybr420, JpegSubsampling::Ybr422] {
+            for restart_interval in [None, Some(1), Some(7)] {
+                let encoded = encode_jpeg_baseline(
+                    JpegSamples::Rgb8 {
+                        data: &pixels,
+                        width,
+                        height,
+                    },
+                    JpegEncodeOptions {
+                        quality: if dense {
+                            100
+                        } else {
+                            JpegEncodeOptions::default().quality
+                        },
+                        subsampling,
+                        restart_interval,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let reference = turbo.decode_rgb(&encoded.data).unwrap();
+                let decoder = Decoder::new(&encoded.data).unwrap();
+                let stride = width as usize * 4 + 5;
+                let mut output = vec![0xa5; stride * height as usize];
+                decoder
+                    .decode_into(&mut output, stride, PixelFormat::Rgba8)
+                    .unwrap();
+                for (row, rgb) in output
+                    .chunks_exact(stride)
+                    .zip(reference.chunks_exact(width as usize * 3))
+                {
+                    for (rgba, expected) in row[..width as usize * 4]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(rgb.as_chunks::<3>().0.iter())
+                    {
+                        assert_eq!(&rgba[..3], expected, "restart {restart_interval:?}");
+                        assert_eq!(rgba[3], 255);
+                    }
+                    assert_eq!(&row[width as usize * 4..], &[0xa5; 5]);
+                }
+                let roi_x = 17.min(width - 1);
+                let roi_y = 15.min(height - 1);
+                let roi = Rect {
+                    x: roi_x,
+                    y: roi_y,
+                    w: 13.min(width - roi_x),
+                    h: 17.min(height - roi_y),
+                };
+                let (region, _) = decoder
+                    .decode_request(DecodeRequest::region(PixelFormat::Rgba8, roi))
+                    .unwrap();
+                let expected = crop_rgb(&reference, width as usize, roi);
+                for (rgba, rgb) in region
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(expected.as_chunks::<3>().0.iter())
+                {
+                    assert_eq!(
+                        &rgba[..3],
+                        rgb,
+                        "{width}x{height} {subsampling:?} restart {restart_interval:?} ROI {roi:?}"
+                    );
+                    assert_eq!(rgba[3], 255);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_ycbcr_stripes_match_turbo_with_padded_rgb_and_rgba_output() {
+    use j2k_jpeg::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples, JpegSubsampling};
+    if !turbo_available() {
+        return;
+    }
+    let mut turbo = libjpeg_turbo::TurboJpegDecoder::new().unwrap();
+    for width in 1..=4u32 {
+        for height in [7u32, 8, 17, 65] {
+            let pixels = j2k_test_support::patterned_rgb8(width, height);
+            for subsampling in [
+                JpegSubsampling::Ybr444,
+                JpegSubsampling::Ybr422,
+                JpegSubsampling::Ybr420,
+            ] {
+                let encoded = encode_jpeg_baseline(
+                    JpegSamples::Rgb8 {
+                        data: &pixels,
+                        width,
+                        height,
+                    },
+                    JpegEncodeOptions {
+                        subsampling,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let reference = turbo.decode_rgb(&encoded.data).unwrap();
+                let decoder = Decoder::new(&encoded.data).unwrap();
+                for (format, channels) in [(PixelFormat::Rgb8, 3usize), (PixelFormat::Rgba8, 4)] {
+                    let row_bytes = width as usize * channels;
+                    let stride = row_bytes + 5;
+                    let mut output = vec![0xa5; stride * height as usize];
+                    decoder.decode_into(&mut output, stride, format).unwrap();
+                    for (row, expected) in output
+                        .chunks_exact(stride)
+                        .zip(reference.chunks_exact(width as usize * 3))
+                    {
+                        for (pixel, rgb) in row[..row_bytes]
+                            .chunks_exact(channels)
+                            .zip(expected.as_chunks::<3>().0.iter())
+                        {
+                            assert_eq!(
+                                &pixel[..3],
+                                rgb,
+                                "{width}x{height}, {subsampling:?}, {format:?}"
+                            );
+                            if channels == 4 {
+                                assert_eq!(pixel[3], 255);
+                            }
+                        }
+                        assert_eq!(&row[row_bytes..], &[0xa5; 5]);
+                    }
+                }
+            }
         }
     }
 }

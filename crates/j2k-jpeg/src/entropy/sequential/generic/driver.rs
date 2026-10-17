@@ -129,7 +129,7 @@ pub(super) trait StripeEmitter {
     fn emit(&mut self, stripe: StripeEmit<'_>) -> Result<(), JpegError>;
 }
 
-pub(super) fn decode_scan_rows<E: StripeEmitter>(
+pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -157,12 +157,13 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
         current_mcu = seek.mcu_index;
         expected_rst = seek.expected_rst;
     }
-    skip_to_mcu(
+    skip_to_mcu::<N>(
         plan,
         McuSkipTarget {
             target_mcu: first_decode_mcu,
             total_mcus,
             restart: setup.restart,
+            wide_huffman: plan.prefers_wide_huffman(scan_bytes.len()),
         },
         &mut McuSkipState {
             br: &mut br,
@@ -185,6 +186,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
         mcus_per_row: setup.mcus_per_row,
         mcu_rows: setup.mcu_rows,
         restart: setup.restart,
+        wide_huffman: plan.prefers_wide_huffman(scan_bytes.len()),
     };
     let mut prev_stripe = stripe_a;
     let mut curr_stripe = stripe_b;
@@ -199,7 +201,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
             mcus_since_restart: &mut mcus_since_restart,
             expected_rst: &mut expected_rst,
         };
-        decode_mcu_row(
+        decode_mcu_row::<N>(
             &row_context,
             &mut row_state,
             setup.first_decode_mcu_row,
@@ -207,7 +209,7 @@ pub(super) fn decode_scan_rows<E: StripeEmitter>(
         )?;
 
         for mcu_row in setup.first_decode_mcu_row + 1..setup.decode_mcu_row_end {
-            decode_mcu_row(&row_context, &mut row_state, mcu_row, next_stripe)?;
+            decode_mcu_row::<N>(&row_context, &mut row_state, mcu_row, next_stripe)?;
             if setup.should_emit(mcu_row - 1) {
                 emitter.emit(StripeEmit {
                     prev: has_prev.then_some(&*prev_stripe),

@@ -18,7 +18,7 @@ struct TopOnlyFixture {
 impl TopOnlyFixture {
     fn new(width: usize) -> Self {
         let chroma_width = width.div_ceil(2);
-        let fixture_byte = |index| u8::try_from(index).expect("fixture index must fit in u8");
+        let fixture_byte = |index| u8::try_from(index & 0xff).expect("masked fixture byte");
         Self {
             y: (0..width)
                 .map(|index| fixture_byte(index).wrapping_mul(37).wrapping_add(11))
@@ -93,14 +93,23 @@ fn cropped_top_only_neon_matches_scalar_across_alignment_and_partial_chunks() {
 
 #[test]
 fn top_only_neon_tail_matches_scalar_for_partial_and_full_chunks() {
-    for width in [31, 32] {
+    for width in [31, 32, 63, 127, 257, 511] {
         let fixture = TopOnlyFixture::new(width);
         let mut expected = vec![0u8; width * 3];
         scalar::fill_rgb_row_pair_from_420(top_only_rows(&fixture, &mut expected));
 
-        let mut actual = vec![0u8; width * 3];
+        let mut actual = vec![0xA5u8; width * 3 + 7];
         fill_rgb_row_pair_from_420(neon(), top_only_rows(&fixture, &mut actual));
 
-        assert_eq!(actual, expected, "top-only tail differs at width {width}");
+        assert_eq!(
+            &actual[..width * 3],
+            expected,
+            "top-only tail differs at width {width}"
+        );
+        assert_eq!(
+            &actual[width * 3..],
+            &[0xA5; 7],
+            "top-only tail overwrote suffix at width {width}"
+        );
     }
 }

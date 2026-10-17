@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod common;
+#[path = "compare/matched_batch.rs"]
+mod matched_batch;
 
 use std::num::NonZeroUsize;
 
@@ -22,7 +24,10 @@ use common::{
     TurboJpegBatchRgbOutputBuffers, TurboJpegDecoder,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
-use j2k_jpeg::{Decoder, Downscale, ScratchPool, TileBatchOptions};
+use j2k_jpeg::{
+    DecodeRequest, Decoder, DecoderContext, Downscale, JpegView, PixelFormat, ScratchPool,
+    TileBatchOptions,
+};
 
 #[expect(
     clippy::too_many_lines,
@@ -30,6 +35,67 @@ use j2k_jpeg::{Decoder, Downscale, ScratchPool, TileBatchOptions};
 )]
 fn bench_compare(c: &mut Criterion) {
     let inputs = load_bench_inputs();
+    if std::env::var_os("J2K_BENCH_VERIFY_OUTPUTS").is_some() {
+        let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+        for input in inputs
+            .iter()
+            .filter(|input| should_compare_full_frame(input.mode, input.input_class))
+        {
+            let (format, expected) = match input.mode {
+                DecodeMode::Gray => (PixelFormat::Gray8, turbo.decode_gray(&input.bytes)),
+                DecodeMode::Rgb => (PixelFormat::Rgb8, turbo.decode_rgb(&input.bytes)),
+            };
+            let expected = expected.expect("libjpeg-turbo reference decode");
+            let actual = Decoder::new(&input.bytes)
+                .expect("j2k decoder")
+                .decode_request(DecodeRequest::full(format))
+                .expect("j2k decode")
+                .0;
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "{}: output length",
+                input.name
+            );
+            let max_delta = actual
+                .iter()
+                .zip(&expected)
+                .map(|(&actual, &expected)| actual.abs_diff(expected))
+                .max()
+                .unwrap_or(0);
+            assert_eq!(
+                max_delta, 0,
+                "{}: output differs from libjpeg-turbo",
+                input.name
+            );
+        }
+    }
+
+    // Keep matched-worker batch sweeps separate from single-image and legacy
+    // groups, so filtering never constructs unrelated large batch sessions.
+    if std::env::var_os("J2K_BENCH_MATCHED_BATCH_ONLY").is_some() {
+        if std::env::var_os("J2K_BENCH_BATCH_MIXED").is_some() {
+            for mode in [DecodeMode::Gray, DecodeMode::Rgb] {
+                let selected = inputs
+                    .iter()
+                    .filter(|input| {
+                        input.mode == mode
+                            && should_compare_full_frame(input.mode, input.input_class)
+                    })
+                    .map(|input| input.bytes.as_slice())
+                    .collect::<Vec<_>>();
+                matched_batch::bench_mixed(c, &selected, mode);
+            }
+            return;
+        }
+        for input in inputs
+            .iter()
+            .filter(|input| should_compare_full_frame(input.mode, input.input_class))
+        {
+            matched_batch::bench(c, &input.name, &input.bytes, input.mode);
+        }
+        return;
+    }
 
     let mut inspect = c.benchmark_group("inspect");
     for input in &inputs {
@@ -95,6 +161,49 @@ fn bench_compare(c: &mut Criterion) {
     }
     decode_gray.finish();
 
+    // Compare complete first-image setup separately from the default warm
+    // context/handle groups. Both sides allocate and destroy a fresh context
+    // and owned output within each timed iteration.
+    if std::env::var_os("J2K_BENCH_COLD_CONTEXT").is_some() {
+        for (mode, suffix, format) in [
+            (DecodeMode::Gray, "gray", PixelFormat::Gray8),
+            (DecodeMode::Rgb, "rgb", PixelFormat::Rgb8),
+        ] {
+            let mut group = c.benchmark_group(format!("decode_cold_{suffix}"));
+            for input in inputs.iter().filter(|input| {
+                input.mode == mode && should_compare_full_frame(input.mode, input.input_class)
+            }) {
+                group.bench_function(format!("j2k/{}", input.name), |b| {
+                    b.iter(|| {
+                        let mut context = DecoderContext::new();
+                        let view = JpegView::parse(&input.bytes).expect("j2k parsed view");
+                        let decoder = Decoder::from_view_in_context(view, &mut context)
+                            .expect("j2k fresh-context decoder");
+                        let output = decoder
+                            .decode_request(DecodeRequest::full(format))
+                            .expect("j2k fresh-context decode");
+                        std::hint::black_box(output);
+                    });
+                });
+                if libjpeg_turbo_available() {
+                    group.bench_function(format!("libjpeg-turbo/{}", input.name), |b| {
+                        b.iter(|| {
+                            let mut turbo =
+                                TurboJpegDecoder::new().expect("libjpeg-turbo fresh decoder");
+                            libjpeg_turbo_decode(&mut turbo, &input.bytes, mode);
+                        });
+                    });
+                }
+            }
+            group.finish();
+        }
+    }
+
+    // Large size sweeps should not allocate unrelated tile-batch sessions.
+    if std::env::var_os("J2K_BENCH_FULL_FRAME_ONLY").is_some() {
+        return;
+    }
+
     let mut decode_reused_rgb = c.benchmark_group("decode_reused_rgb");
     for input in inputs.iter().filter(|input| {
         input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
@@ -105,6 +214,12 @@ fn bench_compare(c: &mut Criterion) {
         decode_reused_rgb.bench_function(format!("j2k_reused/{}", input.name), |b| {
             b.iter(|| j2k_decode_reused(&dec, &mut out, stride, fmt));
         });
+        bench_turbo_prepared(
+            &mut decode_reused_rgb,
+            &input.name,
+            &input.bytes,
+            input.mode,
+        );
     }
     decode_reused_rgb.finish();
 
@@ -118,6 +233,12 @@ fn bench_compare(c: &mut Criterion) {
         decode_reused_gray.bench_function(format!("j2k_reused/{}", input.name), |b| {
             b.iter(|| j2k_decode_reused(&dec, &mut out, stride, fmt));
         });
+        bench_turbo_prepared(
+            &mut decode_reused_gray,
+            &input.name,
+            &input.bytes,
+            input.mode,
+        );
     }
     decode_reused_gray.finish();
 
@@ -134,6 +255,12 @@ fn bench_compare(c: &mut Criterion) {
         decode_scratch_rgb.bench_function(format!("j2k_scratch/{}", input.name), |b| {
             b.iter(|| j2k_decode_with_scratch(&dec, &mut pool, &mut out, stride, fmt));
         });
+        bench_turbo_prepared(
+            &mut decode_scratch_rgb,
+            &input.name,
+            &input.bytes,
+            input.mode,
+        );
     }
     decode_scratch_rgb.finish();
 
@@ -149,8 +276,18 @@ fn bench_compare(c: &mut Criterion) {
         decode_scratch_gray.bench_function(format!("j2k_scratch/{}", input.name), |b| {
             b.iter(|| j2k_decode_with_scratch(&dec, &mut pool, &mut out, stride, fmt));
         });
+        bench_turbo_prepared(
+            &mut decode_scratch_gray,
+            &input.name,
+            &input.bytes,
+            input.mode,
+        );
     }
     decode_scratch_gray.finish();
+
+    if std::env::var_os("J2K_BENCH_PREPARED_ONLY").is_some() {
+        return;
+    }
 
     // CPU-first JPEG proving groups start here. These large tiled image benches are
     // the acceptance contract for Apple Silicon and other non-Metal hosts.
@@ -444,6 +581,49 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     wsi_tile_batch_region_scaled_rgb_q4.finish();
+}
+
+fn bench_turbo_prepared(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    bytes: &[u8],
+    mode: DecodeMode,
+) {
+    if !libjpeg_turbo_available() {
+        return;
+    }
+    let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+    let info = turbo.prepare_rgb(bytes).expect("libjpeg-turbo prepare");
+    let channels = match mode {
+        DecodeMode::Gray => 1,
+        DecodeMode::Rgb => 3,
+    };
+    let stride = info.width as usize * channels;
+    let mut output = vec![0u8; stride * info.height as usize];
+    let mut run = || {
+        let result = match mode {
+            DecodeMode::Gray => turbo.decode_prepared_gray_into(
+                bytes,
+                &mut output,
+                stride,
+                info.width as usize,
+                info.height as usize,
+            ),
+            DecodeMode::Rgb => turbo.decode_prepared_rgb_into(
+                bytes,
+                &mut output,
+                stride,
+                info.width as usize,
+                info.height as usize,
+            ),
+        };
+        result.expect("libjpeg-turbo prepared decode");
+        std::hint::black_box(&output);
+    };
+    run();
+    group.bench_function(format!("libjpeg-turbo_prepared/{name}"), |b| {
+        b.iter(&mut run);
+    });
 }
 
 fn wsi_tile_batch_size() -> usize {

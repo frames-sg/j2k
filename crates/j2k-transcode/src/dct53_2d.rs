@@ -28,14 +28,22 @@ impl Dwt53TwoDimensional<f64> {
         assert_eq!(self.high_width, other.high_width);
         assert_eq!(self.high_height, other.high_height);
 
-        self.ll
-            .iter()
-            .zip(other.ll.iter())
-            .chain(self.hl.iter().zip(other.hl.iter()))
-            .chain(self.lh.iter().zip(other.lh.iter()))
-            .chain(self.hh.iter().zip(other.hh.iter()))
-            .map(|(actual, expected)| (actual - expected).abs())
-            .fold(0.0, f64::max)
+        let mut max_diff = 0.0_f64;
+        for (actual, expected, sample_count) in [
+            (&self.ll, &other.ll, self.low_width * self.low_height),
+            (&self.hl, &other.hl, self.high_width * self.low_height),
+            (&self.lh, &other.lh, self.low_width * self.high_height),
+            (&self.hh, &other.hh, self.high_width * self.high_height),
+        ] {
+            assert_eq!(actual.len(), sample_count, "actual DWT band length");
+            assert_eq!(expected.len(), sample_count, "reference DWT band length");
+            for (&actual, &expected) in actual.iter().zip(expected) {
+                assert!(actual.is_finite(), "nonfinite actual DWT coefficient");
+                assert!(expected.is_finite(), "nonfinite reference DWT coefficient");
+                max_diff = max_diff.max((actual - expected).abs());
+            }
+        }
+        max_diff
     }
 }
 

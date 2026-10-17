@@ -3,11 +3,12 @@
 //! Sequential entropy traversal into preallocated DCT block storage.
 
 use super::restart::{consume_restart_marker_if_due, finish_scan, McuPosition};
-use super::PreparedDecodePlan;
+use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::entropy::block::{
     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
     CoefficientBlock,
 };
+use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::JpegError;
 use crate::internal::bit_reader::BitReader;
 
@@ -17,6 +18,30 @@ use self::allocation::allocate_dct_decode_storage;
 pub(crate) use self::allocation::{DecodedDctBlocks, SequentialDctLifecycleMetadata};
 
 pub(crate) fn decode_scan_dct_blocks(
+    plan: &PreparedDecodePlan,
+    scan_bytes: &[u8],
+    retain_quantized_blocks: bool,
+    lifecycle: SequentialDctLifecycleMetadata,
+) -> Result<DecodedDctBlocks, JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_dct_blocks_with_entries::<NARROW_PRIMARY_ENTRIES>(
+                plan,
+                scan_bytes,
+                retain_quantized_blocks,
+                lifecycle,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => decode_scan_dct_blocks_with_entries::<FULL_PRIMARY_ENTRIES>(
+            plan,
+            scan_bytes,
+            retain_quantized_blocks,
+            lifecycle,
+        ),
+    }
+}
+
+fn decode_scan_dct_blocks_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     retain_quantized_blocks: bool,
@@ -63,8 +88,8 @@ pub(crate) fn decode_scan_dct_blocks(
 
             for component in &plan.components {
                 let plane_idx = component.output_index;
-                let dc_table = plan.dc_table(component)?;
-                let ac_table = plan.ac_table(component)?;
+                let dc_table = plan.dc_table_with_entries::<N>(component)?;
+                let ac_table = plan.ac_table_with_entries::<N>(component)?;
                 let block_cols = storage.block_cols_by_component[plane_idx];
                 for vy in 0..u32::from(component.v) {
                     for vx in 0..u32::from(component.h) {

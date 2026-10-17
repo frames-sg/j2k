@@ -12,8 +12,8 @@ use crate::decoder::{
     decode_prepared_jpeg_tile_rgb8_in_context, decode_tile_into_in_context_with_options,
     decode_tile_region_scaled_into_in_context_with_options,
     decode_tile_scaled_into_in_context_with_options, DecodeOutcome, DecodedTile,
-    PreparedJpegTileJob, TileDecodeJob, TileDecodeOutput, TileRegionScaledDecodeJob,
-    TileScaledDecodeJob,
+    PreparedJpegTileDecode, PreparedJpegTileJob, TileDecodeJob, TileDecodeOutput,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use crate::info::DecodeOptions;
 use crate::internal::scratch::ScratchPool;
@@ -26,6 +26,36 @@ pub(super) struct WorkerSlot {
 }
 
 impl WorkerSlot {
+    pub(super) fn decode_prepared_decoder_job_chunk(
+        &mut self,
+        jobs: &mut [TileDecodeJob<'_, '_>],
+        prepared: &[PreparedJpegTileDecode<'_>],
+        decoder_indices: &[usize],
+        results: &mut [BatchResultSlot<DecodeOutcome>],
+        plans: &[PlannedJob],
+        fmt: PixelFormat,
+    ) -> Result<(), BatchInfrastructureError> {
+        ensure_result_slots(jobs.len(), decoder_indices.len())?;
+        ensure_result_slots(jobs.len(), results.len())?;
+        ensure_result_slots(jobs.len(), plans.len())?;
+        for (((job, &decoder_index), plan), slot) in
+            jobs.iter_mut().zip(decoder_indices).zip(plans).zip(results)
+        {
+            let prepared = prepared
+                .get(decoder_index)
+                .ok_or(BatchInfrastructureError::SchedulerPoisoned)?;
+            let outcome = retain_within_planned_warning_claim(
+                prepared
+                    .decoder
+                    .decode_into_with_scratch(&mut self.pool, job.out, job.stride, fmt),
+                plan,
+                |outcome| outcome.warnings.capacity(),
+            )?;
+            *slot = Some(outcome);
+        }
+        Ok(())
+    }
+
     pub(super) fn decode_tile_job_chunk(
         &mut self,
         jobs: &mut [TileDecodeJob<'_, '_>],
@@ -162,6 +192,11 @@ impl WorkerSlot {
     pub(super) fn release_allocations(&mut self) {
         self.ctx.clear();
         self.pool = ScratchPool::default();
+    }
+
+    pub(super) fn install_planning_context(&mut self, context: DecoderContext) {
+        debug_assert_eq!(self.ctx.retained_allocation_bytes(), 0);
+        self.ctx = context;
     }
 
     pub(super) fn planning_context(&mut self) -> &mut DecoderContext {
