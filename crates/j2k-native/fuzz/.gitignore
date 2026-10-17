@@ -1,0 +1,11 @@
+target
+artifacts
+corpus/*
+!corpus/native_decode_fuzz/
+corpus/native_decode_fuzz/*
+!corpus/native_decode_fuzz/classic_gray1.j2c
+!corpus/native_decode_fuzz/classic_gray12_tiles_layers_plt_tlm.j2c
+!corpus/native_decode_fuzz/classic_gray8_lrcp.j2c
+!corpus/native_decode_fuzz/classic_rgb8_irreversible97_rlcp.j2c
+!corpus/native_decode_fuzz/htj2k_gray16_cprl.j2c
+!corpus/native_decode_fuzz/htj2k_rgb8_rpcl_sop_eph.j2c
