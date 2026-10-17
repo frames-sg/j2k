@@ -28,11 +28,19 @@ pub(super) fn apply_magnitude_refinement_phase(
     for y in (0..height).step_by(4) {
         let mut cur_sig_idx = (y >> 2) as usize * mstr;
         let dpp = (y * stride) as usize;
+        // One bit per row of this stripe that lies inside the code block.
+        let rows_in_block = (1u32 << (height - y).min(4)) - 1;
 
         for i in (0..width).step_by(8) {
             let cwd = magref.fetch();
             let sig = read_u32_pair(sigma, cur_sig_idx);
             cur_sig_idx += 2;
+            // The cleanup pass can mark samples of a quad that lies across
+            // the block edge as significant when the codestream is malformed.
+            // Those samples still consume their refinement bits, but, as in
+            // the cleanup pass, nothing is written for them.
+            let in_block =
+                (0x1111_1111u32 * rows_in_block) & (u32::MAX >> (32 - 4 * (width - i).min(8)));
             let mut col_mask = 0xFu32;
             let mut cwd_mut = cwd;
 
@@ -47,7 +55,9 @@ pub(super) fn apply_magnitude_refinement_phase(
                                 let mut sym = cwd_mut & 1;
                                 sym = (1 - sym) << (p - 1);
                                 sym |= half;
-                                decoded_data[dp] ^= sym;
+                                if (in_block & sample_mask) != 0 {
+                                    decoded_data[dp] ^= sym;
+                                }
                                 cwd_mut >>= 1;
                             }
                             sample_mask <<= 1;

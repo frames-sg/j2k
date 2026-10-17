@@ -128,6 +128,84 @@ fn invalid_cod_layer_count_stops_before_mct_byte() {
     assert_eq!(reader.tail(), Some(&data[6..]));
 }
 
+/// A COD segment body: LRCP, one layer, no MCT, one decomposition level, the
+/// given code-block exponent offsets and, when given, precinct sizes.
+fn cod_body(xcb: u8, ycb: u8, precincts: &[u8]) -> Vec<u8> {
+    let mut body = u16::try_from(12 + precincts.len())
+        .expect("COD length")
+        .to_be_bytes()
+        .to_vec();
+    body.extend_from_slice(&[
+        u8::from(!precincts.is_empty()),
+        0,
+        0,
+        1,
+        0,
+        1,
+        xcb,
+        ycb,
+        0,
+        1,
+    ]);
+    body.extend_from_slice(precincts);
+    body
+}
+
+fn parses_cod(body: &[u8]) -> bool {
+    match cod_marker(&mut BitReader::new(body)) {
+        Ok(_) => true,
+        Err(DecodeError::Marker(MarkerError::ParseFailure("COD"))) => false,
+        Err(other) => panic!("unexpected COD error: {other}"),
+    }
+}
+
+#[test]
+fn cod_code_block_sizes_follow_table_a18() {
+    // Exponent offsets 0-8 (4 to 1024 samples), at most 4096 samples a block.
+    for (xcb, ycb) in [(0, 0), (4, 4), (8, 0), (0, 8), (5, 3)] {
+        assert!(parses_cod(&cod_body(xcb, ycb, &[])), "xcb {xcb} ycb {ycb}");
+    }
+    for (xcb, ycb) in [(9, 0), (0, 9), (5, 4), (8, 1), (57, 4)] {
+        assert!(!parses_cod(&cod_body(xcb, ycb, &[])), "xcb {xcb} ycb {ycb}");
+    }
+}
+
+#[test]
+fn cod_precinct_exponents_are_zero_only_at_the_lowest_resolution() {
+    // Table A.21. Above resolution 0, B-17 and B-18 use PPx - 1 and PPy - 1.
+    assert!(parses_cod(&cod_body(4, 4, &[0x00, 0x11])));
+    for above in [0x10, 0x01, 0x00] {
+        assert!(!parses_cod(&cod_body(4, 4, &[0x00, above])), "{above:#04x}");
+    }
+}
+
+#[test]
+fn fuzzed_precinct_and_code_block_sizes_fail_to_parse() {
+    // From region_scaled_fuzz: PPx = 0 at resolution 1 made PPx - 1
+    // underflow, and with an out-of-range code-block exponent the code-block
+    // width then wrapped to 0 and decode planning divided by it.
+    let options = crate::EncodeOptions {
+        num_decomposition_levels: 1,
+        precinct_exponents: vec![(15, 15), (15, 15)],
+        ..crate::EncodeOptions::default()
+    };
+    let pixels = (0..64).collect::<Vec<u8>>();
+    let mut codestream = crate::encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode");
+    let cod = codestream
+        .windows(2)
+        .position(|marker| marker == [0xff, 0x52])
+        .expect("COD marker");
+    // After FF52: Lcod, Scod, SGcod (4 bytes), decomposition levels, xcb.
+    codestream[cod + 10] = 30;
+    // Then ycb, style, transform and one precinct byte per resolution.
+    codestream[cod + 15] &= 0xf0;
+
+    assert!(matches!(
+        crate::Image::new(&codestream, &DecodeSettings::default()),
+        Err(DecodeError::Marker(MarkerError::ParseFailure("COD")))
+    ));
+}
+
 #[test]
 fn undersized_qcd_stops_after_style_byte() {
     let data = [0, 2, 0, 0xA5];
