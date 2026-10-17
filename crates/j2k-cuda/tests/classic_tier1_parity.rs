@@ -71,6 +71,84 @@ fn classic_tier1_cuda_matches_native_style_and_dimension_matrix() {
     run_case_batch(&context, &pool, &cases);
 }
 
+#[test]
+fn classic_tier1_cuda_matches_native_at_every_reversible_pass_count() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    // Stopping a block after each of its coding passes ends it on every kind
+    // of pass, so reversible coefficients take the T.800 Equation E-8
+    // midpoint below each bit-plane. Each case's truncations share a batch.
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    for case in &tier1_cases() {
+        let encoded = encode_j2k_code_block_scalar_with_style(
+            &generated_coefficients(case),
+            case.width,
+            case.height,
+            case.subband,
+            case.total_bitplanes,
+            case.style,
+        )
+        .unwrap_or_else(|error| panic!("{} encode: {error}", case.name));
+        let mut payload = Vec::new();
+        let mut jobs = Vec::new();
+        let mut segments = Vec::new();
+        let mut expected = Vec::new();
+        for passes in 1..=encoded.number_of_coding_passes {
+            let truncated = truncate_coding_passes(&encoded, passes);
+            let mut job = cuda_job(case, &truncated, truncated.data.len(), true);
+            job.payload_offset = u64::try_from(payload.len()).expect("batch payload offset");
+            job.segment_start = u32::try_from(segments.len()).expect("batch segment offset");
+            job.output_offset = u32::try_from(expected.len()).expect("batch output offset");
+            expected.extend(
+                native_decode(case, &truncated, &truncated.data, &truncated.segments, true)
+                    .unwrap_or_else(|error| {
+                        panic!("{} native decode after {passes} passes: {error}", case.name)
+                    }),
+            );
+            payload.extend_from_slice(&truncated.data);
+            segments.extend(cuda_segments(&truncated.segments));
+            jobs.push(job);
+        }
+        let actual = cuda_decode_jobs(
+            &context,
+            &pool,
+            &payload,
+            &jobs,
+            &segments,
+            expected.len(),
+            false,
+        )
+        .unwrap_or_else(|error| panic!("{} CUDA decode: {error}", case.name));
+        assert_eq!(actual, expected, "{} truncated pass parity", case.name);
+    }
+}
+
+/// The code block as if its encoder had stopped after `passes` passes.
+fn truncate_coding_passes(
+    encoded: &j2k_native::EncodedJ2kCodeBlock,
+    passes: u8,
+) -> j2k_native::EncodedJ2kCodeBlock {
+    let segments = encoded
+        .segments
+        .iter()
+        .filter(|segment| segment.start_coding_pass < passes)
+        .map(|segment| J2kCodeBlockSegment {
+            end_coding_pass: segment.end_coding_pass.min(passes),
+            ..*segment
+        })
+        .collect::<Vec<_>>();
+    let last = segments.last().expect("a segment holds the first pass");
+    let data_len = (last.data_offset + last.data_length) as usize;
+    j2k_native::EncodedJ2kCodeBlock {
+        data: encoded.data[..data_len].to_vec(),
+        segments,
+        number_of_coding_passes: passes,
+        missing_bit_planes: encoded.missing_bit_planes,
+    }
+}
+
 fn tier1_cases() -> [Tier1Case; 10] {
     use J2kSubBandType::{HighHigh, HighLow, LowHigh, LowLow};
     let default_style = J2kCodeBlockStyle {

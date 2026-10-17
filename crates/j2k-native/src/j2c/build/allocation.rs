@@ -202,12 +202,19 @@ impl DecompositionAllocationPlan {
         )?;
 
         if self.include_roi_workspace {
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
-            checked_include_elements::<Option<IntRect>>(
-                &mut total_bytes,
-                self.tile_decompositions,
-            )?;
+            if let Some(roi_plan) = storage.roi_plan.as_ref() {
+                total_bytes = total_bytes
+                    .checked_add(roi_plan.owned_bytes()?)
+                    .filter(|bytes| *bytes <= DEFAULT_MAX_DECODE_BYTES)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            } else {
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
+                checked_include_elements::<Option<IntRect>>(
+                    &mut total_bytes,
+                    self.tile_decompositions,
+                )?;
+            }
         }
 
         if self.plans_idwt_workspace() {
@@ -237,6 +244,7 @@ pub(super) fn prepare_decomposition_storage(
     retained_baseline_bytes: usize,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&super::PrecinctSelection>,
 ) -> Result<DecompositionAllocationPlan> {
     let (mut plan, idwt_workspace_elements) = plan::build_allocation_plan(
         tile,
@@ -244,6 +252,7 @@ pub(super) fn prepare_decomposition_storage(
         storage.exact_integer_decode,
         include_roi_workspace,
         workspace,
+        selection,
     )?;
 
     // Capacity retention must never make a smaller valid tile fail in a later
@@ -358,7 +367,7 @@ fn release_roi_workspace_bytes(
     Ok(())
 }
 
-fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
+pub(super) fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
     let bytes = size_of::<T>()
         .checked_mul(count)
         .ok_or(ValidationError::ImageTooLarge)?;

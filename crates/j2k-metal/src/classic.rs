@@ -6,7 +6,7 @@ use crate::engine as compute;
 use j2k_native::DecodingError;
 use j2k_native::{
     decode_j2k_code_block_scalar, decode_j2k_sub_band_scalar, HtCodeBlockDecoder,
-    J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
+    J2kClassicReconstruction, J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
 };
 
 #[derive(Default)]
@@ -17,6 +17,15 @@ pub(crate) struct MetalClassicBlockDecoder {
     sub_band_batches: usize,
     #[cfg(target_os = "macos")]
     batched_kernel_dispatches: usize,
+}
+
+const fn classic_irreversible_midpoint(reconstruction: J2kClassicReconstruction) -> Option<bool> {
+    match reconstruction {
+        J2kClassicReconstruction::ReversibleExact
+        | J2kClassicReconstruction::ReversibleMidpoint => Some(false),
+        J2kClassicReconstruction::IrreversibleMidpoint => Some(true),
+        _ => None,
+    }
 }
 
 impl MetalClassicBlockDecoder {
@@ -119,6 +128,18 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         self.decode_j2k_sub_band_inner(job, output, irreversible_midpoint)
     }
 
+    fn decode_j2k_sub_band_with_reconstruction(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        let Some(irreversible_midpoint) = classic_irreversible_midpoint(reconstruction) else {
+            return Ok(false);
+        };
+        self.decode_j2k_sub_band_inner(job, output, irreversible_midpoint)
+    }
+
     fn decode_j2k_code_block(
         &mut self,
         job: J2kCodeBlockDecodeJob<'_>,
@@ -133,6 +154,18 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
+        self.decode_j2k_code_block_inner(job, output, irreversible_midpoint)
+    }
+
+    fn decode_j2k_code_block_with_reconstruction(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        let Some(irreversible_midpoint) = classic_irreversible_midpoint(reconstruction) else {
+            return Ok(false);
+        };
         self.decode_j2k_code_block_inner(job, output, irreversible_midpoint)
     }
 }
@@ -257,15 +290,35 @@ mod error_context_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::MetalClassicBlockDecoder;
+    use super::{classic_irreversible_midpoint, MetalClassicBlockDecoder};
     #[cfg(target_os = "macos")]
     use crate::engine as compute;
     #[cfg(target_os = "macos")]
-    use j2k_native::{decode_j2k_code_block_scalar, J2kCodeBlockDecodeJob, J2kCodeBlockSegment};
+    use j2k_native::{
+        decode_j2k_code_block_scalar, encode_j2k_code_block_scalar_with_style,
+        J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kCodeBlockStyle,
+        J2kSubBandDecodeJob, J2kSubBandType,
+    };
     use j2k_native::{
         encode, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder,
-        Image,
+        Image, J2kClassicReconstruction,
     };
+
+    #[test]
+    fn explicit_classic_reconstruction_modes_map_without_guessing() {
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::ReversibleExact),
+            Some(false)
+        );
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::ReversibleMidpoint),
+            Some(false)
+        );
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::IrreversibleMidpoint),
+            Some(true)
+        );
+    }
 
     #[cfg(target_os = "macos")]
     fn should_run_metal_runtime() -> bool {
@@ -625,6 +678,189 @@ mod tests {
 
         for (hooked_plane, baseline_plane) in hooked.planes().iter().zip(baseline.planes()) {
             assert_eq!(hooked_plane.samples(), baseline_plane.samples());
+        }
+    }
+
+    #[test]
+    fn metal_classic_decoder_matches_native_for_early_stopped_reversible_blocks() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        // Both fixtures need the T.800 Equation E-8 midpoint (r = 1/2). Their
+        // one-block sub-bands reach the per-block kernel; the rate-limited
+        // fixture's four-block sub-bands reach the batched kernel.
+        for (label, bytes, batched) in [
+            (
+                "lossless",
+                j2k_test_support::REVERSIBLE_EARLY_STOP_LOSSLESS,
+                false,
+            ),
+            (
+                "rate-limited",
+                j2k_test_support::REVERSIBLE_EARLY_STOP_RATE_LIMITED,
+                true,
+            ),
+        ] {
+            let image = Image::new(bytes, &DecodeSettings::default()).expect("image");
+
+            let mut baseline_context = DecoderContext::default();
+            let baseline = image
+                .decode_components_with_context(&mut baseline_context)
+                .expect("baseline decode");
+
+            let mut hooked_context = DecoderContext::default();
+            let mut decoder = MetalClassicBlockDecoder::default();
+            let hooked = image
+                .decode_components_with_ht_decoder(&mut hooked_context, &mut decoder)
+                .expect("hooked decode");
+
+            #[cfg(target_os = "macos")]
+            {
+                assert!(decoder.kernel_dispatches() > 0, "{label}");
+                assert_eq!(decoder.batched_kernel_dispatches() > 0, batched, "{label}");
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = batched;
+            assert_eq!(
+                hooked.planes()[0].samples(),
+                baseline.planes()[0].samples(),
+                "{label}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn patterned_coefficients(count: u32) -> Vec<i32> {
+        let mut state = 0x9e37_79b9_u32;
+        (0..count)
+            .map(|index| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                if index % 11 == 0 {
+                    0
+                } else {
+                    i32::try_from((state >> 16) & 0x1ff).expect("masked coefficient") - 255
+                }
+            })
+            .collect()
+    }
+
+    /// The pass count, segments and data of `encoded` as if its encoder had
+    /// stopped after `passes` passes.
+    #[cfg(target_os = "macos")]
+    fn truncate_coding_passes(
+        encoded: &j2k_native::EncodedJ2kCodeBlock,
+        passes: u8,
+    ) -> (u8, Vec<J2kCodeBlockSegment>, &[u8]) {
+        let segments = encoded
+            .segments
+            .iter()
+            .filter(|segment| segment.start_coding_pass < passes)
+            .map(|segment| J2kCodeBlockSegment {
+                end_coding_pass: segment.end_coding_pass.min(passes),
+                ..*segment
+            })
+            .collect::<Vec<_>>();
+        let last = segments.last().expect("a segment holds the first pass");
+        let data_len = (last.data_offset + last.data_length) as usize;
+        (passes, segments, &encoded.data[..data_len])
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_classic_kernels_match_scalar_at_every_reversible_pass_count() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        // Stopping a block after each of its coding passes ends it on every
+        // kind of pass, so reversible coefficients take the T.800 Equation
+        // E-8 midpoint below each bit-plane on the per-block and batched
+        // kernels. The truncations sit side by side in one sub-band.
+        let (width, height, total_bitplanes) = (13_u32, 9_u32, 10_u8);
+        let coefficients = patterned_coefficients(width * height);
+        let plain = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: false,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        for style in [
+            plain,
+            J2kCodeBlockStyle {
+                selective_arithmetic_coding_bypass: true,
+                ..plain
+            },
+            J2kCodeBlockStyle {
+                termination_on_each_pass: true,
+                reset_context_probabilities: true,
+                ..plain
+            },
+        ] {
+            let encoded = encode_j2k_code_block_scalar_with_style(
+                &coefficients,
+                width,
+                height,
+                J2kSubBandType::LowLow,
+                total_bitplanes,
+                style,
+            )
+            .expect("encode classic code block");
+            let truncations = (1..=encoded.number_of_coding_passes)
+                .map(|passes| truncate_coding_passes(&encoded, passes))
+                .collect::<Vec<_>>();
+            let sub_band_width = width * u32::from(encoded.number_of_coding_passes);
+            let job = |passes: u8, segments, data, output_stride| J2kCodeBlockDecodeJob {
+                data,
+                segments,
+                width,
+                height,
+                output_stride,
+                missing_bit_planes: encoded.missing_bit_planes,
+                number_of_coding_passes: passes,
+                total_bitplanes,
+                roi_shift: 0,
+                sub_band_type: J2kSubBandType::LowLow,
+                style,
+                strict: true,
+                dequantization_step: 1.0,
+            };
+
+            let mut expected = vec![0.0f32; (sub_band_width * height) as usize];
+            let mut batch = Vec::with_capacity(truncations.len());
+            for (index, (passes, segments, data)) in truncations.iter().enumerate() {
+                let output_x = u32::try_from(index).expect("truncation index") * width;
+                let block = job(*passes, segments, data, width as usize);
+                let mut scalar = vec![0.0f32; (width * height) as usize];
+                decode_j2k_code_block_scalar(block, &mut scalar).expect("scalar decode");
+                let mut metal = vec![0.0f32; scalar.len()];
+                compute::decode_classic_cleanup_code_block_with_midpoint(block, &mut metal, false)
+                    .expect("Metal per-block decode");
+                assert_eq!(metal, scalar, "{style:?} after {passes} passes");
+
+                let in_sub_band = job(*passes, segments, data, sub_band_width as usize);
+                decode_j2k_code_block_scalar(in_sub_band, &mut expected[output_x as usize..])
+                    .expect("scalar decode into the sub-band");
+                batch.push(J2kCodeBlockBatchJob {
+                    output_x,
+                    output_y: 0,
+                    code_block: in_sub_band,
+                });
+            }
+            let mut actual = vec![0.0f32; expected.len()];
+            compute::decode_classic_cleanup_sub_band_with_midpoint(
+                J2kSubBandDecodeJob {
+                    width: sub_band_width,
+                    height,
+                    jobs: &batch,
+                },
+                &mut actual,
+                false,
+            )
+            .expect("Metal batched decode");
+            assert_eq!(actual, expected, "{style:?} batched");
         }
     }
 

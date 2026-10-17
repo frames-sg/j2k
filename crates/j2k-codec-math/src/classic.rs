@@ -137,6 +137,32 @@ pub const fn irreversible_midpoint_bit(
     }
 }
 
+/// Returns the bit to set in a reversible (5/3) coefficient's magnitude when
+/// its code block's coding passes stopped before its lowest bit-planes.
+///
+/// T.800 E.1.2.2 reconstructs a fully decoded reversible coefficient exactly
+/// (Equation E-7) and otherwise as `q ± r·2^(Mb−Nb)` (Equation E-8), with the
+/// reconstruction parameter `r` chosen by the decoder (E.1.1.2). With
+/// `r = 1/2` and `b` undecoded low bit-planes the offset is `2^(b−1)`, the
+/// same placement as [`irreversible_midpoint_bit`], and it stays an integer.
+/// The undecoded bits are zero, so setting the returned bit adds the offset.
+///
+/// `None` means the coefficient is zero, fully decoded, or the pass count is
+/// inconsistent with the number of decoded bitplanes; it is then unchanged.
+// `#[inline]` exports the MIR the cuda-oxide device compiler needs; rustc
+// exports it unprompted only for leaf functions like `irreversible_midpoint_bit`.
+#[inline]
+pub const fn reversible_midpoint_bit(
+    magnitude: u64,
+    decoded_bitplanes: u32,
+    number_of_coding_passes: u32,
+) -> Option<u32> {
+    match irreversible_midpoint_bit(magnitude, decoded_bitplanes, number_of_coding_passes) {
+        Some(lowest_decoded_bit) if lowest_decoded_bit > 0 => Some(lowest_decoded_bit - 1),
+        _ => None,
+    }
+}
+
 /// Sign-coding context and XOR bit indexed by packed cardinal-neighbor state.
 #[rustfmt::skip]
 pub const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
@@ -249,6 +275,23 @@ mod tests {
         assert_eq!(irreversible_midpoint_bit(4, 0, 1), None);
         assert_eq!(irreversible_midpoint_bit(4, 3, 0), None);
         assert_eq!(irreversible_midpoint_bit(1, 1, 5), None);
+    }
+
+    #[test]
+    fn reversible_midpoint_bit_sits_below_the_lowest_decoded_bit() {
+        // Three bitplanes allow 1 + 3 * 2 = 7 passes; a complete block is exact.
+        assert_eq!(reversible_midpoint_bit(5, 3, 7), None);
+        // A final magnitude-refinement pass refines every significant coefficient.
+        assert_eq!(reversible_midpoint_bit(4, 3, 6), None);
+        // A final significance pass leaves 0b100 unrefined at bit 0 but not 0b001.
+        assert_eq!(reversible_midpoint_bit(4, 3, 5), Some(0));
+        assert_eq!(reversible_midpoint_bit(1, 3, 5), None);
+        // After bit-plane 1's cleanup pass, bit 0 is undecoded.
+        assert_eq!(reversible_midpoint_bit(4, 3, 4), Some(0));
+        // After the first cleanup pass, bits 1 and 0 are undecoded.
+        assert_eq!(reversible_midpoint_bit(4, 3, 1), Some(1));
+        assert_eq!(reversible_midpoint_bit(0, 3, 1), None);
+        assert_eq!(reversible_midpoint_bit(1, 1, 5), None);
     }
 
     #[test]

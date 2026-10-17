@@ -9,7 +9,6 @@ use super::decode::{
     DecompositionStorage,
 };
 use super::encode::allocation::{checked_add_bytes, checked_element_bytes};
-use super::progression::progression_iterator;
 use super::segment;
 use super::tile::{self, Tile};
 use crate::error::{bail, DecodingError, Result, TileError, ValidationError};
@@ -136,8 +135,9 @@ fn extract_reversible_53_coefficients_inner<'a>(
         tiles.structural_workspace_bytes(),
         false,
         build::BuildWorkspace::CoefficientsOnly,
+        None,
     )?;
-    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
+    segment::parse(tile, header, &mut ctx.storage)?;
 
     let mut no_ht_decoder = None;
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism();
