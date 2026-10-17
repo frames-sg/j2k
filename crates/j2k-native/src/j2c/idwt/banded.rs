@@ -102,7 +102,13 @@ fn band_workers() -> usize {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(
+        dead_code,
+        reason = "the serial build retains the parallel strip result type for one shared planner signature"
+    )
+)]
 struct ParallelStripLayout {
     strip_len: usize,
     concurrent_strips: usize,
