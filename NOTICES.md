@@ -55,8 +55,10 @@ determination.
 
 - **Compact ICC Profiles** <https://github.com/saucecontrol/Compact-ICC-Profiles>
   — ICC profile assets in `crates/j2k-native/assets/` are used for
-  color-management tests. The profiles are available under CC0 1.0 Universal;
-  the retained license text is in
+  color-management tests, and the grayscale profiles `sGrey-v2-micro.icc` and
+  `sGrey-v4.icc` in `crates/j2k/fuzz/corpus/srgb8_fuzz/` (from commit
+  `bdd84663061bc4ae95ca70decff54f581e27f702`) seed `srgb8_fuzz`. The profiles
+  are available under CC0 1.0 Universal; the retained license text is in
   `crates/j2k-native/assets/LICENSE.txt`.
 
 - **OpenJPH** <https://github.com/aous72/OpenJPH> — HTJ2K lookup tables in

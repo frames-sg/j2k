@@ -1,10 +1,16 @@
 #![no_main]
 
+use std::sync::LazyLock;
+
 use j2k::J2kDecoder;
-use j2k_test_support::minimal_j2k_codestream;
+use j2k_test_support::classic_j2k_gray8_fixture;
 use libfuzzer_sys::fuzz_target;
 
 const MAX_ICC_BYTES: usize = 64 * 1024;
+
+/// A complete 4×4 grayscale codestream: if the decoder rejects the codestream,
+/// it never reads the profile.
+static CODESTREAM: LazyLock<Vec<u8>> = LazyLock::new(|| classic_j2k_gray8_fixture(4, 4));
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_ICC_BYTES {
@@ -19,12 +25,12 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn jp2_with_gray_icc(profile: &[u8]) -> Vec<u8> {
-    let codestream = minimal_j2k_codestream();
+    let codestream = &*CODESTREAM;
     let mut jp2h = Vec::new();
     push_box(
         &mut jp2h,
         *b"ihdr",
-        &[0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 7, 7, 0, 0],
+        &[0, 0, 0, 4, 0, 0, 0, 4, 0, 1, 7, 7, 0, 0],
     );
     let mut color = Vec::with_capacity(profile.len().saturating_add(3));
     color.extend_from_slice(&[2, 0, 0]);
@@ -43,7 +49,7 @@ fn jp2_with_gray_icc(profile: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&[0, 0, 0, 20]);
     out.extend_from_slice(b"ftypjp2 \0\0\0\0jp2 ");
     push_box(&mut out, *b"jp2h", &jp2h);
-    push_box(&mut out, *b"jp2c", &codestream);
+    push_box(&mut out, *b"jp2c", codestream);
     out
 }
 
