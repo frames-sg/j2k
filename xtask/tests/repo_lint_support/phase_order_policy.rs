@@ -16,14 +16,15 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
     let decode = read("crates/j2k-native/src/j2c/decode.rs");
     let decode_tile = FunctionCalls::parse("native tile decode", &decode, "decode_tile");
     // Region decode plans its ROI before building so that precincts it will
-    // never parse get no code-blocks. The selection preflights the precinct
-    // count first, and `build::build` budgets whatever is then built.
+    // never parse get no code-blocks. The selection preflights the tile's
+    // unavoidable structure first, and `build::build` budgets whatever is then
+    // built, with the selection charged until packet parsing ends.
     decode_tile.assert_ordered(
         "native ROI precinct selection and budgeted build before packet parsing",
         &[
             "build::select_region_precincts",
             "build::build",
-            "segment::parse",
+            "segment::parse_selected",
             "decode_component_tile_bit_planes_budgeted",
         ],
     );
@@ -32,7 +33,7 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
         &[
             "build::select_region_precincts",
             "build::build",
-            "segment::parse",
+            "segment::parse_selected",
             "decode_component_tile_bit_planes_budgeted",
         ],
     );
@@ -43,9 +44,9 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
         "select_region_precincts",
     );
     select.assert_ordered(
-        "precinct-count preflight before skeleton and ROI planning",
+        "unavoidable-structure preflight before skeleton and ROI planning",
         &[
-            "validate_precinct_count",
+            "preflight_unavoidable_minimum",
             "build_skeleton",
             "RoiPlan::build",
         ],
@@ -53,7 +54,7 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
     select.assert_propagated(
         "native ROI precinct selection failures",
         &[
-            "validate_precinct_count",
+            "preflight_unavoidable_minimum",
             "build_skeleton",
             "RoiPlan::build",
         ],

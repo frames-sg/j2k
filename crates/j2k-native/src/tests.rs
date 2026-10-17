@@ -1074,6 +1074,84 @@ fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
     );
 }
 
+/// A one-level gray codestream whose single tile is `dimensions` square, with
+/// the 32-layer maximum and the smallest precincts: 1x1 at resolution 0 and 2x2 at
+/// resolution 1. The encoder does not write precincts that small, so COD is
+/// rewritten after encoding. Its packet data is the 4x4 fixture's, so only a
+/// few bytes.
+fn many_precinct_layer_codestream(dimensions: u32) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        precinct_exponents: vec![(15, 15), (15, 15)],
+        ..EncodeOptions::default()
+    };
+    let mut codestream =
+        encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode precinct fixture");
+    rewrite_siz_to_single_large_tile(&mut codestream, dimensions);
+    let cod = codestream
+        .windows(2)
+        .position(|w| w == [0xFF, 0x52])
+        .expect("COD marker");
+    assert_eq!(codestream[cod + 4] & 1, 1, "COD signals precinct sizes");
+    assert_eq!(codestream[cod + 9], 1, "one decomposition level");
+    codestream[cod + 6..cod + 8].copy_from_slice(&32_u16.to_be_bytes());
+    codestream[cod + 14] = 0x00;
+    codestream[cod + 15] = 0x11;
+    codestream
+}
+
+#[test]
+fn decode_region_rejects_an_oversized_precinct_layout_before_walking_the_progression() {
+    // 2048x2048 with these precincts has about 2.1M (component, resolution)
+    // precincts and 4.2M sub-band precincts. Their precinct records and root
+    // tag-tree nodes alone exceed the cap, however few the region keeps, and
+    // at 32 layers the progression has about 67M positions. The selection
+    // must reject the tile from its counts, without walking any of them.
+    let codestream = many_precinct_layer_codestream(2_048);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+    let mut context = DecoderContext::default();
+    let Err(error) = image.decode_region_with_context((0, 0, 1, 1), &mut context) else {
+        panic!("the precinct layout must exceed the structural budget");
+    };
+    assert_eq!(
+        error,
+        DecodeError::Validation(ValidationError::ImageTooLarge)
+    );
+    assert_eq!(
+        context
+            .tile_decode_context
+            .debug_counters
+            .selection_scanned_packets,
+        0
+    );
+}
+
+#[test]
+fn region_precinct_selection_walks_no_more_packets_than_the_tile_has_header_bytes() {
+    // 1024x1024 with the same precincts fits the structural budget, and at
+    // 32 layers the progression still has about 17M positions. Without PLT
+    // the selection walks the progression to find the precincts parsed before
+    // the last required packet. Every packet header takes at least one byte,
+    // so it must stop once the tile's few header bytes are used up.
+    let codestream = many_precinct_layer_codestream(1_024);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+    let mut context = DecoderContext::default();
+    // The packet data does not cover this layout, so the decode result itself
+    // is not the point here.
+    let _ = image.decode_region_with_context((512, 512, 1, 1), &mut context);
+    let scanned = context
+        .tile_decode_context
+        .debug_counters
+        .selection_scanned_packets;
+    assert!(
+        scanned > 0 && scanned <= codestream.len(),
+        "walked {scanned} progression positions for a {}-byte codestream",
+        codestream.len()
+    );
+}
+
 #[test]
 fn decode_region_rejects_code_block_layer_metadata_amplification() {
     let pixels: Vec<u8> = (0..64).collect();

@@ -17,7 +17,7 @@ use allocation::{
     code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,
     DecompositionAllocationPlan,
 };
-pub(crate) use selection::{select_region_precincts, PrecinctSelection};
+pub(crate) use selection::{select_region_precincts, PrecinctSelection, PrecinctUse};
 
 /// Build and allocate all necessary structures to process the code-blocks
 /// for a specific tile. Also parses the segments for each code-block.
@@ -189,12 +189,12 @@ fn resize_planned_coefficients(
     Ok(())
 }
 
-/// The keep flags for the `run`-th resolution, when region decode selected
+/// The precinct uses for the `run`-th resolution, when region decode selected
 /// precincts.
 fn selected_precincts(
     selection: Option<&PrecinctSelection>,
     run: usize,
-) -> Result<Option<&[bool]>> {
+) -> Result<Option<&[PrecinctUse]>> {
     selection
         .map(|selection| {
             selection
@@ -244,7 +244,7 @@ fn build_precincts(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
     tile: &Tile<'_>,
-    keep: Option<&[bool]>,
+    keep: Option<&[PrecinctUse]>,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Range<usize>> {
     let start = storage.precincts.len();
@@ -255,7 +255,10 @@ fn build_precincts(
         .enumerate()
     {
         let mut grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
-        if keep.is_some_and(|keep| !keep.get(precinct_idx).copied().unwrap_or(true)) {
+        if keep.is_some_and(|keep| {
+            keep.get(precinct_idx)
+                .is_some_and(|precinct_use| !precinct_use.is_built())
+        }) {
             // Region decode never parses this precinct's packets: build it
             // with no code-blocks and root-only tag trees.
             grid.columns = 0;

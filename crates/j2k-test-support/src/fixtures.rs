@@ -2,6 +2,22 @@
 
 //! Shared byte fixtures and container builders for integration tests.
 
+/// `OpenJPEG` 2.5.3 PCRL and CPRL codestreams with several precincts per
+/// resolution. `fixtures/openjpeg_progression/README.md` documents how
+/// `generate.sh` makes them. Each decodes losslessly to
+/// [`OPENJPEG_PROGRESSION_SOURCE_97X61_RGB`].
+pub const OPENJPEG_PCRL_97X61: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/pcrl_97x61.j2k");
+pub const OPENJPEG_CPRL_97X61: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/cprl_97x61.j2k");
+pub const OPENJPEG_PCRL_97X61_TILES_PLT: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/pcrl_97x61_tiles_plt.j2k");
+pub const OPENJPEG_CPRL_97X61_TILES_PLT: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/cprl_97x61_tiles_plt.j2k");
+/// Interleaved RGB8 source samples for the `OpenJPEG` progression fixtures.
+pub const OPENJPEG_PROGRESSION_SOURCE_97X61_RGB: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/source_97x61.rgb");
+
 pub const JPEG_BASELINE_420_16X16: &[u8] =
     include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 pub const JPEG_BASELINE_420_16X16_RGB: &[u8] =

@@ -360,7 +360,7 @@ fn release_roi_workspace_bytes(
     Ok(())
 }
 
-fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
+pub(super) fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
     let bytes = size_of::<T>()
         .checked_mul(count)
         .ok_or(ValidationError::ImageTooLarge)?;

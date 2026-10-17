@@ -2022,23 +2022,22 @@ fn region_decode_flush_with_right_and_bottom_edges_matches_scaled_whole_decode_c
     }
 }
 
-#[test]
-fn region_decode_matches_whole_decode_for_every_progression_with_and_without_plt() {
-    // Region decode skips packets of precincts it does not need (by PLT
-    // length when present), stops after the last packet it needs, and builds
-    // no code-blocks for precincts it never parses. Each progression order
-    // places needed and unneeded packets differently. The encoder writes
-    // position-major orders (PCRL, CPRL) correctly only with one precinct per
-    // resolution, so those use the default precincts.
-    let fmt = PixelFormat::Rgb8;
-    let (width, height) = (301_u32, 203_u32);
-    let pixels = edge_fixture_pixels(width, height);
-    let rois = [
+/// Where packet headers live, and whether PLT lengths are signalled.
+#[derive(Clone, Copy, Debug)]
+enum PacketHeaders {
+    InBand,
+    InBandWithPlt,
+    Ppm,
+    Ppt,
+}
+
+fn progression_test_rois(width: u32, height: u32) -> [Rect; 4] {
+    [
         Rect {
-            x: 120,
-            y: 80,
-            w: 40,
-            h: 30,
+            x: width * 2 / 5,
+            y: height * 2 / 5,
+            w: width / 7,
+            h: height / 7,
         },
         Rect {
             x: 0,
@@ -2058,7 +2057,49 @@ fn region_decode_matches_whole_decode_for_every_progression_with_and_without_plt
             w: width,
             h: height,
         },
-    ];
+    ]
+}
+
+/// Region decodes of `bytes` must equal crops of the whole decode, bit for
+/// bit, for every test region at full and reduced scale.
+fn assert_region_decodes_match_whole_decode(bytes: &[u8], dims: (u32, u32), context: &str) {
+    let fmt = PixelFormat::Rgb8;
+    let (width, height) = dims;
+    for scale in [Downscale::None, Downscale::Half, Downscale::Quarter] {
+        let denominator = scale.denominator();
+        let whole = scaled_whole_decode(bytes, dims, fmt, scale);
+        for roi in progression_test_rois(width, height) {
+            assert_eq!(
+                scaled_region_decode(bytes, fmt, roi, scale),
+                crop_bytes(
+                    &whole,
+                    width.div_ceil(denominator) as usize,
+                    fmt.bytes_per_pixel(),
+                    roi.scaled_covering(scale),
+                ),
+                "{context} region {},{} {}x{} at 1/{denominator}",
+                roi.x,
+                roi.y,
+                roi.w,
+                roi.h,
+            );
+        }
+    }
+}
+
+#[test]
+fn region_decode_matches_whole_decode_for_every_progression_and_packet_header_layout() {
+    // Region decode skips packets of precincts it does not need (by PLT
+    // length when every tile-part has it), stops after the last packet it
+    // needs, and builds no code-blocks for precincts it never parses. Each
+    // progression order places needed and unneeded packets differently, and
+    // PPM, PPT and tile-part splits move packet headers away from their
+    // bodies. The encoder writes position-major orders (PCRL, CPRL) correctly
+    // only with one precinct per resolution (frames-sg/j2k#130), so those use
+    // the default precincts here; the OpenJPEG fixtures cover them with
+    // several.
+    let (width, height) = (301_u32, 203_u32);
+    let pixels = edge_fixture_pixels(width, height);
     for progression_order in [
         EncodeProgressionOrder::Lrcp,
         EncodeProgressionOrder::Rlcp,
@@ -2066,8 +2107,19 @@ fn region_decode_matches_whole_decode_for_every_progression_with_and_without_plt
         EncodeProgressionOrder::Pcrl,
         EncodeProgressionOrder::Cprl,
     ] {
-        for write_plt in [false, true] {
-            for (tile_size, num_layers) in [(None, 1_u8), (None, 3), (Some((128, 128)), 3)] {
+        for headers in [
+            PacketHeaders::InBand,
+            PacketHeaders::InBandWithPlt,
+            PacketHeaders::Ppm,
+            PacketHeaders::Ppt,
+        ] {
+            for (tile_size, num_layers, tile_part_packet_limit) in [
+                (None, 1_u8, None),
+                (None, 3, None),
+                (None, 3, Some(7)),
+                (Some((128, 128)), 3, None),
+                (Some((128, 128)), 3, Some(5)),
+            ] {
                 let options = EncodeOptions {
                     reversible: true,
                     num_decomposition_levels: 3,
@@ -2082,38 +2134,134 @@ fn region_decode_matches_whole_decode_for_every_progression_with_and_without_plt
                         vec![(5, 5), (6, 6), (6, 6), (6, 6)]
                     },
                     progression_order,
-                    write_plt,
+                    write_plt: matches!(headers, PacketHeaders::InBandWithPlt),
+                    write_ppm: matches!(headers, PacketHeaders::Ppm),
+                    write_ppt: matches!(headers, PacketHeaders::Ppt),
                     num_layers,
                     tile_size,
+                    tile_part_packet_limit,
                     ..EncodeOptions::default()
                 };
                 let bytes = encode(&pixels, width, height, 3, 8, false, &options)
                     .expect("encode progression fixture");
-                for scale in [Downscale::None, Downscale::Quarter] {
-                    let denominator = scale.denominator();
-                    let whole = scaled_whole_decode(&bytes, (width, height), fmt, scale);
-                    for roi in rois {
-                        let scaled_roi = roi.scaled_covering(scale);
-                        assert_eq!(
-                            scaled_region_decode(&bytes, fmt, roi, scale),
-                            crop_bytes(
-                                &whole,
-                                width.div_ceil(denominator) as usize,
-                                fmt.bytes_per_pixel(),
-                                scaled_roi,
-                            ),
-                            "{progression_order:?} plt={write_plt} tiles={tile_size:?} \
-                             layers={num_layers} region {},{} {}x{} at 1/{denominator}",
-                            roi.x,
-                            roi.y,
-                            roi.w,
-                            roi.h,
-                        );
-                    }
-                }
+                assert_region_decodes_match_whole_decode(
+                    &bytes,
+                    (width, height),
+                    &format!(
+                        "{progression_order:?} {headers:?} tiles={tile_size:?} \
+                         layers={num_layers} tile-part packets={tile_part_packet_limit:?}"
+                    ),
+                );
             }
         }
     }
+}
+
+#[test]
+fn region_decode_of_openjpeg_position_major_progressions_with_several_precincts() {
+    // PCRL and CPRL interleave the packets of different resolutions by
+    // position once precinct sizes differ between resolutions. These OpenJPEG
+    // codestreams have several precincts per resolution, untiled without PLT
+    // and tiled with a PLT-carrying tile-part per resolution. All of them are
+    // lossless, so whole decodes must equal the source samples too.
+    let dims = (97_u32, 61_u32);
+    let source = j2k_test_support::OPENJPEG_PROGRESSION_SOURCE_97X61_RGB;
+    for (name, bytes) in [
+        ("PCRL", j2k_test_support::OPENJPEG_PCRL_97X61),
+        ("CPRL", j2k_test_support::OPENJPEG_CPRL_97X61),
+        (
+            "PCRL tiles PLT",
+            j2k_test_support::OPENJPEG_PCRL_97X61_TILES_PLT,
+        ),
+        (
+            "CPRL tiles PLT",
+            j2k_test_support::OPENJPEG_CPRL_97X61_TILES_PLT,
+        ),
+    ] {
+        assert_eq!(
+            scaled_whole_decode(bytes, dims, PixelFormat::Rgb8, Downscale::None),
+            source,
+            "{name} whole decode"
+        );
+        assert_region_decodes_match_whole_decode(bytes, dims, name);
+    }
+}
+
+#[test]
+fn region_decode_parses_every_packet_when_only_some_tile_parts_have_plt() {
+    // The first tile-part keeps its PLT lengths and the later ones lose them,
+    // so the tile cannot be skipped by length as a whole. Skipping an
+    // unneeded packet in the first tile-part would leave its precinct's tag
+    // trees and Lblock state stale, and the same precinct's packets in the
+    // later tile-parts must still be parsed to reach the packets after them.
+    let (width, height) = (301_u32, 203_u32);
+    let pixels = edge_fixture_pixels(width, height);
+    for progression_order in [EncodeProgressionOrder::Lrcp, EncodeProgressionOrder::Rpcl] {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 3,
+            code_block_width_exp: 3,
+            code_block_height_exp: 3,
+            precinct_exponents: vec![(5, 5), (6, 6), (6, 6), (6, 6)],
+            progression_order,
+            write_plt: true,
+            num_layers: 3,
+            tile_part_packet_limit: Some(9),
+            ..EncodeOptions::default()
+        };
+        let encoded = encode(&pixels, width, height, 3, 8, false, &options)
+            .expect("encode multi-tile-part PLT fixture");
+        let (bytes, stripped) = strip_plt_after_first_tile_part(&encoded);
+        assert!(stripped > 0, "fixture must have later tile-parts with PLT");
+        assert_region_decodes_match_whole_decode(
+            &bytes,
+            (width, height),
+            &format!("{progression_order:?} PLT in the first tile-part only"),
+        );
+    }
+}
+
+/// Remove the PLT marker segments of every tile-part but the first, fixing
+/// each tile-part's Psot. Returns the codestream and the segments removed.
+fn strip_plt_after_first_tile_part(codestream: &[u8]) -> (Vec<u8>, usize) {
+    const SOT: [u8; 2] = [0xFF, 0x90];
+    const SOD: [u8; 2] = [0xFF, 0x93];
+    const PLT: [u8; 2] = [0xFF, 0x58];
+    let segment_len = |bytes: &[u8], at: usize| {
+        2 + usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]))
+    };
+
+    let mut at = 2;
+    while codestream[at..at + 2] != SOT {
+        at += segment_len(codestream, at);
+    }
+    let mut out = codestream[..at].to_vec();
+    let mut removed = 0;
+    let mut first = true;
+    while codestream[at..at + 2] == SOT {
+        let psot = u32::from_be_bytes(codestream[at + 6..at + 10].try_into().expect("Psot"));
+        assert_ne!(psot, 0, "fixture tile-parts record their length");
+        let end = at + psot as usize;
+        let mut part = codestream[at..at + 12].to_vec();
+        let mut marker = at + 12;
+        while codestream[marker..marker + 2] != SOD {
+            let len = segment_len(codestream, marker);
+            if first || codestream[marker..marker + 2] != PLT {
+                part.extend_from_slice(&codestream[marker..marker + len]);
+            } else {
+                removed += 1;
+            }
+            marker += len;
+        }
+        part.extend_from_slice(&codestream[marker..end]);
+        let new_psot = u32::try_from(part.len()).expect("tile-part length fits Psot");
+        part[6..10].copy_from_slice(&new_psot.to_be_bytes());
+        out.extend_from_slice(&part);
+        first = false;
+        at = end;
+    }
+    out.extend_from_slice(&codestream[at..]);
+    (out, removed)
 }
 
 #[test]

@@ -132,6 +132,17 @@ impl TilePart<'_> {
             Self::Merged(_) | Self::Separated(_) => None,
         }
     }
+
+    /// Bytes holding this tile-part's packet headers: the whole tile-part
+    /// when headers are in-band, the PPM/PPT headers otherwise. Every packet
+    /// header takes at least one byte.
+    pub(crate) fn packet_header_bytes(&self) -> usize {
+        let len = |reader: &crate::reader::BitReader<'_>| reader.tail().map_or(0, <[u8]>::len);
+        match self {
+            Self::Merged(part) => len(&part.data),
+            Self::Separated(part) => part.headers.iter().map(len).sum(),
+        }
+    }
 }
 
 impl Tile<'_> {

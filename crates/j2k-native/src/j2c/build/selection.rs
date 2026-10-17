@@ -4,55 +4,145 @@
 //!
 //! A precinct's code-blocks and tag trees are only used when its packet
 //! headers are parsed. Region decode parses a packet header when the packet
-//! holds a code-block the ROI plan requires, or, without PLT lengths to skip
-//! by, when the packet precedes the last required packet in progression order.
-//! Every other precinct is built empty, which keeps precinct indices stable.
+//! holds a code-block the ROI plan requires, or, when the tile's packets
+//! cannot all be skipped by PLT length, when the packet precedes the last
+//! required packet in progression order. Every other precinct is built empty,
+//! which keeps precinct indices stable.
 
 use alloc::vec::Vec;
-use core::mem::size_of;
 
-use super::allocation::code_block_grid;
+use super::allocation::{checked_include_elements, code_block_grid};
 use super::{Decomposition, Precinct, SubBand, SubBandType};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::codestream::Header;
 use crate::j2c::decode::{DecompositionStorage, OutputRegion, TileDecompositions};
-use crate::j2c::progression::progression_iterator;
+use crate::j2c::progression::{progression_iterator, ProgressionData};
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::RoiPlan;
+use crate::j2c::tag_tree::TagNode;
 use crate::j2c::tile::Tile;
-use crate::{try_reserve_decode_elements, try_resize_decode_elements, DEFAULT_MAX_DECODE_BYTES};
+use crate::{try_reserve_decode_elements, DEFAULT_MAX_DECODE_BYTES};
 
-/// Precincts to build with code-blocks and tag trees, in build order: each
-/// component's resolutions from 0, each resolution's precincts in order.
+/// How region decode uses one precinct of one component and resolution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum PrecinctUse {
+    /// Never parsed: built with no code-blocks and root-only tag trees.
+    Unused,
+    /// Parsed only to reach later packets; its code-blocks are not decoded.
+    Parsed,
+    /// Holds a code-block the ROI plan requires.
+    Required,
+}
+
+impl PrecinctUse {
+    /// Whether `build` gives the precinct its code-blocks and tag trees.
+    pub(crate) const fn is_built(self) -> bool {
+        !matches!(self, Self::Unused)
+    }
+}
+
+/// The precincts a region decode builds and parses, from selection through
+/// packet parsing.
 pub(crate) struct PrecinctSelection {
-    keep: Vec<bool>,
-    /// Start of each (component, resolution) run in `keep`.
+    /// One entry per precinct in build order: each component's resolutions
+    /// from 0, each resolution's precincts in order.
+    uses: Vec<PrecinctUse>,
+    /// Start of each (component, resolution) run in `uses`.
     runs: Vec<usize>,
+    /// First run of each component.
+    component_runs: Vec<usize>,
+    /// Whether every packet of the tile can be skipped by its PLT length.
+    skip_by_length: bool,
+    /// Packets of required precincts, all layers.
+    required_packets: usize,
+    /// Live bytes of the vectors above, charged while the selection lives.
+    owned_bytes: usize,
+    /// Progression positions walked to find the parsed precincts.
+    scanned_packets: usize,
 }
 
 impl PrecinctSelection {
-    /// The keep flags for the `run`-th resolution in build order.
-    pub(crate) fn run(&self, run: usize) -> Option<&[bool]> {
+    /// The precinct uses for the `run`-th resolution in build order.
+    pub(crate) fn run(&self, run: usize) -> Option<&[PrecinctUse]> {
         let start = *self.runs.get(run)?;
-        let end = self.runs.get(run + 1).copied().unwrap_or(self.keep.len());
-        self.keep.get(start..end)
+        let end = self.runs.get(run + 1).copied().unwrap_or(self.uses.len());
+        self.uses.get(start..end)
     }
+
+    /// How the decode uses the packet's precinct, or `None` when the packet
+    /// names a precinct the tile does not have.
+    pub(crate) fn packet_use(&self, packet: &ProgressionData) -> Option<PrecinctUse> {
+        self.index(packet).map(|index| self.uses[index])
+    }
+
+    /// Whether the parser skips every unused packet by its PLT length. When
+    /// false, it parses every packet header up to the last required packet.
+    pub(crate) const fn skip_by_length(&self) -> bool {
+        self.skip_by_length
+    }
+
+    /// Packets the parser must read before the rest of the tile can be left.
+    pub(crate) const fn required_packets(&self) -> usize {
+        self.required_packets
+    }
+
+    /// Bytes owned by the selection, to charge while it is live.
+    pub(crate) const fn owned_bytes(&self) -> usize {
+        self.owned_bytes
+    }
+
+    /// Progression positions walked to find the parsed precincts.
+    pub(crate) const fn scanned_packets(&self) -> usize {
+        self.scanned_packets
+    }
+
+    fn index(&self, packet: &ProgressionData) -> Option<usize> {
+        let run = self
+            .component_runs
+            .get(usize::from(packet.component))?
+            .checked_add(usize::from(packet.resolution))?;
+        let start = *self.runs.get(run)?;
+        let end = self.runs.get(run + 1).copied().unwrap_or(self.uses.len());
+        let index = start.checked_add(usize::try_from(packet.precinct).ok()?)?;
+        (index < end).then_some(index)
+    }
+}
+
+/// Element counts the selection needs, known from the tile geometry alone.
+struct SelectionCounts {
+    components: usize,
+    decompositions: usize,
+    sub_bands: usize,
+    runs: usize,
+    /// Precincts per (component, resolution), summed.
+    run_precincts: usize,
+    /// Precincts per sub-band, summed: what `build` stores.
+    sub_band_precincts: usize,
 }
 
 /// Build the ROI plan for a region decode and choose the precincts the decode
 /// will parse. Leaves `storage.roi_plan` set and the rest of `storage` empty.
 /// Returns `None` when no ROI plan applies, so the whole tile is built.
+///
+/// The selection's vectors stay live through packet parsing. The caller
+/// charges [`PrecinctSelection::owned_bytes`] on top of
+/// `retained_baseline_bytes` until it drops the selection.
 pub(crate) fn select_region_precincts(
     tile: &Tile<'_>,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'_>,
     output_region: OutputRegion,
+    retained_baseline_bytes: usize,
 ) -> Result<Option<PrecinctSelection>> {
-    let precinct_count = validate_precinct_count(tile)?;
-    build_skeleton(tile, storage)?;
+    let counts = count(tile)?;
+    let owned_bytes = selection_owned_bytes(&counts)?;
+    preflight_unavoidable_minimum(&counts, retained_baseline_bytes, owned_bytes)?;
+
+    build_skeleton(tile, &counts, storage)?;
     storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
     let selection = match storage.roi_plan.as_ref() {
-        Some(plan) => Some(select(tile, storage, plan, precinct_count)?),
+        Some(plan) => Some(select(tile, storage, plan, &counts, owned_bytes)?),
         None => None,
     };
     storage.sub_bands.clear();
@@ -61,50 +151,112 @@ pub(crate) fn select_region_precincts(
     Ok(selection)
 }
 
-/// Reject a precinct grid the structural budget would reject anyway, before
-/// allocating per-precinct selection state for it.
-fn validate_precinct_count(tile: &Tile<'_>) -> Result<usize> {
-    let mut count = 0usize;
+fn count(tile: &Tile<'_>) -> Result<SelectionCounts> {
+    let mut counts = SelectionCounts {
+        components: 0,
+        decompositions: 0,
+        sub_bands: 0,
+        runs: 0,
+        run_precincts: 0,
+        sub_band_precincts: 0,
+    };
+    let add = |total: &mut usize, count: usize| -> Result<()> {
+        *total = total
+            .checked_add(count)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Ok(())
+    };
     for component_tile in tile.component_tiles() {
+        add(&mut counts.components, 1)?;
         for resolution_tile in component_tile.resolution_tiles() {
             let precincts = usize::try_from(resolution_tile.num_precincts())
                 .map_err(|_| ValidationError::ImageTooLarge)?;
-            count = count
-                .checked_add(precincts)
-                .ok_or(ValidationError::ImageTooLarge)?;
+            let sub_bands = if resolution_tile.resolution == 0 {
+                1
+            } else {
+                add(&mut counts.decompositions, 1)?;
+                3
+            };
+            add(&mut counts.sub_bands, sub_bands)?;
+            add(&mut counts.runs, 1)?;
+            add(&mut counts.run_precincts, precincts)?;
+            add(
+                &mut counts.sub_band_precincts,
+                precincts
+                    .checked_mul(sub_bands)
+                    .ok_or(ValidationError::ImageTooLarge)?,
+            )?;
         }
     }
-    if count
-        .checked_mul(size_of::<Precinct>())
-        .is_none_or(|bytes| bytes > DEFAULT_MAX_DECODE_BYTES)
-    {
+    Ok(counts)
+}
+
+fn selection_owned_bytes(counts: &SelectionCounts) -> Result<usize> {
+    let mut bytes = 0usize;
+    checked_include_elements::<PrecinctUse>(&mut bytes, counts.run_precincts)?;
+    checked_include_elements::<usize>(&mut bytes, counts.runs)?;
+    checked_include_elements::<usize>(&mut bytes, counts.components)?;
+    Ok(bytes)
+}
+
+/// Reject a tile whose structure exceeds the cap however few precincts are
+/// kept, before allocating or walking the progression.
+///
+/// `build` stores every sub-band precinct, each with two root tag-tree nodes
+/// even when it has no code-blocks, plus the decomposition skeleton and the
+/// ROI windows. All of that is live alongside the selection and the retained
+/// baseline.
+fn preflight_unavoidable_minimum(
+    counts: &SelectionCounts,
+    retained_baseline_bytes: usize,
+    owned_bytes: usize,
+) -> Result<()> {
+    if retained_baseline_bytes > DEFAULT_MAX_DECODE_BYTES {
         return Err(ValidationError::ImageTooLarge.into());
     }
-    Ok(count)
+    let mut bytes = retained_baseline_bytes;
+    let mut include_bytes = |count: usize| -> Result<()> {
+        bytes = bytes
+            .checked_add(count)
+            .filter(|bytes| *bytes <= DEFAULT_MAX_DECODE_BYTES)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Ok(())
+    };
+    include_bytes(owned_bytes)?;
+    let mut structure = 0usize;
+    checked_include_elements::<TileDecompositions>(&mut structure, counts.components)?;
+    checked_include_elements::<Decomposition>(&mut structure, counts.decompositions)?;
+    checked_include_elements::<SubBand>(&mut structure, counts.sub_bands)?;
+    checked_include_elements::<Option<IntRect>>(
+        &mut structure,
+        counts
+            .sub_bands
+            .checked_add(counts.decompositions)
+            .and_then(|count| count.checked_add(counts.components))
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
+    checked_include_elements::<Precinct>(&mut structure, counts.sub_band_precincts)?;
+    checked_include_elements::<TagNode>(
+        &mut structure,
+        counts
+            .sub_band_precincts
+            .checked_mul(2)
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
+    include_bytes(structure)
 }
 
 /// Push the decompositions and sub-bands `build` would create, in the same
 /// order, without precincts or coefficients, so the ROI plan's indices match
 /// the full build.
-fn build_skeleton(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>) -> Result<()> {
-    let mut sub_bands = 0usize;
-    let mut decompositions = 0usize;
-    let mut components = 0usize;
-    for component_tile in tile.component_tiles() {
-        components += 1;
-        let levels = component_tile.resolution_tiles().count().saturating_sub(1);
-        decompositions = decompositions
-            .checked_add(levels)
-            .ok_or(ValidationError::ImageTooLarge)?;
-        sub_bands = levels
-            .checked_mul(3)
-            .and_then(|count| count.checked_add(1))
-            .and_then(|count| sub_bands.checked_add(count))
-            .ok_or(ValidationError::ImageTooLarge)?;
-    }
-    try_reserve_decode_elements(&mut storage.sub_bands, sub_bands)?;
-    try_reserve_decode_elements(&mut storage.decompositions, decompositions)?;
-    try_reserve_decode_elements(&mut storage.tile_decompositions, components)?;
+fn build_skeleton(
+    tile: &Tile<'_>,
+    counts: &SelectionCounts,
+    storage: &mut DecompositionStorage<'_>,
+) -> Result<()> {
+    try_reserve_decode_elements(&mut storage.sub_bands, counts.sub_bands)?;
+    try_reserve_decode_elements(&mut storage.decompositions, counts.decompositions)?;
+    try_reserve_decode_elements(&mut storage.tile_decompositions, counts.components)?;
 
     for component_tile in tile.component_tiles() {
         let start = storage.decompositions.len();
@@ -113,62 +265,83 @@ fn build_skeleton(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>) -> Re
             .next()
             .ok_or(DecodingError::InvalidPrecinct)?;
         let first_ll_sub_band =
-            push_skeleton_sub_band(storage, ll.sub_band_rect(SubBandType::LowLow));
+            push_skeleton_sub_band(storage, ll.sub_band_rect(SubBandType::LowLow))?;
         for resolution_tile in resolution_tiles {
-            let sub_bands = [
+            let mut sub_bands = [0; 3];
+            for (slot, sub_band_type) in sub_bands.iter_mut().zip([
                 SubBandType::HighLow,
                 SubBandType::LowHigh,
                 SubBandType::HighHigh,
-            ]
-            .map(|sub_band_type| {
-                push_skeleton_sub_band(storage, resolution_tile.sub_band_rect(sub_band_type))
-            });
-            storage.decompositions.push(Decomposition {
-                sub_bands,
-                rect: resolution_tile.rect,
-            });
+            ]) {
+                *slot =
+                    push_skeleton_sub_band(storage, resolution_tile.sub_band_rect(sub_band_type))?;
+            }
+            push_within_capacity(
+                &mut storage.decompositions,
+                Decomposition {
+                    sub_bands,
+                    rect: resolution_tile.rect,
+                },
+            )?;
         }
-        storage.tile_decompositions.push(TileDecompositions {
-            decompositions: start..storage.decompositions.len(),
-            first_ll_sub_band,
-        });
+        push_within_capacity(
+            &mut storage.tile_decompositions,
+            TileDecompositions {
+                decompositions: start..storage.decompositions.len(),
+                first_ll_sub_band,
+            },
+        )?;
     }
     Ok(())
 }
 
-fn push_skeleton_sub_band(storage: &mut DecompositionStorage<'_>, rect: IntRect) -> usize {
+fn push_skeleton_sub_band(storage: &mut DecompositionStorage<'_>, rect: IntRect) -> Result<usize> {
     let idx = storage.sub_bands.len();
-    storage.sub_bands.push(SubBand {
-        // The type is not read before the full build replaces this entry.
-        sub_band_type: SubBandType::LowLow,
-        rect,
-        precincts: 0..0,
-        coefficients: 0..0,
-        storage_rect: rect,
-    });
-    idx
+    push_within_capacity(
+        &mut storage.sub_bands,
+        SubBand {
+            // The type is not read before the full build replaces this entry.
+            sub_band_type: SubBandType::LowLow,
+            rect,
+            precincts: 0..0,
+            coefficients: 0..0,
+            storage_rect: rect,
+        },
+    )?;
+    Ok(idx)
+}
+
+/// Push into capacity reserved from the up-front counts, never growing.
+fn push_within_capacity<T>(values: &mut Vec<T>, value: T) -> Result<()> {
+    if values.len() == values.capacity() {
+        return Err(DecodingError::InvalidPrecinct.into());
+    }
+    values.push(value);
+    Ok(())
 }
 
 fn select(
     tile: &Tile<'_>,
     storage: &DecompositionStorage<'_>,
     plan: &RoiPlan,
-    precinct_count: usize,
+    counts: &SelectionCounts,
+    owned_bytes: usize,
 ) -> Result<PrecinctSelection> {
-    let mut keep = Vec::new();
-    try_reserve_decode_elements(&mut keep, precinct_count)?;
+    let mut uses = Vec::new();
+    try_reserve_decode_elements(&mut uses, counts.run_precincts)?;
     let mut runs = Vec::new();
-    // First run of each component, to map a packet's resolution to its run.
+    try_reserve_decode_elements(&mut runs, counts.runs)?;
     let mut component_runs = Vec::new();
-    try_reserve_decode_elements(&mut component_runs, storage.tile_decompositions.len())?;
+    try_reserve_decode_elements(&mut component_runs, counts.components)?;
 
+    let layers = usize::from(tile.num_layers);
+    let mut required_packets = 0usize;
     for (component_tile, tile_decompositions) in
         tile.component_tiles().zip(&storage.tile_decompositions)
     {
-        component_runs.push(runs.len());
+        push_within_capacity(&mut component_runs, runs.len())?;
         for (resolution, resolution_tile) in component_tile.resolution_tiles().enumerate() {
-            try_reserve_decode_elements(&mut runs, 1)?;
-            runs.push(keep.len());
+            push_within_capacity(&mut runs, uses.len())?;
             let (sub_band_types, sub_band_indices): (&[SubBandType], [usize; 3]) =
                 if resolution == 0 {
                     (
@@ -208,22 +381,53 @@ fn select(
                         break;
                     }
                 }
-                if keep.len() == keep.capacity() {
-                    return Err(DecodingError::InvalidPrecinct.into());
+                if required {
+                    required_packets = required_packets
+                        .checked_add(layers)
+                        .ok_or(ValidationError::ImageTooLarge)?;
                 }
-                keep.push(required);
+                push_within_capacity(
+                    &mut uses,
+                    if required {
+                        PrecinctUse::Required
+                    } else {
+                        PrecinctUse::Unused
+                    },
+                )?;
             }
         }
     }
 
-    if !packets_skippable_by_length(tile)? {
-        keep_precincts_parsed_before_last_required(tile, &mut keep, &runs, &component_runs)?;
+    let mut selection = PrecinctSelection {
+        uses,
+        runs,
+        component_runs,
+        skip_by_length: packets_skippable_by_length(tile, counts, layers)?,
+        required_packets,
+        owned_bytes,
+        scanned_packets: 0,
+    };
+    if !selection.skip_by_length {
+        mark_precincts_parsed_before_last_required(tile, &mut selection)?;
     }
-    Ok(PrecinctSelection { keep, runs })
+    Ok(selection)
 }
 
-/// Whether every packet of the tile can be skipped by its PLT length.
-fn packets_skippable_by_length(tile: &Tile<'_>) -> Result<bool> {
+/// Whether every packet of the tile can be skipped by its PLT length: every
+/// tile-part keeps its headers in-band and signals PLT lengths, and together
+/// they cover each packet of the progression. The decision is tile-wide,
+/// because a skipped packet leaves its precinct's tag trees and Lblock state
+/// unread, so a later packet of that precinct could never be parsed.
+fn packets_skippable_by_length(
+    tile: &Tile<'_>,
+    counts: &SelectionCounts,
+    layers: usize,
+) -> Result<bool> {
+    // Progression changes can leave packets out of the progression, so its
+    // length is only known by walking it. Parse those tiles instead.
+    if !tile.progression_changes.is_empty() {
+        return Ok(false);
+    }
     let mut lengths = 0usize;
     for tile_part in &tile.tile_parts {
         let Some(count) = tile_part.skippable_packet_count() else {
@@ -233,49 +437,52 @@ fn packets_skippable_by_length(tile: &Tile<'_>) -> Result<bool> {
             .checked_add(count)
             .ok_or(ValidationError::ImageTooLarge)?;
     }
-    // Lengths that do not cover every packet would leave a packet the parser
-    // cannot skip.
-    Ok(lengths == progression_iterator(tile)?.count())
+    // Without progression changes, the progression visits each precinct of
+    // each component and resolution once per layer.
+    let packets = counts
+        .run_precincts
+        .checked_mul(layers)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(lengths == packets)
 }
 
-/// Without PLT, the parser reads every packet header up to the last required
-/// packet. Keep each precinct with a packet in that range.
-fn keep_precincts_parsed_before_last_required(
+/// Without PLT skipping, the parser reads every packet header up to the last
+/// required packet. Mark each precinct with a packet in that range as parsed.
+///
+/// The walk stops once every required packet has been seen. It never goes past
+/// the tile's packet-header bytes either: every packet header takes at least
+/// one byte, so the parser cannot reach a later packet.
+fn mark_precincts_parsed_before_last_required(
     tile: &Tile<'_>,
-    keep: &mut [bool],
-    runs: &[usize],
-    component_runs: &[usize],
+    selection: &mut PrecinctSelection,
 ) -> Result<()> {
-    let flat_index = |component: u16, resolution: u8, precinct: u64| -> Option<usize> {
-        let run = component_runs
-            .get(usize::from(component))?
-            .checked_add(usize::from(resolution))?;
-        let start = *runs.get(run)?;
-        let end = runs.get(run + 1).copied().unwrap_or(keep.len());
-        let index = start.checked_add(usize::try_from(precinct).ok()?)?;
-        (index < end).then_some(index)
-    };
-
-    let mut last_required = None;
-    for (position, packet) in progression_iterator(tile)?.enumerate() {
-        if flat_index(packet.component, packet.resolution, packet.precinct)
-            .is_none_or(|index| keep[index])
-        {
-            last_required = Some(position);
-        }
-    }
-    let Some(last_required) = last_required else {
+    let mut remaining = selection.required_packets;
+    if remaining == 0 {
         return Ok(());
-    };
-    let mut parsed = Vec::new();
-    try_resize_decode_elements(&mut parsed, keep.len(), false)?;
-    for packet in progression_iterator(tile)?.take(last_required) {
-        if let Some(index) = flat_index(packet.component, packet.resolution, packet.precinct) {
-            parsed[index] = true;
-        }
     }
-    for (keep, parsed) in keep.iter_mut().zip(parsed) {
-        *keep |= parsed;
+    let parseable_packets = tile
+        .tile_parts
+        .iter()
+        .try_fold(0usize, |total, tile_part| {
+            total.checked_add(tile_part.packet_header_bytes())
+        })
+        .ok_or(ValidationError::ImageTooLarge)?;
+    for packet in progression_iterator(tile)?.take(parseable_packets) {
+        selection.scanned_packets += 1;
+        let Some(index) = selection.index(&packet) else {
+            // The parser rejects a packet for a precinct the tile lacks.
+            continue;
+        };
+        match selection.uses[index] {
+            PrecinctUse::Required => {
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    break;
+                }
+            }
+            PrecinctUse::Unused => selection.uses[index] = PrecinctUse::Parsed,
+            PrecinctUse::Parsed => {}
+        }
     }
     Ok(())
 }

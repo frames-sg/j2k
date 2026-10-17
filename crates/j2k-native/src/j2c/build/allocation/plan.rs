@@ -2,7 +2,7 @@
 
 //! Exact logical counts and IDWT high-water planning for one tile.
 
-use super::super::PrecinctSelection;
+use super::super::{PrecinctSelection, PrecinctUse};
 use super::{BuildWorkspace, DecompositionAllocationPlan};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::build::SubBandType;
@@ -33,7 +33,7 @@ pub(super) fn build_allocation_plan(
     )?;
     let mut idwt_workspace_elements = 0_usize;
     let mut resolution_run = 0usize;
-    let keep = |run: usize| -> Result<Option<&[bool]>> {
+    let keep = |run: usize| -> Result<Option<&[PrecinctUse]>> {
         match selection {
             Some(selection) => Ok(Some(
                 selection.run(run).ok_or(DecodingError::InvalidPrecinct)?,
@@ -115,7 +115,7 @@ fn include_sub_band_allocations(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_type: SubBandType,
     tile: &Tile<'_>,
-    keep: Option<&[bool]>,
+    keep: Option<&[PrecinctUse]>,
     plan: &mut DecompositionAllocationPlan,
 ) -> Result<()> {
     DecompositionAllocationPlan::checked_add_count(&mut plan.sub_bands, 1)?;
@@ -153,7 +153,10 @@ fn include_sub_band_allocations(
         observed_precincts = observed_precincts
             .checked_add(1)
             .ok_or(ValidationError::ImageTooLarge)?;
-        if keep.is_some_and(|keep| !keep.get(precinct_idx).copied().unwrap_or(true)) {
+        if keep.is_some_and(|keep| {
+            keep.get(precinct_idx)
+                .is_some_and(|precinct_use| !precinct_use.is_built())
+        }) {
             continue;
         }
         let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
