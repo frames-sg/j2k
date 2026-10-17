@@ -234,9 +234,15 @@ pub(super) fn validate_sample_layout(
 }
 
 #[expect(
-    clippy::if_not_else,
     clippy::too_many_lines,
     reason = "the central plane constructor preserves measured architecture dispatch and shared allocation ownership"
+)]
+#[cfg_attr(
+    target_arch = "aarch64",
+    expect(
+        clippy::if_not_else,
+        reason = "the NEON branch keeps the enabled architecture path first"
+    )
 )]
 pub(super) fn component_planes(
     samples: JpegSamples<'_>,

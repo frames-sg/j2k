@@ -142,6 +142,7 @@ impl Surface {
                 };
                 Ok(Cow::Borrowed(bytes))
             }
+            #[cfg(target_os = "macos")]
             Storage::Metal {
                 resident: None,
                 reusable_buffer: Some(buffer),
@@ -154,6 +155,7 @@ impl Surface {
                 let len = self.byte_len();
                 checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes").map(Cow::Owned)
             }
+            #[cfg(target_os = "macos")]
             Storage::Metal { .. } => Err(Error::MetalKernel {
                 message: "JPEG Metal surface storage invariant failed".to_string(),
             }),

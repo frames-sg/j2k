@@ -76,10 +76,13 @@ fn f32_boundary_threshold(error_bound: f32) -> f32 {
 }
 
 impl QuantizationDivisors {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::manual_div_ceil,
-        reason = "the guarded SIMD paths prove the narrowed representations and retain the explicit directed-reciprocal quotient"
+    #[cfg_attr(
+        target_arch = "aarch64",
+        expect(
+            clippy::cast_possible_truncation,
+            clippy::manual_div_ceil,
+            reason = "the guarded SIMD paths prove the narrowed representations and retain the explicit directed-reciprocal quotient"
+        )
     )]
     pub(super) fn new(quant: &[u8; 64]) -> Self {
         let values = core::array::from_fn(|natural| {
@@ -113,8 +116,8 @@ impl QuantizationDivisors {
             }
         };
         Self {
-            reciprocals,
             values,
+            reciprocals,
             #[cfg(target_arch = "aarch64")]
             f32_reciprocals: {
                 let mut reciprocals = reciprocals.map(|reciprocal| reciprocal as f32);
@@ -554,6 +557,8 @@ fn fdct_values(block: &[u8; 64], divisors: &QuantizationDivisors) -> [f64; 64] {
     if let Some(neon) = divisors.neon {
         return neon::fdct_values(neon, block);
     }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = divisors;
     fdct_values_scalar(block)
 }
 
