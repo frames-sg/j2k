@@ -136,6 +136,8 @@ impl DecoderWorkspace {
 pub struct DecoderContext<'a> {
     pub(crate) tile_decode_context: TileDecodeContext,
     pub(crate) storage: DecompositionStorage<'a>,
+    #[cfg(test)]
+    pub(crate) direct_plan_code_blocks: usize,
     pub(super) cpu_decode_parallelism: CpuDecodeParallelism,
     workspace_stats: DecoderWorkspaceStats,
 }
@@ -145,6 +147,8 @@ impl Default for DecoderContext<'_> {
         Self {
             tile_decode_context: TileDecodeContext::default(),
             storage: DecompositionStorage::default(),
+            #[cfg(test)]
+            direct_plan_code_blocks: 0,
             cpu_decode_parallelism: CpuDecodeParallelism::Auto,
             workspace_stats: DecoderWorkspaceStats::default(),
         }
@@ -158,6 +162,8 @@ impl DecoderContext<'_> {
         Self {
             tile_decode_context: workspace.tile_decode_context,
             storage: DecompositionStorage::default(),
+            #[cfg(test)]
+            direct_plan_code_blocks: 0,
             cpu_decode_parallelism: workspace.cpu_decode_parallelism,
             workspace_stats: workspace.stats,
         }

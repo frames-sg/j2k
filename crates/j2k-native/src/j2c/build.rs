@@ -9,6 +9,7 @@ use crate::try_resize_decode_elements;
 use core::{iter, ops::Range};
 
 mod allocation;
+mod selection;
 pub(crate) use allocation::{
     allocate_deferred_coefficients, release_unused_roi_workspace, BuildWorkspace,
 };
@@ -16,6 +17,7 @@ use allocation::{
     code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,
     DecompositionAllocationPlan,
 };
+pub(crate) use selection::{select_region_precincts, PrecinctSelection, PrecinctUse};
 
 /// Build and allocate all necessary structures to process the code-blocks
 /// for a specific tile. Also parses the segments for each code-block.
@@ -25,6 +27,7 @@ pub(crate) fn build(
     retained_baseline_bytes: usize,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&PrecinctSelection>,
 ) -> Result<()> {
     build_decompositions(
         tile,
@@ -32,15 +35,21 @@ pub(crate) fn build(
         retained_baseline_bytes,
         include_roi_workspace,
         workspace,
+        selection,
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass builds each component's sub-band, precinct, and coefficient ranges in decode order"
+)]
 fn build_decompositions(
     tile: &Tile<'_>,
     storage: &mut DecompositionStorage<'_>,
     retained_baseline_bytes: usize,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&PrecinctSelection>,
 ) -> Result<()> {
     if !build_storage_is_empty(storage) {
         return Err(DecodingError::InvalidPrecinct.into());
@@ -52,20 +61,13 @@ fn build_decompositions(
         retained_baseline_bytes,
         include_roi_workspace,
         workspace,
+        selection,
     )?;
-    try_resize_decode_elements(
-        &mut storage.coefficients,
-        plan.coefficient_storage_len(),
-        0.0,
-    )?;
-    if storage.exact_integer_decode {
-        try_resize_decode_elements(
-            &mut storage.coefficients_i64,
-            plan.coefficient_storage_len(),
-            0,
-        )?;
-    }
+    resize_planned_coefficients(storage, &plan)?;
     let mut coefficient_counter = 0usize;
+    // Index of the current (component, resolution) in build order, for the
+    // precinct selection.
+    let mut resolution_run = 0usize;
 
     for (component_idx, component_tile) in tile.component_tiles().enumerate() {
         let d_start = storage.decompositions.len();
@@ -73,6 +75,7 @@ fn build_decompositions(
 
         let mut build_sub_band = |sub_band_type: SubBandType,
                                   resolution_tile: &ResolutionTile<'_>,
+                                  run: usize,
                                   storage: &mut DecompositionStorage<'_>|
          -> Result<usize> {
             let sub_band_rect = resolution_tile.sub_band_rect(sub_band_type);
@@ -95,7 +98,8 @@ fn build_decompositions(
                 resolution_tile.rect.height(),
             );
 
-            let precincts = build_precincts(resolution_tile, sub_band_rect, tile, storage)?;
+            let keep = selected_precincts(selection, run)?;
+            let precincts = build_precincts(resolution_tile, sub_band_rect, tile, keep, storage)?;
 
             let added_coefficients = (sub_band_rect.width() as usize)
                 .checked_mul(sub_band_rect.height() as usize)
@@ -128,18 +132,25 @@ fn build_decompositions(
         let ll_resolution_tile = resolution_tiles
             .next()
             .ok_or(DecodingError::InvalidPrecinct)?;
-        let first_ll_sub_band = build_sub_band(SubBandType::LowLow, &ll_resolution_tile, storage)?;
+        let first_ll_sub_band = build_sub_band(
+            SubBandType::LowLow,
+            &ll_resolution_tile,
+            resolution_run,
+            storage,
+        )?;
+        resolution_run += 1;
 
         for resolution_tile in resolution_tiles {
+            let run = resolution_run;
             let decomposition = Decomposition {
                 sub_bands: [
-                    build_sub_band(SubBandType::HighLow, &resolution_tile, storage)?,
-                    build_sub_band(SubBandType::LowHigh, &resolution_tile, storage)?,
-                    build_sub_band(SubBandType::HighHigh, &resolution_tile, storage)?,
+                    build_sub_band(SubBandType::HighLow, &resolution_tile, run, storage)?,
+                    build_sub_band(SubBandType::LowHigh, &resolution_tile, run, storage)?,
+                    build_sub_band(SubBandType::HighHigh, &resolution_tile, run, storage)?,
                 ],
                 rect: resolution_tile.rect,
             };
-
+            resolution_run += 1;
             push_preallocated(&mut storage.decompositions, decomposition)?;
         }
 
@@ -157,6 +168,40 @@ fn build_decompositions(
     validate_built_storage(&plan, storage, coefficient_counter)?;
     storage.structural_workspace_bytes = plan.total_bytes;
     Ok(())
+}
+
+fn resize_planned_coefficients(
+    storage: &mut DecompositionStorage<'_>,
+    plan: &DecompositionAllocationPlan,
+) -> Result<()> {
+    try_resize_decode_elements(
+        &mut storage.coefficients,
+        plan.coefficient_storage_len(),
+        0.0,
+    )?;
+    if storage.exact_integer_decode {
+        try_resize_decode_elements(
+            &mut storage.coefficients_i64,
+            plan.coefficient_storage_len(),
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+/// The precinct uses for the `run`-th resolution, when region decode selected
+/// precincts.
+fn selected_precincts(
+    selection: Option<&PrecinctSelection>,
+    run: usize,
+) -> Result<Option<&[PrecinctUse]>> {
+    selection
+        .map(|selection| {
+            selection
+                .run(run)
+                .ok_or(DecodingError::InvalidPrecinct.into())
+        })
+        .transpose()
 }
 
 fn build_storage_is_empty(storage: &DecompositionStorage<'_>) -> bool {
@@ -199,15 +244,26 @@ fn build_precincts(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
     tile: &Tile<'_>,
+    keep: Option<&[PrecinctUse]>,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Range<usize>> {
     let start = storage.precincts.len();
 
-    for precinct_data in resolution_tile
+    for (precinct_idx, precinct_data) in resolution_tile
         .precincts()
         .ok_or(DecodingError::InvalidPrecinct)?
+        .enumerate()
     {
-        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
+        let mut grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
+        if keep.is_some_and(|keep| {
+            keep.get(precinct_idx)
+                .is_some_and(|precinct_use| !precinct_use.is_built())
+        }) {
+            // Region decode never parses this precinct's packets: build it
+            // with no code-blocks and root-only tag trees.
+            grid.columns = 0;
+            grid.rows = 0;
+        }
 
         ltrace!(
             "Precinct rect: [{},{} {}x{}], num_code_blocks_wide: {}, num_code_blocks_high: {}",

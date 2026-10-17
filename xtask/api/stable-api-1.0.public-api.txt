@@ -1339,6 +1339,7 @@ impl core::fmt::Display for j2k_codec_math::jpeg::CanonicalHuffmanError
 impl j2k_codec_math::dwt::Dwt53LinearRow
 impl j2k_codec_math::dwt::Dwt53LinearTap
 pub const fn j2k_codec_math::classic::irreversible_midpoint_bit(u64, u32, u32) -> core::option::Option<u32>
+pub const fn j2k_codec_math::classic::reversible_midpoint_bit(u64, u32, u32) -> core::option::Option<u32>
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::sample_index(self) -> usize
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8

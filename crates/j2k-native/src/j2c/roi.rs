@@ -2,12 +2,11 @@ use alloc::vec::Vec;
 
 use super::build::Decomposition;
 use super::codestream::{Header, SizeData, WaveletTransform};
-use super::decode::{DecompositionStorage, OutputRegion};
+use super::decode::{DecodeAllocationBudget, DecompositionStorage, OutputRegion};
 use super::rect::IntRect;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
-use crate::{
-    idwt_required_input_window_for_rects, try_resize_decode_elements, J2kRequiredBandRegion, Result,
-};
+use crate::{idwt_required_input_window_for_rects, J2kRequiredBandRegion, Result};
+use core::mem::size_of;
 
 /// Whether a reference-grid tile can contribute to a decoded output region.
 ///
@@ -83,6 +82,7 @@ impl RoiPlan {
         header: &Header<'_>,
         storage: &DecompositionStorage<'_>,
         output_region: OutputRegion,
+        budget: &mut DecodeAllocationBudget,
     ) -> Result<Option<Self>> {
         if tile.component_infos.iter().any(|component_info| {
             component_info.size_info.horizontal_resolution != 1
@@ -92,11 +92,11 @@ impl RoiPlan {
         }
 
         let mut sub_band_windows = Vec::new();
-        try_resize_decode_elements(&mut sub_band_windows, storage.sub_bands.len(), None)?;
+        budget.resize_new(&mut sub_band_windows, storage.sub_bands.len(), None)?;
         let mut idwt_windows = Vec::new();
-        try_resize_decode_elements(&mut idwt_windows, storage.decompositions.len(), None)?;
+        budget.resize_new(&mut idwt_windows, storage.decompositions.len(), None)?;
         let mut final_windows = Vec::new();
-        try_resize_decode_elements(&mut final_windows, tile.component_infos.len(), None)?;
+        budget.resize_new(&mut final_windows, tile.component_infos.len(), None)?;
         let mut plan = Self {
             sub_band_windows,
             idwt_windows,
@@ -150,6 +150,15 @@ impl RoiPlan {
         }
 
         Ok(Some(plan))
+    }
+
+    pub(crate) fn owned_bytes(&self) -> Result<usize> {
+        self.sub_band_windows
+            .capacity()
+            .checked_add(self.idwt_windows.capacity())
+            .and_then(|count| count.checked_add(self.final_windows.capacity()))
+            .and_then(|count| count.checked_mul(size_of::<Option<IntRect>>()))
+            .ok_or(crate::ValidationError::ImageTooLarge.into())
     }
 
     pub(crate) fn code_block_required(&self, sub_band_idx: usize, rect: IntRect) -> bool {

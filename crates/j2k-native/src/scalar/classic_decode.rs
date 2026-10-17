@@ -160,7 +160,10 @@ fn write_j2k_code_block_output(
             continue;
         }
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            *sample = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift) as f32
+            *sample = apply_roi_maxshift_inverse_i64(
+                midpoint.reconstruct_reversible(*coefficient),
+                job.roi_shift,
+            ) as f32
                 * job.dequantization_step;
         }
     }
