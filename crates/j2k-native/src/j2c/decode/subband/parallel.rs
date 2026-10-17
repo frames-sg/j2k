@@ -741,10 +741,10 @@ fn validate_pending_blocks(
     blocks.try_fold(0usize, |total, (output_x, output_y, width, height)| {
         if output_x
             .checked_add(width)
-            .is_none_or(|x1| x1 > sub_band.rect.width())
+            .is_none_or(|x1| x1 > sub_band.storage_rect.width())
             || output_y
                 .checked_add(height)
-                .is_none_or(|y1| y1 > sub_band.rect.height())
+                .is_none_or(|y1| y1 > sub_band.storage_rect.height())
         {
             return Err(DecodingError::CodeBlockDecodeFailure.into());
         }
@@ -930,7 +930,7 @@ fn copy_decoded_blocks_to_sub_band(
     storage: &mut DecompositionStorage<'_>,
     #[cfg(test)] coefficient_stats: &mut super::super::ParallelCoefficientStats,
 ) -> Result<()> {
-    let sub_band_width = sub_band.rect.width() as usize;
+    let sub_band_width = sub_band.storage_rect.width() as usize;
     let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
     #[cfg(test)]
     let mut scattered_bytes = 0usize;
@@ -941,10 +941,10 @@ fn copy_decoded_blocks_to_sub_band(
         let height = block.height;
         if output_x
             .checked_add(width)
-            .is_none_or(|x1| x1 > sub_band.rect.width())
+            .is_none_or(|x1| x1 > sub_band.storage_rect.width())
             || output_y
                 .checked_add(height)
-                .is_none_or(|y1| y1 > sub_band.rect.height())
+                .is_none_or(|y1| y1 > sub_band.storage_rect.height())
         {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }

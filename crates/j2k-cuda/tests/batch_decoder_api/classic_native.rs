@@ -87,7 +87,7 @@ fn prepared_classic_multitile_gray_and_rgb_are_resident_and_external_bit_exact()
         },
     ];
     for channels in [1, 3] {
-        let encoded = encode_classic_multitile(channels);
+        let (encoded, source) = encode_classic_multitile(channels);
         let prepared = prepare_batch(
             vec![EncodedImage::full(Arc::clone(&encoded))],
             BatchDecodeOptions::default(),
@@ -101,7 +101,14 @@ fn prepared_classic_multitile_gray_and_rgb_are_resident_and_external_bit_exact()
 
         for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
             for request in requests {
-                assert_classic_case(&context, &encoded, layout, request);
+                let actual = assert_classic_case(&context, &encoded, layout, request);
+                if request == DecodeRequest::Full {
+                    assert_eq!(
+                        actual,
+                        source_bytes(&source, channels, layout),
+                        "lossless source {layout:?}"
+                    );
+                }
             }
         }
     }
@@ -220,12 +227,12 @@ fn encode_classic(
     )
 }
 
-fn encode_classic_multitile(channels: u16) -> Arc<[u8]> {
+fn encode_classic_multitile(channels: u16) -> (Arc<[u8]>, Vec<u16>) {
     let sample_count = 16 * 16 * channels as usize;
     let samples = (0..sample_count)
         .map(|index| u16::try_from((index * 977 + 31) & 0x0fff).expect("masked sample fits u16"))
         .collect::<Vec<_>>();
-    Arc::from(
+    let encoded = Arc::from(
         j2k_native::encode(
             native_bytes(&samples).as_slice(),
             16,
@@ -237,12 +244,26 @@ fn encode_classic_multitile(channels: u16) -> Arc<[u8]> {
                 reversible: true,
                 num_decomposition_levels: 2,
                 use_mct: channels == 3,
-                tile_size: Some((9, 7)),
+                tile_size: Some((12, 8)),
                 ..j2k_native::EncodeOptions::default()
             },
         )
         .expect("encode classic multi-tile fixture"),
-    )
+    );
+    (encoded, samples)
+}
+
+/// Interleaved source samples as native bytes in `layout`.
+fn source_bytes(samples: &[u16], channels: u16, layout: BatchLayout) -> Vec<u8> {
+    let channels = usize::from(channels);
+    let ordered = match layout {
+        BatchLayout::Nhwc => samples.to_vec(),
+        BatchLayout::Nchw => (0..channels)
+            .flat_map(|channel| samples.iter().skip(channel).step_by(channels).copied())
+            .collect(),
+        other => panic!("unsupported classic layout: {other:?}"),
+    };
+    native_bytes(&ordered)
 }
 
 fn classic_irreversible_fixture(channels: u16) -> Arc<[u8]> {
@@ -312,7 +333,7 @@ fn assert_classic_case(
     encoded: &Arc<[u8]>,
     layout: BatchLayout,
     request: DecodeRequest,
-) {
+) -> Vec<u8> {
     let options = BatchDecodeOptions {
         layout,
         ..BatchDecodeOptions::default()
@@ -376,6 +397,7 @@ fn assert_classic_case(
     assert!(resident.group_errors().is_empty());
     let actual = download_resident_bytes(&resident.groups()[0], expected.len());
     assert_eq!(actual, expected, "resident {layout:?} {request:?}");
+    actual
 }
 
 fn assert_classic_irreversible_case(

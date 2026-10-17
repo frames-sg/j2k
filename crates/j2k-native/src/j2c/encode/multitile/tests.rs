@@ -221,3 +221,95 @@ fn direct_multitile_handoff_accepts_exact_peak_and_rejects_one_byte_less() {
         }) if requested == upper && cap == upper - 1
     ));
 }
+
+#[test]
+fn multi_tile_encode_rejects_tile_grids_it_would_encode_wrongly() {
+    // Tiles are coded as standalone images, so these grids would produce
+    // codestreams that conforming decoders read as different samples: odd
+    // tile origins under a wavelet level, and sub-bands that cross a 64 px
+    // code-block boundary without starting on one.
+    let rejected = [
+        (30, 30, (15, 15), 1),
+        (40, 40, (18, 18), 2),
+        (301, 203, (64, 48), 1),
+        (301, 203, (48, 48), 1),
+        (301, 203, (96, 96), 0),
+    ];
+    for (width, height, tile, levels) in rejected {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: levels,
+            tile_size: Some(tile),
+            ..EncodeOptions::default()
+        };
+        let pixels: Vec<u8> = (0..width * height * 3)
+            .map(|index| u8::try_from(index * 7 % 251).expect("masked sample"))
+            .collect();
+        assert_eq!(
+            crate::encode(&pixels, width, height, 3, 8, false, &options),
+            Err(EncodeError::Unsupported {
+                what: super::super::tile_grid::MISALIGNED_TILE_GRID
+            }),
+            "{width}x{height} tiles={tile:?} levels={levels}"
+        );
+    }
+
+    let accepted = [
+        (301, 203, (64, 64), 1),
+        (301, 203, (64, 64), 5),
+        (40, 40, (20, 20), 2),
+        (96, 96, (48, 48), 1),
+    ];
+    for (width, height, tile, levels) in accepted {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: levels,
+            tile_size: Some(tile),
+            ..EncodeOptions::default()
+        };
+        let pixels: Vec<u8> = (0..width * height * 3)
+            .map(|index| u8::try_from(index * 7 % 251).expect("masked sample"))
+            .collect();
+        let codestream = crate::encode(&pixels, width, height, 3, 8, false, &options)
+            .expect("aligned multi-tile encode");
+        let decoded = crate::Image::new(&codestream, &DecodeSettings::default())
+            .and_then(|image| image.decode())
+            .expect("decode aligned multi-tile codestream");
+        assert_eq!(
+            decoded, pixels,
+            "{width}x{height} tiles={tile:?} levels={levels}"
+        );
+    }
+}
+
+#[test]
+fn high_bit_multi_tile_encode_rejects_misaligned_tile_grids() {
+    let samples: Vec<u8> = (0..30_u32 * 30)
+        .flat_map(|index| ((index * 1_000_003) & ((1 << 29) - 1)).to_le_bytes())
+        .collect();
+    let plane = [crate::EncodeTypedComponentPlane {
+        data: &samples,
+        x_rsiz: 1,
+        y_rsiz: 1,
+        bit_depth: 29,
+        signed: false,
+    }];
+    let options = |tile| EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        tile_size: Some(tile),
+        ..EncodeOptions::default()
+    };
+    assert_eq!(
+        crate::encode_typed_component_planes_53(&plane, 30, 30, &options((15, 15))),
+        Err(EncodeError::Unsupported {
+            what: super::super::tile_grid::MISALIGNED_TILE_GRID
+        })
+    );
+    let codestream = crate::encode_typed_component_planes_53(&plane, 30, 30, &options((16, 16)))
+        .expect("aligned high-bit multi-tile encode");
+    let decoded = crate::Image::new(&codestream, &DecodeSettings::default())
+        .and_then(|image| image.decode_native())
+        .expect("decode aligned high-bit multi-tile codestream");
+    assert_eq!(decoded.data, samples);
+}

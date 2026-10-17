@@ -54,6 +54,17 @@ impl ReallocationBudget {
         Ok(Self { live_bytes })
     }
 
+    pub(super) fn from_live_bytes(live_bytes: usize) -> Result<Self> {
+        if live_bytes > DEFAULT_MAX_DECODE_BYTES {
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+        Ok(Self { live_bytes })
+    }
+
+    pub(super) const fn live_bytes(&self) -> usize {
+        self.live_bytes
+    }
+
     pub(super) fn reserve<T>(&mut self, values: &mut Vec<T>, target_len: usize) -> Result<()> {
         values.clear();
         if target_len <= values.capacity() {

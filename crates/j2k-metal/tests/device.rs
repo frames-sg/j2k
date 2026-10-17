@@ -182,7 +182,7 @@ fn fixture_classic_multitile_rgb8() -> (Vec<u8>, Vec<u8>) {
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 2,
-        tile_size: Some((11, 7)),
+        tile_size: Some((12, 8)),
         ..EncodeOptions::default()
     };
     let encoded = encode(&pixels, width, height, 3, 8, false, &options)

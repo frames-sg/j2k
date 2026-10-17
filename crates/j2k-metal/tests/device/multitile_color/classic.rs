@@ -19,6 +19,7 @@ fn classic_multitile_rgb8_decodes_exactly_on_metal() {
     host_decoder
         .decode_into(&mut expected, dimensions.0 as usize * 3, PixelFormat::Rgb8)
         .expect("CPU multi-tile classic RGB8 oracle");
+    assert_eq!(expected, source_pixels, "CPU decode of the lossless source");
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
     let prepared = decoder
@@ -62,4 +63,5 @@ fn classic_multitile_rgb8_decodes_exactly_on_metal() {
             .expect("read multi-tile classic RGB8 destination")
     };
     assert_eq!(actual, expected);
+    assert_eq!(actual, source_pixels, "Metal decode of the lossless source");
 }

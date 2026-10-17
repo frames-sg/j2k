@@ -2,6 +2,7 @@
 
 //! Exact logical counts and IDWT high-water planning for one tile.
 
+use super::super::{PrecinctSelection, PrecinctUse};
 use super::{BuildWorkspace, DecompositionAllocationPlan};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::build::SubBandType;
@@ -22,6 +23,7 @@ pub(super) fn build_allocation_plan(
     exact_integer_decode: bool,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&PrecinctSelection>,
 ) -> Result<(DecompositionAllocationPlan, usize)> {
     let mut plan = DecompositionAllocationPlan::new(
         retained_baseline_bytes,
@@ -30,6 +32,15 @@ pub(super) fn build_allocation_plan(
         workspace,
     )?;
     let mut idwt_workspace_elements = 0_usize;
+    let mut resolution_run = 0usize;
+    let keep = |run: usize| -> Result<Option<&[PrecinctUse]>> {
+        match selection {
+            Some(selection) => Ok(Some(
+                selection.run(run).ok_or(DecodingError::InvalidPrecinct)?,
+            )),
+            None => Ok(None),
+        }
+    };
 
     for component_tile in tile.component_tiles() {
         let coefficient_count = checked_rect_elements(component_tile.rect)?;
@@ -40,7 +51,14 @@ pub(super) fn build_allocation_plan(
         let ll_resolution_tile = resolution_tiles
             .next()
             .ok_or(DecodingError::InvalidPrecinct)?;
-        include_sub_band_allocations(&ll_resolution_tile, SubBandType::LowLow, tile, &mut plan)?;
+        include_sub_band_allocations(
+            &ll_resolution_tile,
+            SubBandType::LowLow,
+            tile,
+            keep(resolution_run)?,
+            &mut plan,
+        )?;
+        resolution_run += 1;
 
         let total_decomposition_count = usize::from(
             component_tile
@@ -59,12 +77,20 @@ pub(super) fn build_allocation_plan(
                 .checked_add(1)
                 .ok_or(ValidationError::ImageTooLarge)?;
             DecompositionAllocationPlan::checked_add_count(&mut plan.decompositions, 1)?;
+            let resolution_keep = keep(resolution_run)?;
+            resolution_run += 1;
             for sub_band_type in [
                 SubBandType::HighLow,
                 SubBandType::LowHigh,
                 SubBandType::HighHigh,
             ] {
-                include_sub_band_allocations(&resolution_tile, sub_band_type, tile, &mut plan)?;
+                include_sub_band_allocations(
+                    &resolution_tile,
+                    sub_band_type,
+                    tile,
+                    resolution_keep,
+                    &mut plan,
+                )?;
             }
         }
         if observed_decomposition_count != total_decomposition_count {
@@ -82,10 +108,14 @@ pub(super) fn build_allocation_plan(
     Ok((plan, idwt_workspace_elements))
 }
 
+/// Count one sub-band's precincts, code-blocks, layers and tag-tree nodes.
+/// With `keep`, precincts it excludes are counted as `build` makes them: no
+/// code-blocks and root-only tag trees.
 fn include_sub_band_allocations(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_type: SubBandType,
     tile: &Tile<'_>,
+    keep: Option<&[PrecinctUse]>,
     plan: &mut DecompositionAllocationPlan,
 ) -> Result<()> {
     DecompositionAllocationPlan::checked_add_count(&mut plan.sub_bands, 1)?;
@@ -95,12 +125,15 @@ fn include_sub_band_allocations(
         .map_err(|_| ValidationError::ImageTooLarge)?;
     DecompositionAllocationPlan::checked_add_count(&mut plan.precincts, precinct_count)?;
 
-    let code_block_count = global_code_block_count(resolution_tile, sub_band_rect)?;
-    DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_block_count)?;
-    let layer_count = code_block_count
-        .checked_mul(usize::from(tile.num_layers))
-        .ok_or(ValidationError::ImageTooLarge)?;
-    DecompositionAllocationPlan::checked_add_count(&mut plan.layers, layer_count)?;
+    // Without a selection, count every code-block up front to reject a
+    // metadata bomb before walking precincts. With one, kept precincts are
+    // counted as they are walked.
+    let code_block_count = if keep.is_none() {
+        global_code_block_count(resolution_tile, sub_band_rect)?
+    } else {
+        0
+    };
+    include_code_blocks(plan, code_block_count, tile)?;
 
     // Every tag tree has a root even when its code-block grid is empty. Count
     // both roots up front and reject a metadata bomb before walking precincts.
@@ -112,13 +145,20 @@ fn include_sub_band_allocations(
 
     let mut observed_precincts = 0usize;
     let mut observed_code_blocks = 0usize;
-    for precinct_data in resolution_tile
+    for (precinct_idx, precinct_data) in resolution_tile
         .precincts()
         .ok_or(DecodingError::InvalidPrecinct)?
+        .enumerate()
     {
         observed_precincts = observed_precincts
             .checked_add(1)
             .ok_or(ValidationError::ImageTooLarge)?;
+        if keep.is_some_and(|keep| {
+            keep.get(precinct_idx)
+                .is_some_and(|precinct_use| !precinct_use.is_built())
+        }) {
+            continue;
+        }
         let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
         let block_count = (grid.columns as usize)
             .checked_mul(grid.rows as usize)
@@ -126,6 +166,9 @@ fn include_sub_band_allocations(
         observed_code_blocks = observed_code_blocks
             .checked_add(block_count)
             .ok_or(ValidationError::ImageTooLarge)?;
+        if keep.is_some() {
+            include_code_blocks(plan, block_count, tile)?;
+        }
 
         let nodes_per_tree = tag_tree_node_count(grid.columns, grid.rows)?;
         let additional_nodes = nodes_per_tree
@@ -138,10 +181,24 @@ fn include_sub_band_allocations(
         plan.validate_minimum_live_workspace(0)?;
     }
 
-    if observed_precincts != precinct_count || observed_code_blocks != code_block_count {
+    if observed_precincts != precinct_count
+        || (keep.is_none() && observed_code_blocks != code_block_count)
+    {
         return Err(DecodingError::InvalidPrecinct.into());
     }
     Ok(())
+}
+
+fn include_code_blocks(
+    plan: &mut DecompositionAllocationPlan,
+    code_block_count: usize,
+    tile: &Tile<'_>,
+) -> Result<()> {
+    DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_block_count)?;
+    let layer_count = code_block_count
+        .checked_mul(usize::from(tile.num_layers))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    DecompositionAllocationPlan::checked_add_count(&mut plan.layers, layer_count)
 }
 
 fn global_code_block_count(

@@ -52,6 +52,9 @@ pub(super) struct DecompositionAllocationPlan {
     pub(super) tag_tree_nodes: usize,
     exact_integer_decode: bool,
     include_roi_workspace: bool,
+    /// Region decode plans coefficients and the whole-plane IDWT workspace
+    /// after the ROI plan, so neither is part of this structural plan.
+    defer_coefficients: bool,
     workspace: BuildWorkspace,
 }
 
@@ -78,16 +81,23 @@ impl DecompositionAllocationPlan {
             tag_tree_nodes: 0,
             exact_integer_decode,
             include_roi_workspace,
+            defer_coefficients: include_roi_workspace
+                && !exact_integer_decode
+                && matches!(workspace, BuildWorkspace::DecodePixels { .. }),
             workspace,
         })
     }
 
     pub(super) fn coefficient_storage_len(&self) -> usize {
-        if self.workspace == BuildWorkspace::MetadataOnly {
+        if self.workspace == BuildWorkspace::MetadataOnly || self.defer_coefficients {
             0
         } else {
             self.coefficients
         }
+    }
+
+    fn plans_idwt_workspace(&self) -> bool {
+        matches!(self.workspace, BuildWorkspace::DecodePixels { .. }) && !self.defer_coefficients
     }
 
     fn add_coefficients(&mut self, count: usize) -> Result<()> {
@@ -129,7 +139,7 @@ impl DecompositionAllocationPlan {
             )?;
         }
 
-        if matches!(self.workspace, BuildWorkspace::DecodePixels { .. }) {
+        if self.plans_idwt_workspace() {
             if self.exact_integer_decode {
                 checked_include_elements::<i64>(&mut total_bytes, idwt_workspace_elements)?;
             } else {
@@ -192,15 +202,22 @@ impl DecompositionAllocationPlan {
         )?;
 
         if self.include_roi_workspace {
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
-            checked_include_elements::<Option<IntRect>>(
-                &mut total_bytes,
-                self.tile_decompositions,
-            )?;
+            if let Some(roi_plan) = storage.roi_plan.as_ref() {
+                total_bytes = total_bytes
+                    .checked_add(roi_plan.owned_bytes()?)
+                    .filter(|bytes| *bytes <= DEFAULT_MAX_DECODE_BYTES)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            } else {
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
+                checked_include_elements::<Option<IntRect>>(
+                    &mut total_bytes,
+                    self.tile_decompositions,
+                )?;
+            }
         }
 
-        if matches!(self.workspace, BuildWorkspace::DecodePixels { .. }) {
+        if self.plans_idwt_workspace() {
             if self.exact_integer_decode {
                 checked_include_elements::<i64>(&mut total_bytes, idwt_workspace_elements)?;
             } else {
@@ -227,6 +244,7 @@ pub(super) fn prepare_decomposition_storage(
     retained_baseline_bytes: usize,
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
+    selection: Option<&super::PrecinctSelection>,
 ) -> Result<DecompositionAllocationPlan> {
     let (mut plan, idwt_workspace_elements) = plan::build_allocation_plan(
         tile,
@@ -234,6 +252,7 @@ pub(super) fn prepare_decomposition_storage(
         storage.exact_integer_decode,
         include_roi_workspace,
         workspace,
+        selection,
     )?;
 
     // Capacity retention must never make a smaller valid tile fail in a later
@@ -243,7 +262,75 @@ pub(super) fn prepare_decomposition_storage(
     plan.account_live_workspace(storage, idwt_workspace_elements)?;
     reuse::reserve_decomposition_storage(&plan, storage, retained_baseline_bytes)?;
     plan.account_live_workspace(storage, idwt_workspace_elements)?;
+    storage.deferred_idwt_workspace_elements =
+        plan.defer_coefficients.then_some(idwt_workspace_elements);
     Ok(plan)
+}
+
+/// Allocate coefficient storage that region decode deferred until its ROI
+/// plan was built.
+///
+/// With a plan, each sub-band stores only the union of the code-blocks the
+/// plan requires; every other code-block would be left zero anyway, and
+/// [`super::SubBand::storage_rect`] readers treat samples outside the stored
+/// rectangle as zero. The windowed IDWT's peak buffers are charged in place of
+/// the whole-plane workspace. Without a plan, the whole tile is stored and the
+/// whole-plane IDWT workspace is charged as an ordinary decode would.
+///
+/// Like the whole-plane workspace, the windowed IDWT charge stays in
+/// `structural_workspace_bytes` for the rest of the tile, so packet parsing
+/// and Tier-1 budget against it before any IDWT buffer exists.
+pub(crate) fn allocate_deferred_coefficients(
+    storage: &mut DecompositionStorage<'_>,
+    skipped_resolution_levels: u8,
+) -> Result<()> {
+    let Some(idwt_workspace_elements) = storage.deferred_idwt_workspace_elements.take() else {
+        return Ok(());
+    };
+    let mut live_bytes = storage.structural_workspace_bytes;
+    let mut coefficient_count = 0usize;
+    if storage.roi_plan.is_some() {
+        checked_include_elements::<f32>(
+            &mut live_bytes,
+            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?,
+        )?;
+    }
+    if let Some(roi_plan) = storage.roi_plan.as_ref() {
+        for (sub_band_idx, sub_band) in storage.sub_bands.iter_mut().enumerate() {
+            let mut stored: Option<IntRect> = None;
+            for precinct in &storage.precincts[sub_band.precincts.clone()] {
+                for code_block in &storage.code_blocks[precinct.code_blocks.clone()] {
+                    if roi_plan.code_block_required(sub_band_idx, code_block.rect) {
+                        stored = Some(
+                            stored.map_or(code_block.rect, |rect| rect.union(code_block.rect)),
+                        );
+                    }
+                }
+            }
+            let stored = stored
+                .unwrap_or_else(|| IntRect::from_xywh(sub_band.rect.x0, sub_band.rect.y0, 0, 0));
+            let count = (stored.width() as usize)
+                .checked_mul(stored.height() as usize)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            let end = coefficient_count
+                .checked_add(count)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            sub_band.coefficients = coefficient_count..end;
+            sub_band.storage_rect = stored;
+            coefficient_count = end;
+        }
+    } else {
+        coefficient_count = storage
+            .sub_bands
+            .last()
+            .map_or(0, |sub_band| sub_band.coefficients.end);
+        checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
+    }
+    let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;
+    budget.reserve(&mut storage.coefficients, coefficient_count)?;
+    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    storage.structural_workspace_bytes = budget.live_bytes();
+    Ok(())
 }
 
 pub(crate) fn release_unused_roi_workspace(
@@ -280,7 +367,7 @@ fn release_roi_workspace_bytes(
     Ok(())
 }
 
-fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
+pub(super) fn checked_include_elements<T>(total_bytes: &mut usize, count: usize) -> Result<()> {
     let bytes = size_of::<T>()
         .checked_mul(count)
         .ok_or(ValidationError::ImageTooLarge)?;
