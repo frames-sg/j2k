@@ -13,6 +13,10 @@ use crate::try_reserve_decode_elements;
 pub(crate) const MAX_LAYER_COUNT: u8 = 32;
 const MAX_RESOLUTION_COUNT: u8 = 32;
 const MAX_PRECINCT_EXPONENT: u8 = 31;
+/// Code-block width and height exponents are at most 10, and their sum is at
+/// most 12 (Table A.18).
+const MAX_CODE_BLOCK_EXPONENT: u8 = 10;
+const MAX_CODE_BLOCK_AREA_EXPONENT: u8 = 12;
 
 #[expect(
     clippy::trivially_copy_pass_by_ref,
@@ -42,6 +46,12 @@ fn coding_style_parameters(
         .read_byte()
         .and_then(|value| value.checked_add(2))
         .ok_or(MarkerError::ParseFailure(marker))?;
+    if code_block_width > MAX_CODE_BLOCK_EXPONENT
+        || code_block_height > MAX_CODE_BLOCK_EXPONENT
+        || code_block_width + code_block_height > MAX_CODE_BLOCK_AREA_EXPONENT
+    {
+        return Err(MarkerError::ParseFailure(marker).into());
+    }
     let code_block_style = CodeBlockStyle::from_u8(
         reader
             .read_byte()
@@ -58,7 +68,7 @@ fn coding_style_parameters(
     try_reserve_decode_elements(&mut precinct_exponents, usize::from(num_resolution_levels))?;
     if coding_style.has_precincts() {
         // "Entropy coder with precincts defined below."
-        for _ in 0..num_resolution_levels {
+        for resolution in 0..num_resolution_levels {
             // Table A.21.
             let precinct_size = reader
                 .read_byte()
@@ -67,6 +77,11 @@ fn coding_style_parameters(
             let height_exp = precinct_size >> 4;
 
             if width_exp > MAX_PRECINCT_EXPONENT || height_exp > MAX_PRECINCT_EXPONENT {
+                return Err(MarkerError::ParseFailure(marker).into());
+            }
+            // An exponent of 0 is allowed only at the lowest resolution
+            // level: above it, B-17 and B-18 use PPx - 1 and PPy - 1.
+            if resolution > 0 && (width_exp == 0 || height_exp == 0) {
                 return Err(MarkerError::ParseFailure(marker).into());
             }
 
