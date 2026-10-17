@@ -128,6 +128,33 @@ impl<'data> TilePartCursor<'_, 'data> {
         (actual == expected as usize).then_some(())
     }
 
+    /// Skip one whole packet, header and body, by its PLT length.
+    ///
+    /// Only in-band packet headers can be skipped this way. Returns `false`
+    /// without consuming anything when the length is not signalled, the
+    /// headers live in PPM/PPT, or the length runs past the tile-part, so the
+    /// caller parses the packet instead.
+    pub(crate) fn skip_packet(&mut self) -> bool {
+        let Self::Merged {
+            data,
+            packet_lengths,
+        } = self
+        else {
+            return false;
+        };
+        if !packet_lengths.present {
+            return false;
+        }
+        let Some(&length) = packet_lengths.lengths.get(packet_lengths.next) else {
+            return false;
+        };
+        if data.skip_bytes(length as usize).is_none() {
+            return false;
+        }
+        packet_lengths.next += 1;
+        true
+    }
+
     pub(crate) fn validate_all_packet_lengths_consumed(&self) -> Option<()> {
         let consumed = match self {
             Self::Merged { packet_lengths, .. } | Self::Separated { packet_lengths, .. } => {

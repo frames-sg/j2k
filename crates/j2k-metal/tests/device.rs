@@ -501,5 +501,7 @@ mod legacy_batch;
 mod multitile_color;
 #[path = "device/resident_batch.rs"]
 mod resident_batch;
+#[path = "device/reversible_early_stop.rs"]
+mod reversible_early_stop;
 #[path = "device/tile_batch.rs"]
 mod tile_batch;

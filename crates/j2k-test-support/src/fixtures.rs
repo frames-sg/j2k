@@ -2,6 +2,22 @@
 
 //! Shared byte fixtures and container builders for integration tests.
 
+/// `OpenJPEG` 2.5.3 PCRL and CPRL codestreams with several precincts per
+/// resolution. `fixtures/openjpeg_progression/README.md` documents how
+/// `generate.sh` makes them. Each decodes losslessly to
+/// [`OPENJPEG_PROGRESSION_SOURCE_97X61_RGB`].
+pub const OPENJPEG_PCRL_97X61: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/pcrl_97x61.j2k");
+pub const OPENJPEG_CPRL_97X61: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/cprl_97x61.j2k");
+pub const OPENJPEG_PCRL_97X61_TILES_PLT: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/pcrl_97x61_tiles_plt.j2k");
+pub const OPENJPEG_CPRL_97X61_TILES_PLT: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/cprl_97x61_tiles_plt.j2k");
+/// Interleaved RGB8 source samples for the `OpenJPEG` progression fixtures.
+pub const OPENJPEG_PROGRESSION_SOURCE_97X61_RGB: &[u8] =
+    include_bytes!("../fixtures/openjpeg_progression/source_97x61.rgb");
+
 pub const JPEG_BASELINE_420_16X16: &[u8] =
     include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 pub const JPEG_BASELINE_420_16X16_RGB: &[u8] =
@@ -57,6 +73,53 @@ pub const OPENJPEG_IRREVERSIBLE_RGB8_8X8: &[u8] = &[
     0xea, 0x04, 0x06, 0xbf, 0x80, 0x80, 0xa0, 0xfb, 0xc0, 0x80, 0x01, 0x9f, 0xc1, 0xf7, 0x81, 0x00,
     0x04, 0x8f, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0xff, 0xd9,
 ];
+
+/// Lossless reversible 64 x 64 16-bit codestream whose LL and coarsest LH
+/// code blocks stop before their lowest bit-planes, from pydicom-data.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_LOSSLESS: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/emri_small_jpeg_2k_lossless_frame1.j2c"
+);
+/// The uncompressed original of [`REVERSIBLE_EARLY_STOP_LOSSLESS`] as
+/// row-major little-endian `u16` samples.
+pub const REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE: &[u8] =
+    include_bytes!("../../j2k-native/fixtures/reversible_early_stop/emri_small_frame1.u16le");
+/// `OpenJPEG` 2.5.4 rate-limited reversible 64 x 64 12-bit codestream in which
+/// every code block stops early, four to a sub-band in the finest three.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.j2k"
+);
+/// `opj_decompress` 2.5.4 samples for [`REVERSIBLE_EARLY_STOP_RATE_LIMITED`]
+/// as row-major little-endian `u16`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.u16le"
+);
+/// `OpenJPEG` 2.5.4 rate-limited reversible 19 x 13 8-bit codestream whose
+/// single component uses ROI maxshift 2 and stops coding passes early.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_ROI: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.j2k"
+);
+/// `opj_decompress` 2.5.4 samples for [`REVERSIBLE_EARLY_STOP_ROI`].
+pub const REVERSIBLE_EARLY_STOP_ROI_GRAY8: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.gray"
+);
+/// `OpenJPEG` 2.5.4 rate-limited reversible 128 x 128 RGB8 codestream with the
+/// reversible color transform, in which every coded block stops early.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate12_rgb8_128x128.j2k"
+);
+/// Interleaved RGB samples `opj_decompress` 2.5.4 decodes from
+/// [`REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8`].
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate12_rgb8_128x128.rgb"
+);
 
 #[cfg(feature = "j2k-native-fixtures")]
 mod generated_htj2k;

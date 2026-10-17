@@ -51,6 +51,24 @@ fn prepared_classic_gray_and_rgb_native_batches_match_cpu_for_all_requests_and_l
 }
 
 #[test]
+fn prepared_classic_early_stopped_reversible_batches_match_cpu() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    // Their code blocks need the T.800 Equation E-8 midpoint (r = 1/2).
+    let context = CudaContext::system_default().expect("CUDA context");
+    for encoded in [
+        j2k_test_support::REVERSIBLE_EARLY_STOP_LOSSLESS,
+        j2k_test_support::REVERSIBLE_EARLY_STOP_RATE_LIMITED,
+        j2k_test_support::REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8,
+    ] {
+        for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+            assert_classic_case(&context, &Arc::from(encoded), layout, DecodeRequest::Full);
+        }
+    }
+}
+
+#[test]
 fn prepared_classic_multitile_gray_and_rgb_are_resident_and_external_bit_exact() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;

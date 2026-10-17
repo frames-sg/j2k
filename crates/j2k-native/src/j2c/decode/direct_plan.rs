@@ -3,14 +3,14 @@
 use super::{
     add_roi_shift_to_bitplanes, bail, build, classic_decode_job_parameters,
     code_block_required_by_index, component_unsigned_level_shift, count_classic_code_blocks,
-    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes,
-    progression_iterator, segment, sub_band_decode_parameters, tile, BitReader, ColorError,
-    ComponentInfo, ComponentTile, DecodeAllocationBudget, DecoderContext, DecodingError,
-    DecompositionStorage, DirectPlanUnsupportedReason, Header, HtOwnedCodeBlockBatchJob,
-    HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
-    J2kOwnedSubBandPlan, J2kRect, J2kWaveletTransform, ResolutionTile, Result, RoiPlan, SubBand,
-    SubBandDecodeParameters, Tile, ValidationError, Vec,
+    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes, segment,
+    sub_band_decode_parameters, tile, BitReader, ColorError, ComponentInfo, ComponentTile,
+    DecodeAllocationBudget, DecoderContext, DecodingError, DecompositionStorage,
+    DirectPlanUnsupportedReason, Header, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
+    J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
+    J2kWaveletTransform, ResolutionTile, Result, SubBand, SubBandDecodeParameters, Tile,
+    ValidationError, Vec,
 };
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::tile_intersects_output_region;
@@ -76,6 +76,49 @@ impl ClassicPayloadCollector<'_> {
         self.payloads.push(payload);
         Ok(())
     }
+}
+
+fn build_and_parse_direct_tile_metadata<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    structural_workspace_bytes: usize,
+    storage: &mut DecompositionStorage<'a>,
+    decode_region: Option<super::OutputRegion>,
+) -> Result<()> {
+    let selection = match decode_region {
+        Some(output_region) => build::select_region_precincts(
+            tile,
+            header,
+            storage,
+            output_region,
+            structural_workspace_bytes,
+        )?,
+        None => None,
+    };
+    let selection_bytes = selection
+        .as_ref()
+        .map_or(0, build::PrecinctSelection::owned_bytes);
+    build::build(
+        tile,
+        storage,
+        structural_workspace_bytes
+            .checked_add(selection_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?,
+        decode_region.is_some(),
+        build::BuildWorkspace::MetadataOnly,
+        selection.as_ref(),
+    )?;
+    if decode_region.is_some() && storage.roi_plan.is_none() {
+        build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
+    }
+
+    segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    drop(selection);
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_sub(selection_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(())
 }
 
 pub(crate) fn build_direct_grayscale_plan<'a>(
@@ -158,21 +201,17 @@ fn build_direct_grayscale_tile_plan<'a>(
     ctx.tile_decode_context.channel_data.clear();
     ctx.storage.reset_for_next_tile();
 
-    build::build(
+    build_and_parse_direct_tile_metadata(
         tile,
-        &mut ctx.storage,
+        header,
         structural_workspace_bytes,
-        decode_region.is_some(),
-        build::BuildWorkspace::MetadataOnly,
+        &mut ctx.storage,
+        decode_region,
     )?;
-    if let Some(output_region) = decode_region {
-        ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region)?;
-        if ctx.storage.roi_plan.is_none() {
-            build::release_unused_roi_workspace(&mut ctx.storage, tile.component_infos.len())?;
-        }
+    #[cfg(test)]
+    {
+        ctx.direct_plan_code_blocks = ctx.storage.code_blocks.len();
     }
-
-    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 
     let component_info = &tile.component_infos[0];
     let mut budget = DecodeAllocationBudget::for_storage(&ctx.storage)?;
