@@ -283,16 +283,17 @@ fn report_allocations(cases: &[EncodeCase]) {
 }
 
 fn bench_encode_cpu(c: &mut Criterion) {
+    #[cfg(has_libjpeg_turbo)]
     if std::env::var_os("J2K_ENCODE_BENCH_BATCH").is_some() {
-        #[cfg(has_libjpeg_turbo)]
-        {
-            let cases = encode_cases();
-            batch::bench(c, &cases);
-            return;
-        }
-        #[cfg(not(has_libjpeg_turbo))]
-        panic!("J2K_ENCODE_BENCH_BATCH requires libjpeg-turbo");
+        let cases = encode_cases();
+        batch::bench(c, &cases);
+        return;
     }
+    #[cfg(not(has_libjpeg_turbo))]
+    assert!(
+        std::env::var_os("J2K_ENCODE_BENCH_BATCH").is_none(),
+        "J2K_ENCODE_BENCH_BATCH requires libjpeg-turbo"
+    );
 
     let cases = encode_cases();
     report_allocations(&cases);
