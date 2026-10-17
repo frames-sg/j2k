@@ -247,10 +247,12 @@ fn prepared_classic_plan_supports_duplicate_full_roi_and_reduced_requests() {
 fn referenced_classic_whole_plan_executes_all_gray_and_rgb_tiles_exactly() {
     const WIDTH: u32 = 19;
     const HEIGHT: u32 = 13;
+    // Multi-tile encode needs tile origins on the wavelet grid; 12x8 tiles
+    // still leave partial edge tiles on both axes.
     let gray = Arc::<[u8]>::from(classic_gray8_fixture_with_tile_size(
         WIDTH,
         HEIGHT,
-        Some((11, 7)),
+        Some((12, 8)),
     ));
     let rgb_samples = (0..WIDTH * HEIGHT * 3)
         .map(|index| ((index * 37 + index / 7) & 0xff) as u8)
@@ -266,7 +268,7 @@ fn referenced_classic_whole_plan_executes_all_gray_and_rgb_tiles_exactly() {
             &EncodeOptions {
                 reversible: true,
                 num_decomposition_levels: 1,
-                tile_size: Some((11, 7)),
+                tile_size: Some((12, 8)),
                 use_mct: false,
                 ..EncodeOptions::default()
             },

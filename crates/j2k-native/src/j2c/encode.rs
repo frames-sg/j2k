@@ -92,6 +92,7 @@ mod i64_packetize;
 mod magnitude;
 use self::i64_packetize::{packetize_i64_component_resolution_packets, I64PacketizeRequest};
 mod multitile;
+mod tile_grid;
 mod tile_parts;
 use self::tile_parts::{
     validate_packet_header_marker_payloads, write_single_tile_packetized_codestream_for_session,
