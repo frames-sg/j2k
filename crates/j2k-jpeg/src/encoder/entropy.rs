@@ -541,7 +541,13 @@ fn encode_entropy_mcu_range_into_mode<
                 );
                 &block_storage
             };
-            #[cfg_attr(not(target_arch = "aarch64"), allow(unused_mut))]
+            #[cfg_attr(
+                not(target_arch = "aarch64"),
+                expect(
+                    unused_mut,
+                    reason = "AC token preparation mutates coefficients only on AArch64"
+                )
+            )]
             let mut coeffs = fdct_quantize(block, quant, divisors, cosine);
             #[cfg(target_arch = "aarch64")]
             if AC_TOKENS {

@@ -297,7 +297,7 @@ fn fill_raw_lookup_from_bits(
     lookup_bits: u8,
     raw: &RawHuffmanTable,
     canonical: &CompactRawCanonicalDerivation,
-) {
+) -> Result<(), JpegError> {
     debug_assert_eq!(output.len(), 1usize << lookup_bits);
     let values = raw.values.as_slice();
     let mut value_index = 0usize;
@@ -306,7 +306,7 @@ fn fill_raw_lookup_from_bits(
         let count = usize::from(raw.bits[usize::from(len - 1)]);
         if count != 0 && len <= lookup_bits {
             let first_code = usize::try_from(canonical.min_code[usize::from(len)])
-                .expect("validated populated canonical length has a nonnegative minimum");
+                .map_err(|_| canonical_huffman_error())?;
             let shift = usize::from(lookup_bits - len);
             let repeats = 1usize << shift;
             let mut offset = 0usize;
@@ -323,6 +323,7 @@ fn fill_raw_lookup_from_bits(
         len += 1;
     }
     debug_assert_eq!(value_index, values.len());
+    Ok(())
 }
 
 const fn fill_u32_range(output: &mut [u32], start: usize, end: usize, value: u32) {
@@ -819,7 +820,7 @@ impl HuffmanTable {
             cap,
         )?;
         fast.resize(raw_lookup_entries, (0u8, 0u8));
-        fill_raw_lookup_from_bits(&mut fast, raw_lookup_bits, raw, &canonical);
+        fill_raw_lookup_from_bits(&mut fast, raw_lookup_bits, raw, &canonical)?;
 
         let retained_allocation_bytes = table_live_bytes.checked_sub(initial_live_bytes).ok_or(
             JpegError::InternalInvariant {
