@@ -97,6 +97,19 @@ pub struct J2kCodeBlockDecodeJob<'a> {
     pub dequantization_step: f32,
 }
 
+/// Whether reversible reconstruction of `job` can differ from its decoded
+/// magnitudes. That needs no ROI shift and coding passes that stop before
+/// bit-plane 0's magnitude-refinement pass, the `3·D − 3`th of a complete
+/// block's `3·D − 2` passes for `D` decoded bitplanes: then a significant
+/// coefficient lacks bit 0 and takes the T.800 Equation E-8 midpoint
+/// (r = 1/2). The final cleanup pass only finds coefficients still at zero.
+fn reversible_midpoint_applies(job: &J2kCodeBlockDecodeJob<'_>) -> bool {
+    let decoded_bitplanes = u32::from(job.total_bitplanes.saturating_sub(job.missing_bit_planes));
+    job.roi_shift == 0
+        && job.number_of_coding_passes != 0
+        && u32::from(job.number_of_coding_passes) + 3 < 3 * decoded_bitplanes
+}
+
 /// Adapter HTJ2K cleanup-encode shape counters for backend benchmarking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HtCleanupEncodeDistribution {
@@ -256,9 +269,17 @@ pub trait HtCodeBlockDecoder {
     /// Optionally decode a full classic J2K sub-band with the requested
     /// coefficient reconstruction rule.
     ///
-    /// The default delegates reversible work to [`Self::decode_j2k_sub_band`].
-    /// It declines irreversible midpoint reconstruction because legacy
-    /// adapters did not receive enough information to implement that rule.
+    /// With `irreversible_midpoint` false the coefficients are reversible
+    /// (5/3). They are exact where a code block's coding passes are complete;
+    /// where the passes stop early and the block has no ROI shift, they take
+    /// the T.800 Equation E-8 midpoint (r = 1/2), as the native decoder does.
+    ///
+    /// The default delegates complete reversible work to
+    /// [`Self::decode_j2k_sub_band`]. It declines irreversible midpoint
+    /// reconstruction, because legacy adapters did not receive enough
+    /// information to implement that rule, and sub-bands with an early-stopped
+    /// reversible code block, because legacy adapters return the decoded
+    /// magnitudes without the midpoint.
     ///
     /// # Errors
     ///
@@ -269,7 +290,12 @@ pub trait HtCodeBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
-        if irreversible_midpoint {
+        if irreversible_midpoint
+            || job
+                .jobs
+                .iter()
+                .any(|batch_job| reversible_midpoint_applies(&batch_job.code_block))
+        {
             Ok(false)
         } else {
             self.decode_j2k_sub_band(job, output)
@@ -294,11 +320,14 @@ pub trait HtCodeBlockDecoder {
     }
 
     /// Optionally decode one classic J2K code block with the requested
-    /// coefficient reconstruction rule.
+    /// coefficient reconstruction rule, as described for
+    /// [`Self::decode_j2k_sub_band_with_midpoint`].
     ///
-    /// The default delegates reversible work to [`Self::decode_j2k_code_block`].
-    /// It declines irreversible midpoint reconstruction so an older adapter
-    /// cannot silently emit coefficients with the wrong reconstruction bias.
+    /// The default delegates complete reversible work to
+    /// [`Self::decode_j2k_code_block`]. It declines irreversible midpoint
+    /// reconstruction, and early-stopped reversible code blocks, so an older
+    /// adapter cannot silently emit coefficients with the wrong reconstruction
+    /// bias.
     ///
     /// # Errors
     ///
@@ -309,7 +338,7 @@ pub trait HtCodeBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
-        if irreversible_midpoint {
+        if irreversible_midpoint || reversible_midpoint_applies(&job) {
             Ok(false)
         } else {
             self.decode_j2k_code_block(job, output)

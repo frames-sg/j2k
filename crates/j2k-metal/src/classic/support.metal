@@ -71,6 +71,34 @@ inline void coeff_set_magnitude_refined(thread uchar *states, uint idx) {
     set_state_bit(states, idx, J2K_MAG_REF_SHIFT, uchar(1u));
 }
 
+// Lowest decoded bit of a non-zero coefficient after its code block's final
+// coding pass, as j2k_codec_math::classic::irreversible_midpoint_bit. A final
+// significance pass leaves already-significant coefficients unrefined.
+inline bool classic_lowest_decoded_bit(
+    uint magnitude,
+    uint decoded_bitplanes,
+    uint number_of_coding_passes,
+    thread uint &lowest_decoded_bit
+) {
+    if (magnitude == 0u || number_of_coding_passes == 0u) {
+        return false;
+    }
+    const uint final_pass = number_of_coding_passes - 1u;
+    const uint decoded_plane = (final_pass + 2u) / 3u;
+    if (decoded_bitplanes <= decoded_plane) {
+        return false;
+    }
+    lowest_decoded_bit = decoded_bitplanes - decoded_plane - 1u;
+    if (lowest_decoded_bit >= 32u) {
+        return false;
+    }
+    if (final_pass % 3u == 1u &&
+        (magnitude & (1u << lowest_decoded_bit)) == 0u) {
+        lowest_decoded_bit += 1u;
+    }
+    return lowest_decoded_bit < 32u;
+}
+
 inline float reconstructed_classic_sample(
     uint coefficient,
     J2kClassicCleanupBatchJob job
@@ -78,17 +106,15 @@ inline float reconstructed_classic_sample(
     const uint magnitude = coefficient & 0x7FFFFFFFu;
     const uint decoded_bitplanes =
         job.total_bitplanes + job.roi_shift - job.missing_msbs;
+    uint lowest_decoded_bit = 0u;
+    const bool decoded = classic_lowest_decoded_bit(
+        magnitude, decoded_bitplanes, job.number_of_coding_passes,
+        lowest_decoded_bit
+    );
     float reconstructed;
     if (job.irreversible_midpoint != 0u && magnitude != 0u &&
         job.number_of_coding_passes != 0u) {
-        const uint final_pass = job.number_of_coding_passes - 1u;
-        const uint decoded_plane = (final_pass + 2u) / 3u;
-        if (decoded_bitplanes > decoded_plane) {
-            uint lowest_decoded_bit = decoded_bitplanes - decoded_plane - 1u;
-            if (final_pass % 3u == 1u &&
-                (magnitude & (1u << lowest_decoded_bit)) == 0u) {
-                lowest_decoded_bit += 1u;
-            }
+        if (decoded) {
             uint fixed_magnitude =
                 (magnitude << 1u) | (1u << lowest_decoded_bit);
             if (job.roi_shift != 0u &&
@@ -101,9 +127,16 @@ inline float reconstructed_classic_sample(
         }
     } else {
         uint reconstructed_magnitude = magnitude;
-        if (job.roi_shift != 0u &&
-            reconstructed_magnitude >= (1u << job.roi_shift)) {
-            reconstructed_magnitude >>= job.roi_shift;
+        if (job.roi_shift != 0u) {
+            if (reconstructed_magnitude >= (1u << job.roi_shift)) {
+                reconstructed_magnitude >>= job.roi_shift;
+            }
+        } else if (decoded && lowest_decoded_bit != 0u) {
+            // Reversible coefficient whose low bit-planes were not decoded:
+            // T.800 Equation E-8 with r = 1/2, as
+            // j2k_codec_math::classic::reversible_midpoint_bit. The undecoded
+            // bits are zero, so OR adds the offset.
+            reconstructed_magnitude |= 1u << (lowest_decoded_bit - 1u);
         }
         reconstructed = float(reconstructed_magnitude);
     }

@@ -24,6 +24,7 @@ use super::state::{
 use crate::j2c::build::SubBandType;
 use crate::j2c::codestream::CodeBlockStyle;
 use crate::J2kCodeBlockSegment;
+use j2k_codec_math::classic::reversible_midpoint_bit;
 
 fn seed_130_cb_coefficients() -> Vec<i32> {
     let mut coefficients = Vec::with_capacity(64 * 64);
@@ -191,6 +192,89 @@ fn irreversible_midpoint_reconstruction_tracks_the_last_decoded_pass() {
         reconstruct_irreversible_midpoint(awaiting_refinement, 3, 3, 0).to_bits(),
         5.0_f32.to_bits()
     );
+}
+
+#[test]
+fn reversible_reconstruction_is_exact_when_complete_and_centered_when_stopped_early() {
+    let coefficient = |magnitude: u64, sign: u8| {
+        let mut coefficient = Coefficient::default();
+        for bit in 0..63 {
+            coefficient.push_bit_at(u32::from(magnitude >> bit & 1 == 1), bit);
+        }
+        coefficient.set_sign(sign);
+        coefficient
+    };
+    // Three bit-planes allow 1 + 3 * 2 = 7 passes.
+    let complete = MidpointReconstructor::new(3, 7, 0);
+    assert_eq!(complete.reconstruct_reversible(coefficient(5, 0)), 5);
+    assert_eq!(complete.reconstruct_reversible(coefficient(5, 1)), -5);
+
+    // Stopped after bit-plane 1's cleanup pass: bit 0 is undecoded, so 0b100
+    // is reconstructed at 0b100 + 2^0.
+    let missing_bit0 = MidpointReconstructor::new(3, 4, 0);
+    assert_eq!(missing_bit0.reconstruct_reversible(coefficient(4, 0)), 5);
+    assert_eq!(missing_bit0.reconstruct_reversible(coefficient(4, 1)), -5);
+    assert_eq!(missing_bit0.reconstruct_reversible(coefficient(0, 0)), 0);
+
+    // Only the first cleanup pass: bits 1 and 0 are undecoded (offset 2^1).
+    let first_plane = MidpointReconstructor::new(3, 1, 0);
+    assert_eq!(first_plane.reconstruct_reversible(coefficient(4, 0)), 6);
+
+    // A final significance pass leaves earlier-significant coefficients
+    // unrefined at that bit-plane: 0b100 still misses bits 1 and 0, while a
+    // coefficient that became significant at bit 1 misses only bit 0.
+    let final_sigprop = MidpointReconstructor::new(3, 2, 0);
+    assert_eq!(final_sigprop.reconstruct_reversible(coefficient(4, 0)), 6);
+    assert_eq!(final_sigprop.reconstruct_reversible(coefficient(2, 0)), 3);
+
+    // ROI-shifted blocks keep the plain coefficient.
+    let roi = MidpointReconstructor::new(3, 4, 2);
+    assert_eq!(roi.reconstruct_reversible(coefficient(4, 0)), 4);
+}
+
+#[test]
+fn per_block_reversible_reconstruction_matches_the_shared_reference() {
+    // The CUDA and Metal classic decoders reconstruct reversible coefficients
+    // with `reversible_midpoint_bit`; this grid is the irreversible one above.
+    let mut magnitudes = vec![0_u64, 1, 2, 3, 5, 0x55, 0xAA, 0xFFFF, (1 << 63) - 1];
+    magnitudes.extend((0..63).map(|bit| 1_u64 << bit));
+    magnitudes.extend((1..63).map(|bits| (1_u64 << bits) - 1));
+    for decoded_bitplanes in [0_u8, 1, 2, 3, 8, 13, 31, 62, 63, 64, 70] {
+        for number_of_coding_passes in
+            0..=u8::try_from((u32::from(decoded_bitplanes) * 3).min(200)).unwrap()
+        {
+            for roi_shift in [0_u8, 1, 7, 62, 63] {
+                let block = MidpointReconstructor::new(
+                    decoded_bitplanes,
+                    number_of_coding_passes,
+                    roi_shift,
+                );
+                for &magnitude in &magnitudes {
+                    let offset = reversible_midpoint_bit(
+                        magnitude,
+                        u32::from(decoded_bitplanes),
+                        u32::from(number_of_coding_passes),
+                    )
+                    .filter(|_| roi_shift == 0)
+                    .map_or(0, |bit| 1_u64 << bit);
+                    let expected = i64::try_from(magnitude | offset).unwrap();
+                    for (sign, expected) in [(0_u8, expected), (1, -expected)] {
+                        let mut coefficient = Coefficient::default();
+                        for bit in 0..63 {
+                            coefficient.push_bit_at(u32::from(magnitude >> bit & 1 == 1), bit);
+                        }
+                        coefficient.set_sign(sign);
+                        assert_eq!(
+                            block.reconstruct_reversible(coefficient),
+                            expected,
+                            "bitplanes {decoded_bitplanes} passes {number_of_coding_passes} \
+                             roi {roi_shift} magnitude {magnitude:#x} sign {sign}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

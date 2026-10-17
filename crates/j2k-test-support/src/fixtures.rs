@@ -58,6 +58,41 @@ pub const OPENJPEG_IRREVERSIBLE_RGB8_8X8: &[u8] = &[
     0x04, 0x8f, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0xff, 0xd9,
 ];
 
+/// Lossless reversible 64 x 64 16-bit codestream whose LL and coarsest LH
+/// code blocks stop before their lowest bit-planes, from pydicom-data.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_LOSSLESS: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/emri_small_jpeg_2k_lossless_frame1.j2c"
+);
+/// The uncompressed original of [`REVERSIBLE_EARLY_STOP_LOSSLESS`] as
+/// row-major little-endian `u16` samples.
+pub const REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE: &[u8] =
+    include_bytes!("../../j2k-native/fixtures/reversible_early_stop/emri_small_frame1.u16le");
+/// `OpenJPEG` 2.5.4 rate-limited reversible 64 x 64 12-bit codestream in which
+/// every code block stops early, four to a sub-band in the finest three.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.j2k"
+);
+/// `opj_decompress` 2.5.4 samples for [`REVERSIBLE_EARLY_STOP_RATE_LIMITED`]
+/// as row-major little-endian `u16`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.u16le"
+);
+/// `OpenJPEG` 2.5.4 rate-limited reversible 128 x 128 RGB8 codestream with the
+/// reversible color transform, in which every coded block stops early.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate12_rgb8_128x128.j2k"
+);
+/// SHA-256 of the interleaved RGB samples `opj_decompress` 2.5.4 decodes from
+/// [`REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8`].
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256: &str =
+    "d03c235ce98e68eeefdd5787c56eaa425605553a73efa94155a8deffbf76a24c";
+
 #[cfg(feature = "j2k-native-fixtures")]
 mod generated_htj2k;
 mod jp2;

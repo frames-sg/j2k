@@ -120,6 +120,41 @@ impl MidpointReconstructor {
         }
     }
 
+    /// Reversible (5/3) reconstruction: the per-block form of
+    /// [`reversible_midpoint_bit`](j2k_codec_math::classic::reversible_midpoint_bit),
+    /// which the CUDA and Metal classic decoders apply too. A fully decoded
+    /// coefficient is exact (T.800 Equation E-7); one whose low bit-planes
+    /// were not decoded, because the code block's coding passes stop early,
+    /// takes the Equation E-8 midpoint (r = 1/2). Lossless encoders such as
+    /// GDCM/OpenJPEG 2.0 rely on it: they drop trailing passes whose bits
+    /// equal that midpoint. Blocks with an ROI shift return the coefficient
+    /// unchanged.
+    #[expect(
+        clippy::inline_always,
+        reason = "reversible coefficients are reconstructed once per coefficient in the hot output loop"
+    )]
+    #[inline(always)]
+    pub(crate) fn reconstruct_reversible(self, coefficient: Coefficient) -> i64 {
+        let signed = coefficient.get_i64();
+        let magnitude = signed.unsigned_abs();
+        let Some((lowest, final_sigprop)) = self.fast else {
+            return signed;
+        };
+        // See `reconstruct` for the final significance-pass rule.
+        let bit = lowest + u32::from(final_sigprop && magnitude & (1_u64 << lowest) == 0);
+        if magnitude == 0 || bit == 0 || bit >= u64::BITS {
+            return signed;
+        }
+        // The undecoded bits are zero, so OR adds the 2^(bit-1) offset.
+        let reconstructed = magnitude | (1_u64 << (bit - 1));
+        let reconstructed = i64::try_from(reconstructed).unwrap_or(i64::MAX);
+        if signed < 0 {
+            -reconstructed
+        } else {
+            reconstructed
+        }
+    }
+
     #[expect(
         clippy::cast_precision_loss,
         clippy::inline_always,
