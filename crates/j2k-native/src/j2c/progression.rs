@@ -9,11 +9,9 @@ use alloc::vec::Vec;
 use super::codestream::ComponentInfo;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use crate::error::{DecodingError, Result};
-use crate::{try_resize_decode_elements, ValidationError, DEFAULT_MAX_DECODE_BYTES};
-use alloc::boxed::Box;
+use crate::j2c::decode::DecodeAllocationBudget;
+use crate::ValidationError;
 use core::cmp::Ordering;
-use core::iter;
-use core::mem::size_of;
 
 const PACKETS_PER_INCLUSION_WORD: usize = u64::BITS as usize;
 
@@ -40,7 +38,7 @@ struct PacketInclusionMap {
 }
 
 impl PacketInclusionMap {
-    fn new(tile: &Tile<'_>) -> Result<Self> {
+    fn new(tile: &Tile<'_>, budget: &mut DecodeAllocationBudget) -> Result<Self> {
         let max_resolution = tile
             .component_infos
             .iter()
@@ -55,7 +53,7 @@ impl PacketInclusionMap {
             .checked_mul(max_resolution)
             .ok_or(ValidationError::ImageTooLarge)?;
         let mut resolution_offsets = Vec::new();
-        try_resize_decode_elements(&mut resolution_offsets, slot_count, usize::MAX)?;
+        budget.resize_new(&mut resolution_offsets, slot_count, usize::MAX)?;
 
         let mut packet_count = 0_usize;
         for (component_index, component) in tile.component_tiles().enumerate() {
@@ -77,20 +75,8 @@ impl PacketInclusionMap {
         }
 
         let word_count = packet_count.div_ceil(PACKETS_PER_INCLUSION_WORD);
-        let retained_bytes = resolution_offsets
-            .capacity()
-            .checked_mul(size_of::<usize>())
-            .and_then(|bytes| {
-                word_count
-                    .checked_mul(size_of::<u64>())
-                    .and_then(|word_bytes| bytes.checked_add(word_bytes))
-            })
-            .ok_or(ValidationError::ImageTooLarge)?;
-        if retained_bytes > DEFAULT_MAX_DECODE_BYTES {
-            return Err(ValidationError::ImageTooLarge.into());
-        }
         let mut words = Vec::new();
-        try_resize_decode_elements(&mut words, word_count, 0_u64)?;
+        budget.resize_new(&mut words, word_count, 0_u64)?;
         Ok(Self {
             resolution_offsets,
             words,
@@ -202,27 +188,71 @@ impl<'a> IteratorInput<'a> {
     fn max_comp(&self) -> u16 {
         self.components.1
     }
+}
 
-    fn component_tiles(&self) -> Vec<ComponentTile<'a>> {
-        self.tile
-            .component_infos
-            .iter()
-            .map(|c| ComponentTile::new(self.tile, c))
-            .collect::<Vec<_>>()
+pub(crate) struct ProgressionIterator<'a> {
+    inner: ProgressionInner<'a>,
+    owned_bytes: usize,
+}
+
+enum ProgressionInner<'a> {
+    Single(ProgressionOrderIterator<'a>),
+    Changes {
+        iterators: Vec<ProgressionOrderIterator<'a>>,
+        current: usize,
+        inclusion: PacketInclusionMap,
+    },
+}
+
+impl ProgressionIterator<'_> {
+    pub(crate) const fn owned_bytes(&self) -> usize {
+        self.owned_bytes
+    }
+}
+
+impl Iterator for ProgressionIterator<'_> {
+    type Item = ProgressionData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            ProgressionInner::Single(iterator) => iterator.next(),
+            ProgressionInner::Changes {
+                iterators,
+                current,
+                inclusion,
+            } => loop {
+                let iterator = iterators.get_mut(*current)?;
+                match iterator.next() {
+                    Some(packet) if inclusion.insert(packet) => return Some(packet),
+                    Some(_) => {}
+                    None => *current += 1,
+                }
+            },
+        }
     }
 }
 
 pub(crate) fn progression_iterator<'a>(
     tile: &'a Tile<'a>,
-) -> Result<Box<dyn Iterator<Item = ProgressionData> + 'a>> {
+    retained_live_bytes: usize,
+) -> Result<ProgressionIterator<'a>> {
+    let mut budget = DecodeAllocationBudget::from_live_bytes(retained_live_bytes)?;
     if tile.progression_changes.is_empty() {
         let iter_input =
             IteratorInput::new(tile).ok_or(DecodingError::InvalidProgressionIterator)?;
-        return progression_iterator_for_order(tile.progression_order, iter_input);
+        let iterator =
+            progression_iterator_for_order(tile.progression_order, iter_input, &mut budget)?;
+        return Ok(ProgressionIterator {
+            inner: ProgressionInner::Single(iterator),
+            owned_bytes: budget
+                .live_bytes()
+                .checked_sub(retained_live_bytes)
+                .ok_or(ValidationError::ImageTooLarge)?,
+        });
     }
 
     let mut iterators = Vec::new();
-    crate::try_reserve_decode_elements(&mut iterators, tile.progression_changes.len())?;
+    budget.reserve_new(&mut iterators, tile.progression_changes.len())?;
     for change in &tile.progression_changes {
         let iter_input = IteratorInput::try_new_with_custom_bounds(
             tile,
@@ -231,85 +261,130 @@ pub(crate) fn progression_iterator<'a>(
             (change.component_start, change.component_end),
         )
         .ok_or(DecodingError::InvalidProgressionIterator)?;
+        if iterators.len() == iterators.capacity() {
+            return Err(DecodingError::HostAllocationFailed.into());
+        }
         iterators.push(progression_iterator_for_order(
             change.progression_order,
             iter_input,
+            &mut budget,
         )?);
     }
 
-    let mut inclusion = PacketInclusionMap::new(tile)?;
-
-    Ok(Box::new(
-        iterators
-            .into_iter()
-            .flatten()
-            .filter(move |packet| inclusion.insert(*packet)),
-    ))
+    let inclusion = PacketInclusionMap::new(tile, &mut budget)?;
+    Ok(ProgressionIterator {
+        inner: ProgressionInner::Changes {
+            iterators,
+            current: 0,
+            inclusion,
+        },
+        owned_bytes: budget
+            .live_bytes()
+            .checked_sub(retained_live_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?,
+    })
 }
 
 fn progression_iterator_for_order<'a>(
     progression_order: super::codestream::ProgressionOrder,
     iter_input: IteratorInput<'a>,
-) -> Result<Box<dyn Iterator<Item = ProgressionData> + 'a>> {
-    let iterator: Box<dyn Iterator<Item = ProgressionData>> = match progression_order {
+    budget: &mut DecodeAllocationBudget,
+) -> Result<ProgressionOrderIterator<'a>> {
+    let iterator = match progression_order {
         super::codestream::ProgressionOrder::LayerResolutionComponentPosition => {
-            Box::new(layer_resolution_component_position_progression(iter_input))
+            ProgressionOrderIterator::Lrcp(layer_resolution_component_position_progression(
+                iter_input,
+            ))
         }
         super::codestream::ProgressionOrder::ResolutionLayerComponentPosition => {
-            Box::new(resolution_layer_component_position_progression(iter_input))
+            ProgressionOrderIterator::Rlcp(resolution_layer_component_position_progression(
+                iter_input,
+            ))
         }
-        super::codestream::ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-            resolution_position_component_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
-        super::codestream::ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-            position_component_resolution_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
-        super::codestream::ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-            component_position_resolution_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
+        super::codestream::ProgressionOrder::ResolutionPositionComponentLayer => {
+            ProgressionOrderIterator::Position(resolution_position_component_layer_progression(
+                &iter_input,
+                budget,
+            )?)
+        }
+        super::codestream::ProgressionOrder::PositionComponentResolutionLayer => {
+            ProgressionOrderIterator::Position(position_component_resolution_layer_progression(
+                &iter_input,
+                budget,
+            )?)
+        }
+        super::codestream::ProgressionOrder::ComponentPositionResolutionLayer => {
+            ProgressionOrderIterator::Position(component_position_resolution_layer_progression(
+                &iter_input,
+                budget,
+            )?)
+        }
     };
     Ok(iterator)
 }
 
 /// B.12.1.1 Layer-resolution level-component-position progression.
-pub(crate) fn layer_resolution_component_position_progression(
+fn layer_resolution_component_position_progression(
     input: IteratorInput<'_>,
-) -> impl Iterator<Item = ProgressionData> + '_ {
-    let component_tiles = input.component_tiles();
+) -> LayerResolutionComponentPosition<'_> {
+    LayerResolutionComponentPosition::new(input)
+}
 
-    let mut layer = input.min_layer();
-    let mut resolution = input.min_resolution();
-    let mut component_idx = input.min_comp();
+struct LayerResolutionComponentPosition<'a> {
+    input: IteratorInput<'a>,
+    layer: u8,
+    resolution: u8,
+    component_idx: u16,
+    resolution_tile: Option<ResolutionTile<'a>>,
+    precinct: u64,
+}
 
-    let mut resolution_tile = first_resolution_tile(&input, &component_tiles);
-    let mut precinct = 0;
+impl<'a> LayerResolutionComponentPosition<'a> {
+    fn new(input: IteratorInput<'a>) -> Self {
+        let layer = input.min_layer();
+        let resolution = input.min_resolution();
+        let component_idx = input.min_comp();
+        let resolution_tile = first_resolution_tile(&input);
+        Self {
+            input,
+            layer,
+            resolution,
+            component_idx,
+            resolution_tile,
+            precinct: 0,
+        }
+    }
+}
 
-    iter::from_fn(move || {
-        if layer == input.max_layer() || resolution == input.total_max_resolution() {
+impl Iterator for LayerResolutionComponentPosition<'_> {
+    type Item = ProgressionData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.layer == self.input.max_layer()
+            || self.resolution == self.input.total_max_resolution()
+        {
             return None;
         }
 
-        if resolution_tile
+        if self
+            .resolution_tile
             .as_ref()
-            .is_none_or(|tile| precinct == tile.num_precincts())
+            .is_none_or(|tile| self.precinct == tile.num_precincts())
         {
             loop {
-                precinct = 0;
-                component_idx += 1;
+                self.precinct = 0;
+                self.component_idx += 1;
 
-                if component_idx == input.max_comp() {
-                    component_idx = input.min_comp();
+                if self.component_idx == self.input.max_comp() {
+                    self.component_idx = self.input.min_comp();
 
-                    resolution += 1;
+                    self.resolution += 1;
 
-                    if resolution == input.total_max_resolution() {
-                        resolution = input.min_resolution();
-                        layer += 1;
+                    if self.resolution == self.input.total_max_resolution() {
+                        self.resolution = self.input.min_resolution();
+                        self.layer += 1;
 
-                        if layer == input.max_layer() {
+                        if self.layer == self.input.max_layer() {
                             return None;
                         }
                     }
@@ -317,13 +392,19 @@ pub(crate) fn layer_resolution_component_position_progression(
 
                 // If the given resolution level doesn't exist for the current
                 // component, continue.
-                if resolution >= input.max_resolution(component_idx) {
+                if self.resolution >= self.input.max_resolution(self.component_idx) {
                     continue;
                 }
 
-                let tile = ResolutionTile::new(component_tiles[component_idx as usize], resolution);
+                let tile = ResolutionTile::new(
+                    ComponentTile::new(
+                        self.input.tile,
+                        &self.input.tile.component_infos[self.component_idx as usize],
+                    ),
+                    self.resolution,
+                );
                 let has_precincts = tile.num_precincts() != 0;
-                resolution_tile = Some(tile);
+                self.resolution_tile = Some(tile);
 
                 // Only yield if the resolution tile has precincts, otherwise
                 // we need to keep advancing.
@@ -334,52 +415,79 @@ pub(crate) fn layer_resolution_component_position_progression(
         }
 
         let data = ProgressionData {
-            layer_num: layer,
-            resolution,
-            component: component_idx,
-            precinct,
+            layer_num: self.layer,
+            resolution: self.resolution,
+            component: self.component_idx,
+            precinct: self.precinct,
         };
 
-        precinct += 1;
+        self.precinct += 1;
 
         Some(data)
-    })
+    }
 }
 
 /// B.12.1.2 Resolution level-layer-component-position progression.
-pub(crate) fn resolution_layer_component_position_progression(
+fn resolution_layer_component_position_progression(
     input: IteratorInput<'_>,
-) -> impl Iterator<Item = ProgressionData> + '_ {
-    let component_tiles = input.component_tiles();
+) -> ResolutionLayerComponentPosition<'_> {
+    ResolutionLayerComponentPosition::new(input)
+}
 
-    let mut layer = input.min_layer();
-    let mut resolution = input.min_resolution();
-    let mut component_idx = input.min_comp();
-    let mut resolution_tile = first_resolution_tile(&input, &component_tiles);
-    let mut precinct = 0;
+struct ResolutionLayerComponentPosition<'a> {
+    input: IteratorInput<'a>,
+    layer: u8,
+    resolution: u8,
+    component_idx: u16,
+    resolution_tile: Option<ResolutionTile<'a>>,
+    precinct: u64,
+}
 
-    iter::from_fn(move || {
-        if layer == input.max_layer() || resolution == input.total_max_resolution() {
+impl<'a> ResolutionLayerComponentPosition<'a> {
+    fn new(input: IteratorInput<'a>) -> Self {
+        let layer = input.min_layer();
+        let resolution = input.min_resolution();
+        let component_idx = input.min_comp();
+        let resolution_tile = first_resolution_tile(&input);
+        Self {
+            input,
+            layer,
+            resolution,
+            component_idx,
+            resolution_tile,
+            precinct: 0,
+        }
+    }
+}
+
+impl Iterator for ResolutionLayerComponentPosition<'_> {
+    type Item = ProgressionData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.layer == self.input.max_layer()
+            || self.resolution == self.input.total_max_resolution()
+        {
             return None;
         }
 
-        if resolution_tile
+        if self
+            .resolution_tile
             .as_ref()
-            .is_none_or(|tile| precinct == tile.num_precincts())
+            .is_none_or(|tile| self.precinct == tile.num_precincts())
         {
             loop {
-                precinct = 0;
-                component_idx += 1;
+                self.precinct = 0;
+                self.component_idx += 1;
 
-                if component_idx == input.max_comp() {
-                    component_idx = input.min_comp();
-                    layer += 1;
+                if self.component_idx == self.input.max_comp() {
+                    self.component_idx = self.input.min_comp();
+                    self.layer += 1;
 
-                    if layer == input.max_layer() {
-                        layer = input.min_layer();
-                        resolution += 1;
+                    if self.layer == self.input.max_layer() {
+                        self.layer = self.input.min_layer();
+                        self.resolution += 1;
 
-                        if resolution == input.total_max_resolution() {
+                        if self.resolution == self.input.total_max_resolution() {
                             return None;
                         }
                     }
@@ -387,13 +495,19 @@ pub(crate) fn resolution_layer_component_position_progression(
 
                 // If the given resolution level doesn't exist for the current
                 // component, continue.
-                if resolution >= input.max_resolution(component_idx) {
+                if self.resolution >= self.input.max_resolution(self.component_idx) {
                     continue;
                 }
 
-                let tile = ResolutionTile::new(component_tiles[component_idx as usize], resolution);
+                let tile = ResolutionTile::new(
+                    ComponentTile::new(
+                        self.input.tile,
+                        &self.input.tile.component_infos[self.component_idx as usize],
+                    ),
+                    self.resolution,
+                );
                 let has_precincts = tile.num_precincts() != 0;
-                resolution_tile = Some(tile);
+                self.resolution_tile = Some(tile);
 
                 // Only yield if the resolution tile has precincts, otherwise
                 // we need to keep advancing.
@@ -404,32 +518,51 @@ pub(crate) fn resolution_layer_component_position_progression(
         }
 
         let data = ProgressionData {
-            layer_num: layer,
-            resolution,
-            component: component_idx,
-            precinct,
+            layer_num: self.layer,
+            resolution: self.resolution,
+            component: self.component_idx,
+            precinct: self.precinct,
         };
 
-        precinct += 1;
+        self.precinct += 1;
 
         Some(data)
-    })
+    }
+}
+
+enum ProgressionOrderIterator<'a> {
+    Lrcp(LayerResolutionComponentPosition<'a>),
+    Rlcp(ResolutionLayerComponentPosition<'a>),
+    Position(PositionProgression),
+}
+
+impl Iterator for ProgressionOrderIterator<'_> {
+    type Item = ProgressionData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Lrcp(iterator) => iterator.next(),
+            Self::Rlcp(iterator) => iterator.next(),
+            Self::Position(iterator) => iterator.next(),
+        }
+    }
 }
 
 /// The tile a layer-major progression starts from, or `None` when its first
 /// component lacks the first resolution level, so the iterator advances to the
 /// next component that has it.
-fn first_resolution_tile<'a>(
-    input: &IteratorInput<'a>,
-    component_tiles: &[ComponentTile<'a>],
-) -> Option<ResolutionTile<'a>> {
+fn first_resolution_tile<'a>(input: &IteratorInput<'a>) -> Option<ResolutionTile<'a>> {
     let component_idx = input.min_comp();
-    (input.min_resolution() < input.max_resolution(component_idx)).then(|| {
-        ResolutionTile::new(
-            component_tiles[usize::from(component_idx)],
-            input.min_resolution(),
-        )
-    })
+    if input.min_resolution() >= input.max_resolution(component_idx) {
+        return None;
+    }
+    Some(ResolutionTile::new(
+        ComponentTile::new(
+            input.tile,
+            &input.tile.component_infos[usize::from(component_idx)],
+        ),
+        input.min_resolution(),
+    ))
 }
 
 // The formula for the remaining three progressions looks very intimidating.
@@ -447,11 +580,64 @@ struct PrecinctStore {
     precinct_idx: u64,
 }
 
+struct PositionProgression {
+    elements: alloc::vec::IntoIter<PrecinctStore>,
+    current: Option<PrecinctStore>,
+    min_layer: u8,
+    max_layer: u8,
+    next_layer: u8,
+}
+
+impl Iterator for PositionProgression {
+    type Item = ProgressionData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(current) = self.current.as_ref() {
+                if self.next_layer < self.max_layer {
+                    let packet = ProgressionData {
+                        layer_num: self.next_layer,
+                        resolution: current.resolution,
+                        component: current.component_idx,
+                        precinct: current.precinct_idx,
+                    };
+                    self.next_layer += 1;
+                    return Some(packet);
+                }
+            }
+            self.current = self.elements.next();
+            self.next_layer = self.min_layer;
+            self.current.as_ref()?;
+        }
+    }
+}
+
 fn position_progression_common(
-    input: IteratorInput<'_>,
+    input: &IteratorInput<'_>,
+    budget: &mut DecodeAllocationBudget,
     sort: impl FnMut(&PrecinctStore, &PrecinctStore) -> Ordering,
-) -> Option<impl Iterator<Item = ProgressionData> + '_> {
+) -> Result<PositionProgression> {
+    let mut element_count = 0usize;
+    for component in input
+        .tile
+        .component_tiles()
+        .skip(input.min_comp() as usize)
+        .take(input.max_comp() as usize - input.min_comp() as usize)
+    {
+        for resolution_tile in component
+            .resolution_tiles()
+            .skip(input.min_resolution() as usize)
+            .take(input.total_max_resolution() as usize - input.min_resolution() as usize)
+        {
+            let precincts = usize::try_from(resolution_tile.num_precincts())
+                .map_err(|_| ValidationError::ImageTooLarge)?;
+            element_count = element_count
+                .checked_add(precincts)
+                .ok_or(ValidationError::ImageTooLarge)?;
+        }
+    }
     let mut elements = Vec::new();
+    budget.reserve_new(&mut elements, element_count)?;
 
     for (component_idx, component) in input
         .tile
@@ -460,41 +646,55 @@ fn position_progression_common(
         .skip(input.min_comp() as usize)
         .take(input.max_comp() as usize - input.min_comp() as usize)
     {
-        let component_idx = u16::try_from(component_idx).ok()?;
+        let component_idx =
+            u16::try_from(component_idx).map_err(|_| ValidationError::ImageTooLarge)?;
         for (resolution, resolution_tile) in component
             .resolution_tiles()
             .enumerate()
             .skip(input.min_resolution() as usize)
             .take(input.total_max_resolution() as usize - input.min_resolution() as usize)
         {
-            let resolution = u8::try_from(resolution).ok()?;
-            elements.extend(resolution_tile.precincts()?.map(|d| PrecinctStore {
-                precinct_y: d.r_y,
-                precinct_x: d.r_x,
-                component_idx,
-                resolution,
-                precinct_idx: d.idx,
-            }));
+            let resolution =
+                u8::try_from(resolution).map_err(|_| ValidationError::ImageTooLarge)?;
+            for precinct in resolution_tile
+                .precincts()
+                .ok_or(DecodingError::InvalidProgressionIterator)?
+            {
+                if elements.len() == elements.capacity() {
+                    return Err(DecodingError::HostAllocationFailed.into());
+                }
+                elements.push(PrecinctStore {
+                    precinct_y: precinct.r_y,
+                    precinct_x: precinct.r_x,
+                    component_idx,
+                    resolution,
+                    precinct_idx: precinct.idx,
+                });
+            }
         }
     }
 
-    elements.sort_by(sort);
+    if elements.len() != element_count {
+        return Err(DecodingError::InvalidProgressionIterator.into());
+    }
 
-    Some(elements.into_iter().flat_map(move |e| {
-        (input.min_layer()..input.max_layer()).map(move |layer| ProgressionData {
-            layer_num: layer,
-            resolution: e.resolution,
-            component: e.component_idx,
-            precinct: e.precinct_idx,
-        })
-    }))
+    elements.sort_unstable_by(sort);
+
+    Ok(PositionProgression {
+        elements: elements.into_iter(),
+        current: None,
+        min_layer: input.min_layer(),
+        max_layer: input.max_layer(),
+        next_layer: input.min_layer(),
+    })
 }
 
 /// B.12.1.3 Resolution level-position-component-layer progression.
-pub(crate) fn resolution_position_component_layer_progression(
-    input: IteratorInput<'_>,
-) -> Option<impl Iterator<Item = ProgressionData> + '_> {
-    position_progression_common(input, |p, s| {
+fn resolution_position_component_layer_progression(
+    input: &IteratorInput<'_>,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<PositionProgression> {
+    position_progression_common(input, budget, |p, s| {
         p.resolution
             .cmp(&s.resolution)
             .then_with(|| p.precinct_y.cmp(&s.precinct_y))
@@ -505,10 +705,11 @@ pub(crate) fn resolution_position_component_layer_progression(
 }
 
 /// B.12.1.4 Position-component-resolution level-layer progression.
-pub(crate) fn position_component_resolution_layer_progression(
-    input: IteratorInput<'_>,
-) -> Option<impl Iterator<Item = ProgressionData> + '_> {
-    position_progression_common(input, |p, s| {
+fn position_component_resolution_layer_progression(
+    input: &IteratorInput<'_>,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<PositionProgression> {
+    position_progression_common(input, budget, |p, s| {
         p.precinct_y
             .cmp(&s.precinct_y)
             .then_with(|| p.precinct_x.cmp(&s.precinct_x))
@@ -519,10 +720,11 @@ pub(crate) fn position_component_resolution_layer_progression(
 }
 
 /// B.12.1.5 Component-position-resolution level-layer progression.
-pub(crate) fn component_position_resolution_layer_progression(
-    input: IteratorInput<'_>,
-) -> Option<impl Iterator<Item = ProgressionData> + '_> {
-    position_progression_common(input, |p, s| {
+fn component_position_resolution_layer_progression(
+    input: &IteratorInput<'_>,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<PositionProgression> {
+    position_progression_common(input, budget, |p, s| {
         p.component_idx
             .cmp(&s.component_idx)
             .then_with(|| p.precinct_y.cmp(&s.precinct_y))
@@ -544,9 +746,11 @@ mod tests {
     };
     use crate::j2c::rect::IntRect;
 
-    #[test]
-    fn overlapping_progression_changes_emit_each_packet_once() {
-        let tile = Tile {
+    fn progression_tile(
+        progression_order: ProgressionOrder,
+        progression_changes: Vec<ProgressionChange>,
+    ) -> Tile<'static> {
+        Tile {
             idx: 0,
             tile_parts: vec![],
             component_infos: vec![ComponentInfo {
@@ -576,8 +780,18 @@ mod tests {
                 roi_shift: 0,
             }],
             rect: IntRect::from_ltrb(0, 0, 8, 8),
-            progression_order: ProgressionOrder::LayerResolutionComponentPosition,
-            progression_changes: vec![
+            progression_order,
+            progression_changes,
+            num_layers: 2,
+            mct: false,
+        }
+    }
+
+    #[test]
+    fn overlapping_progression_changes_emit_each_packet_once() {
+        let tile = progression_tile(
+            ProgressionOrder::LayerResolutionComponentPosition,
+            vec![
                 ProgressionChange {
                     resolution_start: 0,
                     component_start: 0,
@@ -595,11 +809,9 @@ mod tests {
                     progression_order: ProgressionOrder::LayerResolutionComponentPosition,
                 },
             ],
-            num_layers: 2,
-            mct: false,
-        };
+        );
 
-        let packets = progression_iterator(&tile)
+        let packets = progression_iterator(&tile, 0)
             .expect("valid progression")
             .collect::<Vec<_>>();
 
@@ -635,6 +847,63 @@ mod tests {
     }
 
     #[test]
+    fn position_major_workspace_is_rejected_against_the_live_decode_baseline() {
+        let tile = progression_tile(ProgressionOrder::ResolutionPositionComponentLayer, vec![]);
+
+        let Err(error) = progression_iterator(&tile, crate::DEFAULT_MAX_DECODE_BYTES) else {
+            panic!("position-major workspace has no headroom");
+        };
+
+        assert_eq!(
+            error,
+            crate::DecodeError::Validation(ValidationError::ImageTooLarge)
+        );
+    }
+
+    #[test]
+    fn poc_iterator_owners_are_rejected_against_the_live_decode_baseline() {
+        let tile = progression_tile(
+            ProgressionOrder::LayerResolutionComponentPosition,
+            vec![ProgressionChange {
+                resolution_start: 0,
+                component_start: 0,
+                layer_end: 2,
+                resolution_end: 2,
+                component_end: 1,
+                progression_order: ProgressionOrder::LayerResolutionComponentPosition,
+            }],
+        );
+
+        let Err(error) = progression_iterator(&tile, crate::DEFAULT_MAX_DECODE_BYTES) else {
+            panic!("POC iterator ownership has no headroom");
+        };
+
+        assert_eq!(
+            error,
+            crate::DecodeError::Validation(ValidationError::ImageTooLarge)
+        );
+    }
+
+    #[test]
+    fn position_major_poc_uses_the_budgeted_inline_iterator() {
+        let tile = progression_tile(
+            ProgressionOrder::LayerResolutionComponentPosition,
+            vec![ProgressionChange {
+                resolution_start: 0,
+                component_start: 0,
+                layer_end: 2,
+                resolution_end: 2,
+                component_end: 1,
+                progression_order: ProgressionOrder::ResolutionPositionComponentLayer,
+            }],
+        );
+
+        let iterator = progression_iterator(&tile, 0).expect("position-major POC");
+        assert!(iterator.owned_bytes() > 0, "POC workspace is charged");
+        assert_eq!(iterator.collect::<Vec<_>>().len(), 4);
+    }
+
+    #[test]
     fn empty_component_set_is_an_invalid_progression_iterator() {
         let tile = Tile {
             idx: 0,
@@ -648,7 +917,7 @@ mod tests {
         };
 
         assert!(matches!(
-            progression_iterator(&tile),
+            progression_iterator(&tile, 0),
             Err(crate::error::DecodeError::Decoding(
                 DecodingError::InvalidProgressionIterator
             ))
@@ -702,7 +971,7 @@ mod tests {
             num_layers: 1,
             mct: false,
         };
-        progression_iterator(&tile)
+        progression_iterator(&tile, 0)
             .expect("valid progression")
             .map(|packet| {
                 assert_eq!((packet.layer_num, packet.precinct), (0, 0));
@@ -736,26 +1005,32 @@ mod tests {
     }
 
     #[test]
-    fn layer_major_progressions_start_at_the_first_component_with_the_resolution_level() {
-        // A progression change that starts above component 0's resolution
-        // levels begins with component 1.
+    fn layer_major_progression_changes_respect_component_and_resolution_starts() {
+        // Begin at the selected component, or skip it when it lacks the
+        // starting resolution level. An excluded component must not affect this.
         for order in [
             ProgressionOrder::LayerResolutionComponentPosition,
             ProgressionOrder::ResolutionLayerComponentPosition,
         ] {
-            let change = ProgressionChange {
-                resolution_start: 2,
-                component_start: 0,
-                layer_end: 1,
-                resolution_end: 4,
-                component_end: 2,
-                progression_order: order,
-            };
-            assert_eq!(
-                packet_order(&[1, 3], order, vec![change]),
-                [(2, 1), (3, 1)],
-                "{order:?}"
-            );
+            for (levels, component_start, expected_component) in [
+                (&[1, 3][..], 0, 1),
+                (&[1, 3, 1][..], 1, 1),
+                (&[3, 1, 3][..], 1, 2),
+            ] {
+                let change = ProgressionChange {
+                    resolution_start: 2,
+                    component_start,
+                    layer_end: 1,
+                    resolution_end: 4,
+                    component_end: component_start + 2,
+                    progression_order: order,
+                };
+                assert_eq!(
+                    packet_order(levels, order, vec![change]),
+                    [(2, expected_component), (3, expected_component)],
+                    "{order:?}, component_start={component_start}"
+                );
+            }
         }
     }
 }

@@ -15,21 +15,48 @@ fn read(relative: &str) -> String {
 fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
     let decode = read("crates/j2k-native/src/j2c/decode.rs");
     let decode_tile = FunctionCalls::parse("native tile decode", &decode, "decode_tile");
+    // Region decode plans its ROI before building so that precincts it will
+    // never parse get no code-blocks. The selection preflights the tile's
+    // unavoidable structure first, and `build::build` budgets whatever is then
+    // built, with the selection charged until packet parsing ends.
     decode_tile.assert_ordered(
-        "native full-tile preflight before ROI planning",
+        "native ROI precinct selection and budgeted build before packet parsing",
         &[
+            "build::select_region_precincts",
             "build::build",
-            "RoiPlan::build",
-            "segment::parse",
+            "segment::parse_selected",
             "decode_component_tile_bit_planes_budgeted",
         ],
     );
     decode_tile.assert_propagated(
         "native tile workspace failures",
         &[
+            "build::select_region_precincts",
             "build::build",
-            "segment::parse",
+            "segment::parse_selected",
             "decode_component_tile_bit_planes_budgeted",
+        ],
+    );
+    let selection = read("crates/j2k-native/src/j2c/build/selection.rs");
+    let select = FunctionCalls::parse(
+        "native ROI precinct selection",
+        &selection,
+        "select_region_precincts",
+    );
+    select.assert_ordered(
+        "unavoidable-structure preflight before skeleton and ROI planning",
+        &[
+            "preflight_unavoidable_minimum",
+            "build_skeleton",
+            "RoiPlan::build",
+        ],
+    );
+    select.assert_propagated(
+        "native ROI precinct selection failures",
+        &[
+            "preflight_unavoidable_minimum",
+            "build_skeleton",
+            "RoiPlan::build",
         ],
     );
 
