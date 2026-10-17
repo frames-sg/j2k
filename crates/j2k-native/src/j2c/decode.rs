@@ -4,7 +4,6 @@
 //! stages in such a way that a given codestream is decoded into its
 //! component channels.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
@@ -12,7 +11,6 @@ use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, 
 use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
-use super::progression::{progression_iterator, ProgressionData};
 use super::roi::{tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ParsedTiles, ResolutionTile, Tile};
@@ -278,7 +276,6 @@ fn decode_parsed_tiles<'a>(
         decode_tile(
             tile,
             header,
-            progression_iterator(tile)?,
             tile_ctx,
             storage,
             ht_decoder,
@@ -345,6 +342,8 @@ pub(crate) struct DecodeDebugCounters {
     /// Progression positions region precinct selection walked, summed over
     /// decoded tiles.
     pub(crate) selection_scanned_packets: usize,
+    /// Empty decomposition capacity discarded before region selection.
+    pub(crate) selection_released_storage_bytes: usize,
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) ht_parallel_tasks: usize,
@@ -387,10 +386,9 @@ impl ParallelCoefficientStats {
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
 )]
-fn decode_tile<'a, 'b>(
-    tile: &'b Tile<'a>,
+fn decode_tile<'a>(
+    tile: &Tile<'a>,
     header: &Header<'_>,
-    progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
@@ -442,6 +440,9 @@ fn decode_tile<'a, 'b>(
     tile_ctx.debug_counters.selection_scanned_packets += selection
         .as_ref()
         .map_or(0, build::PrecinctSelection::scanned_packets);
+    tile_ctx.debug_counters.selection_released_storage_bytes += selection
+        .as_ref()
+        .map_or(0, build::PrecinctSelection::released_storage_bytes);
     build::build(
         tile,
         storage,
@@ -466,13 +467,7 @@ fn decode_tile<'a, 'b>(
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
-    segment::parse_selected(
-        tile,
-        progression_iterator,
-        header,
-        storage,
-        selection.as_ref(),
-    )?;
+    segment::parse_selected(tile, header, storage, selection.as_ref())?;
     drop(selection);
     storage.structural_workspace_bytes = storage
         .structural_workspace_bytes

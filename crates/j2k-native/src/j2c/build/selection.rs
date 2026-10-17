@@ -15,13 +15,16 @@ use super::allocation::{checked_include_elements, code_block_grid};
 use super::{Decomposition, Precinct, SubBand, SubBandType};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::codestream::Header;
-use crate::j2c::decode::{DecompositionStorage, OutputRegion, TileDecompositions};
+use crate::j2c::decode::{
+    DecodeAllocationBudget, DecompositionStorage, OutputRegion, TileDecompositions,
+};
 use crate::j2c::progression::{progression_iterator, ProgressionData};
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::RoiPlan;
 use crate::j2c::tag_tree::TagNode;
 use crate::j2c::tile::Tile;
-use crate::{try_reserve_decode_elements, DEFAULT_MAX_DECODE_BYTES};
+use crate::DEFAULT_MAX_DECODE_BYTES;
+use core::mem::size_of;
 
 /// How region decode uses one precinct of one component and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +63,8 @@ pub(crate) struct PrecinctSelection {
     owned_bytes: usize,
     /// Progression positions walked to find the parsed precincts.
     scanned_packets: usize,
+    /// Empty decomposition capacity discarded before this tile's selection.
+    released_storage_bytes: usize,
 }
 
 impl PrecinctSelection {
@@ -95,6 +100,10 @@ impl PrecinctSelection {
     /// Progression positions walked to find the parsed precincts.
     pub(crate) const fn scanned_packets(&self) -> usize {
         self.scanned_packets
+    }
+
+    pub(crate) const fn released_storage_bytes(&self) -> usize {
+        self.released_storage_bytes
     }
 
     fn index(&self, packet: &ProgressionData) -> Option<usize> {
@@ -135,14 +144,31 @@ pub(crate) fn select_region_precincts(
     output_region: OutputRegion,
     retained_baseline_bytes: usize,
 ) -> Result<Option<PrecinctSelection>> {
+    // Region selection allocates a skeleton, ROI plan, selection map and, for
+    // position-major orders, a progression workspace at the same time. A
+    // previous tile's empty capacities are not useful during this phase and
+    // must not remain live beside those owners.
+    let released_storage_bytes = storage.retained_capacity_bytes()?;
+    let exact_integer_decode = storage.exact_integer_decode;
+    storage.release_all_allocations();
+    storage.exact_integer_decode = exact_integer_decode;
+
     let counts = count(tile)?;
     let owned_bytes = selection_owned_bytes(&counts)?;
     preflight_unavoidable_minimum(&counts, retained_baseline_bytes, owned_bytes)?;
 
-    build_skeleton(tile, &counts, storage)?;
-    storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
+    let mut budget = DecodeAllocationBudget::from_live_bytes(retained_baseline_bytes)?;
+    build_skeleton(tile, &counts, storage, &mut budget)?;
+    storage.roi_plan = RoiPlan::build(tile, header, storage, output_region, &mut budget)?;
     let selection = match storage.roi_plan.as_ref() {
-        Some(plan) => Some(select(tile, storage, plan, &counts, owned_bytes)?),
+        Some(plan) => Some(select(
+            tile,
+            storage,
+            plan,
+            &counts,
+            &mut budget,
+            released_storage_bytes,
+        )?),
         None => None,
     };
     storage.sub_bands.clear();
@@ -253,10 +279,11 @@ fn build_skeleton(
     tile: &Tile<'_>,
     counts: &SelectionCounts,
     storage: &mut DecompositionStorage<'_>,
+    budget: &mut DecodeAllocationBudget,
 ) -> Result<()> {
-    try_reserve_decode_elements(&mut storage.sub_bands, counts.sub_bands)?;
-    try_reserve_decode_elements(&mut storage.decompositions, counts.decompositions)?;
-    try_reserve_decode_elements(&mut storage.tile_decompositions, counts.components)?;
+    budget.reserve_new(&mut storage.sub_bands, counts.sub_bands)?;
+    budget.reserve_new(&mut storage.decompositions, counts.decompositions)?;
+    budget.reserve_new(&mut storage.tile_decompositions, counts.components)?;
 
     for component_tile in tile.component_tiles() {
         let start = storage.decompositions.len();
@@ -325,14 +352,15 @@ fn select(
     storage: &DecompositionStorage<'_>,
     plan: &RoiPlan,
     counts: &SelectionCounts,
-    owned_bytes: usize,
+    budget: &mut DecodeAllocationBudget,
+    released_storage_bytes: usize,
 ) -> Result<PrecinctSelection> {
     let mut uses = Vec::new();
-    try_reserve_decode_elements(&mut uses, counts.run_precincts)?;
+    budget.reserve_new(&mut uses, counts.run_precincts)?;
     let mut runs = Vec::new();
-    try_reserve_decode_elements(&mut runs, counts.runs)?;
+    budget.reserve_new(&mut runs, counts.runs)?;
     let mut component_runs = Vec::new();
-    try_reserve_decode_elements(&mut component_runs, counts.components)?;
+    budget.reserve_new(&mut component_runs, counts.components)?;
 
     let layers = usize::from(tile.num_layers);
     let mut required_packets = 0usize;
@@ -398,6 +426,21 @@ fn select(
         }
     }
 
+    let owned_bytes = uses
+        .capacity()
+        .checked_mul(size_of::<PrecinctUse>())
+        .and_then(|bytes| {
+            runs.capacity()
+                .checked_mul(size_of::<usize>())
+                .and_then(|run_bytes| bytes.checked_add(run_bytes))
+        })
+        .and_then(|bytes| {
+            component_runs
+                .capacity()
+                .checked_mul(size_of::<usize>())
+                .and_then(|component_bytes| bytes.checked_add(component_bytes))
+        })
+        .ok_or(ValidationError::ImageTooLarge)?;
     let mut selection = PrecinctSelection {
         uses,
         runs,
@@ -406,9 +449,10 @@ fn select(
         required_packets,
         owned_bytes,
         scanned_packets: 0,
+        released_storage_bytes,
     };
     if !selection.skip_by_length {
-        mark_precincts_parsed_before_last_required(tile, &mut selection)?;
+        mark_precincts_parsed_before_last_required(tile, &mut selection, budget.live_bytes())?;
     }
     Ok(selection)
 }
@@ -455,6 +499,7 @@ fn packets_skippable_by_length(
 fn mark_precincts_parsed_before_last_required(
     tile: &Tile<'_>,
     selection: &mut PrecinctSelection,
+    retained_live_bytes: usize,
 ) -> Result<()> {
     let mut remaining = selection.required_packets;
     if remaining == 0 {
@@ -467,7 +512,7 @@ fn mark_precincts_parsed_before_last_required(
             total.checked_add(tile_part.packet_header_bytes())
         })
         .ok_or(ValidationError::ImageTooLarge)?;
-    for packet in progression_iterator(tile)?.take(parseable_packets) {
+    for packet in progression_iterator(tile, retained_live_bytes)?.take(parseable_packets) {
         selection.scanned_packets += 1;
         let Some(index) = selection.index(&packet) else {
             // The parser rejects a packet for a precinct the tile lacks.

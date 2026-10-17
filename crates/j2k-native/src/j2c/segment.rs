@@ -1,14 +1,13 @@
 //! Parsing of layers and their segments, as specified in Annex B.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
 use super::build::{CodeBlock, Precinct, PrecinctSelection, PrecinctUse, Segment};
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
-use super::decode::DecompositionStorage;
-use super::progression::ProgressionData;
+use super::decode::{DecodeAllocationBudget, DecompositionStorage};
+use super::progression::{progression_iterator, ProgressionData};
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePartCursor};
 use crate::error::{bail, DecodeError, DecodingError, Result, ValidationError};
@@ -21,21 +20,44 @@ mod ht;
 pub(crate) const MAX_BITPLANE_COUNT: u8 = 63;
 type PacketResult<T = ()> = core::result::Result<T, &'static str>;
 
-pub(crate) fn parse<'a, 'b>(
-    tile: &'b Tile<'a>,
-    progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
+pub(crate) fn parse<'a>(
+    tile: &Tile<'a>,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
-    parse_selected(tile, progression_iterator, header, storage, None)
+    parse_selected(tile, header, storage, None)
 }
 
 /// Parse a tile's packets. With a region decode's `selection`, packets of
 /// unused precincts are skipped or parsed only to reach later packets, and
 /// parsing stops once every required packet has been read.
-pub(crate) fn parse_selected<'a, 'b>(
-    tile: &'b Tile<'a>,
-    mut progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
+pub(crate) fn parse_selected<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    storage: &mut DecompositionStorage<'a>,
+    selection: Option<&PrecinctSelection>,
+) -> Result<()> {
+    if selection.is_some_and(|selection| selection.required_packets() == 0) {
+        return Ok(());
+    }
+    let retained_live_bytes = DecodeAllocationBudget::for_storage(storage)?.live_bytes();
+    let mut progression_iterator = progression_iterator(tile, retained_live_bytes)?;
+    let progression_bytes = progression_iterator.owned_bytes();
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_add(progression_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let result = parse_selected_inner(tile, &mut progression_iterator, header, storage, selection);
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_sub(progression_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    result
+}
+
+fn parse_selected_inner<'a>(
+    tile: &Tile<'a>,
+    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
@@ -56,7 +78,7 @@ pub(crate) fn parse_selected<'a, 'b>(
             .and_then(|cursor| {
                 parse_inner(
                     cursor,
-                    &mut progression_iterator,
+                    progression_iterator,
                     &tile.component_infos,
                     storage,
                     relevance.as_mut(),

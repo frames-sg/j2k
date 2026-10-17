@@ -202,12 +202,19 @@ impl DecompositionAllocationPlan {
         )?;
 
         if self.include_roi_workspace {
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
-            checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
-            checked_include_elements::<Option<IntRect>>(
-                &mut total_bytes,
-                self.tile_decompositions,
-            )?;
+            if let Some(roi_plan) = storage.roi_plan.as_ref() {
+                total_bytes = total_bytes
+                    .checked_add(roi_plan.owned_bytes()?)
+                    .filter(|bytes| *bytes <= DEFAULT_MAX_DECODE_BYTES)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            } else {
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.sub_bands)?;
+                checked_include_elements::<Option<IntRect>>(&mut total_bytes, self.decompositions)?;
+                checked_include_elements::<Option<IntRect>>(
+                    &mut total_bytes,
+                    self.tile_decompositions,
+                )?;
+            }
         }
 
         if self.plans_idwt_workspace() {

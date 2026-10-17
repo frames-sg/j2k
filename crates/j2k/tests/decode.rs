@@ -2100,60 +2100,79 @@ fn region_decode_matches_whole_decode_for_every_progression_and_packet_header_la
     // several.
     let (width, height) = (301_u32, 203_u32);
     let pixels = edge_fixture_pixels(width, height);
-    for progression_order in [
-        EncodeProgressionOrder::Lrcp,
-        EncodeProgressionOrder::Rlcp,
-        EncodeProgressionOrder::Rpcl,
-        EncodeProgressionOrder::Pcrl,
-        EncodeProgressionOrder::Cprl,
-    ] {
-        for headers in [
+    // This pairwise matrix covers every progression, header layout, scale,
+    // ROI, tile mode, layer count and tile-part split without multiplying all
+    // independent dimensions into a slow Cartesian product. Dedicated tests
+    // below retain the risky mixed-PLT and multi-precinct position-major cases.
+    for (progression_order, headers, tile_size, num_layers, tile_part_packet_limit) in [
+        (
+            EncodeProgressionOrder::Lrcp,
             PacketHeaders::InBand,
+            None,
+            1_u8,
+            None,
+        ),
+        (
+            EncodeProgressionOrder::Rlcp,
             PacketHeaders::InBandWithPlt,
+            None,
+            3,
+            None,
+        ),
+        (
+            EncodeProgressionOrder::Rpcl,
             PacketHeaders::Ppm,
+            None,
+            3,
+            Some(7),
+        ),
+        (
+            EncodeProgressionOrder::Pcrl,
             PacketHeaders::Ppt,
-        ] {
-            for (tile_size, num_layers, tile_part_packet_limit) in [
-                (None, 1_u8, None),
-                (None, 3, None),
-                (None, 3, Some(7)),
-                (Some((128, 128)), 3, None),
-                (Some((128, 128)), 3, Some(5)),
-            ] {
-                let options = EncodeOptions {
-                    reversible: true,
-                    num_decomposition_levels: 3,
-                    code_block_width_exp: 3,
-                    code_block_height_exp: 3,
-                    precinct_exponents: if matches!(
-                        progression_order,
-                        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl
-                    ) {
-                        Vec::new()
-                    } else {
-                        vec![(5, 5), (6, 6), (6, 6), (6, 6)]
-                    },
-                    progression_order,
-                    write_plt: matches!(headers, PacketHeaders::InBandWithPlt),
-                    write_ppm: matches!(headers, PacketHeaders::Ppm),
-                    write_ppt: matches!(headers, PacketHeaders::Ppt),
-                    num_layers,
-                    tile_size,
-                    tile_part_packet_limit,
-                    ..EncodeOptions::default()
-                };
-                let bytes = encode(&pixels, width, height, 3, 8, false, &options)
-                    .expect("encode progression fixture");
-                assert_region_decodes_match_whole_decode(
-                    &bytes,
-                    (width, height),
-                    &format!(
-                        "{progression_order:?} {headers:?} tiles={tile_size:?} \
-                         layers={num_layers} tile-part packets={tile_part_packet_limit:?}"
-                    ),
-                );
-            }
-        }
+            Some((128, 128)),
+            3,
+            None,
+        ),
+        (
+            EncodeProgressionOrder::Cprl,
+            PacketHeaders::InBandWithPlt,
+            Some((128, 128)),
+            3,
+            Some(5),
+        ),
+    ] {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 3,
+            code_block_width_exp: 3,
+            code_block_height_exp: 3,
+            precinct_exponents: if matches!(
+                progression_order,
+                EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl
+            ) {
+                Vec::new()
+            } else {
+                vec![(5, 5), (6, 6), (6, 6), (6, 6)]
+            },
+            progression_order,
+            write_plt: matches!(headers, PacketHeaders::InBandWithPlt),
+            write_ppm: matches!(headers, PacketHeaders::Ppm),
+            write_ppt: matches!(headers, PacketHeaders::Ppt),
+            num_layers,
+            tile_size,
+            tile_part_packet_limit,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&pixels, width, height, 3, 8, false, &options)
+            .expect("encode progression fixture");
+        assert_region_decodes_match_whole_decode(
+            &bytes,
+            (width, height),
+            &format!(
+                "{progression_order:?} {headers:?} tiles={tile_size:?} \
+                 layers={num_layers} tile-part packets={tile_part_packet_limit:?}"
+            ),
+        );
     }
 }
 

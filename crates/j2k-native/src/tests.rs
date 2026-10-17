@@ -1153,6 +1153,44 @@ fn region_precinct_selection_walks_no_more_packets_than_the_tile_has_header_byte
 }
 
 #[test]
+fn region_selection_releases_the_previous_tiles_retained_decomposition_capacity() {
+    let pixels = (0..128_u8).collect::<Vec<_>>();
+    let bytes = encode(
+        &pixels,
+        16,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            precinct_exponents: vec![(2, 2)],
+            tile_size: Some((8, 8)),
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode two-tile region fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("two-tile image");
+    let mut context = DecoderContext::default();
+
+    image
+        .decode_region_with_context((0, 0, 16, 8), &mut context)
+        .expect("decode both selected tiles");
+
+    assert!(
+        context
+            .tile_decode_context
+            .debug_counters
+            .selection_released_storage_bytes
+            > 0,
+        "the second selection must release the first tile's retained decomposition owner"
+    );
+}
+
+#[test]
 fn decode_region_rejects_code_block_layer_metadata_amplification() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -1192,21 +1230,25 @@ fn fixture_ht_multi_block() -> Vec<u8> {
         num_decomposition_levels: 0,
         code_block_width_exp: 0,
         code_block_height_exp: 0,
+        precinct_exponents: vec![(2, 2)],
+        write_plt: true,
         ..EncodeOptions::default()
     };
     encode_htj2k(&pixels, 8, 8, 1, 8, false, &options).expect("encode multi-block HT gray8")
 }
 
 fn fixture_ht_rgb_multi_block() -> Vec<u8> {
-    let pixels = gradient_pixels(8, 8, 3);
+    let pixels = gradient_pixels(16, 16, 3);
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 0,
         code_block_width_exp: 0,
         code_block_height_exp: 0,
+        precinct_exponents: vec![(2, 2)],
+        write_plt: true,
         ..EncodeOptions::default()
     };
-    encode_htj2k(&pixels, 8, 8, 3, 8, false, &options).expect("encode multi-block HT RGB8")
+    encode_htj2k(&pixels, 16, 16, 3, 8, false, &options).expect("encode multi-block HT RGB8")
 }
 
 fn direct_ht_job_count(plan: &J2kDirectGrayscalePlan) -> usize {
@@ -1221,6 +1263,44 @@ fn direct_ht_job_count(plan: &J2kDirectGrayscalePlan) -> usize {
 
 fn direct_color_ht_job_count(plan: &J2kDirectColorPlan) -> usize {
     plan.component_plans.iter().map(direct_ht_job_count).sum()
+}
+
+fn corrupt_last_plt_packet(bytes: &mut [u8]) {
+    let plt = bytes
+        .windows(2)
+        .position(|window| window == [0xFF, 0x58])
+        .expect("PLT marker");
+    let marker_len = usize::from(u16::from_be_bytes([bytes[plt + 2], bytes[plt + 3]]));
+    let mut packet_lengths = Vec::new();
+    let mut length = 0usize;
+    for &byte in &bytes[plt + 5..plt + 2 + marker_len] {
+        length = length
+            .checked_mul(128)
+            .and_then(|value| value.checked_add(usize::from(byte & 0x7f)))
+            .expect("packet length fits");
+        if byte & 0x80 == 0 {
+            packet_lengths.push(length);
+            length = 0;
+        }
+    }
+    assert_eq!(length, 0, "PLT packet length terminates");
+    assert!(packet_lengths.len() > 1, "fixture has trailing packets");
+
+    let sod = bytes
+        .windows(2)
+        .position(|window| window == [0xFF, 0x93])
+        .expect("SOD marker");
+    let last_start = sod
+        + 2
+        + packet_lengths[..packet_lengths.len() - 1]
+            .iter()
+            .sum::<usize>();
+    let last_end = last_start + packet_lengths[packet_lengths.len() - 1];
+    assert!(
+        last_end <= bytes.len(),
+        "last PLT packet fits the tile-part"
+    );
+    bytes[last_start..last_end].fill(0xff);
 }
 
 fn gradient_pixels(width: u32, height: u32, components: u8) -> Vec<u8> {
@@ -1805,6 +1885,45 @@ fn grayscale_direct_plan_region_prunes_unneeded_ht_code_blocks() {
         roi_jobs < full_jobs,
         "ROI direct plan must prune HT jobs before device preparation"
     );
+    assert!(
+        roi_context.direct_plan_code_blocks < full_context.direct_plan_code_blocks,
+        "ROI direct plan must not build unneeded grayscale code-block metadata"
+    );
+}
+
+#[test]
+fn grayscale_direct_region_does_not_parse_an_unneeded_trailing_packet() {
+    let pixels: Vec<u8> = (0..64).collect();
+    let mut bytes = encode_htj2k(
+        &pixels,
+        8,
+        8,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            precinct_exponents: vec![(2, 2)],
+            write_plt: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode grayscale PLT fixture");
+    corrupt_last_plt_packet(&mut bytes);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("corrupted packet image");
+
+    image
+        .build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+        .expect_err("the full direct plan parses the corrupted trailing packet");
+    image
+        .build_direct_grayscale_plan_region_with_context(
+            &mut DecoderContext::default(),
+            (0, 0, 1, 1),
+        )
+        .expect("the region plan stops before the unneeded trailing packet");
 }
 
 #[test]
@@ -1828,6 +1947,44 @@ fn color_direct_plan_region_prunes_unneeded_ht_code_blocks() {
         roi_jobs < full_jobs,
         "RGB ROI direct plan must prune HT jobs before device preparation"
     );
+    assert!(
+        roi_context.direct_plan_code_blocks < full_context.direct_plan_code_blocks,
+        "ROI direct plan must not build unneeded color code-block metadata: full={}, roi={}",
+        full_context.direct_plan_code_blocks,
+        roi_context.direct_plan_code_blocks,
+    );
+}
+
+#[test]
+fn color_direct_region_does_not_parse_an_unneeded_trailing_packet() {
+    let pixels = gradient_pixels(8, 8, 3);
+    let mut bytes = encode_htj2k(
+        &pixels,
+        8,
+        8,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            precinct_exponents: vec![(2, 2)],
+            write_plt: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode color PLT fixture");
+    corrupt_last_plt_packet(&mut bytes);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("corrupted packet image");
+
+    image
+        .build_direct_color_plan_with_context(&mut DecoderContext::default())
+        .expect_err("the full direct plan parses the corrupted trailing packet");
+    image
+        .build_direct_color_plan_region_with_context(&mut DecoderContext::default(), (0, 0, 1, 1))
+        .expect("the region plan stops before the unneeded trailing packet");
 }
 
 #[test]
