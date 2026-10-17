@@ -309,6 +309,71 @@ fn refinement_phases_leave_output_unchanged_for_empty_sigma() {
 }
 
 #[test]
+fn magnitude_refinement_skips_significance_outside_the_code_block() {
+    // A malformed cleanup pass can mark samples of quads that lie across the
+    // block edge as significant. Here every sample of an 8 x 4 group is
+    // marked in a 5 x 1 block. Refinement must not write outside the block,
+    // but those samples still consume their bits, so the in-block samples
+    // refine exactly as the first row of an 8 x 4 block does.
+    let p = 5;
+    let refinement = [0xA5u8, 0x3C, 0x5A, 0xC3];
+    let refine = |width: u32, height: u32| {
+        let mstr = sigma_stride(width);
+        let mut sigma = vec![0u16; (height.div_ceil(4) as usize + 1) * mstr];
+        sigma[0] = 0xFFFF;
+        sigma[1] = 0xFFFF;
+        let mut decoded = vec![1u32 << p; (width * height) as usize];
+        apply_magnitude_refinement_phase(
+            &refinement,
+            &sigma,
+            &mut decoded,
+            width,
+            height,
+            width,
+            mstr,
+            p,
+        )
+        .expect("magref");
+        decoded
+    };
+
+    let block = refine(5, 1);
+    let larger = refine(8, 4);
+    assert_eq!(block, larger[..5]);
+    assert_ne!(block, vec![1u32 << p; 5], "refinement data was applied");
+}
+
+#[test]
+fn fuzzed_code_block_with_significance_below_a_one_row_block_decodes() {
+    // From `region_scaled_fuzz`: a 41 x 1 block whose cleanup pass marks
+    // samples in rows 1-3 as significant. Its refinement pass used to index
+    // past the block.
+    let data = [
+        0xca, 0x36, 0xf6, 0x9d, 0xab, 0xe3, 0xf0, 0x71, 0xfb, 0x35, 0xfb, 0x5a, 0x36, 0xb5, 0x1e,
+        0x45, 0xa7, 0x0f, 0xce, 0xe7, 0x7b, 0xa4, 0x8d, 0xff, 0x1f, 0x64, 0x01, 0x8b, 0x5b, 0x00,
+        0x3d, 0x82, 0x0d,
+    ];
+    let job = crate::HtCodeBlockDecodeJob {
+        data: &data,
+        cleanup_length: 27,
+        refinement_length: 6,
+        width: 41,
+        height: 1,
+        output_stride: 41,
+        missing_bit_planes: 7,
+        number_of_coding_passes: 3,
+        num_bitplanes: 14,
+        roi_shift: 0,
+        stripe_causal: false,
+        strict: true,
+        dequantization_step: 1.0,
+    };
+    let mut output = vec![0.0f32; 41];
+
+    crate::decode_ht_code_block_scalar(job, &mut output).expect("decodes");
+}
+
+#[test]
 fn sigprop_spread_masks_follow_column_major_scan_order() {
     let row_patterns = [0x33u32, 0x76, 0xEC, 0xC8];
 

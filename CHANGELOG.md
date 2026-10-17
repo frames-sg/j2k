@@ -3,6 +3,24 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Reversible (5/3) coefficients whose low bit-planes were not decoded, because
+  a classic code block's coding passes stop early, are now reconstructed with
+  r = 1/2 in T.800 Equation E-8 (E.1.2.2), the value already used for
+  irreversible coefficients, instead of r = 0. The native, CUDA and Metal
+  classic decoders share the rule (`j2k_codec_math::classic::reversible_midpoint_bit`),
+  so CPU and GPU routes agree. Lossless encoders such as GDCM/OpenJPEG 2.0
+  stop passes early when the remaining bits equal that midpoint; those
+  codestreams now decode exactly instead of off by up to 2. For ROI Maxshift,
+  reconstruction happens in the coded domain before the ROI inverse.
+- `HtCodeBlockDecoder` has additive classic hooks with an explicit
+  `J2kClassicReconstruction` contract. Their defaults decline reversible
+  midpoint work, so adapters built against either older classic hook cannot
+  silently emit decoded magnitudes for early-stopped blocks. Existing
+  `_with_midpoint(false)` overrides retain their original meaning; adapters
+  that support the reversible midpoint can opt in through the new hooks.
+
 ## [0.12.0] - 2026-10-06
 
 - Breaking (experimental `j2k-cuda-j2k-engine`):
