@@ -155,6 +155,7 @@ fn roi_release_restores_the_exact_reserved_boundary() {
             rect: empty,
             precincts: 0..0,
             coefficients: 0..0,
+            storage_rect: empty,
         });
     }
     for _ in 0..decompositions {

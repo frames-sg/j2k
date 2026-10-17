@@ -568,6 +568,7 @@ struct DecodeWorkCounter {
     classic_code_blocks: usize,
     ht_code_blocks: usize,
     idwt_output_samples: usize,
+    stored_coefficients: usize,
 }
 
 impl DecodeWorkCounter {
@@ -1014,16 +1015,63 @@ fn assert_large_siz_component_budget(error: &DecodeError) {
 }
 
 #[test]
-fn decode_region_rejects_large_full_tile_workspace_before_allocation() {
+fn decode_region_budgets_coefficients_for_the_requested_region() {
     let mut codestream = fixture_gray();
     rewrite_siz_to_single_large_tile(&mut codestream, 60_000);
     let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
 
-    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
-        panic!("tiny ROI must not bypass the full-tile coefficient budget");
+    // A tiny ROI stores only the code-blocks it needs, so the 60000x60000
+    // tile's 14 GB of coefficients no longer stop it. This fixture's packets
+    // are not that large, so decode then fails in packet parsing.
+    let Err(tiny) = image.decode_region((0, 0, 1, 1)) else {
+        panic!("rewritten fixture has no packet data for a 60000x60000 tile");
     };
+    assert!(
+        matches!(tiny, DecodeError::Decoding(_)),
+        "tiny ROI must get past the coefficient budget: {tiny:?}"
+    );
 
-    assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+    // A region whose coefficients and output together exceed the cap is
+    // still rejected before any Tier-1 work. Its 324 MB output alone fits.
+    let Err(large) = image.decode_region((0, 0, 9_000, 9_000)) else {
+        panic!("a 9000x9000 region must exceed the coefficient budget");
+    };
+    assert_eq!(
+        large,
+        DecodeError::Validation(ValidationError::ImageTooLarge)
+    );
+}
+
+#[test]
+fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
+    // One component, one decomposition level, one tile. A full-image region
+    // keeps an f32 decoded-component buffer and f32 coefficients for the
+    // whole image, and the single IDWT level allocates an f32 output window
+    // of the same size while both are live.
+    let mut codestream = fixture_gray();
+    rewrite_siz_to_single_large_tile(&mut codestream, 7_168);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+
+    // 196 MiB of output plus 196 MiB of coefficients fit under the 512 MiB
+    // cap, but the 196 MiB reconstruction window does not.
+    let Err(full) = image.decode_region((0, 0, 7_168, 7_168)) else {
+        panic!("rewritten fixture has no packet data for a 7168x7168 tile");
+    };
+    assert_eq!(
+        full,
+        DecodeError::Validation(ValidationError::ImageTooLarge),
+        "the windowed IDWT peak must be charged before packet parsing"
+    );
+
+    // About 412 MiB for all three fits, so the request gets past the budget
+    // and fails in packet parsing instead.
+    let Err(smaller) = image.decode_region((0, 0, 6_000, 6_000)) else {
+        panic!("rewritten fixture has no packet data for a 6000x6000 region");
+    };
+    assert!(
+        matches!(smaller, DecodeError::Decoding(_)),
+        "a region whose IDWT peak fits must get past the budget: {smaller:?}"
+    );
 }
 
 #[test]
@@ -1182,6 +1230,7 @@ fn count_decode_work(bytes: &[u8], roi: Option<(u32, u32, u32, u32)>) -> DecodeW
         classic_code_blocks: counters.decoded_code_blocks,
         ht_code_blocks: 0,
         idwt_output_samples: counters.idwt_output_samples,
+        stored_coefficients: counters.stored_coefficients,
     }
 }
 
@@ -1295,6 +1344,42 @@ fn roi_decode_prunes_work_for_regions_touching_right_and_bottom_tile_edges() {
                 "edge ROI {roi:?} should produce fewer IDWT output samples (reversible={reversible}); full={}, region={}",
                 full.idwt_output_samples,
                 region.idwt_output_samples
+            );
+        }
+    }
+}
+
+#[test]
+fn region_decode_stores_only_the_code_blocks_it_needs() {
+    // An untiled image keeps every sub-band in one tile; a small region must
+    // not store the whole tile's coefficients. Storage is code-block
+    // granular, and these regions straddle block boundaries at every level,
+    // so each still keeps two 64x64 blocks per axis in most bands.
+    let (width, height) = (1024_u32, 768_u32);
+    let pixels = gradient_pixels(width, height, 1);
+    for reversible in [true, false] {
+        let options = EncodeOptions {
+            reversible,
+            num_decomposition_levels: 3,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&pixels, width, height, 1, 8, false, &options).expect("encode");
+        let full = count_decode_work(&bytes, None);
+        assert_eq!(full.stored_coefficients, (width * height) as usize);
+        for roi in [(500, 380, 32, 32), (992, 736, 32, 32), (0, 0, 16, 16)] {
+            let region = count_decode_work(&bytes, Some(roi));
+            assert!(
+                region.stored_coefficients > 0
+                    && region.stored_coefficients * 4 <= full.stored_coefficients,
+                "ROI {roi:?} stored {} of {} coefficients (reversible={reversible})",
+                region.stored_coefficients,
+                full.stored_coefficients
+            );
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+            assert_eq!(
+                image.decode_region(roi).expect("region decode").data,
+                crop_interleaved(&image.decode().expect("full decode"), width, 1, roi),
+                "ROI {roi:?} (reversible={reversible})"
             );
         }
     }

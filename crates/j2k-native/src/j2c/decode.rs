@@ -340,6 +340,8 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) decoded_code_blocks: usize,
     pub(crate) skipped_code_blocks: usize,
     pub(crate) idwt_output_samples: usize,
+    /// Sub-band coefficients held in storage, summed over decoded tiles.
+    pub(crate) stored_coefficients: usize,
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) ht_parallel_tasks: usize,
@@ -428,15 +430,14 @@ fn decode_tile<'a, 'b>(
     )?;
     if let Some(output_region) = tile_ctx.output_region {
         storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
-        if storage.roi_plan.is_some() {
-            storage.coefficients.fill(0.0);
-            if storage.exact_integer_decode {
-                storage.coefficients_i64.fill(0);
-            }
-        } else {
+        if storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
+        // Region decode sizes coefficient storage to the code-blocks the ROI
+        // plan keeps, or to the whole tile when there is no plan.
+        build::allocate_deferred_coefficients(storage, header.skipped_resolution_levels)?;
     }
+    tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
@@ -689,6 +690,10 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) exact_integer_decode: bool,
     /// Planned non-segment live bytes for the active tile and future decode scratch.
     pub(crate) structural_workspace_bytes: usize,
+    /// Set when region decode deferred coefficient storage until the ROI
+    /// plan is known. Holds the whole-plane IDWT workspace the plan left out,
+    /// which must be charged if decode falls back to the whole tile.
+    pub(crate) deferred_idwt_workspace_elements: Option<usize>,
     /// Allocation/cap failure raised from the option-based packet parser.
     pub(crate) packet_workspace_error: Option<DecodeError>,
 }
@@ -708,6 +713,7 @@ impl DecompositionStorage<'_> {
         self.roi_plan = None;
         self.exact_integer_decode = false;
         self.structural_workspace_bytes = 0;
+        self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;
     }
 
@@ -1038,6 +1044,7 @@ mod tests {
             rect: IntRect::from_xywh(0, 0, width, height),
             precincts: 0..0,
             coefficients: 0..len,
+            storage_rect: IntRect::from_xywh(0, 0, width, height),
         };
         (sub_band, storage)
     }

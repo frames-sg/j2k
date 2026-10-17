@@ -9,9 +9,58 @@ use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_codestream;
 use super::model::{CoefficientSource, IDWTOutput};
 use super::vertical::filter_vertical_codestream;
-use crate::error::DecodingError;
+use crate::error::{DecodingError, ValidationError};
 use crate::j2c::Header;
 use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
+
+/// The most f32 samples [`apply_roi`] holds at once for any one component.
+///
+/// Each level reads the previous level's window and writes a new one, so both
+/// are live together. With no active level, the copied sub-band window is the
+/// only buffer. Components run one after another, and [`apply_roi`] releases
+/// the previous component's output before it allocates, so the peak is the
+/// largest per-component peak rather than their sum.
+pub(crate) fn roi_idwt_peak_elements(
+    storage: &DecompositionStorage<'_>,
+    skipped_resolution_levels: u8,
+) -> Result<usize> {
+    let Some(roi_plan) = storage.roi_plan.as_ref() else {
+        return Ok(0);
+    };
+    let mut peak = 0usize;
+    for (component_idx, tile_decompositions) in storage.tile_decompositions.iter().enumerate() {
+        let active_len = tile_decompositions
+            .decompositions
+            .len()
+            .saturating_sub(usize::from(skipped_resolution_levels));
+        if active_len == 0 {
+            if let Some(window) = roi_plan
+                .sub_band_window(tile_decompositions.first_ll_sub_band)
+                .or_else(|| roi_plan.final_window(component_idx))
+            {
+                peak = peak.max(window_elements(window)?);
+            }
+            continue;
+        }
+        let mut previous = 0usize;
+        for decomposition_idx in tile_decompositions.decompositions.clone().take(active_len) {
+            let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
+                break;
+            };
+            let current = window_elements(window)?;
+            let live = previous
+                .checked_add(current)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            peak = peak.max(live);
+            previous = current;
+        }
+    }
+    Ok(peak)
+}
+
+fn window_elements(window: IntRect) -> Result<usize> {
+    checked_decode_usize_product2(window.width() as usize, window.height() as usize)
+}
 
 pub(super) fn apply_roi(
     storage: &DecompositionStorage<'_>,
@@ -45,6 +94,11 @@ pub(super) fn apply_roi(
         copy_sub_band_window_to_output(ll_sub_band, storage, window, output)?;
         return Ok(());
     }
+
+    // The previous component's output is never reused here, so release it
+    // before allocating this component's windows.
+    output.coefficients = Vec::new();
+    output.rect = IntRect::from_xywh(0, 0, 0, 0);
 
     let mut current_coefficients = Vec::new();
     let mut current_rect = IntRect::from_xywh(0, 0, 0, 0);

@@ -42,6 +42,7 @@ fn test_sub_band(width: u32, height: u32) -> SubBand {
         rect: IntRect::from_xywh(0, 0, width, height),
         precincts: 0..0,
         coefficients: 0..(width as usize * height as usize),
+        storage_rect: IntRect::from_xywh(0, 0, width, height),
     }
 }
 
@@ -370,6 +371,7 @@ fn coefficient_total_rejects_overflow_before_output_allocation() {
         rect: IntRect::from_xywh(0, 0, u32::MAX, u32::MAX),
         precincts: 0..0,
         coefficients: 0..0,
+        storage_rect: IntRect::from_xywh(0, 0, u32::MAX, u32::MAX),
     };
     let error = validate_pending_blocks(
         [(0, 0, u32::MAX, u32::MAX), (0, 0, u32::MAX, u32::MAX)].into_iter(),
