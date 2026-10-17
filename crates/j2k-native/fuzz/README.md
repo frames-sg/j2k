@@ -20,3 +20,9 @@ from synthetic samples, so they carry no third-party content:
 | `classic_gray1.j2c` | classic | 9×7, 1 × 1-bit | 1 level |
 
 Without them, random input rarely parses as a codestream at all.
+
+The two synthetic inputs in `corpus/lossless_roundtrip_fuzz/` select classic
+8×8 grayscale at 8 bits (1 level) and HTJ2K 16×16 RGB at 16 bits (2 levels,
+MCT, RPCL, SOP and EPH). Their trailing ASCII bytes supply the samples.
+These seeds exceed the ten-byte header so the 512-run CI smoke test exercises
+both encoder paths immediately; an empty corpus only reaches eight-byte inputs.

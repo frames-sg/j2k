@@ -22,6 +22,7 @@ fuzz_target!(|data: &[u8]| {
     let bit_depth = 1 + head[3] % 16;
     let options = EncodeOptions {
         reversible: true,
+        validate_high_throughput_codestream: false,
         num_decomposition_levels: head[4] % 6,
         code_block_width_exp: head[5] % 5,
         code_block_height_exp: (head[5] / 5) % 5,

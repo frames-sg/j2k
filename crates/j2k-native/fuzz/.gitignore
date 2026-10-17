@@ -1,6 +1,10 @@
 target
 artifacts
 corpus/*
+!corpus/lossless_roundtrip_fuzz/
+corpus/lossless_roundtrip_fuzz/*
+!corpus/lossless_roundtrip_fuzz/classic_gray8
+!corpus/lossless_roundtrip_fuzz/htj2k_rgb16
 !corpus/native_decode_fuzz/
 corpus/native_decode_fuzz/*
 !corpus/native_decode_fuzz/classic_gray1.j2c
