@@ -55,6 +55,7 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
         log.contains("doc -p j2k-core --lib --no-deps|RUSTDOCFLAGS=-D warnings -D missing_docs")
     );
     assert!(log.contains("check --manifest-path crates/j2k/fuzz/Cargo.toml"));
+    assert!(log.contains("check --manifest-path crates/j2k-native/fuzz/Cargo.toml"));
     assert!(log.contains("check --manifest-path crates/j2k-transcode/fuzz/Cargo.toml"));
     assert!(log.contains("test -p j2k --examples"));
     assert!(log.contains("test -p j2k-transcode --examples"));
