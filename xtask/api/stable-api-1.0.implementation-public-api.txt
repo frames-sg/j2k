@@ -2378,6 +2378,7 @@ pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool
 pub fn j2k_native::Image<'a>::tile_count(&self) -> u32
+pub fn j2k_native::Image<'a>::uses_high_throughput_block_coding(&self) -> bool
 pub fn j2k_native::J2kCodeBlockDecodeProfile::new() -> Self
 pub fn j2k_native::J2kCodeBlockDecodeWorkspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::J2kDirectCpuEntropyWorkspace::retained_classic_bytes(&self) -> usize

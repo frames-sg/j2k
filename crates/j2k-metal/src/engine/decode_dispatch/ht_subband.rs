@@ -5,6 +5,7 @@ use crate::metal_types::prelude::*;
 
 use super::{
     default_metal_ht_chunk_limits, dispatch_1d_pipeline, encode_metal_ht_batches_in_encoder,
+    encode_metal_ht_batches_with_zero_layouts_in_encoder,
     encode_repeated_metal_ht_batch_in_command_buffer, Buffer, CommandBufferRef,
     ComputeCommandEncoderRef, DirectStatusCheck, Error, HtBatchInput, HtCodeBlockDecodeJob,
     J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
@@ -106,7 +107,7 @@ pub(in crate::engine) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
     group: &PreparedHtSubBandGroup,
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    encode_metal_ht_batches_in_encoder(
+    encode_metal_ht_batches_with_zero_layouts_in_encoder(
         runtime,
         encoder,
         &[HtBatchInput {
@@ -116,6 +117,7 @@ pub(in crate::engine) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
             output_base: 0,
             execution_owner: &group.execution_owner,
         }],
+        Some(&[group.zero_layout()]),
         output,
         group.total_coefficients,
         default_metal_ht_chunk_limits(),
@@ -172,12 +174,13 @@ pub(in crate::engine) fn dispatch_zero_u32_buffer_in_encoder(
     }
 
     encoder.setComputePipelineState(&runtime.buffers()?.zero_u32_buffer);
+    // The kernel's 16-byte stores need the buffer bound at offset 0.
     encoder.set_buffer(0, Some(buffer), 0);
     encoder.set_bytes::<u32>(1, &word_count);
     dispatch_1d_pipeline(
         encoder,
         &runtime.buffers()?.zero_u32_buffer,
-        u64::from(word_count),
+        u64::from(word_count.div_ceil(4)),
     );
     Ok(())
 }

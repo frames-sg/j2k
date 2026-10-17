@@ -178,7 +178,7 @@ pub(in crate::engine) struct ClassicRepeatedCleanupDispatch<'a> {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
-pub(in crate::engine) struct ClassicPlainDevRepeatedCleanupDispatch<'a> {
+pub(in crate::engine) struct ClassicSharedRepeatedCleanupDispatch<'a> {
     pub(in crate::engine) runtime: &'a MetalRuntime,
     pub(in crate::engine) command_buffer: &'a CommandBufferRef,
     pub(in crate::engine) coded_data: &'a Buffer,
@@ -203,6 +203,7 @@ pub(in crate::engine) struct ClassicRepeatedStoreDispatch<'a> {
     pub(in crate::engine) output_plane_len: usize,
     pub(in crate::engine) decoded: &'a Buffer,
     pub(in crate::engine) coefficients_scratch: &'a Buffer,
+    pub(in crate::engine) shared_coefficients: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -395,10 +396,10 @@ pub(in crate::engine) fn dispatch_classic_cleanup_repeated_batched_in_command_bu
 }
 
 #[cfg(target_os = "macos")]
-pub(in crate::engine) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
-    dispatch: ClassicPlainDevRepeatedCleanupDispatch<'_>,
+pub(in crate::engine) fn dispatch_classic_cleanup_shared_repeated_batched_in_command_buffer(
+    dispatch: ClassicSharedRepeatedCleanupDispatch<'_>,
 ) -> Result<DirectStatusCheck, Error> {
-    let ClassicPlainDevRepeatedCleanupDispatch {
+    let ClassicSharedRepeatedCleanupDispatch {
         runtime,
         command_buffer,
         coded_data,
@@ -413,13 +414,14 @@ pub(in crate::engine) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_
     } = dispatch;
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
-        total_job_count.max(1) * size_of::<J2kClassicStatus>(),
+        job_count.max(1) * size_of::<J2kClassicStatus>(),
     )?;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
-    let source_indices = repeated_classic_status_sources(job_count, total_job_count)?;
+    let source_indices = repeated_classic_status_sources(job_count, job_count)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.decode()?.classic_cleanup_plain_dev_repeated_batched);
+    let pipeline = &runtime.decode()?.classic_cleanup_plain_shared_batched;
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
@@ -428,20 +430,16 @@ pub(in crate::engine) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_
     encoder.set_buffer(5, Some(coefficients_scratch), 0);
     encoder.set_buffer(6, Some(states_scratch), 0);
     encoder.set_bytes::<J2kClassicRepeatedBatchParams>(7, &repeated);
-    let width = runtime
-        .decode()?
-        .classic_cleanup_plain_dev_repeated_batched
-        .threadExecutionWidth()
-        .max(1);
+    let width = pipeline.threadExecutionWidth().max(1).min(job_count);
     encoder.dispatchThreads_threadsPerThreadgroup(
-        j2k_metal_support::mtl_size(job_count as u64, u64::from(repeated.batch_count), 1),
+        j2k_metal_support::mtl_size(job_count as u64, 1, 1),
         j2k_metal_support::mtl_size(width as u64, 1, 1),
     );
     encoder.endEncoding();
 
     Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
-        len: total_job_count,
+        len: job_count,
         source_indices: Some(source_indices),
     })
 }
@@ -459,11 +457,17 @@ pub(in crate::engine) fn dispatch_classic_store_repeated_batched_in_command_buff
         output_plane_len,
         decoded,
         coefficients_scratch,
+        shared_coefficients,
     } = dispatch;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
     let encoder = new_compute_command_encoder(command_buffer)?;
-    encoder.setComputePipelineState(&runtime.decode()?.classic_store_repeated_batched);
+    let pipeline = if shared_coefficients {
+        &runtime.decode()?.classic_store_shared_repeated_batched
+    } else {
+        &runtime.decode()?.classic_store_repeated_batched
+    };
+    encoder.setComputePipelineState(pipeline);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_buffer(1, Some(jobs), 0);
     encoder.set_buffer(2, Some(coefficients_scratch), 0);

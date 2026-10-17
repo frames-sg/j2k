@@ -133,15 +133,15 @@ kernel void j2k_decode_classic_cleanup_plain_dense_batched(
         set_classic_status(status, J2K_CLASSIC_STATUS_FAIL, 0u);
     }
     if (status->code == J2K_CLASSIC_STATUS_OK) {
-        const uint sample_count = job.width * job.height;
-        for (uint sample_idx = 0u; sample_idx < sample_count; ++sample_idx) {
-            const uint x = sample_idx % job.width;
-            const uint y = sample_idx / job.width;
-            const uint coeff_idx =
-                coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
-            const uint coeff = coefficients[coeff_idx];
-            output[job.output_offset + y * job.output_stride + x] =
-                reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+        for (uint y = 0u; y < job.height; ++y) {
+            const uint coefficient_row =
+                coeff_index(padded_width, J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
+            const uint output_row = job.output_offset + y * job.output_stride;
+            for (uint x = 0u; x < job.width; ++x) {
+                const uint coeff = coefficients[coefficient_row + x];
+                output[output_row + x] =
+                    reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+            }
         }
     }
 }
@@ -196,14 +196,15 @@ kernel void j2k_store_classic_repeated_batched(
     const uint linear_idx = gid.y * repeated.job_count + gid.x;
     device const uint *coefficients =
         coefficients_scratch + linear_idx * J2K_CLASSIC_MAX_COEFF_COUNT;
-    const uint sample_count = job.width * job.height;
-    for (uint sample_idx = lane; sample_idx < sample_count; sample_idx += 32u) {
-        const uint x = sample_idx % job.width;
-        const uint y = sample_idx / job.width;
-        const uint coeff =
-            coefficients[coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING)];
-        output[job.output_offset + y * job.output_stride + x] =
-            reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+    for (uint y = 0u; y < job.height; ++y) {
+        const uint coefficient_row =
+            coeff_index(padded_width, J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
+        const uint output_row = job.output_offset + y * job.output_stride;
+        for (uint x = lane; x < job.width; x += 32u) {
+            const uint coeff = coefficients[coefficient_row + x];
+            output[output_row + x] =
+                reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+        }
     }
 }
 
@@ -267,7 +268,7 @@ kernel void j2k_decode_classic_cleanup_plain_repeated_batched(
     }
 }
 
-kernel void j2k_decode_classic_cleanup_plain_dev_repeated_batched(
+kernel void j2k_decode_classic_cleanup_plain_shared_batched(
     device const uchar *coded_data [[buffer(0)]],
     device float *output [[buffer(1)]],
     device const J2kClassicCleanupBatchJob *jobs [[buffer(2)]],
@@ -276,22 +277,20 @@ kernel void j2k_decode_classic_cleanup_plain_dev_repeated_batched(
     device uint *coefficients_scratch [[buffer(5)]],
     device uint *flags_scratch [[buffer(6)]],
     constant J2kClassicRepeatedBatchParams &repeated [[buffer(7)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint gid [[thread_position_in_grid]]
 ) {
-    if (gid.x >= repeated.job_count || gid.y >= repeated.batch_count) {
+    if (gid >= repeated.job_count) {
         return;
     }
-    const uint linear_idx = gid.y * repeated.job_count + gid.x;
-    device J2kClassicStatus *status = statuses + linear_idx;
-    J2kClassicCleanupBatchJob job = jobs[gid.x];
-    job.output_offset += gid.y * repeated.output_plane_len;
+    device J2kClassicStatus *status = statuses + gid;
+    const J2kClassicCleanupBatchJob job = jobs[gid];
     set_classic_status(status, J2K_CLASSIC_STATUS_OK, 0u);
     if (!decode_classic_job_plain_dev(
             job,
             coded_data,
             segments,
             coefficients_scratch,
-            linear_idx * J2K_CLASSIC_MAX_COEFF_COUNT,
+            gid * J2K_CLASSIC_MAX_COEFF_COUNT,
             flags_scratch,
             output,
             false,
@@ -299,5 +298,33 @@ kernel void j2k_decode_classic_cleanup_plain_dev_repeated_batched(
         ) &&
         status->code == J2K_CLASSIC_STATUS_OK) {
         set_classic_status(status, J2K_CLASSIC_STATUS_FAIL, 0u);
+    }
+}
+
+kernel void j2k_store_classic_shared_repeated_batched(
+    device float *output [[buffer(0)]],
+    device const J2kClassicCleanupBatchJob *jobs [[buffer(1)]],
+    device const uint *coefficients_scratch [[buffer(2)]],
+    constant J2kClassicRepeatedBatchParams &repeated [[buffer(3)]],
+    uint2 gid [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]]
+) {
+    if (gid.x >= repeated.job_count || gid.y >= repeated.batch_count) {
+        return;
+    }
+    J2kClassicCleanupBatchJob job = jobs[gid.x];
+    job.output_offset += gid.y * repeated.output_plane_len;
+    const uint padded_width = job.width + J2K_CLASSIC_PADDING * 2u;
+    device const uint *coefficients =
+        coefficients_scratch + gid.x * J2K_CLASSIC_MAX_COEFF_COUNT;
+    for (uint y = 0u; y < job.height; ++y) {
+        const uint coefficient_row =
+            coeff_index(padded_width, J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
+        const uint output_row = job.output_offset + y * job.output_stride;
+        for (uint x = lane; x < job.width; x += 32u) {
+            const uint coeff = coefficients[coefficient_row + x];
+            output[output_row + x] =
+                reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+        }
     }
 }

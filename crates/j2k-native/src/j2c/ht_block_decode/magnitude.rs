@@ -17,6 +17,11 @@ fn uses_simd_rows(missing_msbs: u32) -> bool {
     missing_msbs + 2 <= simd::MAX_SIMD_MMSBP2
 }
 
+#[cfg(feature = "simd")]
+pub(super) fn supports_cleanup_to_f32(missing_msbs: u32, width: u32) -> bool {
+    width != 0 && width.is_multiple_of(4) && uses_simd_rows(missing_msbs)
+}
+
 fn sample_mask(bit: u32) -> u32 {
     1 << (4 + bit)
 }
@@ -421,4 +426,71 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     }
 
     Some(())
+}
+
+#[cfg(feature = "simd")]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the direct cleanup entry keeps bitstream, geometry, scratch, and output conversion explicit"
+)]
+pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOINT: bool>(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    decoded_data: &mut [f32],
+    missing_msbs: u32,
+    coded_bitplanes: u8,
+    dequantization_step: f32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+    v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
+) -> Option<()> {
+    if !supports_cleanup_to_f32(missing_msbs, width) {
+        return None;
+    }
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let mut mel = MelDecoder::new(coded_data, lcup, scup);
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let mut magsgn = FlatBitReader::new(flat)?;
+    let mut run = mel.get_run()?;
+    let output = simd::FinalOutput {
+        coefficient_shift: 31 - u32::from(coded_bitplanes),
+        midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
+        dequantization_step,
+    };
+
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_to_f32_rows::<IRREVERSIBLE_MIDPOINT, _>(
+        simd,
+        &mut mel,
+        &mut vlc,
+        &mut run,
+        &mut magsgn,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        output,
+    ))
 }

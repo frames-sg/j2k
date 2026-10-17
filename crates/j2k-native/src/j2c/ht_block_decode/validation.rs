@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "simd")]
+use super::pipeline::decode_cleanup_to_f32_impl;
 #[cfg(test)]
 use super::pipeline::PHASE_LIMIT_MAGREF;
 use super::pipeline::{decode_impl, prepare_scratch};
@@ -250,6 +252,47 @@ pub(super) fn validate_combined_decode(
     }
 
     Ok(number_of_coding_passes != 0 && actual_bitplanes != 0)
+}
+
+#[cfg(feature = "simd")]
+pub(crate) fn supports_cleanup_to_f32(missing_bit_planes: u8, width: u32) -> bool {
+    super::magnitude::supports_cleanup_to_f32(u32::from(missing_bit_planes), width)
+}
+
+#[cfg(feature = "simd")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the internal direct-output adapter preserves validated geometry and conversion inputs"
+)]
+pub(crate) fn decode_cleanup_validated_to_f32<const IRREVERSIBLE_MIDPOINT: bool>(
+    cleanup: &[u8],
+    missing_bit_planes: u8,
+    total_bitplanes: u8,
+    strict: bool,
+    decoded_data: &mut [f32],
+    width: u32,
+    height: u32,
+    stride: u32,
+    dequantization_step: f32,
+    scratch: &mut HtBlockDecodeScratch,
+) -> Result<bool> {
+    if !validate_combined_decode(missing_bit_planes, total_bitplanes, 1, strict)? {
+        return Ok(false);
+    }
+    prepare_scratch(scratch, width, height)?;
+    decode_cleanup_to_f32_impl::<IRREVERSIBLE_MIDPOINT>(
+        cleanup,
+        decoded_data,
+        u32::from(missing_bit_planes),
+        total_bitplanes,
+        dequantization_step,
+        width,
+        height,
+        stride,
+        scratch,
+    )
+    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    Ok(true)
 }
 
 #[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]

@@ -4,10 +4,10 @@
 
 use super::{
     validate_group_contract, BatchColor, BatchDecodeOptions, BatchGroupInfo, BatchLayout, Buffer,
-    DeviceRef, DeviceSubmission, Error, IndexedBatchError, J2kDecodeWarning,
-    MetalBatchDecodeResult, MetalBatchGroup, MetalBatchGroupCompletion, MetalBatchGroupError,
-    MetalImageDestination, MetalImageLayout, MetalResidentBatch, PixelFormat, PreparedBatchGroup,
-    Rect, ResidentMetalImage, Surface,
+    DeviceSubmission, Error, IndexedBatchError, J2kDecodeWarning, MetalBatchDecodeResult,
+    MetalBatchGroup, MetalBatchGroupCompletion, MetalBatchGroupError, MetalImageDestination,
+    MetalImageLayout, MetalResidentBatch, PixelFormat, PreparedBatchGroup, Rect,
+    ResidentMetalImage, Surface,
 };
 
 /// Pending direct decode of one prepared group into caller-owned Metal storage.
@@ -223,15 +223,17 @@ pub(super) fn validate_codec_owned_resident_group(
 
 #[cfg(target_os = "macos")]
 pub(super) fn allocate_codec_owned_group_destination(
-    device: &DeviceRef,
+    session: &crate::MetalBackendSession,
     group: &PreparedBatchGroup,
     fmt: PixelFormat,
 ) -> Result<CodecOwnedMetalGroupDestination, Error> {
-    allocate_codec_owned_destination(device, group.info().dimensions, group.images().len(), fmt)
+    allocate_codec_owned_destination(session, group.info().dimensions, group.images().len(), fmt)
 }
 
+/// A dense group output for the caller, from the session runtime's output
+/// heap when it has room.
 pub(super) fn allocate_codec_owned_destination(
-    device: &DeviceRef,
+    session: &crate::MetalBackendSession,
     dimensions: (u32, u32),
     image_count: usize,
     fmt: PixelFormat,
@@ -252,13 +254,7 @@ pub(super) fn allocate_codec_owned_destination(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K submitted codec-owned Metal group size overflow".to_string(),
         })?;
-    let output =
-        j2k_metal_support::checked_shared_buffer(device, total_bytes).map_err(|source| {
-            crate::error::metal_kernel_support_error(
-                "J2K submitted codec-owned Metal group allocation failed",
-                source,
-            )
-        })?;
+    let output = session.runtime()?.new_output_buffer(total_bytes)?;
     let layout =
         MetalImageLayout::new_batch(0, dimensions, row_bytes, fmt, image_count, image_bytes)
             .map_err(|source| {
@@ -267,8 +263,9 @@ pub(super) fn allocate_codec_owned_destination(
                     source,
                 )
             })?;
-    // SAFETY: `output` is a fresh codec-owned allocation and remains
-    // exclusively retained by the pending group until GPU completion.
+    // SAFETY: `output` is a newly allocated codec-owned buffer (heap memory is
+    // reused only after every reference to an earlier buffer is released) and
+    // remains exclusively retained by the pending group until GPU completion.
     let destination =
         unsafe { MetalImageDestination::from_exclusive_buffer(output.clone(), layout) }.map_err(
             |source| {

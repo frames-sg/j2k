@@ -805,6 +805,212 @@ kernel void j2k_idwt_reversible53_interleave_horizontal_fused_batched(
     );
 }
 
+constant uint J2K_IDWT53_2D_TILE_W = 60u;
+constant uint J2K_IDWT53_2D_TILE_H = 60u;
+constant uint J2K_IDWT53_2D_LANES = 32u;
+constant uint J2K_IDWT53_2D_ROWS = 8u;
+// A loaded row spans the tile and both halos: 32 low-pass and 32 high-pass
+// samples, one of each per lane.
+constant uint J2K_IDWT53_2D_STRIDE = J2K_IDWT53_2D_TILE_W + 2u * J2K_IDWT53_HALO;
+
+inline float idwt53_band_sample(
+    device const float *band,
+    uint band_width,
+    uint band_height,
+    uint band_x,
+    uint band_y
+) {
+    return (band_x < band_width && band_y < band_height)
+        ? band[band_y * band_width + band_x]
+        : 0.0f;
+}
+
+// One 5/3 synthesis level in a single pass: each threadgroup loads its output
+// tile plus a two-sample halo from the four sub-bands, lifts the rows, then
+// the tile's columns, and writes the tile once. Every sample sees the same
+// operations on the same values as the interleave/horizontal and vertical
+// kernels, so the output is identical. Each 32-lane SIMD group keeps a row's
+// low/high pairs in registers for the horizontal lifts; the vertical lifts
+// use the shared tile. Needs width and height of at least 2.
+// Writes one synthesized sample of a level to its float plane.
+struct J2kIdwtPlaneWriter {
+    device float *out;
+    uint width;
+
+    void write(uint x, uint y, float value) const {
+        out[ulong(y) * width + x] = value;
+    }
+};
+
+template<typename Params, typename Writer>
+inline void idwt53_fused_2d_core(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    Writer writer,
+    constant Params &params,
+    uint2 group,
+    uint2 local,
+    threadgroup float *tile
+) {
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint tx0 = group.x * J2K_IDWT53_2D_TILE_W;
+    const uint ty0 = group.y * J2K_IDWT53_2D_TILE_H;
+    if (tx0 >= width || ty0 >= height) {
+        return;
+    }
+    const uint tx1 = min(tx0 + J2K_IDWT53_2D_TILE_W, width);
+    const uint ty1 = min(ty0 + J2K_IDWT53_2D_TILE_H, height);
+    const uint lx0 = tx0 > J2K_IDWT53_HALO ? tx0 - J2K_IDWT53_HALO : 0u;
+    const uint ly0 = ty0 > J2K_IDWT53_HALO ? ty0 - J2K_IDWT53_HALO : 0u;
+    const uint lx1 = min(tx1 + J2K_IDWT53_HALO, width);
+    const uint ly1 = min(ty1 + J2K_IDWT53_HALO, height);
+    const uint origin_x = params.x0 + params.output_x;
+    const uint origin_y = params.y0 + params.output_y;
+
+    // Low-pass columns sit at even global x and come from LL or LH; the k-th
+    // low-pass column of the row reads band column `low_band_x + k`.
+    const uint low_x = lx0 + ((origin_x + lx0) & 1u);
+    const uint high_x = lx0 + ((origin_x + lx0 + 1u) & 1u);
+    const uint low_band_x = low_index(origin_x + low_x, params.x0);
+    const uint high_band_x = high_index(origin_x + high_x, params.x0);
+    const uint xl = low_x + 2u * local.x;
+    const uint xh = high_x + 2u * local.x;
+    const bool low_first = low_x < high_x;
+    for (uint y = ly0 + local.y; y < ly1; y += J2K_IDWT53_2D_ROWS) {
+        const uint global_y = origin_y + y;
+        const bool low_y = (global_y & 1u) == 0u;
+        const uint band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
+        float low = 0.0f;
+        float high = 0.0f;
+        if (xl < lx1) {
+            low = low_y
+                ? idwt53_band_sample(ll, params.ll_width, params.ll_height,
+                    low_band_x + local.x - params.ll_x, band_y - params.ll_y)
+                : idwt53_band_sample(lh, params.lh_width, params.lh_height,
+                    low_band_x + local.x - params.lh_x, band_y - params.lh_y);
+        }
+        if (xh < lx1) {
+            high = low_y
+                ? idwt53_band_sample(hl, params.hl_width, params.hl_height,
+                    high_band_x + local.x - params.hl_x, band_y - params.hl_y)
+                : idwt53_band_sample(hh, params.hh_width, params.hh_height,
+                    high_band_x + local.x - params.hh_x, band_y - params.hh_y);
+        }
+        float adjacent = low_first
+            ? simd_shuffle_up(high, 1u) : simd_shuffle_down(high, 1u);
+        float left = xl == 0u ? high : (low_first ? adjacent : high);
+        float right = xl + 1u == width ? left : (low_first ? high : adjacent);
+        const uint lo = tx0 > 1u ? tx0 - 1u : 0u;
+        const uint hi = min(tx1 + 1u, width);
+        if (xl >= lo && xl < hi) {
+            low = reversible53_predict(low, left, right);
+        }
+        adjacent = low_first
+            ? simd_shuffle_down(low, 1u) : simd_shuffle_up(low, 1u);
+        left = xh == 0u ? low : (low_first ? low : adjacent);
+        right = xh + 1u == width ? left : (low_first ? adjacent : low);
+        if (xh >= tx0 && xh < tx1) {
+            high = reversible53_update(high, left, right);
+        }
+        threadgroup float *row = tile + (y - ly0) * J2K_IDWT53_2D_STRIDE;
+        if (xl >= tx0 && xl < tx1) {
+            row[xl - lx0] = low;
+        }
+        if (xh >= tx0 && xh < tx1) {
+            row[xh - lx0] = high;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint first_even_y = origin_y & 1u;
+    {
+        const uint lo = ty0 > 1u ? ty0 - 1u : 0u;
+        const uint hi = min(ty1 + 1u, height);
+        const uint first = lo + ((lo & 1u) != first_even_y ? 1u : 0u);
+        for (uint y = first + 2u * local.y; y < hi; y += 2u * J2K_IDWT53_2D_ROWS) {
+            threadgroup float *row = tile + (y - ly0) * J2K_IDWT53_2D_STRIDE;
+            threadgroup float *above = tile +
+                (periodic_symmetric_extension_left_u32(y, 1u) - ly0) * J2K_IDWT53_2D_STRIDE;
+            threadgroup float *below = tile +
+                (periodic_symmetric_extension_right_u32(y, 1u, height) - ly0) * J2K_IDWT53_2D_STRIDE;
+            for (uint x = tx0 + local.x; x < tx1; x += J2K_IDWT53_2D_LANES) {
+                const uint c = x - lx0;
+                row[c] = reversible53_predict(row[c], above[c], below[c]);
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    {
+        const uint first_odd_y = 1u - first_even_y;
+        const uint first = ty0 + ((ty0 & 1u) != first_odd_y ? 1u : 0u);
+        for (uint y = first + 2u * local.y; y < ty1; y += 2u * J2K_IDWT53_2D_ROWS) {
+            threadgroup float *row = tile + (y - ly0) * J2K_IDWT53_2D_STRIDE;
+            threadgroup float *above = tile +
+                (periodic_symmetric_extension_left_u32(y, 1u) - ly0) * J2K_IDWT53_2D_STRIDE;
+            threadgroup float *below = tile +
+                (periodic_symmetric_extension_right_u32(y, 1u, height) - ly0) * J2K_IDWT53_2D_STRIDE;
+            for (uint x = tx0 + local.x; x < tx1; x += J2K_IDWT53_2D_LANES) {
+                const uint c = x - lx0;
+                row[c] = reversible53_update(row[c], above[c], below[c]);
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint y = ty0 + local.y; y < ty1; y += J2K_IDWT53_2D_ROWS) {
+        threadgroup const float *row = tile + (y - ly0) * J2K_IDWT53_2D_STRIDE;
+        for (uint x = tx0 + local.x; x < tx1; x += J2K_IDWT53_2D_LANES) {
+            writer.write(x, y, row[x - lx0]);
+        }
+    }
+}
+
+kernel void j2k_idwt_reversible53_fused_2d(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(5)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT53_2D_TILE_H + 2u * J2K_IDWT53_HALO) * J2K_IDWT53_2D_STRIDE];
+    idwt53_fused_2d_core(
+        ll, hl, lh, hh, J2kIdwtPlaneWriter{out, params.width}, params, group, local, tile
+    );
+}
+
+kernel void j2k_idwt_reversible53_fused_2d_batched(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kRepeatedIdwtSingleDecompositionParams &params [[buffer(5)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT53_2D_TILE_H + 2u * J2K_IDWT53_HALO) * J2K_IDWT53_2D_STRIDE];
+    if (group.z >= params.batch_count) {
+        return;
+    }
+    idwt53_fused_2d_core(
+        ll + group.z * params.ll_instance_stride,
+        hl + group.z * params.hl_instance_stride,
+        lh + group.z * params.lh_instance_stride,
+        hh + group.z * params.hh_instance_stride,
+        J2kIdwtPlaneWriter{out + ulong(group.z) * params.width * params.height, params.width},
+        params,
+        group.xy,
+        local.xy,
+        tile
+    );
+}
+
 constant uint J2K_IDWT53_COLS_PER_GROUP = 16u;
 constant uint J2K_IDWT53_COL_TILE = 128u;
 constant uint J2K_IDWT53_COL_ROW_THREADS = 16u;
@@ -1152,6 +1358,204 @@ kernel void j2k_idwt_irreversible97_horizontal_lift_fused(
             }
         }
     }
+}
+
+constant uint J2K_IDWT97_2D_TILE_W = 56u;
+constant uint J2K_IDWT97_2D_TILE_H = 56u;
+constant uint J2K_IDWT97_2D_STRIDE = J2K_IDWT97_2D_TILE_W + 2u * J2K_IDWT97_HALO + 1u;
+
+// One 9/7 synthesis level in a single pass, as `j2k_idwt_reversible53_fused_2d`
+// does for 5/3: load the tile and a four-sample halo with the horizontal scale,
+// run the four horizontal lifting steps, scale the tile's columns vertically,
+// run the four vertical steps, and write the tile. Each sample sees the same
+// operations in the same order as the fused horizontal and vertical kernels.
+// Needs width and height of at least 2.
+template<typename Params, typename Writer>
+inline void idwt97_fused_2d_core(
+    device const float *ll,
+    device const float *hl,
+    device const float *lh,
+    device const float *hh,
+    Writer writer,
+    constant Params &params,
+    constant J2kIdwt97LiftSteps &horizontal,
+    constant J2kIdwt97LiftSteps &vertical,
+    uint2 group,
+    uint2 local,
+    threadgroup float *tile
+) {
+    const uint width = params.width;
+    const uint height = params.height;
+    const uint tx0 = group.x * J2K_IDWT97_2D_TILE_W;
+    const uint ty0 = group.y * J2K_IDWT97_2D_TILE_H;
+    if (tx0 >= width || ty0 >= height) {
+        return;
+    }
+    const uint tx1 = min(tx0 + J2K_IDWT97_2D_TILE_W, width);
+    const uint ty1 = min(ty0 + J2K_IDWT97_2D_TILE_H, height);
+    const uint lx0 = tx0 > J2K_IDWT97_HALO ? tx0 - J2K_IDWT97_HALO : 0u;
+    const uint ly0 = ty0 > J2K_IDWT97_HALO ? ty0 - J2K_IDWT97_HALO : 0u;
+    const uint lx1 = min(tx1 + J2K_IDWT97_HALO, width);
+    const uint ly1 = min(ty1 + J2K_IDWT97_HALO, height);
+    const uint origin_x = params.x0 + params.output_x;
+    const uint origin_y = params.y0 + params.output_y;
+    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+    const float high_pass = as_type<float>(horizontal.high_pass_bits);
+
+    const uint low_x = lx0 + ((origin_x + lx0) & 1u);
+    const uint high_x = lx0 + ((origin_x + lx0 + 1u) & 1u);
+    const uint low_band_x = low_index(origin_x + low_x, params.x0);
+    const uint high_band_x = high_index(origin_x + high_x, params.x0);
+    // Each SIMD group owns a row and keeps a low/high pair per lane in
+    // registers. The tile transfers the horizontal result to the columns.
+    const uint xl = low_x + 2u * local.x;
+    const uint xh = high_x + 2u * local.x;
+    const bool low_first = low_x < high_x;
+    for (uint y = ly0 + local.y; y < ly1; y += J2K_IDWT53_2D_ROWS) {
+        const uint global_y = origin_y + y;
+        const bool low_y = (global_y & 1u) == 0u;
+        const uint band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
+        float low = 0.0f;
+        float high = 0.0f;
+        if (xl < lx1) {
+            low = low_y
+                ? idwt53_band_sample(ll, params.ll_width, params.ll_height,
+                    low_band_x + local.x - params.ll_x, band_y - params.ll_y)
+                : idwt53_band_sample(lh, params.lh_width, params.lh_height,
+                    low_band_x + local.x - params.lh_x, band_y - params.lh_y);
+            low *= KAPPA;
+        }
+        if (xh < lx1) {
+            high = low_y
+                ? idwt53_band_sample(hl, params.hl_width, params.hl_height,
+                    high_band_x + local.x - params.hl_x, band_y - params.hl_y)
+                : idwt53_band_sample(hh, params.hh_width, params.hh_height,
+                    high_band_x + local.x - params.hh_x, band_y - params.hh_y);
+            high *= high_pass;
+        }
+        // The four-sample halo contains every stored sample's dependency
+        // cone. Extra lifts outside the shrinking valid range cannot reach
+        // that output, so every lane can execute without per-step bounds.
+        for (uint step = 0u; step < 4u; ++step) {
+            if ((step & 1u) == 0u) {
+                const float adjacent = low_first
+                    ? simd_shuffle_up(high, 1u) : simd_shuffle_down(high, 1u);
+                const float left = xl == 0u ? high : (low_first ? adjacent : high);
+                const float right = xl + 1u == width ? left : (low_first ? high : adjacent);
+                low = fma(left + right, horizontal.coefficients[step], low);
+            } else {
+                const float adjacent = low_first
+                    ? simd_shuffle_down(low, 1u) : simd_shuffle_up(low, 1u);
+                const float left = xh == 0u ? low : (low_first ? low : adjacent);
+                const float right = xh + 1u == width ? left : (low_first ? adjacent : low);
+                high = fma(left + right, horizontal.coefficients[step], high);
+            }
+        }
+        const float scale = low_y ? KAPPA : high_pass;
+        threadgroup float *row = tile + (y - ly0) * J2K_IDWT97_2D_STRIDE;
+        if (xl >= tx0 && xl < tx1) {
+            row[xl - lx0] = low * scale;
+        }
+        if (xh >= tx0 && xh < tx1) {
+            row[xh - lx0] = high * scale;
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Transpose the work assignment for the vertical lifts. Padding the
+    // tile avoids a power-of-two stride for these column reads.
+    const uint low_y0 = ly0 + ((origin_y + ly0) & 1u);
+    const uint high_y0 = ly0 + ((origin_y + ly0 + 1u) & 1u);
+    const uint yl = low_y0 + 2u * local.x;
+    const uint yh = high_y0 + 2u * local.x;
+    const bool low_y_first = low_y0 < high_y0;
+    for (uint x = tx0 + local.y; x < tx1; x += J2K_IDWT53_2D_ROWS) {
+        const uint col = x - lx0;
+        float low = yl < ly1 ? tile[(yl - ly0) * J2K_IDWT97_2D_STRIDE + col] : 0.0f;
+        float high = yh < ly1 ? tile[(yh - ly0) * J2K_IDWT97_2D_STRIDE + col] : 0.0f;
+        for (uint step = 0u; step < 4u; ++step) {
+            if ((step & 1u) == 0u) {
+                const float adjacent = low_y_first
+                    ? simd_shuffle_up(high, 1u) : simd_shuffle_down(high, 1u);
+                const float left = yl == 0u ? high : (low_y_first ? adjacent : high);
+                const float right = yl + 1u == height ? left : (low_y_first ? high : adjacent);
+                low = fma(left + right, vertical.coefficients[step], low);
+            } else {
+                const float adjacent = low_y_first
+                    ? simd_shuffle_down(low, 1u) : simd_shuffle_up(low, 1u);
+                const float left = yh == 0u ? low : (low_y_first ? low : adjacent);
+                const float right = yh + 1u == height ? left : (low_y_first ? adjacent : low);
+                high = fma(left + right, vertical.coefficients[step], high);
+            }
+        }
+        if (yl >= ty0 && yl < ty1) {
+            tile[(yl - ly0) * J2K_IDWT97_2D_STRIDE + col] = low;
+        }
+        if (yh >= ty0 && yh < ty1) {
+            tile[(yh - ly0) * J2K_IDWT97_2D_STRIDE + col] = high;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint y = ty0 + local.y; y < ty1; y += J2K_IDWT53_2D_ROWS) {
+        threadgroup const float *row = tile + (y - ly0) * J2K_IDWT97_2D_STRIDE;
+        const uint x = tx0 + 2u * local.x;
+        if (x < tx1) {
+            writer.write(x, y, row[x - lx0]);
+        }
+        if (x + 1u < tx1) {
+            writer.write(x + 1u, y, row[x + 1u - lx0]);
+        }
+    }
+}
+
+kernel void j2k_idwt_irreversible97_fused_2d(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(5)]],
+    constant J2kIdwt97LiftSteps &horizontal [[buffer(6)]],
+    constant J2kIdwt97LiftSteps &vertical [[buffer(7)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT97_2D_TILE_H + 2u * J2K_IDWT97_HALO) * J2K_IDWT97_2D_STRIDE];
+    idwt97_fused_2d_core(
+        ll, hl, lh, hh, J2kIdwtPlaneWriter{out, params.width}, params, horizontal, vertical,
+        group, local, tile
+    );
+}
+
+kernel void j2k_idwt_irreversible97_fused_2d_batched(
+    device const float *ll [[buffer(0)]],
+    device const float *hl [[buffer(1)]],
+    device const float *lh [[buffer(2)]],
+    device const float *hh [[buffer(3)]],
+    device float *out [[buffer(4)]],
+    constant J2kRepeatedIdwtSingleDecompositionParams &params [[buffer(5)]],
+    constant J2kIdwt97LiftSteps &horizontal [[buffer(6)]],
+    constant J2kIdwt97LiftSteps &vertical [[buffer(7)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT97_2D_TILE_H + 2u * J2K_IDWT97_HALO) * J2K_IDWT97_2D_STRIDE];
+    if (group.z >= params.batch_count) {
+        return;
+    }
+    idwt97_fused_2d_core(
+        ll + group.z * params.ll_instance_stride,
+        hl + group.z * params.hl_instance_stride,
+        lh + group.z * params.lh_instance_stride,
+        hh + group.z * params.hh_instance_stride,
+        J2kIdwtPlaneWriter{out + ulong(group.z) * params.width * params.height, params.width},
+        params,
+        horizontal, vertical, group.xy,
+        local.xy,
+        tile
+    );
 }
 
 kernel void j2k_idwt_irreversible97_vertical_fused(

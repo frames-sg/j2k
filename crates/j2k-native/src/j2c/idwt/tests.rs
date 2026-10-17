@@ -435,6 +435,8 @@ fn pseudo_random_coefficients(count: usize, seed: u64, integral: bool) -> Vec<f3
 fn banded_2d_matches_plain_2d_bit_for_bit() {
     use super::super::build::{Decomposition, SubBand, SubBandType};
     use super::super::decode::DecompositionStorage;
+    #[cfg(feature = "parallel")]
+    use super::banded::banded_scratch_elements_for_execution;
     use super::banded::{filter_2d_banded, use_banded};
     use super::direct::filter_2d;
     use super::model::IDWTInput;
@@ -462,6 +464,9 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                 (16, 300),
                 (17, 300),
                 (18, 260),
+                // High-first width whose longer high band ends on a SIMD
+                // boundary in the fused final horizontal lifting step.
+                (31, 300),
                 // Tall enough for several parallel strips with halos on both
                 // sides, at both row parities.
                 (300, 1000),
@@ -494,6 +499,7 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                             SubBandType::HighHigh,
                         ][index],
                         rect,
+                        storage_rect: rect,
                         precincts: 0..0,
                         coefficients: start..start + len,
                     });
@@ -587,6 +593,15 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                 #[cfg(feature = "parallel")]
                 {
                     let mut parallel = vec![f32::NAN; 3];
+                    let expected_scratch = pool
+                        .install(|| {
+                            banded_scratch_elements_for_execution(
+                                width as usize,
+                                height as usize,
+                                true,
+                            )
+                        })
+                        .expect("parallel scratch size");
                     pool.install(|| {
                         filter_2d_banded(
                             input,
@@ -599,6 +614,7 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                         )
                     })
                     .expect("parallel banded level");
+                    assert_eq!(scratch.len(), expected_scratch, "parallel scratch {label}");
                     assert_eq!(bits(&parallel), bits(&plain), "parallel {label}");
                 }
             }

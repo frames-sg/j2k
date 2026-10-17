@@ -127,6 +127,65 @@ pub struct HtCodeBlockDecodeProfile {
     pub magref_us: u128,
 }
 
+/// Whole-image cleanup-only fast path. Unlike the public scalar helpers, this
+/// may publish a prefix before malformed entropy is rejected; callers discard
+/// their internal coefficient plane when the image decode returns an error.
+#[cfg(feature = "simd")]
+pub(crate) fn try_decode_ht_code_block_to_f32(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    irreversible_midpoint: bool,
+) -> Result<bool> {
+    if job.number_of_coding_passes != 1
+        || job.roi_shift != 0
+        || !j2c::ht_block_decode::supports_cleanup_to_f32(job.missing_bit_planes, job.width)
+    {
+        return Ok(false);
+    }
+
+    let _layout =
+        checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
+    let segments = j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
+        job.data,
+        job.cleanup_length,
+        job.refinement_length,
+    )?;
+    if !segments.refinement.is_empty() {
+        return Ok(false);
+    }
+    let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
+    let stride = u32::try_from(job.output_stride)
+        .map_err(|_| crate::DecodingError::CodeBlockDecodeFailure)?;
+    if irreversible_midpoint {
+        j2c::ht_block_decode::decode_cleanup_validated_to_f32::<true>(
+            segments.cleanup,
+            job.missing_bit_planes,
+            coded_bitplanes,
+            job.strict,
+            output,
+            job.width,
+            job.height,
+            stride,
+            job.dequantization_step,
+            &mut workspace.scratch,
+        )
+    } else {
+        j2c::ht_block_decode::decode_cleanup_validated_to_f32::<false>(
+            segments.cleanup,
+            job.missing_bit_planes,
+            coded_bitplanes,
+            job.strict,
+            output,
+            job.width,
+            job.height,
+            stride,
+            job.dequantization_step,
+            &mut workspace.scratch,
+        )
+    }
+}
+
 impl HtCodeBlockDecodeProfile {
     /// Create an empty profile accumulator.
     #[must_use]
@@ -333,10 +392,15 @@ fn write_ht_code_block_output(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "simd")]
+    use super::try_decode_ht_code_block_to_f32;
     use super::{
-        write_ht_code_block_output, CodeBlockOutputLayout, HtCodeBlockDecodeJob,
-        HtCodeBlockDecodeWorkspace,
+        decode_ht_code_block_scalar_with_workspace,
+        decode_ht_code_block_scalar_with_workspace_midpoint, write_ht_code_block_output,
+        CodeBlockOutputLayout, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
     };
+    #[cfg(feature = "simd")]
+    use crate::encode_ht_code_block_scalar;
 
     #[test]
     fn irreversible_output_retains_the_ht_midpoint_before_dequantization() {
@@ -402,5 +466,180 @@ mod tests {
 
         assert_eq!(workspace.coefficient_capacity(), 0);
         assert_eq!(workspace.coefficients.len(), 0);
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn direct_cleanup_output_matches_transactional_decode_across_precisions() {
+        let width = 8u32;
+        let height = 5u32;
+        let stride = 11usize;
+        let output_len = stride * (height as usize - 1) + width as usize + 7;
+
+        for total_bitplanes in 1_u8..=31 {
+            // The current cleanup encoder selects at most the third highest
+            // cleanup bitplane. Reuse a supported 24-bit payload above that
+            // point while varying the decoder's final coefficient precision.
+            let encoded_bitplanes = total_bitplanes.min(24);
+            let limit = 1_i64 << encoded_bitplanes;
+            let mut coefficients: Vec<i32> = (0..width * height)
+                .map(|index| {
+                    let magnitude = (i64::from(index) * 104_729 + 17) % limit.max(1);
+                    let value = if index & 1 == 0 {
+                        magnitude
+                    } else {
+                        -magnitude
+                    };
+                    i32::try_from(value).expect("test coefficient fits i32")
+                })
+                .collect();
+            coefficients[0] = i32::try_from(limit - 1).expect("top magnitude fits i32");
+            let encoded =
+                encode_ht_code_block_scalar(&coefficients, width, height, encoded_bitplanes)
+                    .expect("encode cleanup-only block");
+            assert_eq!(encoded.num_coding_passes, 1);
+            let job = HtCodeBlockDecodeJob {
+                data: &encoded.data,
+                cleanup_length: encoded.cleanup_length,
+                refinement_length: encoded.refinement_length,
+                width,
+                height,
+                output_stride: stride,
+                missing_bit_planes: encoded.num_zero_bitplanes,
+                number_of_coding_passes: encoded.num_coding_passes,
+                num_bitplanes: total_bitplanes,
+                roi_shift: 0,
+                stripe_causal: false,
+                strict: true,
+                dequantization_step: 0.375,
+            };
+
+            for midpoint in [false, true] {
+                let sentinel = f32::from_bits(0x7FC0_1234);
+                let mut expected = vec![sentinel; output_len];
+                let mut actual = expected.clone();
+                let mut expected_workspace = HtCodeBlockDecodeWorkspace::default();
+                let mut direct_workspace = HtCodeBlockDecodeWorkspace::default();
+                if midpoint {
+                    decode_ht_code_block_scalar_with_workspace_midpoint(
+                        job,
+                        &mut expected,
+                        &mut expected_workspace,
+                    )
+                    .expect("transactional midpoint decode");
+                } else {
+                    decode_ht_code_block_scalar_with_workspace(
+                        job,
+                        &mut expected,
+                        &mut expected_workspace,
+                    )
+                    .expect("transactional reversible decode");
+                }
+                assert!(
+                    try_decode_ht_code_block_to_f32(
+                        job,
+                        &mut actual,
+                        &mut direct_workspace,
+                        midpoint,
+                    )
+                    .expect("direct decode"),
+                    "total_bitplanes={total_bitplanes} midpoint={midpoint}"
+                );
+                assert_eq!(
+                    actual
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    expected
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    "total_bitplanes={total_bitplanes} midpoint={midpoint}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn direct_cleanup_rejects_fallbacks_and_preserves_output_guards_on_error() {
+        let width = 8u32;
+        let height = 4u32;
+        let coefficients: Vec<i32> = (0..width * height)
+            .map(|index| i32::try_from(index).expect("fixture index fits i32") % 31 - 15)
+            .collect();
+        let encoded = encode_ht_code_block_scalar(&coefficients, width, height, 6)
+            .expect("encode cleanup-only block");
+        let base_job = HtCodeBlockDecodeJob {
+            data: &encoded.data,
+            cleanup_length: encoded.cleanup_length,
+            refinement_length: encoded.refinement_length,
+            width,
+            height,
+            output_stride: width as usize,
+            missing_bit_planes: encoded.num_zero_bitplanes,
+            number_of_coding_passes: encoded.num_coding_passes,
+            num_bitplanes: 6,
+            roi_shift: 0,
+            stripe_causal: false,
+            strict: true,
+            dequantization_step: 1.0,
+        };
+        let sentinel = f32::from_bits(0x7FC0_4321);
+
+        for job in [
+            HtCodeBlockDecodeJob {
+                width: 7,
+                ..base_job
+            },
+            HtCodeBlockDecodeJob {
+                roi_shift: 1,
+                ..base_job
+            },
+            HtCodeBlockDecodeJob {
+                number_of_coding_passes: 2,
+                ..base_job
+            },
+        ] {
+            let mut output = vec![sentinel; width as usize * height as usize];
+            assert!(!try_decode_ht_code_block_to_f32(
+                job,
+                &mut output,
+                &mut HtCodeBlockDecodeWorkspace::default(),
+                false,
+            )
+            .expect("unsupported direct decode falls back"));
+            assert!(output
+                .iter()
+                .all(|value| value.to_bits() == sentinel.to_bits()));
+        }
+
+        let mut malformed = encoded.data.clone();
+        let last = malformed.len() - 1;
+        malformed[last] = 0xFF;
+        malformed[last - 1] |= 0x0F;
+        let malformed_job = HtCodeBlockDecodeJob {
+            data: &malformed,
+            cleanup_length: u32::try_from(malformed.len()).expect("payload length fits u32"),
+            ..base_job
+        };
+        let guard = 5usize;
+        let output_len = width as usize * height as usize;
+        let mut guarded = vec![sentinel; guard + output_len + guard];
+        let error = try_decode_ht_code_block_to_f32(
+            malformed_job,
+            &mut guarded[guard..guard + output_len],
+            &mut HtCodeBlockDecodeWorkspace::default(),
+            false,
+        )
+        .expect_err("malformed cleanup suffix must fail");
+        assert_eq!(
+            error,
+            crate::DecodeError::Decoding(crate::DecodingError::CodeBlockDecodeFailure)
+        );
+        assert!(guarded[..guard]
+            .iter()
+            .chain(&guarded[guard + output_len..])
+            .all(|value| value.to_bits() == sentinel.to_bits()));
     }
 }

@@ -307,13 +307,27 @@ inline uint ht_vlc_fetch(thread HtVlcReader &reader) {
         reader.pos -= int(taken);
         reader.remaining -= taken;
         reader.ahead = ht_vlc_load_ahead(reader.data, reader.pos, reader.remaining);
-        for (uint j = 0u; j < 4u; ++j) {
-            const uint raw = (word >> (8u * j)) & 0xFFu;
-            const bool stuffed = reader.unstuff != 0u && (raw & 0x7Fu) == 0x7Fu;
-            reader.tmp |= ulong(stuffed ? raw & 0x7Fu : raw) << reader.bits;
-            reader.bits += stuffed ? 7u : 8u;
-            reader.unstuff = raw > 0x8Fu ? 1u : 0u;
-        }
+        // A byte is stuffed (contributes its low seven bits) when the byte
+        // before it exceeds 0x8F and its own low seven bits are all set, so
+        // all four widths are known at once: pack the destuffed bytes into
+        // one word and append it with a single 64-bit shift, instead of
+        // four dependent 64-bit appends on the VLC walk's serial chain.
+        const uint b0 = word & 0xFFu;
+        const uint b1 = (word >> 8u) & 0xFFu;
+        const uint b2 = (word >> 16u) & 0xFFu;
+        const uint b3 = word >> 24u;
+        const uint s0 = reader.unstuff & uint((b0 & 0x7Fu) == 0x7Fu);
+        const uint s1 = uint(b0 > 0x8Fu) & uint((b1 & 0x7Fu) == 0x7Fu);
+        const uint s2 = uint(b1 > 0x8Fu) & uint((b2 & 0x7Fu) == 0x7Fu);
+        const uint s3 = uint(b2 > 0x8Fu) & uint((b3 & 0x7Fu) == 0x7Fu);
+        const uint w0 = 8u - s0;
+        const uint w01 = w0 + 8u - s1;
+        const uint w012 = w01 + 8u - s2;
+        const uint packed = (b0 & (0xFFu >> s0)) | ((b1 & (0xFFu >> s1)) << w0) |
+            ((b2 & (0xFFu >> s2)) << w01) | ((b3 & (0xFFu >> s3)) << w012);
+        reader.tmp |= ulong(packed) << reader.bits;
+        reader.bits += w012 + 8u - s3;
+        reader.unstuff = uint(b3 > 0x8Fu);
     }
     return uint(reader.tmp);
 }
@@ -644,12 +658,24 @@ inline uint ht_simd_mag_sgn_value(
 }
 
 inline uint ht_simd_output_bits(uint value, J2kHtCleanupParams params, uint k_max) {
+    if (params.irreversible_midpoint != 0u && params.roi_shift == 0u) {
+        // Validation bounds k_max to 1..31. After the same integer-to-float
+        // rounding as the scalar path, scaling a nonzero magnitude by
+        // 2^(k_max - 31) changes only its exponent: the result stays normal.
+        // Adjusting bits also prevents reassociation with dequantization.
+        const uint magnitude = value & 0x7FFFFFFFu;
+        const uint float_bits = as_type<uint>(float(magnitude));
+        const uint scaled_bits = magnitude == 0u ? 0u : float_bits - ((31u - k_max) << 23u);
+        const float coefficient = as_type<float>(scaled_bits | (value & 0x80000000u));
+        return as_type<uint>(coefficient * params.dequantization_step);
+    }
     return coefficient_to_float_bits(
         value, k_max, params.dequantization_step, params.irreversible_midpoint, params.roi_shift
     );
 }
 
-inline void decode_ht_cleanup_magsgn(
+template<bool Narrow>
+inline void decode_ht_cleanup_magsgn_impl(
     device const uchar *coded_data,
     device uint *decoded_data,
     J2kHtCleanupParams params,
@@ -678,6 +704,8 @@ inline void decode_ht_cleanup_magsgn(
     uint window_end = 0u;
     uint prev_ff = 0u;
     uint bit_pos = 0u;
+    uint previous_vn = 0u;
+    uint previous_edge_vn = 0u;
 
     for (uint row = 0u; row < geometry.quad_rows; ++row) {
         const uint y = row * 2u;
@@ -690,6 +718,7 @@ inline void decode_ht_cleanup_magsgn(
             const bool active = q < quads;
             const bool has_right = active && q * 2u + 1u < width;
 
+            const uint right_vn = Narrow ? simd_shuffle_down(previous_vn, 1u) : 0u;
             uint inf = 0u;
             uint uq = 0u;
             if (active) {
@@ -701,7 +730,9 @@ inline void decode_ht_cleanup_magsgn(
                 } else {
                     uint gamma = inf & 0xF0u;
                     gamma &= gamma - 0x10u;
-                    uint emax = v_n[q] | v_n[q + 1u];
+                    uint emax = Narrow
+                        ? previous_vn | (q + 1u < quads ? right_vn : previous_edge_vn)
+                        : v_n[q] | v_n[q + 1u];
                     emax = 31u - clz(emax | 2u);
                     const uint kappa = gamma != 0u ? emax : 1u;
                     uq = u_q + kappa;
@@ -735,46 +766,32 @@ inline void decode_ht_cleanup_magsgn(
             uint v_n1 = 0u;
             uint v_n3 = 0u;
             if (active) {
-                uint cursor = bit_pos + lane_bit;
-                device uint *out = row_out + q * 2u;
+                // All cursors lie at or before the chunk's end, and the
+                // window has another 32 valid bits. Issue all four reads
+                // together, then mask insignificant and absent samples.
+                const uint cursor = bit_pos + lane_bit;
+                const uint ms0 = ht_simd_window_read32(window, cursor);
+                const uint ms1 = ht_simd_window_read32(window, cursor + m0);
+                const uint ms2 = ht_simd_window_read32(window, cursor + m0 + m1);
+                const uint ms3 = ht_simd_window_read32(window, cursor + m0 + m1 + m2);
+                const uint sig0 = 0u - uint((inf & sample_mask(0u)) != 0u);
+                const uint sig1 = 0u - uint((inf & sample_mask(1u)) != 0u);
+                const uint sig2 = 0u - uint(has_right && (inf & sample_mask(2u)) != 0u);
+                const uint sig3 = 0u - uint(has_right && (inf & sample_mask(3u)) != 0u);
                 uint ignored_vn = 0u;
-
-                uint value0 = 0u;
-                if ((inf & sample_mask(0u)) != 0u) {
-                    value0 = ht_simd_mag_sgn_value(
-                        ht_simd_window_read32(window, cursor), m0, inf, 0u, p, ignored_vn
-                    );
-                    cursor += m0;
-                }
+                const uint value0 = ht_simd_mag_sgn_value(ms0, m0, inf, 0u, p, ignored_vn) & sig0;
+                const uint value1 = ht_simd_mag_sgn_value(ms1, m1, inf, 1u, p, v_n1) & sig1;
+                const uint value2 = ht_simd_mag_sgn_value(ms2, m2, inf, 2u, p, ignored_vn) & sig2;
+                const uint value3 = ht_simd_mag_sgn_value(ms3, m3, inf, 3u, p, v_n3) & sig3;
+                v_n1 &= sig1;
+                v_n3 &= sig3;
+                device uint *out = row_out + q * 2u;
                 out[0] = ht_simd_output_bits(value0, params, k_max);
-
-                uint value1 = 0u;
-                if ((inf & sample_mask(1u)) != 0u) {
-                    value1 = ht_simd_mag_sgn_value(
-                        ht_simd_window_read32(window, cursor), m1, inf, 1u, p, v_n1
-                    );
-                    cursor += m1;
-                }
                 if (second_row_present) {
                     out[stride] = ht_simd_output_bits(value1, params, k_max);
                 }
-
                 if (has_right) {
-                    uint value2 = 0u;
-                    if ((inf & sample_mask(2u)) != 0u) {
-                        value2 = ht_simd_mag_sgn_value(
-                            ht_simd_window_read32(window, cursor), m2, inf, 2u, p, ignored_vn
-                        );
-                        cursor += m2;
-                    }
                     out[1] = ht_simd_output_bits(value2, params, k_max);
-
-                    uint value3 = 0u;
-                    if ((inf & sample_mask(3u)) != 0u) {
-                        value3 = ht_simd_mag_sgn_value(
-                            ht_simd_window_read32(window, cursor), m3, inf, 3u, p, v_n3
-                        );
-                    }
                     if (second_row_present) {
                         out[stride + 1u] = ht_simd_output_bits(value3, params, k_max);
                     }
@@ -783,18 +800,48 @@ inline void decode_ht_cleanup_magsgn(
             bit_pos += chunk_bits;
 
             // Every lane has read the previous row's exponents; publish this row's.
-            simdgroup_barrier(mem_flags::mem_threadgroup);
+            if (!Narrow) {
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+            }
             const uint left_v_n3 = simd_shuffle_up(v_n3, 1u);
-            if (active) {
+            if (Narrow) {
+                previous_vn = (lane == 0u ? 0u : left_v_n3) | v_n1;
+            } else if (active) {
                 v_n[q] = (lane == 0u ? carry_v_n3 : left_v_n3) | v_n1;
             }
             const uint last_lane = min(J2K_HT_SIMD_LANES - 1u, quads - 1u - chunk);
             carry_v_n3 = simd_shuffle(v_n3, ushort(last_lane));
         }
-        if (lane == 0u) {
-            v_n[quads] = carry_v_n3;
+        if (Narrow) {
+            previous_edge_vn = carry_v_n3;
+        } else {
+            if (lane == 0u) {
+                v_n[quads] = carry_v_n3;
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
         }
-        simdgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
+// Common code blocks fit one SIMD group across a quad row. Keep that row's
+// exponent context in registers and exchange it directly between lanes.
+inline void decode_ht_cleanup_magsgn(
+    device const uchar *coded_data,
+    device uint *decoded_data,
+    J2kHtCleanupParams params,
+    device J2kHtStatus *status,
+    threadgroup uint *v_n,
+    threadgroup uint *window,
+    uint lane
+) {
+    if (params.width <= 64u) {
+        decode_ht_cleanup_magsgn_impl<true>(
+            coded_data, decoded_data, params, status, v_n, window, lane
+        );
+    } else {
+        decode_ht_cleanup_magsgn_impl<false>(
+            coded_data, decoded_data, params, status, v_n, window, lane
+        );
     }
 }
 

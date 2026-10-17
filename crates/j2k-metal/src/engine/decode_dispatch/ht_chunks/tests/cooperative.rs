@@ -144,8 +144,107 @@ struct CleanupWorkload {
     expected: Vec<f32>,
 }
 
+/// Mix precisions and ragged layouts in one cooperative dispatch, including
+/// integer-to-float rounding boundaries and the ROI/reversible fallback paths.
+fn precision_workload() -> CleanupWorkload {
+    let mut workload = CleanupWorkload {
+        name: "precision_and_geometry",
+        coded_data: Vec::new(),
+        jobs: Vec::new(),
+        output_words: 0,
+        expected: Vec::new(),
+    };
+    let mut scratch = j2k_native::HtCodeBlockDecodeWorkspace::default();
+    for planes in 1_u8..=31 {
+        let (width, height) =
+            [(1, 9), (3, 3), (63, 7), (64, 9), (127, 5), (255, 3)][usize::from(planes) % 6];
+        for (midpoint, roi) in [(false, 0_u8), (true, 0), (false, 1), (true, 1)] {
+            if planes + roi > 31 {
+                continue;
+            }
+            let encoded_planes = (planes + roi).min(30);
+            let mask = (1_u32 << encoded_planes) - 1;
+            let magnitudes = [
+                0,
+                1,
+                3 & mask,
+                mask >> 1,
+                mask,
+                ((1 << 24) - 1) & mask,
+                ((1 << 24) + 1) & mask,
+                ((1 << 24) + 3) & mask,
+            ];
+            let coefficients: Vec<i32> = (0..width * height)
+                .map(|i| {
+                    let magnitude = i32::try_from(magnitudes[i as usize % 8]).unwrap();
+                    if i & 8 == 0 {
+                        magnitude
+                    } else {
+                        -magnitude
+                    }
+                })
+                .collect();
+            let encoded = j2k_native::encode_ht_code_block_scalar(
+                &coefficients,
+                width,
+                height,
+                encoded_planes,
+            )
+            .expect("encode precision block");
+            let offset = workload.expected.len() + 1;
+            let stride = width + 3;
+            workload
+                .expected
+                .resize(offset + (stride * height) as usize + 1, 0.0);
+            let step = [0.1, 0.375, 1.0, 13.7][usize::from(planes) % 4];
+            let job = j2k_native::HtCodeBlockDecodeJob {
+                data: &encoded.data,
+                cleanup_length: encoded.cleanup_length,
+                refinement_length: 0,
+                width,
+                height,
+                output_stride: stride as usize,
+                missing_bit_planes: encoded.num_zero_bitplanes,
+                number_of_coding_passes: 1,
+                num_bitplanes: planes,
+                roi_shift: roi,
+                stripe_causal: false,
+                strict: false,
+                dequantization_step: step,
+            };
+            let decode = if midpoint {
+                j2k_native::decode_ht_code_block_scalar_with_workspace_midpoint
+            } else {
+                j2k_native::decode_ht_code_block_scalar_with_workspace
+            };
+            decode(job, &mut workload.expected[offset..], &mut scratch)
+                .expect("precision CPU oracle");
+            workload.jobs.push(J2kHtCleanupBatchJob {
+                coded_offset: u32::try_from(workload.coded_data.len()).unwrap(),
+                width,
+                height,
+                coded_len: u32::try_from(encoded.data.len()).unwrap(),
+                cleanup_length: encoded.cleanup_length,
+                refinement_length: 0,
+                missing_msbs: u32::from(encoded.num_zero_bitplanes),
+                num_bitplanes: u32::from(planes),
+                roi_shift: u32::from(roi),
+                number_of_coding_passes: 1,
+                output_stride: stride,
+                output_offset: u32::try_from(offset).unwrap(),
+                dequantization_step: step,
+                stripe_causal: 0,
+                irreversible_midpoint: u32::from(midpoint),
+            });
+            workload.coded_data.extend_from_slice(&encoded.data);
+        }
+    }
+    workload.output_words = workload.expected.len();
+    workload
+}
+
 fn cleanup_workloads() -> Vec<CleanupWorkload> {
-    let mut workloads = Vec::new();
+    let mut workloads = vec![precision_workload()];
     for fixture in fixtures() {
         let bytes = j2k_native::encode_htj2k(
             &fixture.samples,

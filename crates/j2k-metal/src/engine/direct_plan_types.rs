@@ -12,7 +12,7 @@ use j2k_native::{
     J2kRequiredBandRegion, J2kWaveletTransform,
 };
 
-use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob};
+use super::abi::{J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob, J2kZeroRect};
 use super::{CpuTier1CoefficientCache, DirectTier1Mode};
 
 mod allocation;
@@ -230,7 +230,18 @@ pub(super) struct PreparedHtSubBandGroup {
     pub(super) payload_source: PreparedHtPayloadSource,
     pub(super) jobs: Vec<J2kHtCleanupBatchJob>,
     pub(super) members: Vec<PreparedHtSubBandGroupMember>,
+    /// Arena rectangles no job writes, which decoding zeroes first.
+    pub(super) zero_rects: Vec<J2kZeroRect>,
     pub(super) execution_owner: Arc<PreparedHtExecutionOwner>,
+}
+
+impl PreparedHtSubBandGroup {
+    pub(super) fn zero_layout(&self) -> super::decode_dispatch::HtZeroLayout<'_> {
+        super::decode_dispatch::HtZeroLayout {
+            extent: self.total_coefficients,
+            uncovered: &self.zero_rects,
+        }
+    }
 }
 
 pub(super) struct PreparedHtSubBandGroupMember {

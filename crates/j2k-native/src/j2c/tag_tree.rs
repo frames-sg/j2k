@@ -124,85 +124,72 @@ impl TagNode {
     }
 }
 
+/// Walks from `node_idx` down to the leaf at (`x`, `y`), reading each
+/// uninitialized node's value on the way, as a loop over the levels.
 fn read_tag_node(
-    node_idx: usize,
-    x: u32,
-    y: u32,
+    mut node_idx: usize,
+    mut x: u32,
+    mut y: u32,
     reader: &mut BitReader<'_>,
-    parent_val: u32,
+    mut parent_val: u32,
     max_val: u32,
     nodes: &mut [TagNode],
 ) -> Option<u32> {
-    let node = &mut nodes[node_idx];
+    loop {
+        let node = &mut nodes[node_idx];
 
-    if !node.initialized {
-        let mut val = u32::max(parent_val, node.value);
+        if !node.initialized {
+            let mut val = u32::max(parent_val, node.value);
 
-        loop {
-            if val >= max_val {
-                break;
-            }
-
-            // "Each node has an associated current value, which is
-            // initialized to zero (the minimum). A 0 bit in the tag tree
-            // means that the minimum (or the value in the case of the
-            // highest level) is larger than the current value and a 1 bit
-            // means that the minimum (or the value in the case of the
-            // highest level) is equal to the current value."
-            match reader.read_bits_with_stuffing(1)? {
-                0 => val += 1,
-                1 => {
-                    node.initialized = true;
+            loop {
+                if val >= max_val {
                     break;
                 }
-                _ => unreachable!(),
+
+                // "Each node has an associated current value, which is
+                // initialized to zero (the minimum). A 0 bit in the tag tree
+                // means that the minimum (or the value in the case of the
+                // highest level) is larger than the current value and a 1 bit
+                // means that the minimum (or the value in the case of the
+                // highest level) is equal to the current value."
+                match reader.read_bits_with_stuffing(1)? {
+                    0 => val += 1,
+                    1 => {
+                        node.initialized = true;
+                        break;
+                    }
+                    _ => unreachable!(),
+                }
             }
+
+            node.value = val;
         }
 
-        node.value = val;
-    }
+        // Stop at the leaf, or when the minimum of all children is too large.
+        if node.value >= max_val || node.level == 0 {
+            return Some(node.value);
+        }
 
-    // Abort early if we already reached the leaf node or the minimum
-    // value of all children is too large.
-    if node.value >= max_val || node.level == 0 {
-        return Some(node.value);
-    }
-
-    let top_left_width = node.top_left_width();
-    let top_left_height = node.top_left_height();
-
-    let left = x < top_left_width;
-    let top = y < top_left_height;
-
-    match (left, top) {
-        (true, true) => read_tag_node(node.children[0], x, y, reader, node.value, max_val, nodes),
-        (false, true) => read_tag_node(
-            node.children[1],
-            x - top_left_width,
-            y,
-            reader,
-            node.value,
-            max_val,
-            nodes,
-        ),
-        (true, false) => read_tag_node(
-            node.children[2],
-            x,
-            y - top_left_height,
-            reader,
-            node.value,
-            max_val,
-            nodes,
-        ),
-        (false, false) => read_tag_node(
-            node.children[3],
-            x - top_left_width,
-            y - top_left_height,
-            reader,
-            node.value,
-            max_val,
-            nodes,
-        ),
+        let top_left_width = node.top_left_width();
+        let top_left_height = node.top_left_height();
+        let child = match (x < top_left_width, y < top_left_height) {
+            (true, true) => 0,
+            (false, true) => {
+                x -= top_left_width;
+                1
+            }
+            (true, false) => {
+                y -= top_left_height;
+                2
+            }
+            (false, false) => {
+                x -= top_left_width;
+                y -= top_left_height;
+                3
+            }
+        };
+        parent_val = node.value;
+        node_idx = node.children[child];
     }
 }
 

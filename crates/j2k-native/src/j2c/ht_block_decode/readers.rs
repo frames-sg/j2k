@@ -388,6 +388,7 @@ pub(super) fn unstuff_magsgn<'a>(
     if bits > 0 {
         out.push((acc | (u64::MAX << bits)) as u8);
     }
+    out.truncate(consumable);
     out.resize(out.len() + 8 + FLAT_MAGSGN_PADDING, 0xFF);
     Some(out.as_slice())
 }

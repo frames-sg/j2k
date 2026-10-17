@@ -47,32 +47,48 @@ impl MelEncoder {
         self.threshold = 1;
     }
 
-    pub(super) fn emit_bit(&mut self, bit: bool) -> Result<(), &'static str> {
-        self.tmp = (self.tmp << 1) | u8::from(bit);
-        self.remaining_bits -= 1;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::inline_always,
+        reason = "MEL run lengths are at most six bits and this is the byte-packing hot path"
+    )]
+    #[inline(always)]
+    fn emit_bits(&mut self, bits: u8, count: u8) -> Result<(), &'static str> {
+        let combined = (u16::from(self.tmp) << count) | u16::from(bits);
+        let remaining = i16::from(self.remaining_bits) - i16::from(count);
 
-        if self.remaining_bits == 0 {
+        if remaining <= 0 {
             if self.pos >= self.buffer.len() {
                 return Err("HTJ2K MEL encoder buffer is full");
             }
 
-            self.buffer[self.pos] = self.tmp;
+            let excess = (-remaining) as u8;
+            let byte = (combined >> excess) as u8;
+            self.buffer[self.pos] = byte;
             self.pos += 1;
-            self.remaining_bits = if self.tmp == 0xFF { 7 } else { 8 };
-            self.tmp = 0;
+            self.tmp = (combined & ((1u16 << excess) - 1)) as u8;
+            self.remaining_bits = (remaining + i16::from(8 - u8::from(byte == 0xFF))) as u8;
+        } else {
+            self.tmp = combined as u8;
+            self.remaining_bits = remaining as u8;
         }
 
         Ok(())
     }
 
+    pub(super) fn emit_bit(&mut self, bit: bool) -> Result<(), &'static str> {
+        self.emit_bits(u8::from(bit), 1)
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MEL exponents are at most five, so the packed run and count fit u8"
+    )]
     pub(super) fn encode(&mut self, bit: bool) -> Result<(), &'static str> {
         if bit {
-            self.emit_bit(false)?;
-            let mut t = MEL_EXP[self.k];
-            while t > 0 {
-                t -= 1;
-                self.emit_bit(((self.run >> t) & 1) != 0)?;
-            }
+            let t = MEL_EXP[self.k];
+            self.emit_bits((self.run & ((1 << t) - 1)) as u8, (t + 1) as u8)?;
             self.run = 0;
             self.k = self.k.saturating_sub(1);
             self.threshold = 1 << MEL_EXP[self.k];
@@ -94,7 +110,7 @@ pub(super) struct VlcEncoder {
     pub(super) buffer: Vec<u8>,
     pub(super) pos: usize,
     pub(super) used_bits: u8,
-    pub(super) tmp: u8,
+    pub(super) tmp: u64,
     pub(super) last_greater_than_8f: bool,
 }
 
@@ -133,40 +149,54 @@ impl VlcEncoder {
     )]
     pub(super) fn encode(
         &mut self,
-        mut codeword: u32,
+        codeword: u32,
         mut codeword_len: u8,
     ) -> Result<(), &'static str> {
-        while codeword_len > 0 {
+        if codeword_len == 0 {
+            return Ok(());
+        }
+        let mut codeword = u64::from(codeword);
+        if codeword_len < u32::BITS as u8 {
+            codeword &= (1u64 << codeword_len) - 1;
+        }
+        loop {
+            let available = 64 - self.used_bits;
+            if codeword_len <= available {
+                self.tmp |= codeword << self.used_bits;
+                self.used_bits += codeword_len;
+                return Ok(());
+            }
+            if available > 0 {
+                self.tmp |= codeword << self.used_bits;
+                self.used_bits = 64;
+                codeword >>= available;
+                codeword_len -= available;
+            }
+            self.drain()?;
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "the reservoir mask bounds the emitted value to one byte in this hot path"
+    )]
+    #[inline(always)]
+    fn drain(&mut self) -> Result<(), &'static str> {
+        while self.used_bits >= 8 {
             if self.pos >= self.buffer.len() {
                 return Err("HTJ2K VLC encoder buffer is full");
             }
 
-            let mut available_bits = 8 - u8::from(self.last_greater_than_8f) - self.used_bits;
-            let take = available_bits.min(codeword_len);
-            let mask = if take == 32 {
-                u32::MAX
-            } else {
-                (1u32 << take) - 1
-            };
-            self.tmp |= ((codeword & mask) as u8) << self.used_bits;
-            self.used_bits += take;
-            available_bits -= take;
-            codeword_len -= take;
-            codeword >>= take;
-
-            if available_bits == 0 {
-                if self.last_greater_than_8f && self.tmp != 0x7F {
-                    self.last_greater_than_8f = false;
-                    continue;
-                }
-
-                let write_index = self.buffer.len() - 1 - self.pos;
-                self.buffer[write_index] = self.tmp;
-                self.pos += 1;
-                self.last_greater_than_8f = self.tmp > 0x8F;
-                self.tmp = 0;
-                self.used_bits = 0;
-            }
+            let needs_stuffing = self.last_greater_than_8f && (self.tmp & 0x7F) == 0x7F;
+            let bits = 8 - u8::from(needs_stuffing);
+            let byte = (self.tmp & ((1u64 << bits) - 1)) as u8;
+            let write_index = self.buffer.len() - 1 - self.pos;
+            self.buffer[write_index] = byte;
+            self.pos += 1;
+            self.tmp >>= bits;
+            self.used_bits -= bits;
+            self.last_greater_than_8f = byte > 0x8F;
         }
 
         Ok(())
@@ -176,9 +206,9 @@ impl VlcEncoder {
 pub(super) struct MagSgnEncoder {
     pub(super) buffer: Vec<u8>,
     pub(super) pos: usize,
-    pub(super) max_bits: u8,
     pub(super) used_bits: u8,
-    pub(super) tmp: u32,
+    pub(super) tmp: u64,
+    pub(super) last_was_ff: bool,
 }
 
 impl MagSgnEncoder {
@@ -191,17 +221,17 @@ impl MagSgnEncoder {
         Ok(Self {
             buffer: try_untracked_vec_filled(MS_SIZE, 0_u8, "HTJ2K magnitude/sign reservoir")?,
             pos: 0,
-            max_bits: 8,
             used_bits: 0,
             tmp: 0,
+            last_was_ff: false,
         })
     }
 
     pub(super) fn reset(&mut self) {
         self.pos = 0;
-        self.max_bits = 8;
         self.used_bits = 0;
         self.tmp = 0;
+        self.last_was_ff = false;
     }
 
     #[expect(
@@ -212,34 +242,124 @@ impl MagSgnEncoder {
     #[inline(always)]
     pub(super) fn encode(
         &mut self,
-        mut codeword: u32,
+        codeword: u32,
         mut codeword_len: u32,
     ) -> Result<(), &'static str> {
-        while codeword_len > 0 {
-            if self.pos >= self.buffer.len() {
-                return Err("HTJ2K magnitude/sign encoder buffer is full");
+        if codeword_len == 0 {
+            return Ok(());
+        }
+        let mut codeword = u64::from(codeword);
+        if codeword_len < u32::BITS {
+            codeword &= (1u64 << codeword_len) - 1;
+        }
+        loop {
+            let available = 64 - u32::from(self.used_bits);
+            if codeword_len <= available {
+                self.tmp |= codeword << self.used_bits;
+                self.used_bits += codeword_len as u8;
+                return Ok(());
             }
-
-            let take = u32::from(self.max_bits - self.used_bits).min(codeword_len);
-            let mask = if take == 32 {
-                u32::MAX
-            } else {
-                (1u32 << take) - 1
-            };
-            self.tmp |= (codeword & mask) << self.used_bits;
-            self.used_bits += take as u8;
-            codeword >>= take;
-            codeword_len -= take;
-
-            if self.used_bits >= self.max_bits {
-                self.buffer[self.pos] = self.tmp as u8;
-                self.pos += 1;
-                self.max_bits = if self.tmp == 0xFF { 7 } else { 8 };
-                self.tmp = 0;
-                self.used_bits = 0;
+            if available > 0 {
+                self.tmp |= codeword << self.used_bits;
+                self.used_bits = 64;
+                codeword >>= available;
+                codeword_len -= available;
             }
+            self.drain()?;
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "drained chunks are at most eight bytes and this is the MagSgn packing hot path"
+    )]
+    #[inline(always)]
+    fn drain(&mut self) -> Result<(), &'static str> {
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+        if self.last_was_ff {
+            if self.used_bits < 7 {
+                return Ok(());
+            }
+            self.push_byte((self.tmp & 0x7F) as u8)?;
+            self.tmp >>= 7;
+            self.used_bits -= 7;
+            self.last_was_ff = false;
         }
 
+        while self.used_bits >= 8 {
+            let byte_count = usize::from((self.used_bits / 8).min(8));
+            let valid_mask = if byte_count == 8 {
+                u64::MAX
+            } else {
+                (1u64 << (byte_count * 8)) - 1
+            };
+            let inverted = !self.tmp;
+            let ff_bytes = inverted.wrapping_sub(ONES) & !inverted & HIGHS & valid_mask;
+            if ff_bytes == 0 {
+                self.push_word(self.tmp, byte_count)?;
+                let drained_bits = byte_count * 8;
+                self.tmp = if drained_bits == 64 {
+                    0
+                } else {
+                    self.tmp >> drained_bits
+                };
+                self.used_bits -= drained_bits as u8;
+                continue;
+            }
+
+            let ff_position = (ff_bytes.trailing_zeros() / 8) as usize;
+            let safe_bytes = ff_position + 1;
+            self.push_word(self.tmp, safe_bytes)?;
+            let drained_bits = safe_bytes * 8;
+            self.tmp = if drained_bits == 64 {
+                0
+            } else {
+                self.tmp >> drained_bits
+            };
+            self.used_bits -= drained_bits as u8;
+            if self.used_bits >= 7 {
+                self.push_byte((self.tmp & 0x7F) as u8)?;
+                self.tmp >>= 7;
+                self.used_bits -= 7;
+            } else {
+                self.last_was_ff = true;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "single-byte capacity handling stays in the MagSgn drain hot path"
+    )]
+    #[inline(always)]
+    fn push_byte(&mut self, byte: u8) -> Result<(), &'static str> {
+        if self.pos >= self.buffer.len() {
+            return Err("HTJ2K magnitude/sign encoder buffer is full");
+        }
+        self.buffer[self.pos] = byte;
+        self.pos += 1;
+        Ok(())
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "short bulk copies stay in the MagSgn drain hot path"
+    )]
+    #[inline(always)]
+    fn push_word(&mut self, word: u64, byte_count: usize) -> Result<(), &'static str> {
+        let end = self
+            .pos
+            .checked_add(byte_count)
+            .ok_or("HTJ2K magnitude/sign encoder buffer is full")?;
+        if end > self.buffer.len() {
+            return Err("HTJ2K magnitude/sign encoder buffer is full");
+        }
+        self.buffer[self.pos..end].copy_from_slice(&word.to_le_bytes()[..byte_count]);
+        self.pos = end;
         Ok(())
     }
 
@@ -248,20 +368,17 @@ impl MagSgnEncoder {
         reason = "termination flushes a reservoir whose used-bit count is bounded to one byte"
     )]
     pub(super) fn terminate(&mut self) -> Result<(), &'static str> {
+        self.drain()?;
         if self.used_bits > 0 {
-            let unused = self.max_bits - self.used_bits;
-            self.tmp |= (0xFF & ((1u32 << unused) - 1)) << self.used_bits;
-            self.used_bits += unused;
+            let max_bits = if self.last_was_ff { 7 } else { 8 };
+            let unused = max_bits - self.used_bits;
+            let mut byte = self.tmp & ((1u64 << self.used_bits) - 1);
+            byte |= (0xFF & ((1u64 << unused) - 1)) << self.used_bits;
 
-            if self.tmp != 0xFF {
-                if self.pos >= self.buffer.len() {
-                    return Err("HTJ2K magnitude/sign encoder buffer is full");
-                }
-
-                self.buffer[self.pos] = self.tmp as u8;
-                self.pos += 1;
+            if byte != 0xFF {
+                self.push_byte(byte as u8)?;
             }
-        } else if self.max_bits == 7 {
+        } else if self.last_was_ff {
             self.pos = self.pos.saturating_sub(1);
         }
 
@@ -281,6 +398,18 @@ pub(super) fn terminate_mel_vlc(
         mel.emit_bit(true)?;
     }
 
+    vlc.drain()?;
+    if vlc.last_greater_than_8f && (vlc.tmp & 0x7F) == 0x7F {
+        if vlc.pos >= vlc.buffer.len() {
+            return Err("HTJ2K VLC encoder buffer is full");
+        }
+        let write_index = vlc.buffer.len() - 1 - vlc.pos;
+        vlc.buffer[write_index] = 0x7F;
+        vlc.pos += 1;
+        vlc.tmp >>= 7;
+        vlc.used_bits -= 7;
+    }
+
     mel.tmp = (u16::from(mel.tmp) << mel.remaining_bits) as u8;
     let mel_mask = ((0xFFu16 << mel.remaining_bits) & 0xFF) as u8;
     let vlc_mask = if vlc.used_bits == 0 {
@@ -293,9 +422,10 @@ pub(super) fn terminate_mel_vlc(
         return Ok(());
     }
 
-    let fused = mel.tmp | vlc.tmp;
+    let vlc_tmp = vlc.tmp as u8;
+    let fused = mel.tmp | vlc_tmp;
     let fused_ok =
-        (((fused ^ mel.tmp) & mel_mask) | ((fused ^ vlc.tmp) & vlc_mask)) == 0 && fused != 0xFF;
+        (((fused ^ mel.tmp) & mel_mask) | ((fused ^ vlc_tmp) & vlc_mask)) == 0 && fused != 0xFF;
 
     if fused_ok && vlc.pos > 1 {
         if mel.pos >= mel.buffer.len() {
@@ -315,7 +445,7 @@ pub(super) fn terminate_mel_vlc(
         mel.buffer[mel.pos] = mel.tmp;
         mel.pos += 1;
         let write_index = vlc.buffer.len() - 1 - vlc.pos;
-        vlc.buffer[write_index] = vlc.tmp;
+        vlc.buffer[write_index] = vlc_tmp;
         vlc.pos += 1;
     }
 

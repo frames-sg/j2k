@@ -2,7 +2,10 @@
 
 use j2k_core::{accelerator::GpuAbi, DEFAULT_MAX_HOST_ALLOCATION_BYTES};
 use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions, MTLTexture, MTLTextureDescriptor};
+use objc2_metal::{
+    MTLBuffer, MTLDevice, MTLHazardTrackingMode, MTLHeap, MTLHeapDescriptor, MTLResourceOptions,
+    MTLStorageMode, MTLTexture, MTLTextureDescriptor,
+};
 
 use crate::MetalSupportError;
 
@@ -224,4 +227,48 @@ pub fn checked_texture(
             depth: dimensions.2,
             array_length: dimensions.3,
         })
+}
+
+/// Create a shared-storage, hazard-tracked heap of at least `bytes`.
+///
+/// Memory freed by a heap buffer is reused only after Metal releases that
+/// buffer, which a command buffer that references it does not do before it
+/// completes.
+///
+/// # Errors
+///
+/// Returns a typed allocation error for limit or nil failures.
+pub fn checked_shared_heap(
+    device: &ProtocolObject<dyn MTLDevice>,
+    bytes: usize,
+) -> Result<Retained<ProtocolObject<dyn MTLHeap>>, MetalSupportError> {
+    let requested = bytes.max(1);
+    let size = checked_buffer_allocation_length(requested, device.maxBufferLength())?;
+    let descriptor = MTLHeapDescriptor::new();
+    descriptor.setSize(size);
+    descriptor.setStorageMode(MTLStorageMode::Shared);
+    descriptor.setHazardTrackingMode(MTLHazardTrackingMode::Tracked);
+    device
+        .newHeapWithDescriptor(&descriptor)
+        .ok_or(MetalSupportError::BufferAllocationFailed { requested })
+}
+
+/// Allocate a shared buffer from `heap`, or `None` when the heap has no room.
+///
+/// Zero-length requests allocate one byte.
+///
+/// # Errors
+///
+/// Returns a typed allocation error when the request exceeds the device or
+/// host allocation limit.
+pub fn checked_heap_shared_buffer(
+    heap: &ProtocolObject<dyn MTLHeap>,
+    bytes: usize,
+) -> Result<Option<Retained<ProtocolObject<dyn MTLBuffer>>>, MetalSupportError> {
+    let requested = bytes.max(1);
+    let length = checked_buffer_allocation_length(requested, heap.device().maxBufferLength())?;
+    Ok(heap.newBufferWithLength_options(
+        length,
+        MTLResourceOptions::StorageModeShared | MTLResourceOptions::HazardTrackingModeTracked,
+    ))
 }

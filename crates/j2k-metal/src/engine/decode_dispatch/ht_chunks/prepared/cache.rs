@@ -6,12 +6,13 @@
 use core::mem::size_of;
 use std::sync::Arc;
 
+#[cfg(test)]
 use crate::metal_types::Device;
 use j2k_core::HtGpuJobChunkLimits;
 
 use super::super::HtBatchInput;
 use super::PreparedMetalHtExecution;
-use crate::engine::{Error, MetalRuntime};
+use crate::engine::{Error, HtInputAllocator, MetalRuntime};
 use crate::session::{PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES, PREPARED_PLAN_CACHE_MAX_HOST_BYTES};
 
 mod entry;
@@ -37,19 +38,30 @@ impl PreparedMetalHtExecutionCache {
         }
     }
 
+    #[cfg(test)]
     fn get_or_prepare(
         &mut self,
         device: &Device,
         batches: &[HtBatchInput<'_>],
         limits: HtGpuJobChunkLimits,
     ) -> Result<Arc<PreparedMetalHtExecution>, Error> {
+        self.get_or_prepare_with(HtInputAllocator::plain(device), batches, limits)
+    }
+
+    fn get_or_prepare_with(
+        &mut self,
+        inputs: HtInputAllocator<'_>,
+        batches: &[HtBatchInput<'_>],
+        limits: HtGpuJobChunkLimits,
+    ) -> Result<Arc<PreparedMetalHtExecution>, Error> {
+        self.evict_dead_entries()?;
         if let Some(index) = self.find(batches, limits) {
             self.access_clock = self.access_clock.saturating_add(1);
             self.entries[index].mark_used(self.access_clock);
             return Ok(self.entries[index].execution());
         }
 
-        let (execution, entry) = self.prepare_entry(device, batches, limits)?;
+        let (execution, entry) = self.prepare_entry(inputs, batches, limits)?;
         let Some(entry) = entry else {
             return Ok(execution);
         };
@@ -60,7 +72,7 @@ impl PreparedMetalHtExecutionCache {
 
     fn prepare_entry(
         &mut self,
-        device: &Device,
+        inputs: HtInputAllocator<'_>,
         batches: &[HtBatchInput<'_>],
         limits: HtGpuJobChunkLimits,
     ) -> Result<
@@ -79,7 +91,7 @@ impl PreparedMetalHtExecutionCache {
                 state: "J2K Metal prepared HT execution cache",
                 reason: "entry metadata byte count overflow",
             })?;
-        PreparedMetalHtExecutionCacheEntry::prepare(device, batches, limits, metadata_host_bytes)
+        PreparedMetalHtExecutionCacheEntry::prepare(inputs, batches, limits, metadata_host_bytes)
     }
 
     fn insert_entry(&mut self, mut entry: PreparedMetalHtExecutionCacheEntry) -> Result<(), Error> {
@@ -177,22 +189,42 @@ impl PreparedMetalHtExecutionCache {
                     state: "J2K Metal prepared HT execution cache",
                     reason: "cache limits require eviction but no entry is retained",
                 })?;
-            let entry = self.entries.remove(index);
-            self.retained_host_bytes = self
-                .retained_host_bytes
-                .checked_sub(entry.host_bytes())
-                .ok_or(Error::MetalStateInvariant {
-                    state: "J2K Metal prepared HT execution cache",
-                    reason: "retained host byte count underflow",
-                })?;
-            self.retained_device_bytes = self
-                .retained_device_bytes
-                .checked_sub(entry.device_bytes())
-                .ok_or(Error::MetalStateInvariant {
-                    state: "J2K Metal prepared HT execution cache",
-                    reason: "retained device byte count underflow",
-                })?;
+            self.remove_entry(index)?;
         }
+        Ok(())
+    }
+
+    /// Drops entries whose plans no longer exist, so a stream of one-shot
+    /// decoders does not hold their device payloads until LRU pressure.
+    /// Submissions in flight keep their own references to the buffers.
+    fn evict_dead_entries(&mut self) -> Result<(), Error> {
+        let mut index = 0;
+        while index < self.entries.len() {
+            if self.entries[index].is_live() {
+                index += 1;
+            } else {
+                self.remove_entry(index)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_entry(&mut self, index: usize) -> Result<(), Error> {
+        let entry = self.entries.remove(index);
+        self.retained_host_bytes = self
+            .retained_host_bytes
+            .checked_sub(entry.host_bytes())
+            .ok_or(Error::MetalStateInvariant {
+                state: "J2K Metal prepared HT execution cache",
+                reason: "retained host byte count underflow",
+            })?;
+        self.retained_device_bytes = self
+            .retained_device_bytes
+            .checked_sub(entry.device_bytes())
+            .ok_or(Error::MetalStateInvariant {
+                state: "J2K Metal prepared HT execution cache",
+                reason: "retained device byte count underflow",
+            })?;
         Ok(())
     }
 }
@@ -208,7 +240,11 @@ pub(in crate::engine) fn prepared_metal_ht_execution(
         .map_err(|_| Error::MetalStatePoisoned {
             state: "J2K Metal prepared HT execution cache",
         })?
-        .get_or_prepare(&runtime.device, batches, limits)
+        .get_or_prepare_with(
+            HtInputAllocator::new(&runtime.device, &runtime.ht_input_heap),
+            batches,
+            limits,
+        )
 }
 
 #[cfg(test)]

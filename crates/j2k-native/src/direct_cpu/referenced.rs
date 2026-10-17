@@ -3,6 +3,8 @@
 //! Parse-free CPU execution for referenced HTJ2K plans.
 
 mod component;
+#[cfg(feature = "parallel")]
+pub(super) use component::parallel_ht_decode_transient_bytes;
 mod output;
 mod payload;
 
@@ -81,7 +83,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             tile.classic_ranges(),
         )?;
     }
-    prepare_referenced_direct_scratch(plan, scratch)?;
+    let workspace_budget = prepare_referenced_direct_scratch(plan, scratch)?;
     {
         let J2kDirectCpuScratch {
             component_band_sets,
@@ -97,6 +99,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             main: ht_workspace,
             tasks: ht_task_workspaces,
             parallel: *parallel,
+            budget: workspace_budget,
         };
         let mut payloads = ReferencedPayloadCursor::new(encoded_input, payload_ranges);
         let mut output_initialized = [false; 4];

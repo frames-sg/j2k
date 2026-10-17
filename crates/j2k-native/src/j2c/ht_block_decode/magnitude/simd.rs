@@ -8,7 +8,7 @@
 //! instead of one after another. Each lane computes exactly what
 //! [`super::decode_mag_sgn_sample_with_vn`] computes for that sample.
 
-use fearless_simd::{u32x4, u8x16, Bytes, Simd, SimdBase};
+use fearless_simd::{f32x4, i32x4, u32x4, u8x16, Bytes, Simd, SimdBase};
 
 use super::super::cleanup::{
     decode_cleanup_first_row_pair, decode_cleanup_row_pair, decode_cleanup_symbols_first_row,
@@ -25,8 +25,15 @@ use super::decode_magnitude_sign_pair_from_cleanup;
 /// `p >= 7`, so the 31-bit `p == 0` reconstruction never occurs here.
 pub(super) const MAX_SIMD_MMSBP2: u32 = 25;
 
-/// Set bits in each 4-bit value.
-const NIBBLE_ONES: [u8; 16] = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
+/// Set-bit counts for the sixteen 4-bit values, packed into nibbles so the
+/// `MagSgn` position chain does not wait on two scalar table loads per quad.
+const NIBBLE_ONES: u64 = 0x4332_3221_3221_2110;
+
+#[expect(clippy::inline_always, reason = "per-quad position update")]
+#[inline(always)]
+fn nibble_ones(value: u32) -> u32 {
+    ((NIBBLE_ONES >> (value << 2)) & 0xF) as u32
+}
 
 #[derive(Clone, Copy)]
 struct Lanes<S: Simd> {
@@ -37,6 +44,13 @@ struct Lanes<S: Simd> {
     emb_1_shift: u32x4<S>,
     byte_spread: u32x4<S>,
     byte_offsets: u32x4<S>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FinalOutput {
+    pub(super) coefficient_shift: u32,
+    pub(super) midpoint_scale: f32,
+    pub(super) dequantization_step: f32,
 }
 
 impl<S: Simd> Lanes<S> {
@@ -65,8 +79,8 @@ impl<S: Simd> Lanes<S> {
 fn quad_bits(inf: u32, uq: u32) -> usize {
     let rho = (inf >> 4) & 0xF;
     let emb_k = (inf >> 12) & rho;
-    let significant = u32::from(NIBBLE_ONES[rho as usize]);
-    let refined = u32::from(NIBBLE_ONES[emb_k as usize]);
+    let significant = nibble_ones(rho);
+    let refined = nibble_ones(emb_k);
     (uq * significant - refined) as usize
 }
 
@@ -162,6 +176,90 @@ fn decode_two_quads<S: Simd>(
     if second_row_present {
         samples0
             .unzip_high(samples1)
+            .store_slice(&mut decoded_data[dp + stride..dp + stride + 4]);
+    }
+    let [c0, c1, c2, c3] = v_n0.unzip_high(v_n1).to_array();
+    v_n_scratch[vp] = *carry | c0;
+    v_n_scratch[vp + 1] = c1 | c2;
+    *carry = c3;
+    Some(())
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "per-pair final coefficient conversion"
+)]
+#[inline(always)]
+fn final_samples<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
+    lanes: &Lanes<S>,
+    samples: u32x4<S>,
+    output: FinalOutput,
+) -> f32x4<S> {
+    let magnitude = samples & 0x7FFF_FFFF;
+    let values = if IRREVERSIBLE_MIDPOINT {
+        let magnitude = lanes.simd.cvt_f32_u32x4(magnitude) * output.midpoint_scale;
+        let signed = magnitude.bitcast::<u32x4<S>>() | (samples & 0x8000_0000);
+        signed.bitcast::<f32x4<S>>()
+    } else {
+        let magnitude = magnitude >> output.coefficient_shift;
+        let sign = lanes.zero - (samples >> 31);
+        let signed = ((magnitude ^ sign) - sign).bitcast::<i32x4<S>>();
+        lanes.simd.cvt_f32_i32x4(signed)
+    };
+    values * output.dequantization_step
+}
+
+/// Decode a full-width pair directly into the final coefficient plane. This
+/// is used only by whole-image cleanup-only decode, where no refinement pass
+/// needs the intermediate sign-magnitude words.
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "two-quad direct-output hot step"
+)]
+#[inline(always)]
+fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
+    lanes: &Lanes<S>,
+    magsgn: &mut FlatBitReader<'_>,
+    decoded_data: &mut [f32],
+    v_n_scratch: &mut [u32],
+    quads: [(u32, u32); 2],
+    mmsbp2: u32,
+    p_shift: u32,
+    stride: usize,
+    second_row_present: bool,
+    dp: usize,
+    vp: usize,
+    carry: &mut u32,
+    output: FinalOutput,
+) -> Option<()> {
+    let [(inf0, uq0), (inf1, uq1)] = quads;
+    if uq0 > mmsbp2 || uq1 > mmsbp2 {
+        return None;
+    }
+
+    if (inf0 | inf1) & 0xF0 == 0 {
+        let zero = final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, lanes.zero, output);
+        zero.store_slice(&mut decoded_data[dp..dp + 4]);
+        if second_row_present {
+            zero.store_slice(&mut decoded_data[dp + stride..dp + stride + 4]);
+        }
+        v_n_scratch[vp] = *carry;
+        v_n_scratch[vp + 1] = 0;
+        *carry = 0;
+        return Some(());
+    }
+
+    let first = magsgn.position();
+    let second = first + quad_bits(inf0, uq0);
+    let (samples0, v_n0) = decode_quad(lanes, magsgn, first, inf0, uq0, p_shift);
+    let (samples1, v_n1) = decode_quad(lanes, magsgn, second, inf1, uq1, p_shift);
+    magsgn.advance_to(second + quad_bits(inf1, uq1));
+
+    final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, samples0.unzip_low(samples1), output)
+        .store_slice(&mut decoded_data[dp..dp + 4]);
+    if second_row_present {
+        final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, samples0.unzip_high(samples1), output)
             .store_slice(&mut decoded_data[dp + stride..dp + stride + 4]);
     }
     let [c0, c1, c2, c3] = v_n0.unzip_high(v_n1).to_array();
@@ -290,6 +388,43 @@ fn decode_pair<S: Simd>(
             &mut cursor.carry,
         )?;
     }
+    Some(())
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "per-pair direct-output hot step"
+)]
+#[inline(always)]
+fn decode_pair_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
+    lanes: &Lanes<S>,
+    magsgn: &mut FlatBitReader<'_>,
+    decoded_data: &mut [f32],
+    v_n_scratch: &mut [u32],
+    quads: [(u32, u32); 2],
+    missing_msbs: u32,
+    stride: usize,
+    cursor: &mut RowCursor,
+    output: FinalOutput,
+) -> Option<()> {
+    decode_two_quads_to_f32::<IRREVERSIBLE_MIDPOINT, _>(
+        lanes,
+        magsgn,
+        decoded_data,
+        v_n_scratch,
+        quads,
+        missing_msbs + 2,
+        29 - missing_msbs,
+        stride,
+        cursor.second_row_present,
+        cursor.dp,
+        cursor.vp,
+        &mut cursor.carry,
+        output,
+    )?;
+    cursor.dp += 4;
+    cursor.vp += 2;
     Some(())
 }
 
@@ -536,6 +671,120 @@ pub(super) fn decode_cleanup_and_magnitude_sign_rows<S: Simd>(
             sstr,
         )?;
         observer.add_mag_sgn_us(phase_start);
+    }
+    Some(())
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "direct-output fused row walker inlined into the dispatched SIMD level"
+)]
+#[inline(always)]
+fn decode_fused_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
+    lanes: &Lanes<S>,
+    mel: &mut MelDecoder<'_>,
+    vlc: &mut ReverseBitReader<'_>,
+    run: &mut i32,
+    magsgn: &mut FlatBitReader<'_>,
+    scratch: &mut [u16],
+    decoded_data: &mut [f32],
+    v_n_scratch: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    y: u32,
+    stride: u32,
+    sstr: usize,
+    output: FinalOutput,
+) -> Option<()> {
+    let stride = stride as usize;
+    let mut cursor = RowCursor {
+        second_row_present: y + 1 < height,
+        dp: y as usize * stride,
+        vp: 0,
+        carry: 0,
+    };
+    let mut row_offset = (y >> 1) as usize * sstr;
+    let mut c_q = 0u32;
+    let mut x = 0u32;
+    while x < width {
+        let quads = if y == 0 {
+            let [t0, u0, t1, u1] = decode_cleanup_first_row_pair(
+                mel, vlc, run, scratch, row_offset, &mut c_q, x, width,
+            )?;
+            [(t0, u0), (t1, u1)]
+        } else {
+            let symbols = decode_cleanup_row_pair(
+                mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width,
+            )?;
+            with_kappa(symbols, v_n_scratch, cursor.vp)
+        };
+        decode_pair_to_f32::<IRREVERSIBLE_MIDPOINT, _>(
+            lanes,
+            magsgn,
+            decoded_data,
+            v_n_scratch,
+            quads,
+            missing_msbs,
+            stride,
+            &mut cursor,
+            output,
+        )?;
+        row_offset += 4;
+        x += 4;
+    }
+    scratch[row_offset] = 0;
+    scratch[row_offset + 1] = 0;
+    v_n_scratch[cursor.vp] = cursor.carry;
+    Some(())
+}
+
+/// Cleanup-only SIMD rows that publish final dequantized coefficients directly.
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "inlined into the dispatched SIMD level"
+)]
+#[inline(always)]
+pub(super) fn decode_cleanup_and_magnitude_sign_to_f32_rows<
+    const IRREVERSIBLE_MIDPOINT: bool,
+    S: Simd,
+>(
+    simd: S,
+    mel: &mut MelDecoder<'_>,
+    vlc: &mut ReverseBitReader<'_>,
+    run: &mut i32,
+    magsgn: &mut FlatBitReader<'_>,
+    scratch: &mut [u16],
+    decoded_data: &mut [f32],
+    v_n_scratch: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    output: FinalOutput,
+) -> Option<()> {
+    let lanes = Lanes::new(simd);
+    for y in (0..height).step_by(2) {
+        decode_fused_row_to_f32::<IRREVERSIBLE_MIDPOINT, _>(
+            &lanes,
+            mel,
+            vlc,
+            run,
+            magsgn,
+            scratch,
+            decoded_data,
+            v_n_scratch,
+            missing_msbs,
+            width,
+            height,
+            y,
+            stride,
+            sstr,
+            output,
+        )?;
     }
     Some(())
 }

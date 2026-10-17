@@ -169,4 +169,12 @@ fn flat_magsgn_unstuffing_requires_reserved_capacity() {
     let mut buffer = Vec::new();
     assert!(unstuff_magsgn(&[1, 2, 3], &mut buffer, 4).is_none());
     assert_eq!(buffer.capacity(), 0, "unstuffing must not allocate");
+
+    let capacity = flat_magsgn_capacity(1).expect("one-sample capacity");
+    let mut buffer = Vec::with_capacity(capacity);
+    let reserved = buffer.capacity();
+    let flat = unstuff_magsgn(&[0; 8], &mut buffer, 4).expect("long segment");
+    assert_eq!(&flat[..4], &[0; 4]);
+    assert!(flat.len() <= capacity, "segment padding must fit its reservation");
+    assert_eq!(buffer.capacity(), reserved, "long segments must not allocate");
 }

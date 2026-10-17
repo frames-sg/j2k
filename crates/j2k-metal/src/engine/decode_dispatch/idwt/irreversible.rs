@@ -145,6 +145,16 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pas
     dispatch: SingleIdwtDispatch<'_>,
     high_pass: f32,
 ) {
+    if super::supports_fused_2d_idwt(
+        dispatch.kernels,
+        &dispatch.kernels.idwt_irreversible97_fused_2d,
+        dispatch.params.width,
+        dispatch.params.height,
+    ) {
+        dispatch_irreversible97_fused_2d(encoder, dispatch, high_pass);
+        encoder.memory_barrier_with_resources(&[dispatch.decoded]);
+        return;
+    }
     if supports_irreversible97_interleave_horizontal_fused(
         dispatch.kernels,
         &dispatch
@@ -332,6 +342,57 @@ const IDWT97_LIFT_COEFFICIENTS: [f32; 4] = [
     dwt::IDWT97_NEG_BETA_F32,
     dwt::IDWT97_NEG_ALPHA_F32,
 ];
+
+/// Output tile of `j2k_idwt_irreversible97_fused_2d`, which runs with the
+/// same threadgroup shape as the 5/3 tile kernel.
+pub(super) const IDWT97_2D_TILE_W: u32 = 56;
+pub(super) const IDWT97_2D_TILE_H: u32 = 56;
+
+fn dispatch_irreversible97_fused_2d(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: SingleIdwtDispatch<'_>,
+    high_pass: f32,
+) {
+    let params = dispatch.params;
+    #[cfg(test)]
+    {
+        // One stage sequence for the level, and one launch covering each
+        // output sample once.
+        crate::engine::test_counters::record_idwt97_stage_sequence();
+        crate::engine::test_counters::record_idwt97_logical_dispatch((
+            params.width,
+            params.height,
+            1,
+        ));
+    }
+    encoder.setComputePipelineState(&dispatch.kernels.idwt_irreversible97_fused_2d);
+    for (index, buffer, offset) in [
+        (0, dispatch.sub_bands.ll, dispatch.sub_bands.ll_offset),
+        (1, dispatch.sub_bands.hl, dispatch.sub_bands.hl_offset),
+        (2, dispatch.sub_bands.lh, dispatch.sub_bands.lh_offset),
+        (3, dispatch.sub_bands.hh, dispatch.sub_bands.hh_offset),
+    ] {
+        encoder.set_buffer(index, Some(buffer), offset as u64);
+    }
+    encoder.set_buffer(4, Some(dispatch.decoded), dispatch.decoded_offset as u64);
+    encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(5, &params);
+    encoder.set_bytes::<J2kIdwt97LiftSteps>(
+        6,
+        &irreversible97_horizontal_lift_steps(params.x0 + params.output_x, high_pass),
+    );
+    encoder.set_bytes::<J2kIdwt97LiftSteps>(
+        7,
+        &irreversible97_horizontal_lift_steps(params.y0 + params.output_y, high_pass),
+    );
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(params.width.div_ceil(IDWT97_2D_TILE_W)),
+            u64::from(params.height.div_ceil(IDWT97_2D_TILE_H)),
+            1,
+        ),
+        j2k_metal_support::mtl_size(super::IDWT53_2D_LANES, super::IDWT53_2D_ROWS, 1),
+    );
+}
 
 pub(super) fn supports_irreversible97_interleave_horizontal_fused(
     kernels: &crate::engine::runtime::DecodeKernels,

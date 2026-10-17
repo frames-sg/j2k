@@ -12,6 +12,7 @@
 
 use alloc::vec::Vec;
 use core::ops::Range;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rayon::prelude::*;
@@ -167,7 +168,7 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     };
 
     let mut coefficients = core::mem::take(&mut storage.coefficients);
-    let result = decode_strips(&plan, &mut coefficients, tile_ctx);
+    let result = decode_strips(&plan, &mut coefficients, tile_ctx, &mut budget);
     storage.coefficients = coefficients;
     result?;
 
@@ -281,8 +282,8 @@ fn plan_tile<'a>(
                         let job = plan_block(
                             code_block,
                             code_block_idx,
-                            sub_band.rect.x0,
-                            sub_band.rect.y0,
+                            sub_band.storage_rect.x0,
+                            sub_band.storage_rect.y0,
                             band,
                             storage,
                             &mut arena_len,
@@ -303,8 +304,8 @@ fn plan_tile<'a>(
                     &mut plan,
                     first_job,
                     sub_band.coefficients.clone(),
-                    sub_band.rect.width(),
-                    sub_band.rect.height(),
+                    sub_band.storage_rect.width(),
+                    sub_band.storage_rect.height(),
                 )? {
                     return Ok(None);
                 }
@@ -316,6 +317,7 @@ fn plan_tile<'a>(
         return Ok(None);
     }
     gather_payloads(&mut plan, storage, arena_len, budget)?;
+    budget.include_elements::<(&mut [f32], &Strip)>(plan.strips.len())?;
     Ok(Some(plan))
 }
 
@@ -484,13 +486,14 @@ fn gather_payloads<'a>(
         return Ok(());
     }
     budget.reserve_new(&mut plan.arena, arena_len)?;
-    for job in &plan.jobs {
-        let Payload::Gathered(start) = job.payload else {
+    for job in &mut plan.jobs {
+        let Payload::Gathered(_) = job.payload else {
             continue;
         };
-        if plan.arena.len() != start {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
+        // Row sorting can change precinct traversal order. Assign the offset
+        // when the payload is appended in its final execution order.
+        let start = plan.arena.len();
+        job.payload = Payload::Gathered(start);
         let code_block = &storage.code_blocks[job.code_block];
         let selected_set = code_block
             .ht_selected_set
@@ -591,6 +594,7 @@ fn decode_strips(
     plan: &TilePlan<'_>,
     coefficients: &mut [f32],
     tile_ctx: &mut TileDecodeContext,
+    budget: &mut DecodeAllocationBudget,
 ) -> Result<()> {
     // Strips are sorted by start offset, so carving them front to back yields
     // disjoint mutable outputs.
@@ -598,6 +602,7 @@ fn decode_strips(
     tasks
         .try_reserve_exact(plan.strips.len())
         .map_err(|_| DecodingError::HostAllocationFailed)?;
+    budget.include_capacity_overage::<(&mut [f32], &Strip)>(plan.strips.len(), tasks.capacity())?;
     let mut rest = coefficients;
     let mut consumed = 0usize;
     for strip in &plan.strips {
@@ -611,38 +616,31 @@ fn decode_strips(
 
     // Largest rows first so stragglers are small.
     tasks.sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.work));
-    let bank = Mutex::new(core::mem::take(&mut tile_ctx.ht_task_workspaces));
-    let result =
-        tasks
-            .into_par_iter()
-            .with_max_len(1)
-            .try_for_each(|(output, strip)| -> Result<()> {
-                let slot = bank
+    let workers = rayon::current_num_threads().min(tasks.len());
+    let queue = Mutex::new(tasks.into_iter());
+    let failed = AtomicBool::new(false);
+    // Each worker owns one already-budgeted workspace for the whole tile.
+    // A single queue pop per strip keeps work balanced across unequal cores
+    // without forking a Rayon job and borrowing/returning scratch for each row.
+    tile_ctx.ht_task_workspaces[..workers]
+        .par_iter_mut()
+        .with_max_len(1)
+        .try_for_each(|slot| -> Result<()> {
+            while !failed.load(Ordering::Relaxed) {
+                let next = queue
                     .lock()
                     .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                    .pop();
-                match slot {
-                    Some(mut slot) => {
-                        let result = decode_strip(plan, strip, output, &mut slot.workspace);
-                        bank.lock()
-                            .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                            .push(slot);
-                        result
-                    }
-                    // More concurrent tasks than prepared workspaces: decode with
-                    // a transient workspace rather than wait.
-                    None => decode_strip(
-                        plan,
-                        strip,
-                        output,
-                        &mut HtCodeBlockDecodeWorkspace::default(),
-                    ),
+                    .next();
+                let Some((output, strip)) = next else {
+                    break;
+                };
+                if let Err(error) = decode_strip(plan, strip, output, &mut slot.workspace) {
+                    failed.store(true, Ordering::Relaxed);
+                    return Err(error);
                 }
-            });
-    tile_ctx.ht_task_workspaces = bank
-        .into_inner()
-        .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    result
+            }
+            Ok(())
+        })
 }
 
 fn decode_strip(
@@ -677,6 +675,15 @@ fn decode_strip(
             dequantization_step: band.dequantization_step,
         };
         let output = &mut output[job.x_offset as usize..];
+        #[cfg(feature = "simd")]
+        if crate::scalar::try_decode_ht_code_block_to_f32(
+            decode_job,
+            output,
+            workspace,
+            band.irreversible_midpoint,
+        )? {
+            continue;
+        }
         if band.irreversible_midpoint {
             decode_ht_code_block_scalar_with_workspace_midpoint(decode_job, output, workspace)?;
         } else {

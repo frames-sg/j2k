@@ -299,6 +299,51 @@ pub(super) fn decode_sub_band_ht_blocks(
                 continue;
             }
             tile_ctx.debug_counters.decoded_code_blocks += 1;
+
+            #[cfg(feature = "simd")]
+            if let Some(prepared) = ht_block_decode::prepare_direct_cleanup(
+                code_block,
+                coded_bitplanes,
+                component_info.roi_shift,
+                &mut tile_ctx.ht_block_decode_context,
+                storage,
+                header.strict,
+                profile_enabled,
+            )? {
+                let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
+                let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
+                let output_stride = sub_band.storage_rect.width();
+                let base_idx = (y_offset * output_stride) as usize + x_offset as usize;
+                let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
+                let output = &mut base_store[base_idx..];
+                if irreversible_midpoint {
+                    ht_block_decode::decode_prepared_cleanup_to_f32::<true>(
+                        prepared,
+                        code_block,
+                        coded_bitplanes,
+                        header.strict,
+                        output,
+                        output_stride,
+                        dequantization_step,
+                        &mut tile_ctx.ht_block_decode_context,
+                        &mut tile_ctx.debug_counters.ht_phase_stats,
+                    )?;
+                } else {
+                    ht_block_decode::decode_prepared_cleanup_to_f32::<false>(
+                        prepared,
+                        code_block,
+                        coded_bitplanes,
+                        header.strict,
+                        output,
+                        output_stride,
+                        dequantization_step,
+                        &mut tile_ctx.ht_block_decode_context,
+                        &mut tile_ctx.debug_counters.ht_phase_stats,
+                    )?;
+                }
+                continue;
+            }
+
             ht_block_decode::decode_with_stats(
                 code_block,
                 coded_bitplanes,

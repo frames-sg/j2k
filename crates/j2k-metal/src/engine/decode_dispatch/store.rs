@@ -6,10 +6,10 @@ use crate::metal_types::prelude::*;
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
     dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer, CommandBufferRef,
-    ComputeCommandEncoderRef, Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams,
-    J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams, MetalRuntime, PixelFormat,
-    Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
+    new_compute_command_encoder, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
+    Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams, J2kRepeatedStoreParams,
+    J2kStoreComponentJob, J2kStoreParams, MetalRuntime, PixelFormat, Surface,
+    SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
 };
 use crate::engine::direct_surface_pack::checked_metal_surface_len;
 #[cfg(target_os = "macos")]
@@ -243,7 +243,7 @@ pub(in crate::engine) fn encode_repeated_gray_store_to_surfaces_in_command_buffe
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal repeated grayscale fused store total size overflow".to_string(),
         })?;
-    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
+    let out_buffer = runtime.new_output_buffer(total_bytes)?;
     let contiguous_full_surface = repeated_gray_store_is_contiguous_full_surface(params);
     let pipeline = match (fmt, contiguous_full_surface) {
         (PixelFormat::Gray8, true) => {
@@ -335,20 +335,26 @@ impl GraySourceSigning {
 
 /// The fused grayscale store kernel for `fmt` and source signing.
 #[cfg(target_os = "macos")]
-pub(in crate::engine) fn gray_store_pipeline(
-    runtime: &MetalRuntime,
+/// The output sample of a grayscale store, which selects its kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::engine) enum GrayStoreKind {
+    U8 = 0,
+    U16 = 1,
+    I16 = 2,
+    /// A signed source of at most eight bits widened to Gray16.
+    I8WidenedU16 = 3,
+}
+
+pub(in crate::engine) fn gray_store_kind(
     fmt: PixelFormat,
     signing: GraySourceSigning,
-) -> Result<&crate::metal_types::ComputePipelineState, Error> {
-    let decode = runtime.decode()?;
+) -> Result<GrayStoreKind, Error> {
     Ok(match (fmt, signing) {
-        (PixelFormat::Gray8, _) => &decode.store_component_gray_u8,
-        (PixelFormat::Gray16, GraySourceSigning::Unsigned) => &decode.store_component_gray_u16,
-        (PixelFormat::Gray16, GraySourceSigning::SignedNarrow) => {
-            &decode.store_component_gray_i8_widened_u16
-        }
+        (PixelFormat::Gray8, _) => GrayStoreKind::U8,
+        (PixelFormat::Gray16, GraySourceSigning::Unsigned) => GrayStoreKind::U16,
+        (PixelFormat::Gray16, GraySourceSigning::SignedNarrow) => GrayStoreKind::I8WidenedU16,
         (PixelFormat::Gray16, GraySourceSigning::SignedWide) | (PixelFormat::GrayI16, _) => {
-            &decode.store_component_gray_i16
+            GrayStoreKind::I16
         }
         _ => {
             return Err(Error::MetalKernel {
@@ -356,6 +362,73 @@ pub(in crate::engine) fn gray_store_pipeline(
             })
         }
     })
+}
+
+pub(in crate::engine) fn gray_store_pipeline(
+    runtime: &MetalRuntime,
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<&crate::metal_types::ComputePipelineState, Error> {
+    let decode = runtime.decode()?;
+    Ok(match gray_store_kind(fmt, signing)? {
+        GrayStoreKind::U8 => &decode.store_component_gray_u8,
+        GrayStoreKind::U16 => &decode.store_component_gray_u16,
+        GrayStoreKind::I8WidenedU16 => &decode.store_component_gray_i8_widened_u16,
+        GrayStoreKind::I16 => &decode.store_component_gray_i16,
+    })
+}
+
+/// What a grayscale store reads: a float plane, or the last inverse wavelet
+/// level, synthesized in the same dispatch.
+#[derive(Clone, Copy)]
+pub(in crate::engine) enum GrayStoreSource<'a> {
+    Plane {
+        buffer: &'a Buffer,
+        offset_bytes: usize,
+    },
+    Idwt(super::FusedIdwtStoreSource<'a>),
+}
+
+/// Where a grayscale store writes: a buffer bound at `offset_bytes`.
+#[derive(Clone, Copy)]
+pub(in crate::engine) struct GrayStoreOutput<'a> {
+    pub(in crate::engine) buffer: &'a crate::metal_types::BufferRef,
+    pub(in crate::engine) offset_bytes: usize,
+}
+
+/// Encodes a grayscale store from `source` into `output`.
+pub(in crate::engine) fn encode_gray_store(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    source: GrayStoreSource<'_>,
+    output: GrayStoreOutput<'_>,
+    params: &J2kGrayStoreParams,
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<(), Error> {
+    match source {
+        GrayStoreSource::Plane {
+            buffer,
+            offset_bytes,
+        } => {
+            let pipeline = gray_store_pipeline(runtime, fmt, signing)?;
+            encoder.setComputePipelineState(pipeline);
+            encoder.set_buffer(0, Some(buffer), offset_bytes as u64);
+            encoder.set_buffer(1, Some(output.buffer), output.offset_bytes as u64);
+            encoder.set_bytes::<J2kGrayStoreParams>(2, params);
+            dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
+        }
+        GrayStoreSource::Idwt(fused) => super::dispatch_fused_idwt_gray_store(
+            encoder,
+            runtime.decode()?,
+            fused,
+            output.buffer,
+            output.offset_bytes,
+            params,
+            gray_store_kind(fmt, signing)?,
+        ),
+    }
+    Ok(())
 }
 
 /// Largest positive sample of a signed `bit_depth` component, as the signed
@@ -366,15 +439,10 @@ pub(in crate::engine) fn signed_store_max_value(bit_depth: u8) -> f32 {
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the fused store keeps buffers, geometry, format, and source signing explicit"
-)]
 pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
-    input: &Buffer,
-    input_offset_bytes: usize,
+    source: GrayStoreSource<'_>,
     params: J2kGrayStoreParams,
     dims: (u32, u32),
     fmt: PixelFormat,
@@ -385,14 +453,18 @@ pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
         fmt.bytes_per_pixel(),
         "J2K Metal grayscale fused store size overflow",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
-    let pipeline = gray_store_pipeline(runtime, fmt, signing)?;
-
-    encoder.setComputePipelineState(pipeline);
-    encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
-    encoder.set_buffer(1, Some(&out_buffer), 0);
-    encoder.set_bytes::<J2kGrayStoreParams>(2, &params);
-    dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
-
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
+    encode_gray_store(
+        runtime,
+        encoder,
+        source,
+        GrayStoreOutput {
+            buffer: &out_buffer,
+            offset_bytes: 0,
+        },
+        &params,
+        fmt,
+        signing,
+    )?;
     Surface::from_metal_buffer(out_buffer, dims, fmt)
 }

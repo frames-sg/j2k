@@ -11,7 +11,7 @@ mod orchestrate;
 mod roi;
 mod vertical;
 
-pub(crate) use banded::planned_band_scratch_elements;
+pub(crate) use banded::{banded_scratch_elements_for_execution, planned_band_scratch_elements};
 pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;

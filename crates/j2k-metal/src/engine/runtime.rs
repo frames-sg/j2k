@@ -34,6 +34,12 @@ use buffers::BufferKernels;
 #[cfg(test)]
 use j2k_metal_support::system_default_device;
 
+/// Heap size ranges for prepared HT inputs and for decoded outputs; the
+/// output heap's upper bound is the shared buffer pool's retention limit.
+const HT_INPUT_HEAP_MIN_BYTES: usize = 4 << 20;
+const HT_INPUT_HEAP_MAX_BYTES: usize = 256 << 20;
+const OUTPUT_HEAP_MIN_BYTES: usize = 64 << 20;
+
 thread_local! {
     static DEFAULT_METAL_SESSION: RefCell<Option<Result<crate::MetalBackendSession, MetalSupportError>>> = const { RefCell::new(None) };
     static METAL_RUNTIME_OVERRIDE: RefCell<Option<Arc<MetalRuntime>>> = const { RefCell::new(None) };
@@ -48,6 +54,8 @@ pub(crate) struct MetalRuntime {
     pub(super) buffer_pools: MetalBufferPools,
     pub(in crate::engine) prepared_ht_execution_cache:
         Mutex<super::decode_dispatch::PreparedMetalHtExecutionCache>,
+    pub(in crate::engine) ht_input_heap: super::ReusableHeap,
+    output_heap: super::ReusableHeap,
 }
 
 // SAFETY: Every retained Metal object in the runtime is documented by Metal
@@ -94,6 +102,14 @@ impl MetalRuntime {
             buffer_pools: MetalBufferPools::new(device),
             prepared_ht_execution_cache: Mutex::new(
                 super::decode_dispatch::PreparedMetalHtExecutionCache::new(),
+            ),
+            ht_input_heap: super::ReusableHeap::new(
+                HT_INPUT_HEAP_MIN_BYTES,
+                HT_INPUT_HEAP_MAX_BYTES,
+            ),
+            output_heap: super::ReusableHeap::new(
+                OUTPUT_HEAP_MIN_BYTES,
+                crate::buffer_pool::shared_retained_bytes_for_device(device),
             ),
         })
     }
@@ -171,6 +187,12 @@ impl MetalRuntime {
 
     pub(super) fn recycle_private_buffer(&self, buffer: PooledBuffer) -> Result<(), Error> {
         self.buffer_pools.recycle_private(buffer)
+    }
+
+    /// A shared buffer for a decoded output handed to the caller, from the
+    /// runtime's output heap when it has room.
+    pub(crate) fn new_output_buffer(&self, bytes: usize) -> Result<Buffer, Error> {
+        self.output_heap.allocate(&self.device, bytes)
     }
 
     pub(super) fn take_shared_buffer(&self, bytes: usize) -> Result<PooledBuffer, Error> {

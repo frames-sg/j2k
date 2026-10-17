@@ -151,6 +151,16 @@ impl HtBlockDecodeContext {
         prepare_scratch(&mut self.scratch, width, height)
     }
 
+    #[cfg(feature = "simd")]
+    pub(super) fn reset_for_direct_output(&mut self, code_block: &CodeBlock) -> Result<()> {
+        let width = code_block.rect.width();
+        let height = code_block.rect.height();
+        self.width = width;
+        self.height = height;
+        self.segment_data.clear();
+        prepare_scratch(&mut self.scratch, width, height)
+    }
+
     pub(super) fn zero_coefficients(&mut self) {
         self.coefficients.fill(0);
     }

@@ -16,7 +16,7 @@ pub(crate) struct HtBlockDecodeStats {
 }
 
 impl HtBlockDecodeStats {
-    fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
+    pub(super) fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
         self.blocks += 1;
         self.cleanup_bytes += cleanup_bytes as u128;
         if refinement_bytes > 0 {

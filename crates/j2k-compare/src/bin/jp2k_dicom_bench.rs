@@ -173,16 +173,16 @@ fn verify(input: &Input, raw_dir: Option<&Path>) -> Result<&'static str, String>
         return Ok("no-reference");
     };
     let decoded = decode_once(&input.bytes, CpuDecodeParallelism::Auto)?;
-    let planes = decoded
-        .planes()
-        .iter()
-        .map(|plane| plane.data().to_vec())
-        .collect::<Vec<_>>();
     // Reference files store interleaved samples; single-plane inputs compare
     // directly and multi-plane inputs are interleaved first.
-    let decoded = if planes.len() == 1 {
-        planes.into_iter().next().unwrap_or_default()
+    let decoded = if let [plane] = decoded.planes() {
+        plane.data().to_vec()
     } else {
+        let planes = decoded
+            .planes()
+            .iter()
+            .map(|plane| (plane.data(), usize::from(plane.bytes_per_sample())))
+            .collect::<Vec<_>>();
         interleave(&planes)
     };
     if decoded == reference {
@@ -198,11 +198,28 @@ fn verify(input: &Input, raw_dir: Option<&Path>) -> Result<&'static str, String>
     }
 }
 
-fn interleave(planes: &[Vec<u8>]) -> Vec<u8> {
-    let len = planes.iter().map(Vec::len).min().unwrap_or(0);
-    let mut out = Vec::with_capacity(len * planes.len());
-    for index in 0..len {
-        out.extend(planes.iter().map(|plane| plane[index]));
+fn interleave(planes: &[(&[u8], usize)]) -> Vec<u8> {
+    let sample_count = planes
+        .iter()
+        .map(|(data, bytes_per_sample)| {
+            if *bytes_per_sample == 0 {
+                0
+            } else {
+                data.len() / bytes_per_sample
+            }
+        })
+        .min()
+        .unwrap_or(0);
+    let bytes_per_pixel = planes
+        .iter()
+        .map(|(_, bytes_per_sample)| bytes_per_sample)
+        .sum::<usize>();
+    let mut out = Vec::with_capacity(sample_count * bytes_per_pixel);
+    for sample_index in 0..sample_count {
+        for &(data, bytes_per_sample) in planes {
+            let start = sample_index * bytes_per_sample;
+            out.extend_from_slice(&data[start..start + bytes_per_sample]);
+        }
     }
     out
 }
@@ -292,4 +309,21 @@ fn series_row(
         total_pixels as f64 / 1.0e6 / (median / 1000.0)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interleave;
+
+    #[test]
+    fn interleave_keeps_wide_rgb_samples_together() {
+        let red = [1, 2, 3, 4];
+        let green = [11, 12, 13, 14];
+        let blue = [21, 22, 23, 24];
+
+        assert_eq!(
+            interleave(&[(&red, 2), (&green, 2), (&blue, 2)]),
+            [1, 2, 11, 12, 21, 22, 3, 4, 13, 14, 23, 24]
+        );
+    }
 }

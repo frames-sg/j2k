@@ -49,13 +49,22 @@ pub(super) fn prepare_ht_sub_band_group(
     let mut owners = allocate_ht_group_owners(sub_bands)?;
     let mut output_base = 0usize;
     let mut logical_coded_base = 0usize;
+    let mut zero_rects = Vec::new();
     for sub_band in sub_bands {
         owners.members.push(PreparedHtSubBandGroupMember {
             band_id: sub_band.band_id,
             offset_elements: output_base,
             window: BandRequiredRegion::full(sub_band.width, sub_band.height),
         });
+        let first_job = owners.jobs.len();
         append_grouped_ht_jobs(&mut owners.jobs, sub_band, logical_coded_base, output_base)?;
+        super::zero_rects::append_uncovered_rects(
+            output_base,
+            sub_band.width,
+            sub_band.height,
+            &owners.jobs[first_job..],
+            &mut zero_rects,
+        )?;
         append_grouped_ht_payload(&mut owners.payload_source, sub_band)?;
         logical_coded_base = checked_grouped_ht_coded_end(logical_coded_base, sub_band)?;
         output_base = checked_grouped_ht_output_end(output_base, sub_band)?;
@@ -69,6 +78,7 @@ pub(super) fn prepare_ht_sub_band_group(
         payload_source: owners.payload_source,
         jobs: owners.jobs,
         members: owners.members,
+        zero_rects,
         execution_owner: Arc::new(PreparedHtExecutionOwner),
     })
 }

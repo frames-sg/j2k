@@ -1,20 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(target_os = "macos")]
-use crate::metal_types::prelude::*;
-
-use super::{
-    dispatch_2d_pipeline, Buffer, ComputeCommandEncoderRef, Error, J2kGrayStoreParams,
-    MetalRuntime, PixelFormat,
-};
+use super::{ComputeCommandEncoderRef, Error, J2kGrayStoreParams, MetalRuntime, PixelFormat};
 use j2k_metal_support::MetalImageDestination;
 
 #[derive(Clone, Copy)]
 pub(in crate::engine) struct GrayStoreDestinationRequest<'a> {
     pub(in crate::engine) runtime: &'a MetalRuntime,
     pub(in crate::engine) encoder: &'a ComputeCommandEncoderRef,
-    pub(in crate::engine) input: &'a Buffer,
-    pub(in crate::engine) input_offset_bytes: usize,
+    pub(in crate::engine) source: super::GrayStoreSource<'a>,
     pub(in crate::engine) params: J2kGrayStoreParams,
     pub(in crate::engine) dims: (u32, u32),
     pub(in crate::engine) fmt: PixelFormat,
@@ -25,20 +18,19 @@ pub(in crate::engine) struct GrayStoreDestinationRequest<'a> {
 }
 
 pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
-    request: GrayStoreDestinationRequest<'_>,
+    request: &GrayStoreDestinationRequest<'_>,
 ) -> Result<(), Error> {
     let GrayStoreDestinationRequest {
         runtime,
         encoder,
-        input,
-        input_offset_bytes,
+        source,
         mut params,
         dims,
         fmt,
         signing,
         destination,
         destination_item_index,
-    } = request;
+    } = *request;
     destination
         .validate_device(&runtime.device)
         .and_then(|()| destination.validate_image(dims, fmt))
@@ -74,31 +66,32 @@ pub(in crate::engine) fn encode_gray_store_to_destination_in_encoder(
         u32::try_from(item_offset_bytes / bytes_per_sample).map_err(|_| Error::MetalKernel {
             message: "J2K Metal grayscale destination item offset exceeds u32".to_string(),
         })?;
-    let pipeline = match fmt {
-        PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16 => {
-            super::gray_store_pipeline(runtime, fmt, signing)?
-        }
-        _ => {
-            return Err(Error::capability_rejected(
-                j2k_core::CapabilityRejection::unsupported_format(
-                    "J2K Metal external final-store currently supports Gray8/Gray16/GrayI16",
-                ),
-            ));
-        }
-    };
-
-    encoder.setComputePipelineState(pipeline);
-    encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
+    if !matches!(
+        fmt,
+        PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16
+    ) {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_format(
+                "J2K Metal external final-store currently supports Gray8/Gray16/GrayI16",
+            ),
+        ));
+    }
     // SAFETY: `MetalImageDestination` validated this exact allocation range,
     // and the decode-into submission retains exclusive access until command
     // completion or a same-device consumer dependency is registered. The raw
     // handle does not escape this encoder binding.
-    encoder.set_buffer(
-        1,
-        Some(unsafe { destination.raw_buffer() }),
-        layout.byte_offset() as u64,
-    );
-    encoder.set_bytes::<J2kGrayStoreParams>(2, &params);
-    dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
+    let output = unsafe { destination.raw_buffer() };
+    super::encode_gray_store(
+        runtime,
+        encoder,
+        source,
+        super::GrayStoreOutput {
+            buffer: output,
+            offset_bytes: layout.byte_offset(),
+        },
+        &params,
+        fmt,
+        signing,
+    )?;
     Ok(())
 }

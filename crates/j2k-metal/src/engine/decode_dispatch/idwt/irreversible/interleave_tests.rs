@@ -3,6 +3,7 @@
 use super::*;
 use crate::engine::abi::J2kRepeatedIdwtSingleDecompositionParams;
 use crate::engine::decode_dispatch::idwt::batched_irreversible::{
+    dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
     dispatch_irreversible97_repeated_interleave_horizontal_fused,
     dispatch_irreversible97_repeated_interleave_horizontal_scale,
 };
@@ -10,6 +11,8 @@ use crate::engine::decode_dispatch::idwt::{
     dispatch_reversible53_horizontal_repeated, dispatch_reversible53_horizontal_single,
     dispatch_reversible53_interleave_horizontal_fused_repeated,
     dispatch_reversible53_interleave_horizontal_fused_single,
+    dispatch_reversible53_repeated_buffers_in_encoder_with_offsets,
+    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets,
     dispatch_reversible53_vertical_repeated, dispatch_reversible53_vertical_single,
     RepeatedIdwtDispatch,
 };
@@ -131,7 +134,7 @@ fn reference_reversible53_vertical(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "encodes eight IDWT variants into one command buffer over shared inputs, then compares them pairwise"
+    reason = "encodes ten IDWT variants into one command buffer over shared inputs, then compares them pairwise"
 )]
 fn compare_interleave(
     runtime: &MetalRuntime,
@@ -140,6 +143,8 @@ fn compare_interleave(
     high_pass: f32,
 ) {
     let repeated = repeated_params(params, batch.max(1));
+    let production_repeated_scale =
+        high_pass.to_bits() == (dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5).to_bits();
     let offsets = [4, 8, 12, 16];
     let strides = [
         repeated.ll_instance_stride,
@@ -177,16 +182,7 @@ fn compare_interleave(
     let prefix = if batch == 0 { 4 } else { 0 };
     let len = prefix + params.width as usize * params.height as usize * batch.max(1) as usize + 4;
     let seed = vec![7.0_f32; len];
-    let outputs = [
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-        copied_slice_buffer(&runtime.device, &seed).unwrap(),
-    ];
+    let outputs = [(); 10].map(|()| copied_slice_buffer(&runtime.device, &seed).unwrap());
     let command = new_command_buffer(&runtime.queue).unwrap();
     let encoder = new_compute_command_encoder(&command).unwrap();
     for (index, decoded) in outputs.iter().enumerate() {
@@ -197,7 +193,42 @@ fn compare_interleave(
             decoded,
             decoded_offset: prefix * size_of::<f32>(),
         };
-        if index == 0 {
+        if index >= 8 {
+            // Exercise the production tile kernels against the separate-pass
+            // references too, including origins, band windows, and guards.
+            if index == 8 && batch == 0 {
+                dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_high_pass(
+                    &encoder, dispatch, high_pass,
+                );
+            } else if index == 8 {
+                if !production_repeated_scale {
+                    continue;
+                }
+                dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets(
+                    &encoder,
+                    RepeatedIdwtDispatch {
+                        kernels: dispatch.kernels,
+                        sub_bands,
+                        params: repeated,
+                        decoded,
+                    },
+                );
+            } else if batch == 0 {
+                dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(
+                    &encoder, dispatch,
+                );
+            } else {
+                dispatch_reversible53_repeated_buffers_in_encoder_with_offsets(
+                    &encoder,
+                    RepeatedIdwtDispatch {
+                        kernels: dispatch.kernels,
+                        sub_bands,
+                        params: repeated,
+                        decoded,
+                    },
+                );
+            }
+        } else if index == 0 {
             reference_interleave_scale(
                 &encoder,
                 dispatch,
@@ -419,6 +450,22 @@ fn compare_interleave(
     for value in actual[..prefix].iter().chain(&actual[len - 4..]) {
         assert_eq!(value.to_bits(), 7.0_f32.to_bits(), "output guard changed");
     }
+    for (candidate, reference) in [(8, 2), (9, 6)] {
+        if candidate == 8 && batch != 0 && !production_repeated_scale {
+            continue;
+        }
+        let expected =
+            checked_buffer_slice::<f32>(&outputs[reference], len, "reference IDWT").unwrap();
+        let actual =
+            checked_buffer_slice::<f32>(&outputs[candidate], len, "production tile IDWT").unwrap();
+        for (index, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                e.to_bits(),
+                "tile {candidate} coefficient {index}, batch {batch}, geometry {}x{} origin {},{} window {},{}", params.width, params.height, params.x0, params.y0, params.output_x, params.output_y
+            );
+        }
+    }
 }
 
 #[test]
@@ -427,7 +474,7 @@ fn irreversible97_interleave_scale_matches_separate_dispatch_bits() {
         return;
     }
     with_runtime(|runtime| {
-        for width in [1, 2, 3, 9, 129, 257] {
+        for width in [1, 2, 3, 9, 55, 57, 61, 129, 257] {
             for origin in [0, 1] {
                 for offset in [0, 1, 2, 3] {
                     let mut params =
@@ -470,7 +517,15 @@ fn reversible53_tiled_vertical_matches_serial_across_chunk_boundaries() {
         return;
     }
     with_runtime(|runtime| {
-        for (width, height) in [(17, 129), (65, 257), (17, 513)] {
+        for (width, height) in [
+            (17, 129),
+            (65, 257),
+            (17, 513),
+            (55, 57),
+            (57, 55),
+            (111, 113),
+            (113, 111),
+        ] {
             for (origin_y, output_y, cropped) in [(0, 0, false), (1, 3, true)] {
                 let mut params = geometry_params((width, height, 1, origin_y, 2, output_y));
                 let broad_band_width = width.div_ceil(2) + 4;
@@ -489,6 +544,15 @@ fn reversible53_tiled_vertical_matches_serial_across_chunk_boundaries() {
                 for batch in [0, 1, 3, 16] {
                     compare_interleave(runtime, params, batch, dwt::DWT97_INV_KAPPA_F32);
                 }
+                // The production repeated 9/7 route uses the OpenJPEG scale.
+                // Exercise its vertical tile boundaries as well as the custom
+                // scale above, which only the single-image API accepts.
+                compare_interleave(
+                    runtime,
+                    params,
+                    3,
+                    dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5,
+                );
             }
         }
         Ok(())
@@ -551,7 +615,9 @@ fn irreversible97_production_decomposition_dispatch_count() {
                 encoder.endEncoding();
                 commit_and_wait_metal(&command).unwrap();
                 let (positions, dispatches) = idwt97_logical_dispatches_for_test();
-                let expected_dispatches = if width > IDWT97_ROW_TILE { 2 } else { 3 };
+                // Single and repeated images run each level as one tile
+                // launch.
+                let expected_dispatches = 1;
                 assert_eq!(
                     dispatches, expected_dispatches,
                     "actual production launches, width {width}, batch {batch}"

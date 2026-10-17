@@ -392,6 +392,18 @@ impl<'a> Image<'a> {
         self.header.size_data.image_height()
     }
 
+    /// Whether the main header's default coding style selects HT block coding.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn uses_high_throughput_block_coding(&self) -> bool {
+        self.header
+            .global_coding_style
+            .component_parameters
+            .parameters
+            .code_block_style
+            .uses_high_throughput_block_coding()
+    }
+
     /// The original bit depth of the image. You usually don't need to do anything
     /// with this parameter, it just exists for informational purposes.
     #[must_use]

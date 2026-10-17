@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "parallel")]
+use crate::error::ValidationError;
 use crate::error::{bail, DecodingError, Result};
 use crate::{
     decode_ht_code_block_scalar_with_workspace,
@@ -12,7 +14,7 @@ use super::super::referenced_classic::{execute_classic_sub_band_referenced, Clas
 use super::super::{
     apply_inverse_mct_region, checked_sub_band_job_output_range, execute_idwt_step,
     prepare_sub_band_output, rounds_at_store, store_component, DirectComponentBandScratch,
-    DirectComponentPlane, SubBandJobOutputRange,
+    DirectComponentPlane, DirectWorkspaceBudget, SubBandJobOutputRange,
 };
 use super::payload::ReferencedPayloadCursor;
 
@@ -136,6 +138,14 @@ pub(super) struct HtWorkspaces<'a> {
     )]
     pub(super) tasks: &'a mut [HtCodeBlockDecodeWorkspace],
     pub(super) parallel: bool,
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(
+            dead_code,
+            reason = "the workspace budget validates parallel dispatch owners"
+        )
+    )]
+    pub(super) budget: DirectWorkspaceBudget,
 }
 
 fn execute_ht_sub_band_referenced(
@@ -207,6 +217,32 @@ struct RowJob<'p, 'i> {
     end: usize,
 }
 
+/// Bytes owned together while a referenced HT sub-band is dispatched in
+/// parallel. Planning and execution share this helper so the private dispatch
+/// types cannot drift from their accounting.
+#[cfg(feature = "parallel")]
+pub(in crate::direct_cpu) fn parallel_ht_decode_transient_bytes(
+    entry_capacity: usize,
+    row_capacity: usize,
+    workspace_capacity: usize,
+) -> Result<usize> {
+    entry_capacity
+        .checked_mul(core::mem::size_of::<RowJob<'static, 'static>>())
+        .and_then(|bytes| {
+            row_capacity
+                .checked_mul(core::mem::size_of::<
+                    CodeBlockRow<'static, 'static, 'static, 'static>,
+                >())
+                .and_then(|rows| bytes.checked_add(rows))
+        })
+        .and_then(|bytes| {
+            workspace_capacity
+                .checked_mul(core::mem::size_of::<&mut HtCodeBlockDecodeWorkspace>())
+                .and_then(|workspaces| bytes.checked_add(workspaces))
+        })
+        .ok_or_else(|| ValidationError::ImageTooLarge.into())
+}
+
 /// Decode a sub-band's rows of code blocks in parallel, each writing its own
 /// rows of `output`. Returns `false` without consuming payloads when a block's
 /// bytes are not one contiguous input slice or the blocks do not tile the
@@ -220,16 +256,20 @@ fn decode_ht_sub_band_rows_parallel(
     ht: &mut HtWorkspaces<'_>,
 ) -> Result<bool> {
     let checkpoint = payloads.position();
-    let Some(mut entries) = collect_row_jobs(plan, output.len(), sub_band_width, payloads)? else {
+    let Some(mut entries) =
+        collect_row_jobs(plan, output.len(), sub_band_width, payloads, ht.budget)?
+    else {
         payloads.rewind(checkpoint);
         return Ok(false);
     };
     entries.sort_unstable_by_key(|entry| (entry.job.output_y, entry.job.output_x));
-    let Some(rows) = carve_rows(&entries, output, sub_band_width)? else {
+    let entry_capacity = entries.capacity();
+    let Some(rows) = carve_rows(&entries, output, sub_band_width, entry_capacity, ht.budget)?
+    else {
         payloads.rewind(checkpoint);
         return Ok(false);
     };
-    decode_rows(rows, plan.irreversible_midpoint, ht)?;
+    decode_rows(rows, entry_capacity, plan.irreversible_midpoint, ht)?;
     Ok(true)
 }
 
@@ -241,9 +281,15 @@ fn collect_row_jobs<'p, 'i>(
     output_len: usize,
     sub_band_width: usize,
     payloads: &mut ReferencedPayloadCursor<'i>,
+    budget: DirectWorkspaceBudget,
 ) -> Result<Option<alloc::vec::Vec<RowJob<'p, 'i>>>> {
     let mut entries = alloc::vec::Vec::new();
     crate::try_reserve_decode_elements(&mut entries, plan.jobs.len())?;
+    budget.validate_workspace(parallel_ht_decode_transient_bytes(
+        entries.capacity(),
+        0,
+        0,
+    )?)?;
     for job in &plan.jobs {
         let range = checked_sub_band_job_output_range(&SubBandJobOutputRange {
             output_x: job.output_x,
@@ -284,9 +330,16 @@ fn carve_rows<'o, 'j, 'p, 'i>(
     entries: &'j [RowJob<'p, 'i>],
     output: &'o mut [f32],
     sub_band_width: usize,
+    entry_capacity: usize,
+    budget: DirectWorkspaceBudget,
 ) -> Result<Option<alloc::vec::Vec<CodeBlockRow<'o, 'j, 'p, 'i>>>> {
     let mut rows = alloc::vec::Vec::new();
     crate::try_reserve_decode_elements(&mut rows, entries.len())?;
+    budget.validate_workspace(parallel_ht_decode_transient_bytes(
+        entry_capacity,
+        rows.capacity(),
+        0,
+    )?)?;
     let mut rest = output;
     let mut consumed = 0usize;
     let mut index = 0usize;
@@ -323,17 +376,30 @@ fn carve_rows<'o, 'j, 'p, 'i>(
 #[cfg(feature = "parallel")]
 fn decode_rows(
     rows: alloc::vec::Vec<CodeBlockRow<'_, '_, '_, '_>>,
+    entry_capacity: usize,
     irreversible_midpoint: bool,
     ht: &mut HtWorkspaces<'_>,
 ) -> Result<()> {
     use rayon::prelude::*;
     use std::sync::Mutex;
 
-    let pool = Mutex::new(
-        core::iter::once(&mut *ht.main)
-            .chain(ht.tasks.iter_mut())
-            .collect::<alloc::vec::Vec<_>>(),
-    );
+    let budget = ht.budget;
+    let row_capacity = rows.capacity();
+    let workspace_count = ht
+        .tasks
+        .len()
+        .checked_add(1)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let mut workspaces = alloc::vec::Vec::new();
+    crate::try_reserve_decode_elements(&mut workspaces, workspace_count)?;
+    workspaces.push(&mut *ht.main);
+    workspaces.extend(ht.tasks.iter_mut());
+    budget.validate_workspace(parallel_ht_decode_transient_bytes(
+        entry_capacity,
+        row_capacity,
+        workspaces.capacity(),
+    )?)?;
+    let pool = Mutex::new(workspaces);
     rows.into_par_iter()
         .with_max_len(1)
         .try_for_each(|(row, jobs, row_start)| -> Result<()> {
@@ -371,16 +437,11 @@ fn decode_rows(
                     }
                 })
             };
-            match pooled {
-                Some(workspace) => {
-                    let result = decode_row(workspace);
-                    pool.lock()
-                        .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                        .push(workspace);
-                    result
-                }
-                // More rows in flight than pooled workspaces.
-                None => decode_row(&mut HtCodeBlockDecodeWorkspace::default()),
-            }
+            let workspace = pooled.ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let result = decode_row(workspace);
+            pool.lock()
+                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
+                .push(workspace);
+            result
         })
 }

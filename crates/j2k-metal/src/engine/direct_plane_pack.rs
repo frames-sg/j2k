@@ -159,7 +159,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
         fmt.bytes_per_pixel(),
         "J2K MetalDirect plane pack output size overflow",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let (output_channels, opaque_alpha, pipeline) = output_shape_for(
         &stage.color_space,
         stage.has_alpha,
@@ -225,7 +225,7 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
         PixelFormat::Rgb8.bytes_per_pixel(),
         "J2K MetalDirect MCT RGB8 output size overflow",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
         u32::from(bit_depths[0]),
         u32::from(bit_depths[1]),
@@ -290,7 +290,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         "J2K MetalDirect color batch surface metadata",
         "J2K MetalDirect color batch surface handles",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
+    let out_buffer = runtime.new_output_buffer(total_bytes)?;
     let plane_stride = dims
         .0
         .checked_mul(dims.1)
@@ -379,7 +379,7 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
         "J2K MetalDirect repeated color batch surface metadata",
         "J2K MetalDirect repeated color batch surface handles",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
+    let out_buffer = runtime.new_output_buffer(total_bytes)?;
     let plane_stride = dims
         .0
         .checked_mul(dims.1)

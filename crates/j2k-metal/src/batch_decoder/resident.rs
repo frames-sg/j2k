@@ -88,7 +88,7 @@ impl MetalBatchDecoder {
     ) -> Result<PreparedResidentGroup<'g>, Error> {
         let fmt = validate_codec_owned_resident_group(group)?;
         let allocation =
-            allocate_codec_owned_group_destination(self.backend_session().device(), group, fmt)?;
+            allocate_codec_owned_group_destination(self.backend_session(), group, fmt)?;
         let plans = self.prepared_group_plans(group, fmt)?;
         Ok(PreparedResidentGroup {
             group,

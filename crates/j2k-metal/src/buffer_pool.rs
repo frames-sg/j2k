@@ -77,6 +77,11 @@ fn record_shared_buffer_pool_miss_for_test() {
     SHARED_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
 }
 
+/// Bytes the shared buffer pool retains on `device`.
+pub(crate) fn shared_retained_bytes_for_device(device: &Device) -> usize {
+    PoolLimits::shared_for_device(device).retained_bytes()
+}
+
 pub(crate) struct MetalBufferPools {
     private: Mutex<PoolState>,
     shared: Mutex<PoolState>,

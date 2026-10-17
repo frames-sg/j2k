@@ -266,23 +266,12 @@ mod tests {
         tree.encode(0, 0, 4, &mut writer).expect("encode tree");
         let data = writer.try_finish().expect("finish tag-tree header");
         // Should encode: 0, 0, 0, 1 (three zeros then one)
-        assert!(!data.is_empty());
+        assert_eq!(data.as_slice(), &[0b0001_0000]);
     }
 
     #[test]
     fn test_2x2_tree() {
-        let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
-        let mut tree = TagTreeEncoder::try_new(2, 2, &allocations).expect("valid tree");
-        tree.set_value(0, 0, 0).expect("valid leaf");
-        tree.set_value(1, 0, 1).expect("valid leaf");
-        tree.set_value(0, 1, 2).expect("valid leaf");
-        tree.set_value(1, 1, 3).expect("valid leaf");
-
-        let mut writer = checked_writer(&allocations);
-        // Encode (0,0) with threshold 1
-        tree.encode(0, 0, 1, &mut writer).expect("encode tree");
-        let data = writer.try_finish().expect("finish tag-tree header");
-        assert!(!data.is_empty());
+        assert_values_round_trip(2, 2, &[0, 1, 2, 3]);
     }
 
     #[test]
@@ -297,20 +286,12 @@ mod tests {
 
     #[test]
     fn one_row_odd_width_tree_sets_all_leaf_values() {
-        let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
-        let mut tree = TagTreeEncoder::try_new(31, 1, &allocations).expect("valid tree");
-        for x in 0..31 {
-            tree.set_value(x, 0, x).expect("valid leaf");
-        }
+        assert_values_round_trip(31, 1, &(0..31).collect::<Vec<_>>());
     }
 
     #[test]
     fn one_column_odd_height_tree_sets_all_leaf_values() {
-        let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
-        let mut tree = TagTreeEncoder::try_new(1, 31, &allocations).expect("valid tree");
-        for y in 0..31 {
-            tree.set_value(0, y, y).expect("valid leaf");
-        }
+        assert_values_round_trip(1, 31, &(0..31).collect::<Vec<_>>());
     }
 
     #[test]
@@ -320,31 +301,42 @@ mod tests {
             1, 1, 1, 2, 3, 2, 2, 1, 1, 1, 1, 2, 2, 2, 3, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 2,
             2, 2, 2, 1, 1, 1,
         ];
+        assert_values_round_trip(8, 8, &values);
+    }
+
+    fn assert_values_round_trip(width: u32, height: u32, values: &[u32]) {
+        assert_eq!(values.len(), usize::try_from(width * height).unwrap());
         let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
-        let mut encoder = TagTreeEncoder::try_new(8, 8, &allocations).expect("valid tree");
+        let mut encoder = TagTreeEncoder::try_new(width, height, &allocations).expect("valid tree");
         for (idx, value) in values.iter().copied().enumerate() {
-            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
+            let index = u32::try_from(idx).expect("test tag-tree index fits u32");
             encoder
-                .set_value(index % 8, index / 8, value)
+                .set_value(index % width, index / width, value)
                 .expect("valid leaf");
         }
 
         let mut writer = checked_writer(&allocations);
         for (idx, value) in values.iter().copied().enumerate() {
-            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
+            let index = u32::try_from(idx).expect("test tag-tree index fits u32");
             encoder
-                .encode(index % 8, index / 8, value + 1, &mut writer)
+                .encode(index % width, index / width, value + 1, &mut writer)
                 .expect("encode tree");
         }
         let bytes = writer.try_finish().expect("finish tag-tree header");
 
         let mut nodes = Vec::<TagNode>::new();
-        let mut decoder = TagTree::new(8, 8, &mut nodes);
+        let mut decoder = TagTree::new(width, height, &mut nodes);
         let mut reader = BitReader::new(&bytes);
         for (idx, expected) in values.iter().copied().enumerate() {
-            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
+            let index = u32::try_from(idx).expect("test tag-tree index fits u32");
             let actual = decoder
-                .read(index % 8, index / 8, &mut reader, u32::MAX, &mut nodes)
+                .read(
+                    index % width,
+                    index / width,
+                    &mut reader,
+                    u32::MAX,
+                    &mut nodes,
+                )
                 .expect("tag tree decode");
             assert_eq!(actual, expected, "index {idx}");
         }

@@ -11,7 +11,14 @@
 //! `BackendRequest::Auto` selects for each file and times that decode.
 //! `J2K_METAL_BENCH_ONLY=metal-into` times one reused decoder decoding into a
 //! fresh surface against decoding into one reused caller-owned buffer, with
-//! the two measurements interleaved.
+//! the two measurements interleaved; with `J2K_METAL_BENCH_CAPTURE` set to an
+//! absolute `.gputrace` path (and `MTL_CAPTURE_ENABLED=1`), one warmed-up
+//! decode of the first file into the buffer is also captured there, for
+//! Xcode's GPU profiler. `J2K_METAL_BENCH_ONLY=metal-batch` times
+//! only the Metal owned-batch decode; with `J2K_METAL_BENCH_DISTINCT` its batch
+//! holds distinct frames (the decoded image with a per-frame offset, re-encoded
+//! as lossless HTJ2K) instead of copies of one codestream, which share one
+//! decode.
 //!
 //! Run with:
 //! `cargo run --release -p j2k-metal --example dicom_decode_bench -- <file-or-dir> [...]`
@@ -55,6 +62,7 @@ mod bench {
             Ok("metal-single") => return run_metal_single_only(&paths, repeats),
             Ok("auto") => return run_auto_only(&paths, repeats),
             Ok("metal-into") => return run_metal_into_only(&paths, repeats),
+            Ok("metal-batch") => return run_metal_batch_only(&paths, repeats, batch),
             _ => {}
         }
         let options = BatchDecodeOptions {
@@ -145,8 +153,169 @@ mod bench {
         Ok(())
     }
 
+    fn run_metal_batch_only(paths: &[PathBuf], repeats: usize, batch: usize) -> Result<(), String> {
+        let options = BatchDecodeOptions {
+            layout: BatchLayout::Nhwc,
+            ..BatchDecodeOptions::default()
+        };
+        let mut decoder = MetalBatchDecoder::system_default_with_options(options)
+            .map_err(|error| format!("Metal batch decoder: {error}"))?;
+        let session = MetalBackendSession::system_default().map_err(|error| error.to_string())?;
+        println!("file\towned_batch{batch}_ms\tinto_batch{batch}_ms");
+        for path in paths {
+            let bytes: Arc<[u8]> = std::fs::read(path)
+                .map_err(|error| format!("read {}: {error}", path.display()))?
+                .into();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let info = j2k::J2kDecoder::inspect(&bytes)
+                .map_err(|error| format!("{name}: inspect: {error}"))?;
+            let Some(format) = pixel_format(info.components, info.bit_depth) else {
+                continue;
+            };
+            let inputs = if std::env::var_os("J2K_METAL_BENCH_DISTINCT").is_some() {
+                distinct_frames(&bytes, &info, format, batch)?
+            } else {
+                (0..batch)
+                    .map(|_| EncodedImage {
+                        bytes: Arc::clone(&bytes),
+                        request: DecodeRequest::Full,
+                    })
+                    .collect()
+            };
+            let prepared = decoder.prepare(inputs).map_err(|error| error.to_string())?;
+            let [group] = prepared.groups() else {
+                return Err(format!("{name}: expected one batch group"));
+            };
+            let dimensions = group.info().dimensions;
+            let pitch = dimensions.0 as usize * format.bytes_per_pixel();
+            let image_bytes = pitch * dimensions.1 as usize;
+            let buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+                session.device(),
+                image_bytes * batch,
+            )
+            .map_err(|error| error.to_string())?;
+            let layout =
+                MetalImageLayout::new_batch(0, dimensions, pitch, format, batch, image_bytes)
+                    .map_err(|error| error.to_string())?;
+            // SAFETY: each decode into the buffer completes before the call
+            // returns, and nothing else accesses it.
+            let destination =
+                unsafe { MetalImageDestination::from_exclusive_buffer(buffer, layout) }
+                    .map_err(|error| error.to_string())?;
+            let into_supported = match decoder.decode_prepared_group_into(group, &destination) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("{name}: decode into a reused buffer unavailable: {error}");
+                    false
+                }
+            };
+            let checked = decoder
+                .decode_prepared(&prepared)
+                .map_err(|error| error.to_string())?;
+            if !checked.errors().is_empty() || !checked.group_errors().is_empty() {
+                return Err(format!(
+                    "{name}: Metal batch errors: {:?} {:?}",
+                    checked.errors(),
+                    checked.group_errors()
+                ));
+            }
+            drop(checked);
+            std::hint::black_box(
+                decoder
+                    .decode_prepared(&prepared)
+                    .map_err(|error| error.to_string())?,
+            );
+            let mut owned = Vec::with_capacity(repeats);
+            let mut into_samples = Vec::with_capacity(repeats);
+            for _ in 0..repeats {
+                let start = Instant::now();
+                std::hint::black_box(
+                    decoder
+                        .decode_prepared(&prepared)
+                        .map_err(|error| error.to_string())?,
+                );
+                owned.push(start.elapsed().as_secs_f64() * 1000.0);
+                if into_supported {
+                    let start = Instant::now();
+                    decoder
+                        .decode_prepared_group_into(group, &destination)
+                        .map_err(|error| error.to_string())?;
+                    into_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            let into_ms = if into_samples.is_empty() {
+                "-".to_string()
+            } else {
+                format!("{:.3}", median(into_samples))
+            };
+            println!("{name}\t{:.3}\t{into_ms}", median(owned));
+        }
+        Ok(())
+    }
+
+    /// `count` lossless HTJ2K frames of the image in `bytes`, each with its
+    /// samples offset by a different amount.
+    fn distinct_frames(
+        bytes: &[u8],
+        info: &j2k_core::Info,
+        format: PixelFormat,
+        count: usize,
+    ) -> Result<Vec<EncodedImage>, String> {
+        let (width, height) = info.dimensions;
+        let row_bytes = width as usize * format.bytes_per_pixel();
+        let mut pixels = vec![0; row_bytes * height as usize];
+        j2k::J2kDecoder::new(bytes)
+            .map_err(|error| error.to_string())?
+            .decode_into(&mut pixels, row_bytes, format)
+            .map_err(|error| error.to_string())?;
+        let bit_depth = info.bit_depth;
+        let mask = u32::try_from((1_u64 << bit_depth) - 1).map_err(|error| error.to_string())?;
+        let options = j2k_native::EncodeOptions {
+            num_decomposition_levels: info.resolution_levels.saturating_sub(1).max(1),
+            ..j2k_native::EncodeOptions::default()
+        };
+        (0..count)
+            .map(|frame| {
+                let offset = u32::try_from(frame * 7).map_err(|error| error.to_string())?;
+                let frame_pixels: Vec<u8> = if format.bytes_per_sample() == 1 {
+                    pixels
+                        .iter()
+                        .map(|&value| ((u32::from(value) + offset) & mask).to_le_bytes()[0])
+                        .collect()
+                } else {
+                    pixels
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .flat_map(|&sample| {
+                            let value = u32::from(u16::from_le_bytes(sample));
+                            let shifted =
+                                u16::try_from((value + offset) & mask).unwrap_or(u16::MAX);
+                            shifted.to_le_bytes()
+                        })
+                        .collect()
+                };
+                let encoded = j2k_native::encode_htj2k(
+                    &frame_pixels,
+                    width,
+                    height,
+                    info.components,
+                    bit_depth,
+                    false,
+                    &options,
+                )
+                .map_err(|error| format!("encode frame {frame}: {error}"))?;
+                Ok(EncodedImage {
+                    bytes: encoded.into(),
+                    request: DecodeRequest::Full,
+                })
+            })
+            .collect()
+    }
+
     fn run_metal_into_only(paths: &[PathBuf], repeats: usize) -> Result<(), String> {
         let session = MetalBackendSession::system_default().map_err(|error| error.to_string())?;
+        let mut capture_path = std::env::var_os("J2K_METAL_BENCH_CAPTURE").map(PathBuf::from);
         println!("file\tformat\tsurface_ms\tinto_ms\tparity");
         for path in paths {
             let bytes =
@@ -189,6 +358,14 @@ mod bench {
             let written =
                 unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 0, len) }
                     .map_err(|error| error.to_string())?;
+            if let Some(trace) = capture_path.take() {
+                capture_gpu_trace(session.device(), &trace, || {
+                    decoder
+                        .decode_into_metal_with_session(&destination, &session)
+                        .map_err(|error| error.to_string())
+                })?;
+                eprintln!("{name}: captured one decode into {}", trace.display());
+            }
 
             let mut surface_samples = Vec::with_capacity(repeats);
             let mut into_samples = Vec::with_capacity(repeats);
@@ -214,6 +391,56 @@ mod bench {
             );
         }
         Ok(())
+    }
+
+    /// Runs `decode` inside a Metal GPU capture of `device`, written to the
+    /// `.gputrace` document at `trace` for Xcode to open and profile.
+    fn capture_gpu_trace(
+        device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+        trace: &Path,
+        decode: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::{NSString, NSURL};
+        use objc2_metal::{MTLCaptureDescriptor, MTLCaptureDestination, MTLCaptureManager};
+
+        if std::env::var("MTL_CAPTURE_ENABLED").as_deref() != Ok("1") {
+            return Err("J2K_METAL_BENCH_CAPTURE needs MTL_CAPTURE_ENABLED=1".to_string());
+        }
+        if !trace.is_absolute()
+            || trace.extension().and_then(std::ffi::OsStr::to_str) != Some("gputrace")
+        {
+            return Err(format!(
+                "J2K_METAL_BENCH_CAPTURE must be an absolute .gputrace path: {}",
+                trace.display()
+            ));
+        }
+        if trace.exists() {
+            return Err(format!(
+                "refusing to overwrite existing GPU trace {}",
+                trace.display()
+            ));
+        }
+        // SAFETY: `sharedCaptureManager` returns Metal's process-wide
+        // singleton, retained for as long as `manager` lives.
+        let manager = unsafe { MTLCaptureManager::sharedCaptureManager() };
+        if !manager.supportsDestination(MTLCaptureDestination::GPUTraceDocument) {
+            return Err("Metal GPU trace documents are unavailable on this host".to_string());
+        }
+        let descriptor = MTLCaptureDescriptor::new();
+        let capture_object: &AnyObject = device.as_ref();
+        // SAFETY: a capture descriptor accepts an MTLDevice as its capture
+        // object, and `device` outlives the capture.
+        unsafe { descriptor.setCaptureObject(Some(capture_object)) };
+        descriptor.setDestination(MTLCaptureDestination::GPUTraceDocument);
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&trace.to_string_lossy()));
+        descriptor.setOutputURL(Some(&url));
+        manager
+            .startCaptureWithDescriptor_error(&descriptor)
+            .map_err(|error| format!("start GPU capture: {error}"))?;
+        let result = decode();
+        manager.stopCapture();
+        result
     }
 
     fn run_auto_only(paths: &[PathBuf], repeats: usize) -> Result<(), String> {

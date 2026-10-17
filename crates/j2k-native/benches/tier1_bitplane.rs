@@ -1,6 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_native::{
     collect_ht_cleanup_encode_distribution, decode_ht_code_block_scalar,
+    decode_ht_code_block_scalar_with_workspace,
     decode_ht_code_block_scalar_with_workspace_midpoint, decode_j2k_code_block_scalar,
     encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes_and_workspace,
     encode_j2k_code_block_scalar_with_style, DecodeSettings, DecoderContext, HtCodeBlockDecodeJob,
@@ -427,7 +428,58 @@ fn bench_htj2k_cleanup_decode(c: &mut Criterion) {
                 std::hint::black_box(&output);
             });
         });
+
+        let mut workspace = HtCodeBlockDecodeWorkspace::default();
+        group.bench_with_input(
+            BenchmarkId::new("decode_64x64_reuse", seed),
+            &job,
+            |b, job| {
+                b.iter(|| {
+                    decode_ht_code_block_scalar_with_workspace(*job, &mut output, &mut workspace)
+                        .expect("decode HTJ2K code block with reusable workspace");
+                    std::hint::black_box(&output);
+                });
+            },
+        );
     }
+
+    let width = 64;
+    let height = 64;
+    let total_bitplanes = 10;
+    let seed = 0x9191_0010;
+    let mut coefficients = generated_coefficients(width, height, seed);
+    for (index, coefficient) in coefficients.iter_mut().enumerate() {
+        if !index.is_multiple_of(16) {
+            *coefficient = 0;
+        }
+    }
+    let encoded = encode_ht_code_block_scalar(&coefficients, width, height, total_bitplanes)
+        .expect("encode sparse HTJ2K code block");
+    let job = HtCodeBlockDecodeJob {
+        data: &encoded.data,
+        cleanup_length: u32::try_from(encoded.data.len())
+            .expect("benchmark payload length fits u32"),
+        refinement_length: 0,
+        width,
+        height,
+        output_stride: width as usize,
+        missing_bit_planes: encoded.num_zero_bitplanes,
+        number_of_coding_passes: encoded.num_coding_passes,
+        num_bitplanes: total_bitplanes,
+        roi_shift: 0,
+        stripe_causal: false,
+        strict: true,
+        dequantization_step: 1.0,
+    };
+    let mut output = vec![0.0; width as usize * height as usize];
+    let mut workspace = HtCodeBlockDecodeWorkspace::default();
+    group.bench_function("decode_64x64_reuse_sparse_1_in_16", |b| {
+        b.iter(|| {
+            decode_ht_code_block_scalar_with_workspace(job, &mut output, &mut workspace)
+                .expect("decode sparse HTJ2K code block with reusable workspace");
+            std::hint::black_box(&output);
+        });
+    });
     group.finish();
 }
 
@@ -453,7 +505,8 @@ fn bench_htj2k_refinement_block_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("htj2k_refinement_block_decode");
     let jobs = collect_refinement_fixture_jobs();
     let job = jobs
-        .first()
+        .iter()
+        .max_by_key(|job| job.output_len())
         .expect("fixture must contain a refinement HTJ2K block");
     let cleanup_job = job.borrowed_with_passes(1, 0);
     let sigprop_job = job.borrowed_with_passes(2, job.refinement_length);

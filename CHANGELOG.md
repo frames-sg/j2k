@@ -98,6 +98,64 @@ and stale roadmap entries have been removed from the public documentation set.
 - Metal HTJ2K decode writes code-block payload bytes straight into the shared
   buffer the kernels read, instead of packing a host copy first, and prepared
   executions no longer keep that host copy.
+- `J2kDecoder` (`j2k-metal`) plans HTJ2K grayscale and RGB images with
+  code-block payloads referenced as ranges into one copy of the codestream,
+  as `MetalBatchDecoder` already did, instead of copying each block's bytes
+  into the native plan, again into each sub-band, and again into each group.
+  The decoder and the session plan cache no longer keep the native plan,
+  which held another copy, and the cache counts the codestream copy toward
+  its byte limit. Classic J2K, and HTJ2K images the referenced plan does not
+  support, keep the owned plan. A new decoder per frame decoded MG1
+  (3064 x 4774 `Gray16`) in 6.76 ms against 7.49 ms.
+- The Metal runtime's prepared HT execution cache drops an entry as soon as
+  the plan it was prepared for is dropped, instead of holding its device
+  payload until the cache's 256 MiB limit forces it out. Decoding 60 MG1
+  frames through new decoders peaked at 393 MB of memory footprint instead
+  of 666 MB.
+- Metal decode does less GPU and setup work; output is bit-identical:
+  - Each 5/3 and 9/7 inverse wavelet level runs as one tiled kernel that
+    loads the four sub-bands with a halo, lifts rows and then columns in
+    threadgroup memory, and writes the level once, instead of an
+    interleave/horizontal kernel followed by a vertical kernel over the
+    whole plane. Single images and stacked same-geometry batches both use
+    it. On a 3072 x 4096 16-bit image the 5/3 transform took 0.79 ms of GPU
+    time instead of 1.51 ms, and the 9/7 transform 1.31 ms instead of
+    1.86 ms.
+  - HT decoding zeroes only the parts of the coefficient arena that no
+    code-block job writes (blocks without coding passes), found once when
+    the plan is prepared, instead of the whole arena: jobs cover 95 to 100%
+    of it in the DICOM corpus. Paths without that layout zero the arena
+    with 16-byte stores, 0.26 ms instead of 0.90 ms for MG1.
+  - Prepared HT payloads and job tables, decoded surfaces, and codec-owned
+    batch outputs come from runtime-owned Metal heaps instead of new
+    buffers. Heap memory stays mapped between decodes, so writing it no
+    longer faults in fresh pages on the CPU or maps them for the GPU. Metal
+    reuses a buffer's memory only after every reference to it, including a
+    command buffer's or the caller's, is released. The input heap holds 4
+    to 256 MiB; the output heap up to the shared buffer pool's retention
+    limit (256 MiB to 1 GiB by device), and never more than the 512 MiB
+    allocation cap. Requests a heap cannot hold use their own buffers.
+  - A grayscale single-image decode runs its last wavelet level and its
+    final store as one kernel: each synthesized sample is shifted, rounded,
+    and packed as the store kernel does and written straight to the output,
+    so the level's float plane (58 MB for MG1) is never written or read
+    back. `MetalBatchDecoder` groups of distinct grayscale images do the
+    same for their last level, component store, and group pack, which
+    halved a 16-frame SC1 batch (25.1 to 11.9 ms) and an MG1 batch (120 to
+    62 ms). Color and broadcast routes keep the separate store.
+- Fix (`j2k-metal`): a `MetalBatchDecoder` grayscale group whose stacked
+  coefficients exceed one allocation (512 MiB; 16 frames of 3064 x 4774) no
+  longer fails as a group error. It is decoded in runs of images that each
+  fit, written to their own destination ranges.
+  - A new `J2kDecoder` reads whether the codestream uses HT block coding
+    from its parsed header instead of inspecting the codestream again.
+  - MG1 (3064 x 4774) decoded to `Gray16` through a new decoder per frame in
+    3.35 ms instead of 7.66 ms, and through one reused decoder in 2.19 ms
+    instead of 4.82 ms. `MetalBatchDecoder` decoded 16 MG1 frames into
+    codec-owned output in 11.7 ms instead of 22 ms, the same as into a
+    caller-owned buffer.
+- `j2k-metal-support` adds `checked_shared_heap` and
+  `checked_heap_shared_buffer`.
 - Adds the `jp2k_dicom_bench` comparison binary (`j2k-compare`) and the
   `dicom_decode_bench` example (`j2k-metal`) for native-bit-depth DICOM-style
   frames.

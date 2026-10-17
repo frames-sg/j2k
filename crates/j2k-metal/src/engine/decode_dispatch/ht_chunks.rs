@@ -20,7 +20,8 @@ use super::{Error, J2kHtCleanupBatchJob};
 use crate::engine::{PreparedHtExecutionOwner, PreparedHtPayloadSource};
 
 pub(in crate::engine) use execution::{
-    encode_metal_ht_batches_in_encoder, encode_repeated_metal_ht_batch_in_command_buffer,
+    encode_metal_ht_batches_in_encoder, encode_metal_ht_batches_with_zero_layouts_in_encoder,
+    encode_repeated_metal_ht_batch_in_command_buffer,
 };
 pub(in crate::engine) use prepared::cache::{
     prepared_metal_ht_execution, PreparedMetalHtExecutionCache,
@@ -38,6 +39,15 @@ pub(in crate::engine) struct HtBatchInput<'a> {
     pub(in crate::engine) jobs: &'a [J2kHtCleanupBatchJob],
     pub(in crate::engine) output_base: usize,
     pub(in crate::engine) execution_owner: &'a Arc<PreparedHtExecutionOwner>,
+}
+
+/// The coefficient arena of one batch input: `extent` words from its
+/// `output_base`, of which only `uncovered` rectangles (relative to the base)
+/// are left unwritten by its jobs.
+#[derive(Clone, Copy)]
+pub(in crate::engine) struct HtZeroLayout<'a> {
+    pub(in crate::engine) extent: usize,
+    pub(in crate::engine) uncovered: &'a [crate::engine::abi::J2kZeroRect],
 }
 
 #[derive(Clone, Copy)]
@@ -226,7 +236,7 @@ impl MetalHtChunkPlan<'_> {
     pub(in crate::engine) fn pack_chunk_into_buffer(
         &self,
         chunk_index: usize,
-        device: &crate::metal_types::Device,
+        inputs: crate::engine::HtInputAllocator<'_>,
     ) -> Result<(PackedMetalHtChunkJobs, super::Buffer), Error> {
         let chunk =
             self.plan
@@ -253,7 +263,7 @@ impl MetalHtChunkPlan<'_> {
             chunk.job_count(),
             crate::batch_allocation::BatchMetadataBudget::new("HTJ2K Metal packed chunk metadata"),
         )?;
-        let buffer = super::new_shared_buffer(device, chunk.payload_bytes().max(1))?;
+        let buffer = inputs.shared_buffer(chunk.payload_bytes().max(1))?;
         let mut sink = SharedBufferPayloadSink {
             buffer: &buffer,
             len: 0,

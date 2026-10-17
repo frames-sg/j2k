@@ -540,6 +540,38 @@ pub(crate) struct J2kHtRepeatedBatchParams {
     pub(crate) batch_count: u32,
 }
 
+/// `height` rows of `width` 32-bit words, `stride` words apart, starting at
+/// word `offset`, to zero; mirrors `J2kZeroRect` in `buffer_ops.metal`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct J2kZeroRect {
+    pub(crate) offset: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stride: u32,
+}
+
+/// A stacked grayscale group's final store applied by its last wavelet level;
+/// mirrors `J2kStackedGrayStoreParams` in `idwt_store.metal`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct J2kStackedGrayStoreParams {
+    pub(crate) source_x: u32,
+    pub(crate) source_y: u32,
+    pub(crate) copy_width: u32,
+    pub(crate) copy_height: u32,
+    pub(crate) output_stride: u32,
+    pub(crate) image_stride: u32,
+    pub(crate) addend: f32,
+    pub(crate) round_centered: u32,
+    pub(crate) max_value: f32,
+    pub(crate) u8_scale: f32,
+    pub(crate) u16_scale: f32,
+    pub(crate) reserved: u32,
+}
+
 /// Blocks per SIMD group for the cooperative HT VLC kernels; mirrors
 /// `J2kHtVlcDispatchParams` in `ht_cleanup_simd.metal`.
 #[cfg(target_os = "macos")]
@@ -1100,6 +1132,8 @@ impl_gpu_readback_abi!(
     J2kHtCleanupBatchJob,
     J2kHtRepeatedBatchParams,
     J2kHtVlcDispatchParams,
+    J2kZeroRect,
+    J2kStackedGrayStoreParams,
     J2kClassicRepeatedBatchParams,
     J2kHtStatus,
     J2kClassicEncodeParams,

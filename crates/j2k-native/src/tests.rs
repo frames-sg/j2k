@@ -7,6 +7,21 @@ mod ht_refinement;
 mod workspace_reuse;
 
 #[test]
+fn image_reports_high_throughput_block_coding_from_its_header() {
+    let pixels = vec![17_u8; 32 * 24];
+    let options = EncodeOptions::default();
+    let ht = encode_htj2k(&pixels, 32, 24, 1, 8, false, &options).expect("encode HTJ2K");
+    let classic = encode(&pixels, 32, 24, 1, 8, false, &options).expect("encode J2K");
+    let settings = DecodeSettings::default();
+    assert!(Image::new(&ht, &settings)
+        .expect("parse HTJ2K")
+        .uses_high_throughput_block_coding());
+    assert!(!Image::new(&classic, &settings)
+        .expect("parse J2K")
+        .uses_high_throughput_block_coding());
+}
+
+#[test]
 fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
     let pixels = vec![0, 16, 32, 64, 80, 96, 128, 144, 160, 192, 208, 224];
     let bytes =

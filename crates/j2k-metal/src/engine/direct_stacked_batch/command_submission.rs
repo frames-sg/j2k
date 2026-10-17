@@ -12,7 +12,7 @@ use super::super::{
 };
 use super::resources::StackedComponentResources;
 use super::validation::StackedComponentBatchPlan;
-use super::StackedDirectComponentPlaneBatchRequest;
+use super::{StackedDirectComponentPlaneBatchRequest, StackedGrayOutput};
 
 mod classic_tier1;
 mod final_store;
@@ -36,6 +36,8 @@ struct SubmissionContext<'a, 'p, 'r> {
     broadcast_tier1_inputs: bool,
     profile_stages: bool,
     round_centered_store: bool,
+    /// Where the last wavelet level may store a grayscale group directly.
+    gray_output: Option<StackedGrayOutput<'a>>,
     resources: &'r mut StackedComponentResources,
 }
 
@@ -66,9 +68,10 @@ fn try_collect_submission_items<T>(
     Ok(values)
 }
 
-pub(super) fn submit_stacked_component_commands<'p>(
-    request: StackedDirectComponentPlaneBatchRequest<'_, 'p>,
-    shared_classic_tier1: Option<&mut SharedClassicTier1Group>,
+pub(super) fn submit_stacked_component_commands<'a, 'p>(
+    request: StackedDirectComponentPlaneBatchRequest<'a, 'p>,
+    shared_classic_tier1: Option<&'a mut SharedClassicTier1Group>,
+    gray_output: Option<StackedGrayOutput<'a>>,
     plan: &StackedComponentBatchPlan<'p>,
     resources: &mut StackedComponentResources,
 ) -> Result<(), Error> {
@@ -103,6 +106,7 @@ pub(super) fn submit_stacked_component_commands<'p>(
         broadcast_tier1_inputs: plan.broadcast_tier1_inputs,
         profile_stages,
         round_centered_store: plan.first.round_centered_store,
+        gray_output,
         resources,
     };
 
@@ -128,6 +132,16 @@ pub(super) fn submit_stacked_component_commands<'p>(
                 context.submit_ht_sub_band(first, step_idx, sub_band)?;
             }
             PreparedDirectGrayscaleStep::Idwt(idwt) => {
+                if let Some(PreparedDirectGrayscaleStep::Store(store)) =
+                    first.steps.get(step_idx + 1)
+                {
+                    if step_idx + 2 == first.steps.len()
+                        && context.submit_idwt_into_gray_output(step_idx, idwt, store)?
+                    {
+                        step_idx += 2;
+                        continue;
+                    }
+                }
                 context.submit_idwt(step_idx, idwt)?;
             }
             PreparedDirectGrayscaleStep::Store(store) => {

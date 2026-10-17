@@ -49,34 +49,99 @@ const RING_ROWS: usize = MAX_HALO_ROWS + 2;
 #[cfg(feature = "parallel")]
 const MIN_STRIP_ROWS: usize = 64;
 
-/// Scratch elements one strip worker needs for a level `width` samples wide.
-fn band_scratch_elements(width: usize) -> Result<usize> {
-    RING_ROWS
-        .checked_mul(width)
+/// Scratch elements for the two horizontally lifted bands of one row.
+fn horizontal_scratch_elements(width: usize) -> Result<usize> {
+    if width < MIN_SIMD_ROW_WIDTH {
+        return Ok(0);
+    }
+    width
+        .checked_add(4)
         .ok_or(ValidationError::ImageTooLarge.into())
 }
 
-/// Ring scratch the build plan reserves for a component whose largest active
-/// level is `width` x `height`. Scratch per worker grows with width, so the
-/// largest level bounds every level; levels too small to stream need none.
-pub(crate) fn planned_band_scratch_elements(width: usize, height: usize) -> Result<usize> {
+/// Scratch elements one parallel strip worker needs: its vertical ring and
+/// the two ghosted horizontal bands it reuses for every synthesized row.
+fn worker_scratch_elements(width: usize) -> Result<usize> {
+    let ring = RING_ROWS
+        .checked_mul(width)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    ring.checked_add(horizontal_scratch_elements(width)?)
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// Banded scratch one execution needs for this level. Serial reconstruction
+/// keeps only the two ghosted horizontal bands; parallel reconstruction keeps
+/// one complete worker slab for every strip that can run concurrently.
+pub(crate) fn banded_scratch_elements_for_execution(
+    width: usize,
+    height: usize,
+    parallel: bool,
+) -> Result<usize> {
     if !use_banded(width, height) {
         return Ok(0);
     }
-    band_scratch_elements(width)?
-        .checked_mul(band_workers())
+    let Some(layout) = parallel_strip_layout(width, height, parallel)? else {
+        return horizontal_scratch_elements(width);
+    };
+    worker_scratch_elements(width)?
+        .checked_mul(layout.concurrent_strips)
         .ok_or(ValidationError::ImageTooLarge.into())
 }
 
+/// Scratch the build plan reserves for a component whose largest active level
+/// is `width` x `height`. The normal decoder may use the Rayon pool, so plan
+/// for parallel execution when that path is available.
+pub(crate) fn planned_band_scratch_elements(width: usize, height: usize) -> Result<usize> {
+    banded_scratch_elements_for_execution(width, height, true)
+}
+
 /// Workers that may each hold ring scratch at once.
+#[cfg(feature = "parallel")]
 fn band_workers() -> usize {
+    rayon::current_num_threads().max(1)
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+struct ParallelStripLayout {
+    strip_len: usize,
+    concurrent_strips: usize,
+}
+
+/// Parallel strip geometry and the maximum number of streams Rayon can run
+/// at once. `None` selects the serial stream.
+fn parallel_strip_layout(
+    width: usize,
+    height: usize,
+    parallel: bool,
+) -> Result<Option<ParallelStripLayout>> {
     #[cfg(feature = "parallel")]
     {
-        rayon::current_num_threads().max(1)
+        let required_len = width
+            .checked_mul(height)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let workers = if parallel && required_len >= MIN_PARALLEL_SAMPLES {
+            band_workers().min(height / MIN_STRIP_ROWS)
+        } else {
+            1
+        };
+        if workers <= 1 {
+            return Ok(None);
+        }
+        let strip_rows = height.div_ceil(2 * workers).max(MIN_STRIP_ROWS);
+        let strip_len = strip_rows
+            .checked_mul(width)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let strip_count = height.div_ceil(strip_rows);
+        Ok(Some(ParallelStripLayout {
+            strip_len,
+            concurrent_strips: band_workers().min(strip_count),
+        }))
     }
     #[cfg(not(feature = "parallel"))]
     {
-        1
+        let _ = (width, height, parallel);
+        Ok(None)
     }
 }
 
@@ -233,39 +298,38 @@ pub(super) fn filter_2d_banded_from_bands(
         high_pass,
     };
 
-    #[cfg(feature = "parallel")]
-    let workers = if parallel && required_len >= MIN_PARALLEL_SAMPLES {
-        band_workers().min(height / MIN_STRIP_ROWS)
-    } else {
-        1
+    let target = &mut target[..required_len];
+    let Some(parallel_layout) = parallel_strip_layout(width, height, parallel)? else {
+        let scratch_len = horizontal_scratch_elements(width)?;
+        try_resize_decode_elements(band_scratch, scratch_len, 0.0)?;
+        dispatch!(Level::new(), simd => stream_level(
+            simd,
+            level,
+            target,
+            &mut band_scratch[..scratch_len],
+        ));
+        return Ok(());
     };
     #[cfg(not(feature = "parallel"))]
-    let workers = {
-        let _ = (parallel, &band_scratch);
-        1
-    };
-    let target = &mut target[..required_len];
-    if workers <= 1 {
-        dispatch!(Level::new(), simd => stream_level(simd, level, target));
-        return Ok(());
-    }
+    let _ = parallel_layout;
 
     #[cfg(feature = "parallel")]
     {
-        let per_worker = band_scratch_elements(width)?;
+        let per_worker = worker_scratch_elements(width)?;
         let scratch_len = per_worker
-            .checked_mul(workers)
+            .checked_mul(parallel_layout.concurrent_strips)
             .ok_or(ValidationError::ImageTooLarge)?;
-        if band_scratch.len() < scratch_len {
-            try_resize_decode_elements(band_scratch, scratch_len, 0.0)?;
-        }
-        // About two strips per worker balances uneven progress.
-        let strip_len = height.div_ceil(2 * workers).max(MIN_STRIP_ROWS) * width;
+        try_resize_decode_elements(band_scratch, scratch_len, 0.0)?;
+        let wave_len = parallel_layout
+            .strip_len
+            .checked_mul(parallel_layout.concurrent_strips)
+            .ok_or(ValidationError::ImageTooLarge)?;
         dispatch!(Level::new(), simd => run_strips(
             simd,
             level,
             target,
-            strip_len,
+            parallel_layout.strip_len,
+            wave_len,
             &mut band_scratch[..scratch_len],
             per_worker,
         ));
@@ -280,35 +344,24 @@ fn run_strips<S: Simd>(
     level: Level2d<'_>,
     target: &mut [f32],
     strip_len: usize,
+    wave_len: usize,
     scratch: &mut [f32],
     per_worker: usize,
 ) {
     use rayon::prelude::*;
-    use std::sync::Mutex;
 
-    let pool = Mutex::new(scratch.chunks_exact_mut(per_worker).collect::<Vec<_>>());
-    target
-        .par_chunks_mut(strip_len)
-        .enumerate()
-        .with_max_len(1)
-        .for_each(|(strip, output)| {
-            // At most `workers` strips run at once, and each returns its
-            // ring before finishing, so a ring is always available.
-            let first_row = strip * strip_len / level.width;
-            // Bind the popped ring first so the pool guard drops before the
-            // ring is pushed back.
-            let pooled = pool.lock().ok().and_then(|mut pool| pool.pop());
-            if let Some(ring) = pooled {
-                stream_strip(simd, level, first_row, output, ring);
-                if let Ok(mut pool) = pool.lock() {
-                    pool.push(ring);
-                }
-            } else {
-                let mut ring = Vec::new();
-                ring.resize(per_worker, 0.0);
-                stream_strip(simd, level, first_row, output, &mut ring);
-            }
-        });
+    let strips_per_wave = scratch.len() / per_worker;
+    for (wave, outputs) in target.chunks_mut(wave_len).enumerate() {
+        outputs
+            .par_chunks_mut(strip_len)
+            .zip(scratch.par_chunks_mut(per_worker))
+            .enumerate()
+            .for_each(|(index, (output, worker_scratch))| {
+                let strip = wave * strips_per_wave + index;
+                let first_row = strip * strip_len / level.width;
+                stream_strip(simd, level, first_row, output, worker_scratch);
+            });
+    }
 }
 
 /// One vertical lifting step: the rows it updates have parity `parity`.
@@ -367,26 +420,29 @@ fn synthesize_level_row<S: Simd>(
     level: Level2d<'_>,
     index: usize,
     row: &mut [f32],
-    low: &mut Vec<f32>,
-    high: &mut Vec<f32>,
+    low: &mut [f32],
+    high: &mut [f32],
 ) {
+    let row_scale = if level.transform == WaveletTransform::Irreversible97 {
+        if index % 2 == level.y0 % 2 {
+            dwt::DWT97_KAPPA_F32
+        } else {
+            level.high_pass
+        }
+    } else {
+        1.0
+    };
     let source = if index % 2 == level.even.start_row % 2 {
         level.even.row(index)
     } else {
         level.odd.row(index)
     };
     match source {
-        Some((first, second)) => synthesize_row(simd, level, first, second, row, low, high),
+        Some((first, second)) => {
+            synthesize_row(simd, level, first, second, row, low, high, row_scale);
+        }
         // Lifting maps an all-zero row to zeros.
         None => row.fill(0.0),
-    }
-    if level.transform == WaveletTransform::Irreversible97 {
-        let scale = if index % 2 == level.y0 % 2 {
-            dwt::DWT97_KAPPA_F32
-        } else {
-            level.high_pass
-        };
-        scale_samples(simd, row, scale);
     }
 }
 
@@ -406,16 +462,20 @@ fn synthesize_level_row<S: Simd>(
     reason = "the streaming kernel is specialized at the architecture dispatch boundary"
 )]
 #[inline(always)]
-fn stream_level<S: Simd>(simd: S, level: Level2d<'_>, target: &mut [f32]) {
+fn stream_level<S: Simd>(
+    simd: S,
+    level: Level2d<'_>,
+    target: &mut [f32],
+    horizontal_scratch: &mut [f32],
+) {
     let width = level.width;
     let height = level.height;
     let (steps, count) = vertical_steps(level);
-    let mut low = Vec::new();
-    let mut high = Vec::new();
+    let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
     for arrival in 0..height + count {
         if arrival < height {
             let row = &mut target[arrival * width..][..width];
-            synthesize_level_row(simd, level, arrival, row, &mut low, &mut high);
+            synthesize_level_row(simd, level, arrival, row, low, high);
         }
         for (index, &(parity, step)) in steps[..count].iter().enumerate() {
             let Some(row) = arrival.checked_sub(index + 1) else {
@@ -448,7 +508,7 @@ fn stream_strip<S: Simd>(
     level: Level2d<'_>,
     first_row: usize,
     output: &mut [f32],
-    ring: &mut [f32],
+    worker_scratch: &mut [f32],
 ) {
     let width = level.width;
     let height = level.height;
@@ -457,13 +517,14 @@ fn stream_strip<S: Simd>(
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
     let ring_rows = count + 2;
+    let ring_capacity = RING_ROWS * width;
+    let (ring, horizontal_scratch) = worker_scratch.split_at_mut(ring_capacity);
     let ring = &mut ring[..ring_rows * width];
-    let mut low = Vec::new();
-    let mut high = Vec::new();
+    let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
     for arrival in lo..hi + count {
         if arrival < hi {
             let row = &mut ring[(arrival % ring_rows) * width..][..width];
-            synthesize_level_row(simd, level, arrival, row, &mut low, &mut high);
+            synthesize_level_row(simd, level, arrival, row, low, high);
         }
         for (index, &(parity, step)) in steps[..count].iter().enumerate() {
             let Some(row) = arrival.checked_sub(index + 1) else {
@@ -495,6 +556,27 @@ fn stream_strip<S: Simd>(
             }
         }
     }
+}
+
+/// Split one worker's exact horizontal scratch into low- and high-pass bands,
+/// each with one ghost sample on either side.
+fn split_horizontal_scratch<'scratch>(
+    level: Level2d<'_>,
+    scratch: &'scratch mut [f32],
+) -> (&'scratch mut [f32], &'scratch mut [f32]) {
+    if level.width < MIN_SIMD_ROW_WIDTH {
+        let (low, rest) = scratch.split_at_mut(0);
+        let (high, _) = rest.split_at_mut(0);
+        return (low, high);
+    }
+    let (low_width, high_width) = if level.x0.is_multiple_of(2) {
+        (level.even.first_width, level.even.second_width)
+    } else {
+        (level.even.second_width, level.even.first_width)
+    };
+    let (low, rest) = scratch.split_at_mut(low_width + 2);
+    let (high, _) = rest.split_at_mut(high_width + 2);
+    (low, high)
 }
 
 /// Row `current` of `rows` (rows of `width` samples) mutably, with rows
@@ -627,6 +709,10 @@ const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
 /// `horizontal::filter_row`. Each buffer carries a ghost sample at both ends
 /// that mirrors its edge sample: that is the symmetric extension (F.3.7) of
 /// the interleaved row seen from the other parity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row synthesis keeps its geometry, two sources, output, and exact scratch explicit"
+)]
 #[inline(always)]
 fn synthesize_row<S: Simd>(
     simd: S,
@@ -634,8 +720,9 @@ fn synthesize_row<S: Simd>(
     first: &[f32],
     second: &[f32],
     row: &mut [f32],
-    low: &mut Vec<f32>,
-    high: &mut Vec<f32>,
+    low: &mut [f32],
+    high: &mut [f32],
+    row_scale: f32,
 ) {
     const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
     const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
@@ -646,6 +733,9 @@ fn synthesize_row<S: Simd>(
     if width < MIN_SIMD_ROW_WIDTH {
         interleave_row(simd, first, second, row);
         filter_row(row, width, level.x0, level.transform, level.high_pass);
+        if level.transform == WaveletTransform::Irreversible97 {
+            scale_samples(simd, row, row_scale);
+        }
         return;
     }
     // Column `x0` is low-pass when it is even; the first band row holds the
@@ -682,11 +772,14 @@ fn synthesize_row<S: Simd>(
                 #[inline(always)]
                 |s, a, b| s - math::floor_f32(math::mul_add(a + b, 0.25, 0.5)),
             );
-            lift_row(
+            lift_high_to_row::<S, false>(
                 simd,
                 high,
                 low,
                 high_reads,
+                low_first,
+                row,
+                1.0,
                 #[inline(always)]
                 |s, a, b| s + ((a + b) * 0.5).floor(),
                 #[inline(always)]
@@ -697,13 +790,10 @@ fn synthesize_row<S: Simd>(
             // Steps 1 and 2.
             scale_row(simd, low, KAPPA);
             scale_row(simd, high, level.high_pass);
-            // Steps 3 to 6.
-            for (update_low, coefficient) in [
-                (true, NEG_DELTA),
-                (false, NEG_GAMMA),
-                (true, NEG_BETA),
-                (false, NEG_ALPHA),
-            ] {
+            // Steps 3 to 5.
+            for (update_low, coefficient) in
+                [(true, NEG_DELTA), (false, NEG_GAMMA), (true, NEG_BETA)]
+            {
                 let coefficient_simd = f32x8::splat(simd, coefficient);
                 let (target, source, reads) = if update_low {
                     (&mut *low, &mut *high, low_reads)
@@ -721,24 +811,33 @@ fn synthesize_row<S: Simd>(
                     |s, a, b| math::mul_add(a + b, coefficient, s),
                 );
             }
+            // Step 6, the interleave, and the vertical scale share their
+            // final loads and store. The multiply still follows the final
+            // lifting expression for every sample.
+            let coefficient_simd = f32x8::splat(simd, NEG_ALPHA);
+            lift_high_to_row::<S, true>(
+                simd,
+                high,
+                low,
+                high_reads,
+                low_first,
+                row,
+                row_scale,
+                #[inline(always)]
+                |s, a, b| (a + b).mul_add(coefficient_simd, s),
+                #[inline(always)]
+                |s, a, b| math::mul_add(a + b, NEG_ALPHA, s),
+            );
         }
-    }
-
-    let low = &low[1..=low_source.len()];
-    let high = &high[1..=high_source.len()];
-    if low_first {
-        interleave_row(simd, low, high, row);
-    } else {
-        interleave_row(simd, high, low, row);
     }
 }
 
 /// Copy `source` into `buffer[1..]`, leaving room for a ghost at each end.
-fn load_ghosted(buffer: &mut Vec<f32>, source: &[f32]) {
-    buffer.clear();
-    buffer.push(0.0);
-    buffer.extend_from_slice(source);
-    buffer.push(0.0);
+fn load_ghosted(buffer: &mut [f32], source: &[f32]) {
+    debug_assert_eq!(buffer.len(), source.len() + 2);
+    buffer[0] = 0.0;
+    buffer[1..=source.len()].copy_from_slice(source);
+    buffer[source.len() + 1] = 0.0;
 }
 
 /// One horizontal lifting step: `target[k] = f(target[k], source[k + a],
@@ -773,6 +872,120 @@ fn lift_row<S: Simd>(
     }
     for index in simd_len..len {
         target[index] = f_scalar(target[index], first[index], second[index]);
+    }
+}
+
+/// Apply the final high-pass lifting step and interleave its result with the
+/// low-pass samples directly into `row`.
+///
+/// The low sample paired with each high sample is already one of the two
+/// neighbor vectors loaded for the lift. For 9-7I, scaling the packed vectors
+/// here preserves the original lift-then-scale order while avoiding another
+/// whole-row load and store.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fused final lift keeps its geometry and scalar/SIMD operations explicit"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_high_to_row<S: Simd, const SCALE: bool>(
+    simd: S,
+    high: &mut [f32],
+    low: &mut [f32],
+    (first_offset, second_offset): (usize, usize),
+    low_first: bool,
+    row: &mut [f32],
+    scale: f32,
+    f_simd: impl Fn(f32x8<S>, f32x8<S>, f32x8<S>) -> f32x8<S>,
+    f_scalar: impl Fn(f32, f32, f32) -> f32,
+) {
+    let low_len = low.len() - 2;
+    let high_len = high.len() - 2;
+    // A high-first odd row can end with an unpaired high sample. If that
+    // sample shares a SIMD vector with seven pairs, preserve the old vector
+    // lift and scalar interleave boundary on this uncommon width.
+    if high_len > low_len && high_len.is_multiple_of(SIMD_WIDTH) {
+        lift_row(
+            simd,
+            high,
+            low,
+            (first_offset, second_offset),
+            f_simd,
+            f_scalar,
+        );
+        interleave_row(simd, &high[1..=high_len], &low[1..=low_len], row);
+        if SCALE {
+            scale_samples(simd, row, scale);
+        }
+        return;
+    }
+
+    // Refresh the low-pass ghosts before taking the neighbor slices.
+    low[0] = low[1];
+    low[low_len + 1] = low[low_len];
+    let high = &high[1..=high_len];
+    let first = &low[first_offset..first_offset + high_len];
+    let second = &low[second_offset..second_offset + high_len];
+    let pairs = low_len.min(high_len);
+    let simd_pairs = pairs / SIMD_WIDTH * SIMD_WIDTH;
+    let scale_simd = f32x8::splat(simd, scale);
+
+    for index in (0..simd_pairs).step_by(SIMD_WIDTH) {
+        let s = f32x8::from_slice(simd, &high[index..][..SIMD_WIDTH]);
+        let a = f32x8::from_slice(simd, &first[index..][..SIMD_WIDTH]);
+        let b = f32x8::from_slice(simd, &second[index..][..SIMD_WIDTH]);
+        let updated_high = f_simd(s, a, b);
+        let paired_low = if low_first { a } else { b };
+        let (first_values, second_values) = if low_first {
+            (paired_low, updated_high)
+        } else {
+            (updated_high, paired_low)
+        };
+        let mut packed_low = first_values.zip_low(second_values);
+        let mut packed_high = first_values.zip_high(second_values);
+        if SCALE {
+            packed_low = packed_low * scale_simd;
+            packed_high = packed_high * scale_simd;
+        }
+        packed_low.store(&mut row[index * 2..]);
+        packed_high.store(&mut row[index * 2 + SIMD_WIDTH..]);
+    }
+
+    for index in simd_pairs..high_len {
+        let updated_high = f_scalar(high[index], first[index], second[index]);
+        let updated_high = if SCALE {
+            updated_high * scale
+        } else {
+            updated_high
+        };
+        if index < pairs {
+            let paired_low = if low_first {
+                first[index]
+            } else {
+                second[index]
+            };
+            let paired_low = if SCALE {
+                paired_low * scale
+            } else {
+                paired_low
+            };
+            if low_first {
+                row[index * 2] = paired_low;
+                row[index * 2 + 1] = updated_high;
+            } else {
+                row[index * 2] = updated_high;
+                row[index * 2 + 1] = paired_low;
+            }
+        } else {
+            row[index * 2] = updated_high;
+        }
+    }
+    if low_len > high_len {
+        let last_low = low[low_len];
+        row[row.len() - 1] = if SCALE { last_low * scale } else { last_low };
     }
 }
 

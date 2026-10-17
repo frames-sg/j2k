@@ -282,25 +282,25 @@ impl<'a> Image<'a> {
         match (bit_depth, component.signed) {
             (1..=8, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(out, samples, parallel, |sample| {
+                extend_converted(out, samples, parallel, move |sample| {
                     [(round_clamped_native(sample, min, max) as i8) as u8]
                 });
             }
             (1..=8, false) => {
                 let max = unsigned_native_max(bit_depth);
-                extend_converted(out, samples, parallel, |sample| {
+                extend_converted(out, samples, parallel, move |sample| {
                     [round_clamped_native(sample, 0.0, max) as u8]
                 });
             }
             (9..=16, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(out, samples, parallel, |sample| {
+                extend_converted(out, samples, parallel, move |sample| {
                     ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
                 });
             }
             (9..=16, false) => {
                 let max = unsigned_native_max(bit_depth);
-                extend_converted(out, samples, parallel, |sample| {
+                extend_converted(out, samples, parallel, move |sample| {
                     (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes()
                 });
             }
@@ -452,7 +452,11 @@ fn unsigned_native_max(bit_depth: u8) -> f32 {
 )]
 #[inline(always)]
 fn round_clamped_native(sample: f32, min: f32, max: f32) -> i32 {
-    let clamped = sample.clamp(min, max);
+    // The callers supply ordered finite bounds. Explicit comparisons preserve
+    // NaN for the saturating cast without repeating clamp's bounds assertion
+    // for every sample, which otherwise prevents vectorizing the packing loop.
+    let clamped = if sample < min { min } else { sample };
+    let clamped = if clamped > max { max } else { clamped };
     #[cfg(feature = "std")]
     let rounded = clamped.round();
     // `libm::roundf` rounds ties away from zero exactly; `floor(x + 0.5)`
@@ -475,7 +479,7 @@ fn extend_converted<const N: usize>(
     out: &mut Vec<u8>,
     samples: &[f32],
     parallel: bool,
-    convert: impl Fn(f32) -> [u8; N] + Sync,
+    convert: impl Fn(f32) -> [u8; N] + Send + Sync,
 ) {
     const CHUNK: usize = 64;
     #[cfg(feature = "parallel")]
@@ -489,7 +493,7 @@ fn extend_converted<const N: usize>(
             .0
             .par_chunks_mut(16 * 1024)
             .zip(samples.par_chunks(16 * 1024))
-            .for_each(|(destination, source)| {
+            .for_each(move |(destination, source)| {
                 for (destination, &sample) in destination.iter_mut().zip(source) {
                     *destination = convert(sample);
                 }

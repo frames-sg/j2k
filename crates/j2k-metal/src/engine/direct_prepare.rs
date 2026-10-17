@@ -39,7 +39,9 @@ pub(crate) use self::grayscale::{
     prepare_referenced_htj2k_grayscale_plan,
 };
 use self::ht::prepare_referenced_ht_sub_band;
-pub(in crate::engine) use self::ht::{prepare_ht_sub_band, prepare_ht_sub_band_groups};
+pub(in crate::engine) use self::ht::{
+    append_span_rects, prepare_ht_sub_band, prepare_ht_sub_band_groups,
+};
 use self::referenced::{
     append_referenced_classic_component_steps, append_referenced_htj2k_component_steps,
     finish_referenced_component_plan, validate_payload_record_span,

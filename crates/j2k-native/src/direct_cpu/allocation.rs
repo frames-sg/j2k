@@ -267,7 +267,9 @@ fn include_plan_allocations(
     budget.include_bytes(retained_plan_bytes)?;
     let mut classic_dimensions = None;
     let mut ht_dimensions = None;
+    let mut idwt_bytes = 0usize;
     for component in components {
+        idwt_bytes = idwt_bytes.max(component_banded_idwt_scratch_bytes(component, false)?);
         for step in &component.steps {
             match step {
                 J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
@@ -290,7 +292,29 @@ fn include_plan_allocations(
     let ht_bytes = ht_dimensions.map_or(Ok(0), |(width, height)| {
         ht_block_decode::ht_decode_workspace_bytes(width, height)
     })?;
-    Ok(classic_bytes.max(ht_bytes))
+    Ok(classic_bytes.max(ht_bytes).max(idwt_bytes))
+}
+
+/// Temporary row-banded IDWT scratch for one component plan. IDWT steps run
+/// serially, so only the largest level is live at once.
+pub(super) fn component_banded_idwt_scratch_bytes(
+    component: &J2kDirectGrayscalePlan,
+    parallel: bool,
+) -> Result<usize> {
+    component.steps.iter().try_fold(0usize, |maximum, step| {
+        let J2kDirectGrayscaleStep::Idwt(idwt) = step else {
+            return Ok(maximum);
+        };
+        let elements = crate::j2c::idwt::banded_scratch_elements_for_execution(
+            idwt.rect.width() as usize,
+            idwt.rect.height() as usize,
+            parallel,
+        )?;
+        let bytes = elements
+            .checked_mul(size_of::<f32>())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Ok(maximum.max(bytes))
+    })
 }
 
 fn observe_max_dimensions(target: &mut Option<(u32, u32)>, width: u32, height: u32) {
@@ -366,15 +390,24 @@ fn include_ht_task_workspaces(
     ht_workspace_dimensions: Option<(u32, u32)>,
     scratch: &J2kDirectCpuScratch,
 ) -> Result<()> {
+    let target_count = parallel_ht_task_workspace_count(scratch.parallel, ht_workspace_dimensions);
+    budget.include_capacity::<crate::HtCodeBlockDecodeWorkspace>(
+        scratch.ht_task_workspaces.capacity().max(target_count),
+    )?;
     let target_bytes = ht_workspace_dimensions.map_or(Ok(0), |(width, height)| {
         ht_block_decode::ht_decode_workspace_bytes(width, height)
     })?;
-    for index in 0..parallel_ht_task_workspace_count(scratch.parallel, ht_workspace_dimensions) {
+    for index in 0..scratch.ht_task_workspaces.len().max(target_count) {
         let retained = scratch
             .ht_task_workspaces
             .get(index)
             .map_or(Ok(0), crate::HtCodeBlockDecodeWorkspace::allocated_bytes)?;
-        budget.include_bytes(retained.max(target_bytes))?;
+        let target = if index < target_count {
+            target_bytes
+        } else {
+            0
+        };
+        budget.include_bytes(retained.max(target))?;
     }
     Ok(())
 }

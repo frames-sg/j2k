@@ -398,9 +398,8 @@ fn decode_tile<'a>(
     retained_decode_baseline: usize,
 ) -> Result<()> {
     storage.reset_for_next_tile();
-    let retained_scratch_bytes = tile_ctx.retained_scratch_bytes()?;
     let retained_decode_baseline = retained_decode_baseline
-        .checked_add(retained_scratch_bytes)
+        .checked_add(tile_ctx.retained_scratch_bytes()?)
         .ok_or(ValidationError::ImageTooLarge)?;
     if retained_decode_baseline > crate::DEFAULT_MAX_DECODE_BYTES {
         return Err(ValidationError::ImageTooLarge.into());

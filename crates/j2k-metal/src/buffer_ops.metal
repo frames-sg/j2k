@@ -3,16 +3,50 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Each thread zeroes four words with one 16-byte store; the buffer is bound
+// at offset 0, so every full group of four is aligned. The thread covering
+// the tail stores word by word.
 kernel void j2k_zero_u32_buffer(
     device uint *buffer [[buffer(0)]],
     constant uint &word_count [[buffer(1)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= word_count) {
+    const uint first = gid * 4u;
+    if (first >= word_count) {
         return;
     }
+    if (word_count - first >= 4u) {
+        reinterpret_cast<device uint4 *>(buffer)[gid] = uint4(0u);
+        return;
+    }
+    for (uint word = first; word < word_count; ++word) {
+        buffer[word] = 0u;
+    }
+}
 
-    buffer[gid] = 0u;
+struct J2kZeroRect {
+    uint offset;
+    uint width;
+    uint height;
+    uint stride;
+};
+
+// Zeroes one rectangle per threadgroup, rows across the threadgroup's rows
+// and words across its lanes.
+kernel void j2k_zero_u32_rects(
+    device uint *buffer [[buffer(0)]],
+    device const J2kZeroRect *rects [[buffer(1)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint3 local [[thread_position_in_threadgroup]],
+    uint3 threads [[threads_per_threadgroup]]
+) {
+    const J2kZeroRect rect = rects[group.x];
+    for (uint row = local.y; row < rect.height; row += threads.y) {
+        device uint *line = buffer + rect.offset + row * rect.stride;
+        for (uint x = local.x; x < rect.width; x += threads.x) {
+            line[x] = 0u;
+        }
+    }
 }
 
 struct J2kValidateBytesParams {

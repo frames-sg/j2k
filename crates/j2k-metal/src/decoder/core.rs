@@ -8,10 +8,7 @@ use j2k::{
 };
 use j2k_core::BackendRequest;
 #[cfg(target_os = "macos")]
-use j2k_native::{
-    DecoderContext as NativeDecoderContext, Image as NativeImage, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan,
-};
+use j2k_native::{DecoderContext as NativeDecoderContext, Image as NativeImage};
 
 use super::request::{
     surface_with_report, DecodeSurfaceWithReport, MetalDecodeOp, MetalDecodeRequest,
@@ -31,14 +28,10 @@ pub struct J2kDecoder<'a> {
     #[cfg(target_os = "macos")]
     pub(super) native_context: NativeDecoderContext<'a>,
     #[cfg(target_os = "macos")]
-    pub(super) native_direct_gray_plan: Option<Arc<J2kDirectGrayscalePlan>>,
-    #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_gray_plan:
         Option<Arc<crate::engine::PreparedDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_gray_device_registry_id: Option<u64>,
-    #[cfg(target_os = "macos")]
-    pub(super) native_direct_color_plan: Option<Arc<J2kDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_plan:
         Option<Arc<crate::engine::PreparedDirectColorPlan>>,
@@ -59,13 +52,9 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_context: NativeDecoderContext::default(),
             #[cfg(target_os = "macos")]
-            native_direct_gray_plan: None,
-            #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_device_registry_id: None,
-            #[cfg(target_os = "macos")]
-            native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
             #[cfg(target_os = "macos")]
@@ -87,13 +76,9 @@ impl<'a> J2kDecoder<'a> {
             #[cfg(target_os = "macos")]
             native_context: NativeDecoderContext::default(),
             #[cfg(target_os = "macos")]
-            native_direct_gray_plan: None,
-            #[cfg(target_os = "macos")]
             native_prepared_direct_gray_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_gray_device_registry_id: None,
-            #[cfg(target_os = "macos")]
-            native_direct_color_plan: None,
             #[cfg(target_os = "macos")]
             native_prepared_direct_color_plan: None,
             #[cfg(target_os = "macos")]
