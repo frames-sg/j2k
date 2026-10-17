@@ -335,7 +335,7 @@ struct LayerResolutionComponentPosition<'a> {
     layer: u8,
     resolution: u8,
     component_idx: u16,
-    resolution_tile: ResolutionTile<'a>,
+    resolution_tile: Option<ResolutionTile<'a>>,
     precinct: u64,
 }
 
@@ -344,13 +344,7 @@ impl<'a> LayerResolutionComponentPosition<'a> {
         let layer = input.min_layer();
         let resolution = input.min_resolution();
         let component_idx = input.min_comp();
-        let resolution_tile = ResolutionTile::new(
-            ComponentTile::new(
-                input.tile,
-                &input.tile.component_infos[component_idx as usize],
-            ),
-            resolution,
-        );
+        let resolution_tile = first_resolution_tile(&input);
         Self {
             input,
             layer,
@@ -372,7 +366,11 @@ impl Iterator for LayerResolutionComponentPosition<'_> {
             return None;
         }
 
-        if self.precinct == self.resolution_tile.num_precincts() {
+        if self
+            .resolution_tile
+            .as_ref()
+            .is_none_or(|tile| self.precinct == tile.num_precincts())
+        {
             loop {
                 self.precinct = 0;
                 self.component_idx += 1;
@@ -382,7 +380,7 @@ impl Iterator for LayerResolutionComponentPosition<'_> {
 
                     self.resolution += 1;
 
-                    if self.resolution == self.input.max_resolution(self.component_idx) {
+                    if self.resolution == self.input.total_max_resolution() {
                         self.resolution = self.input.min_resolution();
                         self.layer += 1;
 
@@ -392,17 +390,25 @@ impl Iterator for LayerResolutionComponentPosition<'_> {
                     }
                 }
 
-                self.resolution_tile = ResolutionTile::new(
+                // If the given resolution level doesn't exist for the current
+                // component, continue.
+                if self.resolution >= self.input.max_resolution(self.component_idx) {
+                    continue;
+                }
+
+                let tile = ResolutionTile::new(
                     ComponentTile::new(
                         self.input.tile,
                         &self.input.tile.component_infos[self.component_idx as usize],
                     ),
                     self.resolution,
                 );
+                let has_precincts = tile.num_precincts() != 0;
+                self.resolution_tile = Some(tile);
 
                 // Only yield if the resolution tile has precincts, otherwise
                 // we need to keep advancing.
-                if self.resolution_tile.num_precincts() != 0 {
+                if has_precincts {
                     break;
                 }
             }
@@ -433,7 +439,7 @@ struct ResolutionLayerComponentPosition<'a> {
     layer: u8,
     resolution: u8,
     component_idx: u16,
-    resolution_tile: ResolutionTile<'a>,
+    resolution_tile: Option<ResolutionTile<'a>>,
     precinct: u64,
 }
 
@@ -442,13 +448,7 @@ impl<'a> ResolutionLayerComponentPosition<'a> {
         let layer = input.min_layer();
         let resolution = input.min_resolution();
         let component_idx = input.min_comp();
-        let resolution_tile = ResolutionTile::new(
-            ComponentTile::new(
-                input.tile,
-                &input.tile.component_infos[component_idx as usize],
-            ),
-            resolution,
-        );
+        let resolution_tile = first_resolution_tile(&input);
         Self {
             input,
             layer,
@@ -470,7 +470,11 @@ impl Iterator for ResolutionLayerComponentPosition<'_> {
             return None;
         }
 
-        if self.precinct == self.resolution_tile.num_precincts() {
+        if self
+            .resolution_tile
+            .as_ref()
+            .is_none_or(|tile| self.precinct == tile.num_precincts())
+        {
             loop {
                 self.precinct = 0;
                 self.component_idx += 1;
@@ -495,17 +499,19 @@ impl Iterator for ResolutionLayerComponentPosition<'_> {
                     continue;
                 }
 
-                self.resolution_tile = ResolutionTile::new(
+                let tile = ResolutionTile::new(
                     ComponentTile::new(
                         self.input.tile,
                         &self.input.tile.component_infos[self.component_idx as usize],
                     ),
                     self.resolution,
                 );
+                let has_precincts = tile.num_precincts() != 0;
+                self.resolution_tile = Some(tile);
 
                 // Only yield if the resolution tile has precincts, otherwise
                 // we need to keep advancing.
-                if self.resolution_tile.num_precincts() != 0 {
+                if has_precincts {
                     break;
                 }
             }
@@ -540,6 +546,23 @@ impl Iterator for ProgressionOrderIterator<'_> {
             Self::Position(iterator) => iterator.next(),
         }
     }
+}
+
+/// The tile a layer-major progression starts from, or `None` when its first
+/// component lacks the first resolution level, so the iterator advances to the
+/// next component that has it.
+fn first_resolution_tile<'a>(input: &IteratorInput<'a>) -> Option<ResolutionTile<'a>> {
+    let component_idx = input.min_comp();
+    if input.min_resolution() >= input.max_resolution(component_idx) {
+        return None;
+    }
+    Some(ResolutionTile::new(
+        ComponentTile::new(
+            input.tile,
+            &input.tile.component_infos[usize::from(component_idx)],
+        ),
+        input.min_resolution(),
+    ))
 }
 
 // The formula for the remaining three progressions looks very intimidating.
@@ -899,5 +922,115 @@ mod tests {
                 DecodingError::InvalidProgressionIterator
             ))
         ));
+    }
+
+    /// A component with its own number of decomposition levels, as a COC
+    /// marker gives it, and one precinct per resolution level.
+    fn component_with_levels(levels: u8) -> ComponentInfo {
+        ComponentInfo {
+            size_info: ComponentSizeInfo {
+                precision: 8,
+                signed: false,
+                horizontal_resolution: 1,
+                vertical_resolution: 1,
+            },
+            coding_style: CodingStyleComponent {
+                flags: CodingStyleFlags::default(),
+                parameters: CodingStyleParameters {
+                    num_decomposition_levels: levels,
+                    num_resolution_levels: levels + 1,
+                    code_block_width: 6,
+                    code_block_height: 6,
+                    code_block_style: CodeBlockStyle::default(),
+                    transformation: WaveletTransform::Reversible53,
+                    precinct_exponents: vec![(15, 15); usize::from(levels) + 1],
+                },
+            },
+            quantization_info: QuantizationInfo {
+                quantization_style: QuantizationStyle::NoQuantization,
+                guard_bits: 2,
+                step_sizes: vec![],
+            },
+            roi_shift: 0,
+        }
+    }
+
+    /// The (resolution, component) of each packet, for a one-layer tile.
+    fn packet_order(
+        levels: &[u8],
+        order: ProgressionOrder,
+        progression_changes: Vec<ProgressionChange>,
+    ) -> Vec<(u8, u16)> {
+        let tile = Tile {
+            idx: 0,
+            tile_parts: vec![],
+            component_infos: levels.iter().map(|&l| component_with_levels(l)).collect(),
+            rect: IntRect::from_ltrb(0, 0, 16, 16),
+            progression_order: order,
+            progression_changes,
+            num_layers: 1,
+            mct: false,
+        };
+        progression_iterator(&tile, 0)
+            .expect("valid progression")
+            .map(|packet| {
+                assert_eq!((packet.layer_num, packet.precinct), (0, 0));
+                (packet.resolution, packet.component)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lrcp_skips_resolution_levels_a_component_does_not_have() {
+        // B.12.1.1: a component without resolution level r has no packets
+        // there. Component 1 has 2 resolution levels, component 0 has 4.
+        assert_eq!(
+            packet_order(
+                &[3, 1],
+                ProgressionOrder::LayerResolutionComponentPosition,
+                vec![]
+            ),
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (3, 0)]
+        );
+        // With the levels swapped, the iterator must not stop after
+        // component 0's last resolution level.
+        assert_eq!(
+            packet_order(
+                &[1, 3],
+                ProgressionOrder::LayerResolutionComponentPosition,
+                vec![]
+            ),
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 1), (3, 1)]
+        );
+    }
+
+    #[test]
+    fn layer_major_progression_changes_respect_component_and_resolution_starts() {
+        // Begin at the selected component, or skip it when it lacks the
+        // starting resolution level. An excluded component must not affect this.
+        for order in [
+            ProgressionOrder::LayerResolutionComponentPosition,
+            ProgressionOrder::ResolutionLayerComponentPosition,
+        ] {
+            for (levels, component_start, expected_component) in [
+                (&[1, 3][..], 0, 1),
+                (&[1, 3, 1][..], 1, 1),
+                (&[3, 1, 3][..], 1, 2),
+            ] {
+                let change = ProgressionChange {
+                    resolution_start: 2,
+                    component_start,
+                    layer_end: 1,
+                    resolution_end: 4,
+                    component_end: component_start + 2,
+                    progression_order: order,
+                };
+                assert_eq!(
+                    packet_order(levels, order, vec![change]),
+                    [(2, expected_component), (3, expected_component)],
+                    "{order:?}, component_start={component_start}"
+                );
+            }
+        }
     }
 }
