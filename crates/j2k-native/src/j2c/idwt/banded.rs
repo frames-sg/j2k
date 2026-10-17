@@ -110,6 +110,13 @@ struct ParallelStripLayout {
 
 /// Parallel strip geometry and the maximum number of streams Rayon can run
 /// at once. `None` selects the serial stream.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the serial stub preserves the fallible parallel geometry signature"
+    )
+)]
 fn parallel_strip_layout(
     width: usize,
     height: usize,

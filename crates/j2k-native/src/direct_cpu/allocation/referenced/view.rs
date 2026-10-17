@@ -238,6 +238,10 @@ fn referenced_parallel_ht_dispatch_bytes(
 }
 
 #[cfg(not(feature = "parallel"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the no-parallel stub preserves the fallible parallel planning signature"
+)]
 fn referenced_parallel_ht_dispatch_bytes(
     _plan: ReferencedPlanView<'_>,
     _parallel: bool,

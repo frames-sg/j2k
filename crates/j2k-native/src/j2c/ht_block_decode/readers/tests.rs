@@ -175,6 +175,13 @@ fn flat_magsgn_unstuffing_requires_reserved_capacity() {
     let reserved = buffer.capacity();
     let flat = unstuff_magsgn(&[0; 8], &mut buffer, 4).expect("long segment");
     assert_eq!(&flat[..4], &[0; 4]);
-    assert!(flat.len() <= capacity, "segment padding must fit its reservation");
-    assert_eq!(buffer.capacity(), reserved, "long segments must not allocate");
+    assert!(
+        flat.len() <= capacity,
+        "segment padding must fit its reservation"
+    );
+    assert_eq!(
+        buffer.capacity(),
+        reserved,
+        "long segments must not allocate"
+    );
 }

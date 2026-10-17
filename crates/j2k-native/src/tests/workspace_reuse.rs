@@ -686,14 +686,20 @@ fn ht_compact_region_with_empty_trailing_blocks_matches_source() {
         .build()
         .expect("parallel pool");
     pool.install(|| {
-        for policy in [crate::CpuDecodeParallelism::Serial, crate::CpuDecodeParallelism::Auto] {
+        for policy in [
+            crate::CpuDecodeParallelism::Serial,
+            crate::CpuDecodeParallelism::Auto,
+        ] {
             let mut context = DecoderContext::default();
             context.set_cpu_decode_parallelism(policy);
             let actual = image
                 .decode_region_with_context((0, 64, 128, 192), &mut context)
                 .expect("compact region decode");
             assert_eq!((actual.width, actual.height), (128, 192));
-            assert!(actual.data.as_slice() == &pixels[128 * 64..], "{policy:?} ROI pixels differ");
+            assert!(
+                actual.data.as_slice() == &pixels[128 * 64..],
+                "{policy:?} ROI pixels differ"
+            );
         }
     });
 }
@@ -720,7 +726,9 @@ fn ht_refinement_across_precincts_matches_serial_decode() {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("HT image");
     let mut serial = DecoderContext::default();
     serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
-    let expected = image.decode_with_context(&mut serial).expect("serial oracle");
+    let expected = image
+        .decode_with_context(&mut serial)
+        .expect("serial oracle");
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(2)
         .build()
@@ -731,7 +739,14 @@ fn ht_refinement_across_precincts_matches_serial_decode() {
             .decode_with_context(&mut context)
             .expect("parallel multiple-precinct refinement decode");
         assert_eq!(actual.data, expected.data);
-        assert!(context.tile_decode_context.debug_counters.ht_phase_stats.refinement_blocks > 0);
+        assert!(
+            context
+                .tile_decode_context
+                .debug_counters
+                .ht_phase_stats
+                .refinement_blocks
+                > 0
+        );
     });
 }
 
