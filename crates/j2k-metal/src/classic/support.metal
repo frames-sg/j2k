@@ -127,16 +127,16 @@ inline float reconstructed_classic_sample(
         }
     } else {
         uint reconstructed_magnitude = magnitude;
-        if (job.roi_shift != 0u) {
-            if (reconstructed_magnitude >= (1u << job.roi_shift)) {
-                reconstructed_magnitude >>= job.roi_shift;
-            }
-        } else if (decoded && lowest_decoded_bit != 0u) {
+        if (decoded && lowest_decoded_bit != 0u) {
             // Reversible coefficient whose low bit-planes were not decoded:
             // T.800 Equation E-8 with r = 1/2, as
             // j2k_codec_math::classic::reversible_midpoint_bit. The undecoded
             // bits are zero, so OR adds the offset.
             reconstructed_magnitude |= 1u << (lowest_decoded_bit - 1u);
+        }
+        if (job.roi_shift != 0u &&
+            reconstructed_magnitude >= (1u << job.roi_shift)) {
+            reconstructed_magnitude >>= job.roi_shift;
         }
         reconstructed = float(reconstructed_magnitude);
     }

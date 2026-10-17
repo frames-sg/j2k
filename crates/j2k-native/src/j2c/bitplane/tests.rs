@@ -227,9 +227,15 @@ fn reversible_reconstruction_is_exact_when_complete_and_centered_when_stopped_ea
     assert_eq!(final_sigprop.reconstruct_reversible(coefficient(4, 0)), 6);
     assert_eq!(final_sigprop.reconstruct_reversible(coefficient(2, 0)), 3);
 
-    // ROI-shifted blocks keep the plain coefficient.
-    let roi = MidpointReconstructor::new(3, 4, 2);
-    assert_eq!(roi.reconstruct_reversible(coefficient(4, 0)), 4);
+    // ROI maxshift is undone after midpoint reconstruction. With three coded
+    // bitplanes and only the first cleanup pass, 4 becomes 6 in the coded
+    // domain and then 3 after an ROI shift of one is removed.
+    let roi = MidpointReconstructor::new(3, 1, 1);
+    assert_eq!(roi.reconstruct_reversible(coefficient(4, 0)), 6);
+    assert_eq!(
+        crate::apply_roi_maxshift_inverse_i64(roi.reconstruct_reversible(coefficient(4, 0)), 1),
+        3
+    );
 }
 
 #[test]
@@ -255,7 +261,6 @@ fn per_block_reversible_reconstruction_matches_the_shared_reference() {
                         u32::from(decoded_bitplanes),
                         u32::from(number_of_coding_passes),
                     )
-                    .filter(|_| roi_shift == 0)
                     .map_or(0, |bit| 1_u64 << bit);
                     let expected = i64::try_from(magnitude | offset).unwrap();
                     for (sign, expected) in [(0_u8, expected), (1, -expected)] {

@@ -98,16 +98,64 @@ pub struct J2kCodeBlockDecodeJob<'a> {
 }
 
 /// Whether reversible reconstruction of `job` can differ from its decoded
-/// magnitudes. That needs no ROI shift and coding passes that stop before
-/// bit-plane 0's magnitude-refinement pass, the `3·D − 3`th of a complete
-/// block's `3·D − 2` passes for `D` decoded bitplanes: then a significant
+/// magnitudes. Coding passes must stop before bit-plane 0's
+/// magnitude-refinement pass, the `3·D − 3`th of a complete block's
+/// `3·D − 2` passes for `D` decoded coded-domain bitplanes: then a significant
 /// coefficient lacks bit 0 and takes the T.800 Equation E-8 midpoint
 /// (r = 1/2). The final cleanup pass only finds coefficients still at zero.
 fn reversible_midpoint_applies(job: &J2kCodeBlockDecodeJob<'_>) -> bool {
-    let decoded_bitplanes = u32::from(job.total_bitplanes.saturating_sub(job.missing_bit_planes));
-    job.roi_shift == 0
-        && job.number_of_coding_passes != 0
+    let decoded_bitplanes = job
+        .total_bitplanes
+        .checked_add(job.roi_shift)
+        .and_then(|coded| coded.checked_sub(job.missing_bit_planes))
+        .map_or(0, u32::from);
+    job.number_of_coding_passes != 0
         && u32::from(job.number_of_coding_passes) + 3 < 3 * decoded_bitplanes
+}
+
+/// Classic Tier-1 coefficient reconstruction requested from an adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum J2kClassicReconstruction {
+    /// Reversible (5/3) coefficients whose pass schedule cannot require a
+    /// coded-domain midpoint.
+    ReversibleExact,
+    /// Reversible (5/3) coefficients requiring the T.800 Equation E-8
+    /// midpoint before any ROI maxshift inverse.
+    ReversibleMidpoint,
+    /// Irreversible (9/7) coefficients reconstructed at the midpoint of the
+    /// final decoded quantization interval.
+    IrreversibleMidpoint,
+}
+
+pub(crate) fn j2k_code_block_reconstruction(
+    job: &J2kCodeBlockDecodeJob<'_>,
+    irreversible_midpoint: bool,
+) -> J2kClassicReconstruction {
+    if irreversible_midpoint {
+        J2kClassicReconstruction::IrreversibleMidpoint
+    } else if reversible_midpoint_applies(job) {
+        J2kClassicReconstruction::ReversibleMidpoint
+    } else {
+        J2kClassicReconstruction::ReversibleExact
+    }
+}
+
+pub(crate) fn j2k_sub_band_reconstruction(
+    job: &J2kSubBandDecodeJob<'_>,
+    irreversible_midpoint: bool,
+) -> J2kClassicReconstruction {
+    if irreversible_midpoint {
+        J2kClassicReconstruction::IrreversibleMidpoint
+    } else if job
+        .jobs
+        .iter()
+        .any(|batch_job| reversible_midpoint_applies(&batch_job.code_block))
+    {
+        J2kClassicReconstruction::ReversibleMidpoint
+    } else {
+        J2kClassicReconstruction::ReversibleExact
+    }
 }
 
 /// Adapter HTJ2K cleanup-encode shape counters for backend benchmarking.
@@ -269,17 +317,16 @@ pub trait HtCodeBlockDecoder {
     /// Optionally decode a full classic J2K sub-band with the requested
     /// coefficient reconstruction rule.
     ///
-    /// With `irreversible_midpoint` false the coefficients are reversible
-    /// (5/3). They are exact where a code block's coding passes are complete;
-    /// where the passes stop early and the block has no ROI shift, they take
-    /// the T.800 Equation E-8 midpoint (r = 1/2), as the native decoder does.
+    /// With `irreversible_midpoint` false this retains the original adapter
+    /// contract: reversible (5/3) coefficients are returned under the
+    /// implementation's existing reconstruction rule. New callers that need
+    /// an explicit reversible midpoint use
+    /// [`Self::decode_j2k_sub_band_with_reconstruction`] instead.
     ///
     /// The default delegates complete reversible work to
     /// [`Self::decode_j2k_sub_band`]. It declines irreversible midpoint
     /// reconstruction, because legacy adapters did not receive enough
-    /// information to implement that rule, and sub-bands with an early-stopped
-    /// reversible code block, because legacy adapters return the decoded
-    /// magnitudes without the midpoint.
+    /// information to implement that rule.
     ///
     /// # Errors
     ///
@@ -290,15 +337,39 @@ pub trait HtCodeBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
-        if irreversible_midpoint
-            || job
-                .jobs
-                .iter()
-                .any(|batch_job| reversible_midpoint_applies(&batch_job.code_block))
-        {
+        if irreversible_midpoint {
             Ok(false)
         } else {
             self.decode_j2k_sub_band(job, output)
+        }
+    }
+
+    /// Optionally decode a full classic J2K sub-band with an explicit
+    /// coefficient reconstruction contract.
+    ///
+    /// The default preserves existing adapters for exact reversible and
+    /// irreversible work by delegating to
+    /// [`Self::decode_j2k_sub_band_with_midpoint`]. It declines reversible
+    /// midpoint work because an existing override of that older hook can
+    /// interpret `false` as plain decoded reversible magnitudes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
+    fn decode_j2k_sub_band_with_reconstruction(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        match reconstruction {
+            J2kClassicReconstruction::ReversibleExact => {
+                self.decode_j2k_sub_band_with_midpoint(job, output, false)
+            }
+            J2kClassicReconstruction::ReversibleMidpoint => Ok(false),
+            J2kClassicReconstruction::IrreversibleMidpoint => {
+                self.decode_j2k_sub_band_with_midpoint(job, output, true)
+            }
         }
     }
 
@@ -323,11 +394,10 @@ pub trait HtCodeBlockDecoder {
     /// coefficient reconstruction rule, as described for
     /// [`Self::decode_j2k_sub_band_with_midpoint`].
     ///
-    /// The default delegates complete reversible work to
-    /// [`Self::decode_j2k_code_block`]. It declines irreversible midpoint
-    /// reconstruction, and early-stopped reversible code blocks, so an older
-    /// adapter cannot silently emit coefficients with the wrong reconstruction
-    /// bias.
+    /// This retains the original adapter contract described for
+    /// [`Self::decode_j2k_sub_band_with_midpoint`]. The default delegates
+    /// reversible work to [`Self::decode_j2k_code_block`] and declines
+    /// irreversible midpoint reconstruction.
     ///
     /// # Errors
     ///
@@ -338,10 +408,37 @@ pub trait HtCodeBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
-        if irreversible_midpoint || reversible_midpoint_applies(&job) {
+        if irreversible_midpoint {
             Ok(false)
         } else {
             self.decode_j2k_code_block(job, output)
+        }
+    }
+
+    /// Optionally decode one classic J2K code block with an explicit
+    /// coefficient reconstruction contract, as described for
+    /// [`Self::decode_j2k_sub_band_with_reconstruction`].
+    ///
+    /// The default safely declines reversible midpoint work rather than
+    /// dispatching it to an older `_with_midpoint(false)` override.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
+    fn decode_j2k_code_block_with_reconstruction(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        match reconstruction {
+            J2kClassicReconstruction::ReversibleExact => {
+                self.decode_j2k_code_block_with_midpoint(job, output, false)
+            }
+            J2kClassicReconstruction::ReversibleMidpoint => Ok(false),
+            J2kClassicReconstruction::IrreversibleMidpoint => {
+                self.decode_j2k_code_block_with_midpoint(job, output, true)
+            }
         }
     }
 

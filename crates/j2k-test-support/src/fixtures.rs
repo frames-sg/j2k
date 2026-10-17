@@ -81,6 +81,17 @@ pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED: &[u8] = include_bytes!(
 pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE: &[u8] = include_bytes!(
     "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.u16le"
 );
+/// `OpenJPEG` 2.5.4 rate-limited reversible 19 x 13 8-bit codestream whose
+/// single component uses ROI maxshift 2 and stops coding passes early.
+///
+/// Provenance is in `crates/j2k-native/fixtures/reversible_early_stop/`.
+pub const REVERSIBLE_EARLY_STOP_ROI: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.j2k"
+);
+/// `opj_decompress` 2.5.4 samples for [`REVERSIBLE_EARLY_STOP_ROI`].
+pub const REVERSIBLE_EARLY_STOP_ROI_GRAY8: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.gray"
+);
 /// `OpenJPEG` 2.5.4 rate-limited reversible 128 x 128 RGB8 codestream with the
 /// reversible color transform, in which every coded block stops early.
 ///
@@ -88,10 +99,11 @@ pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE: &[u8] = include_bytes!(
 pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8: &[u8] = include_bytes!(
     "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate12_rgb8_128x128.j2k"
 );
-/// SHA-256 of the interleaved RGB samples `opj_decompress` 2.5.4 decodes from
+/// Interleaved RGB samples `opj_decompress` 2.5.4 decodes from
 /// [`REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8`].
-pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256: &str =
-    "d03c235ce98e68eeefdd5787c56eaa425605553a73efa94155a8deffbf76a24c";
+pub const REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS: &[u8] = include_bytes!(
+    "../../j2k-native/fixtures/reversible_early_stop/openjpeg_53_rate12_rgb8_128x128.rgb"
+);
 
 #[cfg(feature = "j2k-native-fixtures")]
 mod generated_htj2k;

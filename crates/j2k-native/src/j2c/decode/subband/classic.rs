@@ -12,6 +12,7 @@ use super::{
     J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kSubBandDecodeJob,
     Result, SubBand, TileDecodeContext, Vec, MAX_BITPLANE_COUNT,
 };
+use crate::backend::{j2k_code_block_reconstruction, j2k_sub_band_reconstruction};
 use crate::j2c::build::CodeBlockCoding;
 
 #[cfg(feature = "parallel")]
@@ -95,14 +96,16 @@ pub(super) fn decode_sub_band_classic_blocks(
         }
 
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-        if decoder.decode_j2k_sub_band_with_midpoint(
-            J2kSubBandDecodeJob {
-                width: sub_band.rect.width(),
-                height: sub_band.rect.height(),
-                jobs: &batch_jobs,
-            },
+        let sub_band_job = J2kSubBandDecodeJob {
+            width: sub_band.rect.width(),
+            height: sub_band.rect.height(),
+            jobs: &batch_jobs,
+        };
+        let reconstruction = j2k_sub_band_reconstruction(&sub_band_job, irreversible_midpoint);
+        if decoder.decode_j2k_sub_band_with_reconstruction(
+            sub_band_job,
             base_store,
-            irreversible_midpoint,
+            reconstruction,
         )? {
             tile_ctx.debug_counters.decoded_code_blocks += batch_jobs.len();
             return Ok(());
@@ -140,10 +143,12 @@ pub(super) fn decode_sub_band_classic_blocks(
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?
             };
             let output_slice = &mut base_store[base_idx..base_idx + output_len];
-            if decoder.decode_j2k_code_block_with_midpoint(
+            let reconstruction =
+                j2k_code_block_reconstruction(&job.code_block, irreversible_midpoint);
+            if decoder.decode_j2k_code_block_with_reconstruction(
                 job.code_block,
                 output_slice,
-                irreversible_midpoint,
+                reconstruction,
             )? {
                 continue;
             }

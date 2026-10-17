@@ -12,14 +12,14 @@ and stale roadmap entries have been removed from the public documentation set.
   classic decoders share the rule (`j2k_codec_math::classic::reversible_midpoint_bit`),
   so CPU and GPU routes agree. Lossless encoders such as GDCM/OpenJPEG 2.0
   stop passes early when the remaining bits equal that midpoint; those
-  codestreams now decode exactly instead of off by up to 2. ROI-shifted
-  blocks are unchanged.
-- The default `HtCodeBlockDecoder::decode_j2k_sub_band_with_midpoint` and
-  `decode_j2k_code_block_with_midpoint` now also decline reversible code
-  blocks that need that midpoint, so adapters that implement only
-  `decode_j2k_sub_band` or `decode_j2k_code_block` leave those blocks to the
-  native decoder. Adapters that override the `_with_midpoint` hooks must apply
-  the midpoint when `irreversible_midpoint` is false.
+  codestreams now decode exactly instead of off by up to 2. For ROI Maxshift,
+  reconstruction happens in the coded domain before the ROI inverse.
+- `HtCodeBlockDecoder` has additive classic hooks with an explicit
+  `J2kClassicReconstruction` contract. Their defaults decline reversible
+  midpoint work, so adapters built against either older classic hook cannot
+  silently emit decoded magnitudes for early-stopped blocks. Existing
+  `_with_midpoint(false)` overrides retain their original meaning; adapters
+  that support the reversible midpoint can opt in through the new hooks.
 
 ## [0.12.0] - 2026-10-06
 

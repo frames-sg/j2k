@@ -65,7 +65,7 @@ pub(crate) struct MidpointReconstructor {
 
 impl MidpointReconstructor {
     pub(crate) fn new(decoded_bitplanes: u8, number_of_coding_passes: u8, roi_shift: u8) -> Self {
-        let fast = if roi_shift != 0 || decoded_bitplanes == 0 || number_of_coding_passes == 0 {
+        let fast = if decoded_bitplanes == 0 || number_of_coding_passes == 0 {
             None
         } else {
             let final_pass = u32::from(number_of_coding_passes) - 1;
@@ -100,7 +100,9 @@ impl MidpointReconstructor {
         output: &mut [f32],
         step: f32,
     ) {
-        let Some((lowest, final_sigprop)) = self.fast.filter(|_| self.decoded_bitplanes <= 31)
+        let Some((lowest, final_sigprop)) = self
+            .fast
+            .filter(|_| self.roi_shift == 0 && self.decoded_bitplanes <= 31)
         else {
             for (sample, &coefficient) in output.iter_mut().zip(coefficients) {
                 *sample = self.reconstruct(coefficient) * step;
@@ -127,8 +129,8 @@ impl MidpointReconstructor {
     /// were not decoded, because the code block's coding passes stop early,
     /// takes the Equation E-8 midpoint (r = 1/2). Lossless encoders such as
     /// GDCM/OpenJPEG 2.0 rely on it: they drop trailing passes whose bits
-    /// equal that midpoint. Blocks with an ROI shift return the coefficient
-    /// unchanged.
+    /// equal that midpoint. For ROI-shifted blocks the caller applies the
+    /// maxshift inverse after this coded-domain reconstruction.
     #[expect(
         clippy::inline_always,
         reason = "reversible coefficients are reconstructed once per coefficient in the hot output loop"
@@ -162,7 +164,7 @@ impl MidpointReconstructor {
     )]
     #[inline(always)]
     pub(crate) fn reconstruct(self, coefficient: Coefficient) -> f32 {
-        let Some((lowest, final_sigprop)) = self.fast else {
+        let Some((lowest, final_sigprop)) = self.fast.filter(|_| self.roi_shift == 0) else {
             return reconstruct_irreversible_midpoint(
                 coefficient,
                 self.decoded_bitplanes,

@@ -6,7 +6,7 @@ use crate::engine as compute;
 use j2k_native::DecodingError;
 use j2k_native::{
     decode_j2k_code_block_scalar, decode_j2k_sub_band_scalar, HtCodeBlockDecoder,
-    J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
+    J2kClassicReconstruction, J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
 };
 
 #[derive(Default)]
@@ -17,6 +17,15 @@ pub(crate) struct MetalClassicBlockDecoder {
     sub_band_batches: usize,
     #[cfg(target_os = "macos")]
     batched_kernel_dispatches: usize,
+}
+
+const fn classic_irreversible_midpoint(reconstruction: J2kClassicReconstruction) -> Option<bool> {
+    match reconstruction {
+        J2kClassicReconstruction::ReversibleExact
+        | J2kClassicReconstruction::ReversibleMidpoint => Some(false),
+        J2kClassicReconstruction::IrreversibleMidpoint => Some(true),
+        _ => None,
+    }
 }
 
 impl MetalClassicBlockDecoder {
@@ -119,6 +128,18 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         self.decode_j2k_sub_band_inner(job, output, irreversible_midpoint)
     }
 
+    fn decode_j2k_sub_band_with_reconstruction(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        let Some(irreversible_midpoint) = classic_irreversible_midpoint(reconstruction) else {
+            return Ok(false);
+        };
+        self.decode_j2k_sub_band_inner(job, output, irreversible_midpoint)
+    }
+
     fn decode_j2k_code_block(
         &mut self,
         job: J2kCodeBlockDecodeJob<'_>,
@@ -133,6 +154,18 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         output: &mut [f32],
         irreversible_midpoint: bool,
     ) -> Result<bool> {
+        self.decode_j2k_code_block_inner(job, output, irreversible_midpoint)
+    }
+
+    fn decode_j2k_code_block_with_reconstruction(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        reconstruction: J2kClassicReconstruction,
+    ) -> Result<bool> {
+        let Some(irreversible_midpoint) = classic_irreversible_midpoint(reconstruction) else {
+            return Ok(false);
+        };
         self.decode_j2k_code_block_inner(job, output, irreversible_midpoint)
     }
 }
@@ -257,7 +290,7 @@ mod error_context_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::MetalClassicBlockDecoder;
+    use super::{classic_irreversible_midpoint, MetalClassicBlockDecoder};
     #[cfg(target_os = "macos")]
     use crate::engine as compute;
     #[cfg(target_os = "macos")]
@@ -268,8 +301,24 @@ mod tests {
     };
     use j2k_native::{
         encode, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder,
-        Image,
+        Image, J2kClassicReconstruction,
     };
+
+    #[test]
+    fn explicit_classic_reconstruction_modes_map_without_guessing() {
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::ReversibleExact),
+            Some(false)
+        );
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::ReversibleMidpoint),
+            Some(false)
+        );
+        assert_eq!(
+            classic_irreversible_midpoint(J2kClassicReconstruction::IrreversibleMidpoint),
+            Some(true)
+        );
+    }
 
     #[cfg(target_os = "macos")]
     fn should_run_metal_runtime() -> bool {

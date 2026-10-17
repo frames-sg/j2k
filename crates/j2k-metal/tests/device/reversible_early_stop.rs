@@ -6,9 +6,10 @@
 
 use super::*;
 use j2k_test_support::{
-    auto_routing_sha256, REVERSIBLE_EARLY_STOP_LOSSLESS, REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE,
+    REVERSIBLE_EARLY_STOP_LOSSLESS, REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE,
     REVERSIBLE_EARLY_STOP_RATE_LIMITED, REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8,
-    REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256, REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE,
+    REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS, REVERSIBLE_EARLY_STOP_RATE_LIMITED_U16LE,
+    REVERSIBLE_EARLY_STOP_ROI, REVERSIBLE_EARLY_STOP_ROI_GRAY8,
 };
 
 #[test]
@@ -47,8 +48,18 @@ fn explicit_metal_decode_of_early_stopped_reversible_blocks_matches_the_fixtures
         .expect("RGB8 explicit Metal decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(
-        auto_routing_sha256(&surface.as_bytes().expect("surface byte access")),
-        REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256
+        surface.as_bytes().expect("surface byte access").as_ref(),
+        REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS
+    );
+
+    let surface = J2kDecoder::new(REVERSIBLE_EARLY_STOP_ROI)
+        .expect("ROI decoder")
+        .decode_to_device(PixelFormat::Gray8, BackendRequest::Metal)
+        .expect("ROI explicit Metal decode");
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access").as_ref(),
+        REVERSIBLE_EARLY_STOP_ROI_GRAY8
     );
 }
 
@@ -73,10 +84,7 @@ fn cooperative_batch_of_early_stopped_reversible_blocks_matches_on_cpu_and_gpu()
         panic!("RGB8 batch storage");
     };
     for image in expected.chunks_exact(expected.len() / inputs.len()) {
-        assert_eq!(
-            auto_routing_sha256(image),
-            REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256
-        );
+        assert_eq!(image, REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS);
     }
 
     let mut decoder = MetalBatchDecoder::system_default_with_options(options).unwrap();

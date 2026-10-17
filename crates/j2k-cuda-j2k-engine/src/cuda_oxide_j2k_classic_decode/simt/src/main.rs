@@ -160,18 +160,22 @@ fn reconstructed_classic_sample(coefficient: u32, job: ClassicJob) -> f32 {
             }
             reconstructed = fixed_magnitude as f32 * 0.5;
         }
-    } else if job.roi_shift != 0 {
-        if magnitude >= 1 << job.roi_shift {
-            reconstructed = (magnitude >> job.roi_shift) as f32;
+    } else {
+        let mut reconstructed_magnitude = magnitude;
+        if let Some(midpoint_bit) = reversible_midpoint_bit(
+            u64::from(magnitude),
+            decoded_bitplanes,
+            job.number_of_coding_passes,
+        ) {
+            // Reversible coefficient whose low bit-planes were not decoded:
+            // reconstruct the T.800 Equation E-8 midpoint in the coded domain
+            // before undoing ROI maxshift, as the native and Metal decoders do.
+            reconstructed_magnitude |= 1 << midpoint_bit;
         }
-    } else if let Some(midpoint_bit) = reversible_midpoint_bit(
-        u64::from(magnitude),
-        decoded_bitplanes,
-        job.number_of_coding_passes,
-    ) {
-        // Reversible coefficient whose low bit-planes were not decoded: T.800
-        // Equation E-8 with r = 1/2, as the native and Metal decoders apply.
-        reconstructed = (magnitude | 1 << midpoint_bit) as f32;
+        if job.roi_shift != 0 && reconstructed_magnitude >= 1 << job.roi_shift {
+            reconstructed_magnitude >>= job.roi_shift;
+        }
+        reconstructed = reconstructed_magnitude as f32;
     }
     if coefficient & 0x8000_0000 != 0 {
         -reconstructed

@@ -5,8 +5,8 @@ before their lowest bit-planes.
 
 T.800 E.1.2.2 (Equation E-8) reconstructs such coefficients at
 q ± r·2^(Mb−Nb), with the reconstruction parameter r chosen by the decoder
-(commonly 1/2). Both fixtures need r = 1/2: a decoder that uses r = 0 gets
-them wrong. The native, CUDA and Metal classic decoders share that rule.
+(commonly 1/2). The fixtures below need r = 1/2: a decoder that uses r = 0
+gets them wrong. The native, CUDA and Metal classic decoders share that rule.
 
 ## `emri_small_jpeg_2k_lossless_frame1.j2c`
 
@@ -69,7 +69,25 @@ from a synthetic image whose red, green and blue samples at column `x` and row
 using `opj_compress -i rgb8.ppm -o openjpeg_53_rate12_rgb8_128x128.j2k -r 12
 -b 16,16 -n 3`. Its SHA-256 is
 `5d3316115e524acc571aec03f9e2c0ef090427e4131866f828e99ee01e91d260`.
-`opj_decompress` 2.5.4 decodes it to interleaved RGB samples whose SHA-256 is
-`d03c235ce98e68eeefdd5787c56eaa425605553a73efa94155a8deffbf76a24c`; tests
-check that hash rather than carry the 48 KiB of samples. With r = 0, 43,474
-of its 49,152 samples differ.
+`openjpeg_53_rate12_rgb8_128x128.rgb` contains the 49,152 interleaved RGB
+samples from `opj_decompress` 2.5.4 (SHA-256
+`d03c235ce98e68eeefdd5787c56eaa425605553a73efa94155a8deffbf76a24c`).
+Tests compare those bytes directly. With r = 0, 43,474 samples differ.
+
+## `openjpeg_53_rate3_roi2_gray8_19x13.j2k`
+
+A rate-limited reversible codestream that combines early-stopped coding passes
+with ROI maxshift. Its 19 x 13 unsigned 8-bit source is the repository's
+`gray_u8_53.source.pgm` OpenJPH batch fixture. OpenJPEG 2.5.4 encoded it with
+
+    opj_compress -i gray_u8_53.source.pgm \
+      -o openjpeg_53_rate3_roi2_gray8_19x13.j2k \
+      -r 3 -n 3 -ROI c=0,U=2
+
+The codestream SHA-256 is
+`2551f0ba982cbc6673fe3b6a3425d7b344361cacd78b1002011ff916253a46c5`.
+`openjpeg_53_rate3_roi2_gray8_19x13.gray` contains the 247 samples from
+`opj_decompress` 2.5.4 (SHA-256
+`617924507e0f86d4b29ee9545ce136500426d59f9b9219a900d09292c18d7077`).
+Applying ROI inverse before the reversible midpoint gets 203 samples wrong;
+the largest absolute error is 36.

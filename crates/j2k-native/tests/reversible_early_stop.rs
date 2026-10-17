@@ -20,6 +20,12 @@ const RATE_LIMITED: &[u8] =
     include_bytes!("../fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.j2k");
 const RATE_LIMITED_OPENJPEG: &[u8] =
     include_bytes!("../fixtures/reversible_early_stop/openjpeg_53_rate3_gray12_64x64.u16le");
+/// Every coefficient is upshifted by two bit-planes and the early-stopped
+/// coded-domain midpoint must be applied before the ROI inverse.
+const RATE_LIMITED_ROI: &[u8] =
+    include_bytes!("../fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.j2k");
+const RATE_LIMITED_ROI_OPENJPEG: &[u8] =
+    include_bytes!("../fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.gray");
 
 const PARALLELISMS: [CpuDecodeParallelism; 2] =
     [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto];
@@ -85,6 +91,17 @@ fn early_stopped_code_blocks_match_openjpeg_on_the_serial_and_parallel_paths() {
 }
 
 #[test]
+fn early_stopped_roi_maxshift_matches_openjpeg_on_native_decode() {
+    for parallelism in PARALLELISMS {
+        assert_eq!(
+            decode_native(RATE_LIMITED_ROI, parallelism),
+            RATE_LIMITED_ROI_OPENJPEG,
+            "{parallelism:?}"
+        );
+    }
+}
+
+#[test]
 fn early_stopped_code_blocks_decode_exactly_on_the_exact_integer_path() {
     // Reversible components above 24 bits decode through exact `i64`
     // coefficients. Raising the lossless fixture's SIZ precision from 16 to 25
@@ -120,7 +137,8 @@ impl LegacyClassicAdapter {
     fn record(&mut self, job: &J2kCodeBlockDecodeJob<'_>) {
         // A coefficient significant from the block's first pass, with no
         // lower bits set, takes the midpoint whenever any coefficient does.
-        let decoded_bitplanes = u32::from(job.total_bitplanes - job.missing_bit_planes);
+        let decoded_bitplanes =
+            u32::from(job.total_bitplanes + job.roi_shift - job.missing_bit_planes);
         let first_significant = 1_u64 << (decoded_bitplanes - 1);
         self.jobs += 1;
         self.midpoint_jobs += usize::from(
@@ -164,6 +182,40 @@ struct DecliningAdapter;
 
 impl HtCodeBlockDecoder for DecliningAdapter {}
 
+/// Models an adapter compiled against the previous meaning of
+/// `_with_midpoint(false)`: it handles reversible blocks but returns their
+/// decoded magnitudes without the newly required reversible midpoint.
+#[derive(Default)]
+struct StaleMidpointOverride {
+    jobs: usize,
+}
+
+impl HtCodeBlockDecoder for StaleMidpointOverride {
+    fn decode_j2k_sub_band_with_midpoint(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        assert!(!irreversible_midpoint);
+        self.jobs += job.jobs.len();
+        decode_j2k_sub_band_scalar(job, output)?;
+        Ok(true)
+    }
+
+    fn decode_j2k_code_block_with_midpoint(
+        &mut self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        irreversible_midpoint: bool,
+    ) -> Result<bool> {
+        assert!(!irreversible_midpoint);
+        self.jobs += 1;
+        decode_j2k_code_block_scalar(job, output)?;
+        Ok(true)
+    }
+}
+
 #[test]
 fn legacy_adapters_never_receive_early_stopped_reversible_code_blocks() {
     for (codestream, expected, adapter_jobs) in [
@@ -183,5 +235,22 @@ fn legacy_adapters_never_receive_early_stopped_reversible_code_blocks() {
             decode_with_adapter(codestream, &mut DecliningAdapter),
             expected
         );
+    }
+}
+
+#[test]
+fn stale_with_midpoint_overrides_do_not_receive_reversible_midpoint_work() {
+    for (codestream, expected, u16le) in [
+        (RATE_LIMITED, RATE_LIMITED_OPENJPEG, true),
+        (RATE_LIMITED_ROI, RATE_LIMITED_ROI_OPENJPEG, false),
+    ] {
+        let expected = if u16le {
+            u16_samples(expected).map(f32::from).collect::<Vec<_>>()
+        } else {
+            expected.iter().copied().map(f32::from).collect::<Vec<_>>()
+        };
+        let mut stale = StaleMidpointOverride::default();
+        assert_eq!(decode_with_adapter(codestream, &mut stale), expected);
+        assert_eq!(stale.jobs, 0);
     }
 }

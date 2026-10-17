@@ -9,9 +9,10 @@
 use j2k_core::{BackendRequest, DeviceSurface, ImageDecodeDevice, PixelFormat};
 use j2k_cuda::{J2kDecoder, SurfaceResidency};
 use j2k_test_support::{
-    auto_routing_sha256, cuda_runtime_and_strict_oxide_gate, REVERSIBLE_EARLY_STOP_LOSSLESS,
+    cuda_runtime_and_strict_oxide_gate, REVERSIBLE_EARLY_STOP_LOSSLESS,
     REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE, REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8,
-    REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256,
+    REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS, REVERSIBLE_EARLY_STOP_ROI,
+    REVERSIBLE_EARLY_STOP_ROI_GRAY8,
 };
 
 fn decode_on_cuda(codestream: &[u8], format: PixelFormat) -> Vec<u8> {
@@ -40,10 +41,11 @@ fn explicit_cuda_decode_of_early_stopped_reversible_blocks_matches_the_fixtures(
         REVERSIBLE_EARLY_STOP_LOSSLESS_U16LE
     );
     assert_eq!(
-        auto_routing_sha256(&decode_on_cuda(
-            REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8,
-            PixelFormat::Rgb8
-        )),
-        REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_SHA256
+        decode_on_cuda(REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8, PixelFormat::Rgb8),
+        REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8_PIXELS
+    );
+    assert_eq!(
+        decode_on_cuda(REVERSIBLE_EARLY_STOP_ROI, PixelFormat::Gray8),
+        REVERSIBLE_EARLY_STOP_ROI_GRAY8
     );
 }
