@@ -130,7 +130,6 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
             let packet_descriptors = packet_descriptors_for_session(
                 &prepared_resolution_packets,
                 prepared_resolution_packets.capacity(),
-                1,
                 session,
                 retained_base_bytes,
             )?;

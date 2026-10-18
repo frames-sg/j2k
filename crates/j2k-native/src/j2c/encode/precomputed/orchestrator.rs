@@ -257,7 +257,6 @@ pub(in crate::j2c::encode) fn finish_plan(
     let packet_descriptors = packet_descriptors_for_session(
         &prepared_packets,
         prepared_packets.capacity(),
-        1,
         session,
         phase_base,
     )?;

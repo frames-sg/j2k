@@ -78,7 +78,6 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
             let packet_descriptors = packet_descriptors_for_session(
                 &prepared_resolution_packets,
                 prepared_resolution_packets.capacity(),
-                1,
                 session,
                 retained_base_bytes,
             )?;

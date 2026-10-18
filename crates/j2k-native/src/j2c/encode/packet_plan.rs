@@ -47,15 +47,9 @@ pub(super) fn count_compact_code_blocks(
 pub(super) fn packet_descriptors_for_session(
     packets: &[PreparedResolutionPacket],
     packet_capacity: usize,
-    num_layers: u8,
     session: &NativeEncodeSession<'_>,
     retained_base_bytes: usize,
 ) -> NativeEncodePipelineResult<Vec<J2kPacketizationPacketDescriptor>> {
-    if num_layers != 1 {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "encode currently prepares one packet contribution layer",
-        ));
-    }
     if packet_capacity < packets.len() {
         return Err(crate::EncodeError::InternalInvariant {
             what: "prepared packet capacity is smaller than its length",
@@ -70,17 +64,12 @@ pub(super) fn packet_descriptors_for_session(
         "packet descriptor owners",
     )?;
     for (packet_index, packet) in packets.iter().enumerate() {
+        let packet_index = u32::try_from(packet_index).map_err(|_| {
+            NativeEncodePipelineError::arithmetic_overflow("packet descriptor index exceeds u32")
+        })?;
         descriptors.push(J2kPacketizationPacketDescriptor {
-            packet_index: u32::try_from(packet_index).map_err(|_| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "packet descriptor index exceeds u32",
-                )
-            })?,
-            state_index: u32::try_from(packet_index).map_err(|_| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "packet descriptor state index exceeds u32",
-                )
-            })?,
+            packet_index,
+            state_index: packet_index,
             layer: 0,
             resolution: packet.resolution,
             component: packet.component,
@@ -126,9 +115,7 @@ pub(super) fn ordered_prepared_resolution_packets_for_session(
         | EncodeProgressionOrder::Rpcl => {
             packets.sort_by_key(|packet| (packet.resolution, packet.component, packet.precinct));
         }
-        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
-            packets.sort_by_key(|packet| (packet.component, packet.resolution, packet.precinct));
-        }
+        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {}
     }
     Ok(packets)
 }

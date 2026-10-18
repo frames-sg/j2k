@@ -5,7 +5,7 @@ precincts per resolution, and precinct sizes that differ between
 resolutions. In these orders, packets of different resolutions interleave by
 position on the reference grid, so they exercise packet ordering that the
 LRCP, RLCP and RPCL orders do not. They come from OpenJPEG to provide an
-independent interoperability oracle for j2k's decoder and encoder.
+independent interoperability reference for j2k's decoder.
 
 `generate.sh` regenerates every file with OpenJPEG 2.5.3 (`opj_compress`,
 openjp2 library v2.5.3, Debian package `libopenjp2-tools`
