@@ -2094,10 +2094,9 @@ fn region_decode_matches_whole_decode_for_every_progression_and_packet_header_la
     // needs, and builds no code-blocks for precincts it never parses. Each
     // progression order places needed and unneeded packets differently, and
     // PPM, PPT and tile-part splits move packet headers away from their
-    // bodies. The encoder writes position-major orders (PCRL, CPRL) correctly
-    // only with one precinct per resolution (frames-sg/j2k#130), so those use
-    // the default precincts here; the OpenJPEG fixtures cover them with
-    // several.
+    // bodies. Differing precinct spans make the position-major orders (PCRL,
+    // CPRL) interleave packets from different resolutions by reference-grid
+    // position.
     let (width, height) = (301_u32, 203_u32);
     let pixels = edge_fixture_pixels(width, height);
     // This pairwise matrix covers every progression, header layout, scale,
@@ -2146,14 +2145,7 @@ fn region_decode_matches_whole_decode_for_every_progression_and_packet_header_la
             num_decomposition_levels: 3,
             code_block_width_exp: 3,
             code_block_height_exp: 3,
-            precinct_exponents: if matches!(
-                progression_order,
-                EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl
-            ) {
-                Vec::new()
-            } else {
-                vec![(5, 5), (6, 6), (6, 6), (6, 6)]
-            },
+            precinct_exponents: vec![(5, 5), (6, 6), (6, 6), (6, 6)],
             progression_order,
             write_plt: matches!(headers, PacketHeaders::InBandWithPlt),
             write_ppm: matches!(headers, PacketHeaders::Ppm),
@@ -2165,6 +2157,11 @@ fn region_decode_matches_whole_decode_for_every_progression_and_packet_header_la
         };
         let bytes = encode(&pixels, width, height, 3, 8, false, &options)
             .expect("encode progression fixture");
+        assert_eq!(
+            scaled_whole_decode(&bytes, (width, height), PixelFormat::Rgb8, Downscale::None),
+            pixels,
+            "{progression_order:?} {headers:?} must reproduce the source samples"
+        );
         assert_region_decodes_match_whole_decode(
             &bytes,
             (width, height),

@@ -95,7 +95,7 @@ fn finalize_batch_plan(
     let Prepared97PacketPlan {
         params,
         quant_params,
-        packet_descriptors,
+        mut packet_descriptors,
         prepared_packets,
         tile_part_packet_limit,
     } = plan;
@@ -119,14 +119,14 @@ fn finalize_batch_plan(
             other_live,
             "precomputed 9/7 aggregate packetization owners",
         )?;
+        let descriptor_capacity = packet_descriptors.capacity();
         packetize_resolution_packets_with_options_for_session(
             &resolution_packets,
             resolution_packets.capacity(),
-            &packet_descriptors,
-            packet_descriptors.capacity(),
-            1,
-            params.num_components,
-            params.progression_order,
+            &mut packet_descriptors,
+            descriptor_capacity,
+            &params,
+            (params.width, params.height),
             packet_encode::PacketMarkerOptions {
                 write_sop: params.write_sop,
                 write_eph: params.write_eph,

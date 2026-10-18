@@ -4,7 +4,7 @@ use super::{
     codestream_write, count_compact_code_blocks, encode_precomputed_53_single_tile,
     encode_precomputed_97_single_tile, encode_prepared_resolution_packets_for_session,
     internal_sub_band_type, ordered_prepared_resolution_packets_for_session,
-    packet_descriptors_for_order_for_session, packet_encode, packetization_requires_scalar,
+    packet_descriptors_for_session, packet_encode, packetization_requires_scalar,
     packetize_resolution_packets_with_options_for_session,
     prepare_precomputed_htj2k97_image_for_batch, quantize,
     split_component_resolution_packets_by_precinct_for_session, validate_band_len,

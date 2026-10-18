@@ -68,7 +68,6 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
         I64PacketizeRequest {
             width,
             height,
-            num_components,
             num_levels: plan.num_levels,
             params: &plan.params,
             options,
