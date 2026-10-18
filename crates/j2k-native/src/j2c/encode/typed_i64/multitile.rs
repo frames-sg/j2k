@@ -239,7 +239,6 @@ fn encode_one_tile(
         I64PacketizeRequest {
             width: actual_width,
             height: actual_height,
-            num_components: request.num_components,
             num_levels,
             params: &execution.params,
             options: child_options,

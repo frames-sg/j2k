@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::super::{
-    bitplane_encode, classic_multilayer_code_block_style, BlockCodingMode, EncodeProgressionOrder,
+    bitplane_encode, classic_multilayer_code_block_style, BlockCodingMode,
     NativeEncodeRetainedInput, NativeEncodeSession, PreparedCodeBlockCoefficients,
     PreparedEncodeCodeBlock, PreparedEncodeSubband, PreparedResolutionPacket, SubBandType, Vec,
 };
@@ -61,7 +61,6 @@ fn zero_layer_and_target_count_errors_remain_invalid_input() {
     let zero_layer = encode_prepared_resolution_packets_layered_for_session(
         Vec::new(),
         0,
-        EncodeProgressionOrder::Lrcp,
         &[],
         &session,
         0,
@@ -74,7 +73,6 @@ fn zero_layer_and_target_count_errors_remain_invalid_input() {
     let target_count = encode_prepared_resolution_packets_layered_for_session(
         classic_packet_fixture(),
         2,
-        EncodeProgressionOrder::Lrcp,
         &[64],
         &session,
         0,
@@ -93,7 +91,6 @@ fn layered_rate_control_accepts_exact_peak_and_rejects_cap_minus_one() {
     let measured = encode_prepared_resolution_packets_layered_accounted(
         classic_packet_fixture(),
         2,
-        EncodeProgressionOrder::Lrcp,
         &[8, 4_096],
         &measurement_session,
         RETAINED_BASE_BYTES,
@@ -107,7 +104,6 @@ fn layered_rate_control_accepts_exact_peak_and_rejects_cap_minus_one() {
     let exact = encode_prepared_resolution_packets_layered_for_session(
         classic_packet_fixture(),
         2,
-        EncodeProgressionOrder::Lrcp,
         &[8, 4_096],
         &exact_session,
         RETAINED_BASE_BYTES,
@@ -123,7 +119,6 @@ fn layered_rate_control_accepts_exact_peak_and_rejects_cap_minus_one() {
     let error = encode_prepared_resolution_packets_layered_for_session(
         classic_packet_fixture(),
         2,
-        EncodeProgressionOrder::Lrcp,
         &[8, 4_096],
         &under_session,
         RETAINED_BASE_BYTES,
@@ -157,7 +152,6 @@ fn multilayer_contributions_preserve_classic_payload_bytes() {
     let (packets, descriptors) = encode_prepared_resolution_packets_layered_for_session(
         classic_packet_fixture(),
         2,
-        EncodeProgressionOrder::Lrcp,
         &[],
         &session,
         0,

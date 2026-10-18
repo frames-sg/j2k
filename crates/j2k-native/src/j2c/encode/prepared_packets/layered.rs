@@ -5,9 +5,9 @@
 use super::super::rate_control::classic_rate_target_tolerance;
 use super::super::tier1_allocation::{prepared_packets_ownership, Tier1PhaseTracker};
 use super::super::{
-    EncodeProgressionOrder, J2kEncodeStageAccelerator, J2kPacketizationPacketDescriptor,
-    LayeredPreparedPacket, NativeEncodePipelineError, NativeEncodePipelineResult,
-    NativeEncodeSession, PreparedResolutionPacket, ResolutionPacket, Vec,
+    J2kEncodeStageAccelerator, J2kPacketizationPacketDescriptor, LayeredPreparedPacket,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
+    PreparedResolutionPacket, ResolutionPacket, Vec,
 };
 
 mod assignment;
@@ -27,7 +27,6 @@ mod tests;
 pub(in crate::j2c::encode) fn encode_prepared_resolution_packets_layered_for_session(
     prepared_packets: Vec<PreparedResolutionPacket>,
     num_layers: u8,
-    progression_order: EncodeProgressionOrder,
     quality_layer_byte_targets: &[u64],
     session: &NativeEncodeSession<'_>,
     retained_base_bytes: usize,
@@ -36,7 +35,6 @@ pub(in crate::j2c::encode) fn encode_prepared_resolution_packets_layered_for_ses
     encode_prepared_resolution_packets_layered_accounted(
         prepared_packets,
         num_layers,
-        progression_order,
         quality_layer_byte_targets,
         session,
         retained_base_bytes,
@@ -55,7 +53,6 @@ struct LayeredEncodeOutcome {
 fn encode_prepared_resolution_packets_layered_accounted(
     prepared_packets: Vec<PreparedResolutionPacket>,
     num_layers: u8,
-    progression_order: EncodeProgressionOrder,
     quality_layer_byte_targets: &[u64],
     session: &NativeEncodeSession<'_>,
     retained_base_bytes: usize,
@@ -117,8 +114,7 @@ fn encode_prepared_resolution_packets_layered_accounted(
         quality_layer_byte_targets,
         &mut tracker,
     )?;
-    let (packets, descriptors) =
-        build_layer_packets(layered_packets, num_layers, progression_order, &mut tracker)?;
+    let (packets, descriptors) = build_layer_packets(layered_packets, num_layers, &mut tracker)?;
     Ok(LayeredEncodeOutcome {
         packets,
         descriptors,

@@ -5,9 +5,8 @@ use super::super::magnitude::required_ht_magnitude_bound;
 use super::super::{
     encode_prepared_resolution_packets_for_session,
     encode_prepared_resolution_packets_layered_for_session,
-    ordered_prepared_resolution_packets_for_session, packet_descriptors_for_order_for_session,
-    packet_encode, packetization_requires_scalar,
-    packetize_resolution_packets_with_options_for_session, profile,
+    ordered_prepared_resolution_packets_for_session, packet_descriptors_for_session, packet_encode,
+    packetization_requires_scalar, packetize_resolution_packets_with_options_for_session, profile,
     split_component_resolution_packets_by_precinct_for_session, EncodeComponentSampleInfo,
     EncodeOptions, J2kEncodeStageAccelerator, J2kPacketizationPacketDescriptor,
     NativeEncodePipelineResult, NativeEncodeSession,
@@ -115,13 +114,12 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         "ordered prepared packet tree",
     )?;
     let stage_start = profile::profile_now(profile_enabled);
-    let (resolution_packets, packet_descriptors, allow_packetization_accelerator) =
+    let (resolution_packets, mut packet_descriptors, allow_packetization_accelerator) =
         if options.num_layers > 1 {
             let (resolution_packets, packet_descriptors) =
                 encode_prepared_resolution_packets_layered_for_session(
                     prepared_resolution_packets,
                     options.num_layers,
-                    options.progression_order,
                     &options.quality_layer_byte_targets,
                     session,
                     retained_base_bytes,
@@ -129,11 +127,9 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
                 )?;
             (resolution_packets, packet_descriptors, false)
         } else {
-            let packet_descriptors = packet_descriptors_for_order_for_session(
+            let packet_descriptors = packet_descriptors_for_session(
                 &prepared_resolution_packets,
                 prepared_resolution_packets.capacity(),
-                1,
-                options.progression_order,
                 session,
                 retained_base_bytes,
             )?;
@@ -162,14 +158,14 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         retained_base_bytes,
         "retained transform and single-tile plan owners",
     )?;
+    let descriptor_capacity = packet_descriptors.capacity();
     let mut packetized_tile = packetize_resolution_packets_with_options_for_session(
         &resolution_packets,
         resolution_packets.capacity(),
-        &packet_descriptors,
-        packet_descriptors.capacity(),
-        options.num_layers,
-        num_components,
-        options.progression_order,
+        &mut packet_descriptors,
+        descriptor_capacity,
+        &plan.params,
+        (width, height),
         packet_encode::PacketMarkerOptions {
             write_sop: plan.params.write_sop,
             write_eph: plan.params.write_eph,

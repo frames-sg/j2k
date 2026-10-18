@@ -15,6 +15,8 @@ mod accelerator_metadata;
 use accelerator_metadata::try_public_packetization_resolutions;
 mod precinct;
 pub(super) use precinct::split_component_resolution_packets_by_precinct_for_session;
+mod progression;
+use progression::sort_packet_descriptors_for_tile;
 
 pub(super) fn count_code_blocks(
     resolution_packets: &[ResolutionPacket],
@@ -42,19 +44,12 @@ pub(super) fn count_compact_code_blocks(
     u32::try_from(count).map_err(|_| "packetization code-block count exceeds u32")
 }
 
-pub(super) fn packet_descriptors_for_order_for_session(
+pub(super) fn packet_descriptors_for_session(
     packets: &[PreparedResolutionPacket],
     packet_capacity: usize,
-    num_layers: u8,
-    progression_order: EncodeProgressionOrder,
     session: &NativeEncodeSession<'_>,
     retained_base_bytes: usize,
 ) -> NativeEncodePipelineResult<Vec<J2kPacketizationPacketDescriptor>> {
-    if num_layers != 1 {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "encode currently prepares one packet contribution layer",
-        ));
-    }
     if packet_capacity < packets.len() {
         return Err(crate::EncodeError::InternalInvariant {
             what: "prepared packet capacity is smaller than its length",
@@ -69,27 +64,18 @@ pub(super) fn packet_descriptors_for_order_for_session(
         "packet descriptor owners",
     )?;
     for (packet_index, packet) in packets.iter().enumerate() {
+        let packet_index = u32::try_from(packet_index).map_err(|_| {
+            NativeEncodePipelineError::arithmetic_overflow("packet descriptor index exceeds u32")
+        })?;
         descriptors.push(J2kPacketizationPacketDescriptor {
-            packet_index: u32::try_from(packet_index).map_err(|_| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "packet descriptor index exceeds u32",
-                )
-            })?,
-            state_index: u32::try_from(packet_index).map_err(|_| {
-                NativeEncodePipelineError::arithmetic_overflow(
-                    "packet descriptor state index exceeds u32",
-                )
-            })?,
+            packet_index,
+            state_index: packet_index,
             layer: 0,
             resolution: packet.resolution,
             component: packet.component,
             precinct: packet.precinct,
         });
     }
-    crate::sort_packet_descriptors_for_progression(
-        &mut descriptors,
-        progression_order.packetization_order(),
-    );
     Ok(descriptors)
 }
 
@@ -129,9 +115,7 @@ pub(super) fn ordered_prepared_resolution_packets_for_session(
         | EncodeProgressionOrder::Rpcl => {
             packets.sort_by_key(|packet| (packet.resolution, packet.component, packet.precinct));
         }
-        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
-            packets.sort_by_key(|packet| (packet.component, packet.resolution, packet.precinct));
-        }
+        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {}
     }
     Ok(packets)
 }
@@ -143,11 +127,10 @@ pub(super) fn ordered_prepared_resolution_packets_for_session(
 pub(super) fn packetize_resolution_packets_with_options_for_session(
     resolution_packets: &[ResolutionPacket],
     resolution_packet_capacity: usize,
-    packet_descriptors: &[J2kPacketizationPacketDescriptor],
+    packet_descriptors: &mut [J2kPacketizationPacketDescriptor],
     packet_descriptor_capacity: usize,
-    num_layers: u8,
-    num_components: u16,
-    progression_order: EncodeProgressionOrder,
+    params: &EncodeParams,
+    tile_size: (u32, u32),
     marker_options: packet_encode::PacketMarkerOptions,
     allow_packetization_accelerator: bool,
     force_scalar_packetization: bool,
@@ -166,6 +149,9 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
         }
         .into());
     }
+    // Contribution storage order is independent of codestream order. Sort
+    // once, with the actual tile geometry, before either packetizer sees it.
+    sort_packet_descriptors_for_tile(packet_descriptors, params, tile_size)?;
     let owned_packet_bytes = packet_encode::owned_packet_retained_bytes_for_public_descriptors(
         resolution_packets,
         resolution_packet_capacity,
@@ -190,11 +176,11 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
                     "packetization resolution count exceeds u32",
                 )
             })?,
-            num_layers,
-            num_components,
+            num_layers: params.num_layers,
+            num_components: params.num_components,
             code_block_count: count_code_blocks(resolution_packets)
                 .map_err(NativeEncodePipelineError::arithmetic_overflow)?,
-            progression_order: progression_order.packetization_order(),
+            progression_order: params.progression_order.packetization_order(),
             packet_descriptors,
             resolutions: &packetization_resolutions,
         };

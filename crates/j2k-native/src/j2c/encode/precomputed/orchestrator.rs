@@ -8,9 +8,8 @@ use super::allocation::{add_capacity, encode_params_retained_bytes, Construction
 use super::options::validate_single_layer_packet_input;
 use super::{
     encode_prepared_resolution_packets_for_session,
-    ordered_prepared_resolution_packets_for_session, packet_descriptors_for_order_for_session,
-    packet_encode, packetization_requires_scalar,
-    packetize_resolution_packets_with_options_for_session, quantize,
+    ordered_prepared_resolution_packets_for_session, packet_descriptors_for_session, packet_encode,
+    packetization_requires_scalar, packetize_resolution_packets_with_options_for_session, quantize,
     split_component_resolution_packets_by_precinct_for_session,
     validate_irreversible_quantization_profile, validate_precinct_exponents_for_options,
     write_single_tile_packetized_codestream_for_session, BlockCodingMode, EncodeOptions,
@@ -255,11 +254,9 @@ pub(in crate::j2c::encode) fn finish_plan(
         params.num_decomposition_levels,
         params.reversible,
     )?;
-    let packet_descriptors = packet_descriptors_for_order_for_session(
+    let packet_descriptors = packet_descriptors_for_session(
         &prepared_packets,
         prepared_packets.capacity(),
-        1,
-        params.progression_order,
         session,
         phase_base,
     )?;
@@ -280,7 +277,7 @@ pub(in crate::j2c::encode) fn encode_plan(
     let Prepared97PacketPlan {
         params,
         quant_params,
-        packet_descriptors,
+        mut packet_descriptors,
         prepared_packets,
         tile_part_packet_limit,
     } = plan;
@@ -306,14 +303,14 @@ pub(in crate::j2c::encode) fn encode_plan(
             metadata_without_descriptors,
             "precomputed 9/7 packet-plan metadata",
         )?;
+        let descriptor_capacity = packet_descriptors.capacity();
         packetize_resolution_packets_with_options_for_session(
             &resolution_packets,
             resolution_packets.capacity(),
-            &packet_descriptors,
-            packet_descriptors.capacity(),
-            1,
-            params.num_components,
-            params.progression_order,
+            &mut packet_descriptors,
+            descriptor_capacity,
+            &params,
+            (params.width, params.height),
             packet_encode::PacketMarkerOptions {
                 write_sop: params.write_sop,
                 write_eph: params.write_eph,

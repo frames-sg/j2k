@@ -4,8 +4,8 @@
 
 use super::super::super::tier1_allocation::Tier1PhaseTracker;
 use super::super::super::{
-    EncodeProgressionOrder, J2kPacketizationPacketDescriptor, LayeredPreparedPacket,
-    NativeEncodePipelineResult, ResolutionPacket, Vec,
+    J2kPacketizationPacketDescriptor, LayeredPreparedPacket, NativeEncodePipelineResult,
+    ResolutionPacket, Vec,
 };
 use super::ownership::layered_packets_ownership;
 
@@ -16,7 +16,6 @@ use state::{append_layered_packet, LayerOutputContext};
 pub(super) fn build_layer_packets(
     layered_packets: Vec<LayeredPreparedPacket>,
     num_layers: u8,
-    progression_order: EncodeProgressionOrder,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
 ) -> NativeEncodePipelineResult<(Vec<ResolutionPacket>, Vec<J2kPacketizationPacketDescriptor>)> {
     let layer_count = usize::from(num_layers);
@@ -56,9 +55,5 @@ pub(super) fn build_layer_packets(
             tracker,
         )?;
     }
-    crate::sort_packet_descriptors_for_progression(
-        &mut descriptors,
-        progression_order.packetization_order(),
-    );
     Ok((resolution_packets, descriptors))
 }

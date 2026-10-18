@@ -33,6 +33,10 @@ impl J2kPacketizationProgressionOrder {
 }
 
 /// Sort explicit packet descriptors according to a JPEG 2000 progression order.
+///
+/// Position-major orders require precinct indices with a common spatial order
+/// across the compared components and resolutions. This helper has no geometry
+/// with which to map differing precinct grids onto the reference grid.
 pub fn sort_packet_descriptors_for_progression(
     descriptors: &mut [J2kPacketizationPacketDescriptor],
     progression_order: J2kPacketizationProgressionOrder,

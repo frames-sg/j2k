@@ -36,6 +36,12 @@ pub use dispatch::{
 pub mod encode_geometry;
 
 /// Sort packet descriptors in the requested progression order.
+///
+/// This helper compares descriptor fields without image geometry. For
+/// position-major progressions, the compared precinct indices must share the
+/// same spatial ordering across components and resolutions, as with one
+/// precinct per resolution. Encoders with differing precinct grids must order
+/// descriptors by reference-grid coordinates before packetization instead.
 pub fn sort_packet_descriptors_for_progression(
     descriptors: &mut [J2kPacketizationPacketDescriptor],
     progression_order: J2kPacketizationProgressionOrder,

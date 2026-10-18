@@ -98,7 +98,6 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
         I64PacketizeRequest {
             width,
             height,
-            num_components,
             num_levels,
             params: &execution.params,
             options: &high_bit_options,
