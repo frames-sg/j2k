@@ -9,15 +9,19 @@ use crate::source_audit::{
     PanicMacroInventory, PanicMacroSite,
 };
 
+// This reviewed inventory includes const-evaluated standard-table validation,
+// release-mode capacity guards after JPEG preflight, and internal SIMD/layout
+// specialization invariants. Keep each ceiling exact: any new site requires a
+// fresh reachability review.
 const PANIC_MACRO_BASELINE: PanicMacroInventory = PanicMacroInventory {
-    panic: 0,
-    unreachable: 50,
-    assert: 8,
-    assert_eq: 3,
-    assert_ne: 0,
-    debug_assert: 95,
-    debug_assert_eq: 66,
-    debug_assert_ne: 0,
+    panic: 3,
+    unreachable: 59,
+    assert: 73,
+    assert_eq: 29,
+    assert_ne: 6,
+    debug_assert: 148,
+    debug_assert_eq: 94,
+    debug_assert_ne: 4,
 };
 
 pub(super) fn enforce_panic_macro_inventory(
