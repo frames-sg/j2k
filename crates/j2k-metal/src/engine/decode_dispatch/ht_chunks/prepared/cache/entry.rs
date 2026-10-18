@@ -6,9 +6,8 @@
 use crate::metal_types::prelude::*;
 
 use core::mem::size_of;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use crate::metal_types::Device;
 use j2k_core::HtGpuJobChunkLimits;
 
 use super::super::super::{HtBatchInput, HtPayloadSource, J2kHtCleanupBatchJob};
@@ -17,7 +16,10 @@ use crate::engine::{Error, PreparedHtExecutionOwner};
 use crate::session::{PREPARED_PLAN_CACHE_MAX_DEVICE_BYTES, PREPARED_PLAN_CACHE_MAX_HOST_BYTES};
 
 pub(super) struct PreparedMetalHtInputKey {
-    owner: Arc<PreparedHtExecutionOwner>,
+    /// Weak, so an entry does not keep its plan's identity alive; the
+    /// allocation, and so the address compared below, stays reserved while
+    /// this reference exists.
+    owner: Weak<PreparedHtExecutionOwner>,
     payload: PreparedMetalHtPayloadKey,
     jobs_ptr: usize,
     jobs_len: usize,
@@ -67,12 +69,12 @@ pub(super) struct PreparedMetalHtExecutionCacheEntry {
 
 impl PreparedMetalHtExecutionCacheEntry {
     pub(super) fn prepare(
-        device: &Device,
+        inputs: crate::engine::HtInputAllocator<'_>,
         batches: &[HtBatchInput<'_>],
         limits: HtGpuJobChunkLimits,
         metadata_host_bytes: usize,
     ) -> Result<(Arc<PreparedMetalHtExecution>, Option<Self>), Error> {
-        let execution = Arc::new(PreparedMetalHtExecution::prepare(device, batches, limits)?);
+        let execution = Arc::new(PreparedMetalHtExecution::prepare(inputs, batches, limits)?);
         let (execution_host_bytes, device_bytes) = execution.retained_bytes()?;
         let mut inputs = Vec::new();
         inputs.try_reserve_exact(batches.len()).map_err(|source| {
@@ -82,7 +84,7 @@ impl PreparedMetalHtExecutionCacheEntry {
             }
         })?;
         inputs.extend(batches.iter().map(|batch| PreparedMetalHtInputKey {
-            owner: batch.execution_owner.clone(),
+            owner: Arc::downgrade(batch.execution_owner),
             payload: PreparedMetalHtPayloadKey::from_source(batch.payload),
             jobs_ptr: batch.jobs.as_ptr() as usize,
             jobs_len: batch.jobs.len(),
@@ -124,13 +126,20 @@ impl PreparedMetalHtExecutionCacheEntry {
         same_limits(self.limits, limits)
             && self.inputs.len() == batches.len()
             && self.inputs.iter().zip(batches).all(|(key, batch)| {
-                Arc::ptr_eq(&key.owner, batch.execution_owner)
+                core::ptr::eq(key.owner.as_ptr(), Arc::as_ptr(batch.execution_owner))
                     && key.payload == PreparedMetalHtPayloadKey::from_source(batch.payload)
                     && key.jobs_ptr == batch.jobs.as_ptr() as usize
                     && key.jobs_len == batch.jobs.len()
                     && key.source_index == batch.source_index
                     && key.output_base == batch.output_base
             })
+    }
+
+    /// Whether every plan this entry was prepared for still exists. Once one
+    /// is dropped, no later lookup can present its owner, so the entry can
+    /// never be used again.
+    pub(super) fn is_live(&self) -> bool {
+        self.inputs.iter().all(|key| key.owner.strong_count() > 0)
     }
 
     pub(super) fn execution(&self) -> Arc<PreparedMetalHtExecution> {
@@ -215,17 +224,9 @@ impl PreparedMetalHtExecution {
 
 impl PreparedMetalHtChunk {
     fn host_bytes(&self) -> Result<usize, Error> {
-        self.coded_data
+        self.jobs
             .capacity()
-            .checked_add(
-                self.jobs
-                    .capacity()
-                    .checked_mul(size_of::<J2kHtCleanupBatchJob>())
-                    .ok_or(Error::MetalStateInvariant {
-                        state: "J2K Metal prepared HT execution cache",
-                        reason: "job arena host byte count overflow",
-                    })?,
-            )
+            .checked_mul(size_of::<J2kHtCleanupBatchJob>())
             .and_then(|bytes| {
                 self.source_indices
                     .capacity()

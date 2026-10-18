@@ -127,10 +127,18 @@ impl<'a> CooperativeHtCleanup<'a> {
         let vlc_threads = job_count.div_ceil(lanes_per_simd) * HT_SIMD_LANES;
         encoder.set_bytes::<J2kHtVlcDispatchParams>(9, &dispatch);
         encoder.setComputePipelineState(self.vlc);
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            j2k_metal_support::mtl_size(vlc_threads as u64, u64::from(batch_count), 1),
-            j2k_metal_support::mtl_size(HT_VLC_THREADS_PER_GROUP as u64, 1, 1),
+        #[cfg(test)]
+        let vlc_repeats = crate::engine::test_counters::single_step_repeats_for_test(
+            crate::engine::test_counters::SingleStepKind::HtVlc,
         );
+        #[cfg(not(test))]
+        let vlc_repeats = 1;
+        for _ in 0..vlc_repeats {
+            encoder.dispatchThreads_threadsPerThreadgroup(
+                j2k_metal_support::mtl_size(vlc_threads as u64, u64::from(batch_count), 1),
+                j2k_metal_support::mtl_size(HT_VLC_THREADS_PER_GROUP as u64, 1, 1),
+            );
+        }
         encoder.memory_barrier_with_resources(&[decoded, status]);
         #[cfg(test)]
         if !crate::engine::test_counters::decode_stage_enabled(

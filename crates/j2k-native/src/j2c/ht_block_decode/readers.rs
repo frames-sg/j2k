@@ -165,7 +165,12 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
         self
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "low reservoir word; per-sample hot path"
+    )]
+    #[inline(always)]
     pub(super) fn fetch(&mut self) -> u32 {
         if self.bits < 32 {
             self.fill();
@@ -174,6 +179,8 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
         self.tmp as u32
     }
 
+    #[expect(clippy::inline_always, reason = "per-sample hot path")]
+    #[inline(always)]
     pub(super) fn advance(&mut self, count: u32) {
         debug_assert!(count <= self.bits);
         self.tmp >>= count;
@@ -282,7 +289,12 @@ impl<'a> ReverseBitReader<'a> {
         self
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "low reservoir word; per-quad hot path"
+    )]
+    #[inline(always)]
     pub(super) fn fetch(&mut self) -> u32 {
         if self.bits < 32 {
             self.fill();
@@ -291,12 +303,172 @@ impl<'a> ReverseBitReader<'a> {
         self.tmp as u32
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "low reservoir word; per-quad hot path"
+    )]
+    #[inline(always)]
     pub(super) fn advance(&mut self, count: u32) -> u32 {
         debug_assert!(count <= self.bits);
         self.tmp >>= count;
         self.bits -= count;
         self.tmp as u32
+    }
+}
+
+/// Padding after the unstuffed `MagSgn` bytes. It is at least one fetch window,
+/// so a clamped fetch past the end sees only padding.
+const FLAT_MAGSGN_PADDING: usize = 16;
+
+/// Bytes of unstuffed `MagSgn` data a block of `samples` can consume, plus
+/// padding. Each sample consumes at most 32 bits and peeks one more.
+pub(super) fn flat_magsgn_capacity(samples: usize) -> crate::Result<usize> {
+    samples
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(8 + FLAT_MAGSGN_PADDING))
+        .ok_or(crate::ValidationError::ImageTooLarge.into())
+}
+
+/// Unstuff a forward `MagSgn` segment (Clause 7.3.2: a byte after `0xFF`
+/// carries seven bits) into `out`, then pad it with ones. The padding is what
+/// [`ForwardBitReader`] reads past the end of the segment, so every fetch
+/// returns the same bits. Only the first `consumable` bytes can be read by a
+/// block, so a longer (malformed) segment stops there.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the low byte of the bit accumulator is emitted on purpose"
+)]
+pub(super) fn unstuff_magsgn<'a>(
+    src: &[u8],
+    out: &'a mut alloc::vec::Vec<u8>,
+    consumable: usize,
+) -> Option<&'a [u8]> {
+    const LOW_SEVEN: u64 = 0x7F7F_7F7F_7F7F_7F7F;
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let required = consumable.checked_add(8 + FLAT_MAGSGN_PADDING)?;
+    if out.capacity() < required {
+        return None;
+    }
+    out.clear();
+    let mut acc = 0_u64;
+    let mut bits = 0_u32;
+    let mut unstuff = false;
+    let mut index = 0usize;
+    while index < src.len() && out.len() < consumable {
+        if !unstuff {
+            if let Some(chunk) = src.get(index..index + 8) {
+                let word = u64::from_le_bytes(chunk.try_into().ok()?);
+                // Bit 7 of each byte is set where that byte is 0xFF.
+                let ff = ((word & LOW_SEVEN) + ONES) & word & HIGH;
+                if ff & (HIGH >> 8) == 0 {
+                    // No stuffing inside the first seven bytes: all 64 bits
+                    // are data, appended after the `bits` pending bits.
+                    out.extend_from_slice(&(acc | (word << bits)).to_le_bytes());
+                    acc = if bits == 0 { 0 } else { word >> (64 - bits) };
+                    unstuff = ff >> 63 != 0;
+                    index += 8;
+                    continue;
+                }
+            }
+        }
+        let byte = src[index];
+        index += 1;
+        let data = if unstuff { byte & 0x7F } else { byte };
+        acc |= u64::from(data) << bits;
+        bits += 8 - u32::from(unstuff);
+        unstuff = byte == 0xFF;
+        while bits >= 8 {
+            out.push(acc as u8);
+            acc >>= 8;
+            bits -= 8;
+        }
+    }
+    if bits > 0 {
+        out.push((acc | (u64::MAX << bits)) as u8);
+    }
+    out.truncate(consumable);
+    out.resize(out.len() + 8 + FLAT_MAGSGN_PADDING, 0xFF);
+    Some(out.as_slice())
+}
+
+/// `MagSgn` bits read at absolute bit positions from an unstuffed buffer.
+///
+/// Unlike a reservoir reader, consecutive fetches depend only on the running
+/// position, so the per-sample critical path is one addition.
+pub(super) struct FlatBitReader<'a> {
+    data: &'a [u8],
+    last_window: usize,
+    #[cfg(feature = "simd")]
+    last_window16: usize,
+    position: usize,
+}
+
+impl<'a> FlatBitReader<'a> {
+    pub(super) fn new(data: &'a [u8]) -> Option<Self> {
+        Some(Self {
+            last_window: data.len().checked_sub(8 + FLAT_MAGSGN_PADDING)? + FLAT_MAGSGN_PADDING,
+            // At least 24 bytes are present here, so this cannot underflow.
+            #[cfg(feature = "simd")]
+            last_window16: data.len() - 16,
+            data,
+            position: 0,
+        })
+    }
+
+    /// Absolute bit position of the next unread bit.
+    #[cfg(feature = "simd")]
+    #[expect(clippy::inline_always, reason = "per-quad hot path")]
+    #[inline(always)]
+    pub(super) fn position(&self) -> usize {
+        self.position
+    }
+
+    #[cfg(feature = "simd")]
+    #[expect(clippy::inline_always, reason = "per-quad hot path")]
+    #[inline(always)]
+    pub(super) fn advance_to(&mut self, position: usize) {
+        self.position = position;
+    }
+
+    /// The 16 bytes starting at the byte that holds bit `position`, and that
+    /// bit's offset within the byte. A window past the data is clamped to the
+    /// last 16 bytes, which are padding (all ones) like everything after the
+    /// data, so the bits read are unchanged.
+    #[cfg(feature = "simd")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "bit offset below 8; per-quad hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn window16(&self, position: usize) -> (&[u8], u32) {
+        let byte = (position >> 3).min(self.last_window16);
+        (&self.data[byte..byte + 16], (position & 7) as u32)
+    }
+
+    /// The next 32 bits, least significant first.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "low window word; per-sample hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn fetch(&self) -> u32 {
+        // Past the data every window is padding, which is all ones at any
+        // bit offset, so clamping the window is exact.
+        let byte = (self.position >> 3).min(self.last_window);
+        let window = self.data[byte..byte + 8]
+            .try_into()
+            .map_or(u64::MAX, u64::from_le_bytes);
+        (window >> (self.position & 7)) as u32
+    }
+
+    #[expect(clippy::inline_always, reason = "per-sample hot path")]
+    #[inline(always)]
+    pub(super) fn advance(&mut self, count: u32) {
+        self.position += count as usize;
     }
 }
 

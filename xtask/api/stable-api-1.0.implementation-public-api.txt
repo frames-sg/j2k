@@ -278,6 +278,7 @@ pub fn j2k_core::checked_host_phase_sum(&[usize], &'static str) -> core::result:
 pub fn j2k_core::checked_surface_len((u32, u32), usize, usize, &'static str) -> core::result::Result<(usize, usize), j2k_core::BufferError>
 pub fn j2k_core::copy_tight_pixels_to_strided_output(&[u8], (u32, u32), j2k_core::PixelFormat, &mut [u8], usize) -> core::result::Result<(), j2k_core::BufferError>
 pub fn j2k_core::ensure_allocation_within_cap(usize, usize, &'static str) -> core::result::Result<usize, j2k_core::BufferError>
+pub fn j2k_core::host_physical_memory_bytes() -> core::option::Option<u64>
 pub fn j2k_core::plan_ht_gpu_job_chunks(&[j2k_core::HtGpuJobChunkRequest], j2k_core::HtGpuJobChunkLimits) -> core::result::Result<j2k_core::HtGpuJobChunkPlan, j2k_core::HtGpuJobChunkPlanError>
 pub fn j2k_core::plan_ht_gpu_job_chunks_with_external_live_bytes(&[j2k_core::HtGpuJobChunkRequest], j2k_core::HtGpuJobChunkLimits, usize) -> core::result::Result<j2k_core::HtGpuJobChunkPlan, j2k_core::HtGpuJobChunkPlanError>
 pub fn j2k_core::strided_output_len((u32, u32), usize, j2k_core::PixelFormat) -> core::result::Result<usize, j2k_core::BufferError>
@@ -1083,7 +1084,6 @@ impl j2k_core::traits::TileBatchDecodeDevice for j2k_metal::Codec
 impl j2k_core::traits::TileBatchDecodeManyDevice for j2k_metal::Codec
 impl j2k_core::traits::TileBatchDecodeSubmit for j2k_metal::Codec
 impl j2k_metal::Error
-impl j2k_metal::J2kDecoder<'_>
 impl j2k_metal::MetalDecodeDispatchReport
 impl j2k_metal::MetalLosslessEncodeBatchStats
 impl j2k_metal::MetalLosslessEncodeStageStats
@@ -2378,6 +2378,7 @@ pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool
 pub fn j2k_native::Image<'a>::tile_count(&self) -> u32
+pub fn j2k_native::Image<'a>::uses_high_throughput_block_coding(&self) -> bool
 pub fn j2k_native::J2kCodeBlockDecodeProfile::new() -> Self
 pub fn j2k_native::J2kCodeBlockDecodeWorkspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::J2kDirectCpuEntropyWorkspace::retained_classic_bytes(&self) -> usize
@@ -2387,6 +2388,7 @@ pub fn j2k_native::J2kDirectCpuScratch::prepare_execution_allocation_bytes(&mut 
 pub fn j2k_native::J2kDirectCpuScratch::retained_band_owner_count(&self) -> usize
 pub fn j2k_native::J2kDirectCpuScratch::retained_classic_workspace_bytes(&self) -> usize
 pub fn j2k_native::J2kDirectCpuScratch::retained_ht_workspace_bytes(&self) -> usize
+pub fn j2k_native::J2kDirectCpuScratch::set_parallel_decode(&mut self, bool)
 pub fn j2k_native::J2kDirectDecodedComponents<'_>::plane(&self, usize) -> core::option::Option<j2k_native::J2kDirectDecodedPlane<'_>>
 pub fn j2k_native::J2kRequiredBandRegion::expanded_within_band(self, u32, u32, u32) -> Self
 pub fn j2k_native::J2kRequiredBandRegion::expanded_within_rect(self, u32, j2k_types::decode_plan::J2kRect) -> Self

@@ -39,6 +39,10 @@ path = "src/bin/jp2k_fixture_compare.rs"
 name = "jp2k_encode_compare"
 path = "src/bin/jp2k_encode_compare.rs"
 
+[[bin]]
+name = "jp2k_dicom_bench"
+path = "src/bin/jp2k_dicom_bench.rs"
+
 [lints.rust]
 unsafe_code = "warn"
 unsafe_op_in_unsafe_fn = "deny"

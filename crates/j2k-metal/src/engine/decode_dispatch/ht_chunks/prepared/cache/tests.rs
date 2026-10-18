@@ -37,10 +37,71 @@ fn cleanup_job(output_offset: u32) -> J2kHtCleanupBatchJob {
 }
 
 #[test]
-fn host_pressure_evicts_the_oldest_prepared_execution_instead_of_bypassing_cache() {
-    let Ok(device) = j2k_metal_support::system_default_device() else {
+fn entries_of_dropped_plans_are_evicted_on_the_next_lookup() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
-    };
+    }
+    let device = j2k_metal_support::system_default_device().expect("required Metal device");
+    let limits = HtGpuJobChunkLimits::new(
+        NonZeroUsize::new(1).expect("nonzero job cap"),
+        1,
+        size_of::<J2kHtCleanupBatchJob>(),
+    );
+    let payload = [0_u8];
+    let first_jobs = [cleanup_job(0)];
+    let second_jobs = [cleanup_job(1)];
+    let first_owner = Arc::new(PreparedHtExecutionOwner);
+    let second_owner = Arc::new(PreparedHtExecutionOwner);
+    let mut cache = PreparedMetalHtExecutionCache::new();
+    cache
+        .get_or_prepare(
+            &device,
+            &[HtBatchInput {
+                source_index: 0,
+                payload: HtPayloadSource::Contiguous(&payload),
+                jobs: &first_jobs,
+                output_base: 0,
+                execution_owner: &first_owner,
+            }],
+            limits,
+        )
+        .expect("prepare the first plan's execution");
+    let metadata_bytes = cache
+        .retained_host_bytes
+        .checked_sub(cache.entries[0].host_bytes())
+        .expect("cache metadata accounting");
+    let second = [HtBatchInput {
+        source_index: 1,
+        payload: HtPayloadSource::Contiguous(&payload),
+        jobs: &second_jobs,
+        output_base: 1,
+        execution_owner: &second_owner,
+    }];
+    cache
+        .get_or_prepare(&device, &second, limits)
+        .expect("prepare the second plan's execution");
+    assert_eq!(cache.entries.len(), 2, "live plans keep their entries");
+
+    drop(first_owner);
+    cache
+        .get_or_prepare(&device, &second, limits)
+        .expect("reuse the second plan's execution");
+
+    assert_eq!(cache.entries.len(), 1);
+    assert!(cache.entries[0].is_live());
+    assert_eq!(
+        cache.retained_host_bytes,
+        metadata_bytes + cache.entries[0].host_bytes()
+    );
+    assert_eq!(cache.retained_device_bytes, cache.entries[0].device_bytes());
+}
+
+#[test]
+fn host_pressure_evicts_the_oldest_prepared_execution_instead_of_bypassing_cache() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let device = j2k_metal_support::system_default_device().expect("required Metal device");
     let limits = HtGpuJobChunkLimits::new(
         NonZeroUsize::new(1).expect("nonzero job cap"),
         1,
@@ -107,9 +168,10 @@ fn prepared_execution_key_weight_uses_allocated_capacity() {
 
 #[test]
 fn otherwise_identical_prepared_inputs_are_isolated_by_owner_identity() {
-    let Ok(device) = j2k_metal_support::system_default_device() else {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
-    };
+    }
+    let device = j2k_metal_support::system_default_device().expect("required Metal device");
     let limits = HtGpuJobChunkLimits::new(
         NonZeroUsize::new(1).expect("nonzero job cap"),
         1,
@@ -154,6 +216,9 @@ fn otherwise_identical_prepared_inputs_are_isolated_by_owner_identity() {
 
 #[test]
 fn poisoned_prepared_execution_cache_reports_poisoned_state() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
     let runtime = MetalRuntime::new().expect("isolated Metal runtime");
     let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = runtime
@@ -197,9 +262,10 @@ fn oversized_prepared_execution_is_not_cacheable() {
 
 #[test]
 fn thousand_prepared_cache_hits_keep_retained_memory_stable() {
-    let Ok(device) = j2k_metal_support::system_default_device() else {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
-    };
+    }
+    let device = j2k_metal_support::system_default_device().expect("required Metal device");
     let limits = HtGpuJobChunkLimits::new(
         NonZeroUsize::new(1).expect("nonzero job cap"),
         1,

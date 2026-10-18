@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use j2k_core::BatchInfrastructureError;
 
-use super::allocation::J2K_BATCH_EXECUTION_CAP_BYTES;
+use super::allocation::batch_execution_cap_bytes;
 
 pub(super) struct BatchAllocationBudget {
     cap: usize,
@@ -23,15 +23,16 @@ struct AdmissionState {
 
 impl BatchAllocationBudget {
     pub(super) fn with_baseline(baseline: usize) -> Result<Arc<Self>, BatchInfrastructureError> {
-        if baseline > J2K_BATCH_EXECUTION_CAP_BYTES {
+        let cap = batch_execution_cap_bytes();
+        if baseline > cap {
             return Err(BatchInfrastructureError::AllocationTooLarge {
                 what: "shared J2K direct plan",
                 requested: baseline,
-                cap: J2K_BATCH_EXECUTION_CAP_BYTES,
+                cap,
             });
         }
         Ok(Arc::new(Self {
-            cap: J2K_BATCH_EXECUTION_CAP_BYTES,
+            cap,
             state: Mutex::new(AdmissionState {
                 live: baseline,
                 waiters: 0,

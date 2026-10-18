@@ -49,6 +49,7 @@ pub(super) fn store<'a>(
     component_info: &ComponentInfo,
     component_idx: usize,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    parallel: bool,
 ) -> Result<()> {
     if tile_ctx.channel_data[component_idx]
         .integer_container
@@ -147,34 +148,60 @@ pub(super) fn store<'a>(
         // with the actual tile rectangle. We also need to account for the
         // offset of the reference grid.
 
-        let skip_x = image_x_offset.saturating_sub(idwt_output.rect.x0);
-        let skip_y = image_y_offset.saturating_sub(idwt_output.rect.y0);
-
-        apply_float_sign_shift(
-            &mut idwt_output.coefficients,
+        let skip_x = image_x_offset.saturating_sub(idwt_output.rect.x0) as usize;
+        let skip_y = image_y_offset.saturating_sub(idwt_output.rect.y0) as usize;
+        let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset) as usize;
+        let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset) as usize;
+        let input_width = idwt_output.rect.width() as usize;
+        let input_rows = idwt_output.rect.height() as usize;
+        let output_width = header.size_data.image_width() as usize;
+        // The level shift is applied while copying: one pass instead of a
+        // shift over the whole IDWT output followed by a copy.
+        let shift = SampleShift::new(
             sign_shift,
             component_info.wavelet_transform(),
             round_irreversible_output,
         );
+        let copy_row = |input_row: &[f32], output_row: &mut [f32]| {
+            let input_row = &input_row[skip_x..];
+            let output_row = &mut output_row[output_x..][..input_row.len()];
+            shift.copy(input_row, output_row);
+        };
 
-        let input_row_iter = idwt_output
+        #[cfg(feature = "parallel")]
+        if parallel && input_width * input_rows >= PARALLEL_STORE_SAMPLES {
+            use rayon::prelude::*;
+            idwt_output
+                .coefficients
+                .par_chunks_exact(input_width)
+                .skip(skip_y)
+                .take(input_rows)
+                .zip(
+                    channel_data
+                        .container
+                        .par_chunks_exact_mut(output_width)
+                        .skip(output_y),
+                )
+                .with_min_len(16)
+                .for_each(|(input_row, output_row)| copy_row(input_row, output_row));
+            return Ok(());
+        }
+        #[cfg(not(feature = "parallel"))]
+        let _ = parallel;
+
+        for (input_row, output_row) in idwt_output
             .coefficients
-            .chunks_exact(idwt_output.rect.width() as usize)
-            .skip(skip_y as usize)
-            .take(idwt_output.rect.height() as usize);
-
-        let output_row_iter = channel_data
-            .container
-            .chunks_exact_mut(header.size_data.image_width() as usize)
-            .skip(resolution_tile.rect.y0.saturating_sub(image_y_offset) as usize);
-
-        for (input_row, output_row) in input_row_iter.zip(output_row_iter) {
-            let input_row = &input_row[skip_x as usize..];
-            let output_row = &mut output_row
-                [resolution_tile.rect.x0.saturating_sub(image_x_offset) as usize..]
-                [..input_row.len()];
-
-            output_row.copy_from_slice(input_row);
+            .chunks_exact(input_width)
+            .skip(skip_y)
+            .take(input_rows)
+            .zip(
+                channel_data
+                    .container
+                    .chunks_exact_mut(output_width)
+                    .skip(output_y),
+            )
+        {
+            copy_row(input_row, output_row);
         }
     } else {
         apply_float_sign_shift(
@@ -245,6 +272,46 @@ pub(super) fn store<'a>(
     }
 
     Ok(())
+}
+
+/// Stores with at least this many samples copy rows in parallel.
+#[cfg(feature = "parallel")]
+const PARALLEL_STORE_SAMPLES: usize = 512 * 512;
+
+/// The per-sample output transform of [`apply_float_sign_shift`].
+#[derive(Clone, Copy)]
+enum SampleShift {
+    Copy,
+    Add(f32),
+    RoundThenAdd(f32),
+}
+
+impl SampleShift {
+    fn new(sign_shift: f32, transform: WaveletTransform, round_irreversible_output: bool) -> Self {
+        if round_irreversible_output && transform == WaveletTransform::Irreversible97 {
+            Self::RoundThenAdd(sign_shift)
+        } else if sign_shift != 0.0 {
+            Self::Add(sign_shift)
+        } else {
+            Self::Copy
+        }
+    }
+
+    fn copy(self, input: &[f32], output: &mut [f32]) {
+        match self {
+            Self::Copy => output.copy_from_slice(input),
+            Self::Add(addend) => {
+                for (output, &input) in output.iter_mut().zip(input) {
+                    *output = input + addend;
+                }
+            }
+            Self::RoundThenAdd(addend) => {
+                for (output, &input) in output.iter_mut().zip(input) {
+                    *output = round_ties_even_then_add(input, addend);
+                }
+            }
+        }
+    }
 }
 
 fn apply_float_sign_shift(

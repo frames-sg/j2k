@@ -6,10 +6,10 @@ use crate::metal_types::prelude::*;
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
     dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer, CommandBufferRef,
-    ComputeCommandEncoderRef, Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams,
-    J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams, MetalRuntime, PixelFormat,
-    Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
+    new_compute_command_encoder, with_runtime, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
+    Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams, J2kRepeatedStoreParams,
+    J2kStoreComponentJob, J2kStoreParams, MetalRuntime, PixelFormat, Surface,
+    SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
 };
 use crate::engine::direct_surface_pack::checked_metal_surface_len;
 #[cfg(target_os = "macos")]
@@ -243,7 +243,7 @@ pub(in crate::engine) fn encode_repeated_gray_store_to_surfaces_in_command_buffe
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal repeated grayscale fused store total size overflow".to_string(),
         })?;
-    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
+    let out_buffer = runtime.new_output_buffer(total_bytes)?;
     let contiguous_full_surface = repeated_gray_store_is_contiguous_full_surface(params);
     let pipeline = match (fmt, contiguous_full_surface) {
         (PixelFormat::Gray8, true) => {
@@ -306,38 +306,165 @@ pub(in crate::engine) fn encode_repeated_gray_store_to_surfaces_in_command_buffe
     Ok(surfaces)
 }
 
+/// How a grayscale source maps to its output samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::engine) enum GraySourceSigning {
+    /// Unsigned source, or Gray8 output (which clamps on both backends).
+    Unsigned,
+    /// Signed source of more than eight bits to Gray16: two's complement.
+    SignedWide,
+    /// Signed source of at most eight bits to Gray16: the two's-complement
+    /// byte widened as an eight-bit sample.
+    SignedNarrow,
+}
+
+impl GraySourceSigning {
+    /// Mirror the CPU's Gray8/Gray16 conversion for a single-component plan.
+    /// Such a plan level-shifts unsigned samples by `2^(bit_depth - 1) >= 1`
+    /// and signed samples by zero.
+    pub(in crate::engine) fn for_store(fmt: PixelFormat, bit_depth: u8, addend: f32) -> Self {
+        if fmt != PixelFormat::Gray16 || addend != 0.0 {
+            Self::Unsigned
+        } else if bit_depth > 8 {
+            Self::SignedWide
+        } else {
+            Self::SignedNarrow
+        }
+    }
+}
+
+/// The fused grayscale store kernel for `fmt` and source signing.
+#[cfg(target_os = "macos")]
+/// The output sample of a grayscale store, which selects its kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::engine) enum GrayStoreKind {
+    U8 = 0,
+    U16 = 1,
+    I16 = 2,
+    /// A signed source of at most eight bits widened to Gray16.
+    I8WidenedU16 = 3,
+}
+
+pub(in crate::engine) fn gray_store_kind(
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<GrayStoreKind, Error> {
+    Ok(match (fmt, signing) {
+        (PixelFormat::Gray8, _) => GrayStoreKind::U8,
+        (PixelFormat::Gray16, GraySourceSigning::Unsigned) => GrayStoreKind::U16,
+        (PixelFormat::Gray16, GraySourceSigning::SignedNarrow) => GrayStoreKind::I8WidenedU16,
+        (PixelFormat::Gray16, GraySourceSigning::SignedWide) | (PixelFormat::GrayI16, _) => {
+            GrayStoreKind::I16
+        }
+        _ => {
+            return Err(Error::MetalKernel {
+                message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),
+            })
+        }
+    })
+}
+
+pub(in crate::engine) fn gray_store_pipeline(
+    runtime: &MetalRuntime,
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<&crate::metal_types::ComputePipelineState, Error> {
+    let decode = runtime.decode()?;
+    Ok(match gray_store_kind(fmt, signing)? {
+        GrayStoreKind::U8 => &decode.store_component_gray_u8,
+        GrayStoreKind::U16 => &decode.store_component_gray_u16,
+        GrayStoreKind::I8WidenedU16 => &decode.store_component_gray_i8_widened_u16,
+        GrayStoreKind::I16 => &decode.store_component_gray_i16,
+    })
+}
+
+/// What a grayscale store reads: a float plane, or the last inverse wavelet
+/// level, synthesized in the same dispatch.
+#[derive(Clone, Copy)]
+pub(in crate::engine) enum GrayStoreSource<'a> {
+    Plane {
+        buffer: &'a Buffer,
+        offset_bytes: usize,
+    },
+    Idwt(super::FusedIdwtStoreSource<'a>),
+}
+
+/// Where a grayscale store writes: a buffer bound at `offset_bytes`.
+#[derive(Clone, Copy)]
+pub(in crate::engine) struct GrayStoreOutput<'a> {
+    pub(in crate::engine) buffer: &'a crate::metal_types::BufferRef,
+    pub(in crate::engine) offset_bytes: usize,
+}
+
+/// Encodes a grayscale store from `source` into `output`.
+pub(in crate::engine) fn encode_gray_store(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    source: GrayStoreSource<'_>,
+    output: GrayStoreOutput<'_>,
+    params: &J2kGrayStoreParams,
+    fmt: PixelFormat,
+    signing: GraySourceSigning,
+) -> Result<(), Error> {
+    match source {
+        GrayStoreSource::Plane {
+            buffer,
+            offset_bytes,
+        } => {
+            let pipeline = gray_store_pipeline(runtime, fmt, signing)?;
+            encoder.setComputePipelineState(pipeline);
+            encoder.set_buffer(0, Some(buffer), offset_bytes as u64);
+            encoder.set_buffer(1, Some(output.buffer), output.offset_bytes as u64);
+            encoder.set_bytes::<J2kGrayStoreParams>(2, params);
+            dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
+        }
+        GrayStoreSource::Idwt(fused) => super::dispatch_fused_idwt_gray_store(
+            encoder,
+            runtime.decode()?,
+            fused,
+            output.buffer,
+            output.offset_bytes,
+            params,
+            gray_store_kind(fmt, signing)?,
+        ),
+    }
+    Ok(())
+}
+
+/// Largest positive sample of a signed `bit_depth` component, as the signed
+/// store kernels' clamp bound.
+pub(in crate::engine) fn signed_store_max_value(bit_depth: u8) -> f32 {
+    let signed_bits = u32::from(bit_depth).clamp(1, 16);
+    f32::from(u16::try_from((1_u32 << (signed_bits - 1)) - 1).unwrap_or(u16::MAX))
+}
+
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn encode_gray_store_to_surface_in_encoder(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
-    input: &Buffer,
-    input_offset_bytes: usize,
+    source: GrayStoreSource<'_>,
     params: J2kGrayStoreParams,
     dims: (u32, u32),
     fmt: PixelFormat,
+    signing: GraySourceSigning,
 ) -> Result<Surface, Error> {
     let (_pitch_bytes, surface_bytes) = checked_metal_surface_len(
         dims,
         fmt.bytes_per_pixel(),
         "J2K Metal grayscale fused store size overflow",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
-    let pipeline = match fmt {
-        PixelFormat::Gray8 => &runtime.decode()?.store_component_gray_u8,
-        PixelFormat::Gray16 => &runtime.decode()?.store_component_gray_u16,
-        PixelFormat::GrayI16 => &runtime.decode()?.store_component_gray_i16,
-        _ => {
-            return Err(Error::MetalKernel {
-                message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),
-            })
-        }
-    };
-
-    encoder.setComputePipelineState(pipeline);
-    encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
-    encoder.set_buffer(1, Some(&out_buffer), 0);
-    encoder.set_bytes::<J2kGrayStoreParams>(2, &params);
-    dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
-
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
+    encode_gray_store(
+        runtime,
+        encoder,
+        source,
+        GrayStoreOutput {
+            buffer: &out_buffer,
+            offset_bytes: 0,
+        },
+        &params,
+        fmt,
+        signing,
+    )?;
     Surface::from_metal_buffer(out_buffer, dims, fmt)
 }

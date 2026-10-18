@@ -2552,7 +2552,9 @@ dependencies = [
 name = "j2k-core"
 version = "0.12.0"
 dependencies = [
+ "libc",
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2691,7 +2693,6 @@ dependencies = [
  "j2k-profile",
  "j2k-test-support",
  "j2k-types",
- "libc",
  "objc2",
  "objc2-foundation",
  "objc2-metal",

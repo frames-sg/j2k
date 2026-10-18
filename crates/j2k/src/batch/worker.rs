@@ -32,15 +32,18 @@ pub(crate) struct BatchWorker {
     preparation_worker_reuses: u64,
     prepared_plan_decode_calls: u64,
     allocation_budget: Option<Arc<BatchAllocationBudget>>,
+    /// Parallelism one owned-batch image decode may use; set per submission
+    /// by the retained scheduler.
+    owned_inner_parallelism: CpuDecodeParallelism,
 }
 
 impl BatchWorker {
     pub(super) fn new(
-        batch_size: usize,
+        inner_parallelism: CpuDecodeParallelism,
         allocation_budget: Option<Arc<BatchAllocationBudget>>,
     ) -> Self {
         let mut ctx = J2kContext::new();
-        ctx.set_cpu_decode_parallelism(inner_parallelism_for_batch(batch_size));
+        ctx.set_cpu_decode_parallelism(inner_parallelism);
         Self {
             ctx,
             pool: J2kScratchPool::new(),
@@ -52,6 +55,7 @@ impl BatchWorker {
             preparation_worker_reuses: 0,
             prepared_plan_decode_calls: 0,
             allocation_budget,
+            owned_inner_parallelism: CpuDecodeParallelism::Serial,
         }
     }
 
@@ -180,7 +184,9 @@ fn heap_free_decode_result(
     result.map_err(J2kError::into_heap_free_batch_decode_error)
 }
 
-const fn inner_parallelism_for_batch(batch_size: usize) -> CpuDecodeParallelism {
+/// Parallelism for a worker outside the tile scheduler: a lone job may
+/// parallelize internally, a worker in a larger batch stays serial.
+pub(crate) const fn inner_parallelism_for_batch(batch_size: usize) -> CpuDecodeParallelism {
     if batch_size > 1 {
         CpuDecodeParallelism::Serial
     } else {

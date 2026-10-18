@@ -8,6 +8,15 @@ use super::{join_batch_workers, plan_batch, ScopedWorkerHandle};
 use crate::batch::allocation::try_vec_with_capacity;
 use crate::batch::worker::BatchWorker;
 
+/// Parallelism each retained worker uses inside one image decode for a batch
+/// of `job_count` jobs; see `with_inner_parallelism`.
+pub(crate) fn retained_inner_parallelism(
+    job_count: usize,
+    options: TileBatchOptions,
+) -> Result<crate::CpuDecodeParallelism, BatchInfrastructureError> {
+    Ok(plan_batch(job_count, options)?.inner_parallelism)
+}
+
 /// Run disjoint jobs without destroying worker-owned scratch after each call.
 pub(crate) fn run_retained_chunks<J, R, F>(
     workers: &mut [BatchWorker],
@@ -31,6 +40,9 @@ where
         });
     }
     let plan = plan_batch(jobs.len(), options)?;
+    for worker in workers.iter_mut() {
+        worker.set_owned_inner_parallelism(plan.inner_parallelism);
+    }
     if workers.len() < plan.worker_count {
         return Err(BatchInfrastructureError::WorkerSlotMissing {
             worker: workers.len(),

@@ -4,6 +4,8 @@
 
 mod adapters;
 mod core;
+#[cfg(target_os = "macos")]
+mod destination;
 mod direct_paths;
 mod request;
 mod routes;

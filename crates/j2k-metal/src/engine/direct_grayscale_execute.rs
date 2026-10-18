@@ -5,6 +5,9 @@ use crate::metal_types::prelude::*;
 
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use j2k_metal_support::MetalImageDestination;
+
 use crate::profile_env::{label_command_buffer, metal_profile_decode_split_commands_enabled};
 
 use super::abi::{J2kGrayStoreParams, J2kStoreParams};
@@ -29,9 +32,10 @@ use super::{
     encode_repeated_direct_grayscale_plan_in_command_buffer,
     encode_repeated_gray_plane_to_surfaces_in_command_buffer,
     encode_stacked_direct_component_plane_batch,
-    encode_stacked_direct_component_plane_batch_with_shared_tier1, j2k_scalar_pack_params,
-    lookup_direct_band_slice, lookup_direct_band_slice_entry, metal_profile_stages_enabled,
-    new_command_buffer, new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
+    encode_stacked_direct_component_plane_batch_with_shared_tier1,
+    encode_stacked_direct_gray_batch, j2k_scalar_pack_params, lookup_direct_band_slice,
+    lookup_direct_band_slice_entry, metal_profile_stages_enabled, new_command_buffer,
+    new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
     recycle_scratch_buffers, retire_direct_status_checks,
     supports_stacked_direct_component_plane_batch, take_f32_scratch_buffer,
     try_encode_stacked_mct_rgb8_direct_color_batch, wait_for_completion_metal, with_runtime,
@@ -41,7 +45,7 @@ use super::{
     DirectStatusRetirementMode, DirectTier1Mode, Error, J2kWaveletTransform, MetalRuntime,
     PixelFormat, PreparedDirectColorPlan, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
     RepeatedDirectGrayscalePlanRequest, StackedDirectColorBatchRequest,
-    StackedDirectComponentPlaneBatchRequest, Surface,
+    StackedDirectComponentPlaneBatchRequest, StackedGrayBatch, StackedGrayOutput, Surface,
 };
 mod allocation;
 mod color_batch_completion;
@@ -81,6 +85,7 @@ pub(crate) use self::grayscale_batch::{
 };
 pub(in crate::engine) use self::single::encode_prepared_direct_grayscale_plan_in_command_buffer;
 pub(in crate::engine) use self::single::{
+    encode_prepared_direct_grayscale_plan_as_surface_into_command_buffer,
     encode_prepared_direct_grayscale_plan_into_in_encoder,
     DirectGrayscaleDestinationExecutionRequest,
 };
@@ -127,6 +132,58 @@ pub(crate) fn execute_prepared_direct_grayscale_plan(
         let scratch_retirement = recycle_scratch_buffers(runtime, scratch_buffers);
         completion.and(status_retirement).and(scratch_retirement)?;
         Ok(surface)
+    })
+}
+
+/// [`execute_prepared_direct_grayscale_plan`], storing into `destination`
+/// with the same format conversion instead of a new surface. Returns once
+/// the GPU work has completed.
+#[cfg(target_os = "macos")]
+pub(crate) fn execute_prepared_direct_grayscale_plan_into(
+    plan: &PreparedDirectGrayscalePlan,
+    fmt: PixelFormat,
+    destination: &MetalImageDestination,
+) -> Result<(), Error> {
+    with_runtime(|runtime| {
+        let DirectExecutionMetadata {
+            mut retained_buffers,
+            mut status_checks,
+            mut scratch_buffers,
+            dispatch_report: _,
+        } = allocate_direct_execution_metadata(
+            plan.steps.len(),
+            direct_ht_job_count([plan], "J2K Metal direct grayscale execution HT jobs")?,
+            crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal direct grayscale execution resources",
+            ),
+        )?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        encode_prepared_direct_grayscale_plan_as_surface_into_command_buffer(
+            DirectGrayscaleDestinationExecutionRequest {
+                runtime,
+                command_buffer: &command_buffer,
+                plan,
+                fmt,
+                destination,
+                destination_item_index: 0,
+                retained_buffers: &mut retained_buffers,
+                status_checks: &mut status_checks,
+                scratch_buffers: &mut scratch_buffers,
+            },
+        )?;
+        let completion = commit_and_wait_metal(&command_buffer);
+        let status_retirement = retire_direct_status_checks(
+            runtime,
+            status_checks,
+            if completion.is_ok() {
+                DirectStatusRetirementMode::Validate
+            } else {
+                DirectStatusRetirementMode::RecycleWithoutRead
+            },
+        );
+        drop(retained_buffers);
+        let scratch_retirement = recycle_scratch_buffers(runtime, scratch_buffers);
+        completion.and(status_retirement).and(scratch_retirement)
     })
 }
 

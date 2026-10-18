@@ -24,8 +24,10 @@ pub(in super::super) fn prepare_referenced_direct_scratch(
     scratch: &mut J2kDirectCpuScratch,
 ) -> Result<DirectWorkspaceBudget> {
     let view = ReferencedPlanView::Htj2k(plan);
+    let parallel = scratch.parallel;
     prepare_referenced_component_scratch(
         view,
+        parallel,
         plan.retained_allocation_bytes()?,
         max_referenced_payload_bytes(plan)?,
         max_referenced_dimensions(view, false),
@@ -41,6 +43,7 @@ pub(in super::super) fn prepare_referenced_classic_scratch(
     let view = ReferencedPlanView::Classic(plan);
     prepare_referenced_component_scratch(
         view,
+        false,
         plan.retained_allocation_bytes()?,
         max_referenced_classic_payload_bytes(plan),
         max_referenced_classic_dimensions(plan),
@@ -55,6 +58,7 @@ pub(in super::super) fn prepare_referenced_htj2k_staged_scratch(
 ) -> Result<DirectWorkspaceBudget> {
     prepare_referenced_component_scratch(
         ReferencedPlanView::Htj2k(plan),
+        false,
         plan.retained_allocation_bytes()?,
         0,
         None,
@@ -69,6 +73,7 @@ pub(in super::super) fn prepare_referenced_classic_staged_scratch(
 ) -> Result<DirectWorkspaceBudget> {
     prepare_referenced_component_scratch(
         ReferencedPlanView::Classic(plan),
+        false,
         plan.retained_allocation_bytes()?,
         0,
         None,
@@ -79,6 +84,7 @@ pub(in super::super) fn prepare_referenced_classic_staged_scratch(
 
 fn prepare_referenced_component_scratch(
     plan: ReferencedPlanView<'_>,
+    parallel: bool,
     retained_plan_bytes: usize,
     compressed_payload_bytes: usize,
     retained_classic_workspace_dimensions: Option<(u32, u32)>,
@@ -94,6 +100,7 @@ fn prepare_referenced_component_scratch(
     )?;
     if let Err(error) = validate_referenced_aggregate_plan(
         plan,
+        parallel,
         retained_plan_bytes,
         compressed_payload_bytes,
         retained_classic_workspace_dimensions,
@@ -109,6 +116,7 @@ fn prepare_referenced_component_scratch(
         scratch.clear();
         validate_referenced_aggregate_plan(
             plan,
+            parallel,
             retained_plan_bytes,
             compressed_payload_bytes,
             retained_classic_workspace_dimensions,
@@ -129,6 +137,7 @@ fn prepare_referenced_component_scratch(
     }
     match validate_referenced_aggregate_plan(
         plan,
+        parallel,
         retained_plan_bytes,
         compressed_payload_bytes,
         retained_classic_workspace_dimensions,

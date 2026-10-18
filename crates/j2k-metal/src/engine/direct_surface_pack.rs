@@ -9,8 +9,8 @@ use j2k_metal_support::{dispatch_2d_pipeline, dispatch_3d_pipeline};
 use super::abi::{J2kPackParams, J2kRepeatedGrayPackParams};
 use super::{
     j2k_pack_scale_arrays, j2k_scalar_pack_params, j2k_u32_param, new_compute_command_encoder,
-    new_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState,
-    Error, MetalRuntime, NativeColorSpace, PixelFormat, Rect, Surface,
+    Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState, Error, MetalRuntime,
+    NativeColorSpace, PixelFormat, Rect, Surface,
 };
 use crate::error::metal_kernel_support_error;
 
@@ -132,7 +132,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
         fmt.bytes_per_pixel(),
         "J2K Metal repeated grayscale output size overflow",
     )?;
-    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let (output_channels, opaque_alpha, pipeline) =
         output_shape_for(&NativeColorSpace::Gray, false, 1, fmt, runtime)?;
     let mut bit_depths = [0u32; 4];
@@ -184,7 +184,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal repeated grayscale output size overflow".to_string(),
         })?;
-    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
+    let out_buffer = runtime.new_output_buffer(total_bytes)?;
     let scale = j2k_scalar_pack_params(u32::from(bit_depth));
     let params = J2kRepeatedGrayPackParams {
         width: dims.0,

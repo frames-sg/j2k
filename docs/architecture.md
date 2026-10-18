@@ -139,7 +139,10 @@ unsafe memory helper is accepted.
 GPU adapters can decode into GPU memory, including caller-owned buffers, but
 explicit GPU requests return an unsupported error instead of falling back to
 the CPU. When decoding into a caller's buffer, that buffer is the final output:
-pixels never go GPU-to-CPU-to-GPU or through a second GPU buffer.
+pixels never go GPU-to-CPU-to-GPU or through a second GPU buffer. In
+`j2k-metal`, `J2kDecoder::decode_into_metal` does this for one full image:
+the decoder's prepared plan runs unchanged and only its final store targets
+the caller's range, with the same format conversion as a surface decode.
 
 CUDA adapters use `j2k-cuda-runtime` for the shared CUDA Driver API runtime,
 generic module loading, checked launch geometry, memory, and completion.
@@ -174,7 +177,38 @@ use the general CPU decoder if it supports them.
 `CpuBatchDecoder` uses a bounded scheduler with retained worker workspaces. It
 allocates one typed buffer per homogeneous group and lets workers decode into
 disjoint image regions, avoiding per-image output owners and a final batch
-assembly copy. `CudaBatchDecoder` and `MetalBatchDecoder` likewise retain their
+assembly copy. Memory admission counts each decode at the native decoder's
+512 MiB per-operation bound and admits as many as fit in half of the memory
+available to the process (physical memory, or a lower Linux cgroup limit), and
+at least four. When the caller leaves the worker count unset and the host has
+more threads than admitted workers, each worker decodes its image with internal parallelism:
+prepared HTJ2K plans decode their rows of code blocks and wavelet bands on the
+shared Rayon pool, still without reparsing.
+
+Single-image CPU decode under `CpuDecodeParallelism::Auto` decodes every code
+block of an HT-only tile in one parallel pass, one row of code blocks per task,
+writing coefficients in place. The inverse wavelet transform reconstructs each
+level top to bottom: when row `n` has been interleaved and lifted horizontally
+(SIMD on the separate low- and high-pass rows), vertical lifting step `k` runs
+on row `n - k` if that row has the step's parity. That order reads every
+neighbor in the state the plane-wide sweep reads, so the output is
+bit-identical, and only a few rows are live. On one thread the level is
+reconstructed in the output buffer itself. In parallel each thread streams a
+strip through a ring of four (5-3) or six (9-7) rows, starting and ending one
+halo row per lifting step beyond the strip; halo rows at the edge skip steps
+whose neighbor is outside the halo, and that error never reaches the strip's
+own rows.
+
+Within a code block, the HT cleanup pass decodes one quad pair's VLC symbols
+and then that pair's magnitude/sign samples before moving on. The VLC symbols
+form a serial dependency chain; the magnitude/sign step runs two quads in
+4-lane vectors (prefix-summed bit offsets, one byte gather per quad from the
+unstuffed segment), and it does not feed the next pair's VLC decode, so the
+core overlaps the two. The vector step covers blocks whose samples code at
+most 25 magnitude/sign bits, which includes 16-bit medical images; other
+blocks, and `simd`-less builds, use the scalar step.
+
+`CudaBatchDecoder` and `MetalBatchDecoder` likewise retain their
 device context, streams or queues, modules or pipelines, lookup tables, events,
 staging owners, and scratch pools across submissions.
 

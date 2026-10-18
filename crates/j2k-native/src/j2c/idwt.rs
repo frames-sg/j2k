@@ -1,5 +1,6 @@
 //! Performing the inverse discrete wavelet transform, as specified in Annex F.
 
+mod banded;
 mod direct;
 mod filter_common;
 mod horizontal;
@@ -10,6 +11,7 @@ mod orchestrate;
 mod roi;
 mod vertical;
 
+pub(crate) use banded::{banded_scratch_elements_for_execution, planned_band_scratch_elements};
 pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;

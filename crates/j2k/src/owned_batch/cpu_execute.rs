@@ -8,11 +8,11 @@ use super::cpu_materialize::{
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_recovery, run_retained_chunks, Arc, BatchDecodeOptions, BatchErrorStage,
-    BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
-    CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
-    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
-    TileBatchOptions, Vec,
+    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
+    BatchDecodeOptions, BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError,
+    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace,
+    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
+    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
 
@@ -29,7 +29,14 @@ pub(super) fn decode_cpu_group(
     workers_option: Option<NonZeroUsize>,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<Option<CpuBatchGroup>, BatchInfrastructureError> {
-    let has_flattened_payloads = fast_workspace.prepare_group(group)?;
+    let tile_options = TileBatchOptions::new(workers_option);
+    // The staged route flattens entropy work across images for a few serial
+    // workers. When workers may parallelize inside one image, each prepared
+    // plan decodes faster on its own: its code-block rows and wavelet bands
+    // spread over every core, still without reparsing.
+    let has_flattened_payloads = fast_workspace.prepare_group(group)?
+        && retained_inner_parallelism(group.images.len(), tile_options)?
+            == CpuDecodeParallelism::Serial;
     let samples_per_image =
         group
             .info
@@ -47,8 +54,6 @@ pub(super) fn decode_cpu_group(
         },
     )?;
     ensure_batch_output_within_cap(sample_count, group.info.sample_type)?;
-
-    let tile_options = TileBatchOptions::new(workers_option);
 
     let (samples, successful_slots, copied_samples) = match group.info.sample_type {
         NativeSampleType::U8 => {

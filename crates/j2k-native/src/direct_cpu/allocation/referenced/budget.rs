@@ -11,6 +11,7 @@ use super::view::{
 
 pub(super) fn validate_referenced_aggregate_plan(
     plan: ReferencedPlanView<'_>,
+    parallel: bool,
     retained_plan_bytes: usize,
     compressed_payload_bytes: usize,
     retained_classic_workspace_dimensions: Option<(u32, u32)>,
@@ -20,7 +21,7 @@ pub(super) fn validate_referenced_aggregate_plan(
     validate_referenced_shape(plan)?;
     let mut budget = DirectAllocationBudget::default();
     budget.include_bytes(retained_plan_bytes)?;
-    let temporary_workspace_bytes = referenced_temporary_workspace_bytes(plan)?;
+    let temporary_workspace_bytes = referenced_temporary_workspace_bytes(plan, parallel)?;
     include_referenced_scratch_allocations(
         &mut budget,
         plan,
@@ -91,5 +92,6 @@ fn include_referenced_scratch_allocations(
         .map_or(Ok(0), |(width, height)| {
             ht_block_decode::ht_decode_workspace_bytes(width, height)
         })?;
-    budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))
+    budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))?;
+    super::super::include_ht_task_workspaces(budget, retained_ht_workspace_dimensions, scratch)
 }

@@ -38,6 +38,55 @@ pub(crate) fn coefficient_to_f32(value: u32, k_max: u8) -> f32 {
     }
 }
 
+/// Convert one row of decoded coefficients to dequantized samples: the same
+/// result as [`coefficient_to_i32`] (or [`coefficient_to_f32`] for the
+/// irreversible midpoint), then the ROI inverse shift, then `* step`. Rows
+/// without an ROI shift take branch-free loops that vectorize.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "magnitudes are at most 31 bits; the codec float domain receives them on purpose"
+)]
+pub(crate) fn store_coefficient_row(
+    coefficients: &[u32],
+    output: &mut [f32],
+    k_max: u8,
+    roi_shift: u8,
+    irreversible_midpoint: bool,
+    step: f32,
+) {
+    let pairs = output.iter_mut().zip(coefficients.iter().copied());
+    if roi_shift != 0 {
+        for (sample, coefficient) in pairs {
+            *sample = if irreversible_midpoint {
+                crate::roi::apply_roi_maxshift_inverse_f32(
+                    coefficient_to_f32(coefficient, k_max),
+                    roi_shift,
+                )
+            } else {
+                crate::roi::apply_roi_maxshift_inverse_i32(
+                    coefficient_to_i32(coefficient, k_max),
+                    roi_shift,
+                ) as f32
+            } * step;
+        }
+    } else if irreversible_midpoint {
+        let scale = crate::math::pow2i(-(31_i32 - i32::from(k_max)));
+        for (sample, coefficient) in pairs {
+            let magnitude = (coefficient & 0x7FFF_FFFF) as f32 * scale;
+            // Setting the sign bit of a non-negative value negates it.
+            *sample = f32::from_bits(magnitude.to_bits() | (coefficient & 0x8000_0000)) * step;
+        }
+    } else {
+        let shift = 31_u32.saturating_sub(u32::from(k_max));
+        for (sample, coefficient) in pairs {
+            let magnitude = ((coefficient & 0x7FFF_FFFF) >> shift) as i32;
+            let sign = (coefficient as i32) >> 31;
+            *sample = ((magnitude ^ sign) - sign) as f32 * step;
+        }
+    }
+}
+
 mod scratch;
 #[cfg(test)]
 pub(super) use self::scratch::zeroed_u32_scratch;
@@ -83,8 +132,37 @@ impl HtBlockDecodeContext {
             .ok_or(ValidationError::ImageTooLarge.into())
     }
 
-    pub(super) fn reset(&mut self, code_block: &CodeBlock) -> Result<()> {
-        self.prepare(code_block.rect.width(), code_block.rect.height(), 0)
+    /// Size the buffers for `code_block` without clearing coefficients left by
+    /// an earlier block. A successful decode overwrites every coefficient;
+    /// callers that return early without decoding must call
+    /// [`Self::zero_coefficients`].
+    pub(super) fn reset_for_overwrite(&mut self, code_block: &CodeBlock) -> Result<()> {
+        let width = code_block.rect.width();
+        let height = code_block.rect.height();
+        self.width = width;
+        self.height = height;
+        let coefficient_count = checked_decode_sample_count(width, height)?;
+        if self.coefficients.len() > coefficient_count {
+            self.coefficients.truncate(coefficient_count);
+        } else {
+            try_resize_decode_elements(&mut self.coefficients, coefficient_count, 0)?;
+        }
+        self.segment_data.clear();
+        prepare_scratch(&mut self.scratch, width, height)
+    }
+
+    #[cfg(feature = "simd")]
+    pub(super) fn reset_for_direct_output(&mut self, code_block: &CodeBlock) -> Result<()> {
+        let width = code_block.rect.width();
+        let height = code_block.rect.height();
+        self.width = width;
+        self.height = height;
+        self.segment_data.clear();
+        prepare_scratch(&mut self.scratch, width, height)
+    }
+
+    pub(super) fn zero_coefficients(&mut self) {
+        self.coefficients.fill(0);
     }
 
     pub(crate) fn coefficient_rows(&self) -> impl Iterator<Item = &[u32]> {
@@ -103,6 +181,8 @@ pub(crate) struct HtBlockDecodeScratch {
     pub(super) v_n: Vec<u32>,
     pub(super) sigma: Vec<u16>,
     pub(super) prev_row_sig: Vec<u16>,
+    /// The `MagSgn` segment unstuffed into a flat, padded bit buffer.
+    pub(super) magsgn: Vec<u8>,
 }
 
 impl HtBlockDecodeScratch {
@@ -112,6 +192,7 @@ impl HtBlockDecodeScratch {
             v_n: Vec::new(),
             sigma: Vec::new(),
             prev_row_sig: Vec::new(),
+            magsgn: Vec::new(),
         }
     }
 
@@ -125,6 +206,7 @@ impl HtBlockDecodeScratch {
         include_capacity::<u32>(&mut bytes, self.v_n.capacity())?;
         include_capacity::<u16>(&mut bytes, self.sigma.capacity())?;
         include_capacity::<u16>(&mut bytes, self.prev_row_sig.capacity())?;
+        include_capacity::<u8>(&mut bytes, self.magsgn.capacity())?;
         Ok(bytes)
     }
 }
@@ -146,6 +228,7 @@ pub(super) struct HtBlockDecodeScratchCapacities {
     pub(super) v_n: usize,
     pub(super) sigma: usize,
     pub(super) prev_row_sig: usize,
+    pub(super) magsgn: usize,
 }
 
 #[cfg(test)]
@@ -156,6 +239,7 @@ impl HtBlockDecodeScratch {
             v_n: self.v_n.capacity(),
             sigma: self.sigma.capacity(),
             prev_row_sig: self.prev_row_sig.capacity(),
+            magsgn: self.magsgn.capacity(),
         }
     }
 
@@ -164,5 +248,6 @@ impl HtBlockDecodeScratch {
         self.v_n.fill(u32::MAX);
         self.sigma.fill(u16::MAX);
         self.prev_row_sig.fill(u16::MAX);
+        self.magsgn.fill(u8::MAX);
     }
 }

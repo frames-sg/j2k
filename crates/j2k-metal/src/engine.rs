@@ -70,6 +70,10 @@ use self::direct_buffers::{
     zeroed_recyclable_shared_buffer, zeroed_shared_buffer,
 };
 #[cfg(target_os = "macos")]
+mod reusable_heap;
+#[cfg(target_os = "macos")]
+pub(in crate::engine) use self::reusable_heap::{HtInputAllocator, ReusableHeap};
+#[cfg(target_os = "macos")]
 mod direct_commands;
 #[cfg(target_os = "macos")]
 use self::direct_commands::{
@@ -244,8 +248,8 @@ use self::runtime::{
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::runtime::{
-    current_runtime_device_registry_id, runtime_initialization_error, with_runtime_for_session,
-    MetalRuntime,
+    current_runtime, current_runtime_device_registry_id, runtime_initialization_error,
+    with_runtime_for_session, MetalRuntime,
 };
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use j2k_metal_support::MetalSupportError;
@@ -279,6 +283,7 @@ pub(crate) use self::direct_grayscale_execute::{
     execute_hybrid_cpu_tier1_direct_color_plan_with_device, execute_prepared_direct_color_plan,
     execute_prepared_direct_color_plan_batch, execute_prepared_direct_color_plan_with_device,
     execute_prepared_direct_grayscale_plan, execute_prepared_direct_grayscale_plan_batch,
+    execute_prepared_direct_grayscale_plan_into,
     execute_prepared_direct_grayscale_plan_with_device,
     execute_repeated_prepared_direct_grayscale_plan, submit_cooperative_cpu_color_group,
     submit_prepared_direct_color_plan_batch_into_group,
@@ -288,6 +293,8 @@ pub(crate) use self::direct_grayscale_execute::{
 };
 #[cfg(target_os = "macos")]
 mod direct_prepare;
+#[cfg(target_os = "macos")]
+use self::direct_prepare::append_span_rects;
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_prepare::{
     prepare_direct_grayscale_plan, prepare_referenced_classic_color_plan,
@@ -306,11 +313,12 @@ use self::direct_stacked_batch::{
     encode_prepared_direct_color_plan_in_command_buffer,
     encode_repeated_direct_grayscale_plan_in_command_buffer,
     encode_stacked_direct_component_plane_batch,
-    encode_stacked_direct_component_plane_batch_with_shared_tier1, lookup_direct_band_slice,
-    lookup_direct_band_slice_entry, signed_sample_bias,
-    supports_stacked_direct_component_plane_batch, try_encode_stacked_mct_rgb8_direct_color_batch,
-    DirectBandSlice, DirectColorPlanRequest, RepeatedDirectGrayscalePlanRequest,
-    StackedDirectColorBatchRequest, StackedDirectComponentPlaneBatchRequest,
+    encode_stacked_direct_component_plane_batch_with_shared_tier1,
+    encode_stacked_direct_gray_batch, lookup_direct_band_slice, lookup_direct_band_slice_entry,
+    signed_sample_bias, supports_stacked_direct_component_plane_batch,
+    try_encode_stacked_mct_rgb8_direct_color_batch, DirectBandSlice, DirectColorPlanRequest,
+    RepeatedDirectGrayscalePlanRequest, StackedDirectColorBatchRequest,
+    StackedDirectComponentPlaneBatchRequest, StackedGrayBatch, StackedGrayOutput,
 };
 #[cfg(target_os = "macos")]
 mod direct_surface_pack;

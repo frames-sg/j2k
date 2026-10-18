@@ -15,6 +15,10 @@ use crate::{
 /// Apply the inverse discrete wavelet transform (see Annex F). The output
 /// will be transformed samples covering the rectangle of the smallest
 /// decomposition level.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the level loop keeps both ping-pong buffers, band scratch, and the backend hook in one place"
+)]
 pub(crate) fn apply(
     storage: &DecompositionStorage<'_>,
     tile_ctx: &mut TileDecodeContext,
@@ -22,6 +26,7 @@ pub(crate) fn apply(
     header: &Header<'_>,
     transform: WaveletTransform,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    parallel: bool,
 ) -> Result<()> {
     if storage.exact_integer_decode {
         return apply_i64(storage, tile_ctx, component_idx, header, transform);
@@ -47,7 +52,11 @@ pub(crate) fn apply(
     // component/tile capacities before this call to keep the live-allocation
     // baseline exact; within this component, two buffers are continuously
     // swapped because one level's output feeds the next.
-    let (scratch_buf, output) = (&mut tile_ctx.idwt_scratch_buffer, &mut tile_ctx.idwt_output);
+    let (scratch_buf, output, band_scratch) = (
+        &mut tile_ctx.idwt_scratch_buffer,
+        &mut tile_ctx.idwt_output,
+        &mut tile_ctx.idwt_band_scratch,
+    );
 
     if decompositions.is_empty() {
         // Single decomposition, just copy the coefficients from the sub-band.
@@ -96,34 +105,42 @@ pub(crate) fn apply(
             (InputSource::SubBand, true) => apply_level(
                 IDWTInput::from_sub_band(ll_sub_band, storage),
                 scratch_buf,
+                band_scratch,
                 decomposition,
                 transform,
                 storage,
                 backend,
+                parallel,
             )?,
             (InputSource::SubBand, false) => apply_level(
                 IDWTInput::from_sub_band(ll_sub_band, storage),
                 &mut output.coefficients,
+                band_scratch,
                 decomposition,
                 transform,
                 storage,
                 backend,
+                parallel,
             )?,
             (InputSource::Scratch, false) => apply_level(
                 IDWTInput::from_output(scratch_buf, current_rect),
                 &mut output.coefficients,
+                band_scratch,
                 decomposition,
                 transform,
                 storage,
                 backend,
+                parallel,
             )?,
             (InputSource::Output, true) => apply_level(
                 IDWTInput::from_output(&output.coefficients, current_rect),
                 scratch_buf,
+                band_scratch,
                 decomposition,
                 transform,
                 storage,
                 backend,
+                parallel,
             )?,
             (InputSource::Scratch, true) | (InputSource::Output, false) => unreachable!(),
         };

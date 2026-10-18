@@ -37,9 +37,9 @@ mod runtime;
 
 #[cfg(target_os = "macos")]
 pub use allocation::{
-    checked_private_buffer, checked_private_buffer_for_len, checked_shared_buffer,
-    checked_shared_buffer_for_len, checked_shared_buffer_with_bytes,
-    checked_shared_buffer_with_slice, checked_texture,
+    checked_heap_shared_buffer, checked_private_buffer, checked_private_buffer_for_len,
+    checked_shared_buffer, checked_shared_buffer_for_len, checked_shared_buffer_with_bytes,
+    checked_shared_buffer_with_slice, checked_shared_heap, checked_texture,
 };
 #[cfg(target_os = "macos")]
 pub use buffer_access::{

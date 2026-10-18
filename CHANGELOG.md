@@ -20,6 +20,145 @@ and stale roadmap entries have been removed from the public documentation set.
   silently emit decoded magnitudes for early-stopped blocks. Existing
   `_with_midpoint(false)` overrides retain their original meaning; adapters
   that support the reversible midpoint can opt in through the new hooks.
+- Fix (`j2k-metal`): an explicit Metal `Gray16` decode of a signed grayscale
+  image now returns the same bytes as the CPU. Samples of more than 8 bits
+  keep their two's-complement bits, and 8-bit samples widen their
+  two's-complement byte like any 8-bit sample. Before, Metal clamped negative
+  samples to zero, which erased every negative CT Hounsfield value. `Gray8`
+  output already matched (both backends clamp).
+- CPU HTJ2K decode is faster on every path; output is bit-identical to 0.12.0:
+  - Native-bit-depth output (`decode_native_components`, and `Gray16` and
+    other 16-bit `decode_into` formats, which go through it) converts samples
+    in vectorized chunks instead of one sample at a time through `f64`. Large
+    planes convert in parallel under `CpuDecodeParallelism::Auto`.
+  - Under `Auto`, a tile whose components use HT block coding only decodes
+    all of its code blocks in one parallel pass, one row of code blocks per
+    task, writing coefficients in place. Before, each sub-band forked and
+    joined separately and copied its blocks through a staging buffer. Tiles
+    with less than 8 KiB of coded data decode serially.
+  - The inverse wavelet transform reconstructs each level top to bottom:
+    when a row has been interleaved and filtered horizontally (SIMD on the
+    separate low- and high-pass rows), every vertical lifting step whose
+    neighbors are now ready runs on the row it updates, so only a few rows
+    are live and they stay in cache. On one thread this happens in the
+    output buffer itself, with no row computed twice and nothing copied.
+    Under `Auto` each thread streams a strip of rows through a small ring
+    buffer, starting and ending one halo row per lifting step beyond it.
+  - The HT magnitude/sign stream is unstuffed once and read at absolute bit
+    positions, and sample reconstruction no longer branches on significance.
+  - With the default `simd` feature, HT cleanup decoding reconstructs two
+    quads at a time in 4-lane vectors. Each quad's bit offsets are
+    prefix-summed and its samples gathered from one 16-byte window, so
+    samples no longer wait on each other's bit positions. Each quad pair's
+    VLC symbols are decoded and immediately followed by its vector
+    magnitude/sign work, so the core overlaps the serial VLC chain with the
+    vector work. Quads with no significant sample are skipped. Blocks whose
+    samples can code more than 25 magnitude/sign bits (well beyond 16-bit
+    data), and builds without `simd`, keep the scalar path, which tests check
+    the vector path against on encoded and arbitrary input.
+  - Code-block coefficients convert to sub-band samples in branch-free loops
+    that vectorize when there is no ROI shift, and the per-block coefficient
+    buffer is no longer zeroed before a decode that overwrites all of it.
+  - The final store applies the level shift while copying and copies rows in
+    parallel for large tiles.
+- `decode_tiles_into` and the other tile-batch functions, `prepare_batch`,
+  and `CpuBatchDecoder` now scale their concurrent-decode limit with host
+  memory instead of a fixed four. Each decode still counts as its
+  worst-case 512 MiB, and together they may count up to half of the memory
+  available to the process: physical memory, or the Linux cgroup memory
+  limit when lower. Hosts that report no memory size, or have less than
+  4 GiB, keep four. A 48 GB host now admits up to 48 decodes, so the
+  default worker count is limited by threads instead. The physical memory
+  query moved from the Metal encoder into `j2k-core`
+  (`host_physical_memory_bytes`, hidden) and gained Linux, FreeBSD, and
+  Windows support. When the caller leaves the worker count unset and fewer
+  workers are admitted than the host has threads, each worker now decodes
+  with the parallelism above. An explicit worker count still decodes serially inside each worker.
+  For `CpuBatchDecoder`, such groups decode one image at a time from its
+  prepared plan, still without reparsing, with code-block rows and wavelet
+  bands spread over every core; other groups keep the staged route. The
+  prepared-plan inverse transform also uses the banded reconstruction.
+- `J2kDirectCpuScratch::set_parallel_decode` (hidden) lets referenced-plan
+  execution use the Rayon pool. Its extra per-thread HT workspaces are
+  counted in the scratch's memory budget and in
+  `retained_ht_workspace_bytes`.
+- Adds `J2kDecoder::decode_into_metal` and `decode_into_metal_with_session`
+  (`j2k-metal`): decode one full image into a caller-owned
+  `MetalImageDestination` instead of a new `Surface`, so a stream of
+  same-sized frames reuses one output allocation. Rows may be padded and the
+  image may start at an offset; bytes outside the image are not written. The
+  output equals `decode_request_to_device` for the same format: `Gray8` or
+  `Gray16` for one component at any precision, `Rgb8` for 8-bit RGB, and
+  `Rgb16` for 9- to 16-bit RGB. Other formats and precisions return a
+  capability rejection before anything is written, and codestreams without a
+  direct Metal plan return `MetalDirectFallback` with `UnsupportedPlan`.
+  The call returns after the GPU work completes. Through one reused decoder
+  and session, an MG1 frame (3064 x 4774 `Gray16`) took 4.04 ms against
+  4.75 ms for a new surface each frame.
+- Metal HTJ2K decode writes code-block payload bytes straight into the shared
+  buffer the kernels read, instead of packing a host copy first, and prepared
+  executions no longer keep that host copy.
+- `J2kDecoder` (`j2k-metal`) plans HTJ2K grayscale and RGB images with
+  code-block payloads referenced as ranges into one copy of the codestream,
+  as `MetalBatchDecoder` already did, instead of copying each block's bytes
+  into the native plan, again into each sub-band, and again into each group.
+  The decoder and the session plan cache no longer keep the native plan,
+  which held another copy, and the cache counts the codestream copy toward
+  its byte limit. Classic J2K, and HTJ2K images the referenced plan does not
+  support, keep the owned plan. A new decoder per frame decoded MG1
+  (3064 x 4774 `Gray16`) in 6.76 ms against 7.49 ms.
+- The Metal runtime's prepared HT execution cache drops an entry as soon as
+  the plan it was prepared for is dropped, instead of holding its device
+  payload until the cache's 256 MiB limit forces it out. Decoding 60 MG1
+  frames through new decoders peaked at 393 MB of memory footprint instead
+  of 666 MB.
+- Metal decode does less GPU and setup work; output is bit-identical:
+  - Each 5/3 and 9/7 inverse wavelet level runs as one tiled kernel that
+    loads the four sub-bands with a halo, lifts rows and then columns in
+    threadgroup memory, and writes the level once, instead of an
+    interleave/horizontal kernel followed by a vertical kernel over the
+    whole plane. Single images and stacked same-geometry batches both use
+    it. On a 3072 x 4096 16-bit image the 5/3 transform took 0.79 ms of GPU
+    time instead of 1.51 ms, and the 9/7 transform 1.31 ms instead of
+    1.86 ms.
+  - HT decoding zeroes only the parts of the coefficient arena that no
+    code-block job writes (blocks without coding passes), found once when
+    the plan is prepared, instead of the whole arena: jobs cover 95 to 100%
+    of it in the DICOM corpus. Paths without that layout zero the arena
+    with 16-byte stores, 0.26 ms instead of 0.90 ms for MG1.
+  - Prepared HT payloads and job tables, decoded surfaces, and codec-owned
+    batch outputs come from runtime-owned Metal heaps instead of new
+    buffers. Heap memory stays mapped between decodes, so writing it no
+    longer faults in fresh pages on the CPU or maps them for the GPU. Metal
+    reuses a buffer's memory only after every reference to it, including a
+    command buffer's or the caller's, is released. The input heap holds 4
+    to 256 MiB; the output heap up to the shared buffer pool's retention
+    limit (256 MiB to 1 GiB by device), and never more than the 512 MiB
+    allocation cap. Requests a heap cannot hold use their own buffers.
+  - A grayscale single-image decode runs its last wavelet level and its
+    final store as one kernel: each synthesized sample is shifted, rounded,
+    and packed as the store kernel does and written straight to the output,
+    so the level's float plane (58 MB for MG1) is never written or read
+    back. `MetalBatchDecoder` groups of distinct grayscale images do the
+    same for their last level, component store, and group pack, which
+    halved a 16-frame SC1 batch (25.1 to 11.9 ms) and an MG1 batch (120 to
+    62 ms). Color and broadcast routes keep the separate store.
+- Fix (`j2k-metal`): a `MetalBatchDecoder` grayscale group whose stacked
+  coefficients exceed one allocation (512 MiB; 16 frames of 3064 x 4774) no
+  longer fails as a group error. It is decoded in runs of images that each
+  fit, written to their own destination ranges.
+  - A new `J2kDecoder` reads whether the codestream uses HT block coding
+    from its parsed header instead of inspecting the codestream again.
+  - MG1 (3064 x 4774) decoded to `Gray16` through a new decoder per frame in
+    3.35 ms instead of 7.66 ms, and through one reused decoder in 2.19 ms
+    instead of 4.82 ms. `MetalBatchDecoder` decoded 16 MG1 frames into
+    codec-owned output in 11.7 ms instead of 22 ms, the same as into a
+    caller-owned buffer.
+- `j2k-metal-support` adds `checked_shared_heap` and
+  `checked_heap_shared_buffer`.
+- Adds the `jp2k_dicom_bench` comparison binary (`j2k-compare`) and the
+  `dicom_decode_bench` example (`j2k-metal`) for native-bit-depth DICOM-style
+  frames.
 
 ## [0.12.0] - 2026-10-06
 

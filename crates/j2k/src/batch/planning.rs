@@ -7,8 +7,8 @@ use core::mem::size_of;
 use j2k_core::BatchInfrastructureError;
 
 use super::allocation::{
-    checked_add, checked_mul, GENERIC_WORKER_CLAIM_BYTES, J2K_BATCH_HOST_CAP_BYTES,
-    J2K_BATCH_METADATA_ALLOWANCE_BYTES, MAX_ADMITTED_BATCH_WORKERS, MAX_GENERIC_BATCH_WORKERS,
+    admitted_batch_worker_limit, batch_host_cap_bytes, checked_add, checked_mul,
+    generic_batch_worker_limit, GENERIC_WORKER_CLAIM_BYTES, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 use super::scheduler::ScopedWorkerHandle;
 use super::worker::BatchWorker;
@@ -18,6 +18,8 @@ use crate::J2kDecodeWarning;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BatchPlan {
     pub(super) worker_count: usize,
+    /// Parallelism each worker uses inside one decode.
+    pub(super) inner_parallelism: crate::CpuDecodeParallelism,
     pub(super) chunk_size: usize,
     pub(super) live_bytes: usize,
     pub(super) metadata_bytes: usize,
@@ -33,8 +35,8 @@ pub(super) fn select_batch_plan(
         desired_workers,
         GENERIC_WORKER_CLAIM_BYTES,
         J2K_BATCH_METADATA_ALLOWANCE_BYTES,
-        J2K_BATCH_HOST_CAP_BYTES,
-        MAX_GENERIC_BATCH_WORKERS,
+        batch_host_cap_bytes(),
+        generic_batch_worker_limit(),
     )
 }
 
@@ -49,8 +51,8 @@ pub(super) fn select_direct_batch_plan(
         desired_workers,
         0,
         J2K_BATCH_METADATA_ALLOWANCE_BYTES,
-        J2K_BATCH_HOST_CAP_BYTES,
-        MAX_ADMITTED_BATCH_WORKERS,
+        batch_host_cap_bytes(),
+        admitted_batch_worker_limit(),
     )
 }
 
@@ -68,7 +70,7 @@ fn select_batch_plan_with_limits(
         worker_claim_bytes,
         metadata_cap,
         aggregate_cap,
-        MAX_GENERIC_BATCH_WORKERS,
+        generic_batch_worker_limit(),
     )
 }
 
@@ -122,6 +124,7 @@ fn select_batch_plan_with_worker_limit(
         if live_bytes <= aggregate_cap {
             return Ok(BatchPlan {
                 worker_count,
+                inner_parallelism: crate::CpuDecodeParallelism::Serial,
                 chunk_size,
                 live_bytes,
                 metadata_bytes,

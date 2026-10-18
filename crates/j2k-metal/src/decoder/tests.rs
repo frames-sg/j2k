@@ -44,6 +44,16 @@ fn direct_runtime_fallback_classification_uses_structured_variant() {
     assert!(!is_direct_runtime_fallback_error(&message_only));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn referenced_payload_copy_respects_host_allocation_boundary() {
+    let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
+    assert!(super::direct_paths::referenced_payload_copy_is_bounded(cap));
+    assert!(!super::direct_paths::referenced_payload_copy_is_bounded(
+        cap + 1
+    ));
+}
+
 #[test]
 fn metal_decode_request_maps_geometry_to_report_and_batch_ops() {
     let roi = Rect {
@@ -297,7 +307,63 @@ fn decoder_local_prepared_binding_is_revalidated_for_session_device() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn repeated_session_hits_share_native_and_prepared_plan_owners() {
+fn htj2k_direct_plans_reference_one_copy_of_the_codestream() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Ok(device) = j2k_metal_support::system_default_device() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let options = j2k_native::EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        ..j2k_native::EncodeOptions::default()
+    };
+    let encode = |components: u16, ht: bool| {
+        let pixels = j2k_test_support::gradient_u8(64, 48, usize::from(components));
+        if ht {
+            j2k_native::encode_htj2k(&pixels, 64, 48, components, 8, false, &options)
+        } else {
+            j2k_native::encode(&pixels, 64, 48, components, 8, false, &options)
+        }
+        .expect("encode direct-plan fixture")
+    };
+    let session = MetalBackendSession::new(device);
+
+    for ht in [true, false] {
+        let gray = encode(1, ht);
+        let prepared = J2kDecoder::new(&gray)
+            .expect("gray decoder")
+            .ensure_prepared_direct_gray_plan_with_session(PixelFormat::Gray8, &session)
+            .expect("gray prepared plan")
+            .expect("supported gray prepared plan");
+        let expected = if ht { gray.len() } else { 0 };
+        assert_eq!(
+            prepared.referenced_input_bytes(),
+            Ok(expected),
+            "gray ht={ht}"
+        );
+
+        let rgb = encode(3, ht);
+        let prepared = J2kDecoder::new(&rgb)
+            .expect("RGB decoder")
+            .ensure_prepared_direct_color_plan_with_session(PixelFormat::Rgb8, &session)
+            .expect("RGB prepared plan")
+            .expect("supported RGB prepared plan");
+        let expected = if ht { rgb.len() } else { 0 };
+        assert_eq!(
+            prepared.referenced_input_bytes(),
+            Ok(expected),
+            "RGB ht={ht}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn repeated_session_hits_share_prepared_plan_owners() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -328,11 +394,6 @@ fn repeated_session_hits_share_native_and_prepared_plan_owners() {
     first
         .decode_request_to_device_with_session(request, &session)
         .expect("first session decode");
-    let first_native = first
-        .native_direct_color_plan
-        .as_ref()
-        .expect("first native plan")
-        .clone();
     let first_prepared = first
         .native_prepared_direct_color_plan
         .as_ref()
@@ -343,16 +404,11 @@ fn repeated_session_hits_share_native_and_prepared_plan_owners() {
     second
         .decode_request_to_device_with_session(request, &session)
         .expect("cached session decode");
-    let second_native = second
-        .native_direct_color_plan
-        .as_ref()
-        .expect("cached native plan");
     let second_prepared = second
         .native_prepared_direct_color_plan
         .as_ref()
         .expect("cached prepared plan");
 
-    assert!(Arc::ptr_eq(&first_native, second_native));
     assert!(Arc::ptr_eq(&first_prepared, second_prepared));
 }
 

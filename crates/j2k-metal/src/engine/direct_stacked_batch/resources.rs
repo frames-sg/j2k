@@ -27,6 +27,9 @@ pub(super) struct StackedFinalPlane {
 pub(super) struct StackedComponentResources {
     pub(super) band_sets: Vec<Vec<DirectBandSlice>>,
     pub(super) final_plane: Option<StackedFinalPlane>,
+    /// Whether the last wavelet level stored the group straight into the
+    /// requested grayscale output, so no final plane exists.
+    pub(super) gray_output_written: bool,
 }
 
 pub(super) fn prepare_stacked_component_resources(
@@ -61,6 +64,7 @@ fn prepare_stacked_component_resources_with_budget(
     Ok(StackedComponentResources {
         band_sets,
         final_plane: None,
+        gray_output_written: false,
     })
 }
 

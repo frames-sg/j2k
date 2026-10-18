@@ -122,6 +122,55 @@ impl<'input> ReferencedPayloadCursor<'input> {
         Ok(combined)
     }
 
+    /// The next payload as one slice of the input when its cleanup and
+    /// refinement bytes are adjacent there; `None` (without advancing) when
+    /// they must be gathered, or when [`Self::next_data`] would reject them.
+    #[cfg(feature = "parallel")]
+    pub(super) fn next_contiguous(
+        &mut self,
+        cleanup_length: u32,
+        refinement_length: u32,
+    ) -> Result<Option<&'input [u8]>> {
+        let Some(&payload) = self.payloads.get(self.next) else {
+            return Ok(None);
+        };
+        if payload.cleanup.length != cleanup_length as usize {
+            return Ok(None);
+        }
+        let cleanup = payload_slice(self.encoded_input, payload.cleanup)?;
+        let data = match payload.refinement {
+            None if refinement_length == 0 => cleanup,
+            Some(range)
+                if range.length == refinement_length as usize
+                    && payload.cleanup.end() == Some(range.offset) =>
+            {
+                payload_slice(
+                    self.encoded_input,
+                    crate::J2kCodestreamRange {
+                        offset: payload.cleanup.offset,
+                        length: cleanup
+                            .len()
+                            .checked_add(range.length)
+                            .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+                    },
+                )?
+            }
+            _ => return Ok(None),
+        };
+        self.next += 1;
+        Ok(Some(data))
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(super) const fn position(&self) -> usize {
+        self.next
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(super) fn rewind(&mut self, position: usize) {
+        self.next = position;
+    }
+
     pub(super) fn ensure_exhausted(&self) -> Result<()> {
         if self.next == self.payloads.len() {
             Ok(())

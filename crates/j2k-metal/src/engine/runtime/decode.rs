@@ -22,14 +22,27 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) classic_cleanup_plain_dense_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_plain_repeated_batched: ComputePipelineState,
-    pub(in crate::engine) classic_cleanup_plain_dev_repeated_batched: ComputePipelineState,
+    pub(in crate::engine) classic_cleanup_plain_shared_batched: ComputePipelineState,
     pub(in crate::engine) classic_cleanup_repeated_batched: ComputePipelineState,
     pub(in crate::engine) classic_store_repeated_batched: ComputePipelineState,
+    pub(in crate::engine) classic_store_shared_repeated_batched: ComputePipelineState,
     pub(in crate::engine) idwt_interleave: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_horizontal: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_interleave_horizontal_fused: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_vertical: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_vertical_fused: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_fused_2d: ComputePipelineState,
+    pub(in crate::engine) idwt_irreversible97_fused_2d: ComputePipelineState,
+    pub(in crate::engine) idwt_reversible53_fused_2d_batched: ComputePipelineState,
+    /// Last-level 5/3 and 9/7 tile kernels writing a grayscale store,
+    /// indexed by `GrayStoreKind`.
+    pub(in crate::engine) idwt53_gray_store: [ComputePipelineState; 4],
+    pub(in crate::engine) idwt97_gray_store: [ComputePipelineState; 4],
+    /// Batched last-level kernels writing a stacked `Gray8`, `Gray16`, or `GrayI16`
+    /// group, indexed by `GrayStoreKind`.
+    pub(in crate::engine) idwt53_stacked_gray_store: [ComputePipelineState; 3],
+    pub(in crate::engine) idwt97_stacked_gray_store: [ComputePipelineState; 3],
+    pub(in crate::engine) idwt_irreversible97_fused_2d_batched: ComputePipelineState,
     pub(in crate::engine) idwt_interleave_batched: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_interleave_horizontal_scale: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_interleave_horizontal_scale_batched:
@@ -57,6 +70,7 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) store_component_gray_u8: ComputePipelineState,
     pub(in crate::engine) store_component_gray_u16: ComputePipelineState,
     pub(in crate::engine) store_component_gray_i16: ComputePipelineState,
+    pub(in crate::engine) store_component_gray_i8_widened_u16: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_u8: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_u16: ComputePipelineState,
     pub(in crate::engine) store_native_rgb_batch_i16: ComputePipelineState,
@@ -110,12 +124,14 @@ impl DecodeKernels {
             classic_cleanup_batched: loader.pipeline("j2k_decode_classic_cleanup_batched")?,
             classic_cleanup_plain_repeated_batched: loader
                 .pipeline("j2k_decode_classic_cleanup_plain_repeated_batched")?,
-            classic_cleanup_plain_dev_repeated_batched: loader
-                .pipeline("j2k_decode_classic_cleanup_plain_dev_repeated_batched")?,
+            classic_cleanup_plain_shared_batched: loader
+                .pipeline("j2k_decode_classic_cleanup_plain_shared_batched")?,
             classic_cleanup_repeated_batched: loader
                 .pipeline("j2k_decode_classic_cleanup_repeated_batched")?,
             classic_store_repeated_batched: loader
                 .pipeline("j2k_store_classic_repeated_batched")?,
+            classic_store_shared_repeated_batched: loader
+                .pipeline("j2k_store_classic_shared_repeated_batched")?,
             idwt_interleave: loader.pipeline("j2k_idwt_interleave")?,
             idwt_reversible53_horizontal: loader
                 .pipeline("j2k_idwt_reversible53_horizontal_pass")?,
@@ -124,6 +140,34 @@ impl DecodeKernels {
             idwt_reversible53_vertical: loader.pipeline("j2k_idwt_reversible53_vertical_pass")?,
             idwt_reversible53_vertical_fused: loader
                 .pipeline("j2k_idwt_reversible53_vertical_fused")?,
+            idwt_reversible53_fused_2d: loader.pipeline("j2k_idwt_reversible53_fused_2d")?,
+            idwt_irreversible97_fused_2d: loader.pipeline("j2k_idwt_irreversible97_fused_2d")?,
+            idwt_reversible53_fused_2d_batched: loader
+                .pipeline("j2k_idwt_reversible53_fused_2d_batched")?,
+            idwt53_gray_store: [
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_store_u8")?,
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_store_u16")?,
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_store_i16")?,
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_store_i8_widened_u16")?,
+            ],
+            idwt97_gray_store: [
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_store_u8")?,
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_store_u16")?,
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_store_i16")?,
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_store_i8_widened_u16")?,
+            ],
+            idwt53_stacked_gray_store: [
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_batched_gray_store_u8")?,
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_batched_gray_store_u16")?,
+                loader.pipeline("j2k_idwt_reversible53_fused_2d_batched_gray_store_i16")?,
+            ],
+            idwt97_stacked_gray_store: [
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_batched_gray_store_u8")?,
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_batched_gray_store_u16")?,
+                loader.pipeline("j2k_idwt_irreversible97_fused_2d_batched_gray_store_i16")?,
+            ],
+            idwt_irreversible97_fused_2d_batched: loader
+                .pipeline("j2k_idwt_irreversible97_fused_2d_batched")?,
             idwt_interleave_batched: loader.pipeline("j2k_idwt_interleave_batched")?,
             idwt_irreversible97_interleave_horizontal_scale: loader
                 .pipeline("j2k_idwt_irreversible97_interleave_horizontal_scale")?,
@@ -164,6 +208,8 @@ impl DecodeKernels {
             store_component_gray_u8: loader.pipeline("j2k_store_component_gray_u8")?,
             store_component_gray_u16: loader.pipeline("j2k_store_component_gray_u16")?,
             store_component_gray_i16: loader.pipeline("j2k_store_component_gray_i16")?,
+            store_component_gray_i8_widened_u16: loader
+                .pipeline("j2k_store_component_gray_i8_widened_u16")?,
             store_native_rgb_batch_u8: loader.pipeline("j2k_store_native_rgb_batch_u8")?,
             store_native_rgb_batch_u16: loader.pipeline("j2k_store_native_rgb_batch_u16")?,
             store_native_rgb_batch_i16: loader.pipeline("j2k_store_native_rgb_batch_i16")?,

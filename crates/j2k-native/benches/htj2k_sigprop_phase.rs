@@ -127,7 +127,8 @@ fn bench_htj2k_refinement_sigprop_phase(c: &mut Criterion) {
     let mut group = c.benchmark_group("htj2k_refinement_sigprop_phase");
     let jobs = collect_refinement_fixture_jobs();
     let job = jobs
-        .first()
+        .iter()
+        .max_by_key(|job| job.width as usize * job.height as usize)
         .expect("fixture must contain a refinement HTJ2K block");
     let sigprop_job = job.borrowed_with_passes(2, job.refinement_length);
     let mut state =

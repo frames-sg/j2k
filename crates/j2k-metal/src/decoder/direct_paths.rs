@@ -9,9 +9,12 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use crate::metal_types::Device;
 #[cfg(target_os = "macos")]
-use j2k_core::{BackendRequest, PixelFormat};
+use j2k_core::{BackendRequest, PixelFormat, DEFAULT_MAX_HOST_ALLOCATION_BYTES};
 #[cfg(target_os = "macos")]
-use j2k_native::{DecodeSettings as NativeDecodeSettings, Image as NativeImage};
+use j2k_native::{
+    DecodeSettings as NativeDecodeSettings, DecoderContext as NativeDecoderContext,
+    Image as NativeImage,
+};
 
 #[cfg(target_os = "macos")]
 use super::surface::CPU_STAGED_METAL_REQUIRES_EXPLICIT_API;
@@ -33,15 +36,13 @@ macro_rules! define_ensure_prepared_direct_plan {
         with_session: $with_session:ident,
         plain: $plain:ident,
         prepare_fresh: $prepare_fresh:ident,
-        plan_field: $plan_field:ident,
         prepared_field: $prepared_field:ident,
         prepared_device_field: $prepared_device_field:ident,
         prepared_ty: $prepared_ty:path,
         cache_key: $cache_key:ident,
         cached: $cached:ident,
         store: $store:ident,
-        build: $build:ident,
-        prepare: $prepare:path
+        build_prepared: $build_prepared:path
     ) => {
         #[cfg(target_os = "macos")]
         pub(super) fn $with_session(
@@ -58,8 +59,7 @@ macro_rules! define_ensure_prepared_direct_plan {
             }
             if self.$prepared_field.is_none() {
                 let cache_key = $cache_key(self.bytes, fmt);
-                if let Some((plan, prepared)) = $cached(session, cache_key)? {
-                    self.$plan_field = Some(plan);
+                if let Some(prepared) = $cached(session, cache_key)? {
                     self.$prepared_field = Some(prepared);
                     self.$prepared_device_field = Some(device_registry_id);
                 }
@@ -68,7 +68,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         }
 
         #[cfg(target_os = "macos")]
-        fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
+        pub(super) fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
             let device_registry_id = crate::engine::current_runtime_device_registry_id()?;
             if self.$prepared_field.is_some()
                 && self.$prepared_device_field != Some(device_registry_id)
@@ -87,6 +87,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
             if self.$prepared_field.is_none() {
                 self.ensure_native_image()?;
+                let bytes = self.bytes;
                 let (Some(image), native_context) =
                     (self.native_image.as_ref(), &mut self.native_context)
                 else {
@@ -94,25 +95,20 @@ macro_rules! define_ensure_prepared_direct_plan {
                         "native image cache missing".to_string(),
                     )));
                 };
-                let plan = match image.$build(native_context) {
-                    Ok(plan) => Arc::new(plan),
-                    Err(error) if direct::is_unsupported_direct_plan_error(&error) => {
-                        return Ok(None);
-                    }
-                    Err(error) => return Err(native_decode_error(error)),
-                };
                 let prepared = if let Some((session, _)) = &session_cache {
-                    Arc::new(crate::engine::with_runtime_for_session(session, |_| {
-                        $prepare(plan.as_ref())
-                    })?)
+                    crate::engine::with_runtime_for_session(session, |_| {
+                        $build_prepared(image, native_context, bytes)
+                    })?
                 } else {
-                    Arc::new($prepare(plan.as_ref())?)
+                    $build_prepared(image, native_context, bytes)?
+                };
+                let Some(prepared) = prepared.map(Arc::new) else {
+                    return Ok(None);
                 };
                 if let Some((session, fmt)) = session_cache {
                     let cache_key = $cache_key(self.bytes, fmt);
-                    $store(session, cache_key, plan.clone(), prepared.clone())?;
+                    $store(session, cache_key, prepared.clone())?;
                 }
-                self.$plan_field = Some(plan);
                 self.$prepared_field = Some(prepared);
                 self.$prepared_device_field = Some(device_registry_id);
             }
@@ -137,30 +133,26 @@ impl J2kDecoder<'_> {
         with_session: ensure_prepared_direct_gray_plan_with_session,
         plain: ensure_prepared_direct_gray_plan,
         prepare_fresh: prepare_fresh_direct_gray_plan,
-        plan_field: native_direct_gray_plan,
         prepared_field: native_prepared_direct_gray_plan,
         prepared_device_field: native_prepared_direct_gray_device_registry_id,
         prepared_ty: crate::engine::PreparedDirectGrayscalePlan,
         cache_key: direct_gray_plan_cache_key,
         cached: cached_session_direct_gray_plan,
         store: store_session_direct_gray_plan,
-        build: build_direct_grayscale_plan_with_context,
-        prepare: crate::engine::prepare_direct_grayscale_plan
+        build_prepared: build_prepared_direct_gray_plan
     }
 
     define_ensure_prepared_direct_plan! {
         with_session: ensure_prepared_direct_color_plan_with_session,
         plain: ensure_prepared_direct_color_plan,
         prepare_fresh: prepare_fresh_direct_color_plan,
-        plan_field: native_direct_color_plan,
         prepared_field: native_prepared_direct_color_plan,
         prepared_device_field: native_prepared_direct_color_device_registry_id,
         prepared_ty: crate::engine::PreparedDirectColorPlan,
         cache_key: direct_plan_cache_key,
         cached: cached_session_direct_color_plan,
         store: store_session_direct_color_plan,
-        build: build_direct_color_plan_with_context,
-        prepare: crate::engine::prepare_direct_color_plan
+        build_prepared: build_prepared_direct_color_plan
     }
 
     #[cfg(target_os = "macos")]
@@ -445,7 +437,6 @@ impl J2kDecoder<'_> {
             };
             let plan = Arc::new(plan);
             let prepared = Arc::new(crate::engine::prepare_direct_grayscale_plan(plan.as_ref())?);
-            self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
             self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
         }
@@ -589,5 +580,97 @@ fn adapter_missing_sampled_surface() -> Error {
     Error::MetalStateInvariant {
         state: "sampled full-image decode",
         reason: "one input produced no surface",
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) const fn referenced_payload_copy_is_bounded(input_len: usize) -> bool {
+    input_len <= DEFAULT_MAX_HOST_ALLOCATION_BYTES
+}
+
+/// Builds and prepares the direct grayscale plan, or `None` when the image
+/// cannot take the direct route.
+///
+/// HTJ2K code-block payloads stay ranges into one shared copy of the
+/// codestream, so neither planning nor preparation copies them block by
+/// block; the execution upload reads them straight from that copy. Other
+/// codestreams, and HTJ2K images the referenced plan does not support, use
+/// the owned plan.
+#[cfg(target_os = "macos")]
+fn build_prepared_direct_gray_plan<'a>(
+    image: &NativeImage<'a>,
+    context: &mut NativeDecoderContext<'a>,
+    bytes: &'a [u8],
+) -> Result<Option<crate::engine::PreparedDirectGrayscalePlan>, Error> {
+    // The single-image executor owns one final surface, while a flattened
+    // multi-tile plan has one final store per tile.
+    if referenced_payload_copy_is_bounded(bytes.len())
+        && image.tile_count() == 1
+        && image.uses_high_throughput_block_coding()
+    {
+        let region = (0, 0, image.width(), image.height());
+        match image.build_referenced_htj2k_plan_region_with_context(context, region) {
+            Ok(plan) => {
+                return crate::engine::prepare_referenced_htj2k_grayscale_plan(
+                    &plan,
+                    &Arc::from(bytes),
+                )
+                .map(Some);
+            }
+            Err(error)
+                if matches!(
+                    error.classify(),
+                    j2k_native::DecodeErrorClass::Unsupported { .. }
+                ) => {}
+            Err(error) => return Err(native_decode_error(error)),
+        }
+    }
+    match image.build_direct_grayscale_plan_with_context(context) {
+        Ok(plan) => crate::engine::prepare_direct_grayscale_plan(&plan).map(Some),
+        Err(error) if direct::is_unsupported_direct_plan_error(&error) => Ok(None),
+        Err(error) => Err(native_decode_error(error)),
+    }
+}
+
+/// Builds and prepares the direct RGB plan, or `None` when the image cannot
+/// take the direct route. HTJ2K payloads are referenced as for
+/// [`build_prepared_direct_gray_plan`].
+#[cfg(target_os = "macos")]
+fn build_prepared_direct_color_plan<'a>(
+    image: &NativeImage<'a>,
+    context: &mut NativeDecoderContext<'a>,
+    bytes: &'a [u8],
+) -> Result<Option<crate::engine::PreparedDirectColorPlan>, Error> {
+    // The referenced builder returns an RGBA plan for images with alpha,
+    // which the owned builder below rejects. Keep multi-tile images on the
+    // existing stitched route for the same reason as grayscale above.
+    let rgb = matches!(image.color_space(), j2k_native::ColorSpace::RGB) && !image.has_alpha();
+    if referenced_payload_copy_is_bounded(bytes.len())
+        && rgb
+        && image.tile_count() == 1
+        && image.uses_high_throughput_block_coding()
+    {
+        let region = (0, 0, image.width(), image.height());
+        match image.build_referenced_htj2k_plan_region_with_context(context, region) {
+            Ok(plan) => {
+                return crate::engine::prepare_referenced_htj2k_color_plan(
+                    &plan,
+                    &Arc::from(bytes),
+                    false,
+                )
+                .map(Some);
+            }
+            Err(error)
+                if matches!(
+                    error.classify(),
+                    j2k_native::DecodeErrorClass::Unsupported { .. }
+                ) => {}
+            Err(error) => return Err(native_decode_error(error)),
+        }
+    }
+    match image.build_direct_color_plan_with_context(context) {
+        Ok(plan) => crate::engine::prepare_direct_color_plan(&plan).map(Some),
+        Err(error) if direct::is_unsupported_direct_plan_error(&error) => Ok(None),
+        Err(error) => Err(native_decode_error(error)),
     }
 }

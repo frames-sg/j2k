@@ -5,8 +5,8 @@ use crate::metal_types::prelude::*;
 use super::irreversible::{
     dispatch_irreversible97_stages_after_horizontal_scale,
     dispatch_irreversible97_vertical_after_fused_horizontal, irreversible97_horizontal_lift_steps,
-    supports_irreversible97_interleave_horizontal_fused, IDWT97_ROWS_PER_GROUP, IDWT97_ROW_THREADS,
-    IDWT97_ROW_TILE,
+    supports_irreversible97_interleave_horizontal_fused, IDWT97_2D_TILE_H, IDWT97_2D_TILE_W,
+    IDWT97_ROWS_PER_GROUP, IDWT97_ROW_THREADS, IDWT97_ROW_TILE,
 };
 use super::{
     dispatch_3d_pipeline, label_compute_encoder, new_compute_command_encoder, CommandBufferRef,
@@ -30,6 +30,19 @@ pub(in crate::engine) fn dispatch_irreversible97_repeated_buffers_in_encoder_wit
     dispatch: RepeatedIdwtDispatch<'_>,
 ) {
     let high_pass = j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5;
+    if dispatch.params.batch_count == 0 {
+        return;
+    }
+    if super::supports_fused_2d_idwt(
+        dispatch.kernels,
+        &dispatch.kernels.idwt_irreversible97_fused_2d_batched,
+        dispatch.params.width,
+        dispatch.params.height,
+    ) {
+        dispatch_irreversible97_fused_2d_repeated(encoder, dispatch, high_pass);
+        encoder.memory_barrier_with_resources(&[dispatch.decoded]);
+        return;
+    }
     if supports_irreversible97_interleave_horizontal_fused(
         dispatch.kernels,
         &dispatch
@@ -60,6 +73,52 @@ pub(in crate::engine) fn dispatch_irreversible97_repeated_buffers_in_encoder_wit
             dispatch.params.batch_count,
         );
     }
+}
+
+fn dispatch_irreversible97_fused_2d_repeated(
+    encoder: &ComputeCommandEncoderRef,
+    dispatch: RepeatedIdwtDispatch<'_>,
+    high_pass: f32,
+) {
+    let params = dispatch.params;
+    #[cfg(test)]
+    {
+        // One stage sequence for the level, and one launch covering each
+        // output sample of every image once.
+        crate::engine::test_counters::record_idwt97_stage_sequence();
+        crate::engine::test_counters::record_idwt97_logical_dispatch((
+            params.width,
+            params.height,
+            params.batch_count,
+        ));
+    }
+    encoder.setComputePipelineState(&dispatch.kernels.idwt_irreversible97_fused_2d_batched);
+    for (index, buffer, offset) in [
+        (0, dispatch.sub_bands.ll, dispatch.sub_bands.ll_offset),
+        (1, dispatch.sub_bands.hl, dispatch.sub_bands.hl_offset),
+        (2, dispatch.sub_bands.lh, dispatch.sub_bands.lh_offset),
+        (3, dispatch.sub_bands.hh, dispatch.sub_bands.hh_offset),
+    ] {
+        encoder.set_buffer(index, Some(buffer), offset as u64);
+    }
+    encoder.set_buffer(4, Some(dispatch.decoded), 0);
+    encoder.set_bytes::<J2kRepeatedIdwtSingleDecompositionParams>(5, &params);
+    encoder.set_bytes::<crate::engine::decode_dispatch::J2kIdwt97LiftSteps>(
+        6,
+        &irreversible97_horizontal_lift_steps(params.x0 + params.output_x, high_pass),
+    );
+    encoder.set_bytes::<crate::engine::decode_dispatch::J2kIdwt97LiftSteps>(
+        7,
+        &irreversible97_horizontal_lift_steps(params.y0 + params.output_y, high_pass),
+    );
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(params.width.div_ceil(IDWT97_2D_TILE_W)),
+            u64::from(params.height.div_ceil(IDWT97_2D_TILE_H)),
+            u64::from(params.batch_count),
+        ),
+        j2k_metal_support::mtl_size(super::IDWT53_2D_LANES, super::IDWT53_2D_ROWS, 1),
+    );
 }
 
 pub(super) fn dispatch_irreversible97_repeated_interleave_horizontal_fused(

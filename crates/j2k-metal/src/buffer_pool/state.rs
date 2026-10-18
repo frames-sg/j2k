@@ -47,6 +47,10 @@ impl PoolLimits {
         }
     }
 
+    pub(super) const fn retained_bytes(self) -> usize {
+        self.retained_bytes
+    }
+
     #[cfg(test)]
     pub(super) const fn retained_bytes_for_test(self) -> usize {
         self.retained_bytes

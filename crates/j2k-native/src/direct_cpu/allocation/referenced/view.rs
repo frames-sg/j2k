@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    bitplane, checked_area, component_band_count, component_plane_len, ht_block_decode,
-    observe_max_dimensions, DecodingError, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, Result, ValidationError,
+    bitplane, checked_area, component_band_count, component_banded_idwt_scratch_bytes,
+    component_plane_len, ht_block_decode, observe_max_dimensions, DecodingError,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kReferencedClassicPlan,
+    J2kReferencedHtj2kPlan, Result, ValidationError,
 };
 
 #[derive(Clone, Copy)]
@@ -184,14 +185,68 @@ fn for_each_staged_band_target(
     Ok(())
 }
 
-pub(super) fn referenced_temporary_workspace_bytes(plan: ReferencedPlanView<'_>) -> Result<usize> {
+pub(super) fn referenced_temporary_workspace_bytes(
+    plan: ReferencedPlanView<'_>,
+    parallel: bool,
+) -> Result<usize> {
     let classic = max_referenced_dimensions(plan, false).map_or(Ok(0), |(width, height)| {
         bitplane::classic_decode_workspace_bytes(width, height)
     })?;
     let ht = max_referenced_dimensions(plan, true).map_or(Ok(0), |(width, height)| {
         ht_block_decode::ht_decode_workspace_bytes(width, height)
     })?;
-    Ok(classic.max(ht))
+    let mut idwt = 0usize;
+    for tile_index in 0..plan.tile_count() {
+        for component_index in 0..plan.component_count() {
+            idwt = idwt.max(component_banded_idwt_scratch_bytes(
+                plan.component_plan(tile_index, component_index)?,
+                parallel,
+            )?);
+        }
+    }
+    let ht_dispatch = referenced_parallel_ht_dispatch_bytes(plan, parallel)?;
+    Ok(classic.max(ht).max(idwt).max(ht_dispatch))
+}
+
+#[cfg(feature = "parallel")]
+fn referenced_parallel_ht_dispatch_bytes(
+    plan: ReferencedPlanView<'_>,
+    parallel: bool,
+) -> Result<usize> {
+    let worker_count = rayon::current_num_threads();
+    if !parallel || worker_count <= 1 {
+        return Ok(0);
+    }
+    let mut maximum_jobs = 0usize;
+    for tile_index in 0..plan.tile_count() {
+        for component_index in 0..plan.component_count() {
+            for step in &plan.component_plan(tile_index, component_index)?.steps {
+                if let J2kDirectGrayscaleStep::HtSubBand(sub_band) = step {
+                    maximum_jobs = maximum_jobs.max(sub_band.jobs.len());
+                }
+            }
+        }
+    }
+    if maximum_jobs == 0 {
+        return Ok(0);
+    }
+    super::super::super::referenced::parallel_ht_decode_transient_bytes(
+        maximum_jobs,
+        maximum_jobs,
+        worker_count,
+    )
+}
+
+#[cfg(not(feature = "parallel"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the no-parallel stub preserves the fallible parallel planning signature"
+)]
+fn referenced_parallel_ht_dispatch_bytes(
+    _plan: ReferencedPlanView<'_>,
+    _parallel: bool,
+) -> Result<usize> {
+    Ok(0)
 }
 
 pub(super) fn max_referenced_payload_bytes(plan: &J2kReferencedHtj2kPlan) -> Result<usize> {

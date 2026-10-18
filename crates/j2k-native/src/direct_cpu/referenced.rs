@@ -3,6 +3,8 @@
 //! Parse-free CPU execution for referenced HTJ2K plans.
 
 mod component;
+#[cfg(feature = "parallel")]
+pub(super) use component::parallel_ht_decode_transient_bytes;
 mod output;
 mod payload;
 
@@ -18,7 +20,9 @@ use super::referenced_classic::{
     validate_payload_ranges as validate_classic_payload_ranges, ClassicPayloadCursor,
 };
 use super::J2kDirectCpuScratch;
-use component::{execute_color_components_referenced, execute_component_plan_referenced};
+use component::{
+    execute_color_components_referenced, execute_component_plan_referenced, HtWorkspaces,
+};
 use payload::{validate_payload_ranges, ReferencedPayloadCursor};
 
 /// Execute retained per-tile Gray/RGB/RGBA HTJ2K geometry without reparsing packets.
@@ -57,6 +61,10 @@ pub fn execute_referenced_htj2k_plan_from_payloads<'scratch>(
     execute_referenced_htj2k_plan_with_payloads(plan, payload_arena, payloads, signed, scratch)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "tile traversal keeps grayscale, RGB, and RGBA geometry on one ordered payload cursor"
+)]
 fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
     plan: &J2kReferencedHtj2kPlan,
     encoded_input: &[u8],
@@ -75,7 +83,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             tile.classic_ranges(),
         )?;
     }
-    prepare_referenced_direct_scratch(plan, scratch)?;
+    let workspace_budget = prepare_referenced_direct_scratch(plan, scratch)?;
     {
         let J2kDirectCpuScratch {
             component_band_sets,
@@ -83,8 +91,16 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             compressed_payload,
             classic_workspace,
             ht_workspace,
+            ht_task_workspaces,
+            parallel,
             staged_state: _,
         } = scratch;
+        let mut ht = HtWorkspaces {
+            main: ht_workspace,
+            tasks: ht_task_workspaces,
+            parallel: *parallel,
+            budget: workspace_budget,
+        };
         let mut payloads = ReferencedPayloadCursor::new(encoded_input, payload_ranges);
         let mut output_initialized = [false; 4];
 
@@ -109,7 +125,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     &mut classic_payloads,
                     compressed_payload,
                     classic_workspace,
-                    ht_workspace,
+                    &mut ht,
                     &mut output_initialized[0],
                     true,
                 )?;
@@ -127,7 +143,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     &mut classic_payloads,
                     compressed_payload,
                     classic_workspace,
-                    ht_workspace,
+                    &mut ht,
                     &mut output_initialized,
                     tile.destination_rect(),
                 )?;
@@ -149,7 +165,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
                     &mut classic_payloads,
                     compressed_payload,
                     classic_workspace,
-                    ht_workspace,
+                    &mut ht,
                     &mut output_initialized,
                     tile.destination_rect(),
                 )?;

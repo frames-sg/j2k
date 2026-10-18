@@ -23,8 +23,8 @@ use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::profile;
 use crate::reader::BitReader;
 use crate::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
-    apply_roi_maxshift_inverse_i64, decode_j2k_code_block_scalar_with_workspace,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64,
+    decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint, HtCodeBlockBatchJob,
     HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
     HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
@@ -398,9 +398,8 @@ fn decode_tile<'a>(
     retained_decode_baseline: usize,
 ) -> Result<()> {
     storage.reset_for_next_tile();
-    let retained_scratch_bytes = tile_ctx.retained_scratch_bytes()?;
     let retained_decode_baseline = retained_decode_baseline
-        .checked_add(retained_scratch_bytes)
+        .checked_add(tile_ctx.retained_scratch_bytes()?)
         .ok_or(ValidationError::ImageTooLarge)?;
     if retained_decode_baseline > crate::DEFAULT_MAX_DECODE_BYTES {
         return Err(ValidationError::ImageTooLarge.into());
@@ -500,6 +499,7 @@ fn decode_tile<'a>(
             header,
             component_info.wavelet_transform(),
             ht_decoder,
+            cpu_decode_parallelism == CpuDecodeParallelism::Auto,
         )?;
         profile_timings.idwt_us += profile::elapsed_us(stage_start);
         // Finally, we store the raw samples for the tile area in the correct
@@ -513,7 +513,15 @@ fn decode_tile<'a>(
         // store one IDWT output at a time, allowing for better reuse of
         // allocations.
         let stage_start = profile::profile_now(profile_enabled);
-        store(tile, header, tile_ctx, component_info, idx, ht_decoder)?;
+        store(
+            tile,
+            header,
+            tile_ctx,
+            component_info,
+            idx,
+            ht_decoder,
+            cpu_decode_parallelism == CpuDecodeParallelism::Auto,
+        )?;
         profile_timings.store_us += profile::elapsed_us(stage_start);
     }
 
@@ -791,6 +799,8 @@ pub(crate) struct TileDecodeContext {
     pub(crate) idwt_output: IDWTOutput,
     /// A scratch buffer used during IDWT.
     pub(crate) idwt_scratch_buffer: Vec<f32>,
+    /// Per-worker band buffers for the row-banded IDWT.
+    pub(crate) idwt_band_scratch: Vec<f32>,
     /// A scratch buffer used during exact reversible integer IDWT.
     pub(crate) idwt_scratch_buffer_i64: Vec<i64>,
     /// A reusable context for decoding code blocks.
@@ -803,6 +813,10 @@ pub(crate) struct TileDecodeContext {
     pub(in crate::j2c::decode) ht_task_workspaces: Vec<workspace::HtTaskWorkspace>,
     #[cfg(feature = "parallel")]
     pub(in crate::j2c::decode) parallel_coefficients: Vec<f32>,
+    /// Test-only switch that keeps HT tiles on the per-sub-band path so its
+    /// slab and bank behavior stays covered.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) force_per_sub_band_ht: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -817,9 +831,15 @@ impl TileDecodeContext {
     fn release_all_allocations(&mut self) {
         let output_region = self.output_region;
         let round_irreversible_output = self.round_irreversible_output;
+        #[cfg(all(test, feature = "parallel"))]
+        let force_per_sub_band_ht = self.force_per_sub_band_ht;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
+        #[cfg(all(test, feature = "parallel"))]
+        {
+            self.force_per_sub_band_ht = force_per_sub_band_ht;
+        }
     }
 
     fn release_tile_scratch_allocations(&mut self) {
@@ -885,6 +905,7 @@ impl TileDecodeContext {
         include_capacity::<f32>(&mut bytes, self.idwt_output.coefficients.capacity())?;
         include_capacity::<i64>(&mut bytes, self.idwt_output.coefficients_i64.capacity())?;
         include_capacity::<f32>(&mut bytes, self.idwt_scratch_buffer.capacity())?;
+        include_capacity::<f32>(&mut bytes, self.idwt_band_scratch.capacity())?;
         include_capacity::<i64>(&mut bytes, self.idwt_scratch_buffer_i64.capacity())?;
         Ok(bytes)
     }
@@ -898,6 +919,7 @@ impl TileDecodeContext {
     fn release_idwt_allocations(&mut self) {
         self.idwt_output = IDWTOutput::default();
         self.idwt_scratch_buffer = Vec::new();
+        self.idwt_band_scratch = Vec::new();
         self.idwt_scratch_buffer_i64 = Vec::new();
     }
 }

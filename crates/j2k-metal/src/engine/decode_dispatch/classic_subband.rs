@@ -7,15 +7,15 @@ use super::super::{ClassicTier1Buffers, ClassicTier1Inputs};
 use super::{
     classic_batch_is_plain_arithmetic, classic_batch_uses_plain_fast_path,
     classic_repeated_uses_plain_fast_path, dispatch_classic_cleanup_batched_in_encoder,
-    dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
     dispatch_classic_cleanup_repeated_batched_in_command_buffer,
+    dispatch_classic_cleanup_shared_repeated_batched_in_command_buffer,
     dispatch_classic_store_repeated_batched_in_command_buffer, dispatch_zero_u32_buffer_in_encoder,
     new_compute_command_encoder, new_shared_buffer, take_classic_coefficients_scratch_buffer,
     take_classic_states_scratch_buffer, Buffer, ClassicCleanupBatchDispatch,
-    ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
-    ClassicRepeatedStoreDispatch, CommandBufferRef, ComputeCommandEncoderRef, DirectScratchBuffer,
-    DirectStatusCheck, Error, J2kClassicCleanupBatchJob, J2kClassicSegment, MetalRuntime,
-    PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    ClassicRepeatedCleanupDispatch, ClassicRepeatedStoreDispatch,
+    ClassicSharedRepeatedCleanupDispatch, CommandBufferRef, ComputeCommandEncoderRef,
+    DirectScratchBuffer, DirectStatusCheck, Error, J2kClassicCleanupBatchJob, J2kClassicSegment,
+    MetalRuntime, PreparedClassicSubBand, PreparedClassicSubBandGroup,
 };
 
 #[cfg(target_os = "macos")]
@@ -67,7 +67,7 @@ impl<'a> ClassicBatchView<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RepeatedClassicKernel {
     PlainFast,
-    PlainDeviceState,
+    SharedPlain,
     General,
 }
 
@@ -84,8 +84,8 @@ fn select_repeated_classic_kernel(
             >= 32;
     if plain_fast {
         RepeatedClassicKernel::PlainFast
-    } else if count <= 16 && classic_batch_is_plain_arithmetic(batch.jobs, batch.segments) {
-        RepeatedClassicKernel::PlainDeviceState
+    } else if classic_batch_is_plain_arithmetic(batch.jobs, batch.segments) {
+        RepeatedClassicKernel::SharedPlain
     } else {
         RepeatedClassicKernel::General
     }
@@ -137,13 +137,13 @@ fn dispatch_repeated_classic_cleanup(
                 },
             )
         }
-        RepeatedClassicKernel::PlainDeviceState => {
+        RepeatedClassicKernel::SharedPlain => {
             let states_scratch = states_scratch.ok_or(Error::MetalStateInvariant {
                 state: "classic repeated cleanup dispatch",
                 reason: "plain device-state dispatch has no state scratch buffer",
             })?;
-            dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
-                ClassicPlainDevRepeatedCleanupDispatch {
+            dispatch_classic_cleanup_shared_repeated_batched_in_command_buffer(
+                ClassicSharedRepeatedCleanupDispatch {
                     runtime,
                     command_buffer,
                     coded_data: &buffers.coded,
@@ -226,9 +226,17 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
         })?;
     let buffers = batch.tier1_buffers(runtime)?;
     let kernel = select_repeated_classic_kernel(runtime.decode()?, count, batch);
-    let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, total_jobs)?;
-    let states_scratch = if kernel == RepeatedClassicKernel::PlainDeviceState {
-        Some(take_classic_states_scratch_buffer(runtime, total_jobs)?)
+    let scratch_jobs = if kernel == RepeatedClassicKernel::SharedPlain {
+        batch.jobs.len()
+    } else {
+        total_jobs
+    };
+    let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, scratch_jobs)?;
+    let states_scratch = if kernel == RepeatedClassicKernel::SharedPlain {
+        Some(take_classic_states_scratch_buffer(
+            runtime,
+            batch.jobs.len(),
+        )?)
     } else {
         None
     };
@@ -257,6 +265,7 @@ fn encode_repeated_classic_batch_to_buffer_in_command_buffer(
             output_plane_len: batch.output_plane_len,
             decoded: output,
             coefficients_scratch: &coefficients_scratch.buffer,
+            shared_coefficients: kernel == RepeatedClassicKernel::SharedPlain,
         })?;
     }
     scratch_buffers.push(coefficients_scratch);

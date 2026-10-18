@@ -14,7 +14,8 @@ use super::abi::{
     J2kGrayStoreParams, J2kHtCleanupBatchJob, J2kHtRepeatedBatchParams, J2kHtStatus,
     J2kIdwt97LiftSteps, J2kIdwtSingleDecompositionParams, J2kInverseMctParams,
     J2kRepeatedGrayStoreParams, J2kRepeatedIdwtSingleDecompositionParams, J2kRepeatedStoreParams,
-    J2kStoreParams, J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
+    J2kStackedGrayStoreParams, J2kStoreParams, J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH,
+    J2K_CLASSIC_STATUS_OK,
 };
 use super::{
     checked_buffer_copy_into, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
@@ -41,16 +42,16 @@ pub(in crate::engine) use self::classic_cleanup::{
     classic_batch_is_plain_arithmetic, classic_batch_uses_plain_fast_path,
     classic_repeated_uses_plain_fast_path, dispatch_classic_cleanup_batched,
     dispatch_classic_cleanup_batched_in_encoder,
-    dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
     dispatch_classic_cleanup_repeated_batched_in_command_buffer,
+    dispatch_classic_cleanup_shared_repeated_batched_in_command_buffer,
     dispatch_classic_store_repeated_batched_in_command_buffer,
     encode_distinct_classic_batches_to_buffer_in_encoder,
     encode_distinct_classic_sub_band_groups_to_buffer_in_command_buffer,
     encode_distinct_classic_sub_band_groups_to_buffer_in_encoder,
     encode_distinct_classic_sub_bands_to_buffer_in_command_buffer,
     encode_distinct_classic_sub_bands_to_buffer_in_encoder, ClassicCleanupBatchDispatch,
-    ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
-    ClassicRepeatedStoreDispatch, DistinctClassicBatch,
+    ClassicRepeatedCleanupDispatch, ClassicRepeatedStoreDispatch,
+    ClassicSharedRepeatedCleanupDispatch, DistinctClassicBatch,
 };
 pub(in crate::engine) use self::classic_subband::{
     encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
@@ -60,7 +61,8 @@ pub(in crate::engine) use self::classic_subband::{
 };
 pub(in crate::engine) use self::ht_chunks::{
     default_metal_ht_chunk_limits, encode_metal_ht_batches_in_encoder,
-    encode_repeated_metal_ht_batch_in_command_buffer, HtBatchInput, HtPayloadSource,
+    encode_metal_ht_batches_with_zero_layouts_in_encoder,
+    encode_repeated_metal_ht_batch_in_command_buffer, HtBatchInput, HtPayloadSource, HtZeroLayout,
     MetalHtPipelineKind, PreparedMetalHtExecutionCache,
 };
 pub(in crate::engine) use self::ht_distinct::{
@@ -76,7 +78,9 @@ pub(in crate::engine) use self::ht_subband::{
     encode_repeated_ht_sub_band_to_buffer_in_command_buffer, ht_batch_output_word_count,
     ht_output_word_count, required_ht_output_len,
 };
+use self::idwt::dispatch_fused_idwt_gray_store;
 pub(in crate::engine) use self::idwt::{
+    dispatch_fused_idwt_stacked_gray_store,
     dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
     dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,
@@ -84,7 +88,9 @@ pub(in crate::engine) use self::idwt::{
     dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets,
     dispatch_reversible53_repeated_buffers_in_encoder_with_offsets,
     dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_offsets,
-    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets, IdwtSubBandBuffers,
+    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets,
+    fused_idwt_gray_store_supported, fused_idwt_stacked_gray_store_pipeline,
+    supports_fused_2d_idwt, FusedIdwtStoreSource, FusedStackedGrayStore, IdwtSubBandBuffers,
     RepeatedIdwtDispatch, SingleIdwtDispatch,
 };
 pub(in crate::engine) use self::store::{
@@ -93,5 +99,6 @@ pub(in crate::engine) use self::store::{
     dispatch_store_component_repeated_in_command_buffer,
     dispatch_store_component_repeated_in_encoder, encode_gray_store_to_destination_in_encoder,
     encode_gray_store_to_surface_in_encoder,
-    encode_repeated_gray_store_to_surfaces_in_command_buffer, GrayStoreDestinationRequest,
+    encode_repeated_gray_store_to_surfaces_in_command_buffer, gray_store_kind,
+    GrayStoreDestinationRequest, GrayStoreSource,
 };

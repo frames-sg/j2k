@@ -79,6 +79,18 @@ fn independent_openjph_multitile_gray12_decodes_exactly_on_metal() {
         .iter()
         .find(|fixture| fixture.name == "openjph-gray-u12-53-raw")
         .expect("checked-in OpenJPH Gray12 fixture");
+    let surface = J2kDecoder::new(fixture.encoded)
+        .expect("parse independent multi-tile Gray12 fixture")
+        .decode_request_to_device(MetalDecodeRequest::full(
+            PixelFormat::Gray16,
+            BackendRequest::Metal,
+        ))
+        .expect("decode independent multi-tile Gray12 fixture to a surface");
+    assert_eq!(surface.dimensions(), (fixture.width, fixture.height));
+    assert_eq!(
+        surface.as_bytes().expect("multi-tile Gray12 surface"),
+        fixture.oracle
+    );
     let options = BatchDecodeOptions {
         layout: BatchLayout::Nhwc,
         ..BatchDecodeOptions::default()

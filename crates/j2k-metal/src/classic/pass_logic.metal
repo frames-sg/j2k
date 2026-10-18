@@ -834,14 +834,14 @@ inline void store_classic_job_plain_output_tg(
 ) {
     const uint padded_width = job.width + J2K_CLASSIC_PADDING * 2u;
     device uint *coefficients = coefficients_scratch + scratch_offset;
-    const uint sample_count = job.width * job.height;
-    for (uint sample_idx = lane; sample_idx < sample_count; sample_idx += 32u) {
-        const uint x = sample_idx % job.width;
-        const uint y = sample_idx / job.width;
-        const uint coeff_idx =
-            coeff_index(padded_width, x + J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
-        const uint coeff = coefficients[coeff_idx];
-        output[job.output_offset + y * job.output_stride + x] =
-            reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+    for (uint y = 0u; y < job.height; ++y) {
+        const uint coefficient_row =
+            coeff_index(padded_width, J2K_CLASSIC_PADDING, y + J2K_CLASSIC_PADDING);
+        const uint output_row = job.output_offset + y * job.output_stride;
+        for (uint x = lane; x < job.width; x += 32u) {
+            const uint coeff = coefficients[coefficient_row + x];
+            output[output_row + x] =
+                reconstructed_classic_sample(coeff, job) * job.dequantization_step;
+        }
     }
 }

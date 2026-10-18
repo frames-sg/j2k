@@ -3,6 +3,8 @@
 use super::cleanup::{
     cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
 };
+#[cfg(feature = "simd")]
+use super::magnitude::decode_cleanup_and_magnitude_sign_to_f32;
 use super::magnitude::{decode_cleanup_and_magnitude_sign_phase, decode_magnitude_sign_phase};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::significance::{
@@ -88,6 +90,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
             sstr,
             scratch,
             v_n_scratch,
+            &mut scratch_buffers.magsgn,
             observer,
         )?;
     } else {
@@ -108,6 +111,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
             stride,
             sstr,
             v_n_scratch,
+            &mut scratch_buffers.magsgn,
         )?;
         observer.add_mag_sgn_us(phase_start);
     }
@@ -164,4 +168,49 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
     }
 
     Some(())
+}
+
+#[cfg(feature = "simd")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the cleanup-only direct-output pipeline keeps validated decode inputs explicit"
+)]
+pub(super) fn decode_cleanup_to_f32_impl<const IRREVERSIBLE_MIDPOINT: bool>(
+    cleanup_data: &[u8],
+    decoded_data: &mut [f32],
+    missing_msbs: u32,
+    coded_bitplanes: u8,
+    dequantization_step: f32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    scratch_buffers: &mut HtBlockDecodeScratch,
+) -> Option<()> {
+    if missing_msbs > 30 || cleanup_data.len() < 2 {
+        return None;
+    }
+    let lcup = cleanup_data.len();
+    let scup = cleanup_segment_suffix_length(cleanup_data, lcup)?;
+    let quad_rows = height.div_ceil(2) as usize;
+    let sstr = cleanup_symbol_stride(width);
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    let scratch = resized_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))?;
+    let v_n_scratch = resized_u32_scratch(&mut scratch_buffers.v_n, v_n_width)?;
+
+    decode_cleanup_and_magnitude_sign_to_f32::<IRREVERSIBLE_MIDPOINT>(
+        cleanup_data,
+        lcup,
+        scup,
+        decoded_data,
+        missing_msbs,
+        coded_bitplanes,
+        dequantization_step,
+        width,
+        height,
+        stride,
+        sstr,
+        scratch,
+        v_n_scratch,
+        &mut scratch_buffers.magsgn,
+    )
 }

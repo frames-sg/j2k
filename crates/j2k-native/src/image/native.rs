@@ -24,6 +24,7 @@ impl<'a> Image<'a> {
         component_owner_capacity: usize,
         dimensions: (u32, u32),
         retained_baseline_bytes: usize,
+        parallel: bool,
     ) -> Result<DecodedNativeComponents> {
         let mut budget = NativeOutputBudget::for_decoded_channels(
             retained_baseline_bytes,
@@ -65,14 +66,13 @@ impl<'a> Image<'a> {
             let mut data = Vec::new();
             try_reserve_decode_elements(&mut data, capacity)?;
             budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
-            for idx in 0..sample_count {
-                Self::push_component_native_sample_bytes(
-                    &mut data,
-                    component,
-                    idx,
-                    component.bit_depth,
-                );
-            }
+            Self::extend_component_native_sample_bytes(
+                &mut data,
+                component,
+                0..sample_count,
+                component.bit_depth,
+                parallel,
+            );
             if data.len() != capacity {
                 return Err(DecodingError::CodeBlockDecodeFailure.into());
             }
@@ -256,7 +256,63 @@ impl<'a> Image<'a> {
         })
     }
 
-    pub(super) fn push_component_native_sample_bytes(
+    /// Append the samples in `range` of one component as packed little-endian
+    /// native samples. Produces the same bytes as calling
+    /// [`Self::push_component_native_sample_bytes`] for every index, but packs
+    /// eight- and sixteen-bit float planes in chunks the compiler vectorizes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing"
+    )]
+    pub(crate) fn extend_component_native_sample_bytes(
+        out: &mut Vec<u8>,
+        component: &ComponentData,
+        range: core::ops::Range<usize>,
+        bit_depth: u8,
+        parallel: bool,
+    ) {
+        if let Some(samples) = component.integer_container.as_ref() {
+            for &sample in &samples[range] {
+                Self::push_native_i64_sample_bytes(out, sample, bit_depth, component.signed);
+            }
+            return;
+        }
+        let samples = &component.container.truncated()[range];
+        match (bit_depth, component.signed) {
+            (1..=8, true) => {
+                let (min, max) = signed_native_bounds(bit_depth);
+                extend_converted(out, samples, parallel, move |sample| {
+                    [(round_clamped_native(sample, min, max) as i8) as u8]
+                });
+            }
+            (1..=8, false) => {
+                let max = unsigned_native_max(bit_depth);
+                extend_converted(out, samples, parallel, move |sample| {
+                    [round_clamped_native(sample, 0.0, max) as u8]
+                });
+            }
+            (9..=16, true) => {
+                let (min, max) = signed_native_bounds(bit_depth);
+                extend_converted(out, samples, parallel, move |sample| {
+                    ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
+                });
+            }
+            (9..=16, false) => {
+                let max = unsigned_native_max(bit_depth);
+                extend_converted(out, samples, parallel, move |sample| {
+                    (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes()
+                });
+            }
+            _ => {
+                for &sample in samples {
+                    Self::push_native_sample_bytes(out, sample, bit_depth, component.signed);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn push_component_native_sample_bytes(
         out: &mut Vec<u8>,
         component: &ComponentData,
         index: usize,
@@ -369,6 +425,91 @@ impl<'a> Image<'a> {
                 out.extend_from_slice(&bytes[..byte_count]);
             }
         }
+    }
+}
+
+/// Inclusive signed range of a component with `1..=16` bits.
+fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
+    let magnitude = 1_u16 << (bit_depth.clamp(1, 16) - 1);
+    (-f32::from(magnitude), f32::from(magnitude - 1))
+}
+
+/// Largest unsigned value of a component with `1..=16` bits.
+fn unsigned_native_max(bit_depth: u8) -> f32 {
+    f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
+}
+
+/// Round a sample half away from zero after clamping it to integer bounds.
+///
+/// Matches [`Image::push_native_sample_bytes`] for bounds within 16 bits:
+/// clamping to integer bounds before rounding cannot change the rounded value,
+/// `f32::round` rounds ties away from zero exactly like truncating `x ± 0.5`
+/// in `f64`, and the saturating float-to-int cast maps NaN to zero.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "the clamped value fits the 16-bit native range; inlined into the packing loops"
+)]
+#[inline(always)]
+fn round_clamped_native(sample: f32, min: f32, max: f32) -> i32 {
+    // The callers supply ordered finite bounds. Explicit comparisons preserve
+    // NaN for the saturating cast without repeating clamp's bounds assertion
+    // for every sample, which otherwise prevents vectorizing the packing loop.
+    let clamped = if sample < min { min } else { sample };
+    let clamped = if clamped > max { max } else { clamped };
+    #[cfg(feature = "std")]
+    let rounded = clamped.round();
+    // `libm::roundf` rounds ties away from zero exactly; `floor(x + 0.5)`
+    // would round 0.49999997 up.
+    #[cfg(not(feature = "std"))]
+    let rounded = libm::roundf(clamped);
+    rounded as i32
+}
+
+/// Planes with at least this many samples pack in parallel. Unit tests lower
+/// it so the parallel packer runs on small fixtures.
+#[cfg(all(feature = "parallel", not(test)))]
+const PARALLEL_PACK_SAMPLES: usize = 1 << 20;
+#[cfg(all(feature = "parallel", test))]
+const PARALLEL_PACK_SAMPLES: usize = 1024;
+
+/// Append `convert(sample)` for every sample, in chunks the compiler
+/// vectorizes, splitting large planes across threads when `parallel`.
+fn extend_converted<const N: usize>(
+    out: &mut Vec<u8>,
+    samples: &[f32],
+    parallel: bool,
+    convert: impl Fn(f32) -> [u8; N] + Send + Sync,
+) {
+    const CHUNK: usize = 64;
+    #[cfg(feature = "parallel")]
+    if parallel && samples.len() >= PARALLEL_PACK_SAMPLES {
+        use rayon::prelude::*;
+        // Callers reserve the full output first, so this does not reallocate.
+        let start = out.len();
+        out.resize(start + samples.len() * N, 0);
+        out[start..]
+            .as_chunks_mut::<N>()
+            .0
+            .par_chunks_mut(16 * 1024)
+            .zip(samples.par_chunks(16 * 1024))
+            .for_each(move |(destination, source)| {
+                for (destination, &sample) in destination.iter_mut().zip(source) {
+                    *destination = convert(sample);
+                }
+            });
+        return;
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = parallel;
+
+    let mut staged = [[0_u8; N]; CHUNK];
+    for chunk in samples.chunks(CHUNK) {
+        let staged = &mut staged[..chunk.len()];
+        for (destination, &sample) in staged.iter_mut().zip(chunk) {
+            *destination = convert(sample);
+        }
+        out.extend_from_slice(staged.as_flattened());
     }
 }
 

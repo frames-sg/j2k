@@ -9,16 +9,21 @@ use crate::CpuDecodeParallelism;
 
 impl BatchWorker {
     pub(crate) fn new_owned(batch_size: usize) -> Self {
-        Self::new(batch_size, None)
+        Self::new(super::inner_parallelism_for_batch(batch_size), None)
     }
 
     /// Prepare retained facade context and row scratch for one independent
-    /// owned batch job while keeping nested native parallelism disabled.
+    /// owned batch job. Nested native parallelism stays disabled unless the
+    /// scheduler admitted fewer workers than the host has threads.
     pub(crate) fn prepare_owned_decode(&mut self) -> CpuDecodeParallelism {
         self.ctx
-            .set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+            .set_cpu_decode_parallelism(self.owned_inner_parallelism);
         self.pool.reset();
         self.ctx.cpu_decode_parallelism()
+    }
+
+    pub(crate) fn set_owned_inner_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
+        self.owned_inner_parallelism = parallelism;
     }
 
     pub(crate) fn take_native_workspace(&mut self) -> j2k_native::DecoderWorkspace {
@@ -85,6 +90,8 @@ impl BatchWorker {
         signed: bool,
     ) -> j2k_native::Result<j2k_native::J2kDirectDecodedComponents<'scratch>> {
         self.prepared_plan_decode_calls = self.prepared_plan_decode_calls.saturating_add(1);
+        self.prepared_plan_scratch
+            .set_parallel_decode(self.owned_inner_parallelism == CpuDecodeParallelism::Auto);
         j2k_native::execute_referenced_htj2k_plan(
             plan,
             encoded_input,

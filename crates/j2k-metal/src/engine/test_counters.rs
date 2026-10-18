@@ -65,6 +65,7 @@ std::thread_local! {
     static DIRECT_DESTINATION_EVENT_SIGNALS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_DESTINATION_EVENT_WAITS: Cell<usize> = const { Cell::new(0) };
     static SHARED_CLASSIC_TIER1_PASSES: Cell<usize> = const { Cell::new(0) };
+    static FUSED_IDWT_STORES: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn reset_shared_classic_tier1_passes_for_test() {
@@ -103,6 +104,18 @@ pub(crate) fn record_direct_destination_event_signal() {
 
 pub(crate) fn record_direct_destination_event_wait() {
     DIRECT_DESTINATION_EVENT_WAITS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+pub(crate) fn reset_fused_idwt_stores_for_test() {
+    FUSED_IDWT_STORES.with(|count| count.set(0));
+}
+
+pub(crate) fn fused_idwt_stores_for_test() -> usize {
+    FUSED_IDWT_STORES.with(Cell::get)
+}
+
+pub(crate) fn record_fused_idwt_store() {
+    FUSED_IDWT_STORES.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 pub(crate) fn reset_metal_command_buffers_for_test() {
@@ -355,6 +368,73 @@ pub(crate) fn record_idwt97_logical_dispatch(grid: (u32, u32, u32)) {
             .saturating_add(positions),
     );
     IDWT97_STAGE_DISPATCHES.set(IDWT97_STAGE_DISPATCHES.get().saturating_add(1));
+}
+
+#[cfg(test)]
+static FUSED_2D_IDWT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Images per stacked grayscale submission, overriding the allocation-sized
+/// runs when nonzero.
+#[cfg(test)]
+static STACKED_RUN_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn set_stacked_run_len_for_test(len: usize) {
+    STACKED_RUN_LEN.store(len, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn stacked_run_len_for_test() -> Option<usize> {
+    let len = STACKED_RUN_LEN.load(Ordering::Relaxed);
+    (len != 0).then_some(len)
+}
+
+/// Turns the single-pass 5/3 and 9/7 tile kernels off, so
+/// `single_image_step_profile` can time the two-pass kernels they replace.
+#[cfg(test)]
+pub(crate) fn set_fused_2d_idwt_for_test(enabled: bool) {
+    FUSED_2D_IDWT.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn fused_2d_idwt_for_test() -> bool {
+    FUSED_2D_IDWT.load(Ordering::Relaxed)
+}
+
+/// Step kinds of the single-image grayscale route that
+/// `single_image_step_profile` can encode repeatedly.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SingleStepKind {
+    Tier1 = 0,
+    Idwt = 1,
+    Store = 2,
+    /// The HT coefficient arena zero fill inside each Tier-1 group.
+    HtZero = 3,
+    /// The cooperative HT MEL/VLC kernel inside each Tier-1 group.
+    HtVlc = 4,
+}
+
+#[cfg(test)]
+static SINGLE_STEP_REPEATS: [std::sync::atomic::AtomicU8; 5] = [
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+    std::sync::atomic::AtomicU8::new(1),
+];
+
+/// Encode every single-image grayscale step of `kind` `repeats` times, so the
+/// GPU-time difference attributes that step's cost. Outputs are unchanged:
+/// the repeated dispatches recompute the same values.
+#[cfg(test)]
+pub(crate) fn set_single_step_repeats_for_test(kind: SingleStepKind, repeats: u8) {
+    SINGLE_STEP_REPEATS[kind as usize].store(repeats.max(1), Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn single_step_repeats_for_test(kind: SingleStepKind) -> u8 {
+    SINGLE_STEP_REPEATS[kind as usize].load(Ordering::Relaxed)
 }
 
 /// Last decode stage whose GPU dispatches are encoded, for attributing GPU time

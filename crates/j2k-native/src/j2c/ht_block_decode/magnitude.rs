@@ -1,8 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use alloc::vec::Vec;
+
 use super::cleanup::{decode_cleanup_symbols_first_row, decode_cleanup_symbols_row};
-use super::readers::{ForwardBitReader, MelDecoder, ReverseBitReader};
+use super::readers::{unstuff_magsgn, FlatBitReader, MelDecoder, ReverseBitReader};
 use super::stats::HtDecodeObserver;
+#[cfg(feature = "simd")]
+use crate::math::{dispatch, Level};
+
+#[cfg(feature = "simd")]
+mod simd;
+
+/// Whether the SIMD rows handle a block with this many missing MSBs.
+#[cfg(feature = "simd")]
+fn uses_simd_rows(missing_msbs: u32) -> bool {
+    missing_msbs + 2 <= simd::MAX_SIMD_MMSBP2
+}
+
+#[cfg(feature = "simd")]
+pub(super) fn supports_cleanup_to_f32(missing_msbs: u32, width: u32) -> bool {
+    width != 0 && width.is_multiple_of(4) && uses_simd_rows(missing_msbs)
+}
 
 fn sample_mask(bit: u32) -> u32 {
     1 << (4 + bit)
@@ -15,37 +33,30 @@ fn sample_mask(bit: u32) -> u32 {
 )]
 #[inline(always)]
 fn decode_mag_sgn_sample_with_vn(
-    magsgn: &mut ForwardBitReader<0xFF>,
+    magsgn: &mut FlatBitReader<'_>,
     inf: u32,
     bit: u32,
     uq: u32,
     p: u32,
 ) -> (u32, u32) {
-    if (inf & sample_mask(bit)) == 0 {
-        return (0, 0);
-    }
-
+    // Branch-free: an insignificant sample consumes no bits and yields zero,
+    // exactly as an early return would, without a data-dependent branch.
+    let significant = 0_u32.wrapping_sub((inf & sample_mask(bit)) >> (4 + bit));
     let ms_val = magsgn.fetch();
-    let m_n = uq - ((inf >> (12 + bit)) & 1);
+    let m_n = (uq - ((inf >> (12 + bit)) & 1)) & significant;
     magsgn.advance(m_n);
 
-    let mut value = ms_val << 31;
-    let mask = match m_n {
-        0 => 0,
-        32.. => u32::MAX,
-        bits => (1_u32 << bits) - 1,
-    };
-    let mut v_n = ms_val & mask;
-    if m_n < 32 {
-        v_n |= ((inf >> (8 + bit)) & 1) << m_n;
-    }
-    v_n |= 1;
-    if p == 0 {
-        value |= ((u64::from(v_n) + 1) >> 1) as u32;
+    // `m_n` is at most 32 here; shifting in 64 bits covers 0 and 32 without
+    // a case split, and the implicit one above bit 31 drops out as before.
+    let mask = ((1_u64 << m_n) - 1) as u32;
+    let e1 = (u64::from((inf >> (8 + bit)) & 1) << m_n) as u32;
+    let v_n = ((ms_val & mask) | e1 | 1) & significant;
+    let magnitude = if p == 0 {
+        ((u64::from(v_n) + 1) >> 1) as u32
     } else {
-        value |= (v_n + 2) << (p - 1);
-    }
-    (value, v_n)
+        (v_n + 2) << (p - 1)
+    };
+    (((ms_val << 31) | magnitude) & significant, v_n)
 }
 
 #[inline(never)]
@@ -65,13 +76,33 @@ pub(super) fn decode_magnitude_sign_phase(
     stride: u32,
     sstr: usize,
     v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
 ) -> Option<()> {
     let v_n_width = width.div_ceil(2) as usize + 2;
     if v_n_scratch.len() < v_n_width {
         return None;
     }
     v_n_scratch[..v_n_width].fill(0);
-    let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let mut magsgn = FlatBitReader::new(flat)?;
+    #[cfg(feature = "simd")]
+    if uses_simd_rows(missing_msbs) {
+        return dispatch!(Level::new(), simd => simd::decode_magnitude_sign_rows(
+            simd,
+            &mut magsgn,
+            scratch,
+            decoded_data,
+            v_n_scratch,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+        ));
+    }
     decode_magnitude_sign_first_row_from_cleanup(
         &mut magsgn,
         scratch,
@@ -108,7 +139,7 @@ pub(super) fn decode_magnitude_sign_phase(
 )]
 #[inline(always)]
 fn decode_magnitude_sign_pair_from_cleanup(
-    magsgn: &mut ForwardBitReader<0xFF>,
+    magsgn: &mut FlatBitReader<'_>,
     decoded_data: &mut [u32],
     v_n_scratch: &mut [u32],
     inf: u32,
@@ -125,6 +156,29 @@ fn decode_magnitude_sign_pair_from_cleanup(
 ) -> Option<()> {
     if uq > mmsbp2 {
         return None;
+    }
+
+    if inf & 0xF0 == 0 {
+        // No significant sample: no MagSgn bits, zero output and zero `v_n`,
+        // exactly what the per-sample path produces for this quad.
+        decoded_data[*dp] = 0;
+        if second_row_present {
+            decoded_data[*dp + stride] = 0;
+        }
+        v_n_scratch[*vp] = *prev_v_n;
+        *prev_v_n = 0;
+        *dp += 1;
+        *x += 1;
+        if *x < width {
+            decoded_data[*dp] = 0;
+            if second_row_present {
+                decoded_data[*dp + stride] = 0;
+            }
+            *dp += 1;
+            *x += 1;
+        }
+        *vp += 1;
+        return Some(());
     }
 
     let (val0, _) = decode_mag_sgn_sample_with_vn(magsgn, inf, 0, uq, p);
@@ -166,7 +220,7 @@ fn decode_magnitude_sign_pair_from_cleanup(
 )]
 #[inline(always)]
 pub(super) fn decode_magnitude_sign_first_row_from_cleanup(
-    magsgn: &mut ForwardBitReader<0xFF>,
+    magsgn: &mut FlatBitReader<'_>,
     cleanup: &[u16],
     decoded_data: &mut [u32],
     v_n_scratch: &mut [u32],
@@ -218,7 +272,7 @@ pub(super) fn decode_magnitude_sign_first_row_from_cleanup(
 )]
 #[inline(always)]
 pub(super) fn decode_magnitude_sign_row_from_cleanup(
-    magsgn: &mut ForwardBitReader<0xFF>,
+    magsgn: &mut FlatBitReader<'_>,
     cleanup: &[u16],
     decoded_data: &mut [u32],
     v_n_scratch: &mut [u32],
@@ -291,6 +345,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     sstr: usize,
     scratch: &mut [u16],
     v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
     observer: &mut impl HtDecodeObserver,
 ) -> Option<()> {
     let quad_rows = height.div_ceil(2) as usize;
@@ -305,8 +360,32 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
 
     let mut mel = MelDecoder::new(coded_data, lcup, scup);
     let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
-    let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let mut magsgn = FlatBitReader::new(flat)?;
     let mut run = mel.get_run()?;
+
+    #[cfg(feature = "simd")]
+    if uses_simd_rows(missing_msbs) {
+        return dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_rows(
+            simd,
+            &mut mel,
+            &mut vlc,
+            &mut run,
+            &mut magsgn,
+            scratch,
+            decoded_data,
+            v_n_scratch,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            observer,
+        ));
+    }
 
     let phase_start = observer.phase_start();
     decode_cleanup_symbols_first_row(&mut mel, &mut vlc, &mut run, scratch, width)?;
@@ -347,4 +426,71 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     }
 
     Some(())
+}
+
+#[cfg(feature = "simd")]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the direct cleanup entry keeps bitstream, geometry, scratch, and output conversion explicit"
+)]
+pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOINT: bool>(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    decoded_data: &mut [f32],
+    missing_msbs: u32,
+    coded_bitplanes: u8,
+    dequantization_step: f32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+    v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
+) -> Option<()> {
+    if !supports_cleanup_to_f32(missing_msbs, width) {
+        return None;
+    }
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let mut mel = MelDecoder::new(coded_data, lcup, scup);
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let mut magsgn = FlatBitReader::new(flat)?;
+    let mut run = mel.get_run()?;
+    let output = simd::FinalOutput {
+        coefficient_shift: 31 - u32::from(coded_bitplanes),
+        midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
+        dequantization_step,
+    };
+
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_to_f32_rows::<IRREVERSIBLE_MIDPOINT, _>(
+        simd,
+        &mut mel,
+        &mut vlc,
+        &mut run,
+        &mut magsgn,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        output,
+    ))
 }

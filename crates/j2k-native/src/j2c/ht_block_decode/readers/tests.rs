@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{ForwardBitReader, MelDecoder, ReverseBitReader};
+use super::{
+    flat_magsgn_capacity, unstuff_magsgn, FlatBitReader, ForwardBitReader, MelDecoder,
+    ReverseBitReader,
+};
 
 #[test]
 fn reader_state_and_bit_consumption_match_pre_split_goldens() {
@@ -116,4 +119,69 @@ fn word_refills_yield_the_same_bits_as_byte_refills() {
             }
         }
     }
+}
+
+#[test]
+fn flat_magsgn_reader_matches_reservoir_reader() {
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for len in 0..300_usize {
+        for density in [0_u64, 4, 32, 200] {
+            let data = (0..len)
+                .map(|_| {
+                    let draw = next();
+                    if draw % 256 < density {
+                        0xFF
+                    } else {
+                        draw.to_le_bytes()[3]
+                    }
+                })
+                .collect::<Vec<_>>();
+            // Enough advances to run far past the end of the segment.
+            let advances = (0..(len / 2 + 24))
+                .map(|_| (next() % 33) as u32)
+                .collect::<Vec<_>>();
+            let samples = advances.len();
+            let mut buffer = Vec::with_capacity(flat_magsgn_capacity(samples).expect("capacity"));
+            let flat = unstuff_magsgn(&data, &mut buffer, samples * 4).expect("unstuffed");
+            let mut flat = FlatBitReader::new(flat).expect("flat reader");
+            let mut reservoir = ForwardBitReader::<0xFF>::new(&data);
+            for (step, &count) in advances.iter().enumerate() {
+                assert_eq!(
+                    flat.fetch(),
+                    reservoir.fetch(),
+                    "len {len} density {density} step {step}"
+                );
+                flat.advance(count);
+                reservoir.advance(count);
+            }
+        }
+    }
+}
+
+#[test]
+fn flat_magsgn_unstuffing_requires_reserved_capacity() {
+    let mut buffer = Vec::new();
+    assert!(unstuff_magsgn(&[1, 2, 3], &mut buffer, 4).is_none());
+    assert_eq!(buffer.capacity(), 0, "unstuffing must not allocate");
+
+    let capacity = flat_magsgn_capacity(1).expect("one-sample capacity");
+    let mut buffer = Vec::with_capacity(capacity);
+    let reserved = buffer.capacity();
+    let flat = unstuff_magsgn(&[0; 8], &mut buffer, 4).expect("long segment");
+    assert_eq!(&flat[..4], &[0; 4]);
+    assert!(
+        flat.len() <= capacity,
+        "segment padding must fit its reservation"
+    );
+    assert_eq!(
+        buffer.capacity(),
+        reserved,
+        "long segments must not allocate"
+    );
 }

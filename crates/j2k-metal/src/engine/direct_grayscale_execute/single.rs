@@ -21,6 +21,7 @@ struct GrayscalePlanExecutionRequest<'a> {
     plan: &'a PreparedDirectGrayscalePlan,
     fmt: PixelFormat,
     destination: Option<(&'a MetalImageDestination, usize)>,
+    native_destination: bool,
     retained_buffers: &'a mut Vec<Buffer>,
     status_checks: &'a mut Vec<DirectStatusCheck>,
     scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
@@ -56,6 +57,7 @@ pub(in crate::engine) fn encode_prepared_direct_grayscale_plan_in_command_buffer
             plan,
             fmt,
             destination: None,
+            native_destination: false,
             retained_buffers,
             status_checks,
             scratch_buffers,
@@ -91,11 +93,52 @@ pub(in crate::engine) fn encode_prepared_direct_grayscale_plan_into_in_encoder(
             plan,
             fmt,
             destination: Some((destination, destination_item_index)),
+            native_destination: true,
             retained_buffers,
             status_checks,
             scratch_buffers,
         },
         Some(encoder),
+    )?;
+    if surface.is_some() {
+        return Err(Error::MetalStateInvariant {
+            state: "J2K Metal direct grayscale destination execution",
+            reason: "destination execution unexpectedly allocated a surface",
+        });
+    }
+    Ok(())
+}
+
+/// Encode one plan whose final store writes the request's destination with
+/// the same format conversion as a surface decode, in its own compute encoder.
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn encode_prepared_direct_grayscale_plan_as_surface_into_command_buffer(
+    request: DirectGrayscaleDestinationExecutionRequest<'_>,
+) -> Result<(), Error> {
+    let DirectGrayscaleDestinationExecutionRequest {
+        runtime,
+        command_buffer,
+        plan,
+        fmt,
+        destination,
+        destination_item_index,
+        retained_buffers,
+        status_checks,
+        scratch_buffers,
+    } = request;
+    let surface = encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
+        GrayscalePlanExecutionRequest {
+            runtime,
+            command_buffer,
+            plan,
+            fmt,
+            destination: Some((destination, destination_item_index)),
+            native_destination: false,
+            retained_buffers,
+            status_checks,
+            scratch_buffers,
+        },
+        None,
     )?;
     if surface.is_some() {
         return Err(Error::MetalStateInvariant {
@@ -117,6 +160,7 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         plan,
         fmt,
         destination,
+        native_destination,
         retained_buffers,
         status_checks,
         scratch_buffers,
@@ -150,6 +194,7 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         bands,
         final_surface: None,
         destination,
+        native_destination,
         destination_item_index,
         destination_written: false,
         round_centered_store: plan.round_centered_store,
@@ -158,16 +203,34 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         let mut step_idx = 0;
         while step_idx < plan.steps.len() {
             if let Some(group) = plan.classic_group_starting_at(step_idx) {
-                execution.encode_classic_group(group)?;
+                for _ in 0..step_repeats(&plan.steps[step_idx]) {
+                    execution.encode_classic_group(group)?;
+                }
                 step_idx = group.end_step;
                 continue;
             }
             if let Some(group) = plan.ht_group_starting_at(step_idx) {
-                execution.encode_ht_group(group)?;
+                for _ in 0..step_repeats(&plan.steps[step_idx]) {
+                    execution.encode_ht_group(group)?;
+                }
                 step_idx = group.end_step;
                 continue;
             }
-            execution.encode_step(&plan.steps[step_idx])?;
+            if let (
+                super::PreparedDirectGrayscaleStep::Idwt(idwt),
+                Some(super::PreparedDirectGrayscaleStep::Store(store)),
+            ) = (&plan.steps[step_idx], plan.steps.get(step_idx + 1))
+            {
+                if fuse_last_level_into_store()
+                    && execution.encode_idwt_into_store(idwt, store, &plan.steps[step_idx + 2..])?
+                {
+                    step_idx += 2;
+                    continue;
+                }
+            }
+            for _ in 0..step_repeats(&plan.steps[step_idx]) {
+                execution.encode_step(&plan.steps[step_idx])?;
+            }
             step_idx += 1;
         }
         execution.finish()
@@ -176,4 +239,44 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         encoder.endEncoding();
     }
     result
+}
+
+/// Whether a last wavelet level may write the final store directly: always,
+/// except when `single_image_step_profile` repeats or disables steps.
+#[cfg(target_os = "macos")]
+fn fuse_last_level_into_store() -> bool {
+    #[cfg(test)]
+    {
+        use crate::engine::test_counters::{
+            fused_2d_idwt_for_test, single_step_repeats_for_test, SingleStepKind,
+        };
+        fused_2d_idwt_for_test()
+            && single_step_repeats_for_test(SingleStepKind::Idwt) == 1
+            && single_step_repeats_for_test(SingleStepKind::Store) == 1
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+/// How many times to encode `step`: once, except under
+/// `single_image_step_profile`.
+#[cfg(target_os = "macos")]
+fn step_repeats(step: &super::PreparedDirectGrayscaleStep) -> u8 {
+    #[cfg(test)]
+    {
+        use crate::engine::test_counters::{single_step_repeats_for_test, SingleStepKind};
+        let kind = match step {
+            super::PreparedDirectGrayscaleStep::Idwt(_) => SingleStepKind::Idwt,
+            super::PreparedDirectGrayscaleStep::Store(_) => SingleStepKind::Store,
+            _ => SingleStepKind::Tier1,
+        };
+        single_step_repeats_for_test(kind)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = step;
+        1
+    }
 }

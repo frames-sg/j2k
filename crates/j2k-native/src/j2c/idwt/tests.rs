@@ -403,3 +403,221 @@ fn public_idwt_function_signatures_stay_stable() {
     let _: fn(J2kSingleDecompositionIdwtJob<'_>, &mut Vec<f32>) -> Result<()> =
         apply_single_decomposition_idwt_job;
 }
+
+/// Deterministic xorshift values: small integers for 5/3, fractions for 9/7.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the drawn value is below 20001 and exact in f32"
+)]
+fn pseudo_random_coefficients(count: usize, seed: u64, integral: bool) -> Vec<f32> {
+    let mut state = seed | 1;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let value = (state % 20_001) as f32 - 10_000.0;
+            if integral {
+                value
+            } else {
+                value / 7.0
+            }
+        })
+        .collect()
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    reason = "one table-driven equivalence sweep; fixture band sizes fit u32"
+)]
+fn banded_2d_matches_plain_2d_bit_for_bit() {
+    use super::super::build::{Decomposition, SubBand, SubBandType};
+    use super::super::decode::DecompositionStorage;
+    #[cfg(feature = "parallel")]
+    use super::banded::banded_scratch_elements_for_execution;
+    use super::banded::{filter_2d_banded, use_banded};
+    use super::direct::filter_2d;
+    use super::model::IDWTInput;
+
+    #[cfg(feature = "parallel")]
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("test pool");
+    let mut seed = 1_u64;
+    for transform in [
+        WaveletTransform::Reversible53,
+        WaveletTransform::Irreversible97,
+    ] {
+        for (x0, y0) in [(0, 0), (1, 0), (0, 1), (1, 1), (3, 6)] {
+            for (width, height) in [
+                (64, 65),
+                (65, 71),
+                (100, 300),
+                (257, 263),
+                (600, 200),
+                (1000, 33),
+                (8, 600),
+                (513, 17),
+                (16, 300),
+                (17, 300),
+                (18, 260),
+                // High-first width whose longer high band ends on a SIMD
+                // boundary in the fused final horizontal lifting step.
+                (31, 300),
+                // Tall enough for several parallel strips with halos on both
+                // sides, at both row parities.
+                (300, 1000),
+                (1031, 133),
+            ] {
+                assert!(use_banded(width as usize, height as usize));
+                let rect = IntRect::from_xywh(x0, y0, width, height);
+                let (u0, u1, v0, v1) = (rect.x0, rect.x1, rect.y0, rect.y1);
+                let low_w = (u1.div_ceil(2) - u0.div_ceil(2)) as usize;
+                let high_w = (u1 / 2 - u0 / 2) as usize;
+                let low_h = (v1.div_ceil(2) - v0.div_ceil(2)) as usize;
+                let high_h = (v1 / 2 - v0 / 2) as usize;
+                let integral = transform == WaveletTransform::Reversible53;
+                seed += 1;
+                let ll = pseudo_random_coefficients(low_w * low_h, seed, integral);
+                let mut storage = DecompositionStorage::default();
+                let mut start = 0;
+                for (index, len) in [high_w * low_h, low_w * high_h, high_w * high_h]
+                    .into_iter()
+                    .enumerate()
+                {
+                    seed += 1;
+                    storage
+                        .coefficients
+                        .extend(pseudo_random_coefficients(len, seed, integral));
+                    storage.sub_bands.push(SubBand {
+                        sub_band_type: [
+                            SubBandType::HighLow,
+                            SubBandType::LowHigh,
+                            SubBandType::HighHigh,
+                        ][index],
+                        rect,
+                        storage_rect: rect,
+                        precincts: 0..0,
+                        coefficients: start..start + len,
+                    });
+                    start += len;
+                }
+                let decomposition = Decomposition {
+                    sub_bands: [0, 1, 2],
+                    rect,
+                };
+                let input = IDWTInput {
+                    rect: IntRect::from_xywh(0, 0, low_w as u32, low_h as u32),
+                    coefficients: &ll,
+                };
+
+                let mut plain = Vec::new();
+                filter_2d(input, &mut plain, &decomposition, transform, &storage)
+                    .expect("plain level");
+                let label = format!("{transform:?} origin=({x0},{y0}) size={width}x{height}");
+
+                let mut serial = Vec::new();
+                let mut scratch = Vec::new();
+                filter_2d_banded(
+                    input,
+                    &decomposition,
+                    &mut serial,
+                    &mut scratch,
+                    transform,
+                    &storage,
+                    false,
+                )
+                .expect("serial banded level");
+                assert_eq!(bits(&serial), bits(&plain), "serial {label}");
+
+                // The direct single-level entry point takes the banded path
+                // for packed bands; both normalizations must match the
+                // windowed interleave and plain filters.
+                let packed = super::banded::packed_band_rects(rect);
+                let band_data = [
+                    ll.as_slice(),
+                    &storage.coefficients[storage.sub_bands[0].coefficients.clone()],
+                    &storage.coefficients[storage.sub_bands[1].coefficients.clone()],
+                    &storage.coefficients[storage.sub_bands[2].coefficients.clone()],
+                ];
+                let job_band = |index: usize| band(J2kRect::from(packed[index]), band_data[index]);
+                let job = direct_job(
+                    J2kRect::from(rect),
+                    J2kWaveletTransform::from(transform),
+                    job_band(0),
+                    job_band(1),
+                    job_band(2),
+                    job_band(3),
+                );
+                let mut direct_codestream = Vec::new();
+                super::direct::apply_codestream_single_decomposition_idwt_job(
+                    job,
+                    &mut direct_codestream,
+                    false,
+                )
+                .expect("direct codestream level");
+                assert_eq!(
+                    bits(&direct_codestream),
+                    bits(&plain),
+                    "direct codestream {label}"
+                );
+
+                let sources = band_data
+                    .iter()
+                    .zip(packed)
+                    .map(|(data, packed)| CoefficientSource::new(data, packed, packed.width()))
+                    .collect::<Vec<_>>();
+                let mut windowed = vec![0.0; (width * height) as usize];
+                interleave_samples_roi(
+                    sources[0],
+                    sources[1],
+                    sources[2],
+                    sources[3],
+                    &mut windowed,
+                    rect,
+                );
+                filter_horizontal(&mut windowed, rect, transform);
+                filter_vertical(&mut windowed, rect, transform);
+                let mut direct_standard = Vec::new();
+                apply_single_decomposition_idwt_job(job, &mut direct_standard)
+                    .expect("direct standard level");
+                assert_eq!(
+                    bits(&direct_standard),
+                    bits(&windowed),
+                    "direct standard {label}"
+                );
+
+                #[cfg(feature = "parallel")]
+                {
+                    let mut parallel = vec![f32::NAN; 3];
+                    let expected_scratch = pool
+                        .install(|| {
+                            banded_scratch_elements_for_execution(
+                                width as usize,
+                                height as usize,
+                                true,
+                            )
+                        })
+                        .expect("parallel scratch size");
+                    pool.install(|| {
+                        filter_2d_banded(
+                            input,
+                            &decomposition,
+                            &mut parallel,
+                            &mut scratch,
+                            transform,
+                            &storage,
+                            true,
+                        )
+                    })
+                    .expect("parallel banded level");
+                    assert_eq!(scratch.len(), expected_scratch, "parallel scratch {label}");
+                    assert_eq!(bits(&parallel), bits(&plain), "parallel {label}");
+                }
+            }
+        }
+    }
+}

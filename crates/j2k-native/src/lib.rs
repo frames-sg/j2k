@@ -221,10 +221,9 @@ pub use jp2::{
 };
 #[doc(hidden)]
 pub use roi::idwt_band_index;
-pub(crate) use roi::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32,
-    apply_roi_maxshift_inverse_i64, validate_roi,
-};
+pub(crate) use roi::{add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, validate_roi};
+#[cfg(test)]
+pub(crate) use roi::{apply_roi_maxshift_inverse_f32, apply_roi_maxshift_inverse_i32};
 
 pub use error::{
     ColorError, DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason,

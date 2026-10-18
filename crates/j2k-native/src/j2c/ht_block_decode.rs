@@ -17,6 +17,8 @@ pub(crate) use benchmark::{
     decode_sigprop_benchmark_state, prepare_sigprop_benchmark_state, HtSigPropBenchmarkState,
 };
 pub(crate) use facade::decode_with_stats;
+#[cfg(feature = "simd")]
+pub(crate) use facade::{decode_prepared_cleanup_to_f32, prepare_direct_cleanup};
 pub(crate) use pipeline::{
     ht_decode_workspace_bytes, PHASE_LIMIT_CLEANUP, PHASE_LIMIT_MAGREF, PHASE_LIMIT_SIGPROP,
 };
@@ -25,11 +27,15 @@ pub(crate) use segments::{
     visit_code_block_segments, CombinedCodeBlockData, HtCodeBlockSegmentKind, HtCodeBlockSegments,
 };
 pub(crate) use significance::sigma_stride;
+#[cfg(test)]
+pub(crate) use state::coefficient_to_f32;
 pub(crate) use state::{
-    coefficient_to_f32, coefficient_to_i32, HtBlockDecodeContext, HtBlockDecodeScratch,
+    coefficient_to_i32, store_coefficient_row, HtBlockDecodeContext, HtBlockDecodeScratch,
 };
 pub(crate) use stats::HtBlockDecodeStats;
 pub(crate) use validation::decode_segments_validated_with_scratch_for_phase;
+#[cfg(feature = "simd")]
+pub(crate) use validation::{decode_cleanup_validated_to_f32, supports_cleanup_to_f32};
 #[cfg(test)]
 pub(crate) use validation::{
     decode_combined_validated, decode_segments_validated, decode_segments_validated_for_phase,

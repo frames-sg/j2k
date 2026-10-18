@@ -5,7 +5,6 @@
 use std::sync::{Arc, Mutex};
 
 use j2k_core::PixelFormat;
-use j2k_native::{J2kDirectColorPlan, J2kDirectGrayscalePlan};
 
 use super::{cache, MetalBackendSession};
 use crate::Error;
@@ -14,25 +13,13 @@ const DIRECT_PLAN_CACHE_CAP: usize = 128;
 
 #[derive(Clone)]
 struct DirectGrayPlanCacheEntry {
-    plan: Arc<J2kDirectGrayscalePlan>,
     prepared: Arc<crate::engine::PreparedDirectGrayscalePlan>,
 }
 
 #[derive(Clone)]
 struct DirectColorPlanCacheEntry {
-    plan: Arc<J2kDirectColorPlan>,
     prepared: Arc<crate::engine::PreparedDirectColorPlan>,
 }
-
-type CachedDirectGrayPlan = (
-    Arc<J2kDirectGrayscalePlan>,
-    Arc<crate::engine::PreparedDirectGrayscalePlan>,
-);
-
-type CachedDirectColorPlan = (
-    Arc<J2kDirectColorPlan>,
-    Arc<crate::engine::PreparedDirectColorPlan>,
-);
 
 #[derive(Clone)]
 pub(super) struct DirectPlanCaches {
@@ -67,24 +54,25 @@ impl DirectPlanCaches {
     }
 }
 
+// Plans built by `J2kDecoder` hold the only reference to the codestream copy
+// their HT payload ranges point into, so the cache weight counts it.
 impl cache::PreparedPlanCacheValue for DirectGrayPlanCacheEntry {
     fn retained_cache_weight(
         &self,
     ) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
-        let prepared = self
+        let retained = self
             .prepared
             .retained_cache_bytes()
             .map_err(cache::PreparedPlanCacheError::Invariant)?;
-        direct_plan_cache_weight(
-            self.plan.retained_allocation_bytes().map_err(|_| {
-                cache::PreparedPlanCacheError::Invariant(
-                    "native grayscale direct-plan retained-byte accounting failed",
-                )
-            })?,
-            core::mem::size_of::<J2kDirectGrayscalePlan>(),
-            prepared.host,
-            prepared.device,
+        let input = self
+            .prepared
+            .referenced_input_bytes()
+            .map_err(cache::PreparedPlanCacheError::Invariant)?;
+        owning_plan_cache_weight(
             core::mem::size_of::<crate::engine::PreparedDirectGrayscalePlan>(),
+            retained.host,
+            retained.device,
+            input,
         )
     }
 }
@@ -93,22 +81,38 @@ impl cache::PreparedPlanCacheValue for DirectColorPlanCacheEntry {
     fn retained_cache_weight(
         &self,
     ) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
-        let prepared = self
+        let retained = self
             .prepared
             .retained_cache_bytes()
             .map_err(cache::PreparedPlanCacheError::Invariant)?;
-        direct_plan_cache_weight(
-            self.plan.retained_allocation_bytes().map_err(|_| {
-                cache::PreparedPlanCacheError::Invariant(
-                    "native color direct-plan retained-byte accounting failed",
-                )
-            })?,
-            core::mem::size_of::<J2kDirectColorPlan>(),
-            prepared.host,
-            prepared.device,
+        let input = self
+            .prepared
+            .referenced_input_bytes()
+            .map_err(cache::PreparedPlanCacheError::Invariant)?;
+        owning_plan_cache_weight(
             core::mem::size_of::<crate::engine::PreparedDirectColorPlan>(),
+            retained.host,
+            retained.device,
+            input,
         )
     }
+}
+
+fn owning_plan_cache_weight(
+    root_bytes: usize,
+    retained_host_bytes: usize,
+    retained_device_bytes: usize,
+    referenced_input_bytes: usize,
+) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
+    let nested_host = retained_host_bytes
+        .checked_add(referenced_input_bytes)
+        .ok_or(cache::PreparedPlanCacheError::Invariant(
+            "direct-plan cache weight overflow",
+        ))?;
+    Ok(cache::PreparedPlanCacheWeight::new(
+        arc_owner_bytes(root_bytes, nested_host)?,
+        retained_device_bytes,
+    ))
 }
 
 impl cache::PreparedPlanCacheValue for Arc<crate::engine::PreparedDirectColorPlan> {
@@ -147,27 +151,6 @@ impl cache::PreparedPlanCacheValue for Arc<crate::engine::PreparedDirectGrayscal
     }
 }
 
-fn direct_plan_cache_weight(
-    native_nested_host: usize,
-    native_root_bytes: usize,
-    prepared_host_bytes: usize,
-    prepared_device_bytes: usize,
-    prepared_root_bytes: usize,
-) -> Result<cache::PreparedPlanCacheWeight, cache::PreparedPlanCacheError> {
-    let native_host = arc_owner_bytes(native_root_bytes, native_nested_host)?;
-    let prepared_host = arc_owner_bytes(prepared_root_bytes, prepared_host_bytes)?;
-    let host_bytes =
-        native_host
-            .checked_add(prepared_host)
-            .ok_or(cache::PreparedPlanCacheError::Invariant(
-                "native and prepared direct-plan cache weight overflow",
-            ))?;
-    Ok(cache::PreparedPlanCacheWeight::new(
-        host_bytes,
-        prepared_device_bytes,
-    ))
-}
-
 fn arc_owner_bytes(
     root_bytes: usize,
     nested_bytes: usize,
@@ -197,7 +180,7 @@ pub(crate) fn direct_plan_cache_key(
 pub(crate) fn cached_session_direct_gray_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-) -> Result<Option<CachedDirectGrayPlan>, Error> {
+) -> Result<Option<Arc<crate::engine::PreparedDirectGrayscalePlan>>, Error> {
     let mut guard =
         session
             .direct_plan_caches
@@ -206,15 +189,12 @@ pub(crate) fn cached_session_direct_gray_plan(
             .map_err(|_| Error::MetalStatePoisoned {
                 state: "direct grayscale prepared-plan cache",
             })?;
-    Ok(guard
-        .get(key)
-        .map(|entry| (entry.plan.clone(), entry.prepared.clone())))
+    Ok(guard.get(key).map(|entry| entry.prepared.clone()))
 }
 
 pub(crate) fn store_session_direct_gray_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-    plan: Arc<J2kDirectGrayscalePlan>,
     prepared: Arc<crate::engine::PreparedDirectGrayscalePlan>,
 ) -> Result<(), Error> {
     prepared.disable_cpu_tier1_retention()?;
@@ -226,13 +206,13 @@ pub(crate) fn store_session_direct_gray_plan(
             .map_err(|_| Error::MetalStatePoisoned {
                 state: "direct grayscale prepared-plan cache",
             })?;
-    evict_one_direct_plan_if_needed(&mut guard, key, DirectGrayPlanCacheEntry { plan, prepared })
+    evict_one_direct_plan_if_needed(&mut guard, key, DirectGrayPlanCacheEntry { prepared })
 }
 
 pub(crate) fn cached_session_direct_color_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-) -> Result<Option<CachedDirectColorPlan>, Error> {
+) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
     let mut guard =
         session
             .direct_plan_caches
@@ -241,15 +221,12 @@ pub(crate) fn cached_session_direct_color_plan(
             .map_err(|_| Error::MetalStatePoisoned {
                 state: "direct color prepared-plan cache",
             })?;
-    Ok(guard
-        .get(key)
-        .map(|entry| (entry.plan.clone(), entry.prepared.clone())))
+    Ok(guard.get(key).map(|entry| entry.prepared.clone()))
 }
 
 pub(crate) fn store_session_direct_color_plan(
     session: &MetalBackendSession,
     key: cache::PreparedPlanCacheKey<'_>,
-    plan: Arc<J2kDirectColorPlan>,
     prepared: Arc<crate::engine::PreparedDirectColorPlan>,
 ) -> Result<(), Error> {
     prepared.disable_dynamic_cpu_tier1_retention()?;
@@ -261,11 +238,7 @@ pub(crate) fn store_session_direct_color_plan(
             .map_err(|_| Error::MetalStatePoisoned {
                 state: "direct color prepared-plan cache",
             })?;
-    evict_one_direct_plan_if_needed(
-        &mut guard,
-        key,
-        DirectColorPlanCacheEntry { plan, prepared },
-    )
+    evict_one_direct_plan_if_needed(&mut guard, key, DirectColorPlanCacheEntry { prepared })
 }
 
 pub(crate) fn cached_session_region_scaled_color_plan(

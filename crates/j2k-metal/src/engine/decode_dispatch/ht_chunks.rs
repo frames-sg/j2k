@@ -20,7 +20,8 @@ use super::{Error, J2kHtCleanupBatchJob};
 use crate::engine::{PreparedHtExecutionOwner, PreparedHtPayloadSource};
 
 pub(in crate::engine) use execution::{
-    encode_metal_ht_batches_in_encoder, encode_repeated_metal_ht_batch_in_command_buffer,
+    encode_metal_ht_batches_in_encoder, encode_metal_ht_batches_with_zero_layouts_in_encoder,
+    encode_repeated_metal_ht_batch_in_command_buffer,
 };
 pub(in crate::engine) use prepared::cache::{
     prepared_metal_ht_execution, PreparedMetalHtExecutionCache,
@@ -38,6 +39,15 @@ pub(in crate::engine) struct HtBatchInput<'a> {
     pub(in crate::engine) jobs: &'a [J2kHtCleanupBatchJob],
     pub(in crate::engine) output_base: usize,
     pub(in crate::engine) execution_owner: &'a Arc<PreparedHtExecutionOwner>,
+}
+
+/// The coefficient arena of one batch input: `extent` words from its
+/// `output_base`, of which only `uncovered` rectangles (relative to the base)
+/// are left unwritten by its jobs.
+#[derive(Clone, Copy)]
+pub(in crate::engine) struct HtZeroLayout<'a> {
+    pub(in crate::engine) extent: usize,
+    pub(in crate::engine) uncovered: &'a [crate::engine::abi::J2kZeroRect],
 }
 
 #[derive(Clone, Copy)]
@@ -80,9 +90,18 @@ pub(in crate::engine) struct MetalHtChunkPlan<'a> {
     plan: HtGpuJobChunkPlan,
 }
 
+/// A packed chunk with a host payload arena; tests compare kernels on it.
+#[cfg(test)]
 pub(in crate::engine) struct PackedMetalHtChunk {
     pub(in crate::engine) bucket: HtGpuJobPassBucket,
     pub(in crate::engine) coded_data: Vec<u8>,
+    pub(in crate::engine) jobs: Vec<J2kHtCleanupBatchJob>,
+    pub(in crate::engine) source_indices: Vec<usize>,
+}
+
+/// A packed chunk whose payload bytes already live in a Metal buffer.
+pub(in crate::engine) struct PackedMetalHtChunkJobs {
+    pub(in crate::engine) bucket: HtGpuJobPassBucket,
     pub(in crate::engine) jobs: Vec<J2kHtCleanupBatchJob>,
     pub(in crate::engine) source_indices: Vec<usize>,
 }
@@ -105,11 +124,14 @@ pub(in crate::engine) const fn metal_ht_pipeline_kind_for_bucket(
 }
 
 struct PackedMetalHtChunkOwners {
+    #[cfg(test)]
     coded_data: Vec<u8>,
     jobs: Vec<J2kHtCleanupBatchJob>,
     source_indices: Vec<usize>,
 }
 
+/// Allocate a chunk's job and source-index arenas (plus, in tests, a host
+/// payload arena of `payload_bytes`).
 fn allocate_packed_metal_ht_chunk(
     payload_bytes: usize,
     job_count: usize,
@@ -121,6 +143,7 @@ fn allocate_packed_metal_ht_chunk(
         crate::batch_allocation::BatchMetadataRequest::of::<usize>(job_count),
     ])?;
     Ok(PackedMetalHtChunkOwners {
+        #[cfg(test)]
         coded_data: budget.try_vec(payload_bytes, "HTJ2K Metal packed chunk payload")?,
         jobs: budget.try_vec(job_count, "HTJ2K Metal packed chunk jobs")?,
         source_indices: budget.try_vec(job_count, "HTJ2K Metal packed chunk source indices")?,
@@ -207,6 +230,79 @@ pub(in crate::engine) fn plan_metal_ht_chunks<'a>(
 }
 
 impl MetalHtChunkPlan<'_> {
+    /// Pack one chunk's jobs, writing its payload bytes once, directly into a
+    /// new shared Metal buffer instead of through a host arena.
+    #[cfg(target_os = "macos")]
+    pub(in crate::engine) fn pack_chunk_into_buffer(
+        &self,
+        chunk_index: usize,
+        inputs: crate::engine::HtInputAllocator<'_>,
+    ) -> Result<(PackedMetalHtChunkJobs, super::Buffer), Error> {
+        let chunk =
+            self.plan
+                .chunks()
+                .get(chunk_index)
+                .copied()
+                .ok_or(Error::MetalStateInvariant {
+                    state: "HTJ2K Metal chunk plan",
+                    reason: "requested chunk index is outside the planned range",
+                })?;
+        let entries = self
+            .plan
+            .chunk_entries(chunk_index)
+            .ok_or(Error::MetalStateInvariant {
+                state: "HTJ2K Metal chunk plan",
+                reason: "chunk entry range is outside the flattened job table",
+            })?;
+        let PackedMetalHtChunkOwners {
+            jobs: mut packed_jobs,
+            mut source_indices,
+            ..
+        } = allocate_packed_metal_ht_chunk(
+            0,
+            chunk.job_count(),
+            crate::batch_allocation::BatchMetadataBudget::new("HTJ2K Metal packed chunk metadata"),
+        )?;
+        let buffer = inputs.shared_buffer(chunk.payload_bytes().max(1))?;
+        let mut sink = SharedBufferPayloadSink {
+            buffer: &buffer,
+            len: 0,
+        };
+        for entry in entries {
+            let flattened =
+                self.jobs
+                    .get(entry.original_job_index())
+                    .ok_or(Error::MetalStateInvariant {
+                        state: "HTJ2K Metal chunk plan",
+                        reason: "planned job index is outside the flattened job table",
+                    })?;
+            if flattened.source_index != entry.source_index() {
+                return Err(Error::MetalStateInvariant {
+                    state: "HTJ2K Metal chunk plan",
+                    reason: "planned source identity does not match the flattened job",
+                });
+            }
+            append_packed_ht_job(flattened, &mut sink, &mut packed_jobs, &mut source_indices)?;
+        }
+        if sink.packed_len() != chunk.payload_bytes()
+            || packed_jobs.len() != chunk.job_count()
+            || source_indices.len() != chunk.job_count()
+        {
+            return Err(Error::MetalStateInvariant {
+                state: "HTJ2K Metal packed chunk",
+                reason: "packed arena lengths do not match the shared chunk plan",
+            });
+        }
+        Ok((
+            PackedMetalHtChunkJobs {
+                bucket: chunk.bucket(),
+                jobs: packed_jobs,
+                source_indices,
+            },
+            buffer,
+        ))
+    }
+
     pub(in crate::engine) fn chunk_count(&self) -> usize {
         self.plan.chunks().len()
     }
@@ -215,6 +311,7 @@ impl MetalHtChunkPlan<'_> {
         self.jobs.len()
     }
 
+    #[cfg(test)]
     pub(in crate::engine) fn pack_chunk(
         &self,
         chunk_index: usize,
@@ -280,16 +377,63 @@ impl MetalHtChunkPlan<'_> {
     }
 }
 
+/// Where packed code-block payload bytes go: a host arena, or straight into
+/// the shared Metal buffer the kernels read.
+pub(in crate::engine) trait PackedPayloadSink {
+    fn packed_len(&self) -> usize;
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error>;
+}
+
+impl PackedPayloadSink for Vec<u8> {
+    fn packed_len(&self) -> usize {
+        self.len()
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// Appends payload bytes into a newly allocated shared buffer that nothing
+/// else references until packing finishes.
+#[cfg(target_os = "macos")]
+pub(in crate::engine) struct SharedBufferPayloadSink<'a> {
+    buffer: &'a super::Buffer,
+    len: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl PackedPayloadSink for SharedBufferPayloadSink<'_> {
+    fn packed_len(&self) -> usize {
+        self.len
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        // SAFETY: the sink's buffer was allocated for this packing pass and is
+        // neither bound to an encoder nor shared until packing returns, so
+        // this CPU write has exclusive access; the write is range-checked.
+        unsafe { j2k_metal_support::checked_buffer_write(self.buffer, self.len, bytes) }.map_err(
+            |error| Error::MetalKernel {
+                message: format!("HTJ2K Metal packed payload write: {error}"),
+            },
+        )?;
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
 fn append_packed_ht_job(
     flattened: &FlattenedHtJob<'_>,
-    coded_data: &mut Vec<u8>,
+    coded_data: &mut impl PackedPayloadSink,
     jobs: &mut Vec<J2kHtCleanupBatchJob>,
     source_indices: &mut Vec<usize>,
 ) -> Result<(), Error> {
     let mut adjusted = flattened.job;
-    adjusted.coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
-        message: "HTJ2K Metal packed chunk payload exceeds u32".to_string(),
-    })?;
+    adjusted.coded_offset =
+        u32::try_from(coded_data.packed_len()).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal packed chunk payload exceeds u32".to_string(),
+        })?;
     let output_base = u32::try_from(flattened.output_base).map_err(|_| Error::MetalKernel {
         message: format!(
             "HTJ2K Metal source {} output base exceeds u32",
@@ -338,20 +482,20 @@ fn append_packed_ht_job(
                         flattened.source_index
                     ),
                 })?;
-            coded_data.extend_from_slice(payload);
+            coded_data.append(payload)?;
         }
         FlattenedHtPayload::Referenced { input, ranges } => {
-            coded_data.extend_from_slice(referenced_payload_slice(
+            coded_data.append(referenced_payload_slice(
                 flattened.source_index,
                 input,
                 ranges.cleanup,
-            )?);
+            )?)?;
             if let Some(refinement) = ranges.refinement {
-                coded_data.extend_from_slice(referenced_payload_slice(
+                coded_data.append(referenced_payload_slice(
                     flattened.source_index,
                     input,
                     refinement,
-                )?);
+                )?)?;
             }
         }
     }

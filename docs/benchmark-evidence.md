@@ -19,6 +19,460 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## HTJ2K kernel optimization development run - 2026-10-17
+
+These are incremental measurements against the working tree after rebasing on
+`origin/main`, before this optimization pass. Both builds used the same Rust
+1.99.0 toolchain on an Apple M4 Pro (12 CPU cores, 16 GPU cores, 48 GB).
+They include earlier uncommitted optimizations. They do not establish a
+performance ranking against other codecs or hardware.
+
+| Workload and timing boundary | Before | After | Time reduction |
+| --- | ---: | ---: | ---: |
+| CPU HT cleanup encode, 64 x 64, reused workspace | 28.509 us | 22.891 us | 19.7% |
+| CPU whole-image lossless HT encode, Kodak `kodim23`, 768 x 512 RGB8 | 8.070 ms | 7.243 ms | 10.2% |
+| CPU whole-image lossy HT encode, same image | 59.439 ms | 58.298 ms | 1.9% |
+| Metal GPU decode, 16 distinct 1024 x 1024 RGB8 9/7 images | 8.834 ms | 8.220 ms | 7.0% |
+| Metal GPU decode, 16 distinct 640 x 480 RGB8 9/7 images | 2.679 ms | 2.476 ms | 7.6% |
+
+CPU numbers average two alternating baseline/candidate rounds. The cleanup
+benchmark also averages two coefficient seeds, with 30 Criterion samples, a
+one-second warm-up, and a two-second measurement target. Whole-image encode
+uses 15 samples, a half-second warm-up, and a one-second target. The retained
+changes batch MEL output and use 64-bit VLC/MagSgn reservoirs with bulk byte
+packing. A separate packed-popcount change improves the two dense CPU cleanup
+decode microbenchmarks by 0.4% and 1.8%; no whole-image CPU decode improvement
+is claimed.
+
+Metal numbers are the median of three alternating rounds, each with a
+two-second warm-up and 21 GPU timestamp samples. The existing
+`decode_stage_profile` test uses generated distinct-image batches. Its staged
+timings attribute about 15–18% less time to MagSgn and about 7% less to IDWT.
+The changes expose independent MagSgn reads, replace general power-of-two
+scaling with exact exponent adjustment for the validated irreversible case,
+and remove unnecessary halo predicates from the fused 9/7 kernel. The GPU
+boundary includes cleanup, IDWT, and output stores; it excludes host parsing,
+preparation, and readback.
+
+Representative commands:
+
+```bash
+cargo bench -p j2k-native --bench tier1_bitplane -- \
+  htj2k_cleanup_encode/encode_64x64_reused --sample-size 30 \
+  --warm-up-time 1 --measurement-time 2 --nresamples 10000 --noplot
+J2K_REQUIRE_METAL_RUNTIME=1 cargo test --profile gpu-quick -p j2k-metal --lib -- \
+  engine::tests::decode_stage_profile::decode_stage_profile \
+  --exact --include-ignored --nocapture --test-threads=1
+```
+
+Full-decode checks covered all 24 lossless Kodak images, the 16 medical
+codestreams described below, eight WSI tiles, and four lossy VC08 frames. Alternating
+whole-image measurements were mostly unchanged or noisy, so the GPU gains
+above apply to the measured 9/7 batches, not to every image or decode API.
+Register-only 9/7 kernels, larger paired VLC lookup tables, and wider Metal
+encoder reservoirs were tested and rejected when they slowed their workloads.
+
+## HTJ2K DICOM decode development run - 2026-10-09
+
+This run measured the CPU decode, tile-batch, owned-batch, and Metal changes
+listed under Unreleased in the changelog, against an export of `8b608120`
+(0.12.0 code; later commits changed only links) built the same way. Both used Cargo `release`, Rust 1.99.0, on an
+Apple M4 Pro (12 CPU cores, 16 GPU cores, 48 GB) running macOS 27.0. The
+candidate was an uncommitted working tree. Each cell is the minimum of three
+interleaved baseline/candidate rounds; the host was otherwise busy during
+part of the run, so absolute times are noisy, but every comparison ran both
+builds back to back.
+
+Inputs:
+
+- 16 HTJ2K codestreams from the `openjphjs` test fixtures of
+  `cornerstonejs/codecs` (MIT), encoded by OpenJPH from DICOM sample images:
+  CT, MR, NM, XA, CR/DX (RG), secondary capture, mammography (MG1), and
+  ultrasound. Eleven have raw reference pixels. The other ten decoded outputs
+  matched theirs byte for byte; MG1's reference has a different height from
+  its codestream and was not compared.
+- 58 tiles (512 x 512 RGB, 8-bit, HTJ2K lossless RPCL, 4 levels) extracted
+  from a local WSI DICOM that an older j2k build wrote. That build left
+  `Rsiz` bit 14 clear, which OpenJPH rejects, so the extracted copies set it.
+- OpenHTJ2K 0.19.0 and OpenJPH 0.31.0 from the pinned reference scripts.
+
+Commands:
+
+```bash
+J2K_DICOM_BENCH_REPEATS=21 J2K_DICOM_BENCH_RAW_DIR=<raw-dir> \
+  cargo run --release -p j2k-compare --bin jp2k_dicom_bench -- <codestream-dir>
+J2K_BATCH_COMPARE_MAX_ABS_DIFF=0 J2K_BATCH_COMPARE_REPEATS=5 [J2K_BATCH_COMPARE_THREADS=1] \
+  cargo run --release -p j2k-compare --bin jp2k_batch_compare -- <wsi-tile-dir> 58
+J2K_METAL_BENCH_REPEATS=9 \
+  cargo run --release -p j2k-metal --example dicom_decode_bench -- <codestream-dir>
+open_htj2k_dec -i <file> -o <out>.pgx -iter 21 -num_threads {1,12}
+```
+
+`jp2k_dicom_bench` parses each codestream into a new `J2kDecoder` and calls
+`decode_native_components`, with `CpuDecodeParallelism::Serial` and then
+`Auto`. OpenHTJ2K's `-iter` timing also parses each iteration and writes
+its output once. Times are milliseconds.
+
+| File | Size | Serial before | Serial now | OpenHTJ2K 1 thread | `Auto` before | `Auto` now | OpenHTJ2K 12 threads |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CT1 | 512 x 512, 16-bit | 1.61 | 0.85 | 0.79 | 1.31 | 0.45 | 0.76 |
+| CT2 | 512 x 512, 16-bit | 1.63 | 0.85 | 0.77 | 1.34 | 0.44 | 0.72 |
+| MR1 | 512 x 512, 16-bit | 1.67 | 0.87 | 0.80 | 1.33 | 0.46 | 0.75 |
+| NM1 | 256 x 1024, 16-bit | 1.56 | 0.79 | 0.73 | 1.30 | 0.43 | 0.72 |
+| MR2 | 1024 x 1024, 16-bit | 6.33 | 3.44 | 2.97 | 4.32 | 1.09 | 1.55 |
+| XA1 | 1024 x 1024, 16-bit | 6.29 | 3.31 | 2.85 | 4.11 | 1.02 | 1.58 |
+| RG1 | 1841 x 1955, 16-bit | 23.31 | 12.93 | 10.98 | 14.20 | 2.74 | 4.46 |
+| SC1 | 2048 x 2487, 16-bit | 31.58 | 18.10 | 15.24 | 18.02 | 3.81 | 5.39 |
+| MG1 | 3064 x 4774, 16-bit | 94.69 | 52.19 | 43.39 | 56.02 | 9.57 | 14.60 |
+| US1 (RCT) | 640 x 480 RGB, 8-bit | 3.93 | 2.26 | 1.38 | 3.55 | 1.17 | 1.32 |
+
+Decoding all 16 files 8 times each on 12 threads, one frame per thread with
+serial decode, took 221 ms before and 133 ms now.
+
+The 58 WSI tiles through `decode_tiles_into` (Rgb8) took 212 ms before and
+153 ms now on one worker (OpenHTJ2K 152 ms, OpenJPH 225 ms), and 60 ms before
+and 30 ms now with the default worker count (OpenHTJ2K 21 ms, OpenJPH 26 ms).
+The external decoders run one tile per thread. In this run j2k still admitted
+at most four concurrent decodes and parallelized inside each.
+
+A follow-up run the same day replaced that fixed four with a limit scaled to
+host memory (48 on this host, so the default worker count became the 12
+threads). Another build was compiling throughout (load average 9 to 13), so it
+was compared only with an otherwise identical four-worker build, interleaved,
+minimum of three rounds. The 58 WSI tiles took 39.2 ms with four workers and
+29.0 ms scaled (OpenHTJ2K 27.6 ms, OpenJPH 36.7 ms in the same run).
+`CpuBatchDecoder` batches of 16 copies went from 5.5 to 4.3 ms (CT1), 5.6 to
+3.6 ms (MR1), 19.1 to 13.3 ms (US1), 19.5 to 14.1 ms (WSI tile), 85.6 to
+75.0 ms (SC1), and 191 to 174 ms (MG1). RG1 to RG3 measured 3 to 11% slower,
+within the up to 25% spread of the unchanged single-image decodes in the same
+run. Images large enough to fill every core by themselves gain little from
+more workers. The CPU batch output equaled the Metal batch output byte for
+byte for every file.
+
+`dicom_decode_bench` decodes to `Gray16` or `Rgb8` with `J2kDecoder`
+(`decode_into`), with explicit Metal (`decode_request_to_device`), and as
+owned batches of 16 copies of the same input with `CpuBatchDecoder` and
+`MetalBatchDecoder` (preparation excluded). Metal output was read back outside
+the timers and equaled the CPU output byte for byte for every file, single
+and batch.
+
+| File | CPU before | CPU now | Metal before | Metal now | CPU batch before | CPU batch now | Metal batch before | Metal batch now |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| CT2 | 1.37 | 0.48 | 0.54 | 0.58 | 7.21 | 4.63 | 2.37 | 0.98 |
+| MR2 | 4.60 | 1.15 | 1.03 | 0.97 | 27.20 | 13.63 | 1.79 | 1.80 |
+| XA1 | 4.38 | 1.06 | 1.43 | 0.84 | 25.87 | 13.22 | 1.84 | 1.70 |
+| RG1 | 15.53 | 3.01 | 2.54 | 2.42 | 103.46 | 42.47 | 5.27 | 5.15 |
+| SC1 | 20.73 | 3.91 | 2.83 | 2.58 | 133.40 | 57.38 | 7.11 | 7.42 |
+| MG1 | 60.28 | 10.78 | 7.55 | 7.29 | 402.47 | 154.47 | 22.94 | 23.07 |
+| US1 (RCT) | 2.00 | 1.15 | 1.89 | 1.76 | 20.96 | 12.78 | 1.20 | 1.85 |
+| WSI tile | 2.12 | 1.08 | 1.33 | 1.28 | 20.69 | 13.75 | 2.46 | 1.92 |
+
+The Metal batch route did not change; its small-image cells moved between
+about 1.0 and 2.4 ms in both builds from run to run. Before this change the
+explicit Metal `Gray16` decode of the signed CT1 and CT2 inputs did not match
+the CPU (see the changelog), so the "Metal before" CT2 time is for that wrong
+output. The batch route was already correct for them.
+
+These results are from a development tree and have not been reproduced on the
+release runners. The `Auto` routing tables were measured against the 0.12.0
+CPU decoder, so some Metal routes they select may now be slower than the CPU;
+rerun the routing suite before relying on them.
+
+## HTJ2K block decoder and streamed wavelet run - 2026-10-09
+
+A second run the same day measured the changes made after the section above:
+the vector `MagSgn` step, the fused per-pair VLC and `MagSgn` decode, the
+skipped empty quads, the vectorized coefficient conversion, and the streamed
+inverse wavelet transform. Same host, toolchain, and inputs as above. Other
+work kept the host busy (load average 9 to 14 in these runs, briefly far
+higher earlier), so builds were compared interleaved, minimum of five rounds
+of 15 repeats per file, rather than against the absolute times above.
+
+`jp2k_dicom_bench`, serial decode, sum over the 16 files, milliseconds. The
+first step starts from the build the section above calls "now".
+
+| Step | Serial total | Step change |
+| --- | ---: | ---: |
+| Skip quads with no significant sample | 143.7 / 148.3 | -3.1% |
+| Vector `MagSgn` (two quads per step) | 129.5 / 146.9 | -11.8% |
+| Vectorized conversion, no per-block zeroing | 132.6 / 134.6 | -1.5% |
+| VLC and `MagSgn` fused per quad pair | 111.2 / 129.7 | -14.3% |
+| Streamed single-thread wavelet transform | 108.4 / 113.1 | -4.2% |
+
+Each row shows the new and the previous build from that step's own
+interleaved run; load differed between runs, so totals differ between rows.
+Most files improved at each step; the few that did not moved by about 2% at
+most, within run-to-run noise. Every lossless output still matched its
+reference.
+
+The final build, the build before the first step, and OpenHTJ2K 0.19.0
+(`-iter 11 -num_threads 1`) measured alternately at one thread under the
+same load, minimum of five rounds, milliseconds:
+
+| File | Before | Now | OpenHTJ2K |
+| --- | ---: | ---: | ---: |
+| MG1 | 63.03 | 42.42 | 47.61 |
+| RG1 | 15.70 | 10.69 | 13.68 |
+| SC1 | 21.75 | 14.85 | 18.80 |
+| MR2 | 4.17 | 2.81 | 3.82 |
+| CT1 | 1.08 | 0.70 | 1.09 |
+| US1 (RCT) | 2.87 | 1.96 | 2.07 |
+
+Before these steps j2k was 16 to 20% behind OpenHTJ2K on the largest files.
+Under `Auto` the 16-file total went from 39.5 to 34.0 ms (MG1 12.7 to 11.1
+ms); streaming the parallel wavelet bands as per-thread strips was neutral
+there (34.8 against 35.2 ms) and is kept because it shares the serial kernel
+and needs a quarter of the scratch or less.
+
+The 58 WSI tiles through `decode_tiles_into` with the default worker count,
+interleaved against the build before the memory-scaled worker limit: 43.5 ms
+before, 21.3 ms now; OpenHTJ2K took 28.2 and 30.2 ms and OpenJPH 37.1 and
+36.6 ms in the same rounds. `CpuBatchDecoder` batches of 16 copies against
+that same build: CT1 6.5 to 4.0 ms, US1 17.8 to 10.4 ms, RG1 59.5 to 44.7 ms,
+MG1 228 to 177 ms. Explicit Metal decodes did not change, and Metal and CPU
+outputs matched byte for byte, single and batch, for every file.
+
+Two experiments were measured and not kept: wavelet bands four times larger
+(8.6% slower; the 128 KiB band stays in L1) or half as large (no change),
+and allocating fresh buffers from the zeroed allocator instead of filling
+them (no measurable change, since freed blocks are recycled and must be
+cleared anyway).
+
+### Follow-up measurements, same day
+
+Three more changes were measured and not kept:
+
+- `MagSgn` in 16-bit lanes, both quads in one vector, for blocks whose
+  samples code at most 14 bits: 16-file serial total 99.5 against 99.6 ms,
+  and US1 (all blocks eligible) 4% slower. With the fused decode the vector
+  step already overlaps the VLC chain, and widening results back to 32 bits
+  cost what the narrower arithmetic saved.
+- Filling large decode buffers from every Rayon thread (`par_extend`)
+  instead of `resize`: `Auto` total 33.7 against 39.9 ms, 18% slower.
+  Decoding through one reused decoder instead of a new one per frame changes
+  `Auto` and serial totals by under 1%, so these fills are memory traffic,
+  not first-touch page faults, and one thread's `memset` already runs near
+  memory bandwidth. Packing MG1's 14.6 million samples to native bytes alone
+  takes 1.47 ms on one thread and 1.26 ms on all of them.
+- Reusing the HT payload buffer between one-shot Metal decodes: MG1 6%
+  faster, RG1 and SC1 29 to 40% slower, interleaved.
+
+Explicit Metal single-image decode (`J2K_METAL_BENCH_ONLY=metal-single` in
+`dicom_decode_bench`), a new `J2kDecoder` per frame against one decoder
+reused across frames, interleaved, minimum of five rounds of 21, ms:
+
+| File | New decoder | Reused decoder |
+| --- | ---: | ---: |
+| CT1 | 0.63 | 0.71 |
+| MR2 | 0.99 | 1.07 |
+| RG1 | 2.65 | 2.15 |
+| SC1 | 2.88 | 2.33 |
+| MG1 | 9.04 | 4.90 |
+| US1 (RCT) | 1.83 | 1.21 |
+
+The reused decoder keeps its prepared plan and the cached device payloads,
+so the difference is per-plan setup, which grows with the coded payload:
+MG1's is 12.9 MB. On the host it is copied three times before the GPU reads
+it (per-block collection in the native plan, per-group concatenation in
+`prepare_ht_sub_band_groups`, which also leaves the plan holding the payload
+twice, and the upload into a new shared buffer). The ignored test
+`single_image_step_profile` attributes GPU time by encoding one step kind
+five times: a 3072 x 4096 16-bit image spends about 1.4 ms in HT decode,
+1.1 ms in the inverse wavelet transform, and 0.3 ms in the store; a
+512 x 512 one about 0.26, 0.03, and 0.0 ms, the rest being per-decode setup
+and submission.
+
+`BackendRequest::Auto` sent US1 (640 x 480 `Rgb8`) to Metal at 1.8 to 2.0
+ms while the CPU took 1.4 to 1.5 ms, and kept every `Gray16` image on the
+CPU, including SC1 and MG1, where one-shot Metal measured faster under the
+same load. The routing tables predate these CPU changes; regenerate them
+through the hardware routing run described below before relying on them.
+
+## Metal decode into a caller-owned buffer - 2026-10-09
+
+`J2K_METAL_BENCH_ONLY=metal-into` in `dicom_decode_bench` decodes each file
+through one `J2kDecoder` and one `MetalBackendSession`, alternating a
+`decode_request_to_device_with_session` into a new surface with a
+`decode_into_metal_with_session` into one reused shared buffer of the exact
+image size. Same machine and corpus as above, load average 10 to 20 from
+other work, minimum over five runs of 21 decodes each, ms. The reused buffer
+equaled the surface's bytes in every run.
+
+```bash
+J2K_METAL_BENCH_ONLY=metal-into J2K_METAL_BENCH_REPEATS=21 \
+  cargo run --release -p j2k-metal --example dicom_decode_bench -- <codestreams>
+```
+
+| File | Format | New surface | Reused buffer |
+| --- | --- | ---: | ---: |
+| CT1 | `Gray16` | 0.51 | 0.47 |
+| MR2 | `Gray16` | 0.73 | 0.65 |
+| RG1 | `Gray16` | 1.52 | 1.31 |
+| SC1 | `Gray16` | 1.89 | 1.63 |
+| MG1 | `Gray16` | 4.75 | 4.04 |
+| US1 (RCT) | `Rgb8` | 1.19 | 0.60 |
+
+Into a buffer, `Rgb8` goes through the color store that batch destinations
+use, not the surface route's color execution. A first version that ran session decodes
+outside the session's runtime built a new runtime per call, with empty
+buffer pools, and took 9.2 ms for MG1.
+
+## Metal single-image plans with referenced payloads - 2026-10-09
+
+`J2kDecoder` now plans HTJ2K images with code-block payloads referenced into
+one copy of the codestream. `J2K_METAL_BENCH_ONLY=metal-single` in
+`dicom_decode_bench` (a new decoder per frame, so every frame builds its plan)
+compared this build against commit `91d2c412`, both Cargo `release` with line
+tables, on the machine and corpus above. Minimum of seven interleaved rounds of
+21 decodes, load average about 6, ms:
+
+| File | Format | `91d2c412` | Referenced payloads |
+| --- | --- | ---: | ---: |
+| CT1 | `Gray16` | 0.79 | 0.70 |
+| MR2 | `Gray16` | 0.91 | 0.84 |
+| RG1 | `Gray16` | 2.38 | 2.17 |
+| SC1 | `Gray16` | 2.58 | 2.40 |
+| MG1 | `Gray16` | 7.49 | 6.76 |
+| US1 (RCT) | `Rgb8` | 1.33 | 1.34 |
+
+Metal output equaled the CPU output byte for byte for all 16 codestreams,
+single and batch. Over 60 MG1 frames through new decoders, the process peaked
+at 393 MB of memory footprint (165 MB resident) against 666 MB (423 MB), since
+the runtime's HT execution cache now drops entries of dropped plans.
+
+Sampling MG1 frames through new decoders (`sample`, `release-bench` profile)
+attributed the remaining main-thread time to waiting on the GPU (66%), writing
+payload bytes into new shared buffers (16%), and parsing the codestream into
+the plan (11%, mostly tag trees). Command-buffer timestamps put GPU execution
+at about 3.9 ms and driver scheduling at 0.6 to 0.8 ms, with or without a
+reused decoder. Writing 13 MB in 2.7 KB pieces into a new shared Metal buffer
+took 1.0 ms, and 0.31 ms into one already written, so about 0.7 ms of the
+upload is first-touch page faults that buffer reuse would remove.
+
+## Metal GPU kernels and HT input heap - 2026-10-09
+
+Same machine and corpus. The ignored test `single_image_step_profile`
+(`J2K_STEP_PROFILE_FILES`, `J2K_STEP_PROFILE_INTO`) attributes GPU time by
+encoding one step kind five times while decoding into a reused destination.
+Before these changes, MG1 spent 1.83 ms in HT decode (0.90 ms of it zeroing
+the coefficient arena and 0.76 ms in the MEL/VLC kernel), 1.79 ms in the
+inverse wavelet transform, and 0.48 ms in the store. The zero fill wrote one
+4-byte word per thread; the two-pass wavelet kernels were compute-bound by
+per-sample band selection, and the vertical pass ran one threadgroup per
+16-column strip down the whole height. The store is near memory bandwidth;
+the 1.2 ms a surface decode attributes to it is mostly the new 29 MB surface.
+
+`J2K_STEP_PROFILE_COMPARE_IDWT` times the transform with the new tile
+kernels turned off in the same binary, generated 16-bit images, ms:
+
+| Image | Two-pass IDWT | Tile IDWT | Two-pass total | Tile total |
+| --- | ---: | ---: | ---: | ---: |
+| 1024 x 1024, 5/3 | 0.19 | 0.10 | 0.61 | 0.53 |
+| 3072 x 4096, 5/3 | 1.51 | 0.79 | 3.17 | 2.52 |
+| 1024 x 1024, 9/7 | 0.24 | 0.15 | 0.69 | 0.61 |
+| 3072 x 4096, 9/7 | 1.86 | 1.31 | 3.57 | 3.00 |
+
+Command-buffer timestamps showed a new decoder's MG1 decode spending about
+1 ms more GPU time than a reused one, and 0.2 ms more driver scheduling,
+besides 0.7 ms of CPU page faults writing the payload into a new buffer;
+allocating HT inputs from a runtime heap removes all three.
+
+`dicom_decode_bench` with `J2K_METAL_BENCH_ONLY=metal-single`, minimum of
+five interleaved rounds of 21 decodes against the build before these changes,
+load average 12 to 17, ms:
+
+| File | New decoder before | New decoder now | Reused decoder before | Reused decoder now |
+| --- | ---: | ---: | ---: | ---: |
+| CT1 | 0.75 | 0.64 | 0.51 | 0.43 |
+| MR2 | 1.07 | 0.84 | 0.72 | 0.59 |
+| RG1 | 2.49 | 1.80 | 1.52 | 1.18 |
+| SC1 | 2.67 | 2.10 | 1.92 | 1.48 |
+| MG1 | 7.66 | 5.15 | 4.82 | 3.57 |
+| US1 (RCT) | 1.78 | 1.20 | 1.18 | 1.00 |
+
+All 16 codestreams still decoded byte-identical to the CPU, single and
+batch. Over 60 MG1 frames through new decoders, peak memory footprint was
+401 MB against 394 MB before.
+
+## Metal zero layouts, batched tiles, and output heap - 2026-10-10
+
+Same machine and corpus, load average 3 to 6 unless noted.
+
+Code-block jobs cover 98.8% of MG1's HT coefficient arena, 98.3% of SC1's,
+95.3% of XA1's, and all of RG1's, MR2's, and CT1's. Zeroing only the rest
+took the `single_image_step_profile` zero-fill cost for MG1 from 0.26 ms to
+nothing measurable; MG1's GPU time decoding into a reused destination was
+2.67 ms, against 4.23 ms before the kernel work of the previous section.
+
+`J2K_METAL_BENCH_ONLY=metal-batch` decodes 16 copies with `MetalBatchDecoder`
+into codec-owned output and, interleaved, into one reused caller-owned
+buffer (`decode_prepared_group_into`). Before the output heap, owned output
+cost twice the decode: MG1 22.7 ms owned against 10.7 ms into a reused
+buffer, SC1 7.4 against 3.1, RG1 5.7 against 2.5. With the heap turned off
+and on in the same binary, ms:
+
+| Batch of 16 | Owned, new buffers | Owned, heap | Reused buffer |
+| --- | ---: | ---: | ---: |
+| MG1 | 21.3 to 22.2 | 11.7 to 12.3 | 11.5 to 12.4 |
+| SC1 | 6.8 to 7.4 | 3.2 to 4.0 | 3.1 to 3.2 |
+
+Single-image decodes with `J2K_METAL_BENCH_ONLY=metal-single`, minimum of
+five interleaved rounds of 21, before and after the output heap, ms:
+
+| File | New decoder before | New decoder after | Reused decoder before | Reused decoder after |
+| --- | ---: | ---: | ---: | ---: |
+| CT1 | 0.455 | 0.430 | 0.417 | 0.412 |
+| MR2 | 0.658 | 0.593 | 0.554 | 0.539 |
+| RG1 | 1.499 | 1.376 | 1.122 | 0.991 |
+| SC1 | 1.780 | 1.577 | 1.388 | 1.215 |
+| MG1 | 4.369 | 3.856 | 3.169 | 2.667 |
+| XA1 | 0.665 | 0.614 | 0.549 | 0.538 |
+| US1 (RCT) | 1.090 | 1.081 | 0.970 | 1.009 |
+
+Reading HT block coding from the parsed header instead of inspecting the
+codestream again, with an iterative tag-tree walk, took a new decoder's MG1
+frame from 3.83 to 3.73 ms and changed the others by under 2%. Over 60 MG1
+frames through new decoders the process peaked at 407 MB of memory footprint
+(401 MB before); repeated 16-image MG1 batches peaked at 1.36 GB, which
+includes the 512 MiB output heap. All 16 codestreams decoded byte-identical
+to the CPU, single and batch.
+
+Runs while Spotlight indexed the build directory (load average near 30)
+varied by up to 5x between repetitions and are not reported.
+
+Running the last wavelet level and the grayscale store as one kernel, so the
+level's float plane is never written, then took single-image decodes from
+(new decoder, reused decoder, ms): MG1 3.75 and 2.60 to 3.35 and 2.19, RG1
+1.30 and 0.95 to 1.20 and 0.85, SC1 1.53 and 1.16 to 1.42 and 1.04, MR2 0.59
+and 0.51 to 0.57 and 0.50, CT1 0.43 and 0.39 to 0.42 and 0.38. A test decodes
+5/3 and 9/7 images to every gray output kind (`u8`, `u16`, signed `i16`, and
+signed 8-bit widened to `u16`) through the fused kernel and requires the CPU's
+bytes.
+
+The `metal-batch` batches above hold 16 copies of one codestream, which share
+one prepared plan, so the batch decodes once and stores the result 16 times.
+`J2K_METAL_BENCH_DISTINCT` builds 16 distinct frames instead (the decoded
+image with a per-frame offset, re-encoded as lossless HTJ2K). Fusing the last
+level, the component store, and the group pack for such groups, with the
+fusion turned off and on in the same binary, minimum of three runs, ms:
+
+| 16 distinct frames | Separate store and pack | Fused |
+| --- | ---: | ---: |
+| SC1 | 24.6 | 11.9 |
+| RG1 | 17.2 | 12.6 |
+| MR2 | 3.62 | 2.62 |
+| CT2 (512 x 512) | 1.22 | 0.99 |
+| MG1 | 117 | 62 |
+
+Sixteen distinct MG1 frames failed as a group error before: their stacked
+coefficient arena needed one 936 MB allocation, over the 512 MiB cap. Groups
+are now decoded in runs whose arenas fit (nine MG1 frames). Large frames gain
+little from batching even so: decoding the 16 MG1 frames in runs of 1, 2, 4,
+and 8 took 56, 58, 55, and 61 ms, against about 35 ms for 16 single-image
+decodes, because a batch keeps every image's scratch planes (more than 1 GB
+here) until it completes, beyond what the buffer pools retain. Small frames
+gain the most (MR2: 6.5 ms in runs of 1, 3.0 ms in runs of 8).
+
 ## CPU JPEG safe-SIMD development run - 2026-08-12
 
 The CPU JPEG safe-SIMD refactor was measured before and after on the same Apple

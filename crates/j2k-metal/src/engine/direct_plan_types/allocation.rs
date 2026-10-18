@@ -68,6 +68,16 @@ impl PreparedDirectGrayscalePlan {
         include_grayscale_plan(&mut retained, self)?;
         Ok(retained)
     }
+
+    /// Bytes of the encoded inputs that HT payload ranges point into, each
+    /// input counted once. [`Self::retained_cache_bytes`] leaves them out
+    /// because batch plans borrow inputs their caller owns; a cache that
+    /// owns a plan's only reference to its input adds this.
+    pub(crate) fn referenced_input_bytes(&self) -> Result<usize, &'static str> {
+        let mut inputs = Vec::new();
+        collect_referenced_inputs(self, &mut inputs);
+        referenced_input_total(&inputs)
+    }
 }
 
 impl PreparedDirectColorPlan {
@@ -82,12 +92,51 @@ impl PreparedDirectColorPlan {
         Ok(retained)
     }
 
+    /// [`PreparedDirectGrayscalePlan::referenced_input_bytes`] over all
+    /// components, each input counted once.
+    pub(crate) fn referenced_input_bytes(&self) -> Result<usize, &'static str> {
+        let mut inputs = Vec::new();
+        for component in &self.component_plans {
+            collect_referenced_inputs(component, &mut inputs);
+        }
+        referenced_input_total(&inputs)
+    }
+
     pub(crate) fn disable_dynamic_cpu_tier1_retention(&self) -> Result<(), crate::Error> {
         for component in &self.component_plans {
             component.disable_cpu_tier1_retention()?;
         }
         Ok(())
     }
+}
+
+fn collect_referenced_inputs<'plan>(
+    plan: &'plan PreparedDirectGrayscalePlan,
+    inputs: &mut Vec<&'plan std::sync::Arc<[u8]>>,
+) {
+    let sub_bands = plan.steps.iter().filter_map(|step| match step {
+        PreparedDirectGrayscaleStep::HtSubBand(sub_band) => Some(&sub_band.payload_source),
+        _ => None,
+    });
+    let groups = plan.ht_groups.iter().map(|group| &group.payload_source);
+    for source in sub_bands.chain(groups) {
+        if let PreparedHtPayloadSource::Referenced { input, .. } = source {
+            if !inputs
+                .iter()
+                .any(|seen| std::sync::Arc::ptr_eq(seen, input))
+            {
+                inputs.push(input);
+            }
+        }
+    }
+}
+
+fn referenced_input_total(inputs: &[&std::sync::Arc<[u8]>]) -> Result<usize, &'static str> {
+    inputs.iter().try_fold(0usize, |total, input| {
+        total
+            .checked_add(input.len())
+            .ok_or("referenced input byte count overflow")
+    })
 }
 
 fn include_grayscale_plan(
@@ -173,6 +222,8 @@ fn include_ht_group(
     retained.include_host_capacity::<J2kHtCleanupBatchJob>(group.jobs.capacity())?;
     retained
         .include_host_capacity::<super::PreparedHtSubBandGroupMember>(group.members.capacity())?;
+    retained
+        .include_host_capacity::<crate::engine::abi::J2kZeroRect>(group.zero_rects.capacity())?;
     retained.include_host_bytes(size_of::<PreparedHtExecutionOwner>() + 2 * size_of::<usize>())
 }
 

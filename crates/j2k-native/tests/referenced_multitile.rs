@@ -294,3 +294,82 @@ fn referenced_htj2k_reduced_roi_stores_are_disjoint_and_cover_the_destination() 
     assert_eq!(next_payload_record, plan.payloads().len());
     assert!(coverage.into_iter().all(|covered| covered));
 }
+
+#[cfg(feature = "parallel")]
+#[test]
+fn referenced_htj2k_parallel_execution_matches_serial_execution() {
+    use j2k_native::{encode_htj2k, EncodeOptions};
+
+    let (width, height) = (600_u32, 400_u32);
+    for (components, reversible) in [(1_u16, true), (1, false), (3, true), (3, false)] {
+        let pixels = (0..width * height * u32::from(components))
+            .map(|index| {
+                let index = index % 4093;
+                u8::try_from((index * 37 + index / 7) % 251).expect("sample fits u8")
+            })
+            .collect::<Vec<_>>();
+        // Small code blocks give every sub-band several rows of blocks.
+        let options = EncodeOptions {
+            reversible,
+            num_decomposition_levels: 4,
+            code_block_width_exp: 3,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let codestream = encode_htj2k(&pixels, width, height, components, 8, false, &options)
+            .expect("encode HTJ2K fixture");
+        let image = Image::new(&codestream, &DecodeSettings::strict()).expect("parse fixture");
+        let mut context = DecoderContext::default();
+        let plan = image
+            .build_referenced_htj2k_plan_region_with_context(&mut context, (0, 0, width, height))
+            .expect("build referenced plan");
+
+        let mut serial = J2kDirectCpuScratch::new();
+        let serial_planes = {
+            let decoded = execute_referenced_htj2k_plan(&plan, &codestream, false, &mut serial)
+                .expect("serial referenced execution");
+            (0..decoded.component_count())
+                .map(|index| {
+                    decoded
+                        .plane(index)
+                        .expect("serial plane")
+                        .samples()
+                        .iter()
+                        .map(|sample| sample.to_bits())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test pool");
+        let mut parallel = J2kDirectCpuScratch::new();
+        parallel.set_parallel_decode(true);
+        pool.install(|| {
+            for _ in 0..2 {
+                let decoded =
+                    execute_referenced_htj2k_plan(&plan, &codestream, false, &mut parallel)
+                        .expect("parallel referenced execution");
+                for (index, expected) in serial_planes.iter().enumerate() {
+                    let actual = decoded
+                        .plane(index)
+                        .expect("parallel plane")
+                        .samples()
+                        .iter()
+                        .map(|sample| sample.to_bits())
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        &actual, expected,
+                        "components={components} reversible={reversible} plane={index}"
+                    );
+                }
+            }
+        });
+        assert!(
+            parallel.retained_ht_workspace_bytes() > serial.retained_ht_workspace_bytes(),
+            "parallel execution retains one workspace per extra worker"
+        );
+    }
+}

@@ -93,9 +93,25 @@ fn aggregate_overflow_is_a_typed_cap_failure() {
 
 #[test]
 fn planning_claims_do_not_allocate_worker_workspace() {
-    let plan = select_batch_plan(8, usize::MAX).expect("bounded arithmetic plan");
-    assert_eq!(plan.worker_count, MAX_GENERIC_BATCH_WORKERS);
-    assert!(plan.live_bytes <= J2K_BATCH_HOST_CAP_BYTES);
+    let jobs = generic_batch_worker_limit() * 2;
+    let plan = select_batch_plan(jobs, usize::MAX).expect("bounded arithmetic plan");
+    assert_eq!(plan.worker_count, generic_batch_worker_limit());
+    assert!(plan.live_bytes <= batch_host_cap_bytes());
+}
+
+#[test]
+fn generic_worker_claims_are_bounded_by_the_given_limit() {
+    let plan = select_batch_plan_with_worker_limit(
+        64,
+        64,
+        GENERIC_WORKER_CLAIM_BYTES,
+        J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+        usize::MAX,
+        4,
+    )
+    .expect("four claims fit");
+    assert_eq!(plan.worker_count, 4);
+    assert_eq!(plan.chunk_size, 16);
 }
 
 #[test]
@@ -113,8 +129,9 @@ fn dynamically_admitted_direct_batch_is_not_clamped_to_generic_workers() {
 
 #[test]
 fn dynamically_admitted_workers_remain_structurally_bounded() {
-    let plan = select_direct_batch_plan(64, 64).expect("bounded direct metadata plan");
+    let jobs = admitted_batch_worker_limit() * 8;
+    let plan = select_direct_batch_plan(jobs, jobs).expect("bounded direct metadata plan");
 
-    assert_eq!(plan.worker_count, MAX_ADMITTED_BATCH_WORKERS);
+    assert_eq!(plan.worker_count, admitted_batch_worker_limit());
     assert_eq!(plan.chunk_size, 8);
 }

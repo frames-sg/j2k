@@ -66,6 +66,7 @@ pub(super) fn normalize_referenced_scratch(
     }
     if !retain_ht_workspace {
         scratch.ht_workspace = crate::HtCodeBlockDecodeWorkspace::default();
+        scratch.ht_task_workspaces = Vec::new();
     }
     scratch.staged_state = None;
     Ok(())
@@ -116,5 +117,5 @@ pub(super) fn reserve_referenced_scratch(
     if let Some((width, height)) = retained_ht_workspace_dimensions {
         scratch.ht_workspace.prepare(width, height)?;
     }
-    Ok(())
+    super::super::reserve_ht_task_workspaces(retained_ht_workspace_dimensions, scratch)
 }

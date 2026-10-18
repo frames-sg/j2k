@@ -21,6 +21,12 @@ path = "src/lib.rs"
 [dependencies]
 thiserror = { workspace = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "freebsd"))'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_SystemInformation"] }
+
 [lints.rust]
 # `GpuAbi` provides the shared host/device byte-view contract used by adapter
 # crates; every unsafe operation remains audited with `unsafe_op_in_unsafe_fn`.

@@ -318,7 +318,7 @@ impl Cohort {
             }
         }
         let allocation = allocate_codec_owned_destination(
-            decoder.backend_session().device(),
+            decoder.backend_session(),
             group.info().dimensions,
             count,
             PixelFormat::Rgb8,
@@ -348,7 +348,7 @@ impl CooperativeParts {
     ) -> Result<Self, Error> {
         let metadata = MetalResidentGroupMetadata::from_prepared(group, group.options())?;
         let output = super::allocate_codec_owned_group_destination(
-            decoder.backend_session().device(),
+            decoder.backend_session(),
             group,
             PixelFormat::Rgb8,
         )?;

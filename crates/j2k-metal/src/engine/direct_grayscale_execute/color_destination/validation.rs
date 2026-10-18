@@ -78,6 +78,11 @@ pub(super) fn validate_color_group(
             )
         })?;
 
+    // Interleaved stores index rows and images by the layout's strides;
+    // planar stores derive plane geometry from the image dimensions alone.
+    if layout == BatchLayout::Nhwc {
+        return Ok(());
+    }
     let destination_layout = destination.layout();
     let tight_row_bytes = usize::try_from(first.dimensions.0)
         .ok()
@@ -95,7 +100,7 @@ pub(super) fn validate_color_group(
     {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(
-                "J2K Metal exact RGB destination must be one dense contiguous group",
+                "J2K Metal exact planar RGB destination must be one dense contiguous group",
             ),
         ));
     }

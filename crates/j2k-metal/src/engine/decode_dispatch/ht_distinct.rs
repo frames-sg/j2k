@@ -4,9 +4,10 @@
 use crate::metal_types::prelude::*;
 
 use super::{
-    default_metal_ht_chunk_limits, encode_metal_ht_batches_in_encoder, new_compute_command_encoder,
-    new_shared_buffer, Buffer, CommandBufferRef, DirectStatusCheck, Error, HtBatchInput,
-    J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
+    default_metal_ht_chunk_limits, encode_metal_ht_batches_with_zero_layouts_in_encoder,
+    new_compute_command_encoder, new_shared_buffer, Buffer, CommandBufferRef, DirectStatusCheck,
+    Error, HtBatchInput, HtZeroLayout, J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand,
+    PreparedHtSubBandGroup,
 };
 
 #[cfg(target_os = "macos")]
@@ -64,6 +65,7 @@ pub(in crate::engine) fn encode_distinct_ht_sub_bands_to_buffer_in_encoder(
                 jobs: &sub_band.jobs,
                 output_base: index * per_instance_len,
                 execution_owner: &sub_band.execution_owner,
+                zero_layout: None,
             }),
         output,
         output_word_count,
@@ -126,6 +128,7 @@ pub(in crate::engine) fn encode_distinct_ht_sub_band_groups_to_buffer_in_encoder
                 jobs: &group.jobs,
                 output_base: index * per_instance_len,
                 execution_owner: &group.execution_owner,
+                zero_layout: Some(group.zero_layout()),
             }),
         output,
         output_word_count,
@@ -140,6 +143,8 @@ pub(in crate::engine) struct DistinctHtBatch<'a> {
     pub(in crate::engine) output_base: usize,
     pub(in crate::engine) execution_owner:
         &'a std::sync::Arc<crate::engine::PreparedHtExecutionOwner>,
+    /// The batch's arena and the parts its jobs leave unwritten, when known.
+    pub(in crate::engine) zero_layout: Option<HtZeroLayout<'a>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -158,6 +163,9 @@ fn encode_distinct_ht_batches_to_buffer_in_encoder<'a>(
         batch_count,
         "HTJ2K MetalDirect distinct chunk input descriptors",
     )?;
+    let mut zero_layouts =
+        budget.try_vec(batch_count, "HTJ2K MetalDirect distinct zero layouts")?;
+    zero_layouts.extend(batches.clone().map_while(|batch| batch.zero_layout));
     inputs.extend(
         batches
             .enumerate()
@@ -194,10 +202,11 @@ fn encode_distinct_ht_batches_to_buffer_in_encoder<'a>(
         }
     }
 
-    encode_metal_ht_batches_in_encoder(
+    encode_metal_ht_batches_with_zero_layouts_in_encoder(
         runtime,
         encoder,
         &inputs,
+        (zero_layouts.len() == inputs.len()).then_some(zero_layouts.as_slice()),
         output,
         output_word_count,
         default_metal_ht_chunk_limits(),

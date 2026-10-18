@@ -437,22 +437,46 @@ fn cpu_classic_lossy_bits_per_pixel_target_encodes_parseable_codestream() {
 
 #[test]
 fn cpu_classic_lossy_roundtrips_more_than_four_components() {
-    let pixels: Vec<u8> = (0..16 * 16 * 5)
+    let distinct_components: Vec<u8> = (0..16 * 16)
+        .flat_map(|index| {
+            let x = index % 16;
+            let y = index / 16;
+            [
+                masked_u8(16 + x * 3),
+                masked_u8(64 + y * 4),
+                masked_u8(128 + x * 2 + y),
+                masked_u8(224 - x * 3),
+                masked_u8(32 + (x + y) * 5),
+            ]
+        })
+        .collect();
+    let noisy_components: Vec<u8> = (0..16 * 16 * 5)
         .map(|index| masked_u8(index * 7 + index / 11))
         .collect();
-    let samples = J2kLossySamples::new(&pixels, 16, 16, 5, 8, false).unwrap();
+    for pixels in [noisy_components, distinct_components] {
+        let samples = J2kLossySamples::new(&pixels, 16, 16, 5, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossy(
-        samples,
-        &J2kLossyEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly),
-    )
-    .expect("classic lossy five-component encode");
-    let decoded = strict_decode_native(&encoded.codestream);
+        let encoded = encode_j2k_lossy(
+            samples,
+            &J2kLossyEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly),
+        )
+        .expect("classic lossy five-component encode");
+        let decoded = strict_decode_native(&encoded.codestream);
 
-    assert_eq!(encoded.components, 5);
-    assert_eq!(decoded.width, 16);
-    assert_eq!(decoded.height, 16);
-    assert_eq!(decoded.num_components, 5);
+        assert_eq!(encoded.components, 5);
+        assert_eq!(decoded.width, 16);
+        assert_eq!(decoded.height, 16);
+        assert_eq!(decoded.num_components, 5);
+        assert_eq!(decoded.data.len(), pixels.len());
+        for (index, (&actual, &expected)) in decoded.data.iter().zip(&pixels).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "component {} at pixel {}: decoded {actual}, expected {expected}",
+                index % 5,
+                index / 5
+            );
+        }
+    }
 }
 
 #[test]

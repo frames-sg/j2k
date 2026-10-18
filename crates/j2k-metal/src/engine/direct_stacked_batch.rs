@@ -327,11 +327,44 @@ pub(super) struct StackedDirectComponentPlaneBatchRequest<'a, 'p> {
     pub(super) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
 }
 
+/// A dense grayscale group that a stacked batch's last wavelet level may
+/// write directly, with the group pack's sample conversion.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub(super) struct StackedGrayOutput<'a> {
+    pub(super) buffer: &'a crate::metal_types::BufferRef,
+    pub(super) offset_bytes: usize,
+    pub(super) kind: super::decode_dispatch::store::GrayStoreKind,
+    pub(super) max_value: f32,
+    pub(super) u8_scale: f32,
+    pub(super) u16_scale: f32,
+}
+
+/// The result of [`encode_stacked_direct_gray_batch`].
+#[cfg(target_os = "macos")]
+pub(super) enum StackedGrayBatch {
+    /// The batch produced its final plane for the caller to pack.
+    Plane(StackedDirectComponentPlane),
+    /// The last wavelet level already wrote the requested output.
+    Stored,
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn encode_stacked_direct_component_plane_batch(
     request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
 ) -> Result<StackedDirectComponentPlane, Error> {
     encode_stacked_component_plane(request, None)
+}
+
+/// Like [`encode_stacked_direct_component_plane_batch`], but lets the last
+/// wavelet level store a grayscale group straight into `output` when the
+/// plan allows it.
+#[cfg(target_os = "macos")]
+pub(super) fn encode_stacked_direct_gray_batch(
+    request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
+    output: StackedGrayOutput<'_>,
+) -> Result<StackedGrayBatch, Error> {
+    encode_stacked_component(request, None, Some(output))
 }
 
 /// Like [`encode_stacked_direct_component_plane_batch`], but reads classic
@@ -355,18 +388,36 @@ fn encode_stacked_component_plane(
     request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
     shared_tier1: Option<&mut SharedClassicTier1Group>,
 ) -> Result<StackedDirectComponentPlane, Error> {
+    match encode_stacked_component(request, shared_tier1, None)? {
+        StackedGrayBatch::Plane(plane) => Ok(plane),
+        StackedGrayBatch::Stored => Err(Error::MetalStateInvariant {
+            state: "J2K MetalDirect stacked component batch",
+            reason: "a batch without a grayscale output stored one",
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn encode_stacked_component(
+    request: StackedDirectComponentPlaneBatchRequest<'_, '_>,
+    shared_tier1: Option<&mut SharedClassicTier1Group>,
+    gray_output: Option<StackedGrayOutput<'_>>,
+) -> Result<StackedGrayBatch, Error> {
     let tier1_mode = request.tier1_mode;
     let plan = plan_stacked_component_batch(request.plans, tier1_mode)?;
     let mut resources = prepare_stacked_component_resources(plan.count, plan.first.steps.len())?;
-    submit_stacked_component_commands(request, shared_tier1, &plan, &mut resources)?;
+    submit_stacked_component_commands(request, shared_tier1, gray_output, &plan, &mut resources)?;
+    record_stacked_component_batch();
+    record_hybrid_stacked_component_batch(tier1_mode);
+    if resources.gray_output_written {
+        return Ok(StackedGrayBatch::Stored);
+    }
     let final_plane = resources.final_plane.ok_or_else(|| Error::MetalKernel {
         message: "J2K MetalDirect color component batch did not produce a final plane".to_string(),
     })?;
-    record_stacked_component_batch();
-    record_hybrid_stacked_component_batch(tier1_mode);
-    Ok(StackedDirectComponentPlane {
+    Ok(StackedGrayBatch::Plane(StackedDirectComponentPlane {
         buffer: final_plane.buffer,
         dimensions: plan.first.dimensions,
         count: plan.count,
-    })
+    }))
 }

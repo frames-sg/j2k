@@ -13,6 +13,7 @@ use crate::{J2kCodec, J2kContext, J2kDecodeWarning, J2kError, J2kScratchPool};
 mod admission;
 pub(crate) mod allocation;
 mod direct;
+mod host_memory;
 mod planning;
 pub(crate) mod scheduler;
 pub(crate) mod worker;
@@ -125,10 +126,15 @@ pub fn decode_tile_region_scaled_into_in_context(
 
 /// Decode independent J2K/HTJ2K tiles into caller-owned output buffers.
 ///
-/// Outcomes preserve caller input order. Generic native decoding is limited to
-/// four concurrent workers by the aggregate memory policy; requesting more
-/// workers reduces concurrency before spawning rather than weakening the
-/// native decoder's per-operation bound.
+/// Outcomes preserve caller input order. Each concurrent native decode is
+/// accounted at the decoder's per-operation memory bound, and together they
+/// may account for half of the memory available to the process (physical
+/// memory, lowered by a Linux cgroup limit), with a floor of four. Requesting
+/// more workers reduces concurrency before spawning rather than weakening the
+/// per-operation bound. When `options.workers` is unset and
+/// fewer workers are admitted than the host has threads, each worker decodes
+/// its tile with internal code-block and wavelet parallelism; an explicit
+/// worker count keeps every decode on its worker's thread.
 pub fn decode_tiles_into(
     jobs: &mut [TileDecodeJob<'_, '_>],
     fmt: PixelFormat,

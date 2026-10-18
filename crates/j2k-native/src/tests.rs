@@ -7,6 +7,21 @@ mod ht_refinement;
 mod workspace_reuse;
 
 #[test]
+fn image_reports_high_throughput_block_coding_from_its_header() {
+    let pixels = vec![17_u8; 32 * 24];
+    let options = EncodeOptions::default();
+    let ht = encode_htj2k(&pixels, 32, 24, 1, 8, false, &options).expect("encode HTJ2K");
+    let classic = encode(&pixels, 32, 24, 1, 8, false, &options).expect("encode J2K");
+    let settings = DecodeSettings::default();
+    assert!(Image::new(&ht, &settings)
+        .expect("parse HTJ2K")
+        .uses_high_throughput_block_coding());
+    assert!(!Image::new(&classic, &settings)
+        .expect("parse J2K")
+        .uses_high_throughput_block_coding());
+}
+
+#[test]
 fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
     let pixels = vec![0, 16, 32, 64, 80, 96, 128, 144, 160, 192, 208, 224];
     let bytes =
@@ -817,6 +832,69 @@ fn native_sample_packing_writes_high_bit_signed_little_endian_bytes() {
     out.clear();
     Image::push_native_sample_bytes(&mut out, -137_438_953_472.0, 38, true);
     assert_eq!(out, [0x00, 0x00, 0x00, 0x00, 0xe0]);
+}
+
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample magnitudes stay below 2^17 and are exact in f32"
+)]
+fn chunked_native_sample_packing_matches_per_sample_packing() {
+    let mut samples = vec![
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        -0.0,
+        f32::MIN_POSITIVE,
+        -f32::MIN_POSITIVE,
+        0.499_999_97,
+        -0.499_999_97,
+        f32::MAX,
+        f32::MIN,
+    ];
+    for whole in -70_000_i32..=70_000 {
+        if whole.unsigned_abs() > 300 && whole % 97 != 0 && whole.unsigned_abs() < 32_000 {
+            continue;
+        }
+        let whole = whole as f32;
+        samples.extend([whole, whole + 0.5, whole - 0.5, whole + 0.25, whole - 0.75]);
+        samples.extend([whole.next_up(), whole.next_down()]);
+        samples.extend([(whole + 0.5).next_down(), (whole - 0.5).next_up()]);
+    }
+    for bit_depth in 1_u8..=20 {
+        for signed in [false, true] {
+            let component = crate::j2c::ComponentData {
+                container: crate::math::SimdBuffer::new(samples.clone()),
+                integer_container: None,
+                bit_depth,
+                signed,
+            };
+            let mut expected = Vec::new();
+            for index in 0..samples.len() {
+                Image::push_component_native_sample_bytes(
+                    &mut expected,
+                    &component,
+                    index,
+                    bit_depth,
+                );
+            }
+            for parallel in [false, true] {
+                let mut actual = Vec::with_capacity(expected.len());
+                Image::extend_component_native_sample_bytes(
+                    &mut actual,
+                    &component,
+                    0..samples.len(),
+                    bit_depth,
+                    parallel,
+                );
+                assert_eq!(
+                    actual, expected,
+                    "bit_depth={bit_depth} signed={signed} parallel={parallel}"
+                );
+            }
+        }
+    }
 }
 
 fn rewrite_siz_to_single_large_tile(codestream: &mut [u8], dimensions: u32) {
