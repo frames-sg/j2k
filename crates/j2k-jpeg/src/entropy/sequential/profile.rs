@@ -24,8 +24,10 @@ impl Fast420Profiler for BenchBlockActivityCounts {
     fn record_activity(&mut self, activity: BlockActivity) {
         match activity {
             BlockActivity::DcOnly => self.record_dc_only(),
-            BlockActivity::BottomHalfZero => self.record_bottom_half_zero(),
-            BlockActivity::General => self.record_general(),
+            BlockActivity::TopLeft2x2
+            | BlockActivity::TopLeftQuadrant
+            | BlockActivity::BottomHalfZero => self.record_bottom_half_zero(),
+            BlockActivity::RightHalfZero | BlockActivity::General => self.record_general(),
         }
     }
 }

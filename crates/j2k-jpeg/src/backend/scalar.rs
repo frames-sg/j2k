@@ -3,7 +3,7 @@
 use crate::color::upsample::h2v2_fancy_sample;
 use crate::color::ycbcr::ycbcr_to_rgb;
 
-use super::{Rgb420CroppedRowPair, Rgb420RowPair};
+use super::{Rgb420CroppedRowPair, Rgb420RowPair, Rgb422Row};
 
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
     for (&gray, pixel) in gray_row.iter().zip(dst.as_chunks_mut::<3>().0.iter_mut()) {
@@ -37,6 +37,43 @@ pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8]
         pixel[0] = r;
         pixel[1] = g;
         pixel[2] = b;
+    }
+}
+
+pub(crate) fn fill_rgb_row_from_422(request: Rgb422Row<'_>) {
+    let Rgb422Row { y, cb, cr, dst } = request;
+    let width = y
+        .len()
+        .min(dst.len() / 3)
+        .min(cb.len().min(cr.len()).saturating_mul(2));
+    let chroma_width = width.div_ceil(2);
+    let cb = &cb[..chroma_width];
+    let cr = &cr[..chroma_width];
+    for (x, pixel) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let (r, g, b) = ycbcr_to_rgb(y[x], h2v1_fancy_sample(cb, x), h2v1_fancy_sample(cr, x));
+        pixel.copy_from_slice(&[r, g, b]);
+    }
+}
+
+#[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the weighted mean of u8 chroma samples remains in the u8 range"
+)]
+pub(super) fn h2v1_fancy_sample(input: &[u8], x: usize) -> u8 {
+    let sample = x / 2;
+    match x {
+        0 => input[0],
+        _ if x == input.len() * 2 - 1 => input[input.len() - 1],
+        _ if x.is_multiple_of(2) => {
+            ((3 * u16::from(input[sample]) + u16::from(input[sample - 1]) + 1) >> 2) as u8
+        }
+        _ => ((3 * u16::from(input[sample]) + u16::from(input[sample + 1]) + 2) >> 2) as u8,
     }
 }
 

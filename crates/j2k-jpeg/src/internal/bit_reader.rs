@@ -91,7 +91,7 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits(&mut self, n: u8) -> Result<(), JpegError> {
-        if self.bits >= n || self.try_refill_bulk() {
+        if self.bits >= n || self.try_refill_bulk(n) {
             return Ok(());
         }
         *self = self.clone().ensure_bits_slow(n)?;
@@ -117,12 +117,16 @@ impl<'a> BitReader<'a> {
 
     /// Branch-light refill: when the next eight input bytes contain no `0xFF`
     /// (no stuffing and no marker), OR them in with one big-endian load and
-    /// count every whole byte that fits, leaving `bits` in `56..=63`. Returns
-    /// `false`, changing nothing, when the window is short or holds `0xFF`.
+    /// count every whole byte that fits, leaving `bits` in `56..=63`. A window
+    /// containing one `FF00` pair is unstuffed in registers; other `0xFF`
+    /// windows contribute only their preceding ordinary bytes. Returns
+    /// whether the accumulator now contains `needed` bits, leaving it unchanged
+    /// when the checked byte-at-a-time path is still needed.
     #[inline(always)]
-    fn try_refill_bulk(&mut self) -> bool {
+    fn try_refill_bulk(&mut self, needed: u8) -> bool {
         const ONES: u64 = 0x0101_0101_0101_0101;
         const HIGHS: u64 = 0x8080_8080_8080_8080;
+        const LOWS: u64 = 0x7f7f_7f7f_7f7f_7f7f;
         let Some(window) = self
             .bytes
             .get(self.pos..)
@@ -131,10 +135,51 @@ impl<'a> BitReader<'a> {
             return false;
         };
         let word = u64::from_be_bytes(*window);
-        // A byte of `word` is 0xFF exactly when that byte of `!word` is zero.
-        let inverted = !word;
-        if inverted.wrapping_sub(ONES) & word & HIGHS != 0 {
-            return false;
+        // Increment only the low seven bits of each byte. No increment can
+        // carry into another byte, and its high bit is set exactly for 0x7F.
+        // Intersecting with the original high bits therefore finds every FF
+        // without the cross-byte false positives of a subtract-based scan.
+        let exact = (word & LOWS).wrapping_add(ONES) & word & HIGHS;
+        if exact != 0 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a u64 leading-zero byte count is in 0..=8"
+            )]
+            let prefix = (exact.leading_zeros() >> 3) as u8;
+            // The terminal path also records the marker for finish_scan.
+            // Keep its eager observation unchanged; only defer stuffed data.
+            if self.bytes.get(self.pos + usize::from(prefix) + 1) != Some(&0) {
+                return false;
+            }
+            let capacity = (ACC_BITS - 1 - self.bits) >> 3;
+            if prefix < 7 && exact & exact.wrapping_sub(1) == 0 && capacity > prefix {
+                // A single FF00 pair contributes seven data bytes. Remove its
+                // zero byte in registers; no other FF in this window means no
+                // marker or second escape can be crossed by this fast refill.
+                let head_bits = (prefix + 1) << 3;
+                let head_mask = u64::MAX << (ACC_BITS - head_bits);
+                let unstuffed = (word & head_mask) | ((word << 8) & !head_mask);
+                let added_bits = capacity << 3;
+                if self.bits + added_bits >= needed {
+                    self.acc |= unstuffed >> self.bits;
+                    self.pos += usize::from(capacity) + 1;
+                    self.bits += added_bits;
+                    return true;
+                }
+            }
+            let whole_bytes = prefix.min(capacity);
+            if whole_bytes == 0 {
+                return false;
+            }
+            let added_bits = whole_bytes << 3;
+            if self.bits + added_bits < needed {
+                return false;
+            }
+            let prefix_word = word & (u64::MAX << (ACC_BITS - added_bits));
+            self.acc |= prefix_word >> self.bits;
+            self.pos += usize::from(whole_bytes);
+            self.bits += added_bits;
+            return true;
         }
         self.acc |= word >> self.bits;
         let whole_bytes = (ACC_BITS - 1 - self.bits) >> 3;
@@ -160,7 +205,7 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits_padded(&mut self, n: u8) -> Result<(), JpegError> {
-        if self.bits >= n || self.try_refill_bulk() {
+        if self.bits >= n || self.try_refill_bulk(n) {
             return Ok(());
         }
         *self = self.clone().ensure_bits_padded_slow(n)?;
@@ -336,7 +381,7 @@ impl<'a> BitReader<'a> {
     /// After consuming bits, top up the accumulator so the next Huffman peek
     /// can always examine 16 bits without further refill.
     fn refill_to_threshold(&mut self) {
-        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
+        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk(REFILL_THRESHOLD) {
             while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
         }
     }
@@ -350,7 +395,7 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     fn top_up_to_threshold(&mut self) {
-        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk() {
+        if self.bits < REFILL_THRESHOLD && !self.try_refill_bulk(REFILL_THRESHOLD) {
             *self = self.clone().top_up_to_threshold_slow();
         }
     }
@@ -794,20 +839,30 @@ mod tests {
 
     #[test]
     fn bulk_refill_snapshot_restores_only_counted_bits() {
-        let payload: Vec<u8> = (0u8..=40).map(|i| i.wrapping_mul(37)).collect();
-        let segment = stuffed_segment(&payload, 0xd9);
-        let mut br = BitReader::new(&segment);
-        for n in [3u8, 11, 7, 16, 1, 9, 13] {
-            br.ensure_bits_padded(n).unwrap();
-            br.consume_bits(n);
-            let snapshot = br.snapshot();
-            let mut original = br.clone();
-            let mut restored = BitReader::from_snapshot(&segment, snapshot);
-            for width in [5u8, 12, 16, 2] {
-                assert_eq!(
-                    restored.read_bits(width).unwrap(),
-                    original.read_bits(width).unwrap()
-                );
+        for stuffed in [false, true] {
+            let payload: Vec<u8> = (0u8..=40)
+                .map(|i| {
+                    if stuffed && i % 7 == 2 {
+                        0xff
+                    } else {
+                        i.wrapping_mul(37)
+                    }
+                })
+                .collect();
+            let segment = stuffed_segment(&payload, 0xd9);
+            let mut br = BitReader::new(&segment);
+            for n in [3u8, 11, 7, 16, 1, 9, 13] {
+                br.ensure_bits_padded(n).unwrap();
+                br.consume_bits(n);
+                let snapshot = br.snapshot();
+                let mut original = br.clone();
+                let mut restored = BitReader::from_snapshot(&segment, snapshot);
+                for width in [5u8, 12, 16, 2] {
+                    assert_eq!(
+                        restored.read_bits(width).unwrap(),
+                        original.read_bits(width).unwrap()
+                    );
+                }
             }
         }
     }

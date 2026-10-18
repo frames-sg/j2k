@@ -28,7 +28,10 @@ use crate::internal::bit_reader::BitReader;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockActivity {
     DcOnly,
+    TopLeft2x2,
+    TopLeftQuadrant,
     BottomHalfZero,
+    RightHalfZero,
     General,
 }
 
@@ -106,8 +109,8 @@ impl CoefficientBlock {
 
 /// Classify a block from the OR of every stored AC coefficient's natural
 /// index. AC indices are nonzero, so any AC store makes the OR nonzero, and
-/// bit 5 is set exactly when some index is at least 32 (rows 4-7). Keeping
-/// one OR per coefficient replaces a per-coefficient state-machine update.
+/// bit 5 marks rows 4-7 and bit 2 marks columns 4-7. One OR per coefficient
+/// therefore identifies both half-block shortcuts without rescanning the block.
 #[expect(
     clippy::inline_always,
     reason = "measured entropy-block hot path requires cross-helper inlining"
@@ -116,10 +119,14 @@ impl CoefficientBlock {
 fn activity_from_ac_indices(ac_index_or: usize) -> BlockActivity {
     if ac_index_or == 0 {
         BlockActivity::DcOnly
-    } else if ac_index_or & 32 == 0 {
-        BlockActivity::BottomHalfZero
     } else {
-        BlockActivity::General
+        match ac_index_or & (32 | 4) {
+            0 if ac_index_or & (16 | 2) == 0 => BlockActivity::TopLeft2x2,
+            0 => BlockActivity::TopLeftQuadrant,
+            4 => BlockActivity::BottomHalfZero,
+            32 => BlockActivity::RightHalfZero,
+            _ => BlockActivity::General,
+        }
     }
 }
 
@@ -132,10 +139,10 @@ fn activity_from_ac_indices(ac_index_or: usize) -> BlockActivity {
 /// - `out` is cleared and filled with the dequantized coefficients in row-major
 ///   order (natural 8×8 layout), ready for the IDCT.
 #[cfg(test)]
-pub(crate) fn decode_block(
+pub(crate) fn decode_block<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
     quant: &[u16; 64],
     block: &mut CoefficientBlock,
@@ -148,10 +155,10 @@ pub(crate) fn decode_block(
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-pub(crate) fn decode_block_with_activity(
+pub(crate) fn decode_block_with_activity<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
     quant: &[u16; 64],
     block: &mut CoefficientBlock,
@@ -166,7 +173,7 @@ pub(crate) fn decode_block_with_activity(
     block.store_dc(clamp_i16(dc_dequant));
 
     let mut ac_index_or = 0usize;
-    drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
+    drive_ac_fast::<N, false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         // Quant table entries are stored in zigzag order per T.81 §B.2.4.1,
         // so `quant[k]` is the matching coefficient (not `quant[natural_idx]`).
@@ -188,10 +195,10 @@ pub(crate) fn decode_block_with_activity(
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-pub(crate) fn decode_block_dequantized_into(
+pub(crate) fn decode_block_dequantized_into<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
     quant: &[u16; 64],
     out: &mut [i16; 64],
@@ -202,7 +209,7 @@ pub(crate) fn decode_block_dequantized_into(
     let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     out[0] = clamp_i16(dc_dequant);
 
-    drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
+    drive_ac_fast::<N, false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
         let dequant = value.wrapping_mul(i32::from(quant[k]));
@@ -217,10 +224,10 @@ pub(crate) fn decode_block_dequantized_into(
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
+pub(crate) fn decode_block_quantized_and_dequantized_with_activity<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
     quant: &[u16; 64],
     quantized_block: &mut CoefficientBlock,
@@ -237,7 +244,7 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     dequantized_block.store_dc(clamp_i16(dc_dequant));
 
     let mut ac_index_or = 0usize;
-    drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
+    drive_ac_fast::<N, false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
         quantized_block.store(natural_idx, clamp_i16(value));
@@ -255,10 +262,10 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
 )]
 #[inline(always)]
 #[cfg(test)]
-pub(crate) fn decode_block_with_dc_status(
+pub(crate) fn decode_block_with_dc_status<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
     quant: &[u16; 64],
     block: &mut CoefficientBlock,
@@ -271,7 +278,7 @@ pub(crate) fn decode_block_with_dc_status(
     block.store_dc(clamp_i16(dc_dequant));
 
     let mut dc_only = true;
-    drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
+    drive_ac_fast::<N, false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
         let dequant = value.wrapping_mul(i32::from(quant[k]));
@@ -287,16 +294,16 @@ pub(crate) fn decode_block_with_dc_status(
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-pub(crate) fn skip_block(
+pub(crate) fn skip_block<const N: usize>(
     br: &mut BitReader<'_>,
-    dc_table: DcHuffmanTable<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
     prev_dc: &mut i32,
 ) -> Result<(), JpegError> {
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
 
-    drive_ac_fast::<true, _>(br, ac_table, |_, _| Ok(()))?;
+    drive_ac_fast::<N, true, _>(br, ac_table, |_, _| Ok(()))?;
     Ok(())
 }
 
@@ -305,9 +312,29 @@ pub(crate) fn skip_block(
     reason = "measured entropy-block hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-fn drive_ac_fast<const SKIP_VALUES: bool, F>(
+fn drive_ac_fast<const N: usize, const SKIP_VALUES: bool, F>(
     br: &mut BitReader<'_>,
-    ac_table: AcHuffmanTable<'_>,
+    ac_table: AcHuffmanTable<'_, N>,
+    on_value: F,
+) -> Result<(), JpegError>
+where
+    F: FnMut(usize, u32) -> Result<(), JpegError>,
+{
+    if ac_table.uses_wide_lookup() {
+        drive_ac_fast_with_width::<N, SKIP_VALUES, true, F>(br, ac_table, on_value)
+    } else {
+        drive_ac_fast_with_width::<N, SKIP_VALUES, false, F>(br, ac_table, on_value)
+    }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "the lookup width is selected once before the AC coefficient loop"
+)]
+#[inline(always)]
+fn drive_ac_fast_with_width<const N: usize, const SKIP_VALUES: bool, const WIDE: bool, F>(
+    br: &mut BitReader<'_>,
+    ac_table: AcHuffmanTable<'_, N>,
     mut on_value: F,
 ) -> Result<(), JpegError>
 where
@@ -316,9 +343,9 @@ where
     let mut k: usize = 1;
     while k < 64 {
         let ac = if SKIP_VALUES {
-            ac_table.skip_fast_ac(br)?
+            ac_table.skip_fast_ac::<WIDE>(br)?
         } else {
-            ac_table.decode_fast_ac(br)?
+            ac_table.decode_fast_ac::<WIDE>(br)?
         };
         match ac & AC_FAST_KIND_MASK {
             AC_FAST_EOB => break,
@@ -502,7 +529,7 @@ mod tests {
             &mut out,
         )
         .unwrap();
-        assert_eq!(activity, BlockActivity::BottomHalfZero);
+        assert_eq!(activity, BlockActivity::TopLeft2x2);
         assert_eq!(out.coefficients()[crate::entropy::ZIGZAG[1] as usize], 1);
     }
 
@@ -542,7 +569,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(activity, BlockActivity::BottomHalfZero);
+        assert_eq!(activity, BlockActivity::TopLeft2x2);
         assert!(!dc_only);
         assert_eq!(dc_status_prev_dc, activity_prev_dc);
         assert_eq!(
@@ -595,27 +622,31 @@ mod tests {
     }
 
     #[test]
-    fn top_half_ac_indices_classify_as_bottom_half_zero() {
-        for indices in [&[31usize][..], &[7], &[1, 8, 31], &[3, 17, 26]] {
-            let or = indices.iter().fold(0, |acc, &idx| acc | idx);
-            assert_eq!(
-                activity_from_ac_indices(or),
-                BlockActivity::BottomHalfZero,
-                "{indices:?}"
-            );
-        }
+    fn activity_tracks_top_and_left_half_occupancy() {
         assert_eq!(activity_from_ac_indices(0), BlockActivity::DcOnly);
-    }
-
-    #[test]
-    fn any_bottom_half_ac_index_classifies_as_general() {
-        for indices in [&[32usize][..], &[40], &[1, 63], &[7, 31, 32]] {
-            let or = indices.iter().fold(0, |acc, &idx| acc | idx);
-            assert_eq!(
-                activity_from_ac_indices(or),
-                BlockActivity::General,
-                "{indices:?}"
-            );
+        for first in 1usize..64 {
+            for second in 1usize..64 {
+                let bottom = first / 8 >= 4 || second / 8 >= 4;
+                let right = first % 8 >= 4 || second % 8 >= 4;
+                let top_left_2x2 = [first, second]
+                    .into_iter()
+                    .all(|index| index / 8 < 2 && index % 8 < 2);
+                let expected = if top_left_2x2 {
+                    BlockActivity::TopLeft2x2
+                } else {
+                    match (bottom, right) {
+                        (false, false) => BlockActivity::TopLeftQuadrant,
+                        (false, true) => BlockActivity::BottomHalfZero,
+                        (true, false) => BlockActivity::RightHalfZero,
+                        (true, true) => BlockActivity::General,
+                    }
+                };
+                assert_eq!(
+                    activity_from_ac_indices(first | second),
+                    expected,
+                    "AC positions {first}, {second}"
+                );
+            }
         }
     }
 

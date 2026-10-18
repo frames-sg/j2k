@@ -391,7 +391,7 @@ fn cached_plan_lease_preflight_preserves_cache_at_live_budget_boundary() {
         .expect("fixture leaves external live budget");
     let retained = context.retained_allocation_bytes();
     let occupied = context.cache_stats().occupied_slots;
-    let plan = context
+    let (_, plan) = context
         .cached_decode_plan(prefix)
         .expect("warmed exact-key plan");
 
@@ -407,6 +407,7 @@ fn cached_plan_lease_preflight_preserves_cache_at_live_budget_boundary() {
         context
             .cached_decode_plan(prefix)
             .expect("rejected preflight preserves cached plan")
+            .1
             .scan_offset,
         plan.scan_offset
     );

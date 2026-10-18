@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::PreparedConstructionBudget;
-use crate::JpegError;
+use crate::{
+    context::DecoderContext,
+    parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable},
+    JpegError,
+};
 use alloc::vec::Vec;
 use core::mem::size_of;
 
@@ -90,4 +94,29 @@ fn prior_actual_capacity_is_used_by_the_next_reserve() {
         Err(JpegError::MemoryCapExceeded { requested, cap })
             if requested == requested_boundary && cap == requested_boundary - 1
     ));
+}
+
+#[test]
+fn context_and_prepared_owners_each_charge_the_shared_huffman_payload() {
+    let raw = RawHuffmanTable {
+        bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        values: HuffmanValues::from_slice(&[0]),
+    };
+    let mut ctx = DecoderContext::new();
+    let mut budget =
+        PreparedConstructionBudget::with_cap(0, 0, j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES)
+            .unwrap();
+    let mut prepared = budget.try_huffman_tables(1).unwrap();
+
+    budget
+        .push_huffman_table(&mut ctx, &raw, HuffmanTableRole::Dc, &mut prepared)
+        .unwrap();
+
+    let context_bytes = ctx.retained_allocation_bytes();
+    let prepared_bytes = prepared.retained_allocation_bytes().unwrap();
+    budget
+        .verify_retained(context_bytes, prepared_bytes)
+        .unwrap();
+    assert!(context_bytes > 0);
+    assert!(prepared_bytes > 0);
 }

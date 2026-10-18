@@ -118,13 +118,21 @@ pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_,
     let curr_plane = curr.plane(plane_idx);
     let chroma_rows = curr_plane.rows as u32;
     let chroma_y = (local_y_out / v_ratio).min(chroma_rows.saturating_sub(1));
-    let (prev_row, curr_row, next_row) = component_row_triplet(
-        prev.map(|stripe| stripe.plane(plane_idx)),
-        curr_plane,
-        next.map(|stripe| stripe.plane(plane_idx)),
-        chroma_y as usize,
-        valid_component_rows(stripe_rows, v_ratio as usize),
-    );
+    let (prev_row, curr_row, next_row) = match upsample {
+        Upsample::FancyH1V2 | Upsample::FancyH2V2 => component_row_triplet(
+            prev.map(|stripe| stripe.plane(plane_idx)),
+            curr_plane,
+            next.map(|stripe| stripe.plane(plane_idx)),
+            chroma_y as usize,
+            valid_component_rows(stripe_rows, v_ratio as usize),
+        ),
+        _ => {
+            // Horizontal filters and replication use no neighboring rows.
+            let start = chroma_y as usize * curr_plane.stride;
+            let row = &curr_plane.data[start..start + curr_plane.stride];
+            (row, row, row)
+        }
+    };
 
     match upsample {
         Upsample::None => {
@@ -192,6 +200,14 @@ pub(super) fn upsample_420_pair(request: Stripe420PairUpsample<'_, '_>) {
         chroma_y as usize,
         valid_component_rows(stripe_rows, 2),
     );
+    let chroma_cols = width.div_ceil(2);
 
-    upsample_h2v2_fancy_rows(prev_row, curr_row, next_row, width, top, bot);
+    upsample_h2v2_fancy_rows(
+        &prev_row[..chroma_cols],
+        &curr_row[..chroma_cols],
+        &next_row[..chroma_cols],
+        width,
+        top,
+        bot,
+    );
 }

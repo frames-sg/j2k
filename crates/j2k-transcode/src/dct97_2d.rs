@@ -36,14 +36,22 @@ impl Dwt97TwoDimensional<f64> {
         assert_eq!(self.high_width, other.high_width);
         assert_eq!(self.high_height, other.high_height);
 
-        self.ll
-            .iter()
-            .zip(other.ll.iter())
-            .chain(self.hl.iter().zip(other.hl.iter()))
-            .chain(self.lh.iter().zip(other.lh.iter()))
-            .chain(self.hh.iter().zip(other.hh.iter()))
-            .map(|(actual, expected)| (actual - expected).abs())
-            .fold(0.0, f64::max)
+        let mut max_diff = 0.0_f64;
+        for (actual, expected, sample_count) in [
+            (&self.ll, &other.ll, self.low_width * self.low_height),
+            (&self.hl, &other.hl, self.high_width * self.low_height),
+            (&self.lh, &other.lh, self.low_width * self.high_height),
+            (&self.hh, &other.hh, self.high_width * self.high_height),
+        ] {
+            assert_eq!(actual.len(), sample_count, "actual DWT band length");
+            assert_eq!(expected.len(), sample_count, "reference DWT band length");
+            for (&actual, &expected) in actual.iter().zip(expected) {
+                assert!(actual.is_finite(), "nonfinite actual DWT coefficient");
+                assert!(expected.is_finite(), "nonfinite reference DWT coefficient");
+                max_diff = max_diff.max((actual - expected).abs());
+            }
+        }
+        max_diff
     }
 }
 
@@ -986,6 +994,61 @@ mod tests {
                 assert!((idct8x8_sample(&block, x, y) - 40.0).abs() < 1e-9);
             }
         }
+    }
+
+    fn reference_dct_grid(
+        blocks: &[[[f64; 8]; 8]],
+        block_cols: usize,
+        width: usize,
+        height: usize,
+    ) -> Dwt97TwoDimensional<f64> {
+        let mut samples = Vec::with_capacity(width * height);
+        for y in 0..height {
+            for x in 0..width {
+                let block = &blocks[(y / 8) * block_cols + x / 8];
+                samples.push(exact_idct_sample(block, x % 8, y % 8));
+            }
+        }
+        ref_analysis_2d(&samples, width, height)
+    }
+
+    #[test]
+    fn dct8x8_grid_to_2d_97_public_path_matches_reference_for_structured_cases() {
+        let blocks = structured_blocks(2, 2);
+
+        for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+            let public_path = dct8x8_blocks_then_dwt97_float(&blocks, 2, 2, width, height)
+                .expect("public 9/7 IDCT path accepts covered grid");
+            let reference = reference_dct_grid(&blocks, 2, width, height);
+
+            assert!(
+                public_path.max_abs_diff(&reference) < 1.0e-9,
+                "public 9/7 IDCT path diverged for {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn dct8x8_grid_to_2d_97_public_path_matches_reference_after_large_grid() {
+        let large_blocks = structured_blocks(32, 32);
+        let small_blocks = structured_blocks(2, 2);
+
+        let large = dct8x8_blocks_then_dwt97_float(&large_blocks, 32, 32, 255, 241)
+            .expect("public 9/7 IDCT path accepts covered large grid");
+        let expected_large = reference_dct_grid(&large_blocks, 32, 255, 241);
+
+        let small = dct8x8_blocks_then_dwt97_float(&small_blocks, 2, 2, 13, 11)
+            .expect("public 9/7 IDCT path accepts covered small grid");
+        let expected_small = reference_dct_grid(&small_blocks, 2, 13, 11);
+
+        assert!(
+            large.max_abs_diff(&expected_large) < 1.0e-9,
+            "public 9/7 IDCT path diverged for large grid"
+        );
+        assert!(
+            small.max_abs_diff(&expected_small) < 1.0e-9,
+            "public 9/7 IDCT path diverged for small grid"
+        );
     }
 
     #[test]

@@ -3,6 +3,16 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::sync::Arc;
+
+#[cfg(has_libjpeg_turbo)]
+#[path = "encode_cpu/batch.rs"]
+mod batch;
+#[path = "encode_cpu/inputs.rs"]
+mod inputs;
+#[cfg(has_libjpeg_turbo)]
+#[path = "encode_cpu/turbo.rs"]
+mod turbo;
 use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -98,11 +108,11 @@ enum CaseKind {
 }
 
 struct EncodeCase {
-    name: &'static str,
+    name: String,
     width: u32,
     height: u32,
     kind: CaseKind,
-    data: Vec<u8>,
+    data: Arc<[u8]>,
     options: JpegEncodeOptions,
 }
 
@@ -126,6 +136,7 @@ impl EncodeCase {
         let encoded =
             encode_jpeg_baseline(self.samples(), self.options).expect("JPEG CPU encode bench");
         let output_bytes = encoded.data.len();
+        std::hint::black_box(&encoded.data);
         std::hint::black_box(encoded.backend);
         std::hint::black_box(output_bytes)
     }
@@ -133,11 +144,11 @@ impl EncodeCase {
 
 fn gray_case(name: &'static str, width: u32, height: u32, quality: u8) -> EncodeCase {
     EncodeCase {
-        name,
+        name: name.into(),
         width,
         height,
         kind: CaseKind::Gray,
-        data: patterned_gray8(width, height),
+        data: patterned_gray8(width, height).into(),
         options: JpegEncodeOptions {
             quality,
             subsampling: JpegSubsampling::Gray,
@@ -148,7 +159,7 @@ fn gray_case(name: &'static str, width: u32, height: u32, quality: u8) -> Encode
 }
 
 fn rgb_case(
-    name: &'static str,
+    name: &str,
     width: u32,
     height: u32,
     quality: u8,
@@ -156,11 +167,11 @@ fn rgb_case(
     restart_interval: Option<u16>,
 ) -> EncodeCase {
     EncodeCase {
-        name,
+        name: name.into(),
         width,
         height,
         kind: CaseKind::Rgb,
-        data: patterned_rgb8(width, height),
+        data: patterned_rgb8(width, height).into(),
         options: JpegEncodeOptions {
             quality,
             subsampling,
@@ -171,6 +182,9 @@ fn rgb_case(
 }
 
 fn encode_cases() -> Vec<EncodeCase> {
+    if let Some(cases) = inputs::load_cases() {
+        return cases;
+    }
     vec![
         gray_case("gray8_256_default", 256, 256, 90),
         gray_case("gray8_512_default", 512, 512, 90),
@@ -269,16 +283,41 @@ fn report_allocations(cases: &[EncodeCase]) {
 }
 
 fn bench_encode_cpu(c: &mut Criterion) {
+    #[cfg(has_libjpeg_turbo)]
+    if std::env::var_os("J2K_ENCODE_BENCH_BATCH").is_some() {
+        let cases = encode_cases();
+        batch::bench(c, &cases);
+        return;
+    }
+    #[cfg(not(has_libjpeg_turbo))]
+    assert!(
+        std::env::var_os("J2K_ENCODE_BENCH_BATCH").is_none(),
+        "J2K_ENCODE_BENCH_BATCH requires libjpeg-turbo"
+    );
+
     let cases = encode_cases();
     report_allocations(&cases);
 
     let mut group = c.benchmark_group("jpeg_cpu_encode_runtime");
     for case in &cases {
-        group.bench_function(case.name, |b| {
+        group.bench_function(&case.name, |b| {
             b.iter(|| {
                 std::hint::black_box(case.encode());
             });
         });
+        #[cfg(has_libjpeg_turbo)]
+        if case.options.restart_interval.is_none() {
+            let mut turbo = turbo::TurboEncoder::new(
+                case.width,
+                case.height,
+                matches!(case.kind, CaseKind::Gray),
+                case.options.subsampling,
+                case.options.quality,
+            );
+            group.bench_function(format!("libjpeg-turbo/{}", case.name), |b| {
+                b.iter(|| std::hint::black_box(turbo.encode(&case.data)));
+            });
+        }
     }
     group.finish();
 }

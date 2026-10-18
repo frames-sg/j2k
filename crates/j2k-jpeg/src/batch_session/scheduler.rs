@@ -82,6 +82,9 @@ where
     }
 
     let decode_chunk = &decode_chunk;
+    let inline_len = plan.chunk_size.min(job_count);
+    let (inline_jobs, spawned_jobs) = jobs.split_at_mut(inline_len);
+    let (inline_results, spawned_results) = results.split_at_mut(inline_len);
     let run = std::thread::scope(|scope| {
         let mut handles =
             try_vec_with_capacity(plan.worker_count, "JPEG scoped batch worker handles")?;
@@ -102,11 +105,19 @@ where
             })?;
         ensure_plan_capacity(plan, capacity_extra)?;
         let mut spawn_error = None;
-        for (chunk_index, (chunk, result_chunk)) in jobs
+        // Launch the remaining chunks first so the caller becomes worker zero
+        // without reducing the requested decode concurrency.
+        for (spawned_index, (chunk, result_chunk)) in spawned_jobs
             .chunks_mut(plan.chunk_size)
-            .zip(results.chunks_mut(plan.chunk_size))
+            .zip(spawned_results.chunks_mut(plan.chunk_size))
             .enumerate()
         {
+            let chunk_index = spawned_index.checked_add(1).ok_or(
+                BatchInfrastructureError::ResultIndexOutOfBounds {
+                    index: usize::MAX,
+                    job_count,
+                },
+            )?;
             let start_index = chunk_index.checked_mul(plan.chunk_size).ok_or(
                 BatchInfrastructureError::ResultIndexOutOfBounds {
                     index: usize::MAX,
@@ -125,7 +136,18 @@ where
             };
             handles.push((chunk_index, handle));
         }
-        join_batch_workers(handles, spawn_error)
+        // Worker zero logically precedes every spawned worker, so it still
+        // runs after a later spawn failure; that spawn error keeps priority.
+        let inline_run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut worker = lock_worker(worker_slot(workers, 0)?)?;
+            decode_chunk(&mut worker, 0, inline_jobs, inline_results)
+        }));
+        let inline_error = match inline_run {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error),
+            Err(_) => Some(BatchInfrastructureError::WorkerPanicked { worker: 0 }),
+        };
+        join_batch_workers(handles, spawn_error.or(inline_error))
     });
     run?;
     Ok(results)
@@ -263,5 +285,60 @@ mod tests {
                 available: 0,
             })
         ));
+    }
+
+    #[test]
+    fn scoped_scheduler_keeps_inline_worker_error_precedence() {
+        let workers = (0..2)
+            .map(|_| Mutex::new(WorkerSlot::default()))
+            .collect::<Vec<_>>();
+        let mut jobs = [0usize, 1];
+        let plan = BatchPlan {
+            worker_count: 2,
+            chunk_size: 1,
+            live_bytes: 0,
+            metadata_bytes: 0,
+            codec_bytes: 0,
+        };
+
+        let error =
+            run_chunks_scoped::<_, usize, _>(&workers, &mut jobs, plan, |_, start, _, _| {
+                Err(BatchInfrastructureError::MissingResult { index: start })
+            })
+            .expect_err("both workers fail");
+
+        assert_eq!(error, BatchInfrastructureError::MissingResult { index: 0 });
+    }
+
+    #[test]
+    fn scoped_scheduler_maps_inline_panic_to_worker_error() {
+        let workers = (0..2)
+            .map(|_| Mutex::new(WorkerSlot::default()))
+            .collect::<Vec<_>>();
+        let mut jobs = [0usize, 1];
+        let plan = BatchPlan {
+            worker_count: 2,
+            chunk_size: 1,
+            live_bytes: 0,
+            metadata_bytes: 0,
+            codec_bytes: 0,
+        };
+
+        let error =
+            run_chunks_scoped::<_, usize, _>(&workers, &mut jobs, plan, |_, start, _, results| {
+                assert_ne!(start, 0, "inline worker panic");
+                results[0] = Some(Ok(start));
+                Ok(())
+            })
+            .expect_err("inline worker panic");
+
+        assert_eq!(
+            error,
+            BatchInfrastructureError::WorkerPanicked { worker: 0 }
+        );
+        assert!(
+            workers[0].lock().is_err(),
+            "inline panic poisons worker zero"
+        );
     }
 }

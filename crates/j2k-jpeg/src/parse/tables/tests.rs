@@ -17,7 +17,7 @@ fn parses_single_8bit_quant_table() {
     payload.extend(core::iter::repeat_n(1u8, 64));
     let mut tables = QuantTables::default();
     parse_dqt(&payload, 0, &mut tables, &mut ParsedMetadataBudget::new()).unwrap();
-    assert_eq!(tables.entries[0].unwrap(), ones_64());
+    assert_eq!(tables.active(0).copied().unwrap(), ones_64());
     assert_eq!(tables.versions.len(), 1);
 }
 
@@ -41,7 +41,7 @@ fn parses_single_dc_huffman_table() {
     payload.extend_from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     let mut tables = HuffmanTables::default();
     parse_dht(&payload, 0, &mut tables, &mut ParsedMetadataBudget::new()).unwrap();
-    let table = tables.dc[0].as_ref().unwrap();
+    let table = tables.active_dc(0).unwrap();
     assert_eq!(
         table.values.as_slice(),
         &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]

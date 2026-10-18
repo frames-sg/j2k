@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, uint16x8_t, uint8x16_t, uint8x8_t, vaddq_s16, vaddq_u16, vcombine_s16,
+    int16x8_t, uint16x8_t, uint8x16_t, uint8x16x2_t, uint8x8_t, vaddq_s16, vaddq_u16, vcombine_s16,
     vcombine_u8, vdup_n_u8, vdupq_n_s16, vdupq_n_u16, vdupq_n_u8, vget_low_s16, vget_low_u8,
     vmlal_high_n_s16, vmlal_n_s16, vmovl_high_u8, vmovl_u8, vmull_high_n_s16, vmull_n_s16,
-    vqmovn_u16, vqmovun_high_s16, vqmovun_s16, vreinterpretq_s16_u16, vrshrn_n_s32, vshrq_n_u16,
-    vsubl_high_u8, vsubl_u8, vsubq_s16, vzip_u8, vzipq_u16,
+    vqmovn_u16, vqmovun_high_s16, vqmovun_s16, vqrdmulhq_n_s16, vreinterpretq_s16_u16,
+    vrshrn_n_s32, vshlq_n_s16, vshrq_n_u16, vsubl_high_u8, vsubl_u8, vsubq_s16, vzip_u8, vzipq_u16,
+    vzipq_u8,
 };
 
 use super::row_pair::{normalize_simd_row_pair, normalize_ycbcr_row};
-use super::{scalar, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
-use crate::color::upsample::h2v2_fancy_sample_for_width;
-use crate::color::ycbcr::{ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200};
+use super::{scalar, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair, Rgb422Row};
+use crate::color::upsample::{h2v2_fancy_sample, h2v2_fancy_sample_for_width};
+use crate::color::ycbcr::ycbcr_to_rgb;
 use crate::simd::neon_memory::{self, load_head_window, load_tail_window};
 
 pub(crate) fn fill_rgb_row_from_gray(neon: fearless_simd::Neon, gray_row: &[u8], dst: &mut [u8]) {
@@ -94,6 +95,7 @@ fn fill_rgb_row_from_rgb_neon(r_row: &[u8], g_row: &[u8], b_row: &[u8], dst: &mu
 
 const LANES: usize = 8;
 const UPSAMPLED_LANES: usize = LANES * 2;
+const FUSED_422_PIXELS: usize = UPSAMPLED_LANES * 2;
 
 #[derive(Clone, Copy)]
 struct Neon420PartialChunk {
@@ -158,6 +160,123 @@ pub(super) fn fill_rgb_row_from_ycbcr_for_test(
         .as_neon()
         .expect("AArch64 test host must provide NEON");
     fill_rgb_row_from_ycbcr(neon, y_row, cb_row, cr_row, dst);
+}
+
+pub(crate) fn fill_rgb_row_from_422(neon: fearless_simd::Neon, request: Rgb422Row<'_>) {
+    let Rgb422Row { y, cb, cr, dst } = request;
+    let width = y
+        .len()
+        .min(dst.len() / 3)
+        .min(cb.len().min(cr.len()).saturating_mul(2));
+    if width == 0 {
+        return;
+    }
+    let chroma_width = width.div_ceil(2);
+    fill_rgb_row_from_422_kernel(
+        neon,
+        &y[..width],
+        &cb[..chroma_width],
+        &cr[..chroma_width],
+        &mut dst[..width * 3],
+    );
+}
+
+fearless_simd::kernel! {
+    fn fill_rgb_row_from_422_kernel(
+        neon: Neon,
+        y: &[u8],
+        cb: &[u8],
+        cr: &[u8],
+        dst: &mut [u8],
+    ) {
+        fill_rgb_row_from_422_neon(y, cb, cr, dst);
+    }
+}
+
+#[target_feature(enable = "neon")]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the hot color kernel uses standard y/cb/cr and r/g/b channel names"
+)]
+fn fill_rgb_row_from_422_neon(y: &[u8], cb: &[u8], cr: &[u8], dst: &mut [u8]) {
+    debug_assert_eq!(cb.len(), cr.len());
+    debug_assert_eq!(y.len(), dst.len() / 3);
+    debug_assert_eq!(cb.len(), y.len().div_ceil(2));
+    if y.len() < FUSED_422_PIXELS + 1 {
+        scalar::fill_rgb_row_from_422(Rgb422Row { y, cb, cr, dst });
+        return;
+    }
+
+    let (r, g, b) = ycbcr_to_rgb(y[0], cb[0], cr[0]);
+    dst[..3].copy_from_slice(&[r, g, b]);
+
+    let mut sample = 0usize;
+    let mut x = 1usize;
+    while sample + UPSAMPLED_LANES < cb.len() && x + FUSED_422_PIXELS <= y.len() {
+        let Some(y_chunk) = y[x..].first_chunk::<FUSED_422_PIXELS>() else {
+            break;
+        };
+        let Some(cb_left) = cb[sample..].first_chunk::<UPSAMPLED_LANES>() else {
+            break;
+        };
+        let Some(cb_right) = cb[sample + 1..].first_chunk::<UPSAMPLED_LANES>() else {
+            break;
+        };
+        let Some(cr_left) = cr[sample..].first_chunk::<UPSAMPLED_LANES>() else {
+            break;
+        };
+        let Some(cr_right) = cr[sample + 1..].first_chunk::<UPSAMPLED_LANES>() else {
+            break;
+        };
+        let Some(dst_chunk) = dst[x * 3..].first_chunk_mut::<{ FUSED_422_PIXELS * 3 }>() else {
+            break;
+        };
+        fill_rgb_row_from_422_chunk32_neon(
+            y_chunk, cb_left, cb_right, cr_left, cr_right, dst_chunk,
+        );
+        sample += UPSAMPLED_LANES;
+        x += FUSED_422_PIXELS;
+    }
+
+    // A regular chunk starts at output pixel 1, so power-of-two row widths
+    // leave 31 pixels after the final non-overlapping vector. Re-run the last
+    // 16 adjacent chroma pairs at the right edge when that is cheaper than a
+    // long scalar tail. The overlap is bit-identical and leaves at most the
+    // final replicated pixel of an even-width row for scalar handling.
+    if y.len() - x >= UPSAMPLED_LANES {
+        let tail_sample = cb.len() - (UPSAMPLED_LANES + 1);
+        let tail_x = tail_sample * 2 + 1;
+        let y_chunk = y[tail_x..]
+            .first_chunk::<FUSED_422_PIXELS>()
+            .expect("tail chunk fits the normalized visible row");
+        let cb_left = cb[tail_sample..]
+            .first_chunk::<UPSAMPLED_LANES>()
+            .expect("tail chunk has 16 left chroma samples");
+        let cb_right = cb[tail_sample + 1..]
+            .first_chunk::<UPSAMPLED_LANES>()
+            .expect("tail chunk has 16 right chroma samples");
+        let cr_left = cr[tail_sample..]
+            .first_chunk::<UPSAMPLED_LANES>()
+            .expect("tail chunk has 16 left chroma samples");
+        let cr_right = cr[tail_sample + 1..]
+            .first_chunk::<UPSAMPLED_LANES>()
+            .expect("tail chunk has 16 right chroma samples");
+        let dst_chunk = dst[tail_x * 3..]
+            .first_chunk_mut::<{ FUSED_422_PIXELS * 3 }>()
+            .expect("tail RGB chunk fits the normalized destination");
+        fill_rgb_row_from_422_chunk32_neon(
+            y_chunk, cb_left, cb_right, cr_left, cr_right, dst_chunk,
+        );
+        x = tail_x + FUSED_422_PIXELS;
+    }
+
+    for (output_x, pixel) in dst[x * 3..].as_chunks_mut::<3>().0.iter_mut().enumerate() {
+        let output_x = output_x + x;
+        let cb = scalar::h2v1_fancy_sample(cb, output_x);
+        let cr = scalar::h2v1_fancy_sample(cr, output_x);
+        let (r, g, b) = ycbcr_to_rgb(y[output_x], cb, cr);
+        pixel.copy_from_slice(&[r, g, b]);
+    }
 }
 
 pub(crate) fn fill_rgb_row_pair_from_420(neon: fearless_simd::Neon, request: Rgb420RowPair<'_>) {
@@ -659,21 +778,39 @@ fn fill_rgb_row_pair_from_420_neon_dual(
                 );
             }
         } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
+            if chunk_width == 1 {
+                record_420_dispatch_scalar_chunk();
+                fill_last_420_pixel_dual(y_top, y_bottom, chroma, width, dst_top, dst_bottom);
+                sample += chunk_samples;
+                continue;
+            }
             record_420_dispatch_neon_tail_chunk();
+            // A 16k-1 row would otherwise convert 15 pixels through temporary
+            // RGB arrays. Overlap the last full vector and repair one pixel.
+            let overlap = chunk_width == UPSAMPLED_LANES - 1;
+            let (tail_sample, tail_x, tail_width) = if overlap {
+                let tail_x = width - (UPSAMPLED_LANES + 1);
+                (tail_x / 2, tail_x, UPSAMPLED_LANES)
+            } else {
+                (sample, x, chunk_width)
+            };
             {
                 fill_rgb_row_pair_from_420_tail_neon_dual(
                     y_top,
                     y_bottom,
                     chroma,
                     Neon420TailChunk {
-                        sample_offset: sample,
-                        x,
-                        chunk_width,
+                        sample_offset: tail_sample,
+                        x: tail_x,
+                        chunk_width: tail_width,
                         row_width: width,
                     },
                     dst_top,
                     dst_bottom,
                 );
+            }
+            if overlap {
+                fill_last_420_pixel_dual(y_top, y_bottom, chroma, width, dst_top, dst_bottom);
             }
         } else {
             record_420_dispatch_scalar_chunk();
@@ -776,19 +913,37 @@ fn fill_rgb_row_pair_from_420_neon_top_only(
                 fill_rgb_row_pair_from_420_edge_neon_top_only(y_top, chroma, chunk_width, dst_top);
             }
         } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
+            if chunk_width == 1 {
+                record_420_dispatch_scalar_chunk();
+                fill_last_420_pixel_top(y_top, chroma, width, dst_top);
+                sample += chunk_samples;
+                continue;
+            }
             record_420_dispatch_neon_tail_chunk();
+            // A 16k-1 row would otherwise convert 15 pixels through a temporary
+            // RGB array. Overlap the last full vector and repair one pixel.
+            let overlap = chunk_width == UPSAMPLED_LANES - 1;
+            let (tail_sample, tail_x, tail_width) = if overlap {
+                let tail_x = width - (UPSAMPLED_LANES + 1);
+                (tail_x / 2, tail_x, UPSAMPLED_LANES)
+            } else {
+                (sample, x, chunk_width)
+            };
             {
                 fill_rgb_row_pair_from_420_tail_neon_top_only(
                     y_top,
                     chroma,
                     Neon420TailChunk {
-                        sample_offset: sample,
-                        x,
-                        chunk_width,
+                        sample_offset: tail_sample,
+                        x: tail_x,
+                        chunk_width: tail_width,
                         row_width: width,
                     },
                     dst_top,
                 );
+            }
+            if overlap {
+                fill_last_420_pixel_top(y_top, chroma, width, dst_top);
             }
         } else {
             record_420_dispatch_scalar_chunk();
@@ -823,10 +978,6 @@ fn fill_rgb_row_pair_from_420_neon_top_only(
 }
 
 #[target_feature(enable = "neon")]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NEON weighted chroma sums are shifted into the u8 sample range before lane-edge repair"
-)]
 fn fill_rgb_row_pair_from_420_edge_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
@@ -862,14 +1013,6 @@ fn fill_rgb_row_pair_from_420_edge_neon_dual(
     let y_bottom_lo = { load_eight(&y_bottom_tail, 0) };
     let y_bottom_hi = { load_eight(&y_bottom_tail, LANES) };
 
-    let top_cb = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
-    let top_cr = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
-    let bottom_cb = ((u32::from(next_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
-    let bottom_cr = ((u32::from(next_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
-    let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[0], top_cb as u8, top_cr as u8);
-    let (r_bottom, g_bottom, b_bottom) =
-        ycbcr_to_rgb(y_bottom[0], bottom_cb as u8, bottom_cr as u8);
-
     if chunk_width == UPSAMPLED_LANES {
         {
             fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut dst_top[..LANES * 3]);
@@ -892,8 +1035,6 @@ fn fill_rgb_row_pair_from_420_edge_neon_dual(
                 &mut dst_bottom[LANES * 3..UPSAMPLED_LANES * 3],
             );
         }
-        dst_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
-        dst_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
     } else {
         let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
         let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
@@ -913,18 +1054,12 @@ fn fill_rgb_row_pair_from_420_edge_neon_dual(
                 &mut rgb_bottom[LANES * 3..],
             );
         }
-        rgb_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
-        rgb_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
         dst_top[..chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
         dst_bottom[..chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
     }
 }
 
 #[target_feature(enable = "neon")]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NEON weighted chroma sums are shifted into the u8 sample range before lane-edge repair"
-)]
 fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     y_top: &[u8],
     chroma: Rgb420ChromaRows<'_>,
@@ -949,10 +1084,6 @@ fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     let y_lo = { load_eight(&y_top_tail, 0) };
     let y_hi = { load_eight(&y_top_tail, LANES) };
 
-    let cb0 = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
-    let cr0 = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
-    let (r, g, b) = ycbcr_to_rgb(y_top[0], cb0 as u8, cr0 as u8);
-
     if chunk_width == UPSAMPLED_LANES {
         {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst_top[..LANES * 3]);
@@ -963,14 +1094,12 @@ fn fill_rgb_row_pair_from_420_edge_neon_top_only(
                 &mut dst_top[LANES * 3..UPSAMPLED_LANES * 3],
             );
         }
-        dst_top[..3].copy_from_slice(&[r, g, b]);
     } else {
         let mut rgb = [0u8; UPSAMPLED_LANES * 3];
         {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
             fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
         }
-        rgb[..3].copy_from_slice(&[r, g, b]);
         dst_top[..chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
     }
 }
@@ -1198,6 +1327,70 @@ fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: us
     out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the color helper uses standard y/cb/cr and r/g/b channel names"
+)]
+fn last_420_pixel(
+    y: &[u8],
+    near_cb: &[u8],
+    curr_cb: &[u8],
+    near_cr: &[u8],
+    curr_cr: &[u8],
+    width: usize,
+) -> [u8; 3] {
+    let x = width - 1;
+    let cb = h2v2_fancy_sample(near_cb, curr_cb, x);
+    let cr = h2v2_fancy_sample(near_cr, curr_cr, x);
+    let (r, g, b) = ycbcr_to_rgb(y[x], cb, cr);
+    [r, g, b]
+}
+
+fn fill_last_420_pixel_dual(
+    y_top: &[u8],
+    y_bottom: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
+    width: usize,
+    dst_top: &mut [u8],
+    dst_bottom: &mut [u8],
+) {
+    let x = width - 1;
+    let dst = x * 3..x * 3 + 3;
+    dst_top[dst.clone()].copy_from_slice(&last_420_pixel(
+        y_top,
+        chroma.prev_cb,
+        chroma.curr_cb,
+        chroma.prev_cr,
+        chroma.curr_cr,
+        width,
+    ));
+    dst_bottom[dst].copy_from_slice(&last_420_pixel(
+        y_bottom,
+        chroma.next_cb,
+        chroma.curr_cb,
+        chroma.next_cr,
+        chroma.curr_cr,
+        width,
+    ));
+}
+
+fn fill_last_420_pixel_top(
+    y_top: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
+    width: usize,
+    dst_top: &mut [u8],
+) {
+    let x = width - 1;
+    dst_top[x * 3..x * 3 + 3].copy_from_slice(&last_420_pixel(
+        y_top,
+        chroma.prev_cb,
+        chroma.curr_cb,
+        chroma.prev_cr,
+        chroma.curr_cr,
+        width,
+    ));
+}
+
 fn record_420_dispatch_neon_tail_chunk() {
     #[cfg(feature = "bench-internals")]
     crate::bench_support::record_420_dispatch_neon_tail_chunk();
@@ -1337,31 +1530,13 @@ fn fill_chunk_from_vectors(y: uint8x8_t, cb: uint8x8_t, cr: uint8x8_t, dst_chunk
     fill_chunk_from_vectors_u16(y, cb16, cr16, dst_chunk);
 }
 
-// The libjpeg chroma multipliers exceed `i16`, so each is split into a
-// multiple of 65536 plus a remainder that fits a 16-bit lane. For integer `k`,
-// `(65536·k·x + p + ROUND) >> 16 == k·x + ((p + ROUND) >> 16)` exactly, so the
-// split keeps `ycbcr_to_rgb`'s rounding bit for bit while every multiply stays
-// a 16→32-bit widening one and the rest of the math runs eight lanes wide.
-const R_CR_REMAINDER: i16 = narrow_multiplier(FIX_1_40200 - 65_536);
-const G_CB: i16 = narrow_multiplier(FIX_0_34414);
-const G_CR_REMAINDER: i16 = narrow_multiplier(FIX_0_71414 - 65_536);
-const B_CB_REMAINDER: i16 = narrow_multiplier(FIX_1_77200 - 2 * 65_536);
-
-const fn narrow_multiplier(value: i32) -> i16 {
-    assert!(value >= i16::MIN as i32 && value <= i16::MAX as i32);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the range is asserted at compile time"
-    )]
-    let narrowed = value as i16;
-    narrowed
-}
-
-#[target_feature(enable = "neon")]
-fn rounded_high_half(low: int32x4_t, high: int32x4_t) -> int16x8_t {
-    // `vrshrn` computes `(x + ROUND) >> 16` without intermediate overflow.
-    vcombine_s16(vrshrn_n_s32::<16>(low), vrshrn_n_s32::<16>(high))
-}
+// Q14/Q15 constants from libjpeg-turbo's NEON converter. Across the complete
+// centered 8-bit chroma domain (-128..=127), these produce the same rounded
+// integer offsets as the scalar Q16 conversion.
+const R_CR_Q14: i16 = 22_971;
+const G_CB_Q15: i16 = -11_277;
+const G_CR_Q15: i16 = -23_401;
+const B_CB_Q14: i16 = 29_033;
 
 /// Convert eight pixels whose chroma lanes hold 8-bit sample values.
 #[target_feature(enable = "neon")]
@@ -1378,6 +1553,77 @@ fn fill_chunk_from_vectors_u16(y: uint8x8_t, cb: uint16x8_t, cr: uint16x8_t, dst
     neon_memory::store_rgb8(dst, vqmovun_s16(r), vqmovun_s16(g), vqmovun_s16(b));
 }
 
+#[target_feature(enable = "neon")]
+fn upsample_422_pairs16(left: &[u8; 16], right: &[u8; 16]) -> uint8x16x2_t {
+    let left = neon_memory::load_u8x16(left);
+    let right = neon_memory::load_u8x16(right);
+
+    let left_lo = vmovl_u8(vget_low_u8(left));
+    let left_hi = vmovl_high_u8(left);
+    let right_lo = vmovl_u8(vget_low_u8(right));
+    let right_hi = vmovl_high_u8(right);
+    let three_left_lo = vaddq_u16(left_lo, vaddq_u16(left_lo, left_lo));
+    let three_left_hi = vaddq_u16(left_hi, vaddq_u16(left_hi, left_hi));
+    let three_right_lo = vaddq_u16(right_lo, vaddq_u16(right_lo, right_lo));
+    let three_right_hi = vaddq_u16(right_hi, vaddq_u16(right_hi, right_hi));
+
+    let odd_lo = vshrq_n_u16(
+        vaddq_u16(vaddq_u16(three_left_lo, right_lo), vdupq_n_u16(2)),
+        2,
+    );
+    let odd_hi = vshrq_n_u16(
+        vaddq_u16(vaddq_u16(three_left_hi, right_hi), vdupq_n_u16(2)),
+        2,
+    );
+    let even_lo = vshrq_n_u16(
+        vaddq_u16(vaddq_u16(three_right_lo, left_lo), vdupq_n_u16(1)),
+        2,
+    );
+    let even_hi = vshrq_n_u16(
+        vaddq_u16(vaddq_u16(three_right_hi, left_hi), vdupq_n_u16(1)),
+        2,
+    );
+
+    let odd = vcombine_u8(vqmovn_u16(odd_lo), vqmovn_u16(odd_hi));
+    let even = vcombine_u8(vqmovn_u16(even_lo), vqmovn_u16(even_hi));
+    vzipq_u8(odd, even)
+}
+
+#[target_feature(enable = "neon")]
+fn fill_rgb_row_from_422_chunk32_neon(
+    y: &[u8; FUSED_422_PIXELS],
+    cb_left: &[u8; UPSAMPLED_LANES],
+    cb_right: &[u8; UPSAMPLED_LANES],
+    cr_left: &[u8; UPSAMPLED_LANES],
+    cr_right: &[u8; UPSAMPLED_LANES],
+    dst: &mut [u8; FUSED_422_PIXELS * 3],
+) {
+    let cb = upsample_422_pairs16(cb_left, cb_right);
+    let cr = upsample_422_pairs16(cr_left, cr_right);
+    fill_rgb_chunk16_vectors(
+        neon_memory::load_u8x16(
+            y.first_chunk::<UPSAMPLED_LANES>()
+                .expect("fixed first half"),
+        ),
+        cb.0,
+        cr.0,
+        dst.first_chunk_mut::<{ UPSAMPLED_LANES * 3 }>()
+            .expect("fixed first RGB half"),
+    );
+    fill_rgb_chunk16_vectors(
+        neon_memory::load_u8x16(
+            y[UPSAMPLED_LANES..]
+                .first_chunk::<UPSAMPLED_LANES>()
+                .expect("fixed second half"),
+        ),
+        cb.1,
+        cr.1,
+        dst[UPSAMPLED_LANES * 3..]
+            .first_chunk_mut::<{ UPSAMPLED_LANES * 3 }>()
+            .expect("fixed second RGB half"),
+    );
+}
+
 /// `ycbcr_to_rgb` on eight lanes of luma and centered chroma, before the
 /// final unsigned saturation.
 #[target_feature(enable = "neon")]
@@ -1386,33 +1632,22 @@ fn ycbcr_lanes_to_rgb(
     cb: int16x8_t,
     cr: int16x8_t,
 ) -> (int16x8_t, int16x8_t, int16x8_t) {
-    // R = Y + Cr + ((26345·Cr + ROUND) >> 16)
-    let r_fraction = rounded_high_half(
-        vmull_n_s16(vget_low_s16(cr), R_CR_REMAINDER),
-        vmull_high_n_s16(cr, R_CR_REMAINDER),
-    );
-    let r = vaddq_s16(vaddq_s16(y, cr), r_fraction);
+    let r = vaddq_s16(y, vqrdmulhq_n_s16(vshlq_n_s16::<1>(cr), R_CR_Q14));
 
-    // G = Y - Cr - ((22554·Cb - 18734·Cr + ROUND) >> 16)
-    let g_fraction = rounded_high_half(
-        vmlal_n_s16(
-            vmull_n_s16(vget_low_s16(cb), G_CB),
-            vget_low_s16(cr),
-            G_CR_REMAINDER,
-        ),
-        vmlal_high_n_s16(vmull_high_n_s16(cb, G_CB), cr, G_CR_REMAINDER),
+    let g_low = vmlal_n_s16(
+        vmull_n_s16(vget_low_s16(cb), G_CB_Q15),
+        vget_low_s16(cr),
+        G_CR_Q15,
     );
-    let g = vsubq_s16(vsubq_s16(y, cr), g_fraction);
+    let g_high = vmlal_high_n_s16(vmull_high_n_s16(cb, G_CB_Q15), cr, G_CR_Q15);
+    let g = vaddq_s16(
+        y,
+        vcombine_s16(vrshrn_n_s32::<15>(g_low), vrshrn_n_s32::<15>(g_high)),
+    );
 
-    // B = Y + 2·Cb + ((-14942·Cb + ROUND) >> 16)
-    let b_fraction = rounded_high_half(
-        vmull_n_s16(vget_low_s16(cb), B_CB_REMAINDER),
-        vmull_high_n_s16(cb, B_CB_REMAINDER),
-    );
-    let b = vaddq_s16(vaddq_s16(y, vaddq_s16(cb, cb)), b_fraction);
+    let b = vaddq_s16(y, vqrdmulhq_n_s16(vshlq_n_s16::<1>(cb), B_CB_Q14));
     (r, g, b)
 }
-
 /// Sixteen pixels per iteration so loads and the interleaving `st3` store use
 /// full 128-bit registers; two 8-pixel halves would issue twice the
 /// multi-structure store µops.
@@ -1426,6 +1661,16 @@ fn fill_rgb_row_from_ycbcr_chunk16_neon(
     let y = neon_memory::load_u8x16(y);
     let cb = neon_memory::load_u8x16(cb);
     let cr = neon_memory::load_u8x16(cr);
+    fill_rgb_chunk16_vectors(y, cb, cr, dst);
+}
+
+#[target_feature(enable = "neon")]
+fn fill_rgb_chunk16_vectors(
+    y: uint8x16_t,
+    cb: uint8x16_t,
+    cr: uint8x16_t,
+    dst: &mut [u8; UPSAMPLED_LANES * 3],
+) {
     let bias = vdup_n_u8(128);
     // Widening subtraction wraps in `u16`; reinterpreting as `i16` yields the
     // exact centered chroma for 8-bit samples.
@@ -1596,17 +1841,14 @@ fn upsampled_420_chunk16_pair_u16(
 
 #[target_feature(enable = "neon")]
 fn load_eight_triplet(src: &[u8], sample_offset: usize) -> (uint8x8_t, uint8x8_t, uint8x8_t) {
-    let Some(start) = sample_offset.checked_sub(1) else {
-        let zero = neon_memory::load_u8x8(&[0; LANES]);
-        return (zero, zero, zero);
-    };
-    let Some(window) = src
+    // Interior callers prove a left neighbor and eight samples plus a
+    // right neighbor. Edge callers pass a replicated 16-byte window at
+    // offset one. Keep violations explicit instead of synthesizing zeros.
+    let start = sample_offset.checked_sub(1).expect("chroma left neighbor");
+    let window = src
         .get(start..)
         .and_then(<[u8]>::first_chunk::<{ LANES + 2 }>)
-    else {
-        let zero = neon_memory::load_u8x8(&[0; LANES]);
-        return (zero, zero, zero);
-    };
+        .expect("validated chroma triplet window");
     neon_memory::load_u8x8_triplet(window)
 }
 

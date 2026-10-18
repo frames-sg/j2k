@@ -13,7 +13,7 @@ use j2k_core::{
 use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
 
 #[cfg(target_os = "macos")]
-use crate::buffers::checked_buffer_slice_at;
+use crate::buffers::{checked_buffer_borrow_slice_at, checked_buffer_slice_at};
 #[cfg(target_os = "macos")]
 use crate::error::metal_kernel_support_error;
 use crate::Error;
@@ -101,10 +101,11 @@ impl Surface {
 
     /// Return the tightly packed surface bytes.
     ///
-    /// Host storage is borrowed. Metal storage is copied into an owned snapshot
-    /// so safe Rust never exposes a slice that aliases later GPU access.
-    /// Synchronization, access-gate, and checked readback failures are returned
-    /// through the backend's typed error contract.
+    /// Host storage and completed immutable CPU-visible Metal storage are
+    /// borrowed. Reusable Metal storage is copied into an owned snapshot while
+    /// holding its access gate. Synchronization, visibility, bounds, and
+    /// allocation failures are returned through the backend's typed error
+    /// contract.
     pub fn as_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         self.storage_bytes()
     }
@@ -121,32 +122,43 @@ impl Surface {
             Storage::Host(bytes) => Ok(Cow::Borrowed(bytes.as_slice())),
             #[cfg(target_os = "macos")]
             Storage::Metal {
-                resident,
-                reusable_buffer,
+                resident: Some(image),
+                reusable_buffer: None,
                 offset,
-                access_gate,
+                access_gate: None,
             } => {
-                let _access = match access_gate {
-                    Some(gate) => Some(gate.lock().map_err(|_| Error::MetalStatePoisoned {
-                        state: "surface access gate",
-                    })?),
-                    None => None,
-                };
                 let len = self.byte_len();
-                let buffer = match (resident, reusable_buffer) {
-                    (Some(image), None) => {
-                        // SAFETY: completed resident surfaces are read only.
-                        unsafe { image.raw_buffer() }
-                    }
-                    (None, Some(buffer)) => buffer,
-                    _ => {
-                        return Err(Error::MetalKernel {
-                            message: "JPEG Metal surface storage invariant failed".to_string(),
-                        })
-                    }
+                // SAFETY: completed resident surfaces are logically immutable,
+                // and the returned borrow cannot outlive `self` or its retained
+                // allocation. Unsafe raw aliases keep their existing no-writer
+                // contract for the borrow's lifetime.
+                let bytes = unsafe {
+                    checked_buffer_borrow_slice_at(
+                        image.raw_buffer(),
+                        *offset,
+                        len,
+                        "surface bytes",
+                    )?
                 };
+                Ok(Cow::Borrowed(bytes))
+            }
+            #[cfg(target_os = "macos")]
+            Storage::Metal {
+                resident: None,
+                reusable_buffer: Some(buffer),
+                offset,
+                access_gate: Some(gate),
+            } => {
+                let _access = gate.lock().map_err(|_| Error::MetalStatePoisoned {
+                    state: "surface access gate",
+                })?;
+                let len = self.byte_len();
                 checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes").map(Cow::Owned)
             }
+            #[cfg(target_os = "macos")]
+            Storage::Metal { .. } => Err(Error::MetalKernel {
+                message: "JPEG Metal surface storage invariant failed".to_string(),
+            }),
         }
     }
 
@@ -165,9 +177,10 @@ impl Surface {
     /// The caller must synchronize every CPU and GPU access made through the
     /// returned buffer or any handle cloned from it. The internal safe-access
     /// gate cannot observe work submitted through raw handles. In particular,
-    /// no command may write the surface range while [`Surface::as_bytes`] or
-    /// [`Surface::download_into`] reads it, and no raw access may overlap a safe
-    /// decoder write through an aliasing [`MetalBatchOutputBuffer`].
+    /// no command may write the surface range for the entire lifetime of a
+    /// borrowed slice returned by [`Surface::as_bytes`]. No write may overlap
+    /// [`Surface::download_into`], and no raw access may overlap a safe decoder
+    /// write through an aliasing [`MetalBatchOutputBuffer`].
     pub unsafe fn metal_buffer(
         &self,
     ) -> Option<(
@@ -269,7 +282,8 @@ impl Surface {
         let layout = MetalImageLayout::new(offset, dimensions, pitch_bytes, fmt)
             .map_err(|source| metal_kernel_support_error("JPEG Metal surface layout", source))?;
         // SAFETY: these crate-private constructors are used by producer paths
-        // that retain and complete the sole writer before exposing a surface.
+        // that either have completed the sole writer or keep the surface inside
+        // a pending operation until that writer completes.
         let image = unsafe { ResidentMetalImage::from_exclusive_pending_buffer(buffer, layout) }
             .map_err(|source| metal_kernel_support_error("JPEG Metal resident surface", source))?;
         Ok(Self {

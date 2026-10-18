@@ -446,17 +446,40 @@ fn large_fast_420_region_decode_populates_cpu_entropy_checkpoints() {
 
 #[test]
 fn decoder_retained_bytes_are_owned_metadata_without_the_context_reserve() {
-    use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
-
+    let mut first_retained = None;
     for bytes in [dc_only_420_jpeg(16, 16), dc_only_420_jpeg(1024, 2048)] {
         let dec = Decoder::new(&bytes).expect("decoder");
+        let huffman_bytes = dec
+            .plan
+            .huffman_tables
+            .retained_allocation_bytes()
+            .expect("Huffman bytes");
         let expected = dec.plan.retained_allocation_bytes().expect("plan bytes")
             + dec.warnings.capacity() * core::mem::size_of::<Warning>();
         let retained = dec
             .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
             .expect("retained bytes");
         assert_eq!(retained, expected);
-        assert!(retained < MAX_DECODER_CONTEXT_ALLOCATION_BYTES / 64);
+        let non_huffman_bytes = retained
+            .checked_sub(huffman_bytes)
+            .expect("Huffman bytes are part of retained metadata");
+        if let Some((first_retained, first_huffman, first_non_huffman)) = first_retained {
+            assert!(
+                huffman_bytes > first_huffman,
+                "large custom-table fixture must select wider Huffman metadata"
+            );
+            assert_eq!(
+                non_huffman_bytes, first_non_huffman,
+                "pixel dimensions must not retain storage outside selected Huffman metadata"
+            );
+            assert_eq!(
+                retained - first_retained,
+                huffman_bytes - first_huffman,
+                "all dimension-dependent retained bytes must be owned Huffman metadata"
+            );
+        } else {
+            first_retained = Some((retained, huffman_bytes, non_huffman_bytes));
+        }
     }
 }
 

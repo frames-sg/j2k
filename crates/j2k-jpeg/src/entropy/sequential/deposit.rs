@@ -90,6 +90,18 @@ pub(super) fn idct_deposit_fast_tile_block(
             let pixel = crate::idct::idct_islow_dc_only_pixel(coeff.dc_coeff());
             deposit_dc_block(target.plane, target.stride, target.x, target.y, pixel);
         }
+        BlockActivity::TopLeft2x2 => {
+            backend.idct_top_left_2x2(coeff.coefficients(), pixels);
+            deposit_block(target.plane, target.stride, target.x, target.y, pixels);
+        }
+        BlockActivity::TopLeftQuadrant => {
+            backend.idct_top_left_quadrant(coeff.coefficients(), pixels);
+            deposit_block(target.plane, target.stride, target.x, target.y, pixels);
+        }
+        BlockActivity::RightHalfZero => {
+            backend.idct_right_half_zero(coeff.coefficients(), pixels);
+            deposit_block(target.plane, target.stride, target.x, target.y, pixels);
+        }
         BlockActivity::BottomHalfZero => {
             backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
             deposit_block(target.plane, target.stride, target.x, target.y, pixels);
@@ -134,10 +146,10 @@ pub(super) struct PlaneBlockTarget<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct FastTile420Components<'a> {
-    pub(super) y: ResolvedPreparedComponentPlan<'a>,
-    pub(super) cb: ResolvedPreparedComponentPlan<'a>,
-    pub(super) cr: ResolvedPreparedComponentPlan<'a>,
+pub(super) struct FastTile420Components<'a, const N: usize> {
+    pub(super) y: ResolvedPreparedComponentPlan<'a, N>,
+    pub(super) cb: ResolvedPreparedComponentPlan<'a, N>,
+    pub(super) cr: ResolvedPreparedComponentPlan<'a, N>,
 }
 
 pub(super) struct FastTile420DcState<'a> {
@@ -210,6 +222,10 @@ pub(super) struct FastTile420Window {
     pub(super) mcus_per_row: u32,
     pub(super) stripe_mcu_start: u32,
     pub(super) stripe_mcus_per_row: u32,
+    /// Whether the final coded MCU's right luma blocks intersect the image.
+    pub(super) right_luma: bool,
+    /// Whether this row's bottom luma blocks intersect the image.
+    pub(super) bottom_luma: bool,
 }
 
 impl FastTile420Window {

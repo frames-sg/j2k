@@ -27,7 +27,7 @@ pub(crate) use self::layout::{fast_tile_region_first_decode_mcu, stripe_region_l
 use self::layout::{scaled_dimensions, uses_fancy_420_emit, Fast420RegionLayout};
 use self::output_scratch::{OutputScratch, RgbOutputScratch};
 pub(crate) use self::plan::{
-    PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
+    HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
 pub(crate) use self::restart::finish_scan;
 pub(crate) use self::rgb444::decode_scan_fast_rgb_444;

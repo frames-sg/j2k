@@ -88,6 +88,7 @@ pub(crate) mod encoded_output;
 mod baseline_encode_contract;
 mod baseline_entropy;
 mod dct_contract;
+mod standard_huffman;
 
 /// Baseline JPEG encoder API.
 mod encoder;

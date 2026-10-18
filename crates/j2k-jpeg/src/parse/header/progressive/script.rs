@@ -28,10 +28,46 @@ impl<'a> ProgressiveScriptState<'a> {
         marker_offset: usize,
         scan: &ParsedScan,
     ) -> Result<(), JpegError> {
-        self.for_each_selected(marker_offset, scan, |component, coefficient, previous| {
-            validate_transition(marker_offset, component, coefficient, previous, scan)
-        })?;
-        self.for_each_selected_mut(marker_offset, scan, |state| *state = scan.al)?;
+        let start = usize::from(scan.ss);
+        let end = usize::from(scan.se);
+        let expected = if scan.ah == 0 { UNINITIALIZED } else { scan.ah };
+        let mut component_indices = [0usize; MAX_COMPONENTS];
+        for (slot, scan_component) in scan.components.iter().enumerate() {
+            let component_index = self.component_index(scan_component.id, marker_offset)?;
+            component_indices[slot] = component_index;
+            let selected = &self.approximation[component_index][start..=end];
+            let difference = selected.iter().fold(0u8, |difference, &previous| {
+                difference | (previous ^ expected)
+            });
+            if difference != 0 {
+                let offset = selected
+                    .iter()
+                    .position(|&previous| previous != expected)
+                    .ok_or(JpegError::InternalInvariant {
+                        reason: "progressive scan state reduction disagrees with its range",
+                    })?;
+                let coefficient = scan
+                    .ss
+                    .checked_add(u8::try_from(offset).map_err(|_| {
+                        JpegError::InternalInvariant {
+                            reason: "progressive coefficient offset exceeds the JPEG range",
+                        }
+                    })?)
+                    .ok_or(JpegError::InternalInvariant {
+                        reason: "progressive coefficient exceeds the JPEG range",
+                    })?;
+                return validate_transition(
+                    marker_offset,
+                    scan_component.id,
+                    coefficient,
+                    selected[offset],
+                    scan,
+                );
+            }
+        }
+        for &component_index in &component_indices[..scan.components.len()] {
+            self.approximation[component_index][start..=end].fill(scan.al);
+        }
         Ok(())
     }
 
@@ -45,40 +81,6 @@ impl<'a> ProgressiveScriptState<'a> {
                     0,
                     ProgressiveScanStateError::MissingInitialDc,
                 ));
-            }
-        }
-        Ok(())
-    }
-
-    fn for_each_selected(
-        &self,
-        marker_offset: usize,
-        scan: &ParsedScan,
-        mut visit: impl FnMut(u8, u8, u8) -> Result<(), JpegError>,
-    ) -> Result<(), JpegError> {
-        for scan_component in &scan.components {
-            let component_index = self.component_index(scan_component.id, marker_offset)?;
-            for coefficient in scan.ss..=scan.se {
-                visit(
-                    scan_component.id,
-                    coefficient,
-                    self.approximation[component_index][usize::from(coefficient)],
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn for_each_selected_mut(
-        &mut self,
-        marker_offset: usize,
-        scan: &ParsedScan,
-        mut visit: impl FnMut(&mut u8),
-    ) -> Result<(), JpegError> {
-        for scan_component in &scan.components {
-            let component_index = self.component_index(scan_component.id, marker_offset)?;
-            for coefficient in scan.ss..=scan.se {
-                visit(&mut self.approximation[component_index][usize::from(coefficient)]);
             }
         }
         Ok(())

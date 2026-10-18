@@ -276,12 +276,14 @@ fn cuda_resident_batch_encode_preserves_order_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_resident_encode_rejects_cpu_backend_without_fallback() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
     let width = 8;
     let height = 8;
     let pixels = patterned_rgb(width, height);
-    let Ok(context) = j2k_cuda_runtime::CudaContext::system_default() else {
-        return;
-    };
+    let context = j2k_cuda_runtime::CudaContext::system_default().expect("required CUDA context");
     let buffer = context.upload(&pixels).expect("upload rgb pixels");
     let mut session = j2k_jpeg_cuda::CudaSession::default();
     let error = j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(

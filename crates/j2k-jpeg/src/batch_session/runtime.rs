@@ -58,21 +58,34 @@ impl JpegBatchSession {
         plan_capacity_bytes: usize,
         min_output_len: usize,
     ) -> Result<BatchPlan, BatchInfrastructureError> {
-        let mut desired_workers =
-            tile_batch_worker_count(plans.len(), self.options, available_tile_batch_workers());
-        let small_output_default_batch = self.cap_small_output_default_workers
-            && self.options.workers.is_none()
-            && min_output_len <= SMALL_OUTPUT_BYTES;
-        if small_output_default_batch {
-            desired_workers = desired_workers.min(SMALL_OUTPUT_DEFAULT_WORKER_CAP);
-        }
+        self.prepare_batch_with_shared_codec_bytes::<R, O>(
+            plans,
+            plan_capacity_bytes,
+            min_output_len,
+            0,
+        )
+    }
 
-        let mut retained = self.prepare_retained_summary(plan_capacity_bytes)?;
+    pub(super) fn prepare_batch_with_shared_codec_bytes<R, O>(
+        &mut self,
+        plans: &[PlannedJob],
+        plan_capacity_bytes: usize,
+        min_output_len: usize,
+        shared_codec_bytes: usize,
+    ) -> Result<BatchPlan, BatchInfrastructureError> {
+        let desired_workers = self.desired_batch_worker_count(plans.len(), min_output_len);
+
+        let mut retained =
+            self.prepare_retained_summary(plan_capacity_bytes, shared_codec_bytes)?;
         let mut metadata = self
             .batch_metadata_layout::<R, O>(plan_capacity_bytes, vec_capacity_bytes(&retained)?)?;
-        let mut plan = select_batch_plan(plans, desired_workers, metadata, |worker| {
-            retained.get(worker).copied().unwrap_or(0)
-        });
+        let mut plan = select_batch_plan(
+            plans,
+            desired_workers,
+            metadata,
+            shared_codec_bytes,
+            |worker| retained.get(worker).copied().unwrap_or(0),
+        );
         if plan.is_err() && retained.iter().any(|&bytes| bytes != 0) {
             for slot in &mut self.workers {
                 slot.get_mut()
@@ -80,7 +93,7 @@ impl JpegBatchSession {
                     .release_allocations();
             }
             retained.fill(0);
-            plan = select_batch_plan(plans, desired_workers, metadata, |_| 0);
+            plan = select_batch_plan(plans, desired_workers, metadata, shared_codec_bytes, |_| 0);
         }
         if plan.is_err() && self.workers.capacity() > desired_workers {
             self.workers = Vec::new();
@@ -89,7 +102,7 @@ impl JpegBatchSession {
                 plan_capacity_bytes,
                 vec_capacity_bytes(&retained)?,
             )?;
-            plan = select_batch_plan(plans, desired_workers, metadata, |_| 0);
+            plan = select_batch_plan(plans, desired_workers, metadata, shared_codec_bytes, |_| 0);
         }
         let mut plan = plan?;
 
@@ -103,13 +116,21 @@ impl JpegBatchSession {
                     cap: JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
                 },
             )?;
-        self.ensure_planning_live_bytes(plan_capacity_bytes, requested_post_summary_bytes)?;
+        self.ensure_planning_live_bytes(
+            plan_capacity_bytes,
+            requested_post_summary_bytes,
+            shared_codec_bytes,
+        )?;
         let mut post_retained = try_vec_with_capacity(
             self.workers.len(),
             "JPEG post-reservation worker allocation summary",
         )?;
         let actual_post_summary_bytes = vec_capacity_bytes(&post_retained)?;
-        self.ensure_planning_live_bytes(plan_capacity_bytes, actual_post_summary_bytes)?;
+        self.ensure_planning_live_bytes(
+            plan_capacity_bytes,
+            actual_post_summary_bytes,
+            shared_codec_bytes,
+        )?;
         for slot in &mut self.workers {
             post_retained.push(
                 slot.get_mut()
@@ -122,12 +143,36 @@ impl JpegBatchSession {
             vec_capacity_bytes(&post_retained)?,
         )?;
         metadata.worker_slot_capacity = self.workers.capacity();
-        plan = select_batch_plan(plans, plan.worker_count, metadata, |worker| {
-            post_retained.get(worker).copied().unwrap_or(0)
-        })?;
+        plan = select_batch_plan(
+            plans,
+            plan.worker_count,
+            metadata,
+            shared_codec_bytes,
+            |worker| post_retained.get(worker).copied().unwrap_or(0),
+        )?;
         self.workers.truncate(plan.worker_count);
         self.active_workers = plan.worker_count;
         Ok(plan)
+    }
+
+    pub(super) fn desired_batch_worker_count(
+        &self,
+        job_count: usize,
+        min_output_len: usize,
+    ) -> usize {
+        let available_workers = self
+            .options
+            .workers
+            .map_or_else(available_tile_batch_workers, core::num::NonZeroUsize::get);
+        let mut desired_workers =
+            tile_batch_worker_count(job_count, self.options, available_workers);
+        let small_output_default_batch = self.cap_small_output_default_workers
+            && self.options.workers.is_none()
+            && min_output_len <= SMALL_OUTPUT_BYTES;
+        if small_output_default_batch {
+            desired_workers = desired_workers.min(SMALL_OUTPUT_DEFAULT_WORKER_CAP);
+        }
+        desired_workers
     }
 
     fn batch_metadata_layout<R, O>(
@@ -163,6 +208,7 @@ impl JpegBatchSession {
     fn prepare_retained_summary(
         &mut self,
         plan_capacity_bytes: usize,
+        shared_codec_bytes: usize,
     ) -> Result<Vec<usize>, BatchInfrastructureError> {
         let mut requested_summary_bytes =
             self.workers.len().checked_mul(size_of::<usize>()).ok_or(
@@ -172,14 +218,26 @@ impl JpegBatchSession {
                     cap: JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
                 },
             )?;
-        if self.planning_live_exceeds_cap(plan_capacity_bytes, requested_summary_bytes)? {
+        if self.planning_live_exceeds_cap(
+            plan_capacity_bytes,
+            requested_summary_bytes,
+            shared_codec_bytes,
+        )? {
             self.release_worker_allocations()?;
         }
-        if self.planning_live_exceeds_cap(plan_capacity_bytes, requested_summary_bytes)? {
+        if self.planning_live_exceeds_cap(
+            plan_capacity_bytes,
+            requested_summary_bytes,
+            shared_codec_bytes,
+        )? {
             self.workers = Vec::new();
             requested_summary_bytes = 0;
         }
-        self.ensure_planning_live_bytes(plan_capacity_bytes, requested_summary_bytes)?;
+        self.ensure_planning_live_bytes(
+            plan_capacity_bytes,
+            requested_summary_bytes,
+            shared_codec_bytes,
+        )?;
 
         let mut retained = try_vec_with_capacity(
             self.workers.len(),
@@ -193,7 +251,11 @@ impl JpegBatchSession {
             );
         }
         let actual_summary_bytes = vec_capacity_bytes(&retained)?;
-        match self.ensure_planning_live_bytes(plan_capacity_bytes, actual_summary_bytes) {
+        match self.ensure_planning_live_bytes(
+            plan_capacity_bytes,
+            actual_summary_bytes,
+            shared_codec_bytes,
+        ) {
             Ok(()) => return Ok(retained),
             Err(BatchInfrastructureError::AllocationTooLarge { .. }) => {}
             Err(error) => return Err(error),
@@ -204,7 +266,7 @@ impl JpegBatchSession {
         drop(retained);
         self.release_worker_allocations()?;
         self.workers = Vec::new();
-        self.ensure_planning_live_bytes(plan_capacity_bytes, 0)?;
+        self.ensure_planning_live_bytes(plan_capacity_bytes, 0, shared_codec_bytes)?;
         Ok(Vec::new())
     }
 
@@ -221,6 +283,7 @@ impl JpegBatchSession {
         &mut self,
         plan_capacity_bytes: usize,
         summary_capacity_bytes: usize,
+        shared_codec_bytes: usize,
     ) -> Result<(usize, usize), BatchInfrastructureError> {
         let mut metadata_bytes = checked_add(
             plan_capacity_bytes,
@@ -234,7 +297,7 @@ impl JpegBatchSession {
             "JPEG batch planning metadata",
             JPEG_BATCH_METADATA_ALLOWANCE_BYTES,
         )?;
-        let mut codec_bytes = 0usize;
+        let mut codec_bytes = shared_codec_bytes;
         for slot in &mut self.workers {
             codec_bytes = checked_add(
                 codec_bytes,
@@ -252,9 +315,13 @@ impl JpegBatchSession {
         &mut self,
         plan_capacity_bytes: usize,
         summary_capacity_bytes: usize,
+        shared_codec_bytes: usize,
     ) -> Result<(), BatchInfrastructureError> {
-        let (codec_bytes, metadata_bytes) =
-            self.planning_domain_bytes(plan_capacity_bytes, summary_capacity_bytes)?;
+        let (codec_bytes, metadata_bytes) = self.planning_domain_bytes(
+            plan_capacity_bytes,
+            summary_capacity_bytes,
+            shared_codec_bytes,
+        )?;
         ensure_live_domains(codec_bytes, metadata_bytes, "JPEG batch planning live set")?;
         Ok(())
     }
@@ -263,8 +330,13 @@ impl JpegBatchSession {
         &mut self,
         plan_capacity_bytes: usize,
         summary_capacity_bytes: usize,
+        shared_codec_bytes: usize,
     ) -> Result<bool, BatchInfrastructureError> {
-        match self.ensure_planning_live_bytes(plan_capacity_bytes, summary_capacity_bytes) {
+        match self.ensure_planning_live_bytes(
+            plan_capacity_bytes,
+            summary_capacity_bytes,
+            shared_codec_bytes,
+        ) {
             Ok(()) => Ok(false),
             Err(BatchInfrastructureError::AllocationTooLarge { .. }) => Ok(true),
             Err(error) => Err(error),

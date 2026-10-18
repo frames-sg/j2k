@@ -8,8 +8,9 @@ mod row;
 use self::driver::{decode_scan_rows, ScanBuffers, ScanOutputMode, ScanSetup, StripeEmitter};
 use super::emit::{emit_stripe, emit_stripe_rgb, StripeEmit};
 use super::layout::uses_fancy_420_emit;
-use super::{OutputScratch, PreparedDecodePlan, RgbOutputScratch};
+use super::{HuffmanPrimaryWidth, OutputScratch, PreparedDecodePlan, RgbOutputScratch};
 use crate::backend::Backend;
+use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::{JpegError, Warning};
 use crate::info::{ColorSpace, DownscaleFactor, Rect};
 use crate::internal::scratch::ScratchPool;
@@ -58,6 +59,41 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
     downscale: DownscaleFactor,
     output_rect: Rect,
 ) -> Result<Vec<Warning>, JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_baseline_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
+                plan,
+                backend,
+                scan_bytes,
+                pool,
+                writer,
+                downscale,
+                output_rect,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_baseline_with_entries::<FULL_PRIMARY_ENTRIES, W>(
+                plan,
+                backend,
+                scan_bytes,
+                pool,
+                writer,
+                downscale,
+                output_rect,
+            )
+        }
+    }
+}
+
+fn decode_scan_baseline_with_entries<const N: usize, W: OutputWriter>(
+    plan: &PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &[u8],
+    pool: &mut ScratchPool,
+    writer: &mut W,
+    downscale: DownscaleFactor,
+    output_rect: Rect,
+) -> Result<Vec<Warning>, JpegError> {
     let setup = ScanSetup::new(plan, downscale, output_rect, ScanOutputMode::ComponentRows);
     setup.prepare_pool(plan, pool)?;
     let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
@@ -84,7 +120,7 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
         writer,
         scratch,
     };
-    decode_scan_rows(
+    decode_scan_rows::<N, _>(
         plan,
         backend,
         scan_bytes,
@@ -101,6 +137,41 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
 }
 
 pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
+    plan: &PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &[u8],
+    pool: &mut ScratchPool,
+    writer: &mut W,
+    downscale: DownscaleFactor,
+    output_rect: Rect,
+) -> Result<Vec<Warning>, JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_baseline_rgb_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
+                plan,
+                backend,
+                scan_bytes,
+                pool,
+                writer,
+                downscale,
+                output_rect,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_baseline_rgb_with_entries::<FULL_PRIMARY_ENTRIES, W>(
+                plan,
+                backend,
+                scan_bytes,
+                pool,
+                writer,
+                downscale,
+                output_rect,
+            )
+        }
+    }
+}
+
+fn decode_scan_baseline_rgb_with_entries<const N: usize, W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -135,7 +206,7 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
         writer,
         scratch,
     };
-    decode_scan_rows(
+    decode_scan_rows::<N, _>(
         plan,
         backend,
         scan_bytes,

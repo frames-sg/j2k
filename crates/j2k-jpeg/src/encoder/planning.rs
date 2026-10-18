@@ -8,6 +8,7 @@ use crate::adapter::{
     jpeg_baseline_entropy_capacity_bytes, JpegBaselineSampling,
 };
 use crate::allocation::AllocationBudgetError;
+use crate::encoded_output::JPEG_BASELINE_FRAME_OVERHEAD_CAPACITY;
 
 use super::entropy::entropy_host_workspace_bytes;
 use super::{JpegEncodeError, JpegSamples};
@@ -28,8 +29,16 @@ pub(super) fn checked_cpu_encode_capacity_plan(
         JpegSamples::Gray8 { width, height, .. } => (width, height, 0),
         JpegSamples::Rgb8 { width, height, .. } => (width, height, expected_sample_len),
     };
-    let entropy_capacity =
+    let theoretical_entropy_capacity =
         jpeg_baseline_entropy_capacity_bytes(width, height, sampling, restart_interval)?;
+    let entropy_capacity = if restart_interval.is_none() {
+        theoretical_entropy_capacity.min(cpu_serial_entropy_capacity_limit(
+            owned_plane_bytes,
+            usize::from(sampling.components),
+        )?)
+    } else {
+        theoretical_entropy_capacity
+    };
     let entropy_workspace_bytes =
         entropy_host_workspace_bytes(width, height, sampling, restart_interval, entropy_capacity)?;
     checked_cpu_encode_live_bytes(
@@ -45,6 +54,28 @@ pub(super) fn checked_cpu_encode_capacity_plan(
         entropy_workspace_bytes,
         plane_capacity_limit,
     })
+}
+
+// The serial CPU path retains component planes and entropy while allocating
+// the final frame. Bound entropy so that its full reservation plus the equally
+// sized frame payload and fixed frame overhead fit the shared host cap. A
+// stream that exceeds this allowance fails through the existing capped writer.
+fn cpu_serial_entropy_capacity_limit(
+    owned_plane_bytes: usize,
+    component_count: usize,
+) -> Result<usize, JpegEncodeError> {
+    let plane_metadata_bytes = core::mem::size_of::<Cow<'static, [u8]>>()
+        .checked_mul(component_count)
+        .ok_or(JpegEncodeError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })?;
+    let fixed_bytes = checked_encode_host_live_bytes([
+        owned_plane_bytes,
+        plane_metadata_bytes,
+        JPEG_BASELINE_FRAME_OVERHEAD_CAPACITY,
+    ])?;
+    Ok((DEFAULT_MAX_HOST_ALLOCATION_BYTES - fixed_bytes) / 2)
 }
 
 pub(super) fn checked_sample_byte_len(

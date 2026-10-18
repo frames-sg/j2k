@@ -55,6 +55,11 @@ struct JpegBaselineBitWriter {
     bool overflow;
 };
 
+struct JpegBaselineRawBitWriter {
+    uint bits;
+    bool overflow;
+};
+
 struct JpegFast420Params {
     uint width;
     uint height;
@@ -300,11 +305,13 @@ constant uint OUT_RGB = 1;
 constant uint OUT_RGBA = 2;
 
 constant uint JPEG_BASELINE_ENCODE_FORMAT_GRAY8 = 0;
-constant uint JPEG_BASELINE_ENCODE_FORMAT_RGB8 = 1;
 constant uint JPEG_BASELINE_ENCODE_STATUS_OK = 0;
 constant uint JPEG_BASELINE_ENCODE_STATUS_OVERFLOW = 1;
 constant uint JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN = 2;
 constant uint JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS = 3;
+// Six baseline blocks * 250 worst-case raw entropy bytes, rounded up for
+// byte-addressed per-MCU scratch.
+constant uint JPEG_BASELINE_ENCODE_SEGMENT_BYTES = 1536;
 
 constant uint FAST420_STATUS_OK = 0;
 constant uint FAST420_STATUS_TRUNCATED = 1;
@@ -527,26 +534,43 @@ inline void jpeg_encode_push_data_byte(
     }
 }
 
-inline void jpeg_encode_write_bits(
+// Append at most one source byte whose valid bits occupy the low `len` bits.
+// Unlike jpeg_encode_write_bits, this emits a completed byte at once instead
+// of replaying every bit; it is used by the segment compaction pass.
+inline void jpeg_encode_append_raw_bits(
     device uchar *entropy,
     uint capacity,
     thread JpegBaselineBitWriter &writer,
-    ushort code,
+    ushort bits,
     uint len
 ) {
-    for (int bit = int(len) - 1; bit >= 0; bit--) {
-        const uchar value = uchar((code >> uint(bit)) & 1u);
-        writer.current = uchar((writer.current << 1u) | value);
-        writer.used += 1u;
-        if (writer.used == 8u) {
-            jpeg_encode_push_data_byte(entropy, capacity, writer, writer.current);
-            writer.current = 0;
-            writer.used = 0u;
-            if (writer.overflow) {
-                return;
-            }
-        }
+    if (len == 0u || writer.overflow) {
+        return;
     }
+    if (writer.used == 0u && len == 8u) {
+        jpeg_encode_push_data_byte(entropy, capacity, writer, uchar(bits));
+        return;
+    }
+    const uint available = 8u - writer.used;
+    if (len < available) {
+        writer.current = uchar((ushort(writer.current) << len) | bits);
+        writer.used += len;
+        return;
+    }
+
+    const uint remaining = len - available;
+    writer.current = uchar(
+        (ushort(writer.current) << available)
+        | (bits >> remaining)
+    );
+    jpeg_encode_push_data_byte(entropy, capacity, writer, writer.current);
+    writer.current = 0;
+    writer.used = 0u;
+    if (writer.overflow || remaining == 0u) {
+        return;
+    }
+    writer.current = uchar(bits & ushort((1u << remaining) - 1u));
+    writer.used = remaining;
 }
 
 inline void jpeg_encode_align_with_ones(
@@ -601,10 +625,38 @@ inline ushort jpeg_encode_magnitude_bits(int value, uint size) {
     return ushort(value + int((1u << size) - 1u));
 }
 
-inline bool jpeg_encode_write_symbol(
+inline void jpeg_encode_write_raw_bits(
     device uchar *entropy,
     uint capacity,
-    thread JpegBaselineBitWriter &writer,
+    thread JpegBaselineRawBitWriter &writer,
+    ushort code,
+    uint len
+) {
+    uint remaining = len;
+    while (remaining > 0u) {
+        const uint byte_position = writer.bits >> 3u;
+        if (byte_position >= capacity) {
+            writer.overflow = true;
+            return;
+        }
+        const uint bit_position = writer.bits & 7u;
+        if (bit_position == 0u) {
+            entropy[byte_position] = 0;
+        }
+        const uint take = min(8u - bit_position, remaining);
+        const uint source_shift = remaining - take;
+        const ushort mask = ushort((1u << take) - 1u);
+        const uchar chunk = uchar((code >> source_shift) & mask);
+        entropy[byte_position] |= uchar(chunk << (8u - bit_position - take));
+        writer.bits += take;
+        remaining -= take;
+    }
+}
+
+inline bool jpeg_encode_write_raw_symbol(
+    device uchar *entropy,
+    uint capacity,
+    thread JpegBaselineRawBitWriter &writer,
     constant JpegBaselineEncodeHuffmanTable &table,
     uint symbol,
     device JpegBaselineEncodeStatus *status
@@ -615,7 +667,7 @@ inline bool jpeg_encode_write_symbol(
         status->detail = symbol;
         return false;
     }
-    jpeg_encode_write_bits(entropy, capacity, writer, table.codes[symbol], len);
+    jpeg_encode_write_raw_bits(entropy, capacity, writer, table.codes[symbol], len);
     if (writer.overflow) {
         status->code = JPEG_BASELINE_ENCODE_STATUS_OVERFLOW;
         return false;
@@ -623,24 +675,24 @@ inline bool jpeg_encode_write_symbol(
     return true;
 }
 
-inline bool jpeg_encode_block(
-    thread const int coeffs[64],
+inline bool jpeg_encode_raw_block(
+    device const int *coeffs,
     thread int &prev_dc,
     constant JpegBaselineEncodeHuffmanTable &dc_table,
     constant JpegBaselineEncodeHuffmanTable &ac_table,
     device uchar *entropy,
     uint capacity,
-    thread JpegBaselineBitWriter &writer,
+    thread JpegBaselineRawBitWriter &writer,
     device JpegBaselineEncodeStatus *status
 ) {
     const int diff = coeffs[0] - prev_dc;
     prev_dc = coeffs[0];
     const uint dc_size = jpeg_encode_magnitude_category(diff);
-    if (!jpeg_encode_write_symbol(entropy, capacity, writer, dc_table, dc_size, status)) {
+    if (!jpeg_encode_write_raw_symbol(entropy, capacity, writer, dc_table, dc_size, status)) {
         return false;
     }
     if (dc_size > 0u) {
-        jpeg_encode_write_bits(
+        jpeg_encode_write_raw_bits(
             entropy,
             capacity,
             writer,
@@ -654,24 +706,24 @@ inline bool jpeg_encode_block(
     }
 
     uint zero_run = 0u;
-    for (uint k = 1u; k < 64u; k++) {
+    for (uint k = 1u; k < 64u; ++k) {
         const int coeff = coeffs[ZIGZAG[k]];
         if (coeff == 0) {
             zero_run += 1u;
             continue;
         }
         while (zero_run >= 16u) {
-            if (!jpeg_encode_write_symbol(entropy, capacity, writer, ac_table, 0xf0u, status)) {
+            if (!jpeg_encode_write_raw_symbol(entropy, capacity, writer, ac_table, 0xf0u, status)) {
                 return false;
             }
             zero_run -= 16u;
         }
         const uint size = jpeg_encode_magnitude_category(coeff);
         const uint symbol = (zero_run << 4u) | size;
-        if (!jpeg_encode_write_symbol(entropy, capacity, writer, ac_table, symbol, status)) {
+        if (!jpeg_encode_write_raw_symbol(entropy, capacity, writer, ac_table, symbol, status)) {
             return false;
         }
-        jpeg_encode_write_bits(
+        jpeg_encode_write_raw_bits(
             entropy,
             capacity,
             writer,
@@ -685,7 +737,7 @@ inline bool jpeg_encode_block(
         zero_run = 0u;
     }
     if (zero_run > 0u) {
-        return jpeg_encode_write_symbol(entropy, capacity, writer, ac_table, 0u, status);
+        return jpeg_encode_write_raw_symbol(entropy, capacity, writer, ac_table, 0u, status);
     }
     return true;
 }
@@ -701,109 +753,4 @@ inline uint jpeg_encode_blocks_per_mcu(
         blocks += params.h2 * params.v2;
     }
     return blocks;
-}
-
-inline void jpeg_encode_baseline_entropy_from_coeffs_one(
-    device const int *tile_coeffs,
-    device uchar *entropy,
-    device JpegBaselineEncodeStatus *status,
-    constant JpegBaselineEncodeParams &params,
-    constant JpegBaselineEncodeHuffmanTable &dc_luma,
-    constant JpegBaselineEncodeHuffmanTable &ac_luma,
-    constant JpegBaselineEncodeHuffmanTable &dc_chroma,
-    constant JpegBaselineEncodeHuffmanTable &ac_chroma
-) {
-    status->code = JPEG_BASELINE_ENCODE_STATUS_OK;
-    status->entropy_len = 0u;
-    status->detail = 0u;
-
-    const uint blocks_per_mcu = jpeg_encode_blocks_per_mcu(params);
-    if (
-        params.output_width == 0u ||
-        params.output_height == 0u ||
-        params.mcus_per_row == 0u ||
-        params.mcu_rows == 0u ||
-        blocks_per_mcu == 0u
-    ) {
-        status->code = JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS;
-        return;
-    }
-
-    thread JpegBaselineBitWriter writer;
-    writer.pos = 0u;
-    writer.current = 0;
-    writer.used = 0u;
-    writer.overflow = false;
-    thread int prev_dc[3] = {0, 0, 0};
-    uint mcus_since_restart = 0u;
-    uint rst = 0u;
-    uint block_index = 0u;
-
-    for (uint mcu_y = 0u; mcu_y < params.mcu_rows; mcu_y++) {
-        for (uint mcu_x = 0u; mcu_x < params.mcus_per_row; mcu_x++) {
-            if (params.restart_interval_mcus != 0u && mcus_since_restart == params.restart_interval_mcus) {
-                jpeg_encode_push_restart_marker(entropy, params.entropy_capacity, writer, rst);
-                if (writer.overflow) {
-                    status->code = JPEG_BASELINE_ENCODE_STATUS_OVERFLOW;
-                    return;
-                }
-                rst = (rst + 1u) & 7u;
-                prev_dc[0] = 0;
-                prev_dc[1] = 0;
-                prev_dc[2] = 0;
-                mcus_since_restart = 0u;
-            }
-
-            for (uint component = 0u; component < params.components; component++) {
-                const uint h = component_h(params, component);
-                const uint v = component_v(params, component);
-                if (h == 0u || v == 0u) {
-                    status->code = JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS;
-                    return;
-                }
-                for (uint block_y = 0u; block_y < v; block_y++) {
-                    for (uint block_x = 0u; block_x < h; block_x++) {
-                        thread int coeffs[64];
-                        device const int *source = tile_coeffs + block_index * 64u;
-                        for (uint index = 0u; index < 64u; index++) {
-                            coeffs[index] = source[index];
-                        }
-                        block_index += 1u;
-                        const bool ok = component == 0u
-                            ? jpeg_encode_block(
-                                coeffs,
-                                prev_dc[component],
-                                dc_luma,
-                                ac_luma,
-                                entropy,
-                                params.entropy_capacity,
-                                writer,
-                                status
-                            )
-                            : jpeg_encode_block(
-                                coeffs,
-                                prev_dc[component],
-                                dc_chroma,
-                                ac_chroma,
-                                entropy,
-                                params.entropy_capacity,
-                                writer,
-                                status
-                            );
-                        if (!ok) {
-                            return;
-                        }
-                    }
-                }
-            }
-            mcus_since_restart += 1u;
-        }
-    }
-
-    jpeg_encode_align_with_ones(entropy, params.entropy_capacity, writer);
-    if (writer.overflow) {
-        status->code = JPEG_BASELINE_ENCODE_STATUS_OVERFLOW;
-        return;
-    }
-    status->entropy_len = writer.pos;
 }

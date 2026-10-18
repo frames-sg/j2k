@@ -20,10 +20,10 @@ use crate::internal::bit_reader::BitReader;
     reason = "ROI seek hot path keeps six Huffman skips inside the caller loop"
 )]
 #[inline(always)]
-pub(super) fn skip_mcu_fast_tile_420(
-    y_comp: ResolvedPreparedComponentPlan<'_>,
-    cb_comp: ResolvedPreparedComponentPlan<'_>,
-    cr_comp: ResolvedPreparedComponentPlan<'_>,
+pub(super) fn skip_mcu_fast_tile_420<const N: usize>(
+    y_comp: ResolvedPreparedComponentPlan<'_, N>,
+    cb_comp: ResolvedPreparedComponentPlan<'_, N>,
+    cr_comp: ResolvedPreparedComponentPlan<'_, N>,
     br: &mut BitReader<'_>,
     y_dc: &mut i32,
     cb_dc: &mut i32,
@@ -37,8 +37,28 @@ pub(super) fn skip_mcu_fast_tile_420(
     Ok(())
 }
 
-pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
-    components: FastTile420Components<'_>,
+pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usize>(
+    components: FastTile420Components<'_, N>,
+    backend: Backend,
+    state: &mut FastTile420EntropyState<'_, '_>,
+    pixels: &mut [u8; 64],
+    window: FastTile420Window,
+    stripe: &mut StripeBuffer,
+    profiler: &mut impl Fast420Profiler,
+) -> Result<(), JpegError> {
+    if window.right_luma && window.bottom_luma {
+        decode_mcu_row_fast_tile_420_specialized::<N, false>(
+            components, backend, state, pixels, window, stripe, profiler,
+        )
+    } else {
+        decode_mcu_row_fast_tile_420_specialized::<N, true>(
+            components, backend, state, pixels, window, stripe, profiler,
+        )
+    }
+}
+
+fn decode_mcu_row_fast_tile_420_specialized<const N: usize, const CLIP_PADDING: bool>(
+    components: FastTile420Components<'_, N>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
     pixels: &mut [u8; 64],
@@ -47,7 +67,7 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
     let mut local = state.take_local();
-    let result = decode_mcu_row_fast_tile_420_local(
+    let result = decode_mcu_row_fast_tile_420_local::<N, CLIP_PADDING>(
         components,
         backend,
         &mut local.state(&mut *state.coeff),
@@ -69,8 +89,8 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
     reason = "inlining into the row wrapper is what keeps the local reader out of memory"
 )]
 #[inline(always)]
-fn decode_mcu_row_fast_tile_420_local(
-    components: FastTile420Components<'_>,
+fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
+    components: FastTile420Components<'_, N>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
     pixels: &mut [u8; 64],
@@ -109,6 +129,8 @@ fn decode_mcu_row_fast_tile_420_local(
         let local_mx = window.local_mcu_x(mx);
         let y_x = local_mx * 16;
         let c_x = local_mx * 8;
+        let emit_right = !CLIP_PADDING || window.right_luma || mx + 1 < window.mcus_per_row;
+        let emit_bottom = !CLIP_PADDING || window.bottom_luma;
 
         let y0_activity = decode_block_with_activity(
             &mut *state.br,
@@ -141,18 +163,20 @@ fn decode_mcu_row_fast_tile_420_local(
             &mut *state.coeff,
         )?;
         profiler.record_activity(y1_activity);
-        idct_deposit_fast_tile_block(
-            y1_activity,
-            backend,
-            &*state.coeff,
-            pixels,
-            PlaneBlockTarget {
-                plane: &mut stripe.planes[0],
-                stride: stripe.plane_strides[0],
-                x: y_x + 8,
-                y: 0,
-            },
-        );
+        if emit_right {
+            idct_deposit_fast_tile_block(
+                y1_activity,
+                backend,
+                &*state.coeff,
+                pixels,
+                PlaneBlockTarget {
+                    plane: &mut stripe.planes[0],
+                    stride: stripe.plane_strides[0],
+                    x: y_x + 8,
+                    y: 0,
+                },
+            );
+        }
 
         let y2_activity = decode_block_with_activity(
             &mut *state.br,
@@ -163,18 +187,20 @@ fn decode_mcu_row_fast_tile_420_local(
             &mut *state.coeff,
         )?;
         profiler.record_activity(y2_activity);
-        idct_deposit_fast_tile_block(
-            y2_activity,
-            backend,
-            &*state.coeff,
-            pixels,
-            PlaneBlockTarget {
-                plane: &mut stripe.planes[0],
-                stride: stripe.plane_strides[0],
-                x: y_x,
-                y: 8,
-            },
-        );
+        if emit_bottom {
+            idct_deposit_fast_tile_block(
+                y2_activity,
+                backend,
+                &*state.coeff,
+                pixels,
+                PlaneBlockTarget {
+                    plane: &mut stripe.planes[0],
+                    stride: stripe.plane_strides[0],
+                    x: y_x,
+                    y: 8,
+                },
+            );
+        }
 
         let y3_activity = decode_block_with_activity(
             &mut *state.br,
@@ -185,18 +211,20 @@ fn decode_mcu_row_fast_tile_420_local(
             &mut *state.coeff,
         )?;
         profiler.record_activity(y3_activity);
-        idct_deposit_fast_tile_block(
-            y3_activity,
-            backend,
-            &*state.coeff,
-            pixels,
-            PlaneBlockTarget {
-                plane: &mut stripe.planes[0],
-                stride: stripe.plane_strides[0],
-                x: y_x + 8,
-                y: 8,
-            },
-        );
+        if emit_right && emit_bottom {
+            idct_deposit_fast_tile_block(
+                y3_activity,
+                backend,
+                &*state.coeff,
+                pixels,
+                PlaneBlockTarget {
+                    plane: &mut stripe.planes[0],
+                    stride: stripe.plane_strides[0],
+                    x: y_x + 8,
+                    y: 8,
+                },
+            );
+        }
 
         let cb_activity = decode_block_with_activity(
             &mut *state.br,

@@ -10,7 +10,8 @@ use super::{
     },
 };
 use crate::{
-    backend::{Backend, Rgb420ChromaRows, Rgb420RowPair},
+    backend::{Backend, Rgb420ChromaRows, Rgb420RowPair, Rgb422Row},
+    color::scaled_sampling::{ScaledSampling, Upsample},
     error::JpegError,
     info::ColorSpace,
     output::{InterleavedRgbWriter, OutputWriter},
@@ -122,6 +123,28 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                 unreachable!("generic YCbCr RGB output requires reusable row scratch");
             };
 
+            // Narrow rows cannot fill even one SIMD vector. Group the stripe's
+            // samples when its upsampling needs no filtering across rows.
+            if width <= 4
+                && stripe_rows >= 8
+                && (0..3).all(|index| {
+                    matches!(
+                        scaled.component(index).upsample,
+                        Upsample::None | Upsample::Replicate
+                    )
+                })
+            {
+                return emit_narrow_ycbcr_stripe(
+                    backend,
+                    writer,
+                    curr,
+                    scaled,
+                    y_start,
+                    stripe_rows,
+                    width,
+                );
+            }
+
             // Every plane is at output resolution, including 4:2:0 chroma
             // that a reduced scale decodes with a larger IDCT.
             if scaled.is_unsampled() {
@@ -131,6 +154,25 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     let cr_row = &curr.row(2, local_y)[..width];
                     writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {
                         backend.fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst);
+                        Ok(())
+                    })?;
+                }
+                return Ok(());
+            }
+
+            if width >= 33
+                && backend.prefers_fused_422()
+                && scaled.component(0).upsample == Upsample::None
+                && scaled.component(1).upsample == Upsample::FancyH2V1
+                && scaled.component(2).upsample == Upsample::FancyH2V1
+            {
+                let chroma_width = width.div_ceil(2);
+                for local_y in 0..stripe_rows {
+                    let y_row = &curr.row(0, local_y)[..width];
+                    let cb_row = &curr.row(1, local_y)[..chroma_width];
+                    let cr_row = &curr.row(2, local_y)[..chroma_width];
+                    writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {
+                        backend.fill_rgb_row_from_422(Rgb422Row::new(y_row, cb_row, cr_row, dst));
                         Ok(())
                     })?;
                 }
@@ -241,5 +283,57 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
         }
     }
 
+    Ok(())
+}
+
+/// Flatten at most 4 x 32 pixels so color conversion can span row boundaries.
+/// Only unfiltered replication reaches this path; the usual stripe emitter
+/// retains the neighboring rows required by fancy upsampling.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "local rows are bounded by the maximum 32-row JPEG MCU stripe"
+)]
+fn emit_narrow_ycbcr_stripe<W: OutputWriter + InterleavedRgbWriter>(
+    backend: Backend,
+    writer: &mut W,
+    curr: &super::super::StripeBuffer,
+    scaled: &ScaledSampling,
+    y_start: u32,
+    stripe_rows: usize,
+    width: usize,
+) -> Result<(), JpegError> {
+    let pixels = stripe_rows * width;
+    let mut samples = [[0u8; 128]; 3];
+    for (index, component_samples) in samples.iter_mut().enumerate() {
+        let component = scaled.component(index);
+        let h_ratio = component.h_ratio as usize;
+        let v_ratio = component.v_ratio as usize;
+        for local_y in 0..stripe_rows {
+            let row = curr.row(index, local_y / v_ratio);
+            let dst = &mut component_samples[local_y * width..(local_y + 1) * width];
+            for (x, sample) in dst.iter_mut().enumerate() {
+                *sample = row[x / h_ratio];
+            }
+        }
+    }
+    let mut rgb = [0u8; 384];
+    backend.fill_rgb_row_from_ycbcr(
+        &samples[0][..pixels],
+        &samples[1][..pixels],
+        &samples[2][..pixels],
+        &mut rgb[..pixels * 3],
+    );
+    let row_bytes = width * 3;
+    for local_y in (0..stripe_rows).step_by(2) {
+        let row_count = (stripe_rows - local_y).min(2);
+        let start = local_y * row_bytes;
+        writer.with_rgb_rows(y_start + local_y as u32, row_count, |top, bottom| {
+            top.copy_from_slice(&rgb[start..start + row_bytes]);
+            if let Some(bottom) = bottom {
+                bottom.copy_from_slice(&rgb[start + row_bytes..start + row_bytes * 2]);
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }

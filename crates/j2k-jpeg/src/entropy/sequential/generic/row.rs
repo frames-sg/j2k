@@ -8,6 +8,7 @@ use super::super::deposit::{
 };
 use super::super::layout::{component_block_intersects_rect, ComponentBlockPosition};
 use super::super::restart::{consume_restart_marker_if_due, McuPosition};
+use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext, FastRgbMcuRowState};
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use crate::backend::Backend;
 use crate::color::scaled_sampling::ScaledSampling;
@@ -33,6 +34,7 @@ pub(super) struct McuRowContext<'a> {
     pub(super) mcus_per_row: u32,
     pub(super) mcu_rows: u32,
     pub(super) restart: u16,
+    pub(super) wide_huffman: bool,
 }
 
 pub(super) struct McuRowState<'a, 'b> {
@@ -44,7 +46,69 @@ pub(super) struct McuRowState<'a, 'b> {
     pub(super) expected_rst: &'a mut u8,
 }
 
-pub(super) fn decode_mcu_row(
+pub(super) fn decode_mcu_row<const N: usize>(
+    context: &McuRowContext<'_>,
+    state: &mut McuRowState<'_, '_>,
+    mcu_y: u32,
+    stripe: &mut StripeBuffer,
+) -> Result<(), JpegError> {
+    if context.downscale == DownscaleFactor::Full
+        && context.full_output_rect
+        && context.stripe_mcu_start == 0
+        && context.stripe_mcus_per_row == context.mcus_per_row
+    {
+        if context.plan.matches_fast_rgb422_shape() {
+            return decode_mcu_row_rgb422::<N>(context, state, mcu_y, stripe);
+        }
+        decode_mcu_row_specialized::<N, true>(context, state, mcu_y, stripe)
+    } else {
+        decode_mcu_row_specialized::<N, false>(context, state, mcu_y, stripe)
+    }
+}
+
+fn decode_mcu_row_rgb422<const N: usize>(
+    context: &McuRowContext<'_>,
+    state: &mut McuRowState<'_, '_>,
+    mcu_y: u32,
+    stripe: &mut StripeBuffer,
+) -> Result<(), JpegError> {
+    let row_context = FastRgbMcuRowContext {
+        y_comp: context
+            .plan
+            .resolved_component_with_entries::<N>(0)?
+            .with_wide_huffman(context.wide_huffman),
+        cb_comp: context
+            .plan
+            .resolved_component_with_entries::<N>(1)?
+            .with_wide_huffman(context.wide_huffman),
+        cr_comp: context
+            .plan
+            .resolved_component_with_entries::<N>(2)?
+            .with_wide_huffman(context.wide_huffman),
+        backend: context.backend,
+        mcus_per_row: context.mcus_per_row,
+        mcu_rows: context.mcu_rows,
+        restart: context.restart,
+    };
+    let [y_dc, cb_dc, cr_dc] = state.prev_dc else {
+        return Err(JpegError::InternalInvariant {
+            reason: "4:2:2 decode requires three DC predictors",
+        });
+    };
+    let mut row_state = FastRgbMcuRowState {
+        br: &mut *state.br,
+        y_dc,
+        cb_dc,
+        cr_dc,
+        coeff: &mut *state.coeff,
+        pixels: &mut *state.pixels,
+        mcus_since_restart: &mut *state.mcus_since_restart,
+        expected_rst: &mut *state.expected_rst,
+    };
+    decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, mcu_y, stripe)
+}
+
+fn decode_mcu_row_specialized<const N: usize, const FULL_SIZE: bool>(
     context: &McuRowContext<'_>,
     state: &mut McuRowState<'_, '_>,
     mcu_y: u32,
@@ -55,23 +119,19 @@ pub(super) fn decode_mcu_row(
     // on every symbol. They are written back even when the row fails.
     let mut prev_dc = [0i32; 4];
     let Some(local_dc) = prev_dc.get_mut(..state.prev_dc.len()) else {
-        return decode_mcu_row_local(context, state, mcu_y, stripe);
+        return decode_mcu_row_local::<N, false>(context, state, mcu_y, stripe);
     };
     local_dc.copy_from_slice(state.prev_dc);
     let mut br = state.br.clone();
-    let result = decode_mcu_row_local(
-        context,
-        &mut McuRowState {
-            br: &mut br,
-            prev_dc: &mut *local_dc,
-            coeff: &mut *state.coeff,
-            pixels: &mut *state.pixels,
-            mcus_since_restart: &mut *state.mcus_since_restart,
-            expected_rst: &mut *state.expected_rst,
-        },
-        mcu_y,
-        stripe,
-    );
+    let mut local_state = McuRowState {
+        br: &mut br,
+        prev_dc: &mut *local_dc,
+        coeff: &mut *state.coeff,
+        pixels: &mut *state.pixels,
+        mcus_since_restart: &mut *state.mcus_since_restart,
+        expected_rst: &mut *state.expected_rst,
+    };
+    let result = decode_mcu_row_local::<N, FULL_SIZE>(context, &mut local_state, mcu_y, stripe);
     *state.br = br;
     state.prev_dc.copy_from_slice(local_dc);
     result
@@ -86,7 +146,7 @@ pub(super) fn decode_mcu_row(
     reason = "inlining into the row wrapper is what keeps the local reader out of memory"
 )]
 #[inline(always)]
-fn decode_mcu_row_local(
+fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
     context: &McuRowContext<'_>,
     state: &mut McuRowState<'_, '_>,
     mcu_y: u32,
@@ -107,14 +167,17 @@ fn decode_mcu_row_local(
     let mut pixels_2x2 = [0u8; 4];
     // Resolve immutable Huffman handles outside the MCU loop, including the
     // generic grayscale, restart, and subsampled paths.
-    let mut resolved = [context.plan.resolved_component(0)?; 4];
+    let mut resolved = [context.plan.resolved_component_with_entries::<N>(0)?; 4];
     if context.plan.components.len() > resolved.len() {
         return Err(JpegError::InternalInvariant {
             reason: "sequential decode supports at most four components",
         });
     }
     for (tables, comp) in resolved.iter_mut().zip(&context.plan.components) {
-        *tables = context.plan.resolve_component(comp)?;
+        *tables = context
+            .plan
+            .resolve_component_with_entries::<N>(comp)?
+            .with_wide_huffman(context.wide_huffman);
     }
     for mx in 0..context.mcus_per_row {
         if consume_restart_marker_if_due(
@@ -135,28 +198,33 @@ fn decode_mcu_row_local(
             let plane_idx = comp.output_index;
             let dc_table = tables.dc_table;
             let ac_table = tables.ac_table;
-            let in_region = mx >= context.stripe_mcu_start && mx < stripe_mcu_end;
+            let in_region = FULL_SIZE || (mx >= context.stripe_mcu_start && mx < stripe_mcu_end);
             // libjpeg-turbo may decode a subsampled component with a larger
             // reduced IDCT than the scale's own block size.
-            let block_size = context.scaled.component(plane_idx).idct_size;
+            let block_size = if FULL_SIZE {
+                8
+            } else {
+                context.scaled.component(plane_idx).idct_size
+            };
             let local_mcu_x0_px =
                 mx.saturating_sub(context.stripe_mcu_start) * u32::from(comp.h) * block_size;
             for vy in 0..u32::from(comp.v) {
                 for vx in 0..u32::from(comp.h) {
-                    let should_output = in_region
-                        && (context.full_output_rect
-                            || component_block_intersects_rect(
-                                context.plan,
-                                comp,
-                                context.downscale,
-                                ComponentBlockPosition {
-                                    mcu_x: mx,
-                                    mcu_y,
-                                    block_x: vx,
-                                    block_y: vy,
-                                },
-                                context.output_rect,
-                            ));
+                    let should_output = FULL_SIZE
+                        || in_region
+                            && (context.full_output_rect
+                                || component_block_intersects_rect(
+                                    context.plan,
+                                    comp,
+                                    context.downscale,
+                                    ComponentBlockPosition {
+                                        mcu_x: mx,
+                                        mcu_y,
+                                        block_x: vx,
+                                        block_y: vy,
+                                    },
+                                    context.output_rect,
+                                ));
                     if !should_output {
                         skip_block(state.br, dc_table, ac_table, &mut state.prev_dc[plane_idx])?;
                         continue;
@@ -177,6 +245,24 @@ fn decode_mcu_row_local(
                     match (block_size, activity) {
                         (8, BlockActivity::DcOnly) => {
                             crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
+                        }
+                        (8, BlockActivity::TopLeft2x2) => {
+                            context
+                                .backend
+                                .idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
+                        }
+                        (8, BlockActivity::TopLeftQuadrant) => {
+                            context
+                                .backend
+                                .idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
+                            deposit_block(plane, stride, block_x, block_y, state.pixels);
+                        }
+                        (8, BlockActivity::RightHalfZero) => {
+                            context
+                                .backend
+                                .idct_right_half_zero(state.coeff.coefficients(), state.pixels);
                             deposit_block(plane, stride, block_x, block_y, state.pixels);
                         }
                         (8, BlockActivity::BottomHalfZero) => {

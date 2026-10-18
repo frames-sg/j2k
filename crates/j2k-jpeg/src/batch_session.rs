@@ -8,8 +8,9 @@ use j2k_core::{BatchInfrastructureError, PixelFormat, TileBatchOptions};
 use std::sync::Mutex;
 
 use crate::decoder::{
-    planned_jpeg_tile_decode_live_bytes, DecodeOutcome, DecodedTile, PreparedJpegTileJob,
-    TileBatchError, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    planned_jpeg_tile_decode_live_bytes, prepare_jpeg_tile_decode, DecodeOutcome, DecodedTile,
+    PreparedJpegTileJob, TileBatchError, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 use crate::error::JpegError;
 use crate::info::DecodeOptions;
@@ -21,12 +22,15 @@ mod runtime;
 mod scheduler;
 mod worker;
 
-use allocation::vec_capacity_bytes;
+use allocation::{accept_prepared_batch_plan, ensure_metadata_bytes, vec_capacity_bytes};
 use collection::{
     collect_per_tile_results, collect_results, decode_outcome_retained_bytes,
     decoded_tile_retained_bytes, retained_live_bytes,
 };
-use planning::{min_output_len, plan_per_tile_jobs, plan_regular_jobs, planned_job_chunk};
+use planning::{
+    min_output_len, plan_per_tile_jobs, plan_prepared_regular_jobs, plan_regular_jobs,
+    planned_job_chunk, restore_regular_plans, PreparedRegularPlanning,
+};
 use scheduler::{run_chunks_rayon, run_chunks_scoped};
 use worker::WorkerSlot;
 
@@ -132,6 +136,10 @@ impl JpegBatchSession {
     /// # Errors
     /// Returns [`TileBatchError`] with the first codec failure in input order,
     /// or a typed infrastructure failure when no tile index applies.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "prepared execution and its allocation-safe fallback share one batch transaction"
+    )]
     pub fn decode_tiles_into_with_options(
         &mut self,
         jobs: &mut [TileDecodeJob<'_, '_>],
@@ -143,41 +151,162 @@ impl JpegBatchSession {
         }
         let job_count = jobs.len();
         let planning_metadata = self.prepare_job_planning(job_count)?;
-        let plans = plan_regular_jobs(
+        let prepared_planning = plan_prepared_regular_jobs(
             jobs,
             planning_metadata,
             &mut self.workers,
             |job, ctx, external_live_bytes| {
-                planned_jpeg_tile_decode_live_bytes(
-                    job.input,
-                    ctx,
-                    fmt,
-                    None,
-                    j2k_core::Downscale::None,
-                    decode_options,
-                    external_live_bytes,
-                )
+                prepare_jpeg_tile_decode(job.input, ctx, fmt, decode_options, external_live_bytes)
             },
         )?;
-        let batch = self.prepare_batch::<DecodeOutcome, DecodeOutcome>(
-            &plans,
-            vec_capacity_bytes(&plans)?,
-            min_output_len(jobs),
-        )?;
-        let planned_jobs = &plans;
-        let decode_chunk =
-            |worker: &mut WorkerSlot,
-             start_index: usize,
-             chunk: &mut [_],
-             results: &mut [BatchResultSlot<DecodeOutcome>]| {
-                let chunk_plans = planned_job_chunk(planned_jobs, start_index, chunk.len())?;
-                worker.decode_tile_job_chunk(chunk, results, chunk_plans, fmt, decode_options)
-            };
-        let results = if self.options.workers.is_some() {
-            run_chunks_scoped(&self.workers, jobs, batch, decode_chunk)?
-        } else {
-            run_chunks_rayon(&self.workers, jobs, batch, decode_chunk)?
+        let (
+            mut plans,
+            mut prepared,
+            mut decoder_indices,
+            mut planning_context,
+            retained_prepared_bytes,
+        ) = match prepared_planning {
+            PreparedRegularPlanning::Prepared(prepared_jobs) => (
+                prepared_jobs.plans,
+                Some(prepared_jobs.prepared),
+                Some(prepared_jobs.decoder_indices),
+                prepared_jobs.planning_context,
+                prepared_jobs.retained_codec_bytes,
+            ),
+            PreparedRegularPlanning::Fallback => {
+                let mut previous_plan = None;
+                let plans = plan_regular_jobs(
+                    jobs,
+                    planning_metadata,
+                    &mut self.workers,
+                    |job, ctx, external_live_bytes| {
+                        if let Some((input, plan)) = previous_plan {
+                            if core::ptr::eq(job.input, input) {
+                                return Ok(plan);
+                            }
+                        }
+                        let plan = planned_jpeg_tile_decode_live_bytes(
+                            job.input,
+                            ctx,
+                            fmt,
+                            None,
+                            j2k_core::Downscale::None,
+                            decode_options,
+                            external_live_bytes,
+                        )?;
+                        // The input stays immutably borrowed for this call. Identical
+                        // slices and fixed output options have the same codec claim;
+                        // the claim already reserves the maximum context footprint.
+                        // Reuse only within this call, without retaining input pointers
+                        // after the caller can mutate or replace their storage.
+                        previous_plan = Some((job.input, plan));
+                        Ok(plan)
+                    },
+                )?;
+                (plans, None, None, None, 0)
+            }
         };
+        let min_output_len = min_output_len(jobs);
+        let desired_workers = self.desired_batch_worker_count(job_count, min_output_len);
+        let candidate_workers = desired_workers.max(1).min(job_count);
+        let candidate_chunk_size = job_count.div_ceil(candidate_workers);
+        let expected_worker_count = job_count.div_ceil(candidate_chunk_size);
+        let plan_capacity_bytes = vec_capacity_bytes(&plans)?;
+        let prepared_metadata_bytes = match &decoder_indices {
+            Some(indices) => ensure_metadata_bytes(
+                plan_capacity_bytes,
+                vec_capacity_bytes(indices)?,
+                "JPEG prepared batch metadata",
+            )?,
+            None => plan_capacity_bytes,
+        };
+        let attempt = self.prepare_batch_with_shared_codec_bytes::<DecodeOutcome, DecodeOutcome>(
+            &plans,
+            prepared_metadata_bytes,
+            min_output_len,
+            retained_prepared_bytes,
+        );
+        let batch = if prepared.is_some() {
+            accept_prepared_batch_plan(attempt, expected_worker_count)?
+        } else {
+            Some(attempt?)
+        };
+        let batch = if let Some(batch) = batch {
+            batch
+        } else {
+            let prepared_jobs = prepared
+                .take()
+                .ok_or(BatchInfrastructureError::SchedulerPoisoned)?;
+            let prepared_indices = decoder_indices
+                .take()
+                .ok_or(BatchInfrastructureError::SchedulerPoisoned)?;
+            restore_regular_plans(&mut plans, &prepared_jobs, &prepared_indices)?;
+            drop((prepared_jobs, prepared_indices, planning_context.take()));
+            self.prepare_batch::<DecodeOutcome, DecodeOutcome>(
+                &plans,
+                plan_capacity_bytes,
+                min_output_len,
+            )?
+        };
+        if let Some(context) = planning_context.take() {
+            let available = self.workers.len();
+            self.workers
+                .first_mut()
+                .ok_or(BatchInfrastructureError::WorkerSlotMissing {
+                    worker: 0,
+                    available,
+                })?
+                .get_mut()
+                .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?
+                .install_planning_context(context);
+        }
+        let planned_jobs = &plans;
+        let results = if let (Some(prepared), Some(decoder_indices)) = (&prepared, &decoder_indices)
+        {
+            let decode_chunk =
+                |worker: &mut WorkerSlot,
+                 start_index: usize,
+                 chunk: &mut [_],
+                 results: &mut [BatchResultSlot<DecodeOutcome>]| {
+                    let end = start_index
+                        .checked_add(chunk.len())
+                        .ok_or(BatchInfrastructureError::SchedulerPoisoned)?;
+                    let chunk_indices = decoder_indices
+                        .get(start_index..end)
+                        .ok_or(BatchInfrastructureError::SchedulerPoisoned)?;
+                    let chunk_plans = planned_job_chunk(planned_jobs, start_index, chunk.len())?;
+                    worker.decode_prepared_decoder_job_chunk(
+                        chunk,
+                        prepared,
+                        chunk_indices,
+                        results,
+                        chunk_plans,
+                        fmt,
+                    )
+                };
+            if self.options.workers.is_some() {
+                run_chunks_scoped(&self.workers, jobs, batch, decode_chunk)?
+            } else {
+                run_chunks_rayon(&self.workers, jobs, batch, decode_chunk)?
+            }
+        } else if prepared.is_none() && decoder_indices.is_none() {
+            let decode_chunk =
+                |worker: &mut WorkerSlot,
+                 start_index: usize,
+                 chunk: &mut [_],
+                 results: &mut [BatchResultSlot<DecodeOutcome>]| {
+                    let chunk_plans = planned_job_chunk(planned_jobs, start_index, chunk.len())?;
+                    worker.decode_tile_job_chunk(chunk, results, chunk_plans, fmt, decode_options)
+                };
+            if self.options.workers.is_some() {
+                run_chunks_scoped(&self.workers, jobs, batch, decode_chunk)?
+            } else {
+                run_chunks_rayon(&self.workers, jobs, batch, decode_chunk)?
+            }
+        } else {
+            return Err(BatchInfrastructureError::SchedulerPoisoned.into());
+        };
+        drop((prepared, decoder_indices));
         let retained = retained_live_bytes(
             &self.workers,
             vec_capacity_bytes(&self.workers)?,

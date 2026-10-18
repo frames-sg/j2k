@@ -95,12 +95,36 @@ impl ColorFastHeader {
             y_quant: quant_for_component(header, 0)?,
             cb_quant: quant_for_component(header, 1)?,
             cr_quant: quant_for_component(header, 2)?,
-            y_dc_table: huffman_table(&header.huffman_tables.dc, TableKind::Dc, y_scan.dc_table)?,
-            y_ac_table: huffman_table(&header.huffman_tables.ac, TableKind::Ac, y_scan.ac_table)?,
-            cb_dc_table: huffman_table(&header.huffman_tables.dc, TableKind::Dc, cb_scan.dc_table)?,
-            cb_ac_table: huffman_table(&header.huffman_tables.ac, TableKind::Ac, cb_scan.ac_table)?,
-            cr_dc_table: huffman_table(&header.huffman_tables.dc, TableKind::Dc, cr_scan.dc_table)?,
-            cr_ac_table: huffman_table(&header.huffman_tables.ac, TableKind::Ac, cr_scan.ac_table)?,
+            y_dc_table: huffman_table(
+                header.huffman_tables.active_dc(y_scan.dc_table),
+                TableKind::Dc,
+                y_scan.dc_table,
+            )?,
+            y_ac_table: huffman_table(
+                header.huffman_tables.active_ac(y_scan.ac_table),
+                TableKind::Ac,
+                y_scan.ac_table,
+            )?,
+            cb_dc_table: huffman_table(
+                header.huffman_tables.active_dc(cb_scan.dc_table),
+                TableKind::Dc,
+                cb_scan.dc_table,
+            )?,
+            cb_ac_table: huffman_table(
+                header.huffman_tables.active_ac(cb_scan.ac_table),
+                TableKind::Ac,
+                cb_scan.ac_table,
+            )?,
+            cr_dc_table: huffman_table(
+                header.huffman_tables.active_dc(cr_scan.dc_table),
+                TableKind::Dc,
+                cr_scan.dc_table,
+            )?,
+            cr_ac_table: huffman_table(
+                header.huffman_tables.active_ac(cr_scan.ac_table),
+                TableKind::Ac,
+                cr_scan.ac_table,
+            )?,
         })
     }
 }
@@ -139,12 +163,12 @@ impl GrayFastHeader {
             entropy_offset: header.sos_offset.ok_or(FastPacketError::MissingScan)?,
             y_quant: quant_for_component(header, 0)?,
             y_dc_table: huffman_table(
-                &header.huffman_tables.dc,
+                header.huffman_tables.active_dc(scan_component.dc_table),
                 TableKind::Dc,
                 scan_component.dc_table,
             )?,
             y_ac_table: huffman_table(
-                &header.huffman_tables.ac,
+                header.huffman_tables.active_ac(scan_component.ac_table),
                 TableKind::Ac,
                 scan_component.ac_table,
             )?,
@@ -174,10 +198,8 @@ fn quant_for_component(
         .ok_or(FastPacketError::UnsupportedComponentOrder)?;
     header
         .quant_tables
-        .entries
-        .get(usize::from(slot))
+        .active(slot)
         .copied()
-        .flatten()
         .ok_or(FastPacketError::MissingQuantTable { slot })
 }
 
@@ -202,13 +224,10 @@ fn ordered_scan_triplet(
 }
 
 fn huffman_table(
-    tables: &[Option<RawHuffmanTable>; 4],
+    raw: Option<&RawHuffmanTable>,
     kind: TableKind,
     slot: u8,
 ) -> Result<JpegHuffmanTable, FastPacketError> {
-    let raw = tables
-        .get(usize::from(slot))
-        .and_then(Option::as_ref)
-        .ok_or(FastPacketError::MissingHuffmanTable { kind, slot })?;
+    let raw = raw.ok_or(FastPacketError::MissingHuffmanTable { kind, slot })?;
     Ok(JpegHuffmanTable::from_raw(raw))
 }

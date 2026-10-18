@@ -64,7 +64,24 @@ impl ParsedMetadataBudget {
             .len()
             .checked_add(1)
             .ok_or_else(|| cap_error(self.cap))?;
-        try_reserve_for_len_with_live_budget(values, new_len, &mut self.live_bytes, self.cap)?;
+        // Metadata arrives a table or scan at a time. Grow geometrically when
+        // the old-plus-replacement peak fits; near the cap, retain the exact
+        // minimum request so spare capacity cannot turn this push into a failure.
+        let reserve_len = if new_len > values.capacity() {
+            let preferred = values.capacity().saturating_mul(2).max(4).max(new_len);
+            let preferred_fits = preferred
+                .checked_mul(size_of::<T>())
+                .and_then(|bytes| self.live_bytes.checked_add(bytes))
+                .is_some_and(|peak| peak <= self.cap);
+            if preferred_fits {
+                preferred
+            } else {
+                new_len
+            }
+        } else {
+            new_len
+        };
+        try_reserve_for_len_with_live_budget(values, reserve_len, &mut self.live_bytes, self.cap)?;
         values.push(value);
         Ok(())
     }
@@ -136,6 +153,18 @@ mod tests {
             }) if requested == exact_peak && cap == exact_peak - 1
         ));
         assert_eq!(another.capacity(), 2, "preflight runs before reserve");
+
+        let mut growing = Vec::<u64>::new();
+        let mut roomy = ParsedMetadataBudget::with_limits(0, 512);
+        for value in 0..10 {
+            roomy
+                .try_push(&mut growing, value)
+                .expect("metadata growth fits");
+        }
+        assert_eq!(growing.as_slice(), &(0..10).collect::<Vec<_>>());
+        roomy
+            .finish(growing.capacity() * size_of::<u64>())
+            .expect("all retained capacity remains charged after repeated growth");
     }
 
     #[test]

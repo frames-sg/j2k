@@ -42,8 +42,20 @@ impl TurboJpegDecoder {
         width: usize,
         height: usize,
     ) -> Result<(), String> {
-        validate_output_buffer(width, height, out, pitch)?;
+        validate_output_buffer(width, height, out, pitch, 3)?;
         self.decompress(bytes, out, pitch, 0)
+    }
+
+    pub(crate) fn decode_prepared_gray_into(
+        &mut self,
+        bytes: &[u8],
+        out: &mut [u8],
+        pitch: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<(), String> {
+        validate_output_buffer(width, height, out, pitch, 1)?;
+        self.decompress(bytes, out, pitch, 6)
     }
 
     pub(crate) fn decode_scaled_rgb(
@@ -97,6 +109,18 @@ impl TurboJpegDecoder {
         super::libjpeg_turbo::unavailable()
     }
 
+    pub(crate) fn decode_prepared_gray_into(
+        &mut self,
+        _bytes: &[u8],
+        _out: &mut [u8],
+        _pitch: usize,
+        _width: usize,
+        _height: usize,
+    ) -> Result<(), String> {
+        let _ = self;
+        super::libjpeg_turbo::unavailable()
+    }
+
     pub(crate) fn decode_scaled_rgb(
         &mut self,
         _bytes: &[u8],
@@ -132,9 +156,10 @@ fn validate_output_buffer(
     height: usize,
     out: &[u8],
     pitch: usize,
+    channels: usize,
 ) -> Result<(), String> {
     let row_bytes = width
-        .checked_mul(3)
+        .checked_mul(channels)
         .ok_or("libjpeg-turbo output row size overflow")?;
     if pitch < row_bytes {
         return Err(format!(

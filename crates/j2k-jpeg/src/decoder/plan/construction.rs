@@ -10,7 +10,7 @@ use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
 
 use crate::allocation::try_reserve_for_len_with_live_budget;
 use crate::context::DecoderContext;
-use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables};
+use crate::entropy::huffman::{HuffmanLookupRequirement, PreparedHuffmanTables};
 use crate::error::JpegError;
 use crate::parse::tables::{HuffmanTableRole, RawHuffmanTable};
 
@@ -81,29 +81,56 @@ impl PreparedConstructionBudget {
         )
     }
 
-    pub(super) fn resolve_huffman_table(
+    pub(super) fn push_huffman_table(
         &mut self,
         ctx: &mut DecoderContext,
         raw: &RawHuffmanTable,
         role: HuffmanTableRole,
-    ) -> Result<HuffmanTable, JpegError> {
+        prepared: &mut PreparedHuffmanTables,
+    ) -> Result<(), JpegError> {
+        self.push_huffman_table_with_requirement(
+            ctx,
+            raw,
+            role,
+            HuffmanLookupRequirement::FusedFull,
+            prepared,
+        )
+    }
+
+    pub(super) fn push_huffman_table_with_requirement(
+        &mut self,
+        ctx: &mut DecoderContext,
+        raw: &RawHuffmanTable,
+        role: HuffmanTableRole,
+        requirement: HuffmanLookupRequirement,
+        prepared: &mut PreparedHuffmanTables,
+    ) -> Result<(), JpegError> {
         let non_context_bytes = self.live_bytes.checked_sub(self.context_bytes).ok_or(
             JpegError::InternalInvariant {
                 reason: "prepared construction context bytes exceed its live-byte ledger",
             },
         )?;
-        let table = ctx
-            .resolve_huffman_table_with_live_budget(raw, role, &mut self.live_bytes, self.cap)?
-            .clone();
+        // The prepared owner conservatively charges the shared immutable
+        // payload again so it remains accounted after context-cache eviction.
+        let table = ctx.resolve_huffman_table_with_requirement_and_live_budget(
+            raw,
+            role,
+            requirement,
+            &mut self.live_bytes,
+            self.cap,
+        )?;
+        let table_bytes = table.retained_allocation_bytes();
+        prepared.push_with_live_budget(table.clone(), &mut self.live_bytes, self.cap)?;
         let context_bytes = ctx.retained_allocation_bytes();
         let expected = checked_add_under_cap(non_context_bytes, context_bytes, self.cap)?;
+        let expected = checked_add_under_cap(expected, table_bytes, self.cap)?;
         if self.live_bytes != expected {
             return Err(JpegError::InternalInvariant {
                 reason: "budgeted context growth did not reconcile its actual capacity",
             });
         }
         self.context_bytes = context_bytes;
-        Ok(table)
+        Ok(())
     }
 
     /// A plan-cache hit clones a plan, while a miss may retain a second clone

@@ -12,7 +12,7 @@ use crate::internal::checkpoint::{
 };
 use alloc::vec::Vec;
 
-const MAX_NONRESTART_ENTROPY_CHECKPOINTS: u32 = 2048;
+const MAX_NONRESTART_ENTROPY_CHECKPOINTS: u32 = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FastCheckpointLayout {

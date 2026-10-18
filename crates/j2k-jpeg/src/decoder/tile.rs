@@ -121,6 +121,14 @@ pub(crate) struct PlannedJpegTileDecode {
     pub(crate) retained_result_bytes: usize,
 }
 
+pub(crate) struct PreparedJpegTileDecode<'a> {
+    pub(crate) decoder: Decoder<'a>,
+    // Keep the unadjusted worker claim beside the decoder so an all-or-none
+    // fallback can restore the original parse-plus-decode plan without reparsing.
+    pub(crate) plan: PlannedJpegTileDecode,
+    pub(crate) retained_decoder_bytes: usize,
+}
+
 pub(crate) fn planned_jpeg_tile_decode_live_bytes(
     input: &[u8],
     ctx: &mut DecoderContext,
@@ -134,50 +142,99 @@ pub(crate) fn planned_jpeg_tile_decode_live_bytes(
         checked_add_allocation_bytes(external_live_bytes, ctx.retained_allocation_bytes())?;
     let view = JpegView::parse_with_options_and_external_live(input, options, parsing_live_bytes)?;
     Decoder::with_view_in_context_with_external_live(view, ctx, external_live_bytes, |decoder| {
-        let source_rect = roi.unwrap_or_else(|| Rect::full(decoder.info.dimensions));
-        if !source_rect.is_within(decoder.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: source_rect,
-                width: decoder.info.dimensions.0,
-                height: decoder.info.dimensions.1,
-            });
-        }
+        planned_jpeg_tile_decode_for_decoder(decoder, fmt, roi, scale)
+    })
+}
 
-        let output_format = output_format_from_parts(decoder.info.sof_kind, fmt, scale)?;
-        let downscale = output_format.downscale();
-        let output_rect = if source_rect == Rect::full(decoder.info.dimensions) {
-            Rect::full(scaled_dimensions(decoder.info.dimensions, downscale))
-        } else {
-            scaled_rect_covering(source_rect, downscale)?
-        };
-        let additional_scratch = additional_decode_scratch_bytes(
-            decoder.info.sof_kind,
-            decoder.info.dimensions,
-            output_format,
-            source_rect,
-            output_rect,
-            downscale,
-        )?;
-        let workspace_cap = decoder.decode_workspace_cap()?;
-        let base_scratch = decoder.decode_scratch_bytes(workspace_cap)?;
-        let scratch = checked_add_allocation_bytes(base_scratch, additional_scratch)?;
-        let checkpoints = planned_roi_checkpoint_bytes(decoder, source_rect)?;
-        let transient = checked_add_allocation_bytes(scratch, checkpoints)?;
-        let retained = DEFAULT_MAX_DECODE_BYTES.checked_sub(workspace_cap).ok_or(
-            JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap: DEFAULT_MAX_DECODE_BYTES,
-            },
-        )?;
-        let worker_live_bytes = checked_add_allocation_bytes(retained, transient)?;
-        // The merged public result can retain all parsed warnings plus the bounded
-        // scan-warning tail after the decoder itself has been dropped. Batch
-        // planning counts that payload once per completed tile.
-        let retained_result_bytes = merged_warning_capacity_bytes(decoder.warnings.capacity())?;
-        Ok(PlannedJpegTileDecode {
-            worker_live_bytes,
-            retained_result_bytes,
-        })
+pub(crate) fn prepare_jpeg_tile_decode<'a>(
+    input: &'a [u8],
+    ctx: &mut DecoderContext,
+    fmt: PixelFormat,
+    options: DecodeOptions,
+    external_live_bytes: usize,
+) -> Result<PreparedJpegTileDecode<'a>, JpegError> {
+    let cached = if options == DecodeOptions::default() {
+        Decoder::from_cached_sequential_template_with_external_live(
+            input,
+            ctx,
+            external_live_bytes,
+        )?
+    } else {
+        None
+    };
+    let decoder = if let Some(decoder) = cached {
+        decoder
+    } else {
+        let parsing_live_bytes =
+            checked_add_allocation_bytes(external_live_bytes, ctx.retained_allocation_bytes())?;
+        let view =
+            JpegView::parse_with_options_and_external_live(input, options, parsing_live_bytes)?;
+        Decoder::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?
+    };
+    let plan =
+        planned_jpeg_tile_decode_for_decoder(&decoder, fmt, None, j2k_core::Downscale::None)?;
+    let retained_decoder_bytes = crate::adapter::decoder_retained_allocation_bytes(&decoder)?;
+    if retained_decoder_bytes > plan.worker_live_bytes {
+        return Err(JpegError::InternalInvariant {
+            reason: "prepared decoder exceeds its full worker live-byte claim",
+        });
+    }
+    Ok(PreparedJpegTileDecode {
+        decoder,
+        plan,
+        retained_decoder_bytes,
+    })
+}
+
+fn planned_jpeg_tile_decode_for_decoder(
+    decoder: &Decoder<'_>,
+    fmt: PixelFormat,
+    roi: Option<Rect>,
+    scale: Downscale,
+) -> Result<PlannedJpegTileDecode, JpegError> {
+    let source_rect = roi.unwrap_or_else(|| Rect::full(decoder.info.dimensions));
+    if !source_rect.is_within(decoder.info.dimensions) {
+        return Err(JpegError::RectOutOfBounds {
+            rect: source_rect,
+            width: decoder.info.dimensions.0,
+            height: decoder.info.dimensions.1,
+        });
+    }
+
+    let output_format = output_format_from_parts(decoder.info.sof_kind, fmt, scale)?;
+    let downscale = output_format.downscale();
+    let output_rect = if source_rect == Rect::full(decoder.info.dimensions) {
+        Rect::full(scaled_dimensions(decoder.info.dimensions, downscale))
+    } else {
+        scaled_rect_covering(source_rect, downscale)?
+    };
+    let additional_scratch = additional_decode_scratch_bytes(
+        decoder.info.sof_kind,
+        decoder.info.dimensions,
+        output_format,
+        source_rect,
+        output_rect,
+        downscale,
+    )?;
+    let workspace_cap = decoder.decode_workspace_cap()?;
+    let base_scratch = decoder.decode_scratch_bytes(workspace_cap)?;
+    let scratch = checked_add_allocation_bytes(base_scratch, additional_scratch)?;
+    let checkpoints = planned_roi_checkpoint_bytes(decoder, source_rect)?;
+    let transient = checked_add_allocation_bytes(scratch, checkpoints)?;
+    let retained = DEFAULT_MAX_DECODE_BYTES.checked_sub(workspace_cap).ok_or(
+        JpegError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap: DEFAULT_MAX_DECODE_BYTES,
+        },
+    )?;
+    let worker_live_bytes = checked_add_allocation_bytes(retained, transient)?;
+    // The merged public result can retain all parsed warnings plus the bounded
+    // scan-warning tail after the decoder itself has been dropped. Batch
+    // planning counts that payload once per completed tile.
+    let retained_result_bytes = merged_warning_capacity_bytes(decoder.warnings.capacity())?;
+    Ok(PlannedJpegTileDecode {
+        worker_live_bytes,
+        retained_result_bytes,
     })
 }
 

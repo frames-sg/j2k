@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use super::super::enforce_panic_macro_inventory;
+use super::super::{enforce_panic_macro_inventory, source_inventory::PANIC_MACRO_BASELINE};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -63,18 +64,26 @@ fn inventory_scans_production_masks_tests_and_excludes_bin_roots() {
 #[test]
 fn inventory_ratchet_reports_the_exact_production_site() {
     let root = temp_repository("failure");
-    fs::write(
-        root.join("crates/codec/src/lib.rs"),
-        "pub fn fail() { panic!(\"production panic\"); }\n",
-    )
-    .expect("write library source");
+    let mut source = String::new();
+    for index in 0..=PANIC_MACRO_BASELINE.panic {
+        writeln!(
+            source,
+            "pub fn fail_{index}() {{ panic!(\"production panic\"); }}"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    fs::write(root.join("crates/codec/src/lib.rs"), source).expect("write library source");
     fs::write(root.join("crates/codec/src/bin/tool.rs"), "fn main() {}\n")
         .expect("write binary source");
 
     let error = enforce_panic_macro_inventory(&metadata(&root), &["codec".to_string()], &root)
-        .expect_err("panic macro must exceed zero baseline");
+        .expect_err("panic macro must exceed reviewed baseline");
 
-    assert!(error.contains("panic! 1/0"));
+    assert!(error.contains(&format!(
+        "panic! {}/{}",
+        PANIC_MACRO_BASELINE.panic + 1,
+        PANIC_MACRO_BASELINE.panic
+    )));
     assert!(error.contains("crates/codec/src/lib.rs:1"));
     assert!(error.contains("current inventory"));
 }

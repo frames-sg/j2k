@@ -37,6 +37,9 @@ impl Dwt53MultiLevel<f64> {
         assert_eq!(self.levels.len(), other.levels.len());
         assert_eq!(self.final_ll_width, other.final_ll_width);
         assert_eq!(self.final_ll_height, other.final_ll_height);
+        let final_sample_count = self.final_ll_width * self.final_ll_height;
+        assert_eq!(self.final_ll.len(), final_sample_count);
+        assert_eq!(other.final_ll.len(), final_sample_count);
 
         let level_diff = self
             .levels
@@ -48,7 +51,11 @@ impl Dwt53MultiLevel<f64> {
         self.final_ll
             .iter()
             .zip(other.final_ll.iter())
-            .map(|(actual, expected)| (actual - expected).abs())
+            .map(|(actual, expected)| {
+                assert!(actual.is_finite(), "nonfinite actual LL coefficient");
+                assert!(expected.is_finite(), "nonfinite reference LL coefficient");
+                (actual - expected).abs()
+            })
             .fold(level_diff, f64::max)
     }
 }

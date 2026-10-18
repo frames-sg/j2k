@@ -13,7 +13,8 @@ use super::DeviceCheckpoint;
 use crate::entropy::block::skip_block;
 #[cfg(test)]
 use crate::entropy::block::{decode_block_with_activity, CoefficientBlock};
-use crate::entropy::sequential::PreparedDecodePlan;
+use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+use crate::entropy::sequential::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::error::{JpegError, MarkerKind};
 use crate::internal::bit_reader::BitReader;
 
@@ -42,6 +43,41 @@ where
 }
 
 pub(crate) fn build_checkpoint_plan_mapped_from_validated_with_live_budget<T, E>(
+    plan: &PreparedDecodePlan,
+    validated_scan: ValidatedScanBytes<'_>,
+    cadence_mcus: u32,
+    live_bytes: &mut usize,
+    allocation_cap: usize,
+    map_checkpoint: impl FnMut(DeviceCheckpoint) -> Result<T, E>,
+) -> Result<Vec<T>, E>
+where
+    E: From<JpegError>,
+{
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            build_checkpoint_plan_mapped_with_entries::<NARROW_PRIMARY_ENTRIES, T, E>(
+                plan,
+                validated_scan,
+                cadence_mcus,
+                live_bytes,
+                allocation_cap,
+                map_checkpoint,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            build_checkpoint_plan_mapped_with_entries::<FULL_PRIMARY_ENTRIES, T, E>(
+                plan,
+                validated_scan,
+                cadence_mcus,
+                live_bytes,
+                allocation_cap,
+                map_checkpoint,
+            )
+        }
+    }
+}
+
+fn build_checkpoint_plan_mapped_with_entries<const N: usize, T, E>(
     plan: &PreparedDecodePlan,
     validated_scan: ValidatedScanBytes<'_>,
     cadence_mcus: u32,
@@ -108,7 +144,7 @@ where
             }
         }
 
-        skip_one_mcu(plan, &mut br, &mut prev_dc).map_err(E::from)?;
+        skip_one_mcu_with_entries::<N>(plan, &mut br, &mut prev_dc).map_err(E::from)?;
         mcus_since_restart += 1;
     }
 
@@ -162,7 +198,23 @@ pub(super) fn snapshot_checkpoint(
     }
 }
 
+#[cfg(test)]
 pub(super) fn skip_one_mcu(
+    plan: &PreparedDecodePlan,
+    br: &mut BitReader<'_>,
+    prev_dc: &mut [i32; 4],
+) -> Result<(), JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            skip_one_mcu_with_entries::<NARROW_PRIMARY_ENTRIES>(plan, br, prev_dc)
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            skip_one_mcu_with_entries::<FULL_PRIMARY_ENTRIES>(plan, br, prev_dc)
+        }
+    }
+}
+
+pub(super) fn skip_one_mcu_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
     prev_dc: &mut [i32; 4],
@@ -172,8 +224,8 @@ pub(super) fn skip_one_mcu(
     // dequantized coefficients that this traversal would immediately discard.
     for component in &plan.components {
         let plane_index = component.output_index;
-        let dc_table = plan.dc_table(component)?;
-        let ac_table = plan.ac_table(component)?;
+        let dc_table = plan.dc_table_with_entries::<N>(component)?;
+        let ac_table = plan.ac_table_with_entries::<N>(component)?;
         for _ in 0..u32::from(component.h) * u32::from(component.v) {
             skip_block(br, dc_table, ac_table, &mut prev_dc[plane_index])?;
         }
@@ -188,10 +240,27 @@ pub(super) fn decode_one_mcu(
     coeff: &mut CoefficientBlock,
     prev_dc: &mut [i32; 4],
 ) -> Result<(), JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_one_mcu_with_entries::<NARROW_PRIMARY_ENTRIES>(plan, br, coeff, prev_dc)
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_one_mcu_with_entries::<FULL_PRIMARY_ENTRIES>(plan, br, coeff, prev_dc)
+        }
+    }
+}
+
+#[cfg(test)]
+fn decode_one_mcu_with_entries<const N: usize>(
+    plan: &PreparedDecodePlan,
+    br: &mut BitReader<'_>,
+    coeff: &mut CoefficientBlock,
+    prev_dc: &mut [i32; 4],
+) -> Result<(), JpegError> {
     for component in &plan.components {
         let plane_index = component.output_index;
-        let dc_table = plan.dc_table(component)?;
-        let ac_table = plan.ac_table(component)?;
+        let dc_table = plan.dc_table_with_entries::<N>(component)?;
+        let ac_table = plan.ac_table_with_entries::<N>(component)?;
         for _ in 0..u32::from(component.h) * u32::from(component.v) {
             let _ = decode_block_with_activity(
                 br,

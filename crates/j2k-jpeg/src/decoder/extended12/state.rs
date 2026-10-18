@@ -37,7 +37,11 @@ pub(super) fn decode_extended12_block_pixels(
                 coeff.dc_coeff(),
             ));
         }
-        BlockActivity::BottomHalfZero | BlockActivity::General => {
+        BlockActivity::TopLeft2x2
+        | BlockActivity::TopLeftQuadrant
+        | BlockActivity::BottomHalfZero
+        | BlockActivity::RightHalfZero
+        | BlockActivity::General => {
             backend.idct_12bit(coeff.coefficients(), pixels);
         }
     }

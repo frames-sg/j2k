@@ -72,6 +72,48 @@ fn planner_reduces_concurrency_to_fit_aggregate_worker_claims() {
 }
 
 #[test]
+fn prepared_exact_cap_is_retained_and_one_over_falls_back_as_a_whole_batch() {
+    let prepared_jobs = decode_jobs(&[50, 50]);
+    let exact_attempt = select_batch_plan_with_shared_codec_bytes_and_limits(
+        &prepared_jobs,
+        2,
+        zero_metadata(),
+        20,
+        |_| 0,
+        limits(0, 120, 120),
+    );
+    let exact = accept_prepared_batch_plan(exact_attempt, 2)
+        .expect("exact prepared plan selection")
+        .expect("exact cap keeps every prepared decoder");
+    assert_eq!(exact.worker_count, 2);
+    assert_eq!(exact.codec_bytes, 120);
+
+    let one_over_attempt = select_batch_plan_with_shared_codec_bytes_and_limits(
+        &prepared_jobs,
+        2,
+        zero_metadata(),
+        21,
+        |_| 0,
+        limits(0, 120, 120),
+    );
+    assert!(accept_prepared_batch_plan(one_over_attempt, 2)
+        .expect("one-over prepared selection")
+        .is_none());
+
+    let original_jobs = decode_jobs(&[60, 60]);
+    let fallback = select_batch_plan_with_limits(
+        &original_jobs,
+        2,
+        zero_metadata(),
+        |_| 0,
+        limits(0, 120, 120),
+    )
+    .expect("dropping the whole prepared set restores the original worker plan");
+    assert_eq!(fallback.worker_count, 2);
+    assert_eq!(fallback.codec_bytes, 120);
+}
+
+#[test]
 fn stale_retained_worker_bytes_participate_in_the_next_plan() {
     let jobs = decode_jobs(&[20, 20]);
     let error = select_batch_plan_with_limits(

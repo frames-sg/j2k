@@ -100,7 +100,7 @@ mod sequential;
 mod tile;
 pub(crate) use self::tile::{
     decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_live_bytes,
-    PlannedJpegTileDecode,
+    prepare_jpeg_tile_decode, PlannedJpegTileDecode, PreparedJpegTileDecode,
 };
 pub use self::tile::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,
@@ -439,6 +439,28 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    pub(super) fn from_cached_sequential_template_with_external_live(
+        bytes: &'a [u8],
+        ctx: &mut DecoderContext,
+        external_live_bytes: usize,
+    ) -> Result<Option<Self>, JpegError> {
+        let Some((info, warnings, plan)) =
+            ctx.clone_cached_sequential_template(bytes, external_live_bytes)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            bytes,
+            info,
+            warnings,
+            backend: Backend::detect(),
+            plan,
+            progressive_plan: None,
+            lossless_plan: None,
+            cpu_entropy_checkpoints: Mutex::new(CpuCheckpointCache::default()),
+        }))
+    }
+
     pub(crate) fn with_view_in_context<R>(
         view: JpegView<'a>,
         ctx: &mut DecoderContext,
@@ -469,17 +491,13 @@ impl<'a> Decoder<'a> {
                 Self::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?;
             return operation(&decoder);
         };
-        let Some(cached_plan) = ctx.cached_decode_plan(cache_prefix) else {
+        let Some((slot, cached_plan)) = ctx.cached_decode_plan(cache_prefix) else {
             let decoder =
                 Self::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?;
             return operation(&decoder);
         };
         Self::validate_cached_plan_lease(&view.header, ctx, cached_plan, external_live_bytes)?;
-        let Some((lease, plan)) = ctx.lease_cached_decode_plan(cache_prefix)? else {
-            return Err(JpegError::InternalInvariant {
-                reason: "validated cached decode plan disappeared before execution",
-            });
-        };
+        let (lease, plan) = ctx.lease_cached_decode_plan(slot)?;
         let JpegView {
             bytes,
             mut header,

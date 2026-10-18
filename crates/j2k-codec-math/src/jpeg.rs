@@ -58,7 +58,12 @@ impl fmt::Display for CanonicalHuffmanError {
 ///
 /// The caller owns the HUFFVAL bytes; this helper derives only the canonical
 /// code metadata shared by CPU and device backends.
-pub fn derive_canonical_huffman(
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "JPEG Huffman lengths and value counts are bounded to 16 and 256, which fit every converted integer type"
+)]
+pub const fn derive_canonical_huffman(
     bits: &[u8; 16],
     values_len: usize,
 ) -> Result<CanonicalHuffmanDerivation, CanonicalHuffmanError> {
@@ -68,15 +73,19 @@ pub fn derive_canonical_huffman(
 
     let mut huffsize = [0u8; 256];
     let mut huffsize_len = 0usize;
-    for (len_minus_1, &count) in bits.iter().enumerate() {
-        let len = u8::try_from(len_minus_1 + 1).map_err(|_| CanonicalHuffmanError::CodeOverflow)?;
-        for _ in 0..count {
+    let mut len_minus_1 = 0usize;
+    while len_minus_1 < bits.len() {
+        let len = (len_minus_1 + 1) as u8;
+        let mut remaining = bits[len_minus_1];
+        while remaining != 0 {
             if huffsize_len >= values_len || huffsize_len >= huffsize.len() {
                 return Err(CanonicalHuffmanError::BitsExceedTableCapacity);
             }
             huffsize[huffsize_len] = len;
             huffsize_len += 1;
+            remaining -= 1;
         }
+        len_minus_1 += 1;
     }
     if huffsize_len != values_len {
         return Err(CanonicalHuffmanError::BitsValuesLenMismatch);
@@ -84,8 +93,10 @@ pub fn derive_canonical_huffman(
 
     let mut huffcode = [0u16; 256];
     let mut code = 0u32;
-    let mut si = huffsize.first().copied().unwrap_or(0);
-    for (idx, &size) in huffsize[..huffsize_len].iter().enumerate() {
+    let mut si = if huffsize_len == 0 { 0 } else { huffsize[0] };
+    let mut idx = 0usize;
+    while idx < huffsize_len {
+        let size = huffsize[idx];
         while size != si {
             code <<= 1;
             si = si.saturating_add(1);
@@ -93,27 +104,31 @@ pub fn derive_canonical_huffman(
         if si > 16 || code >= (1u32 << si) {
             return Err(CanonicalHuffmanError::CodeOverflow);
         }
-        huffcode[idx] = u16::try_from(code).map_err(|_| CanonicalHuffmanError::CodeOverflow)?;
-        code = code
-            .checked_add(1)
-            .ok_or(CanonicalHuffmanError::CodeOverflow)?;
+        huffcode[idx] = code as u16;
+        code = match code.checked_add(1) {
+            Some(next) => next,
+            None => return Err(CanonicalHuffmanError::CodeOverflow),
+        };
+        idx += 1;
     }
 
     let mut min_code = [i32::MAX; 17];
     let mut max_code = [-1i32; 17];
     let mut val_offset = [0i32; 17];
     let mut cursor = 0usize;
-    for (len_minus_1, &count) in bits.iter().enumerate() {
+    let mut len_minus_1 = 0usize;
+    while len_minus_1 < bits.len() {
         let len = len_minus_1 + 1;
-        let count = usize::from(count);
+        let count = bits[len_minus_1] as usize;
         if count == 0 {
+            len_minus_1 += 1;
             continue;
         }
-        min_code[len] = i32::from(huffcode[cursor]);
-        max_code[len] = i32::from(huffcode[cursor + count - 1]);
-        val_offset[len] =
-            i32::try_from(cursor).map_err(|_| CanonicalHuffmanError::CodeOverflow)? - min_code[len];
+        min_code[len] = huffcode[cursor] as i32;
+        max_code[len] = huffcode[cursor + count - 1] as i32;
+        val_offset[len] = cursor as i32 - min_code[len];
         cursor += count;
+        len_minus_1 += 1;
     }
 
     Ok(CanonicalHuffmanDerivation {
