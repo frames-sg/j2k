@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Progressive post-SOS marker walk and compact scan-script capture.
+//! Progressive and split sequential post-SOS marker walk and compact
+//! scan-script capture.
 
 mod application;
 mod pending;
@@ -21,6 +22,7 @@ use super::markers::{marker_payload, segment_length};
 use super::types::ParsedProgressiveScan;
 use super::validation::{
     normalize_restart_interval, validate_progressive_scan_components, validate_scan_parameters,
+    validate_split_scan,
 };
 use crate::error::{JpegError, MarkerKind, Warning};
 use crate::parse::allocation::ParsedMetadataBudget;
@@ -31,7 +33,18 @@ use crate::parse::tables::{
     parse_dht, parse_dqt, HuffmanTables, ProgressiveTableState, QuantTables,
 };
 
+/// Which scan grammar the collected scans follow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScanCollectionMode {
+    /// Progressive spectral selection and successive approximation.
+    Progressive,
+    /// A sequential or lossless frame whose components are split across
+    /// scans, each component coded exactly once.
+    Split,
+}
+
 pub(super) struct ProgressiveScanCollection<'a> {
+    pub(super) mode: ScanCollectionMode,
     pub(super) bytes: &'a [u8],
     pub(super) first_scan: ParsedScan,
     pub(super) first_marker_offset: usize,
@@ -51,6 +64,7 @@ pub(super) fn collect_progressive_scans(
 }
 
 struct ProgressiveCollector<'a> {
+    mode: ScanCollectionMode,
     bytes: &'a [u8],
     huffman_tables: &'a mut HuffmanTables,
     quant_tables: &'a mut QuantTables,
@@ -62,12 +76,29 @@ struct ProgressiveCollector<'a> {
     pending: Option<PendingProgressiveScan>,
     position: usize,
     script: ProgressiveScriptState<'a>,
+    /// Split frame coverage: frame components coded so far, and the
+    /// first scan header offset for an incomplete-coverage error.
+    covered: [bool; MAX_SPLIT_COMPONENTS],
+    first_scan_offset: usize,
 }
+
+const MAX_SPLIT_COMPONENTS: usize = 4;
 
 impl<'a> ProgressiveCollector<'a> {
     fn new(request: ProgressiveScanCollection<'a>) -> Result<Self, JpegError> {
         let mut script = ProgressiveScriptState::new(request.sof);
-        script.record_scan(request.first_marker_offset, &request.first_scan)?;
+        let mut covered = [false; MAX_SPLIT_COMPONENTS];
+        match request.mode {
+            ScanCollectionMode::Progressive => {
+                script.record_scan(request.first_marker_offset, &request.first_scan)?;
+            }
+            ScanCollectionMode::Split => record_split_coverage(
+                request.sof,
+                &request.first_scan,
+                request.first_marker_offset + 4,
+                &mut covered,
+            )?,
+        }
         let pending = PendingProgressiveScan::new(
             request.first_scan,
             request.first_entropy_offset,
@@ -75,6 +106,7 @@ impl<'a> ProgressiveCollector<'a> {
             *request.restart_interval,
         );
         Ok(Self {
+            mode: request.mode,
             bytes: request.bytes,
             huffman_tables: request.huffman_tables,
             quant_tables: request.quant_tables,
@@ -86,7 +118,32 @@ impl<'a> ProgressiveCollector<'a> {
             pending: Some(pending),
             position: request.first_entropy_offset,
             script,
+            covered,
+            first_scan_offset: request.first_marker_offset + 4,
         })
+    }
+
+    /// Validates the scans ending at `marker_offset`: every component has its
+    /// initial DC scan (progressive) or is coded once (split frame).
+    fn finish_terminal(&self, marker_offset: usize) -> Result<(), JpegError> {
+        match self.mode {
+            ScanCollectionMode::Progressive => self.script.finish_terminal(marker_offset),
+            ScanCollectionMode::Split => {
+                let expected = self.sof.component_ids.len();
+                let found = self.covered[..expected]
+                    .iter()
+                    .filter(|&&seen| seen)
+                    .count();
+                if found == expected {
+                    return Ok(());
+                }
+                Err(JpegError::InvalidSequentialComponentSet {
+                    offset: self.first_scan_offset,
+                    expected: u8::try_from(expected).unwrap_or(u8::MAX),
+                    found: u8::try_from(found).unwrap_or(u8::MAX),
+                })
+            }
+        }
     }
 
     fn collect(mut self) -> Result<Vec<ParsedProgressiveScan>, JpegError> {
@@ -100,7 +157,7 @@ impl<'a> ProgressiveCollector<'a> {
         }
         let eof = self.bytes.len();
         self.finish_pending(eof, 0)?;
-        self.script.finish_terminal(eof)?;
+        self.finish_terminal(eof)?;
         self.allocation_budget
             .try_push(self.warnings, Warning::MissingEoi)?;
         Ok(self.scans)
@@ -121,7 +178,7 @@ impl<'a> ProgressiveCollector<'a> {
     fn handle_marker(&mut self, marker_offset: usize, code: u8) -> Result<MarkerFlow, JpegError> {
         match code {
             0xd9 => {
-                self.script.finish_terminal(marker_offset)?;
+                self.finish_terminal(marker_offset)?;
                 Ok(MarkerFlow::Finish)
             }
             0xdb => {
@@ -187,8 +244,16 @@ impl<'a> ProgressiveCollector<'a> {
         let (payload, entropy_offset) = marker_payload(self.bytes, marker_offset, code)?;
         let scan = parse_scan_header(payload, marker_offset + 4)?;
         validate_scan_parameters(self.sof.sof_kind, &scan, marker_offset + 4)?;
-        validate_progressive_scan_components(self.sof, &scan, marker_offset + 4)?;
-        self.script.record_scan(marker_offset, &scan)?;
+        match self.mode {
+            ScanCollectionMode::Progressive => {
+                validate_progressive_scan_components(self.sof, &scan, marker_offset + 4)?;
+                self.script.record_scan(marker_offset, &scan)?;
+            }
+            ScanCollectionMode::Split => {
+                validate_split_scan(self.sof, &scan, marker_offset + 4)?;
+                record_split_coverage(self.sof, &scan, marker_offset + 4, &mut self.covered)?;
+            }
+        }
         self.pending = Some(PendingProgressiveScan::new(
             scan,
             entropy_offset,
@@ -211,6 +276,35 @@ impl<'a> ProgressiveCollector<'a> {
         self.position = next;
         Ok(MarkerFlow::Continue)
     }
+}
+
+/// Marks the frame components `scan` codes; a component already coded by an
+/// earlier scan of a split frame is a duplicate.
+fn record_split_coverage(
+    sof: &ParsedSof,
+    scan: &ParsedScan,
+    offset: usize,
+    covered: &mut [bool; MAX_SPLIT_COMPONENTS],
+) -> Result<(), JpegError> {
+    for (slot, component) in scan.components.iter().enumerate() {
+        let index = sof
+            .component_ids
+            .iter()
+            .position(|&id| id == component.id)
+            .filter(|&index| index < MAX_SPLIT_COMPONENTS)
+            .ok_or(JpegError::UnknownScanComponent {
+                offset: offset + 1 + slot * 2,
+                component: component.id,
+            })?;
+        if covered[index] {
+            return Err(JpegError::DuplicateScanComponent {
+                offset: offset + 1 + slot * 2,
+                component: component.id,
+            });
+        }
+        covered[index] = true;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

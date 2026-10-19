@@ -22,8 +22,9 @@ use super::{
     compute_lossless_scratch_bytes, lossless_color_sampling, ColorSpace, DecodeOptions, Decoder,
     DecoderContext, Info, JpegError, MarkerKind, ParsedHeader, PreparedComponentPlan,
     PreparedDecodePlan, PreparedDecoderMetadata, PreparedHuffmanTableId, PreparedHuffmanTables,
-    PreparedLosslessPlan, PreparedProgressiveComponentPlan, PreparedProgressivePlan,
-    PreparedProgressiveScan, PreparedProgressiveScanComponent, SofKind, DEFAULT_MAX_DECODE_BYTES,
+    PreparedLosslessPlan, PreparedLosslessScan, PreparedProgressiveComponentPlan,
+    PreparedProgressivePlan, PreparedProgressiveScan, PreparedProgressiveScanComponent, SofKind,
+    DEFAULT_MAX_DECODE_BYTES,
 };
 
 impl Decoder<'_> {
@@ -56,10 +57,14 @@ impl Decoder<'_> {
             retained_parsed_bytes,
             ctx.retained_allocation_bytes(),
         )?;
+        // Progressive frames and split (multi-scan) sequential frames both
+        // decode through whole-image coefficients.
         let (plan, progressive_plan, lossless_plan) = if matches!(
             info.sof_kind,
             SofKind::Progressive8 | SofKind::Progressive12
-        ) {
+        ) || (info.sof_kind != SofKind::Lossless
+            && !header.progressive_scans.is_empty())
+        {
             let progressive_plan =
                 Self::build_progressive_plan(&header, &info, ctx, &mut construction)?;
             let plan = Self::build_progressive_host_output_plan(
@@ -119,6 +124,12 @@ impl Decoder<'_> {
             prepared_bytes = crate::allocation::checked_add_allocation_bytes(
                 prepared_bytes,
                 progressive.retained_allocation_bytes()?,
+            )?;
+        }
+        if let Some(lossless) = &lossless_plan {
+            prepared_bytes = crate::allocation::checked_add_allocation_bytes(
+                prepared_bytes,
+                lossless.retained_allocation_bytes()?,
             )?;
         }
         construction.verify_retained(ctx.retained_allocation_bytes(), prepared_bytes)?;
@@ -228,31 +239,37 @@ impl Decoder<'_> {
         if info.sof_kind != SofKind::Lossless {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        if header.scan_count != 1 {
+        // A split frame codes its components in several scans; any other
+        // frame has exactly one scan.
+        let split = !header.progressive_scans.is_empty();
+        if header.scan_count != 1 && !split {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
             marker: MarkerKind::Sos,
         })?;
-        if !(1..=7).contains(&scan.ss) {
-            return Err(JpegError::UnsupportedPredictor { predictor: scan.ss });
-        }
-        if scan.se != 0 || scan.ah != 0 || scan.al != 0 {
-            return Err(JpegError::NotImplemented { sof: info.sof_kind });
-        }
-        let expected_components = match (info.color_space, info.bit_depth) {
-            (ColorSpace::Grayscale, 8 | 16) => 1,
-            (ColorSpace::Rgb | ColorSpace::YCbCr, 8 | 16) => 3,
-            _ => return Err(JpegError::NotImplemented { sof: info.sof_kind }),
+        validate_lossless_scan(scan, info)?;
+        let expected_components = match info.color_space {
+            ColorSpace::Grayscale => 1,
+            ColorSpace::Rgb | ColorSpace::YCbCr => 3,
+            ColorSpace::Cmyk | ColorSpace::Ycck => {
+                return Err(JpegError::NotImplemented { sof: info.sof_kind })
+            }
         };
-        if scan.components.len() != expected_components {
+        if !split && scan.components.len() != expected_components {
             return Err(JpegError::UnsupportedComponentCount {
                 count: scan.components.len() as u8,
             });
         }
-        let prepared_bytes = prepared_decode_plan_allocation_bytes(
-            scan.components.len(),
-            header.huffman_tables.versions.len(),
+        let split_scan_bytes = crate::allocation::checked_allocation_bytes::<PreparedLosslessScan>(
+            header.progressive_scans.len(),
+        )?;
+        let prepared_bytes = crate::allocation::checked_add_allocation_bytes(
+            prepared_decode_plan_allocation_bytes(
+                expected_components,
+                header.huffman_tables.versions.len(),
+            )?,
+            split_scan_bytes,
         )?;
         ensure_prepared_construction_fits(header, prepared_bytes)?;
         let huffman_tables = compile_huffman_versions(
@@ -261,45 +278,105 @@ impl Decoder<'_> {
             construction,
             HuffmanLookupRequirement::FusedFull,
         )?;
-        let prepared_bytes = prepared_decode_plan_allocation_bytes(
-            scan.components.len(),
-            huffman_tables.capacity(),
+        let prepared_bytes = crate::allocation::checked_add_allocation_bytes(
+            prepared_decode_plan_allocation_bytes(expected_components, huffman_tables.capacity())?,
+            split_scan_bytes,
         )?;
         ensure_prepared_construction_fits(header, prepared_bytes)?;
         let workspace_cap = decode_workspace_cap(header, prepared_bytes)?;
-        let mut components = construction.try_vec(scan.components.len())?;
-        for scan_component in scan.components.iter().copied() {
-            let component_index = find_component_index(&header.component_ids, scan_component.id)
-                .ok_or(JpegError::UnknownScanComponent {
-                    offset: header.sos_offset.unwrap_or_default(),
+        let mut components = construction.try_vec(expected_components)?;
+        let mut split_scans = construction.try_vec(header.progressive_scans.len())?;
+        if split {
+            // Each scan's tables are its own snapshot: DHT may change
+            // between scans.
+            for parsed in &header.progressive_scans {
+                validate_lossless_scan(&parsed.scan, info)?;
+                let component_start = components.len();
+                if component_start + parsed.scan.components.len() > expected_components {
+                    return Err(JpegError::UnsupportedComponentCount {
+                        count: (component_start + parsed.scan.components.len()) as u8,
+                    });
+                }
+                for scan_component in parsed.scan.components.iter().copied() {
+                    let component_index =
+                        find_component_index(&header.component_ids, scan_component.id).ok_or(
+                            JpegError::UnknownScanComponent {
+                                offset: parsed.entropy_offset,
+                                component: scan_component.id,
+                            },
+                        )?;
+                    let (h, v) = header.sampling.component(component_index).ok_or(
+                        JpegError::MissingMarker {
+                            marker: MarkerKind::Sof,
+                        },
+                    )?;
+                    let dc_table = resolve_progressive_huffman(
+                        &parsed.table_state,
+                        &huffman_tables,
+                        scan_component.id,
+                        0,
+                        scan_component.dc_table,
+                    )?;
+                    components.push(PreparedComponentPlan {
+                        h,
+                        v,
+                        output_index: component_index,
+                        quant: ctx.resolve_quant_table([1; 64]),
+                        dc_table: Some(dc_table),
+                        ac_table: None,
+                    });
+                }
+                split_scans.push(PreparedLosslessScan {
+                    component_start,
+                    component_len: parsed.scan.components.len(),
+                    predictor: parsed.scan.ss,
+                    point_transform: parsed.scan.al,
+                    restart_interval: parsed.restart_interval,
+                    entropy_offset: parsed.entropy_offset,
+                    terminal_code: parsed.terminal_code,
+                });
+            }
+            if components.len() != expected_components {
+                return Err(JpegError::UnsupportedComponentCount {
+                    count: components.len() as u8,
+                });
+            }
+        } else {
+            for scan_component in scan.components.iter().copied() {
+                let component_index =
+                    find_component_index(&header.component_ids, scan_component.id).ok_or(
+                        JpegError::UnknownScanComponent {
+                            offset: header.sos_offset.unwrap_or_default(),
+                            component: scan_component.id,
+                        },
+                    )?;
+                let (h, v) =
+                    header
+                        .sampling
+                        .component(component_index)
+                        .ok_or(JpegError::MissingMarker {
+                            marker: MarkerKind::Sof,
+                        })?;
+                let dc_table = prepared_active_huffman_id(
+                    &header.huffman_tables,
+                    &huffman_tables,
+                    0,
+                    scan_component.dc_table,
+                )
+                .ok_or(JpegError::MissingHuffmanTable {
                     component: scan_component.id,
+                    class: 0,
+                    id: scan_component.dc_table,
                 })?;
-            let (h, v) =
-                header
-                    .sampling
-                    .component(component_index)
-                    .ok_or(JpegError::MissingMarker {
-                        marker: MarkerKind::Sof,
-                    })?;
-            let dc_table = prepared_active_huffman_id(
-                &header.huffman_tables,
-                &huffman_tables,
-                0,
-                scan_component.dc_table,
-            )
-            .ok_or(JpegError::MissingHuffmanTable {
-                component: scan_component.id,
-                class: 0,
-                id: scan_component.dc_table,
-            })?;
-            components.push(PreparedComponentPlan {
-                h,
-                v,
-                output_index: component_index,
-                quant: ctx.resolve_quant_table([1; 64]),
-                dc_table: Some(dc_table),
-                ac_table: None,
-            });
+                components.push(PreparedComponentPlan {
+                    h,
+                    v,
+                    output_index: component_index,
+                    quant: ctx.resolve_quant_table([1; 64]),
+                    dc_table: Some(dc_table),
+                    ac_table: None,
+                });
+            }
         }
         if matches!(info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
             && lossless_color_sampling(info).is_none()
@@ -325,6 +402,7 @@ impl Decoder<'_> {
             point_transform: scan.al,
             dimensions: info.dimensions,
             scan_offset: plan.scan_offset,
+            split_scans,
         };
         Ok((plan, lossless))
     }
@@ -339,19 +417,8 @@ impl Decoder<'_> {
         ctx: &mut DecoderContext,
         construction: &mut PreparedConstructionBudget,
     ) -> Result<PreparedProgressivePlan, JpegError> {
-        if !matches!(
-            info.sof_kind,
-            SofKind::Progressive8 | SofKind::Progressive12
-        ) {
+        if info.sof_kind == SofKind::Lossless {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
-        }
-        match (info.sof_kind, info.color_space) {
-            (
-                SofKind::Progressive8 | SofKind::Progressive12,
-                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
-            )
-            | (SofKind::Progressive12, ColorSpace::Cmyk | ColorSpace::Ycck) => {}
-            (_, color_space) => return Err(JpegError::UnsupportedColorSpace { color_space }),
         }
         validate_sampling_factors(header, info)?;
         if header.progressive_scans.is_empty() {
@@ -459,7 +526,9 @@ impl Decoder<'_> {
                 } else {
                     None
                 };
-                let ac_table = if parsed.scan.ss > 0 {
+                // Progressive AC scans and full-spectrum split sequential
+                // scans code AC coefficients.
+                let ac_table = if parsed.scan.se > 0 {
                     Some(resolve_progressive_huffman(
                         &parsed.table_state,
                         &huffman_tables,
@@ -673,6 +742,21 @@ fn validate_leading_component_sampling(
         if h != header.sampling.max_h || v != header.sampling.max_v {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
+    }
+    Ok(())
+}
+
+/// One lossless scan's parameters: predictor 1..=7, no spectral selection
+/// or successive approximation, and a point transform below the precision.
+fn validate_lossless_scan(
+    scan: &crate::parse::scan::ParsedScan,
+    info: &Info,
+) -> Result<(), JpegError> {
+    if !(1..=7).contains(&scan.ss) {
+        return Err(JpegError::UnsupportedPredictor { predictor: scan.ss });
+    }
+    if scan.se != 0 || scan.ah != 0 || scan.al >= info.bit_depth {
+        return Err(JpegError::NotImplemented { sof: info.sof_kind });
     }
     Ok(())
 }

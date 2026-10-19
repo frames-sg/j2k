@@ -18,11 +18,9 @@ pub(super) fn application_warning(
             size: payload.len(),
         }),
         0xee => match parse_adobe_app14(payload) {
-            Some(AdobeTransform::Unknown) if payload.len() >= 12 && payload[11] > 2 => {
-                Some(Warning::AdobeApp14Ambiguous {
-                    raw_transform: payload[11],
-                })
-            }
+            Some(AdobeTransform::Reserved) => Some(Warning::AdobeApp14Ambiguous {
+                raw_transform: payload[11],
+            }),
             Some(_) => None,
             None => Some(Warning::UnknownAppMarker {
                 marker: 0xee,

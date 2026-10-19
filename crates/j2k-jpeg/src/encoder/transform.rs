@@ -651,6 +651,71 @@ fn fdct_8(input: [f64; 8]) -> [f64; 8] {
     ]
 }
 
+/// Forward DCT and quantization of one block of level-shifted samples at a
+/// precision up to 12 bits, in natural order: the 8-bit path's AAN
+/// transform, rounding half away from zero, with the same exact fallback for
+/// results within rounding error of a tie.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "12-bit DCT coefficients are bounded by 8 * 2048 and fit i16"
+)]
+pub(super) fn fdct_quantize_centered(
+    centered: &[i32; 64],
+    quant: &[u16; 64],
+    cosine: &[[f64; 8]; 8],
+) -> [i16; 64] {
+    let mut columns = [[0.0; 8]; 8];
+    for y in 0..8 {
+        let row = fdct_8(core::array::from_fn(|x| f64::from(centered[y * 8 + x])));
+        for u in 0..8 {
+            columns[u][y] = row[u];
+        }
+    }
+    let mut values = [0.0; 64];
+    for (u, column) in columns.into_iter().enumerate() {
+        for (v, value) in fdct_8(column).into_iter().enumerate() {
+            values[v * 8 + u] = value;
+        }
+    }
+    core::array::from_fn(|natural| {
+        let divisor =
+            8.0 * AAN_SCALE[natural % 8] * AAN_SCALE[natural / 8] * f64::from(quant[natural]);
+        let quantized = values[natural] / divisor;
+        if (quantized.abs().fract() - 0.5).abs() < 1e-9 {
+            quantize_direct_centered(centered, quant, cosine, natural)
+        } else {
+            quantized.round() as i16
+        }
+    })
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "12-bit DCT coefficients are bounded by 8 * 2048 and fit i16"
+)]
+fn quantize_direct_centered(
+    centered: &[i32; 64],
+    quant: &[u16; 64],
+    cosine: &[[f64; 8]; 8],
+    natural: usize,
+) -> i16 {
+    let (u, v) = (natural % 8, natural / 8);
+    let mut direct = 0.0;
+    for y in 0..8 {
+        for x in 0..8 {
+            direct += f64::from(centered[y * 8 + x]) * cosine[u][x] * cosine[v][y];
+        }
+    }
+    let scale = |index: usize| {
+        if index == 0 {
+            core::f64::consts::FRAC_1_SQRT_2
+        } else {
+            1.0
+        }
+    };
+    (0.25 * scale(u) * scale(v) * direct / f64::from(quant[natural])).round() as i16
+}
+
 pub(super) fn cosine_table() -> &'static [[f64; 8]; 8] {
     static TABLE: OnceLock<[[f64; 8]; 8]> = OnceLock::new();
     TABLE.get_or_init(|| {

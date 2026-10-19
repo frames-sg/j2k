@@ -3,82 +3,30 @@
 //! Lossless grayscale and color rendering paths. Every path pulls whole MCU
 //! rows from one [`LosslessScan`] and stores them into its output.
 
+use super::lossless_planes::{lossless_color_uses_planes, lossless_plane_layout};
 use super::{
     allocate_output_buffer_with_live_budget, checked_scratch_len,
     convert_ycbcr16_to_rgb16_in_place, convert_ycbcr8_to_rgb8_in_place, copy_gray16_scaled_rect,
     copy_gray8_scaled_rect, copy_ycbcr16_row_to_rgb16, copy_ycbcr8_row_to_rgb8,
-    lossless_color_sampling, lossless_output_order, lossless_sampled_plane_layout, merged_warnings,
-    scaled_rect_covering, validate_lossless_color_plan, write_lossless_color16_sampled_output,
-    write_lossless_color8_sampled_output, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor,
-    JpegError, LosslessColorPlanes, LosslessColorSampling, LosslessSample,
-    LosslessSampledPlaneLayout, PreparedLosslessPlan, Rect, RowSink, Vec,
+    lossless_color_sampling, lossless_output_order, merged_warnings, scaled_rect_covering,
+    validate_lossless_color_plan, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError,
+    LosslessColorSampling, LosslessSample, PreparedComponentPlan, PreparedLosslessPlan, Rect,
+    RowSink, Vec,
 };
-use crate::allocation::{
-    try_reserve_for_len_with_live_budget, try_resize_filled, try_vec_with_capacity,
-};
+use crate::allocation::{try_resize_filled, try_vec_with_capacity};
 use crate::lossless::scan::{LosslessComponentSpec, LosslessScan, LosslessScanSpec};
 
 #[cfg(test)]
 mod tests;
 
-struct OwnedLosslessSampledPlanes<P> {
-    c0: Vec<P>,
-    c1: Vec<P>,
-    c2: Vec<P>,
-}
-
-fn allocate_lossless_sampled_planes<P: LosslessSample>(
-    layout: LosslessSampledPlaneLayout,
-    cap: usize,
-) -> Result<OwnedLosslessSampledPlanes<P>, JpegError> {
-    let mut live_bytes = 0;
-    let mut c0 = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut c0, layout.luma_len, &mut live_bytes, cap)?;
-    c0.resize(layout.luma_len, P::default());
-    let mut c1 = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut c1, layout.chroma_len, &mut live_bytes, cap)?;
-    c1.resize(layout.chroma_len, P::default());
-    let mut c2 = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut c2, layout.chroma_len, &mut live_bytes, cap)?;
-    c2.resize(layout.chroma_len, P::default());
-    Ok(OwnedLosslessSampledPlanes { c0, c1, c2 })
-}
-
 /// Color output steps that depend on the sample container.
 trait LosslessColorOutput: LosslessSample {
     fn convert_ycbcr_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32));
-
-    fn write_sampled(
-        out: &mut [u8],
-        stride: usize,
-        color_space: ColorSpace,
-        sampling: LosslessColorSampling,
-        dimensions: (usize, usize),
-        planes: LosslessColorPlanes<'_, Self>,
-    );
 }
 
 impl LosslessColorOutput for u8 {
     fn convert_ycbcr_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
         convert_ycbcr8_to_rgb8_in_place(out, stride, dimensions);
-    }
-
-    fn write_sampled(
-        out: &mut [u8],
-        stride: usize,
-        color_space: ColorSpace,
-        sampling: LosslessColorSampling,
-        dimensions: (usize, usize),
-        planes: LosslessColorPlanes<'_, Self>,
-    ) {
-        write_lossless_color8_sampled_output(
-            out,
-            stride,
-            color_space,
-            sampling,
-            dimensions,
-            planes,
-        );
     }
 }
 
@@ -86,36 +34,34 @@ impl LosslessColorOutput for u16 {
     fn convert_ycbcr_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
         convert_ycbcr16_to_rgb16_in_place(out, stride, dimensions);
     }
+}
 
-    fn write_sampled(
-        out: &mut [u8],
-        stride: usize,
-        color_space: ColorSpace,
-        sampling: LosslessColorSampling,
-        dimensions: (usize, usize),
-        planes: LosslessColorPlanes<'_, Self>,
-    ) {
-        write_lossless_color16_sampled_output(
-            out,
-            stride,
-            color_space,
-            sampling,
-            dimensions,
-            planes,
-        );
-    }
+/// One scan of a lossless frame: its components (in scan order, with the
+/// scan's tables) and parameters.
+#[derive(Clone, Copy)]
+pub(super) struct LosslessScanView<'p> {
+    pub(super) components: &'p [PreparedComponentPlan],
+    predictor: u8,
+    point_transform: u8,
+    restart_interval: Option<u16>,
+    entropy_offset: usize,
+    /// Whether EOI must follow: false for a split frame's earlier scans and
+    /// for a final scan the header walk saw cut off at EOF.
+    pub(super) validate_eoi: bool,
 }
 
 impl Decoder<'_> {
     /// The lossless plan, checked against the `P` output container.
-    fn lossless_plan_for<P: LosslessSample>(&self) -> Result<&PreparedLosslessPlan, JpegError> {
+    pub(super) fn lossless_plan_for<P: LosslessSample>(
+        &self,
+    ) -> Result<&PreparedLosslessPlan, JpegError> {
         let plan = self
             .lossless_plan
             .as_ref()
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        if plan.bit_depth != P::BIT_DEPTH {
+        if !P::holds_precision(plan.bit_depth) {
             return Err(JpegError::UnsupportedBitDepth {
                 depth: plan.bit_depth,
             });
@@ -128,30 +74,90 @@ impl Decoder<'_> {
         Ok(plan)
     }
 
-    /// Start the scan over every plan component, in scan order.
-    fn lossless_scan(
+    /// Scan `index` of the frame.
+    pub(super) fn lossless_scan_view<'p>(
+        &'p self,
+        plan: &'p PreparedLosslessPlan,
+        index: usize,
+    ) -> Result<LosslessScanView<'p>, JpegError> {
+        let invalid = || JpegError::InternalInvariant {
+            reason: "lossless scan view is outside the prepared scans",
+        };
+        if plan.split_scans.is_empty() {
+            if index != 0 {
+                return Err(invalid());
+            }
+            return Ok(LosslessScanView {
+                components: &self.plan.components,
+                predictor: plan.predictor,
+                point_transform: plan.point_transform,
+                restart_interval: self.plan.restart_interval,
+                entropy_offset: plan.scan_offset,
+                validate_eoi: true,
+            });
+        }
+        let scan = plan.split_scans.get(index).ok_or_else(invalid)?;
+        let components = self
+            .plan
+            .components
+            .get(scan.component_start..scan.component_start + scan.component_len)
+            .ok_or_else(invalid)?;
+        Ok(LosslessScanView {
+            components,
+            predictor: scan.predictor,
+            point_transform: scan.point_transform,
+            restart_interval: scan.restart_interval,
+            entropy_offset: scan.entropy_offset,
+            validate_eoi: scan.terminal_code == 0xD9,
+        })
+    }
+
+    /// Start decoding the scan `view` describes.
+    pub(super) fn open_lossless_scan(
         &self,
         plan: &PreparedLosslessPlan,
+        view: LosslessScanView<'_>,
     ) -> Result<LosslessScan<'_, '_>, JpegError> {
-        let mut components = try_vec_with_capacity(self.plan.components.len())?;
-        for component in &self.plan.components {
+        let mut components = try_vec_with_capacity(view.components.len())?;
+        for component in view.components {
             components.push(LosslessComponentSpec {
                 h: component.h,
                 v: component.v,
                 table: self.plan.dc_table(component)?,
             });
         }
+        let scan_bytes = self
+            .bytes
+            .get(view.entropy_offset..)
+            .ok_or(JpegError::Truncated {
+                offset: view.entropy_offset,
+                expected: 1,
+            })?;
         LosslessScan::new(
-            &self.bytes[plan.scan_offset..],
+            scan_bytes,
             LosslessScanSpec {
                 dimensions: plan.dimensions,
-                predictor: plan.predictor,
+                predictor: view.predictor,
                 precision: plan.bit_depth,
-                point_transform: plan.point_transform,
-                restart_interval: self.plan.restart_interval,
+                point_transform: view.point_transform,
+                restart_interval: view.restart_interval,
+                frame_max_sampling: (self.info.sampling.max_h, self.info.sampling.max_v),
             },
             &components,
         )
+    }
+
+    /// Start the frame's only scan.
+    fn lossless_scan(
+        &self,
+        plan: &PreparedLosslessPlan,
+    ) -> Result<LosslessScan<'_, '_>, JpegError> {
+        if !plan.split_scans.is_empty() {
+            return Err(JpegError::InternalInvariant {
+                reason: "single-scan lossless path reached a split frame",
+            });
+        }
+        self.open_lossless_scan(plan, self.lossless_scan_view(plan, 0)?)
     }
 
     fn lossless_gray_scan<P: LosslessSample>(&self) -> Result<LosslessScan<'_, '_>, JpegError> {
@@ -344,6 +350,10 @@ impl Decoder<'_> {
         stride: usize,
         color_space: ColorSpace,
     ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self.lossless_plan_for::<P>()?;
+        if lossless_color_uses_planes(&self.info, plan) {
+            return self.decode_lossless_color_planes_into::<P>(out, stride, color_space);
+        }
         match lossless_color_sampling(&self.info) {
             Some(LosslessColorSampling::S444) => {
                 let outcome =
@@ -353,10 +363,7 @@ impl Decoder<'_> {
                 }
                 Ok(outcome)
             }
-            Some(sampling @ (LosslessColorSampling::S422 | LosslessColorSampling::S420)) => {
-                self.decode_lossless_color_sampled_into::<P>(out, stride, color_space, sampling)
-            }
-            None => Err(JpegError::NotImplemented {
+            Some(LosslessColorSampling::Sampled) | None => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             }),
         }
@@ -384,83 +391,6 @@ impl Decoder<'_> {
             );
         }
         self.finish_lossless_scan(scan)
-    }
-
-    /// 4:2:2 and 4:2:0 color: reconstruct full component planes, then
-    /// upsample and convert them into `out`.
-    fn decode_lossless_color_sampled_into<P: LosslessColorOutput>(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        color_space: ColorSpace,
-        sampling: LosslessColorSampling,
-    ) -> Result<DecodeOutcome, JpegError> {
-        let plan = self.lossless_plan_for::<P>()?;
-        validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
-        let order = lossless_output_order(&self.plan)?;
-        let (width, height) = (plan.dimensions.0 as usize, plan.dimensions.1 as usize);
-        let layout = lossless_sampled_plane_layout(&self.info, super::DEFAULT_MAX_DECODE_BYTES)?
-            .ok_or(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            })?;
-        let expected_plane_bytes = layout
-            .chroma_len
-            .checked_mul(2)
-            .and_then(|chroma_bytes| layout.luma_len.checked_add(chroma_bytes))
-            .and_then(|samples| samples.checked_mul(core::mem::size_of::<P>()))
-            .ok_or(JpegError::InternalInvariant {
-                reason: "lossless sampled-plane layout arithmetic diverged after validation",
-            })?;
-        if layout.total_bytes != expected_plane_bytes {
-            return Err(JpegError::InternalInvariant {
-                reason: "lossless sampled-plane layout total disagrees with its planes",
-            });
-        }
-        if layout.total_bytes > self.plan.scratch_bytes {
-            return Err(JpegError::MemoryCapExceeded {
-                requested: layout.total_bytes,
-                cap: self.plan.scratch_bytes,
-            });
-        }
-        let chroma_width = layout.chroma_dimensions.0;
-        let OwnedLosslessSampledPlanes {
-            mut c0,
-            mut c1,
-            mut c2,
-        } = allocate_lossless_sampled_planes::<P>(layout, self.plan.scratch_bytes)?;
-
-        let mut scan = self.lossless_scan(plan)?;
-        let shift = scan.point_transform();
-        while scan.decode_mcu_row()? {
-            for (output, &component) in order.iter().enumerate() {
-                let (plane, plane_width) = match output {
-                    0 => (&mut c0, width),
-                    1 => (&mut c1, chroma_width),
-                    _ => (&mut c2, chroma_width),
-                };
-                let base = scan.row_base(component);
-                for index in 0..scan.rows_ready(component) {
-                    let dst = &mut plane[(base + index) * plane_width..][..plane_width];
-                    for (dst, &sample) in dst.iter_mut().zip(scan.row(component, index)) {
-                        *dst = P::from_sample(sample << shift);
-                    }
-                }
-            }
-        }
-        let outcome = self.finish_lossless_scan(scan)?;
-        P::write_sampled(
-            out,
-            stride,
-            color_space,
-            sampling,
-            (width, height),
-            LosslessColorPlanes {
-                c0: &c0,
-                c1: &c1,
-                c2: &c2,
-            },
-        );
-        Ok(outcome)
     }
 
     pub(super) fn decode_lossless_rgb8_into(
@@ -514,6 +444,9 @@ impl Decoder<'_> {
         S: RowSink<u8, Error = JpegError>,
     {
         let plan = self.lossless_plan_for::<P>()?;
+        if lossless_color_uses_planes(&self.info, plan) {
+            return self.decode_lossless_color_plane_rows::<P, S>(sink, row, color_space);
+        }
         validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
         if lossless_color_sampling(&self.info) != Some(LosslessColorSampling::S444) {
             return Err(JpegError::NotImplemented {
@@ -594,5 +527,117 @@ impl Decoder<'_> {
             color_space,
             copy_ycbcr16_row_to_rgb16,
         )
+    }
+}
+
+/// One scan of a validated device lossless decode.
+pub(crate) struct DeviceLosslessScan<'d> {
+    pub(crate) scan: LosslessScan<'d, 'd>,
+    /// Frame (`output_index`) position of each scan component, in scan order.
+    pub(crate) frame_components: [usize; 3],
+    pub(crate) component_count: usize,
+    /// Whether EOI must follow the scan.
+    pub(crate) validate_eoi: bool,
+}
+
+impl Decoder<'_> {
+    /// Validate a device decode to `fmt` exactly as CPU decode validates
+    /// that output, and return how many scans it decodes.
+    pub(crate) fn device_lossless_scan_count(
+        &self,
+        fmt: j2k_core::PixelFormat,
+    ) -> Result<usize, JpegError> {
+        use j2k_core::PixelFormat;
+        let plan = match fmt {
+            PixelFormat::Gray8 => self.device_lossless_gray_plan::<u8>()?,
+            PixelFormat::Gray16 => self.device_lossless_gray_plan::<u16>()?,
+            PixelFormat::Rgb8 | PixelFormat::Rgba8 => self.device_lossless_color_plan::<u8>()?,
+            PixelFormat::Rgb16 | PixelFormat::Rgba16 => self.device_lossless_color_plan::<u16>()?,
+            _ => {
+                return Err(JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                })
+            }
+        };
+        Ok(plan.scan_count())
+    }
+
+    /// Open scan `index` of a device decode validated by
+    /// [`Self::device_lossless_scan_count`].
+    pub(crate) fn device_lossless_scan(
+        &self,
+        index: usize,
+    ) -> Result<DeviceLosslessScan<'_>, JpegError> {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        let view = self.lossless_scan_view(plan, index)?;
+        let mut frame_components = [0; 3];
+        if view.components.len() > frame_components.len() {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: u8::try_from(view.components.len()).unwrap_or(u8::MAX),
+            });
+        }
+        for (slot, component) in frame_components.iter_mut().zip(view.components) {
+            *slot = component.output_index;
+        }
+        Ok(DeviceLosslessScan {
+            scan: self.open_lossless_scan(plan, view)?,
+            frame_components,
+            component_count: view.components.len(),
+            validate_eoi: view.validate_eoi,
+        })
+    }
+
+    fn device_lossless_gray_plan<P: LosslessSample>(
+        &self,
+    ) -> Result<&PreparedLosslessPlan, JpegError> {
+        let plan = self.lossless_plan_for::<P>()?;
+        if self.plan.components.len() != 1 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        Ok(plan)
+    }
+
+    fn device_lossless_color_plan<P: LosslessSample>(
+        &self,
+    ) -> Result<&PreparedLosslessPlan, JpegError> {
+        let color_space = if self.info.color_space == ColorSpace::YCbCr {
+            ColorSpace::YCbCr
+        } else {
+            ColorSpace::Rgb
+        };
+        let plan = self.lossless_plan_for::<P>()?;
+        if lossless_color_uses_planes(&self.info, plan) {
+            if self.info.color_space != color_space {
+                return Err(JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                });
+            }
+            let layout = lossless_plane_layout(&self.info, self.plan.scratch_bytes)?.ok_or(
+                JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                },
+            )?;
+            if layout.total_bytes > self.plan.scratch_bytes {
+                return Err(JpegError::MemoryCapExceeded {
+                    requested: layout.total_bytes,
+                    cap: self.plan.scratch_bytes,
+                });
+            }
+            return Ok(plan);
+        }
+        validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
+        if lossless_color_sampling(&self.info) != Some(LosslessColorSampling::S444) {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        Ok(plan)
     }
 }

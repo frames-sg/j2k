@@ -16,7 +16,8 @@ mod upsample;
 mod writers;
 
 pub(super) use self::sampling::lossless_color_sampling;
-pub(super) use self::upsample::{upsample_h2v1_sample_at, upsample_h2v2_rows_at};
+#[cfg(test)]
+use self::upsample::upsample_h2v2_rows_at;
 
 #[cfg(test)]
 mod tests;

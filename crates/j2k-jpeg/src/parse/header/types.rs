@@ -37,6 +37,8 @@ pub(crate) struct ParsedHeader {
     pub(crate) huffman_tables: HuffmanTables,
     pub(crate) restart_interval: Option<u16>,
     pub(crate) adobe: Option<AdobeTransform>,
+    /// Whether a JFIF APP0 header preceded the first scan.
+    pub(crate) jfif: bool,
     pub(crate) scan_count: u16,
     pub(crate) warnings: Vec<Warning>,
     pub(crate) sos_offset: Option<usize>,
@@ -46,7 +48,12 @@ pub(crate) struct ParsedHeader {
 
 impl ParsedHeader {
     pub(crate) fn color_space(&self) -> ColorSpace {
-        color_space_for_components(self.sampling.len(), self.adobe)
+        color_space_for_frame(
+            self.component_ids.as_slice(),
+            self.sof_kind == SofKind::Lossless,
+            self.adobe,
+            self.jfif,
+        )
     }
 
     pub(crate) fn info(&self) -> Info {
@@ -73,15 +80,33 @@ impl ParsedHeader {
     }
 }
 
-pub(super) fn color_space_for_components(
-    component_count: usize,
+/// Input color space as libjpeg-turbo's `default_decompress_parms` chooses
+/// it: a JFIF marker means YCbCr; otherwise the Adobe transform decides;
+/// otherwise three components are RGB when their IDs spell "RGB" or the
+/// frame is lossless (libjpeg-turbo's lossless guess), else YCbCr.
+pub(super) fn color_space_for_frame(
+    component_ids: &[u8],
+    lossless: bool,
     adobe: Option<AdobeTransform>,
+    jfif: bool,
 ) -> ColorSpace {
-    match (component_count, adobe) {
-        (1, _) => ColorSpace::Grayscale,
-        (3, Some(AdobeTransform::Unknown)) => ColorSpace::Rgb,
-        (4, Some(AdobeTransform::Ycck)) => ColorSpace::Ycck,
-        (4, _) => ColorSpace::Cmyk,
+    match component_ids.len() {
+        1 => ColorSpace::Grayscale,
+        3 if jfif => ColorSpace::YCbCr,
+        3 => match adobe {
+            Some(AdobeTransform::Unknown) => ColorSpace::Rgb,
+            Some(AdobeTransform::YCbCr | AdobeTransform::Ycck | AdobeTransform::Reserved) => {
+                ColorSpace::YCbCr
+            }
+            None if component_ids == b"RGB" || lossless => ColorSpace::Rgb,
+            None => ColorSpace::YCbCr,
+        },
+        4 => match adobe {
+            None | Some(AdobeTransform::Unknown) => ColorSpace::Cmyk,
+            Some(AdobeTransform::YCbCr | AdobeTransform::Ycck | AdobeTransform::Reserved) => {
+                ColorSpace::Ycck
+            }
+        },
         _ => ColorSpace::YCbCr,
     }
 }

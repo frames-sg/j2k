@@ -28,7 +28,8 @@ struct ProgressiveBlockTarget<'a, 't> {
 }
 
 /// Huffman tables one scan component uses, resolved once per scan: DC first
-/// scans need the DC table, AC scans the AC table, DC refinement neither.
+/// scans need the DC table, AC scans the AC table, DC refinement neither, and
+/// full-spectrum (split sequential) scans both.
 #[derive(Clone, Copy, Default)]
 struct ScanTables<'t> {
     dc: Option<RawHuffmanDecoder<'t>>,
@@ -50,10 +51,11 @@ fn resolve_scan_tables<'t>(
         });
     }
     for (slot, scan_component) in tables.iter_mut().zip(scan_components) {
-        if scan.ss != 0 {
-            slot.ac = Some(plan.ac_table(scan_component.ac_table)?);
-        } else if scan.ah == 0 {
+        if scan.ss == 0 && scan.ah == 0 {
             slot.dc = Some(plan.dc_table(scan_component.dc_table)?);
+        }
+        if scan.se != 0 {
+            slot.ac = Some(plan.ac_table(scan_component.ac_table)?);
         }
     }
     Ok(tables)
@@ -133,6 +135,10 @@ fn decode_progressive_scan(
     let state = (&mut dc_predictors[..plan.components.len()], &mut eob_run);
     let counts = (restart, total_mcus);
     match (scan.ss == 0, scan.ah == 0) {
+        // Only split sequential frames have Ss == 0 with Se > 0.
+        (true, true) if scan.se != 0 => {
+            decode_scan_mcus::<SEQ_FULL>(&context, &mut br, coeffs, state, counts)
+        }
         (true, true) => decode_scan_mcus::<DC_FIRST>(&context, &mut br, coeffs, state, counts),
         (true, false) => decode_scan_mcus::<DC_REFINE>(&context, &mut br, coeffs, state, counts),
         (false, true) => decode_scan_mcus::<AC_FIRST>(&context, &mut br, coeffs, state, counts),
@@ -143,12 +149,15 @@ fn decode_progressive_scan(
 }
 
 /// Scan kinds (T.81 G.1.2): `Ss == 0` selects DC, `Ah == 0` a first pass.
+/// `SEQ_FULL` is a sequential scan of a split (multi-scan) sequential frame:
+/// the whole spectrum with sequential AC coding (T.81 F.2.2), no EOB runs.
 /// Each kind gets its own monomorphized MCU loop, so a loop only carries
 /// the one block decoder it needs.
 const DC_FIRST: u8 = 0;
 const DC_REFINE: u8 = 1;
 const AC_FIRST: u8 = 2;
 const AC_REFINE: u8 = 3;
+const SEQ_FULL: u8 = 4;
 
 /// Decode every MCU of one scan of kind `KIND`. Kept out of line per kind:
 /// its callee chain is inlined so the reader stays in registers.
@@ -301,7 +310,7 @@ fn decode_single_component_scan<const KIND: u8>(
                 *eob_run = 0;
                 mcus_since_restart = 0;
             }
-            if KIND == DC_FIRST || KIND == AC_FIRST {
+            if KIND == DC_FIRST || KIND == AC_FIRST || KIND == SEQ_FULL {
                 decode_progressive_block_first::<KIND>(
                     context.scan,
                     tables,
@@ -437,7 +446,7 @@ fn decode_progressive_block_at<const KIND: u8>(
         return Err(invalid_symbol());
     };
 
-    if KIND == DC_FIRST || KIND == AC_FIRST {
+    if KIND == DC_FIRST || KIND == AC_FIRST || KIND == SEQ_FULL {
         decode_progressive_block_first::<KIND>(
             scan,
             target.tables,
@@ -464,7 +473,7 @@ fn decode_progressive_block_first<const KIND: u8>(
     dc_predictor: &mut i32,
     eob_run: &mut u32,
 ) -> Result<(), JpegError> {
-    if KIND == DC_FIRST {
+    if KIND == DC_FIRST || KIND == SEQ_FULL {
         let dc_table = tables.dc.ok_or_else(missing_table)?;
         let ssss = dc_table.decode(br)?;
         if ssss > 15 {
@@ -473,7 +482,10 @@ fn decode_progressive_block_first<const KIND: u8>(
         let diff = br.receive_extend(ssss)?;
         *dc_predictor = dc_predictor.wrapping_add(diff);
         block[0] = dc_predictor.wrapping_shl(u32::from(scan.al));
-        return Ok(());
+        if KIND == DC_FIRST {
+            return Ok(());
+        }
+        return decode_sequential_ac(tables, br, (block, nonzero));
     }
 
     let ac_table = tables.ac.ok_or_else(missing_table)?;
@@ -509,6 +521,42 @@ fn decode_progressive_block_first<const KIND: u8>(
         }
     }
 
+    Ok(())
+}
+
+/// Sequential AC coefficients 1..=63 of one block (T.81 F.2.2.2): ZRL skips
+/// sixteen positions and any other zero-size symbol ends the block.
+#[expect(
+    clippy::inline_always,
+    reason = "inlining keeps the caller's local bit reader in registers for the whole scan"
+)]
+#[inline(always)]
+fn decode_sequential_ac(
+    tables: ScanTables<'_>,
+    br: &mut BitReader<'_>,
+    (block, nonzero): (&mut [i32; 64], &mut u64),
+) -> Result<(), JpegError> {
+    let ac_table = tables.ac.ok_or_else(missing_table)?;
+    let mut k = 1usize;
+    while k <= 63 {
+        let symbol = ac_table.decode(br)?;
+        let run = symbol >> 4;
+        let ssss = symbol & 0x0F;
+        if ssss == 0 {
+            if run != 15 {
+                break;
+            }
+            k += 16;
+            continue;
+        }
+        k += usize::from(run);
+        if k > 63 {
+            return Err(invalid_symbol());
+        }
+        block[usize::from(ZIGZAG[k & 63]) & 63] = br.receive_extend(ssss)?;
+        *nonzero |= 1 << (k & 63);
+        k += 1;
+    }
     Ok(())
 }
 

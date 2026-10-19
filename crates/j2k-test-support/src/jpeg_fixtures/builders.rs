@@ -1253,10 +1253,18 @@ fn lossless_rgb_restart_jpeg(
     bytes
 }
 
+/// JFIF APP0 marking lossless color fixtures as YCbCr: without a JFIF or
+/// Adobe marker libjpeg-turbo reads lossless color as RGB.
+const LOSSLESS_YCBCR_JFIF_APP0: [u8; 18] = [
+    0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x02, 0x00, 0x00, 0x01, 0x00, 0x01,
+    0x00, 0x00,
+];
+
 fn lossless_ycbcr_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
     assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0);
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1286,6 +1294,7 @@ fn lossless_ycbcr_restart_jpeg(
     assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0);
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1477,6 +1486,7 @@ fn lossless_ycbcr_16bit_jpeg(width: u16, height: u16, predictor: u8, samples: &[
     assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0);
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 16]);
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1506,6 +1516,7 @@ fn lossless_ycbcr_16bit_restart_jpeg(
     assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0);
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 16]);
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1577,11 +1588,13 @@ fn lossless_color_8bit_422_jpeg_impl(
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
-    if let Some(transform) = adobe_transform {
-        bytes.extend_from_slice(&[
+    match adobe_transform {
+        Some(transform) => bytes.extend_from_slice(&[
             0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
             0x00, transform,
-        ]);
+        ]),
+        // YCbCr: libjpeg-turbo reads unmarked lossless color as RGB.
+        None => bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0),
     }
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -1665,11 +1678,13 @@ fn lossless_color_8bit_420_jpeg_impl(
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
-    if let Some(transform) = adobe_transform {
-        bytes.extend_from_slice(&[
+    match adobe_transform {
+        Some(transform) => bytes.extend_from_slice(&[
             0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
             0x00, transform,
-        ]);
+        ]),
+        // YCbCr: libjpeg-turbo reads unmarked lossless color as RGB.
+        None => bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0),
     }
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -1744,11 +1759,13 @@ fn lossless_color_16bit_422_jpeg_impl(
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
-    if let Some(transform) = adobe_transform {
-        bytes.extend_from_slice(&[
+    match adobe_transform {
+        Some(transform) => bytes.extend_from_slice(&[
             0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
             0x00, transform,
-        ]);
+        ]),
+        // YCbCr: libjpeg-turbo reads unmarked lossless color as RGB.
+        None => bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0),
     }
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 16]);
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -1832,11 +1849,13 @@ fn lossless_color_16bit_420_jpeg_impl(
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
-    if let Some(transform) = adobe_transform {
-        bytes.extend_from_slice(&[
+    match adobe_transform {
+        Some(transform) => bytes.extend_from_slice(&[
             0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
             0x00, transform,
-        ]);
+        ]),
+        // YCbCr: libjpeg-turbo reads unmarked lossless color as RGB.
+        None => bytes.extend_from_slice(&LOSSLESS_YCBCR_JFIF_APP0),
     }
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 16]);
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -3124,9 +3143,11 @@ pub fn four_component_12bit_8x8_cmyk_nonconstant_rgb16() -> Vec<u8> {
     repeat_rgb16_pixels(8, 8, [1024, 1028, 1026])
 }
 
-/// Reference native-range RGB16 pixels for non-constant 12-bit YCCK fixtures.
+/// Reference native-range RGB16 pixels for non-constant 12-bit YCCK fixtures,
+/// as libjpeg-turbo 3.1.4 `djpeg -pnm` writes them: YCC decodes to
+/// complemented CMY (`ycck_cmyk_convert`), then each channel is scaled by K.
 pub fn four_component_12bit_8x8_ycck_nonconstant_rgb16() -> Vec<u8> {
-    repeat_rgb16_pixels(8, 8, [1038, 1013, 1046])
+    repeat_rgb16_pixels(8, 8, [994, 1019, 986])
 }
 
 /// Reference native-range RGB16 pixels for 16x8 12-bit CMYK/YCCK fixtures.

@@ -112,17 +112,23 @@ fn lossless_plan_rejects_nonzero_spectral_end() {
 }
 
 #[test]
-fn lossless_plan_rejects_scan_component_count_mismatch() {
+fn lossless_plan_rejects_scans_that_miss_components() {
+    // One one-component scan of a three-component frame starts a split
+    // frame; with no later scans the other two components are never coded.
     let bytes = lossless_jpeg(LosslessFixture {
         frame_components: 3,
         scan_components: 1,
         ..LosslessFixture::default()
     });
 
-    assert_eq!(
-        Decoder::new(&bytes).expect_err("color scan must carry three components"),
-        JpegError::UnsupportedComponentCount { count: 1 }
-    );
+    assert!(matches!(
+        Decoder::new(&bytes).expect_err("every color component must be coded"),
+        JpegError::InvalidSequentialComponentSet {
+            expected: 3,
+            found: 1,
+            ..
+        }
+    ));
 }
 
 #[test]

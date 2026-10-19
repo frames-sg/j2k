@@ -101,7 +101,8 @@ fn committed_review_config_covers_the_exact_release_scope() {
         BTreeSet::from([
             "rustdoc-io-error-path",
             "cuda-upload-and-cleanup-contract",
-            "cuda-pooled-surface-lifetime"
+            "cuda-pooled-surface-lifetime",
+            "jpeg-huffman-const",
         ])
     );
     let expected_packages = SEMVER_BASELINE_PACKAGES

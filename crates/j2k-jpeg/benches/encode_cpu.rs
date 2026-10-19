@@ -13,6 +13,12 @@ mod inputs;
 #[cfg(has_libjpeg_turbo)]
 #[path = "encode_cpu/turbo.rs"]
 mod turbo;
+#[cfg(has_libjpeg_turbo_v3)]
+#[path = "encode_cpu/turbo_v3.rs"]
+mod turbo_v3;
+#[cfg(has_libjpeg_turbo_v3)]
+#[path = "encode_cpu/v3_compare.rs"]
+mod v3_compare;
 use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -283,6 +289,16 @@ fn report_allocations(cases: &[EncodeCase]) {
 }
 
 fn bench_encode_cpu(c: &mut Criterion) {
+    #[cfg(has_libjpeg_turbo_v3)]
+    if std::env::var_os("J2K_ENCODE_BENCH_V3").is_some() {
+        v3_compare::bench(c);
+        return;
+    }
+    #[cfg(not(has_libjpeg_turbo_v3))]
+    assert!(
+        std::env::var_os("J2K_ENCODE_BENCH_V3").is_none(),
+        "J2K_ENCODE_BENCH_V3 requires libjpeg-turbo 3"
+    );
     #[cfg(has_libjpeg_turbo)]
     if std::env::var_os("J2K_ENCODE_BENCH_BATCH").is_some() {
         let cases = encode_cases();

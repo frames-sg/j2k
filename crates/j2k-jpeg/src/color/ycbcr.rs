@@ -113,9 +113,78 @@ pub(crate) fn ycbcr16_to_rgb16(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
     (clamp_to_u16(r), clamp_to_u16(g), clamp_to_u16(b))
 }
 
+/// Convert one lossless YCbCr pixel of `precision` bits (2..=16) to RGB:
+/// chroma is centered on 2^(P-1) and results are clamped to [0, 2^P - 1].
+/// At 8 and 16 bits it equals `ycbcr_to_rgb` and `ycbcr16_to_rgb16`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each channel is clamped to the precision range, at most u16::MAX"
+)]
+pub(crate) fn ycbcr_to_rgb_with_precision(
+    y: u16,
+    cb: u16,
+    cr: u16,
+    precision: u8,
+) -> (u16, u16, u16) {
+    let center = 1_i64 << (precision.clamp(2, 16) - 1);
+    let max = (center << 1) - 1;
+    let y = i64::from(y);
+    let cb = i64::from(cb) - center;
+    let cr = i64::from(cr) - center;
+    let round = i64::from(ROUND);
+    let r = y + ((i64::from(FIX_1_40200) * cr + round) >> 16);
+    let g = y - ((i64::from(FIX_0_34414) * cb + i64::from(FIX_0_71414) * cr + round) >> 16);
+    let b = y + ((i64::from(FIX_1_77200) * cb + round) >> 16);
+    (
+        r.clamp(0, max) as u16,
+        g.clamp(0, max) as u16,
+        b.clamp(0, max) as u16,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn precision_conversion_equals_the_8_and_16_bit_converters() {
+        for y in [0_u8, 1, 77, 128, 200, 255] {
+            for cb in 0..=255_u8 {
+                for cr in 0..=255_u8 {
+                    let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
+                    assert_eq!(
+                        ycbcr_to_rgb_with_precision(y.into(), cb.into(), cr.into(), 8),
+                        (r.into(), g.into(), b.into()),
+                        "8-bit y {y} cb {cb} cr {cr}"
+                    );
+                }
+            }
+        }
+        for y in [0_u16, 1, 0x4000, 0x8000, 0xC123, 0xFFFF] {
+            for cb in (0..=u16::MAX).step_by(257) {
+                for cr in (0..=u16::MAX).step_by(251) {
+                    assert_eq!(
+                        ycbcr_to_rgb_with_precision(y, cb, cr, 16),
+                        ycbcr16_to_rgb16(y, cb, cr),
+                        "16-bit y {y} cb {cb} cr {cr}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn precision_conversion_centers_and_clamps_at_the_precision() {
+        // 12-bit neutral chroma leaves luma unchanged; full red saturates.
+        assert_eq!(
+            ycbcr_to_rgb_with_precision(1000, 2048, 2048, 12),
+            (1000, 1000, 1000)
+        );
+        assert_eq!(ycbcr_to_rgb_with_precision(4095, 2048, 4095, 12).0, 4095);
+        assert_eq!(ycbcr_to_rgb_with_precision(5, 8, 8, 4), (5, 5, 5));
+        assert_eq!(ycbcr_to_rgb_with_precision(15, 15, 15, 4), (15, 8, 15));
+    }
 
     #[test]
     fn neutral_gray_roundtrips_to_equal_rgb_channels() {

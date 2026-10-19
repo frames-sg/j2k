@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 
 use crate::allocation::{checked_allocation_len, try_reserve_for_len_with_live_budget};
 use crate::backend::Backend;
+use crate::color::cmyk::four_component_row_to_rgb;
 use crate::color::scaled_sampling::{ScaledComponent, ScaledSampling, Upsample};
 use crate::color::upsample::{upsample_h1v2_fancy_row, upsample_h2v1_fancy_row};
 use crate::entropy::block::clamp_i16;
@@ -141,21 +142,34 @@ pub(super) fn emit_component_images<W: OutputWriter>(
         return Ok(());
     }
 
+    let four_component = matches!(plan.color_space, ColorSpace::Cmyk | ColorSpace::Ycck);
     let first = component_slot(plan, 0)?;
     let second = component_slot(plan, 1)?;
     let third = component_slot(plan, 2)?;
-    let row_bytes = checked_allocation_len::<u8>(width_usize, 3)?;
+    let fourth = if four_component {
+        Some(component_slot(plan, 3)?)
+    } else {
+        None
+    };
+    let row_count = if four_component { 4 } else { 3 };
+    let row_bytes = checked_allocation_len::<u8>(width_usize, row_count)?;
     checked_phase_capacity(image_live_bytes, row_bytes, plan.scratch_bytes)?;
     let mut live_bytes = image_live_bytes;
-    let mut a = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut a, width_usize, &mut live_bytes, plan.scratch_bytes)?;
-    a.resize(width_usize, 0u8);
-    let mut b = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut b, width_usize, &mut live_bytes, plan.scratch_bytes)?;
-    b.resize(width_usize, 0u8);
-    let mut c = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut c, width_usize, &mut live_bytes, plan.scratch_bytes)?;
-    c.resize(width_usize, 0u8);
+    let mut row = || -> Result<Vec<u8>, JpegError> {
+        let mut row = Vec::new();
+        try_reserve_for_len_with_live_budget(
+            &mut row,
+            width_usize,
+            &mut live_bytes,
+            plan.scratch_bytes,
+        )?;
+        row.resize(width_usize, 0u8);
+        Ok(row)
+    };
+    let mut a = row()?;
+    let mut b = row()?;
+    let mut c = row()?;
+    let mut k = if four_component { row()? } else { Vec::new() };
     for y in 0..height {
         upsample_component_row(backend, scaled.component(first), &images[first], y, &mut a);
         upsample_component_row(
@@ -166,14 +180,28 @@ pub(super) fn emit_component_images<W: OutputWriter>(
             &mut b,
         );
         upsample_component_row(backend, scaled.component(third), &images[third], y, &mut c);
+        if let Some(fourth) = fourth {
+            upsample_component_row(
+                backend,
+                scaled.component(fourth),
+                &images[fourth],
+                y,
+                &mut k,
+            );
+        }
         match plan.color_space {
             ColorSpace::YCbCr => writer.write_ycbcr_row(y, &a, &b, &c)?,
             ColorSpace::Rgb => writer.write_rgb_row(y, &a, &b, &c)?,
             ColorSpace::Grayscale => writer.write_gray_row(y, &a)?,
             ColorSpace::Cmyk | ColorSpace::Ycck => {
-                return Err(JpegError::UnsupportedColorSpace {
-                    color_space: plan.color_space,
-                });
+                four_component_row_to_rgb(
+                    plan.color_space == ColorSpace::Ycck,
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    &k,
+                );
+                writer.write_rgb_row(y, &a, &b, &c)?;
             }
         }
     }

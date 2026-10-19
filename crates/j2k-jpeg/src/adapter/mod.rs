@@ -6,12 +6,20 @@
 //! decode plans without depending on private codec internals.
 
 mod baseline_encode;
+mod device_dct;
+mod device_lossless;
 mod device_plan;
 mod fast_packet;
 
 use crate::Decoder;
 
 pub use crate::internal::checkpoint::DeviceCheckpoint;
+pub use crate::lossless_encode::{
+    assemble_jpeg_lossless_frame, finish_jpeg_lossless_gpu_entropy, jpeg_lossless_huffman_table,
+    plan_jpeg_lossless_encode, plan_jpeg_lossless_gpu_encode, JpegLosslessEncodePlan,
+    JpegLosslessGpuEncodeError, JpegLosslessGpuEncodeParams, JpegLosslessGpuEncodePlan,
+    JpegLosslessGpuEncodeTile, JpegLosslessHuffmanTable, JPEG_LOSSLESS_GPU_CHUNK_PIXELS,
+};
 pub use baseline_encode::{
     assemble_jpeg_baseline_frame, baseline_encode_tables, encode_jpeg_baseline_gpu_batch,
     encode_jpeg_baseline_gpu_batch_with_external_live, encode_jpeg_baseline_gpu_tile,
@@ -26,6 +34,16 @@ pub(crate) use baseline_encode::{
     checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
     jpeg_baseline_entropy_capacity_bytes, jpeg_baseline_entropy_capacity_for_mcus,
     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
+};
+pub use device_dct::{
+    decode_device_dct_blocks_into, decode_device_dct_window_into, device_component_geometry,
+    device_dct_layout, device_dct_mcu_window, device_dct_window_layout,
+    JpegDeviceComponentGeometry, JpegDeviceDctComponentLayout, JpegDeviceDctLayout,
+    JpegDeviceMcuWindow, JpegDeviceUpsample, JPEG_DEVICE_MAX_COMPONENTS,
+};
+pub use device_lossless::{
+    decode_device_lossless_differences_into, device_lossless_layout, JpegDeviceLosslessComponent,
+    JpegDeviceLosslessLayout, JPEG_DEVICE_LOSSLESS_MAX_COMPONENTS,
 };
 pub use device_plan::{
     build_device_plan, summarize_device_batch, DeviceBatchSummary, DeviceComponentPlan,

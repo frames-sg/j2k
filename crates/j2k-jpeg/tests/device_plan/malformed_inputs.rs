@@ -203,21 +203,19 @@ fn adapter_device_plan_rejects_restart_marker_without_dri() {
     ));
 }
 
+/// Any number of 0xFF fill bytes may precede a marker (T.81 B.1.1.2), and
+/// DICOM encoders pad fragments with one before EOI. CPU decode and
+/// libjpeg-turbo accept them, so device planning must too.
 #[test]
-fn adapter_device_plan_rejects_doubled_ff_before_terminal_eoi() {
+fn adapter_device_plan_accepts_fill_bytes_before_terminal_eoi() {
     let mut bytes = baseline_grayscale_jpeg(24, 24);
     bytes.insert(bytes.len() - 1, 0xff);
 
     let decoder = Decoder::new(&bytes).expect("decoder");
-    let err = j2k_jpeg::adapter::build_device_plan(&decoder, 2)
-        .expect_err("double-FF terminal marker should fail");
-
-    assert!(matches!(
-        err,
-        j2k_jpeg::JpegError::UnexpectedMarker {
-            expected: j2k_jpeg::MarkerKind::Eoi,
-            found: 0xff,
-            ..
-        }
-    ));
+    decoder
+        .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Gray8))
+        .expect("CPU decode accepts a fill byte before EOI");
+    let plan = j2k_jpeg::adapter::build_device_plan(&decoder, 2)
+        .expect("device planning accepts a fill byte before EOI");
+    assert!(plan.scan_bytes.ends_with(&[0xff, 0xff, 0xd9]));
 }

@@ -19,9 +19,9 @@ pub(super) fn metal_fast_eligibility(
             "JPEG Metal fast path supports Gray8, Rgb8, or Rgba8 output formats",
         );
     }
-    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
+    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) || info.scan_count != 1 {
         return JpegBackendEligibility::rejected(
-            "JPEG Metal fast path currently supports baseline/extended 8-bit sequential JPEG only",
+            "JPEG Metal fast path currently supports single-scan baseline/extended 8-bit sequential JPEG only",
         );
     }
     if !matches!(

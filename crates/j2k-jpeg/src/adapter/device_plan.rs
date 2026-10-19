@@ -79,10 +79,12 @@ pub fn build_device_plan<'a>(
     decoder: &'a Decoder<'a>,
     cadence_mcus: u32,
 ) -> Result<DeviceDecodePlan<'a>, JpegError> {
+    // Split (multi-scan) sequential frames have no single interleaved scan.
     if !matches!(
         decoder.info().sof_kind,
         SofKind::Baseline8 | SofKind::Extended8
-    ) {
+    ) || decoder.progressive_plan.is_some()
+    {
         return Err(JpegError::NotImplemented {
             sof: decoder.info().sof_kind,
         });
@@ -211,7 +213,8 @@ pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> Devic
     if !matches!(
         decoder.info().sof_kind,
         SofKind::Baseline8 | SofKind::Extended8
-    ) {
+    ) || decoder.progressive_plan.is_some()
+    {
         return DeviceBatchSummary {
             restart_interval: None,
             checkpoint_count: 0,

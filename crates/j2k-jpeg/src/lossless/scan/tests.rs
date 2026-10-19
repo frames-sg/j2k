@@ -245,6 +245,7 @@ fn gray_spec(width: u32, height: u32, predictor: u8, precision: u8) -> LosslessS
         precision,
         point_transform: 0,
         restart_interval: None,
+        frame_max_sampling: (1, 1),
     }
 }
 

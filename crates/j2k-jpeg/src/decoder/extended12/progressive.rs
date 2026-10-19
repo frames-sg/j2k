@@ -8,7 +8,7 @@ use super::super::{
 };
 use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
 use super::sampling::{
-    progressive_color_layout, progressive_four_component_sampling, Extended12ColorSampling,
+    progressive_color_layout, progressive_four_component_layout, Extended12ColorSampling,
     Extended12Layout,
 };
 use super::scaled::{needs_scaled_extended12_route, Extended12Color};
@@ -64,16 +64,19 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        if self.info.sof_kind != SofKind::Progressive12
-            || !matches!(
-                self.info.color_space,
-                ColorSpace::Grayscale
-                    | ColorSpace::YCbCr
-                    | ColorSpace::Rgb
-                    | ColorSpace::Cmyk
-                    | ColorSpace::Ycck
-            )
-        {
+        // Progressive and split (multi-scan) extended frames both carry
+        // whole-image coefficients.
+        if !matches!(
+            self.info.sof_kind,
+            SofKind::Progressive12 | SofKind::Extended12
+        ) || !matches!(
+            self.info.color_space,
+            ColorSpace::Grayscale
+                | ColorSpace::YCbCr
+                | ColorSpace::Rgb
+                | ColorSpace::Cmyk
+                | ColorSpace::Ycck
+        ) {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -123,16 +126,19 @@ impl Decoder<'_> {
                     };
                 }
                 ColorSpace::Cmyk | ColorSpace::Ycck => {
-                    let sampling = progressive_four_component_sampling(plan, self.info.sof_kind)?;
-                    if scaled_route {
-                        let color = Extended12Color::FourComponent(self.info.color_space);
-                        return self.decode_extended12_scaled_region_into(
-                            out, stride, roi, downscale, color,
-                        );
-                    }
-                    return self.decode_progressive12_four_component_region_into(
-                        out, stride, roi, downscale, sampling,
-                    );
+                    let layout = progressive_four_component_layout(plan, self.info.sof_kind)?;
+                    return match layout {
+                        Extended12Layout::Direct(sampling) if !scaled_route => self
+                            .decode_progressive12_four_component_region_into(
+                                out, stride, roi, downscale, sampling,
+                            ),
+                        Extended12Layout::Direct(_) | Extended12Layout::Planes => {
+                            let color = Extended12Color::FourComponent(self.info.color_space);
+                            self.decode_extended12_scaled_region_into(
+                                out, stride, roi, downscale, color,
+                            )
+                        }
+                    };
                 }
                 ColorSpace::Grayscale => {}
             }

@@ -11,6 +11,7 @@ use super::types::{JpegBaselineEncodeTables, JpegBaselineSampling};
 use super::validation::{
     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
 };
+use crate::encoded_frame::{write_marker, write_segment, write_segment_header};
 use crate::encoded_output::{checked_jpeg_baseline_frame_capacity, CappedBytes};
 use crate::encoder::{EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions};
 
@@ -89,36 +90,6 @@ pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
         data: out.into_vec(),
         backend,
     })
-}
-
-fn write_marker(out: &mut CappedBytes, marker: u8) -> Result<(), JpegEncodeError> {
-    out.push(0xFF)?;
-    out.push(marker)
-}
-
-fn write_segment(
-    out: &mut CappedBytes,
-    marker: u8,
-    payload: &[u8],
-    name: &'static str,
-) -> Result<(), JpegEncodeError> {
-    write_segment_header(out, marker, payload.len(), name)?;
-    out.extend_from_slice(payload)
-}
-
-fn write_segment_header(
-    out: &mut CappedBytes,
-    marker: u8,
-    payload_len: usize,
-    name: &'static str,
-) -> Result<(), JpegEncodeError> {
-    let len = payload_len
-        .checked_add(2)
-        .and_then(|value| u16::try_from(value).ok())
-        .ok_or(JpegEncodeError::SegmentTooLarge { name })?;
-    write_marker(out, marker)?;
-    out.extend_from_slice(&len.to_be_bytes())?;
-    Ok(())
 }
 
 fn write_dqt(out: &mut CappedBytes, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {

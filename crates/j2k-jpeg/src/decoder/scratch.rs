@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::extended12::lossless_color_sampling;
+use super::lossless_planes::lossless_plane_layout;
 use super::{
-    DownscaleFactor, JpegError, LosslessColorSampling, OutputFormat, PreparedComponentPlan, Rect,
-    SofKind, DEFAULT_MAX_DECODE_BYTES,
+    DownscaleFactor, JpegError, OutputFormat, PreparedComponentPlan, Rect, SofKind,
+    DEFAULT_MAX_DECODE_BYTES,
 };
 use crate::entropy::sequential::StripeLayout;
 use crate::info::{ColorSpace, Info, SamplingFactors};
 use crate::lossless::scan::lossless_scan_allocation_bytes;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct LosslessSampledPlaneLayout {
-    pub(super) luma_len: usize,
-    pub(super) chroma_len: usize,
-    pub(super) chroma_dimensions: (usize, usize),
-    pub(super) total_bytes: usize,
-}
 
 pub(super) fn compute_decode_scratch_bytes(
     (width, height): (u32, u32),
@@ -138,16 +130,16 @@ pub(super) fn additional_decode_scratch_bytes(
     Ok(additional)
 }
 
-/// Largest lossless workspace: the scan's own row buffers plus either the
-/// sampled color planes or the streaming row buffers.
+/// Largest lossless workspace: the scan's own row buffers, the component
+/// planes of plane-rendered color, and the streaming row buffers (row-sink
+/// decodes of plane-rendered color hold planes and rows together).
 pub(super) fn compute_lossless_scratch_bytes(info: &Info, cap: usize) -> Result<usize, JpegError> {
-    let sampled_planes =
-        lossless_sampled_plane_layout(info, cap)?.map_or(0, |layout| layout.total_bytes);
+    let planes = lossless_plane_layout(info, cap)?.map_or(0, |layout| layout.total_bytes);
     let row_scratch = compute_lossless_row_scratch_bytes(info, cap)?;
     let scan_rows = lossless_scan_allocation_bytes(info.dimensions, info.sampling.components())?;
-    let total = sampled_planes
-        .max(row_scratch)
-        .checked_add(scan_rows)
+    let total = planes
+        .checked_add(row_scratch)
+        .and_then(|total| total.checked_add(scan_rows))
         .ok_or(JpegError::MemoryCapExceeded {
             requested: usize::MAX,
             cap,
@@ -161,45 +153,6 @@ pub(super) fn compute_lossless_scratch_bytes(info: &Info, cap: usize) -> Result<
     Ok(total)
 }
 
-pub(super) fn lossless_sampled_plane_layout(
-    info: &Info,
-    cap: usize,
-) -> Result<Option<LosslessSampledPlaneLayout>, JpegError> {
-    if !matches!(
-        lossless_color_sampling(info),
-        Some(LosslessColorSampling::S422 | LosslessColorSampling::S420)
-    ) {
-        return Ok(None);
-    }
-    let width = info.dimensions.0 as usize;
-    let height = info.dimensions.1 as usize;
-    let bytes_per_sample: usize = if info.bit_depth > 8 { 2 } else { 1 };
-    let chroma_width = width.div_ceil(usize::from(info.sampling.max_h));
-    let chroma_height = height.div_ceil(usize::from(info.sampling.max_v));
-    let luma_len = checked_usize_product(&[width, height], cap)?;
-    let chroma_len = checked_usize_product(&[chroma_width, chroma_height], cap)?;
-    let luma_bytes = checked_usize_product(&[luma_len, bytes_per_sample], cap)?;
-    let chroma_bytes = checked_usize_product(&[chroma_len, bytes_per_sample, 2], cap)?;
-    let total_bytes = luma_bytes
-        .checked_add(chroma_bytes)
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-    if total_bytes > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: total_bytes,
-            cap,
-        });
-    }
-    Ok(Some(LosslessSampledPlaneLayout {
-        luma_len,
-        chroma_len,
-        chroma_dimensions: (chroma_width, chroma_height),
-        total_bytes,
-    }))
-}
-
 fn compute_lossless_row_scratch_bytes(info: &Info, cap: usize) -> Result<usize, JpegError> {
     let width = info.dimensions.0 as usize;
     let bytes_per_sample = if info.bit_depth > 8 { 2 } else { 1 };
@@ -211,7 +164,7 @@ fn compute_lossless_row_scratch_bytes(info: &Info, cap: usize) -> Result<usize, 
     let predictor_row = checked_usize_product(&[width, channels, bytes_per_sample], cap)?;
     let predictor_rows = checked_usize_product(&[predictor_row, 2], cap)?;
     let conversion_rows = match (info.color_space, info.bit_depth) {
-        (ColorSpace::Grayscale, 8) => checked_usize_product(&[width, 3, 2], cap)?,
+        (ColorSpace::Grayscale, depth) if depth <= 8 => checked_usize_product(&[width, 3, 2], cap)?,
         (ColorSpace::YCbCr, _) => checked_usize_product(&[predictor_row, 2], cap)?,
         _ => 0,
     };

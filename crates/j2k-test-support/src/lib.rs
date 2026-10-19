@@ -11,9 +11,11 @@ use std::{
 mod auto_routing;
 mod corpus;
 mod cuda;
+mod dicom_matrix;
 mod fixtures;
 mod gpu_gate;
 mod jpeg_fixtures;
+mod lossless_matrix;
 mod manifest;
 mod metal;
 mod pixels;
@@ -34,6 +36,7 @@ pub use cuda::{
     cuda_jpeg_hardware_decode_required, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
     cuda_runtime_required, cuda_strict_oxide_gate, cuda_strict_oxide_required,
 };
+pub use dicom_matrix::{dicom_matrix_cases, DicomMatrixCase};
 pub use fixtures::{
     baseline_grayscale_jpeg, minimal_baseline_jpeg, minimal_baseline_jpeg_with_restart_interval,
     minimal_grayscale_jpeg_with_dimensions, minimal_j2k_codestream, minimal_jp2,
@@ -69,6 +72,7 @@ pub use gpu_gate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_
 /// `jpeg_fixtures::builders`; the export-policy test below confines wildcard
 /// re-exports to the fixture catalog.
 pub use jpeg_fixtures::*;
+pub use lossless_matrix::{lossless_matrix_cases, LosslessMatrixCase};
 pub use manifest::{
     canonicalize_manifest_row_path, manifest_column, manifest_field, manifest_optional_value,
     optional_manifest_column,

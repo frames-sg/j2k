@@ -180,6 +180,11 @@ fn validate_sequential_eight_bit(header: &ParsedHeader) -> Result<(), FastPacket
     if !matches!(header.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
         return Err(FastPacketError::UnsupportedSof(header.sof_kind));
     }
+    // Split (multi-scan) sequential frames code components in separate
+    // scans; fast packets decode one interleaved scan.
+    if !header.progressive_scans.is_empty() {
+        return Err(FastPacketError::UnsupportedComponentOrder);
+    }
     if header.bit_depth != 8 {
         return Err(FastPacketError::Decode(JpegError::UnsupportedBitDepth {
             depth: header.bit_depth,

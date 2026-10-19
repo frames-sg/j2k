@@ -1344,6 +1344,12 @@ pub const fn j2k_codec_math::dwt::Dwt53LinearTap::sample_index(self) -> usize
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_codec_math::dwt::reflect_index(i64, u32) -> u32
+pub const fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
+pub const fn j2k_codec_math::jpeg::lossless::additional_bits(u8) -> u8
+pub const fn j2k_codec_math::jpeg::lossless::difference_category(u16) -> (u8, u16)
+pub const fn j2k_codec_math::jpeg::lossless::initial_predictor(u8, u8) -> core::option::Option<u16>
+pub const fn j2k_codec_math::jpeg::lossless::predict(u8, u16, u16, u16) -> u16
+pub const fn j2k_codec_math::jpeg::lossless::predict_at(u8, u16, usize, usize, [u16; 3]) -> u16
 pub const j2k_codec_math::classic::MQ_QE_VALUES: [u32; 47]
 pub const j2k_codec_math::classic::MQ_STATES: [j2k_codec_math::classic::ClassicMqState; 47]
 pub const j2k_codec_math::classic::PACKED_MQ_TRANSITION_VALUES: [u32; 47]
@@ -1396,6 +1402,10 @@ pub const j2k_codec_math::jpeg::idct::FIX_2_053119869: i32
 pub const j2k_codec_math::jpeg::idct::FIX_2_562915447: i32
 pub const j2k_codec_math::jpeg::idct::FIX_3_072711026: i32
 pub const j2k_codec_math::jpeg::idct::PASS1_BITS: usize
+pub const j2k_codec_math::jpeg::lossless::DIFFERENCE_SYMBOLS: usize
+pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_BITS: u32
+pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_CATEGORY: u8
+pub const j2k_codec_math::jpeg::lossless::MAX_PREDICTOR: u8
 pub const j2k_codec_math::jpeg::ycbcr::FIX_0_34414: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_0_71414: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_1_40200: i32
@@ -1420,7 +1430,6 @@ pub enum j2k_codec_math::jpeg::CanonicalHuffmanError
 pub fn j2k_codec_math::dwt::Dwt53LinearRow::taps(&self) -> &[j2k_codec_math::dwt::Dwt53LinearTap]
 pub fn j2k_codec_math::dwt::linearized_dwt53_row(usize, j2k_codec_math::dwt::Dwt53Band, usize) -> core::option::Option<j2k_codec_math::dwt::Dwt53LinearRow>
 pub fn j2k_codec_math::jpeg::CanonicalHuffmanError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
 pub j2k_codec_math::classic::ClassicMqState::nlps: u8
 pub j2k_codec_math::classic::ClassicMqState::nmps: u8
 pub j2k_codec_math::classic::ClassicMqState::qe: u32
@@ -1443,6 +1452,7 @@ pub mod j2k_codec_math::generated
 pub mod j2k_codec_math::htj2k
 pub mod j2k_codec_math::jpeg
 pub mod j2k_codec_math::jpeg::idct
+pub mod j2k_codec_math::jpeg::lossless
 pub mod j2k_codec_math::jpeg::ycbcr
 pub mod j2k_codec_math::mct
 pub struct j2k_codec_math::classic::ClassicMqState
@@ -1459,6 +1469,7 @@ pub struct j2k_codec_math::jpeg::CanonicalHuffmanDerivation
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanStateError
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanTerminationError
 #[non_exhaustive] pub enum j2k_jpeg::Warning
+#[non_exhaustive] pub struct j2k_jpeg::JpegLosslessEncodeOptions
 impl core::convert::AsRef<[u8]> for j2k_jpeg::PreparedJpeg<'_>
 impl core::convert::From<j2k_core::types::Rect> for j2k_jpeg::Rect
 impl core::convert::From<j2k_jpeg::DecodeOutcome> for j2k_core::types::DecodeOutcome<j2k_jpeg::Warning>
@@ -1479,6 +1490,8 @@ impl j2k_jpeg::JpegBatchSession
 impl j2k_jpeg::JpegCapabilityReport
 impl j2k_jpeg::JpegDecodeRequest
 impl j2k_jpeg::JpegError
+impl j2k_jpeg::JpegLosslessEncodeOptions
+impl j2k_jpeg::JpegLosslessSamples<'_>
 impl j2k_jpeg::JpegOutputBuffer
 impl j2k_jpeg::JpegResolvedDecode
 impl j2k_jpeg::PreparedJpeg<'_>
@@ -1493,6 +1506,9 @@ pub const fn j2k_jpeg::DecodeRequest::region(j2k_core::pixel::PixelFormat, j2k_j
 pub const fn j2k_jpeg::DecodeRequest::region_scaled(j2k_core::pixel::PixelFormat, j2k_jpeg::Rect, j2k_core::scale::Downscale) -> Self
 pub const fn j2k_jpeg::DecodeRequest::scaled(j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> Self
 pub const fn j2k_jpeg::JpegDecodeRequest::capability(self) -> j2k_jpeg::JpegCapabilityRequest
+pub const fn j2k_jpeg::JpegLosslessEncodeOptions::new(u8) -> Self
+pub const fn j2k_jpeg::JpegLosslessSamples<'_>::dimensions(&self) -> (u32, u32)
+pub const fn j2k_jpeg::JpegLosslessSamples<'_>::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub const fn j2k_jpeg::is_sof_marker(u8) -> bool
 pub enum j2k_jpeg::BuilderConflictReason
 pub enum j2k_jpeg::ColorSpace
@@ -1502,7 +1518,9 @@ pub enum j2k_jpeg::HuffmanFailure
 pub enum j2k_jpeg::JpegBackend
 pub enum j2k_jpeg::JpegDecodeOp
 pub enum j2k_jpeg::JpegEncodeError
+pub enum j2k_jpeg::JpegLosslessSamples<'a>
 pub enum j2k_jpeg::JpegResolvedDecodePath
+pub enum j2k_jpeg::JpegSamples12<'a>
 pub enum j2k_jpeg::JpegSamples<'a>
 pub enum j2k_jpeg::JpegSubsampling
 pub enum j2k_jpeg::MarkerKind
@@ -1605,6 +1623,9 @@ pub fn j2k_jpeg::decode_tiles_into(&mut [j2k_jpeg::TileDecodeJob<'_, '_>], j2k_c
 pub fn j2k_jpeg::decode_tiles_region_scaled_into(&mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::decode_tiles_scaled_into(&mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::encode_jpeg_baseline(j2k_jpeg::JpegSamples<'_>, j2k_jpeg::JpegEncodeOptions) -> core::result::Result<j2k_jpeg::EncodedJpeg, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::encode_jpeg_baseline_optimized(j2k_jpeg::JpegSamples<'_>, j2k_jpeg::JpegEncodeOptions) -> core::result::Result<j2k_jpeg::EncodedJpeg, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::encode_jpeg_extended12(j2k_jpeg::JpegSamples12<'_>, j2k_jpeg::JpegEncodeOptions) -> core::result::Result<j2k_jpeg::EncodedJpeg, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::encode_jpeg_lossless(j2k_jpeg::JpegLosslessSamples<'_>, j2k_jpeg::JpegLosslessEncodeOptions) -> core::result::Result<j2k_jpeg::EncodedJpeg, j2k_jpeg::JpegEncodeError>
 pub fn j2k_jpeg::extract_icc_profile(&[u8]) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, j2k_jpeg::IccProfileError>
 pub fn j2k_jpeg::find_scan_ranges(&[u8]) -> core::result::Result<j2k_jpeg::JpegScanRanges, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::insert_icc_profile(&[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::IccProfileError>
@@ -1706,19 +1727,36 @@ pub j2k_jpeg::JpegEncodeError::InternalInvariant
 pub j2k_jpeg::JpegEncodeError::InternalInvariant::reason: &'static str
 pub j2k_jpeg::JpegEncodeError::InvalidDctImage
 pub j2k_jpeg::JpegEncodeError::InvalidDctImage::reason: j2k_jpeg::dct_contract::JpegDctImageError
+pub j2k_jpeg::JpegEncodeError::InvalidPointTransform
+pub j2k_jpeg::JpegEncodeError::InvalidPointTransform::point_transform: u8
+pub j2k_jpeg::JpegEncodeError::InvalidPointTransform::precision: u8
+pub j2k_jpeg::JpegEncodeError::InvalidPredictor
+pub j2k_jpeg::JpegEncodeError::InvalidPredictor::predictor: u8
 pub j2k_jpeg::JpegEncodeError::InvalidRestartInterval
 pub j2k_jpeg::JpegEncodeError::MemoryCapExceeded
 pub j2k_jpeg::JpegEncodeError::MemoryCapExceeded::cap: usize
 pub j2k_jpeg::JpegEncodeError::MemoryCapExceeded::requested: usize
 pub j2k_jpeg::JpegEncodeError::MissingHuffmanCode
 pub j2k_jpeg::JpegEncodeError::MissingHuffmanCode::symbol: u8
+pub j2k_jpeg::JpegEncodeError::RestartIntervalTooLarge
+pub j2k_jpeg::JpegEncodeError::RestartIntervalTooLarge::mcus_per_row: u32
+pub j2k_jpeg::JpegEncodeError::RestartIntervalTooLarge::rows: u16
 pub j2k_jpeg::JpegEncodeError::SampleLength
 pub j2k_jpeg::JpegEncodeError::SampleLength::actual: usize
 pub j2k_jpeg::JpegEncodeError::SampleLength::expected: usize
+pub j2k_jpeg::JpegEncodeError::SampleOutOfRange
+pub j2k_jpeg::JpegEncodeError::SampleOutOfRange::index: usize
+pub j2k_jpeg::JpegEncodeError::SampleOutOfRange::precision: u8
+pub j2k_jpeg::JpegEncodeError::SampleOutOfRange::value: u16
 pub j2k_jpeg::JpegEncodeError::SegmentTooLarge
 pub j2k_jpeg::JpegEncodeError::SegmentTooLarge::name: &'static str
 pub j2k_jpeg::JpegEncodeError::UnsupportedBackend
 pub j2k_jpeg::JpegEncodeError::UnsupportedBackend::backend: j2k_jpeg::JpegBackend
+pub j2k_jpeg::JpegEncodeError::UnsupportedPixelFormat
+pub j2k_jpeg::JpegEncodeError::UnsupportedPixelFormat::format: j2k_core::pixel::PixelFormat
+pub j2k_jpeg::JpegEncodeError::UnsupportedPrecision
+pub j2k_jpeg::JpegEncodeError::UnsupportedPrecision::precision: u8
+pub j2k_jpeg::JpegEncodeError::UnsupportedPrecision::samples: &'static str
 pub j2k_jpeg::JpegEncodeOptions::backend: j2k_jpeg::JpegBackend
 pub j2k_jpeg::JpegEncodeOptions::quality: u8
 pub j2k_jpeg::JpegEncodeOptions::restart_interval: core::option::Option<u16>
@@ -1863,6 +1901,27 @@ pub j2k_jpeg::JpegError::UnsupportedSof::reason: j2k_jpeg::UnsupportedReason
 pub j2k_jpeg::JpegError::ZeroDimension
 pub j2k_jpeg::JpegError::ZeroDimension::height: u16
 pub j2k_jpeg::JpegError::ZeroDimension::width: u16
+pub j2k_jpeg::JpegLosslessEncodeOptions::backend: j2k_jpeg::JpegBackend
+pub j2k_jpeg::JpegLosslessEncodeOptions::point_transform: u8
+pub j2k_jpeg::JpegLosslessEncodeOptions::precision: u8
+pub j2k_jpeg::JpegLosslessEncodeOptions::predictor: u8
+pub j2k_jpeg::JpegLosslessEncodeOptions::restart_rows: core::option::Option<u16>
+pub j2k_jpeg::JpegLosslessSamples::Gray16
+pub j2k_jpeg::JpegLosslessSamples::Gray16::data: &'a [u16]
+pub j2k_jpeg::JpegLosslessSamples::Gray16::height: u32
+pub j2k_jpeg::JpegLosslessSamples::Gray16::width: u32
+pub j2k_jpeg::JpegLosslessSamples::Gray8
+pub j2k_jpeg::JpegLosslessSamples::Gray8::data: &'a [u8]
+pub j2k_jpeg::JpegLosslessSamples::Gray8::height: u32
+pub j2k_jpeg::JpegLosslessSamples::Gray8::width: u32
+pub j2k_jpeg::JpegLosslessSamples::Rgb16
+pub j2k_jpeg::JpegLosslessSamples::Rgb16::data: &'a [u16]
+pub j2k_jpeg::JpegLosslessSamples::Rgb16::height: u32
+pub j2k_jpeg::JpegLosslessSamples::Rgb16::width: u32
+pub j2k_jpeg::JpegLosslessSamples::Rgb8
+pub j2k_jpeg::JpegLosslessSamples::Rgb8::data: &'a [u8]
+pub j2k_jpeg::JpegLosslessSamples::Rgb8::height: u32
+pub j2k_jpeg::JpegLosslessSamples::Rgb8::width: u32
 pub j2k_jpeg::JpegResolvedDecode::capabilities: j2k_jpeg::JpegCapabilityReport
 pub j2k_jpeg::JpegResolvedDecode::output_rect: j2k_jpeg::Rect
 pub j2k_jpeg::JpegResolvedDecode::path: j2k_jpeg::JpegResolvedDecodePath
@@ -1873,6 +1932,14 @@ pub j2k_jpeg::JpegResolvedDecodePath::OwnedCudaRgb8
 pub j2k_jpeg::JpegResolvedDecodePath::Rejected
 pub j2k_jpeg::JpegResolvedDecodePath::Rejected::backend: j2k_core::backend::BackendRequest
 pub j2k_jpeg::JpegResolvedDecodePath::Rejected::reason: &'static str
+pub j2k_jpeg::JpegSamples12::Gray
+pub j2k_jpeg::JpegSamples12::Gray::data: &'a [u16]
+pub j2k_jpeg::JpegSamples12::Gray::height: u32
+pub j2k_jpeg::JpegSamples12::Gray::width: u32
+pub j2k_jpeg::JpegSamples12::Rgb
+pub j2k_jpeg::JpegSamples12::Rgb::data: &'a [u16]
+pub j2k_jpeg::JpegSamples12::Rgb::height: u32
+pub j2k_jpeg::JpegSamples12::Rgb::width: u32
 pub j2k_jpeg::JpegSamples::Gray8
 pub j2k_jpeg::JpegSamples::Gray8::data: &'a [u8]
 pub j2k_jpeg::JpegSamples::Gray8::height: u32

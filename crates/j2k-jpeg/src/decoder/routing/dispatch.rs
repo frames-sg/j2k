@@ -51,7 +51,7 @@ impl Decoder<'_> {
                 self.decode_with_writer(pool, &mut writer, downscale, source_roi)
             }
             OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. }
-                if self.info.sof_kind == SofKind::Progressive12 =>
+                if self.progressive_plan.is_some() =>
             {
                 self.decode_progressive12_gray16_region_scaled_into(
                     out, stride, source_roi, downscale,
@@ -62,7 +62,7 @@ impl Decoder<'_> {
                 self.decode_extended12_gray16_region_scaled_into(out, stride, source_roi, downscale)
             }
             OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. }
-                if self.info.sof_kind == SofKind::Progressive12 =>
+                if self.progressive_plan.is_some() =>
             {
                 self.decode_progressive12_rgb16_region_scaled_into(
                     out, stride, source_roi, downscale,
@@ -174,7 +174,7 @@ impl Decoder<'_> {
             downscale,
             ..
         } = request;
-        if self.info.sof_kind == SofKind::Progressive12 {
+        if self.progressive_plan.is_some() {
             return self.decode_progressive12_gray16_region_scaled_into(
                 out, stride, source_roi, downscale,
             );
@@ -201,7 +201,7 @@ impl Decoder<'_> {
             downscale,
             ..
         } = request;
-        if self.info.sof_kind == SofKind::Progressive12 {
+        if self.progressive_plan.is_some() {
             return self
                 .decode_progressive12_rgb16_region_scaled_into(out, stride, source_roi, downscale);
         }

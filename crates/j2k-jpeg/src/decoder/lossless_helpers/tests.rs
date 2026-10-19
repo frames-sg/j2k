@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec;
-
-use crate::{ColorSpace, Decoder, JpegError, MarkerKind};
+use crate::{Decoder, JpegError, MarkerKind};
 
 use super::{
     lossless_output_order, restart_index_allocation_bytes, restart_index_for_stream,
-    restart_segment_capacity, upsample_h2v1_u16_at, upsample_h2v1_u8_at, upsample_h2v2_u16_at,
-    upsample_h2v2_u8_at, write_lossless_color16_sampled_output,
-    write_lossless_color8_sampled_output, LosslessColorPlanes, LosslessColorSampling,
-    RestartSegment,
+    restart_segment_capacity, RestartSegment,
 };
 
 fn baseline_info() -> crate::Info {
@@ -140,68 +135,4 @@ fn output_order_follows_frame_component_order() {
         lossless_output_order(&gray.plan),
         Err(JpegError::UnsupportedComponentCount { count: 1 })
     ));
-}
-
-#[test]
-fn sampled_upsamplers_cover_horizontal_and_vertical_edges() {
-    assert_eq!(upsample_h2v1_u8_at(&[10, 30], 0), 10);
-    assert_eq!(upsample_h2v1_u8_at(&[10, 30], 3), 30);
-    assert_eq!(upsample_h2v2_u8_at(&[10, 30, 50, 70], 2, 2, 4, 2, 3), 65);
-
-    assert_eq!(upsample_h2v1_u16_at(&[1_000, 3_000], 0), 1_000);
-    assert_eq!(upsample_h2v1_u16_at(&[1_000, 3_000], 3), 3_000);
-    assert_eq!(
-        upsample_h2v2_u16_at(&[1_000, 3_000, 5_000, 7_000], 2, 2, 4, 2, 3),
-        6_500
-    );
-}
-
-#[test]
-fn sampled_rgb_writers_preserve_rgb_planes_and_stride_padding() {
-    let c0 = [10u8, 20, 30, 40];
-    let c1 = [50u8, 60];
-    let c2 = [70u8, 80];
-    let mut out = vec![0xee; 16];
-    write_lossless_color8_sampled_output(
-        &mut out,
-        8,
-        ColorSpace::Rgb,
-        LosslessColorSampling::S422,
-        (2, 2),
-        LosslessColorPlanes {
-            c0: &c0,
-            c1: &c1,
-            c2: &c2,
-        },
-    );
-
-    assert_eq!(&out[..6], &[10, 50, 70, 20, 50, 70]);
-    assert_eq!(&out[8..14], &[30, 60, 80, 40, 60, 80]);
-    assert_eq!(&out[6..8], &[0xee; 2]);
-    assert_eq!(&out[14..], &[0xee; 2]);
-}
-
-#[test]
-fn sampled_rgb16_writer_handles_odd_420_dimensions() {
-    let c0 = [1_000u16, 2_000, 3_000, 4_000, 5_000, 6_000];
-    let c1 = [10_000u16, 20_000];
-    let c2 = [30_000u16, 40_000];
-    let mut out = vec![0u8; 3 * 2 * 6];
-    write_lossless_color16_sampled_output(
-        &mut out,
-        18,
-        ColorSpace::Rgb,
-        LosslessColorSampling::S420,
-        (3, 2),
-        LosslessColorPlanes {
-            c0: &c0,
-            c1: &c1,
-            c2: &c2,
-        },
-    );
-
-    assert_eq!(u16::from_le_bytes([out[0], out[1]]), 1_000);
-    assert_eq!(u16::from_le_bytes([out[2], out[3]]), 10_000);
-    assert_eq!(u16::from_le_bytes([out[4], out[5]]), 30_000);
-    assert_eq!(u16::from_le_bytes([out[30], out[31]]), 6_000);
 }

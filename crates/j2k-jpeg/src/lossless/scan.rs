@@ -48,6 +48,9 @@ pub(crate) struct LosslessScanSpec {
     /// Point transform `Pt` (`Al`), below `P`.
     pub(crate) point_transform: u8,
     pub(crate) restart_interval: Option<u16>,
+    /// The frame's `(Hmax, Vmax)`. A scan of a component subset (a split
+    /// frame) still sizes its components and MCUs from the whole frame.
+    pub(crate) frame_max_sampling: (u8, u8),
 }
 
 struct ComponentRows<'t> {
@@ -99,13 +102,15 @@ struct ComponentLayout {
 }
 
 /// MCU grid of a scan: `(MCUs per row, MCU rows)`, plus each component's
-/// layout. A single-component scan is non-interleaved, so its MCU is one sample.
+/// layout. A single-component scan is non-interleaved, so its MCU is one
+/// sample. Sizes follow the frame's `(Hmax, Vmax)` (T.81 A.1.1, A.2).
 fn scan_layout(
     dimensions: (u32, u32),
     sampling: &[(u8, u8)],
+    frame_max_sampling: (u8, u8),
 ) -> Result<((usize, usize), Vec<ComponentLayout>), JpegError> {
-    let max_h = usize::from(sampling.iter().map(|s| s.0).max().unwrap_or(0));
-    let max_v = usize::from(sampling.iter().map(|s| s.1).max().unwrap_or(0));
+    let max_h = usize::from(frame_max_sampling.0);
+    let max_v = usize::from(frame_max_sampling.1);
     if max_h == 0 || max_v == 0 {
         return Err(JpegError::NotImplemented {
             sof: SofKind::Lossless,
@@ -113,10 +118,14 @@ fn scan_layout(
     }
     let (width, height) = (dimensions.0 as usize, dimensions.1 as usize);
     let interleaved = sampling.len() > 1;
-    let grid = if interleaved {
-        (width.div_ceil(max_h), height.div_ceil(max_v))
-    } else {
-        (width, height)
+    // A non-interleaved scan's MCU is one sample of its component, so its
+    // grid is the component's own extent (T.81 A.2.2).
+    let grid = match sampling {
+        [(h, v)] if !interleaved => (
+            (width * usize::from(*h)).div_ceil(max_h),
+            (height * usize::from(*v)).div_ceil(max_v),
+        ),
+        _ => (width.div_ceil(max_h), height.div_ceil(max_v)),
     };
     let mut layouts = try_vec_with_capacity(sampling.len())?;
     for &(h, v) in sampling {
@@ -150,12 +159,17 @@ fn geometry_overflow() -> JpegError {
     }
 }
 
-/// Bytes [`LosslessScan::new`] allocates for components with this sampling.
+/// Bytes [`LosslessScan::new`] allocates for one scan of every component of
+/// a frame with this sampling; a scan of a component subset allocates less.
 pub(crate) fn lossless_scan_allocation_bytes(
     dimensions: (u32, u32),
     sampling: &[(u8, u8)],
 ) -> Result<usize, JpegError> {
-    let (_, layouts) = scan_layout(dimensions, sampling)?;
+    let frame_max = (
+        sampling.iter().map(|s| s.0).max().unwrap_or(0),
+        sampling.iter().map(|s| s.1).max().unwrap_or(0),
+    );
+    let (_, layouts) = scan_layout(dimensions, sampling, frame_max)?;
     let mut total = checked_allocation_bytes::<ComponentRows<'_>>(layouts.len())?;
     for layout in &layouts {
         total =
@@ -201,7 +215,8 @@ impl<'a, 't> LosslessScan<'a, 't> {
         for (slot, component) in sampling.iter_mut().zip(components) {
             *slot = (component.h, component.v);
         }
-        let ((mcus_per_row, mcu_rows), layouts) = scan_layout(spec.dimensions, sampling)?;
+        let ((mcus_per_row, mcu_rows), layouts) =
+            scan_layout(spec.dimensions, sampling, spec.frame_max_sampling)?;
         let restart_mcus = usize::from(spec.restart_interval.unwrap_or(0));
         if restart_mcus != 0 && mcus_per_row != 0 && restart_mcus % mcus_per_row != 0 {
             return Err(JpegError::NotImplemented {
@@ -250,6 +265,11 @@ impl<'a, 't> LosslessScan<'a, 't> {
     /// Point transform the caller shifts samples left by on output.
     pub(crate) fn point_transform(&self) -> u8 {
         self.point_transform
+    }
+
+    /// Predictor selection value `Ss`.
+    pub(crate) fn predictor(&self) -> u8 {
+        self.predictor
     }
 
     /// First component row held by the last decoded MCU row.
@@ -327,8 +347,77 @@ impl<'a, 't> LosslessScan<'a, 't> {
     }
 
     /// Validate the end of the scan once every MCU row is decoded.
-    pub(crate) fn finish(mut self) -> Result<Vec<Warning>, JpegError> {
-        finish_scan(&mut self.br, true)
+    pub(crate) fn finish(self) -> Result<Vec<Warning>, JpegError> {
+        self.finish_with_eoi(true)
+    }
+
+    /// End the scan, requiring EOI next only when `validate_eoi` is set: a
+    /// split frame's earlier scans end at the next scan's markers, and the
+    /// header walk already warned about a final scan cut off before EOI.
+    pub(crate) fn finish_with_eoi(mut self, validate_eoi: bool) -> Result<Vec<Warning>, JpegError> {
+        finish_scan(&mut self.br, validate_eoi)
+    }
+
+    /// Visible `(width, height)` and the component rows each restart
+    /// interval spans (zero without restarts) of the scan component at
+    /// `component`.
+    pub(crate) fn device_component_geometry(&self, component: usize) -> (usize, usize, usize) {
+        let c = &self.components[component];
+        (c.width, c.height, self.restart_rows * c.mcu_v)
+    }
+
+    /// Seed of the 1-D predictor and the largest valid sample.
+    pub(crate) fn device_reconstruction_limits(&self) -> (u16, u16) {
+        (self.initial_predictor, self.sample_limit)
+    }
+
+    /// Entropy pass only, for device reconstruction: decode every MCU row and
+    /// store each scan component's visible differences row-major into its
+    /// plane in `planes` (`width * height` differences each). Restart
+    /// markers are validated exactly as [`Self::decode_mcu_row`] does, and
+    /// the scan ends as [`Self::finish_with_eoi`] ends it.
+    ///
+    /// # Errors
+    /// Entropy, restart-marker, or end-of-scan errors, or an invariant error
+    /// when a plane does not match its component.
+    pub(crate) fn decode_differences_into(
+        mut self,
+        planes: &mut [&mut [u16]],
+        validate_eoi: bool,
+    ) -> Result<Vec<Warning>, JpegError> {
+        if planes.len() != self.components.len()
+            || planes
+                .iter()
+                .zip(&self.components)
+                .any(|(plane, c)| plane.len() != c.width * c.height)
+        {
+            return Err(JpegError::InternalInvariant {
+                reason: "device lossless difference planes disagree with the scan components",
+            });
+        }
+        while self.mcu_row < self.mcu_rows {
+            if self.restart_rows != 0 {
+                if self.rows_to_go == 0 {
+                    self.restart()?;
+                }
+                self.rows_to_go -= 1;
+            }
+            let mut br = self.br.clone();
+            let decoded = decode_differences(&mut br, &mut self.components, self.mcus_per_row);
+            self.br = br;
+            decoded?;
+            for (component, plane) in self.components.iter().zip(planes.iter_mut()) {
+                let first = self.mcu_row * component.mcu_v;
+                let rows = component.mcu_v.min(component.height.saturating_sub(first));
+                let width = component.width;
+                for row in 0..rows {
+                    plane[(first + row) * width..][..width]
+                        .copy_from_slice(&component.diffs[row * component.coded_width..][..width]);
+                }
+            }
+            self.mcu_row += 1;
+        }
+        self.finish_with_eoi(validate_eoi)
     }
 }
 

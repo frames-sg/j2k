@@ -41,3 +41,21 @@ fn terminated_scan_appends_only_the_missing_eoi_bytes() {
     let missing_code = terminated_scan_bytes(&marker_without_code).expect("append EOI code");
     assert_eq!(missing_code.as_ref(), &[0x12, 0xff, 0xd9]);
 }
+
+#[test]
+fn terminated_scan_accepts_fill_bytes_before_markers() {
+    // A 0xFF fill byte before EOI, as DICOM encoders pad fragments, and fill
+    // bytes before a stuffed zero.
+    let filled = [0x12, 0xff, 0xff, 0xd9];
+    let borrowed = terminated_scan_bytes_with_cap(&filled, 0).expect("fill before EOI");
+    assert!(matches!(borrowed, Cow::Borrowed(_)));
+    assert_eq!(borrowed.as_ref(), &filled);
+
+    let stuffed = [0x12, 0xff, 0xff, 0x00, 0x34, 0xff, 0xd9];
+    let borrowed = terminated_scan_bytes_with_cap(&stuffed, 0).expect("fill before stuffing");
+    assert_eq!(borrowed.as_ref(), &stuffed);
+
+    let trailing_fill = [0x12, 0xff, 0xff];
+    let appended = terminated_scan_bytes(&trailing_fill).expect("fill at end of data");
+    assert_eq!(appended.as_ref(), &[0x12, 0xff, 0xff, 0xd9]);
+}

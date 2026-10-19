@@ -9,7 +9,10 @@ use crate::profile::jpeg_profile_stages_enabled;
 use std::time::Instant;
 
 mod api;
+mod dct_entropy;
 mod entropy;
+mod extended12;
+mod optimized;
 mod planning;
 mod profile;
 mod sample_planes;
@@ -22,6 +25,8 @@ pub use self::api::{
     EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use self::entropy::encode_entropy;
+pub use self::extended12::{encode_jpeg_extended12, JpegSamples12};
+pub use self::optimized::encode_jpeg_baseline_optimized;
 use self::planning::{checked_cpu_encode_capacity_plan, component_plane_capacity_bytes};
 use self::profile::{emit_cpu_encode_profile, JpegEncodeProfile};
 use self::sample_planes::{component_planes, validate_sample_layout};

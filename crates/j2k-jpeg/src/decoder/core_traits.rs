@@ -22,7 +22,11 @@ pub(super) fn jpeg_passthrough_syntax(view: &JpegView<'_>) -> Option<CompressedT
         SofKind::Progressive8 | SofKind::Progressive12 => {
             Some(CompressedTransferSyntax::JpegProgressive)
         }
-        SofKind::Lossless if view.lossless_predictor() == Some(1) => {
+        // First-order prediction (SV1) needs predictor 1 in every scan.
+        SofKind::Lossless
+            if view.lossless_predictor() == Some(1)
+                && view.split_lossless_scans_use_predictor(1) =>
+        {
             Some(CompressedTransferSyntax::JpegLosslessSv1)
         }
         SofKind::Lossless => Some(CompressedTransferSyntax::JpegLossless),

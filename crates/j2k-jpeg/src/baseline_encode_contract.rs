@@ -141,6 +141,54 @@ pub enum JpegEncodeError {
     #[error("JPEG restart interval must be nonzero when provided")]
     /// Restart interval was explicitly set to zero.
     InvalidRestartInterval,
+    #[error(
+        "JPEG restart interval of {rows} rows spans more than 65535 MCUs at {mcus_per_row} MCUs per row"
+    )]
+    /// A row-based restart interval does not fit the 16-bit DRI field.
+    RestartIntervalTooLarge {
+        /// Requested rows per restart interval.
+        rows: u16,
+        /// MCUs in one row of the image.
+        mcus_per_row: u32,
+    },
+    #[error("JPEG encode does not accept {format:?} samples")]
+    /// The encoder has no mode for this sample layout.
+    UnsupportedPixelFormat {
+        /// Supplied sample layout.
+        format: j2k_core::PixelFormat,
+    },
+    #[error("JPEG encode cannot code {samples} samples at {precision}-bit precision")]
+    /// The precision is outside what the coding process and sample type allow.
+    UnsupportedPrecision {
+        /// Requested sample precision in bits.
+        precision: u8,
+        /// Human-readable sample format name.
+        samples: &'static str,
+    },
+    #[error("JPEG lossless predictor must be 1..=7, got {predictor}")]
+    /// The lossless predictor selection value is outside 1..=7.
+    InvalidPredictor {
+        /// Requested predictor selection value.
+        predictor: u8,
+    },
+    #[error("JPEG point transform {point_transform} must be below the {precision}-bit precision")]
+    /// The lossless point transform would discard every sample bit.
+    InvalidPointTransform {
+        /// Requested point transform.
+        point_transform: u8,
+        /// Sample precision in bits.
+        precision: u8,
+    },
+    #[error("JPEG sample {index} is {value}, above the {precision}-bit range")]
+    /// An input sample does not fit the declared precision.
+    SampleOutOfRange {
+        /// Index of the first offending sample in the input slice.
+        index: usize,
+        /// The offending sample value.
+        value: u16,
+        /// Declared sample precision in bits.
+        precision: u8,
+    },
     #[error("JPEG encode backend {backend:?} is unavailable in j2k-jpeg CPU crate")]
     /// Requested backend is not available in this crate.
     UnsupportedBackend {
