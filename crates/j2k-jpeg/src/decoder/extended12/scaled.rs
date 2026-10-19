@@ -17,7 +17,6 @@ use super::super::{
     checked_scratch_len, decode_block_with_activity, decode_progressive_dct_blocks, finish_scan,
     merged_warnings, scaled_rect_covering, try_clone_warnings, Backend, BitReader, BlockActivity,
     CoefficientBlock, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect,
-    SofKind,
 };
 use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
 use super::state::Extended12RestartTracker;
@@ -181,7 +180,7 @@ impl Decoder<'_> {
         color: Extended12Color,
     ) -> Result<DecodeOutcome, JpegError> {
         let output_rect = scaled_rect_covering(roi, downscale)?;
-        let (planes, warnings, cap) = if self.info.sof_kind == SofKind::Progressive12 {
+        let (planes, warnings, cap) = if self.progressive_plan.is_some() {
             let planes = self.render_progressive12_scaled_planes(downscale, color)?;
             let cap = self
                 .progressive_plan

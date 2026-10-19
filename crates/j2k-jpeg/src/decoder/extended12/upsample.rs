@@ -112,29 +112,6 @@ impl UpsampleSample for u16 {
     }
 }
 
-pub(in crate::decoder) fn upsample_h2v1_sample_at<S: UpsampleSample>(
-    row: &[S],
-    output_x: usize,
-) -> S {
-    debug_assert!(
-        !row.is_empty(),
-        "upsampling needs at least one source sample"
-    );
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        S::from_u32((3 * row[sample].to_u32() + row[sample - 1].to_u32() + 2) / 4)
-    } else {
-        S::from_u32((3 * row[sample].to_u32() + row[sample + 1].to_u32() + 2) / 4)
-    }
-}
-
 pub(in crate::decoder) fn upsample_h2v2_rows_at<S: UpsampleSample>(
     curr: &[S],
     near: &[S],

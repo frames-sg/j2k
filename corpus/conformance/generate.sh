@@ -276,5 +276,19 @@ EOF
 # for the scaled-decode tests; written to j2k-test-support/fixtures.
 python3 scaled_matrix.py
 
+# Lossless (SOF3) matrix: every predictor and precision, point transforms,
+# restarts, RGB/YCbCr chroma layouts, and split scans; written to
+# j2k-test-support/fixtures.
+python3 lossless_matrix.py
+
+# DICOM interoperability matrix: DCMTK-written codestreams with DCMTK's own
+# decode as reference. Needs DCMTK; skipped (keeping the committed files)
+# when it is not installed.
+if command -v dcmcjpeg >/dev/null && command -v dcmdjpeg >/dev/null; then
+    python3 dicom_matrix.py
+else
+    echo "note: DCMTK not on PATH; keeping the committed DICOM matrix"
+fi
+
 echo "Regenerated fixtures:"
 ls -la *.jpg *.rgb *.gray manifest.json

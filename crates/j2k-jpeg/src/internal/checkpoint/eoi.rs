@@ -80,8 +80,13 @@ pub(crate) fn validate_scan_bytes(
             continue;
         }
 
-        let marker_start = index;
-        let next = index + 1;
+        // Any number of 0xFF fill bytes may precede a marker (T.81
+        // B.1.1.2); DICOM encoders pad fragments with one before EOI.
+        let mut next = index + 1;
+        while next < scan_bytes.len() && scan_bytes[next] == 0xff {
+            next += 1;
+        }
+        let marker_start = next - 1;
         if next >= scan_bytes.len() {
             return Ok(ValidatedScanBytes {
                 bytes: scan_bytes,

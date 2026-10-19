@@ -12,10 +12,6 @@ pub(super) fn append_rgb16_pixel(out: &mut Vec<u8>, rgb: [u16; 3]) {
     }
 }
 
-fn weighted_u8(value: u32) -> u8 {
-    u8::try_from(value).expect("weighted 8-bit sample must remain in range")
-}
-
 fn weighted_u16(value: u32) -> u16 {
     u16::try_from(value).expect("weighted 16-bit sample must remain in range")
 }
@@ -173,8 +169,9 @@ pub(super) fn lossless_422_planes_to_rgb8(
         let c2_row = &c2[y * chroma_width..(y + 1) * chroma_width];
         for x in 0..width {
             let c0_sample = c0[y * width + x];
-            let c1_sample = upsample_h2v1_8bit_for_fixture(c1_row, x);
-            let c2_sample = upsample_h2v1_8bit_for_fixture(c2_row, x);
+            // libjpeg-turbo's lossless upsampler replicates chroma.
+            let c1_sample = c1_row[x / 2];
+            let c2_sample = c2_row[x / 2];
             let (r, g, b) = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
@@ -196,15 +193,13 @@ pub(super) fn lossless_420_planes_to_rgb8(
     c2: &[u8],
 ) -> Vec<u8> {
     let chroma_width = width.div_ceil(2);
-    let chroma_height = height.div_ceil(2);
     let mut out = Vec::with_capacity(width * height * 3);
     for y in 0..height {
         for x in 0..width {
             let c0_sample = c0[y * width + x];
-            let c1_sample =
-                upsample_h2v2_8bit_for_fixture(c1, chroma_width, chroma_height, width, x, y);
-            let c2_sample =
-                upsample_h2v2_8bit_for_fixture(c2, chroma_width, chroma_height, width, x, y);
+            // libjpeg-turbo's lossless upsampler replicates chroma.
+            let c1_sample = c1[(y / 2) * chroma_width + x / 2];
+            let c2_sample = c2[(y / 2) * chroma_width + x / 2];
             let (r, g, b) = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
@@ -232,8 +227,9 @@ pub(super) fn lossless_422_planes_to_rgb16(
         let c2_row = &c2[y * chroma_width..(y + 1) * chroma_width];
         for x in 0..width {
             let c0_sample = c0[y * width + x];
-            let c1_sample = upsample_h2v1_16bit_for_fixture(c1_row, x);
-            let c2_sample = upsample_h2v1_16bit_for_fixture(c2_row, x);
+            // libjpeg-turbo's lossless upsampler replicates chroma.
+            let c1_sample = c1_row[x / 2];
+            let c2_sample = c2_row[x / 2];
             let (r, g, b) = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
@@ -255,15 +251,13 @@ pub(super) fn lossless_420_planes_to_rgb16(
     c2: &[u16],
 ) -> Vec<u8> {
     let chroma_width = width.div_ceil(2);
-    let chroma_height = height.div_ceil(2);
     let mut out = Vec::with_capacity(width * height * 6);
     for y in 0..height {
         for x in 0..width {
             let c0_sample = c0[y * width + x];
-            let c1_sample =
-                upsample_h2v2_16bit_for_fixture(c1, chroma_width, chroma_height, width, x, y);
-            let c2_sample =
-                upsample_h2v2_16bit_for_fixture(c2, chroma_width, chroma_height, width, x, y);
+            // libjpeg-turbo's lossless upsampler replicates chroma.
+            let c1_sample = c1[(y / 2) * chroma_width + x / 2];
+            let c2_sample = c2[(y / 2) * chroma_width + x / 2];
             let (r, g, b) = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
@@ -274,110 +268,4 @@ pub(super) fn lossless_420_planes_to_rgb16(
         }
     }
     out
-}
-
-pub(super) fn upsample_h2v1_8bit_for_fixture(row: &[u8], output_x: usize) -> u8 {
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        weighted_u8((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4)
-    } else {
-        weighted_u8((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4)
-    }
-}
-
-pub(super) fn upsample_h2v2_8bit_for_fixture(
-    plane: &[u8],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u8 {
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
-    if chroma_width == 1 {
-        return weighted_u8((4 * colsum(0) + 8) >> 4);
-    }
-
-    let sample = output_x / 2;
-    let this = colsum(sample);
-    match output_x {
-        0 => weighted_u8((this * 4 + 8) >> 4),
-        _ if output_x == output_width - 1 => weighted_u8((this * 4 + 7) >> 4),
-        _ if output_x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            weighted_u8((this * 3 + last + 8) >> 4)
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            weighted_u8((this * 3 + next + 7) >> 4)
-        }
-    }
-}
-
-pub(super) fn upsample_h2v1_16bit_for_fixture(row: &[u16], output_x: usize) -> u16 {
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        weighted_u16((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4)
-    } else {
-        weighted_u16((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4)
-    }
-}
-
-pub(super) fn upsample_h2v2_16bit_for_fixture(
-    plane: &[u16],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u16 {
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
-    if chroma_width == 1 {
-        return weighted_u16((4 * colsum(0) + 8) >> 4);
-    }
-
-    let sample = output_x / 2;
-    let this = colsum(sample);
-    match output_x {
-        0 => weighted_u16((this * 4 + 8) >> 4),
-        _ if output_x == output_width - 1 => weighted_u16((this * 4 + 7) >> 4),
-        _ if output_x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            weighted_u16((this * 3 + last + 8) >> 4)
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            weighted_u16((this * 3 + next + 7) >> 4)
-        }
-    }
 }

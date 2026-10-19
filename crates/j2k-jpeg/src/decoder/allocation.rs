@@ -189,16 +189,21 @@ pub(super) fn compute_progressive_scratch_bytes(
         plane_samples = checked_workspace_add(plane_samples, samples, cap)?;
     }
 
-    // Component rendering owns one grayscale or three color rows. Row-sink
-    // decoding simultaneously detaches two RGB rows from `ScratchPool`.
-    let row_count = if components.len() == 1 { 7 } else { 9 };
+    // Component rendering owns one grayscale, three color, or four CMYK/YCCK
+    // rows. Row-sink decoding simultaneously detaches two RGB rows from
+    // `ScratchPool`.
+    let row_count = match components.len() {
+        1 => 7,
+        4 => 10,
+        _ => 9,
+    };
     let row_payload = checked_usize_product(&[output_width, row_count], cap)?;
     let eight_bit_render = checked_workspace_add(
         checked_workspace_add(image_outer, plane_samples, cap)?,
         row_payload,
         cap,
     )?;
-    let render_phase = if sof_kind == SofKind::Progressive12 {
+    let render_phase = if matches!(sof_kind, SofKind::Progressive12 | SofKind::Extended12) {
         let extended12_planes = checked_usize_product(&[plane_samples, 2], cap)?;
         eight_bit_render.max(extended12_planes)
     } else {

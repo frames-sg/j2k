@@ -145,7 +145,7 @@ pub fn extract_dct_blocks(
     let planned_restart_index_bytes =
         restart_index_allocation_bytes(decoder.info(), decoder.plan.restart_interval)?;
     let (coding_mode, components) = match decoder.info().sof_kind {
-        SofKind::Baseline8 => {
+        SofKind::Baseline8 if decoder.progressive_plan.is_none() => {
             let scan_bytes = &decoder.bytes[decoder.plan.scan_offset..];
             let lifecycle = SequentialDctLifecycleMetadata::new(
                 checked_allocation_bytes::<JpegDctComponent>(decoder.info().sampling.len())?,
@@ -163,22 +163,26 @@ pub fn extract_dct_blocks(
                 build_sequential_components(&decoder, decoded_blocks, workspace_cap)?,
             )
         }
-        SofKind::Progressive8 => {
-            let progressive_plan =
-                decoder
-                    .progressive_plan
-                    .as_ref()
-                    .ok_or(JpegError::NotImplemented {
-                        sof: SofKind::Progressive8,
-                    })?;
+        // Progressive and split (multi-scan) baseline frames carry
+        // whole-image coefficients.
+        sof @ (SofKind::Progressive8 | SofKind::Baseline8) => {
+            let progressive_plan = decoder
+                .progressive_plan
+                .as_ref()
+                .ok_or(JpegError::NotImplemented { sof })?;
             validate_progressive_extraction_workspace(
                 &progressive_plan.components,
                 options.retain_quantized_blocks,
                 workspace_cap,
             )?;
             let decoded_blocks = decode_progressive_dct_blocks(progressive_plan, decoder.bytes, 0)?;
+            let coding_mode = if sof == SofKind::Progressive8 {
+                JpegDctCodingMode::Progressive
+            } else {
+                JpegDctCodingMode::BaselineSequential
+            };
             (
-                JpegDctCodingMode::Progressive,
+                coding_mode,
                 build_progressive_components(
                     &decoder,
                     decoded_blocks,

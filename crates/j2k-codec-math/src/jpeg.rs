@@ -1,6 +1,9 @@
-//! Baseline JPEG constants shared by CPU and device backends.
+//! JPEG constants and helpers shared by CPU and device backends.
 
 use core::fmt;
+
+/// Lossless (SOF3) prediction and difference coding.
+pub mod lossless;
 
 /// T.81 zigzag order from stream coefficient index to natural 8x8 index.
 #[rustfmt::skip]

@@ -1,21 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{upsample_h2v1_sample_at, upsample_h2v2_rows_at};
+use super::upsample_h2v2_rows_at;
 
 #[test]
 fn extended12_generic_upsampling_keeps_edge_and_rounding_goldens() {
-    let row_u8 = [0u8, 1, 255];
-    let actual_u8 = (0..row_u8.len() * 2)
-        .map(|x| upsample_h2v1_sample_at(&row_u8, x))
-        .collect::<Vec<_>>();
-    assert_eq!(actual_u8, [0, 0, 1, 65, 192, 255]);
-
-    let row_u16 = [0u16, 1, 4095];
-    let actual_u16 = (0..row_u16.len() * 2)
-        .map(|x| upsample_h2v1_sample_at(&row_u16, x))
-        .collect::<Vec<_>>();
-    assert_eq!(actual_u16, [0, 0, 1, 1025, 3072, 4095]);
-
     let current = [100u16, 400, 900];
     let near = [300u16, 200, 700];
     let actual_h2v2 = (0..5)

@@ -198,6 +198,40 @@ impl BitWriter {
         })
     }
 
+    /// A writer that starts with `capacity` bytes and grows up to `max_bytes`.
+    pub(crate) fn try_with_capacity(
+        capacity: usize,
+        max_bytes: usize,
+    ) -> Result<Self, JpegEncodeError> {
+        Ok(Self {
+            bytes: CappedBytes::try_with_capacity(capacity.min(max_bytes), max_bytes)?,
+            reservoir: BitReservoir {
+                current: 0,
+                used: 0,
+            },
+        })
+    }
+
+    /// Append the code of `symbol` followed by the low `value_len` bits of
+    /// `value_bits`; a symbol absent from `table` is an error.
+    pub(crate) fn write_huffman_value(
+        &mut self,
+        table: &JpegBaselineHuffmanTable,
+        symbol: u8,
+        value_bits: u32,
+        value_len: u8,
+    ) -> Result<(), JpegEncodeError> {
+        self.reservoir = write_huffman_value(
+            table,
+            symbol,
+            value_bits,
+            value_len,
+            self.reservoir,
+            &mut self.bytes,
+        )?;
+        Ok(())
+    }
+
     fn flush_partial_bytes(&mut self) -> Result<(), JpegEncodeError> {
         // Eight data bytes plus, at worst, eight JPEG stuffing bytes. Reserve
         // output once per word rather than once for every emitted byte.

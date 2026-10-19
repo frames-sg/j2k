@@ -25,7 +25,10 @@ pub fn classify_color_fast_packet_family(decoder: &Decoder<'_>) -> Option<JpegFa
 }
 
 pub(super) fn classify_color_fast_packet_info(info: &Info) -> Option<JpegFastPacketFamily> {
-    if info.bit_depth != 8 || !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
+    if info.bit_depth != 8
+        || !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8)
+        || info.scan_count != 1
+    {
         return None;
     }
 

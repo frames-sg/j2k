@@ -7,7 +7,7 @@ use super::super::{
     DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
 };
 use super::sampling::{
-    extended12_color_layout, extended12_four_component_sampling, Extended12ColorSampling,
+    extended12_color_layout, extended12_four_component_layout, Extended12ColorSampling,
     Extended12Layout,
 };
 use super::scaled::{needs_scaled_extended12_route, Extended12Color};
@@ -162,23 +162,25 @@ impl Decoder<'_> {
                     };
                 }
                 ColorSpace::Cmyk | ColorSpace::Ycck => {
-                    let sampling =
-                        extended12_four_component_sampling(&self.plan, self.info.sof_kind)?;
-                    if scaled_route {
-                        let color = Extended12Color::FourComponent(self.info.color_space);
-                        return self.decode_extended12_scaled_region_into(
-                            out, stride, roi, downscale, color,
-                        );
-                    }
-                    return match sampling {
-                        Extended12ColorSampling::S444 => self
-                            .decode_extended12_four_component444_region_into(
+                    let layout = extended12_four_component_layout(&self.plan, self.info.sof_kind)?;
+                    return match layout {
+                        Extended12Layout::Direct(Extended12ColorSampling::S444)
+                            if !scaled_route =>
+                        {
+                            self.decode_extended12_four_component444_region_into(
                                 out, stride, roi, downscale,
-                            ),
-                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            )
+                        }
+                        Extended12Layout::Direct(sampling) if !scaled_route => self
                             .decode_extended12_four_component_subsampled_region_into(
                                 out, stride, roi, downscale, sampling,
                             ),
+                        Extended12Layout::Direct(_) | Extended12Layout::Planes => {
+                            let color = Extended12Color::FourComponent(self.info.color_space);
+                            self.decode_extended12_scaled_region_into(
+                                out, stride, roi, downscale, color,
+                            )
+                        }
                     };
                 }
                 ColorSpace::Grayscale => {}

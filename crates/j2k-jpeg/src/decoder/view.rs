@@ -115,6 +115,15 @@ impl<'a> JpegView<'a> {
         self.header.scan.as_ref().map(|scan| scan.ss)
     }
 
+    /// Whether every scan of a split (multi-scan) lossless frame selects
+    /// `predictor`; true for single-scan frames.
+    pub(crate) fn split_lossless_scans_use_predictor(&self, predictor: u8) -> bool {
+        self.header
+            .progressive_scans
+            .iter()
+            .all(|parsed| parsed.scan.ss == predictor)
+    }
+
     /// Build a restart-marker byte-offset index for the first scan.
     ///
     /// Offsets are absolute byte positions in the original JPEG byte slice.
@@ -135,7 +144,6 @@ impl<'a> JpegView<'a> {
     pub(crate) fn has_lossless_subsampled_color_capability_shape(&self) -> bool {
         if self.info.sof_kind != SofKind::Lossless
             || !matches!(self.info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
-            || !matches!(self.info.bit_depth, 8 | 16)
             || self.info.sampling.len() != 3
             || !self
                 .info
@@ -143,7 +151,7 @@ impl<'a> JpegView<'a> {
                 .components()
                 .iter()
                 .any(|&(h, v)| h != 1 || v != 1)
-            || self.header.scan_count != 1
+            || (self.header.scan_count != 1 && self.header.progressive_scans.is_empty())
         {
             return false;
         }
@@ -151,11 +159,12 @@ impl<'a> JpegView<'a> {
         let Some(scan) = self.header.scan.as_ref() else {
             return false;
         };
+        let split = !self.header.progressive_scans.is_empty();
         if !(1..=7).contains(&scan.ss)
             || scan.se != 0
             || scan.ah != 0
-            || scan.al != 0
-            || scan.components.len() != 3
+            || scan.al >= self.info.bit_depth
+            || (scan.components.len() != 3 && !split)
         {
             return false;
         }

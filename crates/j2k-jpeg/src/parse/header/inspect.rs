@@ -4,15 +4,16 @@
 
 use crate::error::{JpegError, MarkerKind};
 use crate::info::{Info, McuGeometry, SofKind};
-use crate::parse::adobe_app14::parse_adobe_app14;
+use crate::parse::adobe_app14::{is_jfif_app0, parse_adobe_app14};
 use crate::parse::markers::MarkerWalker;
 use crate::parse::scan::parse_scan_header;
 use crate::parse::sof::{parse_sof, ParsedSof};
 
 use super::markers::count_scan_markers;
-use super::types::color_space_for_components;
+use super::types::color_space_for_frame;
 use super::validation::{
-    normalize_restart_interval, validate_scan_parameters, validate_sequential_scan_components,
+    is_split_frame_scan, normalize_restart_interval, validate_scan_parameters,
+    validate_sequential_scan_components, validate_split_scan,
 };
 
 #[expect(
@@ -26,6 +27,7 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
     let mut sof = None;
     let mut restart_interval = None;
     let mut adobe = None;
+    let mut jfif = false;
     let mut scan_count = 0u16;
     while let Some(marker) = walker.next_marker()? {
         match marker.code {
@@ -55,11 +57,17 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
                 let scan = parse_scan_header(marker.payload, marker.offset + 4)?;
                 if let Some(frame) = sof.as_ref() {
                     validate_scan_parameters(frame.sof_kind, &scan, marker.offset + 4)?;
-                    validate_sequential_scan_components(frame, &scan, marker.offset + 4)?;
-                    scan_count = if matches!(
-                        frame.sof_kind,
-                        SofKind::Progressive8 | SofKind::Progressive12
-                    ) {
+                    let split = is_split_frame_scan(frame, &scan);
+                    if split {
+                        validate_split_scan(frame, &scan, marker.offset + 4)?;
+                    } else {
+                        validate_sequential_scan_components(frame, &scan, marker.offset + 4)?;
+                    }
+                    scan_count = if split
+                        || matches!(
+                            frame.sof_kind,
+                            SofKind::Progressive8 | SofKind::Progressive12
+                        ) {
                         count_scan_markers(bytes, walker.position())
                     } else {
                         1
@@ -68,7 +76,8 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
                 break;
             }
             0xee => adobe = parse_adobe_app14(marker.payload).or(adobe),
-            0xdb | 0xc4 | 0xe0 | 0xe1..=0xef | 0xfe => {}
+            0xe0 => jfif |= is_jfif_app0(marker.payload),
+            0xdb | 0xc4 | 0xe1..=0xef | 0xfe => {}
             _ => {
                 return Err(JpegError::InvalidMarker {
                     offset: marker.offset,
@@ -84,7 +93,12 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
     let dimensions = (u32::from(sof.width), u32::from(sof.height));
     Ok(Info {
         dimensions,
-        color_space: color_space_for_components(sof.sampling.len(), adobe),
+        color_space: color_space_for_frame(
+            sof.component_ids.as_slice(),
+            sof.sof_kind == SofKind::Lossless,
+            adobe,
+            jfif,
+        ),
         sampling: sof.sampling,
         sof_kind: sof.sof_kind,
         bit_depth: sof.bit_depth,

@@ -4,7 +4,7 @@
 
 use super::super::{
     allocate_output_buffer_with_live_budget, checked_scratch_len, copy_rgb16_to_rgba16,
-    scaled_rect_covering, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
+    scaled_rect_covering, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect,
 };
 
 impl Decoder<'_> {
@@ -23,7 +23,7 @@ impl Decoder<'_> {
         let (mut live_bytes, workspace_cap) = self.decode_phase_live_bytes(external_live_bytes)?;
         let mut rgb =
             allocate_output_buffer_with_live_budget(rgb_len, &mut live_bytes, workspace_cap)?;
-        let outcome = if self.info.sof_kind == SofKind::Progressive12 {
+        let outcome = if self.progressive_plan.is_some() {
             self.decode_progressive12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
         } else {
             self.decode_extended12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)

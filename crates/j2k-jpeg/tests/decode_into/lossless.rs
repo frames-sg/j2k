@@ -1179,3 +1179,146 @@ fn decode_region_scaled_into_gray16_projects_lossless_16bit_grayscale_common_pre
         assert_gray16_rows_with_padding(&buf, stride, scaled_roi.w, &expected, 4, predictor);
     }
 }
+
+fn matrix_format(case: &j2k_test_support::LosslessMatrixCase) -> PixelFormat {
+    match (case.is_gray(), case.precision > 8) {
+        (true, false) => PixelFormat::Gray8,
+        (true, true) => PixelFormat::Gray16,
+        (false, false) => PixelFormat::Rgb8,
+        (false, true) => PixelFormat::Rgb16,
+    }
+}
+
+/// Decoder output as sample values; 16-bit output is little-endian.
+fn output_samples(bytes: &[u8], wide: bool) -> Vec<u16> {
+    if wide {
+        bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect()
+    } else {
+        bytes.iter().map(|&sample| u16::from(sample)).collect()
+    }
+}
+
+/// Every lossless case libjpeg-turbo decodes, at every precision, point
+/// transform, restart interval, sampling ratio, and scan split, matches
+/// `djpeg` exactly, in full and as a region crop.
+#[test]
+fn lossless_matrix_matches_libjpeg_turbo() {
+    let mut compared = 0;
+    let mut failures = Vec::new();
+    for case in j2k_test_support::lossless_matrix_cases() {
+        let Some(expected) = case.reference_samples() else {
+            continue;
+        };
+        let decoder = match Decoder::new(case.jpeg) {
+            Ok(decoder) => decoder,
+            Err(err) => {
+                failures.push(format!("{}: parse failed: {err}", case.name));
+                continue;
+            }
+        };
+        let fmt = matrix_format(&case);
+        let wide = case.precision > 8;
+        let channels = if case.is_gray() { 1 } else { 3 };
+        match decoder.decode_request(DecodeRequest::full(fmt)) {
+            Ok((bytes, _)) if output_samples(&bytes, wide) == expected => {}
+            Ok(_) => failures.push(format!("{}: full decode differs from djpeg", case.name)),
+            Err(err) => failures.push(format!("{}: full decode failed: {err}", case.name)),
+        }
+        let (w, h) = (case.width, case.height);
+        let roi = Rect {
+            x: w / 3,
+            y: h / 4,
+            w: (w - w / 3).div_ceil(2),
+            h: (h - h / 4).div_ceil(2),
+        };
+        let mut crop = Vec::new();
+        for y in roi.y..roi.y + roi.h {
+            let start = (y * w + roi.x) as usize * channels;
+            crop.extend_from_slice(&expected[start..start + roi.w as usize * channels]);
+        }
+        match decoder.decode_request(DecodeRequest::region(fmt, roi)) {
+            Ok((bytes, _)) if output_samples(&bytes, wide) == crop => {}
+            Ok(_) => failures.push(format!("{}: region differs from djpeg", case.name)),
+            Err(err) => failures.push(format!("{}: region decode failed: {err}", case.name)),
+        }
+        compared += 1;
+    }
+    assert!(
+        failures.is_empty(),
+        "{} lossless decodes differ from libjpeg-turbo:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    assert_eq!(compared, 55);
+}
+
+struct CollectRows(Vec<u8>);
+
+impl j2k_core::RowSink<u8> for CollectRows {
+    type Error = JpegError;
+
+    fn write_row(&mut self, _y: u32, row: &[u8]) -> Result<(), Self::Error> {
+        self.0.extend_from_slice(row);
+        Ok(())
+    }
+}
+
+/// Row-sink decodes of every lossless case, plane-rendered ones included,
+/// emit the full decode's pixels (8-bit grayscale as RGB rows).
+#[test]
+fn lossless_matrix_rows_match_full_decode() {
+    for case in j2k_test_support::lossless_matrix_cases() {
+        let decoder = Decoder::new(case.jpeg).expect("lossless matrix case parses");
+        let (full, _) = decoder
+            .decode_request(DecodeRequest::full(matrix_format(&case)))
+            .unwrap_or_else(|err| panic!("{}: full decode: {err}", case.name));
+        let expected = if case.is_gray() && case.precision <= 8 {
+            full.iter().flat_map(|&gray| [gray; 3]).collect()
+        } else {
+            full
+        };
+        let mut rows = CollectRows(Vec::new());
+        decoder
+            .decode_rows(&mut rows)
+            .unwrap_or_else(|err| panic!("{}: row decode: {err}", case.name));
+        assert!(
+            rows.0 == expected,
+            "{}: rows differ from full decode",
+            case.name
+        );
+    }
+}
+
+fn dicom_format(case: &j2k_test_support::DicomMatrixCase) -> PixelFormat {
+    match (case.channels, case.precision > 8) {
+        (1, false) => PixelFormat::Gray8,
+        (1, true) => PixelFormat::Gray16,
+        (_, false) => PixelFormat::Rgb8,
+        (_, true) => PixelFormat::Rgb16,
+    }
+}
+
+/// DCMTK-written DICOM codestreams (lossless SV1 and other predictors at 8
+/// to 16 bits stored, 12-bit extended and progressive DCT, RGB) decode
+/// exactly as DCMTK decodes them.
+#[test]
+fn dicom_matrix_matches_dcmtk_decode() {
+    for case in j2k_test_support::dicom_matrix_cases() {
+        let decoder = Decoder::new(case.jpeg)
+            .unwrap_or_else(|err| panic!("{} ({}): parse: {err}", case.name, case.options));
+        let (bytes, _) = decoder
+            .decode_request(DecodeRequest::full(dicom_format(&case)))
+            .unwrap_or_else(|err| panic!("{} ({}): decode: {err}", case.name, case.options));
+        assert!(
+            output_samples(&bytes, case.precision > 8) == case.reference_samples(),
+            "{} ({}): differs from DCMTK",
+            case.name,
+            case.options
+        );
+    }
+}

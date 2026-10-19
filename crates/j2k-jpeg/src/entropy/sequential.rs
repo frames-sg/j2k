@@ -17,7 +17,8 @@ mod rgb444;
 mod stripe;
 
 pub(crate) use self::dct::{
-    decode_scan_dct_blocks, DecodedDctBlocks, SequentialDctLifecycleMetadata,
+    decode_scan_dct_blocks, decode_scan_dct_blocks_into, decode_scan_dct_window_into,
+    sequential_mcu_grid, DecodedDctBlocks, McuWindow, SequentialDctLifecycleMetadata,
 };
 #[cfg(feature = "bench-internals")]
 pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;

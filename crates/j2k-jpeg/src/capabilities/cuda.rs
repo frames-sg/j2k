@@ -16,9 +16,9 @@ pub(super) fn owned_cuda_eligibility(
             "J2K-owned CUDA JPEG decode currently supports full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 only",
         );
     }
-    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
+    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) || info.scan_count != 1 {
         return JpegBackendEligibility::rejected(
-            "J2K-owned CUDA JPEG decode supports baseline/extended 8-bit sequential JPEG only",
+            "J2K-owned CUDA JPEG decode supports single-scan baseline/extended 8-bit sequential JPEG only",
         );
     }
     if info.color_space != ColorSpace::YCbCr

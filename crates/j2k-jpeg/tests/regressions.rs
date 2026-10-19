@@ -292,3 +292,60 @@ fn push_bits(bits: &mut Vec<bool>, value: u32, width: u8) {
         bits.push(((value >> shift) & 1) != 0);
     }
 }
+
+/// A split (multi-scan) sequential frame must code each component once.
+#[test]
+fn decoder_new_rejects_a_component_coded_in_two_split_scans() {
+    let case = j2k_test_support::scaled_matrix_cases()
+        .into_iter()
+        .find(|case| case.coding == "multiscan" && case.layout == "444" && case.precision == 8)
+        .expect("8-bit 4:4:4 multi-scan case");
+    let mut bytes = case.jpeg.to_vec();
+    let sos: Vec<usize> = bytes
+        .windows(2)
+        .enumerate()
+        .filter(|(_, marker)| *marker == [0xff, 0xda])
+        .map(|(offset, _)| offset)
+        .collect();
+    assert!(sos.len() >= 2, "multi-scan case has several scans");
+    let first_id = bytes[sos[0] + 5];
+    // Recode the second scan's first component as the first scan's.
+    bytes[sos[1] + 5] = first_id;
+
+    let err = Decoder::new(&bytes).expect_err("a component coded twice must be rejected");
+    assert!(
+        matches!(err, JpegError::DuplicateScanComponent { component, .. } if component == first_id),
+        "{err:?}"
+    );
+}
+
+/// A split sequential frame reports every scan, from `inspect` and from the
+/// parsed decoder alike.
+#[test]
+fn split_sequential_scan_count_is_consistent() {
+    for case in j2k_test_support::scaled_matrix_cases()
+        .into_iter()
+        .filter(|case| case.coding == "multiscan")
+    {
+        let scans = case
+            .jpeg
+            .windows(2)
+            .filter(|marker| *marker == [0xff, 0xda])
+            .count();
+        let inspected = Decoder::inspect(case.jpeg).expect("inspect");
+        let decoder = Decoder::new(case.jpeg).expect("decoder");
+        assert_eq!(usize::from(inspected.scan_count), scans, "{}", case.name);
+        assert_eq!(
+            usize::from(decoder.info().scan_count),
+            scans,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            inspected.color_space,
+            decoder.info().color_space,
+            "{}",
+            case.name
+        );
+    }
+}

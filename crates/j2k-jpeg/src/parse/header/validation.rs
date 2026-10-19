@@ -58,6 +58,42 @@ pub(super) fn validate_sequential_scan_components(
     Ok(())
 }
 
+/// Whether `scan` opens a split (multi-scan) frame: a sequential or lossless
+/// SOF whose first scan codes fewer components than the frame, the rest
+/// following in later scans.
+pub(super) fn is_split_frame_scan(sof: &ParsedSof, scan: &ParsedScan) -> bool {
+    matches!(
+        sof.sof_kind,
+        SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12 | SofKind::Lossless
+    ) && scan.components.len() < sof.component_ids.len()
+}
+
+/// Validates one scan of a split frame over known, unique components:
+/// sequential scans code the full spectrum with no successive
+/// approximation; lossless scans select predictor 1..=7 with a point
+/// transform below the precision.
+pub(super) fn validate_split_scan(
+    sof: &ParsedSof,
+    scan: &ParsedScan,
+    offset: usize,
+) -> Result<(), JpegError> {
+    let invalid = if sof.sof_kind == SofKind::Lossless {
+        !(1..=7).contains(&scan.ss) || scan.se != 0 || scan.ah != 0 || scan.al >= sof.bit_depth
+    } else {
+        scan.ss != 0 || scan.se != 63 || scan.ah != 0 || scan.al != 0
+    };
+    if scan.components.is_empty() || invalid {
+        return Err(JpegError::InvalidScanParameters {
+            offset,
+            ss: scan.ss,
+            se: scan.se,
+            ah: scan.ah,
+            al: scan.al,
+        });
+    }
+    validate_known_unique_components(sof, scan, offset)
+}
+
 pub(super) fn validate_progressive_scan_components(
     sof: &ParsedSof,
     scan: &ParsedScan,

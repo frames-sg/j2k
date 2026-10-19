@@ -4,15 +4,21 @@
 
 pub(crate) mod scan;
 
-/// Output container for reconstructed lossless samples: `u8` for 8-bit and
-/// `u16` (little-endian) for 16-bit images.
+/// Output container for reconstructed lossless samples, as libjpeg-turbo's
+/// sample types hold them: `u8` for 2- to 8-bit and `u16` (little-endian)
+/// for 9- to 16-bit precision. Samples keep their native range.
 pub(crate) trait LosslessSample: Copy + Default {
-    const BIT_DEPTH: u8;
     const BYTES: usize;
+
+    /// Whether this container holds `precision`-bit samples.
+    fn holds_precision(precision: u8) -> bool;
 
     /// Narrow a reconstructed sample. [`scan::LosslessScan`] has already
     /// rejected values wider than the image precision.
     fn from_sample(sample: u16) -> Self;
+
+    /// Widen a stored sample back to the reconstruction type.
+    fn to_sample(self) -> u16;
 
     fn write_le(self, dst: &mut [u8]);
 
@@ -48,15 +54,22 @@ pub(crate) trait LosslessSample: Copy + Default {
 }
 
 impl LosslessSample for u8 {
-    const BIT_DEPTH: u8 = 8;
     const BYTES: usize = 1;
+
+    fn holds_precision(precision: u8) -> bool {
+        (2..=8).contains(&precision)
+    }
 
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "8-bit lossless samples are range-checked to 0..=255 during reconstruction"
+        reason = "lossless samples up to 8 bits are range-checked to 0..=255 during reconstruction"
     )]
     fn from_sample(sample: u16) -> Self {
         sample as u8
+    }
+
+    fn to_sample(self) -> u16 {
+        u16::from(self)
     }
 
     fn write_le(self, dst: &mut [u8]) {
@@ -85,11 +98,18 @@ impl LosslessSample for u8 {
 }
 
 impl LosslessSample for u16 {
-    const BIT_DEPTH: u8 = 16;
     const BYTES: usize = 2;
+
+    fn holds_precision(precision: u8) -> bool {
+        (9..=16).contains(&precision)
+    }
 
     fn from_sample(sample: u16) -> Self {
         sample
+    }
+
+    fn to_sample(self) -> u16 {
+        self
     }
 
     fn write_le(self, dst: &mut [u8]) {

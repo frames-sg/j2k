@@ -8,10 +8,8 @@ use super::{
     },
 };
 use crate::{
-    color::cmyk::{inverted_cmyk_to_rgb, ycck_to_rgb},
-    color::scaled_sampling::ScaledSampling,
-    info::ColorSpace,
-    internal::scratch::RgbGenericRows,
+    color::cmyk::four_component_row_to_rgb, color::scaled_sampling::ScaledSampling,
+    info::ColorSpace, internal::scratch::RgbGenericRows,
 };
 
 /// One output row of a stripe: its stripe-local index, the rows the stripe
@@ -81,16 +79,11 @@ pub(super) fn fill_four_component_rgb_row(
         out: &mut scratch.k,
     });
 
-    for x in 0..width {
-        let (r, g, b) = match plan.color_space {
-            ColorSpace::Cmyk => {
-                inverted_cmyk_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x])
-            }
-            ColorSpace::Ycck => ycck_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x]),
-            _ => unreachable!("four-component conversion requires CMYK/YCCK input"),
-        };
-        scratch.r[x] = r;
-        scratch.g[x] = g;
-        scratch.b[x] = b;
-    }
+    four_component_row_to_rgb(
+        plan.color_space == ColorSpace::Ycck,
+        &mut scratch.r[..width],
+        &mut scratch.g[..width],
+        &mut scratch.b[..width],
+        &scratch.k[..width],
+    );
 }

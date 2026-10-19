@@ -6,8 +6,10 @@
 //! 3.1.4.1 `cjpeg` and records `djpeg -dct int -scale 1/N` output for N = 1,
 //! 2, 4, 8 (default fancy upsampling, as `OpenSlide` uses it). The cases cover
 //! every chroma layout libjpeg-turbo decodes differently at reduced scale,
-//! chroma at most two samples wide, restart intervals, progressive scans and
-//! 12-bit precision.
+//! chroma at most two samples wide, restart intervals, progressive scans,
+//! multi-scan sequential coding, 12-bit precision, and Adobe CMYK/YCCK
+//! (sources from the generator's own encoder, recoded with `jpegtran`;
+//! `djpeg` writes them as RGB).
 
 const CASES_TSV: &str = include_str!("../fixtures/scaled_matrix/cases.tsv");
 const DATA: &[u8] = include_bytes!("../fixtures/scaled_matrix/data.bin");
@@ -21,10 +23,12 @@ pub struct ScaledMatrixCase {
     /// Unique case name, `{layout}_{w}x{h}_{coding}_{precision}bit`.
     pub name: &'static str,
     /// `gray`, `444`, `422`, `440`, `420`, `411`, `410` or `1x4` (luma
-    /// sampling; chroma is 1x1).
+    /// sampling; chroma is 1x1), or a four-component layout: `cmyk444`,
+    /// `cmyk420` (C at 2x2), `ycck444`, or `ycck420` (Y and K at 2x2).
     pub layout: &'static str,
-    /// `baseline`, `restart` (one-MCU interval), `progressive` or `extended`
-    /// (12-bit sequential).
+    /// `baseline`, `restart` (one-MCU interval), `progressive`, `extended`
+    /// (12-bit sequential), or `multiscan` (sequential with the components
+    /// split across scans).
     pub coding: &'static str,
     /// Sample precision, 8 or 12.
     pub precision: u8,
@@ -41,6 +45,11 @@ impl ScaledMatrixCase {
     /// Whether the case is single-component grayscale.
     pub fn is_gray(&self) -> bool {
         self.layout == "gray"
+    }
+
+    /// Whether the case is four-component Adobe CMYK or YCCK.
+    pub fn is_four_component(&self) -> bool {
+        self.layout.starts_with("cmyk") || self.layout.starts_with("ycck")
     }
 
     /// Interleaved samples per pixel in the references.
@@ -137,7 +146,7 @@ mod tests {
     #[test]
     fn every_reference_has_the_scaled_geometry() {
         let cases = scaled_matrix_cases();
-        assert_eq!(cases.len(), 208);
+        assert_eq!(cases.len(), 322);
         for case in cases {
             assert_eq!(&case.jpeg[..2], &[0xFF, 0xD8], "{}", case.name);
             let bytes_per_sample = if case.precision > 8 { 2 } else { 1 };

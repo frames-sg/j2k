@@ -64,15 +64,15 @@ use self::output_format::{
     scaled_rect_covering,
 };
 mod extended12;
-use self::extended12::{lossless_color_sampling, upsample_h2v1_sample_at, upsample_h2v2_rows_at};
+use self::extended12::lossless_color_sampling;
 mod lossless_helpers;
 pub(crate) use self::lossless_helpers::restart_index_allocation_bytes;
 use self::lossless_helpers::{
     emit_decode_scan_profile, lossless_output_order, restart_index_for_stream,
-    validate_lossless_color_plan, write_lossless_color16_sampled_output,
-    write_lossless_color8_sampled_output, LosslessColorPlanes,
+    validate_lossless_color_plan,
 };
 mod color_convert;
+mod lossless_planes;
 use self::color_convert::{
     convert_ycbcr16_to_rgb16_in_place, convert_ycbcr8_to_rgb8_in_place, copy_gray16_scaled_rect,
     copy_gray8_scaled_rect, copy_rgb16_to_rgba16, copy_ycbcr16_row_to_rgb16,
@@ -88,7 +88,7 @@ mod scratch;
 use self::scratch::{
     additional_decode_scratch_bytes, checked_scratch_len, checked_usize_product,
     compute_decode_scratch_bytes, compute_extended12_planes_scratch_bytes,
-    compute_lossless_scratch_bytes, lossless_sampled_plane_layout, LosslessSampledPlaneLayout,
+    compute_lossless_scratch_bytes,
 };
 mod sink_writer;
 pub(crate) use self::sink_writer::SinkWriter;
@@ -113,6 +113,7 @@ pub use self::tile::{
     decode_tiles_scaled_into_with_options,
 };
 mod lossless_render;
+pub(crate) use self::lossless_render::DeviceLosslessScan;
 
 /// Non-fatal outcome of a successful decode.
 ///
@@ -316,13 +317,47 @@ struct PreparedLosslessPlan {
     point_transform: u8,
     dimensions: (u32, u32),
     scan_offset: usize,
+    /// Every scan of a split (multi-scan) frame, in stream order; empty when
+    /// one scan codes every component. The decode plan's components then
+    /// hold each scan's components in this order, with that scan's tables.
+    split_scans: Vec<PreparedLosslessScan>,
+}
+
+impl PreparedLosslessPlan {
+    /// Scans in the frame: one, or every scan of a split frame.
+    fn scan_count(&self) -> usize {
+        self.split_scans.len().max(1)
+    }
+
+    fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
+        crate::allocation::checked_allocation_bytes::<PreparedLosslessScan>(
+            self.split_scans.capacity(),
+        )
+    }
+}
+
+/// One scan of a split lossless frame.
+#[derive(Debug, Clone, Copy)]
+struct PreparedLosslessScan {
+    /// First of this scan's components in the decode plan, and their count.
+    component_start: usize,
+    component_len: usize,
+    predictor: u8,
+    point_transform: u8,
+    restart_interval: Option<u16>,
+    entropy_offset: usize,
+    /// Marker ending the entropy data (`0xD9` for EOI, zero at EOF).
+    terminal_code: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LosslessColorSampling {
+    /// Every component at full resolution.
     S444,
-    S422,
-    S420,
+    /// Any other layout whose factors divide the maximum factors; output
+    /// replicates each component by its ratio, as libjpeg-turbo's lossless
+    /// upsampler does.
+    Sampled,
 }
 
 impl<'a> Decoder<'a> {
@@ -475,11 +510,15 @@ impl<'a> Decoder<'a> {
         external_live_bytes: usize,
         operation: impl FnOnce(&Self) -> Result<R, JpegError>,
     ) -> Result<R, JpegError> {
+        // Split (multi-scan) sequential frames plan through whole-image
+        // coefficients, which the single-scan plan cache does not hold.
         let cache_prefix = if view.options == DecodeOptions::default()
             && matches!(
                 view.info.sof_kind,
                 SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12
-            ) {
+            )
+            && view.header.progressive_scans.is_empty()
+        {
             view.header
                 .sos_offset
                 .and_then(|offset| view.bytes.get(..offset))

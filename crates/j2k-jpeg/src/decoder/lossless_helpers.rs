@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    downscale_profile_name, emit_jpeg_profile_fields, upsample_h2v1_sample_at,
-    upsample_h2v2_rows_at, BitReader, ColorSpace, DownscaleFactor, Duration, Info, JpegError,
-    LosslessColorSampling, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField, Rect,
-    RestartIndex, RestartSegment, SofKind,
+    downscale_profile_name, emit_jpeg_profile_fields, BitReader, ColorSpace, DownscaleFactor,
+    Duration, Info, JpegError, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField,
+    Rect, RestartIndex, RestartSegment, SofKind,
 };
 use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
 use crate::entropy::sequential::PreparedDecodePlan;
@@ -249,7 +248,7 @@ pub(super) fn validate_lossless_color_plan<P: LosslessSample>(
     info: &Info,
     color_space: ColorSpace,
 ) -> Result<(), JpegError> {
-    if plan.bit_depth != P::BIT_DEPTH {
+    if !P::holds_precision(plan.bit_depth) {
         return Err(JpegError::UnsupportedBitDepth {
             depth: plan.bit_depth,
         });
@@ -268,184 +267,6 @@ pub(super) fn validate_lossless_color_plan<P: LosslessSample>(
         });
     }
     Ok(())
-}
-
-pub(super) struct LosslessColorPlanes<'a, P> {
-    pub(super) c0: &'a [P],
-    pub(super) c1: &'a [P],
-    pub(super) c2: &'a [P],
-}
-
-type H2v1Upsample<P> = fn(&[P], usize) -> P;
-type H2v2Upsample<P> = fn(&[P], usize, usize, usize, usize, usize) -> P;
-type LosslessColorConvert<P> = fn(ColorSpace, P, P, P) -> (P, P, P);
-
-struct LosslessSampledOutput<'out, 'planes, P> {
-    out: &'out mut [u8],
-    stride: usize,
-    color_space: ColorSpace,
-    sampling: LosslessColorSampling,
-    dimensions: (usize, usize),
-    planes: LosslessColorPlanes<'planes, P>,
-    upsample_h2v1: H2v1Upsample<P>,
-    upsample_h2v2: H2v2Upsample<P>,
-    convert: LosslessColorConvert<P>,
-}
-
-pub(super) fn write_lossless_color8_sampled_output(
-    out: &mut [u8],
-    stride: usize,
-    color_space: ColorSpace,
-    sampling: LosslessColorSampling,
-    dimensions: (usize, usize),
-    planes: LosslessColorPlanes<'_, u8>,
-) {
-    write_lossless_color_sampled_output(LosslessSampledOutput {
-        out,
-        stride,
-        color_space,
-        sampling,
-        dimensions,
-        planes,
-        upsample_h2v1: upsample_h2v1_u8_at,
-        upsample_h2v2: upsample_h2v2_u8_at,
-        convert: lossless_color8_to_rgb,
-    });
-}
-
-pub(super) fn write_lossless_color16_sampled_output(
-    out: &mut [u8],
-    stride: usize,
-    color_space: ColorSpace,
-    sampling: LosslessColorSampling,
-    dimensions: (usize, usize),
-    planes: LosslessColorPlanes<'_, u16>,
-) {
-    write_lossless_color_sampled_output(LosslessSampledOutput {
-        out,
-        stride,
-        color_space,
-        sampling,
-        dimensions,
-        planes,
-        upsample_h2v1: upsample_h2v1_u16_at,
-        upsample_h2v2: upsample_h2v2_u16_at,
-        convert: lossless_color16_to_rgb,
-    });
-}
-
-fn write_lossless_color_sampled_output<P>(request: LosslessSampledOutput<'_, '_, P>)
-where
-    P: LosslessSample,
-{
-    let LosslessSampledOutput {
-        out,
-        stride,
-        color_space,
-        sampling,
-        dimensions,
-        planes,
-        upsample_h2v1,
-        upsample_h2v2,
-        convert,
-    } = request;
-    let (width, height) = dimensions;
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = match sampling {
-        LosslessColorSampling::S422 => height,
-        LosslessColorSampling::S420 => height.div_ceil(2),
-        LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-    };
-    for y in 0..height {
-        for x in 0..width {
-            let c0_sample = planes.c0[y * width + x];
-            let (c1_sample, c2_sample) = match sampling {
-                LosslessColorSampling::S422 => {
-                    let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
-                    let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
-                    (upsample_h2v1(c1_row, x), upsample_h2v1(c2_row, x))
-                }
-                LosslessColorSampling::S420 => (
-                    upsample_h2v2(planes.c1, chroma_width, chroma_height, width, x, y),
-                    upsample_h2v2(planes.c2, chroma_width, chroma_height, width, x, y),
-                ),
-                LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-            };
-            let (r, g, b) = convert(color_space, c0_sample, c1_sample, c2_sample);
-            let dst = y * stride + x * 3 * P::BYTES;
-            r.write_le(&mut out[dst..dst + P::BYTES]);
-            g.write_le(&mut out[dst + P::BYTES..dst + 2 * P::BYTES]);
-            b.write_le(&mut out[dst + 2 * P::BYTES..dst + 3 * P::BYTES]);
-        }
-    }
-}
-
-fn lossless_color8_to_rgb(color_space: ColorSpace, c0: u8, c1: u8, c2: u8) -> (u8, u8, u8) {
-    match color_space {
-        ColorSpace::Rgb => (c0, c1, c2),
-        ColorSpace::YCbCr => crate::color::ycbcr::ycbcr_to_rgb(c0, c1, c2),
-        _ => unreachable!("lossless sampled color path only accepts RGB/YCbCr"),
-    }
-}
-
-fn lossless_color16_to_rgb(color_space: ColorSpace, c0: u16, c1: u16, c2: u16) -> (u16, u16, u16) {
-    match color_space {
-        ColorSpace::Rgb => (c0, c1, c2),
-        ColorSpace::YCbCr => crate::color::ycbcr::ycbcr16_to_rgb16(c0, c1, c2),
-        _ => unreachable!("lossless sampled color path only accepts RGB/YCbCr"),
-    }
-}
-
-pub(super) fn upsample_h2v2_u8_at(
-    plane: &[u8],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u8 {
-    debug_assert!(!plane.is_empty(), "chroma plane needs at least one sample");
-    debug_assert!(chroma_width > 0);
-    debug_assert!(chroma_height > 0);
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    upsample_h2v2_rows_at(current, near, output_width, output_x)
-}
-
-pub(super) fn upsample_h2v1_u8_at(row: &[u8], output_x: usize) -> u8 {
-    upsample_h2v1_sample_at(row, output_x)
-}
-
-pub(super) fn upsample_h2v2_u16_at(
-    plane: &[u16],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u16 {
-    debug_assert!(!plane.is_empty(), "chroma plane needs at least one sample");
-    debug_assert!(chroma_width > 0);
-    debug_assert!(chroma_height > 0);
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    upsample_h2v2_rows_at(current, near, output_width, output_x)
-}
-
-pub(super) fn upsample_h2v1_u16_at(row: &[u16], output_x: usize) -> u16 {
-    upsample_h2v1_sample_at(row, output_x)
 }
 
 #[cfg(test)]

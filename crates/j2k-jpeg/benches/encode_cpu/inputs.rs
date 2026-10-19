@@ -69,7 +69,7 @@ pub(super) fn load_cases() -> Option<Vec<EncodeCase>> {
     Some(cases)
 }
 
-fn collect_pnm(path: PathBuf, output: &mut Vec<PathBuf>) {
+pub(super) fn collect_pnm(path: PathBuf, output: &mut Vec<PathBuf>) {
     if path.is_dir() {
         for entry in std::fs::read_dir(path).expect("JPEG encoder corpus directory") {
             collect_pnm(entry.expect("JPEG encoder corpus entry").path(), output);

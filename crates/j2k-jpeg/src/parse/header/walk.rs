@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::error::{JpegError, MarkerKind, Warning};
 use crate::info::SofKind;
-use crate::parse::adobe_app14::{parse_adobe_app14, AdobeTransform};
+use crate::parse::adobe_app14::{is_jfif_app0, parse_adobe_app14, AdobeTransform};
 use crate::parse::allocation::ParsedMetadataBudget;
 use crate::parse::markers::{Marker, MarkerWalker};
 use crate::parse::scan::{parse_scan_header, ParsedScan};
@@ -14,11 +14,13 @@ use crate::parse::sof::{parse_sof, ParsedSof};
 use crate::parse::tables::{parse_dht, parse_dqt, HuffmanTables, QuantTables};
 
 use super::markers::count_scan_markers;
-use super::progressive::{collect_progressive_scans, ProgressiveScanCollection};
+use super::progressive::{
+    collect_progressive_scans, ProgressiveScanCollection, ScanCollectionMode,
+};
 use super::types::{ParsedHeader, ParsedProgressiveScan};
 use super::validation::{
-    normalize_restart_interval, validate_progressive_scan_components, validate_scan_parameters,
-    validate_sequential_scan_components,
+    is_split_frame_scan, normalize_restart_interval, validate_progressive_scan_components,
+    validate_scan_parameters, validate_sequential_scan_components, validate_split_scan,
 };
 
 pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
@@ -40,6 +42,7 @@ struct HeaderParser<'a> {
     huffman_tables: HuffmanTables,
     restart_interval: Option<u16>,
     adobe: Option<AdobeTransform>,
+    jfif: bool,
     warnings: Vec<Warning>,
     scan_count: u16,
     sos_offset: Option<usize>,
@@ -58,6 +61,7 @@ impl<'a> HeaderParser<'a> {
             huffman_tables: HuffmanTables::default(),
             restart_interval: None,
             adobe: None,
+            jfif: false,
             warnings: Vec::new(),
             scan_count: 0,
             sos_offset: None,
@@ -113,7 +117,11 @@ impl<'a> HeaderParser<'a> {
                 self.handle_adobe(marker)?;
                 Ok(false)
             }
-            0xe0 | 0xfe => Ok(false),
+            0xe0 => {
+                self.jfif |= is_jfif_app0(marker.payload);
+                Ok(false)
+            }
+            0xfe => Ok(false),
             0xe2 => {
                 let warning = if crate::icc::is_icc_app2_payload(marker.payload) {
                     Warning::IccProfileIgnored {
@@ -159,22 +167,29 @@ impl<'a> HeaderParser<'a> {
     )]
     fn handle_scan(&mut self, marker: Marker<'a>) -> Result<(), JpegError> {
         let scan = parse_scan_header(marker.payload, marker.offset + 4)?;
+        let mut mode = None;
         if let Some(sof) = self.sof.as_ref() {
             validate_scan_parameters(sof.sof_kind, &scan, marker.offset + 4)?;
-            validate_sequential_scan_components(sof, &scan, marker.offset + 4)?;
-            validate_progressive_scan_components(sof, &scan, marker.offset + 4)?;
+            if is_split_frame_scan(sof, &scan) {
+                validate_split_scan(sof, &scan, marker.offset + 4)?;
+                mode = Some(ScanCollectionMode::Split);
+            } else {
+                validate_sequential_scan_components(sof, &scan, marker.offset + 4)?;
+                validate_progressive_scan_components(sof, &scan, marker.offset + 4)?;
+                if matches!(sof.sof_kind, SofKind::Progressive8 | SofKind::Progressive12) {
+                    mode = Some(ScanCollectionMode::Progressive);
+                }
+            }
         }
         let entropy_offset = self.walker.position();
         self.sos_offset = Some(entropy_offset);
         self.scan = Some(scan.clone());
-        if matches!(
-            self.sof.as_ref().map(|sof| sof.sof_kind),
-            Some(SofKind::Progressive8 | SofKind::Progressive12)
-        ) {
+        if let Some(mode) = mode {
             let sof = self.sof.as_ref().ok_or(JpegError::MissingMarker {
                 marker: MarkerKind::Sof,
             })?;
             self.progressive_scans = collect_progressive_scans(ProgressiveScanCollection {
+                mode,
                 bytes: self.bytes,
                 first_scan: scan,
                 first_marker_offset: marker.offset,
@@ -196,10 +211,7 @@ impl<'a> HeaderParser<'a> {
     fn handle_adobe(&mut self, marker: Marker<'a>) -> Result<(), JpegError> {
         if let Some(transform) = parse_adobe_app14(marker.payload) {
             self.adobe = Some(transform);
-            if transform == AdobeTransform::Unknown
-                && marker.payload.len() >= 12
-                && marker.payload[11] > 2
-            {
+            if transform == AdobeTransform::Reserved {
                 self.push_warning(Warning::AdobeApp14Ambiguous {
                     raw_transform: marker.payload[11],
                 })?;
@@ -232,6 +244,7 @@ impl<'a> HeaderParser<'a> {
             huffman_tables: self.huffman_tables,
             restart_interval: self.restart_interval,
             adobe: self.adobe,
+            jfif: self.jfif,
             scan_count: self.scan_count,
             warnings: self.warnings,
             sos_offset: self.sos_offset,

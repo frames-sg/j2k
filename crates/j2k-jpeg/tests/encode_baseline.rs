@@ -1,6 +1,6 @@
 use j2k_jpeg::{
-    encode_jpeg_baseline, DecodeRequest, Decoder, EncodedJpeg, JpegBackend, JpegEncodeOptions,
-    JpegSamples, JpegSubsampling, PixelFormat,
+    encode_jpeg_baseline, encode_jpeg_baseline_optimized, DecodeRequest, Decoder, EncodedJpeg,
+    JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling, PixelFormat,
 };
 use j2k_test_support::{patterned_gray8, patterned_rgb8};
 use std::io::Cursor;
@@ -174,4 +174,119 @@ fn cpu_encoder_round_trips_gray_and_writes_required_markers() {
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
     assert_eq!(decoded.len(), width as usize * height as usize);
     assert_independent_decoder_accepts(&encoded.data, width, height, jpeg_decoder::PixelFormat::L8);
+}
+
+fn decode(encoded: &[u8], fmt: PixelFormat) -> Vec<u8> {
+    Decoder::new(encoded)
+        .expect("decoder")
+        .decode_request(DecodeRequest::full(fmt))
+        .expect("decode")
+        .0
+}
+
+fn count_restart_markers(encoded: &[u8]) -> usize {
+    encoded
+        .windows(2)
+        .filter(|pair| pair[0] == 0xFF && (0xD0..=0xD7).contains(&pair[1]))
+        .count()
+}
+
+#[test]
+fn optimized_huffman_keeps_pixels_and_shrinks_output() {
+    let (width, height) = (61, 43);
+    let rgb = patterned_rgb8(width, height);
+    let gray = patterned_gray8(width, height);
+    // Pinned codestream hashes. Their DHT segments and entropy-coded data
+    // were checked equal to `jpegtran -optimize -restart <N>B` (libjpeg-turbo
+    // 3.1.4.1) applied to the standard-table encode of the same samples.
+    let cases = [
+        (JpegSubsampling::Gray, None, 0xb411_8f53_ae46_300d_u64),
+        (JpegSubsampling::Gray, Some(3), 0x824b_be39_a63d_cea2),
+        (JpegSubsampling::Ybr444, None, 0xdc2c_3a21_bc04_7222),
+        (JpegSubsampling::Ybr422, Some(2), 0xf43b_3f2e_98e9_44fe),
+        (JpegSubsampling::Ybr420, None, 0xe0c4_9d36_dc95_70a3),
+        (JpegSubsampling::Ybr420, Some(5), 0x4e12_01b1_11db_f845),
+    ];
+    for (subsampling, restart_interval, golden) in cases {
+        let (samples, fmt) = if subsampling == JpegSubsampling::Gray {
+            (
+                JpegSamples::Gray8 {
+                    data: &gray,
+                    width,
+                    height,
+                },
+                PixelFormat::Gray8,
+            )
+        } else {
+            (
+                JpegSamples::Rgb8 {
+                    data: &rgb,
+                    width,
+                    height,
+                },
+                PixelFormat::Rgb8,
+            )
+        };
+        let options = JpegEncodeOptions {
+            quality: 85,
+            subsampling,
+            restart_interval,
+            backend: JpegBackend::Cpu,
+        };
+        let standard = encode_jpeg_baseline(samples, options).expect("standard encode");
+        let optimized = encode_jpeg_baseline_optimized(samples, options).expect("optimized encode");
+        let label = format!("{subsampling:?} restart {restart_interval:?}");
+        assert_eq!(optimized.backend, JpegBackend::Cpu);
+        assert_eq!(
+            fnv1a64(&optimized.data),
+            golden,
+            "{label}: codestream changed"
+        );
+        assert_eq!(
+            decode(&optimized.data, fmt),
+            decode(&standard.data, fmt),
+            "{label}"
+        );
+        assert!(
+            optimized.data.len() < standard.data.len(),
+            "{label}: {} >= {}",
+            optimized.data.len(),
+            standard.data.len()
+        );
+        assert_eq!(
+            count_restart_markers(&optimized.data),
+            count_restart_markers(&standard.data),
+            "{label}"
+        );
+        let expected_format = if fmt == PixelFormat::Gray8 {
+            jpeg_decoder::PixelFormat::L8
+        } else {
+            jpeg_decoder::PixelFormat::RGB24
+        };
+        assert_independent_decoder_accepts(&optimized.data, width, height, expected_format);
+    }
+}
+
+#[test]
+fn optimized_huffman_rejects_gpu_backends() {
+    let gray = patterned_gray8(8, 8);
+    let result = encode_jpeg_baseline_optimized(
+        JpegSamples::Gray8 {
+            data: &gray,
+            width: 8,
+            height: 8,
+        },
+        JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Gray,
+            restart_interval: None,
+            backend: JpegBackend::Metal,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(JpegEncodeError::UnsupportedBackend {
+            backend: JpegBackend::Metal
+        })
+    ));
 }

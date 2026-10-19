@@ -78,8 +78,12 @@ impl Decoder<'_> {
 
         let width = self.info.dimensions.0 as usize;
         let scratch_bytes = self.prepare_decode_workspace(pool, 0)?;
-        match (self.info.color_space, plan.bit_depth) {
-            (ColorSpace::Grayscale, 8) => {
+        // Samples up to 8 bits stream as bytes; 9- to 16-bit samples as u16.
+        match (self.info.color_space, plan.bit_depth > 8) {
+            (_, _) if !(2..=16).contains(&plan.bit_depth) => Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            }),
+            (ColorSpace::Grayscale, false) => {
                 let predictor_len = checked_scratch_len(&[width])?;
                 let sink_len = checked_scratch_len(&[width, 3])?;
                 let mut rows =
@@ -92,12 +96,12 @@ impl Decoder<'_> {
                 pool.restore_sink_rows(rows);
                 result
             }
-            (ColorSpace::Grayscale, 16) => {
+            (ColorSpace::Grayscale, true) => {
                 let predictor_len = checked_scratch_len(&[width, 2])?;
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
                 self.decode_lossless_gray16_rows(sink, &mut pool.lossless_curr_row)
             }
-            (ColorSpace::Rgb, 8) => {
+            (ColorSpace::Rgb, false) => {
                 let predictor_len = checked_scratch_len(&[width, 3])?;
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
                 self.decode_lossless_color8_rows(
@@ -107,7 +111,7 @@ impl Decoder<'_> {
                     ColorSpace::Rgb,
                 )
             }
-            (ColorSpace::YCbCr, 8) => {
+            (ColorSpace::YCbCr, false) => {
                 let row_len = checked_scratch_len(&[width, 3])?;
                 let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color8_rows(
@@ -119,7 +123,7 @@ impl Decoder<'_> {
                 pool.restore_sink_rows(rows);
                 result
             }
-            (ColorSpace::Rgb, 16) => {
+            (ColorSpace::Rgb, true) => {
                 let predictor_len = checked_scratch_len(&[width, 6])?;
                 let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
                 self.decode_lossless_color16_rows(
@@ -129,7 +133,7 @@ impl Decoder<'_> {
                     ColorSpace::Rgb,
                 )
             }
-            (ColorSpace::YCbCr, 16) => {
+            (ColorSpace::YCbCr, true) => {
                 let row_len = checked_scratch_len(&[width, 6])?;
                 let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color16_rows(
@@ -140,9 +144,6 @@ impl Decoder<'_> {
                 );
                 pool.restore_sink_rows(rows);
                 result
-            }
-            (_, depth) if depth != 8 && depth != 16 => {
-                Err(JpegError::UnsupportedBitDepth { depth })
             }
             _ => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
