@@ -1296,40 +1296,37 @@ fn assert_default_batch_matches_scalar(
     let batch = transcoder
         .transcode_batch(inputs, options)
         .unwrap_or_else(|error| panic!("{context}: default batch failed globally: {error}"));
+    let report = &batch.report;
 
     assert_eq!(batch.tiles.len(), inputs.len(), "{context}: output count");
+    assert_eq!(report.tile_count, inputs.len(), "{context}: tile count");
     assert_eq!(
-        batch.report.tile_count,
-        inputs.len(),
-        "{context}: tile count"
-    );
-    assert_eq!(
-        batch.report.successful_tiles, expected_successes,
+        report.successful_tiles, expected_successes,
         "{context}: successful tile count"
     );
     assert_eq!(
-        batch.report.failed_tiles,
+        report.failed_tiles,
         inputs.len() - expected_successes,
         "{context}: failed tile count"
     );
     assert_eq!(
-        batch.report.transformed_components, expected_components,
+        report.transformed_components, expected_components,
         "{context}: transformed components"
     );
     assert_eq!(
-        batch.report.timings.tile_count, expected_successes,
+        report.timings.tile_count, expected_successes,
         "{context}: timing tile count"
     );
     assert_eq!(
-        batch.report.timings.component_count, expected_components,
+        report.timings.component_count, expected_components,
         "{context}: timing component count"
     );
     assert_eq!(
-        batch.report.timings.cpu_fallback_jobs, expected_cpu_fallback_jobs,
+        report.timings.cpu_fallback_jobs, expected_cpu_fallback_jobs,
         "{context}: CPU fallback jobs"
     );
     assert_eq!(
-        batch.report.timings.accelerator_dispatches, 0,
+        report.timings.accelerator_dispatches, 0,
         "{context}: default CPU route must not report accelerator dispatches"
     );
 
