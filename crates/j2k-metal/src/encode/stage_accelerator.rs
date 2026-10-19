@@ -694,7 +694,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = job;
+            let _ = (job, origin);
             Ok(None)
         }
     }
@@ -749,7 +749,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = job;
+            let _ = (job, origin);
             Ok(None)
         }
     }
