@@ -26,6 +26,7 @@ default = []
 cuda-profiling = ["j2k-cuda-runtime/cuda-profiling"]
 cuda-oxide-jpeg-decode = []
 cuda-oxide-jpeg-encode = []
+cuda-oxide-jpeg-lossless-encode = []
 
 [dependencies]
 j2k-codec-math = { path = "../j2k-codec-math", version = "=0.12.0" }

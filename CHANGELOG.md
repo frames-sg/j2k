@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `j2k_jpeg_cuda::encode_jpeg_lossless_from_cuda_buffer` encodes CUDA-resident
+  2–16-bit grayscale and RGB samples as lossless SOF3 JPEG. CUDA-Oxide
+  kernels classify and pack the stream; the host builds the Huffman table
+  from the device histogram and performs byte stuffing. Output is
+  byte-identical to the CPU lossless encoder for the same samples and options.
 - `j2k-jpeg` decodes the remaining JPEG classes libjpeg-turbo decodes:
   - sequential 8- and 12-bit frames whose components are split across
     several scans (multi-scan, one per component or partly interleaved),

@@ -25,6 +25,7 @@ cuda-runtime = [
     "dep:j2k-cuda-runtime",
     "j2k-cuda-jpeg-engine/cuda-oxide-jpeg-decode",
     "j2k-cuda-jpeg-engine/cuda-oxide-jpeg-encode",
+    "j2k-cuda-jpeg-engine/cuda-oxide-jpeg-lossless-encode",
 ]
 
 [dependencies]

@@ -4200,6 +4200,7 @@ pub unsafe fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_store_rgbi16_native_ba
 #[repr(C)] pub struct j2k_cuda_jpeg_engine::CudaJpegEntropyOverflowState
 #[repr(C)] pub struct j2k_cuda_jpeg_engine::CudaJpegEntropySyncState
 #[repr(C)] pub struct j2k_cuda_jpeg_engine::CudaJpegHuffmanTable
+#[repr(C)] pub struct j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams
 impl core::default::Default for j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeHuffmanTable
 impl core::default::Default for j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeHuffmanTable
@@ -4208,13 +4209,13 @@ impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegEntropyChec
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegEntropyOverflowState
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegEntropySyncState
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegHuffmanTable
+impl j2k_core::accelerator::GpuAbi for j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams
 impl j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeFormat
 impl j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig
 impl j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyReport
 impl j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings
 impl j2k_cuda_jpeg_engine::CudaJpegHuffmanTable
 impl j2k_cuda_jpeg_engine::CudaJpegProfiledOutput
-impl j2k_cuda_jpeg_engine::JpegCudaEngine<'_>
 impl j2k_cuda_runtime::execution::CudaKernelParam for j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeParams
 pub const fn j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings::component_workspace_bytes(self) -> usize
 pub const fn j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings::conversion_us(self) -> u128
@@ -4227,7 +4228,9 @@ pub const j2k_cuda_jpeg_engine::CudaJpegEntropyCheckpoint::NAME: &'static str
 pub const j2k_cuda_jpeg_engine::CudaJpegEntropyOverflowState::NAME: &'static str
 pub const j2k_cuda_jpeg_engine::CudaJpegEntropySyncState::NAME: &'static str
 pub const j2k_cuda_jpeg_engine::CudaJpegHuffmanTable::NAME: &'static str
+pub const j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::NAME: &'static str
 pub enum j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeFormat
+pub enum j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome
 pub enum j2k_cuda_jpeg_engine::CudaJpegRgb8Sampling
 pub fn j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeFormat::abi(self) -> u32
 pub fn j2k_cuda_jpeg_engine::CudaJpegBaselineEncodeHuffmanTable::default() -> Self
@@ -4253,6 +4256,7 @@ pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_jpeg_baseline_entropy(&s
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_jpeg_baseline_entropy_batch(&self, &j2k_cuda_jpeg_engine::CudaJpegBaselineEntropyEncodeBatchJob<'_>) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_jpeg_baseline_entropy_batch_with_external_live(&self, &j2k_cuda_jpeg_engine::CudaJpegBaselineEntropyEncodeBatchJob<'_>, usize) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_jpeg_baseline_entropy_with_external_live(&self, &j2k_cuda_jpeg_engine::CudaJpegBaselineEntropyEncodeJob<'_>, usize) -> core::result::Result<alloc::vec::Vec<u8>, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_lossless_with_external_live<E: core::convert::From<j2k_cuda_runtime::error::CudaError>>(self, &j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeJob<'_>, usize, impl core::ops::function::FnOnce(&[u32; 17]) -> core::result::Result<[u32; 17], E>) -> core::result::Result<j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome, E>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::profile_decode_jpeg_rgb8_owned_with_external_live(&self, &j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan<'_>, usize) -> core::result::Result<j2k_cuda_jpeg_engine::CudaJpegProfiledOutput, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::validate_jpeg_output_buffer_context(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer) -> core::result::Result<(), j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::decode_rgb8_owned_into_with_external_live(self, &j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
@@ -4344,6 +4348,30 @@ pub j2k_cuda_jpeg_engine::CudaJpegEntropySyncState::reserved: u32
 pub j2k_cuda_jpeg_engine::CudaJpegEntropySyncState::start_bit: u32
 pub j2k_cuda_jpeg_engine::CudaJpegEntropySyncState::symbol_count: u32
 pub j2k_cuda_jpeg_engine::CudaJpegEntropySyncState::zigzag_index: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeJob::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeJob::params: j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::Packed
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::Packed::interval_lengths: alloc::vec::Vec<u32>
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::Packed::stream: alloc::vec::Vec<u8>
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::SampleOutOfRange
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::SampleOutOfRange::index: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeOutcome::SampleOutOfRange::value: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::chunk_pixels: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::chunks_per_row: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::components: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::height: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::initial_predictor: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::input_offset_bytes: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::interval_rows: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::intervals: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::max_sample: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::packed_words: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::pitch_bytes: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::point_transform: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::predictor: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::sample_bytes: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::sample_count: u32
+pub j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeParams::width: u32
 pub j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan::cb_ac_table: j2k_cuda_jpeg_engine::CudaJpegHuffmanTable
 pub j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan::cb_dc_table: j2k_cuda_jpeg_engine::CudaJpegHuffmanTable
 pub j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan::cb_quant: [u16; 64]
@@ -4368,6 +4396,7 @@ pub struct j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig
 pub struct j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyPlan<'a>
 pub struct j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyReport
 pub struct j2k_cuda_jpeg_engine::CudaJpegDecodeStageTimings
+pub struct j2k_cuda_jpeg_engine::CudaJpegLosslessEncodeJob<'a>
 pub struct j2k_cuda_jpeg_engine::CudaJpegProfiledOutput
 pub struct j2k_cuda_jpeg_engine::CudaJpegRgb8DecodePlan<'a>
 ```

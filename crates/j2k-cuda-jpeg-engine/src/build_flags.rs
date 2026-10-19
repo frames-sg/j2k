@@ -31,3 +31,11 @@ pub(crate) fn ensure_jpeg_encode_ptx_built() -> Result<(), CudaError> {
         "cuda-oxide JPEG encode",
     )
 }
+
+#[cfg(feature = "cuda-oxide-jpeg-lossless-encode")]
+pub(crate) fn ensure_jpeg_lossless_encode_ptx_built() -> Result<(), CudaError> {
+    ensure_cuda_oxide_ptx_built(
+        cfg!(j2k_cuda_oxide_jpeg_lossless_encode_built),
+        "cuda-oxide JPEG lossless encode",
+    )
+}

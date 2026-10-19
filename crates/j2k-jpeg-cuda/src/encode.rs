@@ -29,8 +29,11 @@ use crate::{
 
 #[cfg(feature = "cuda-runtime")]
 mod error;
+mod lossless;
+
 #[cfg(feature = "cuda-runtime")]
 use self::error::cuda_gpu_encode_error;
+pub use self::lossless::{encode_jpeg_lossless_from_cuda_buffer, JpegLosslessCudaEncodeTile};
 
 #[cfg(feature = "cuda-runtime")]
 #[derive(Debug, Clone, Copy)]

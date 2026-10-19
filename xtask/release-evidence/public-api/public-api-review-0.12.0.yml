@@ -79,11 +79,11 @@ reviews:
     hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages."
   j2k-cuda-jpeg-engine:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
-    hidden_count: 176
-    hidden_fingerprint: "fnv1a64:e88101299bf042a3"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+    added_fingerprint: "fnv1a64:103e0c647d4cb39d"
+    hidden_count: 205
+    hidden_fingerprint: "fnv1a64:ad37da6966da1cfd"
+    rationale: "Adds the lossless category count and encode_lossless_with_external_live entry point; existing engine calls keep their signatures."
+    hidden_rationale: "Adds the C-layout lossless parameter block, borrowed input job, and packed-stream or sample-range outcome. The new path validates buffer ranges, alignment, geometry, and retained host allocation before launching CUDA-Oxide kernels."
   j2k-cuda-transcode-engine:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -170,10 +170,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-jpeg-cuda:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:8dc9917dffab817e"
     hidden_count: 133
     hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Adds JpegLosslessCudaEncodeTile and encode_jpeg_lossless_from_cuda_buffer for grayscale or RGB at 2-16 bits. It reuses CPU option validation, binds the session to the input context, and returns CudaUnavailable without the runtime feature; existing decode and baseline encode APIs are preserved."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-cuda:
     removed_fingerprint: "none"
