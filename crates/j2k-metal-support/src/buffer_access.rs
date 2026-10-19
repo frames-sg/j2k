@@ -167,6 +167,34 @@ pub unsafe fn checked_buffer_write<T: GpuAbi>(
     Ok(())
 }
 
+/// Run `fill` over a checked range of a CPU-visible Metal buffer viewed as
+/// mutable GPU ABI values, so CPU producers can write straight into Metal
+/// storage. The mutable view cannot outlive the call.
+///
+/// # Errors
+///
+/// Returns a typed range, ABI, alignment, or visibility error.
+///
+/// # Safety
+///
+/// No Metal command or other CPU access may overlap the call.
+pub unsafe fn with_checked_buffer_slice_mut<T: GpuAbi, R>(
+    buffer: &ProtocolObject<dyn MTLBuffer>,
+    offset_bytes: usize,
+    len: usize,
+    fill: impl FnOnce(&mut [T]) -> R,
+) -> Result<R, MetalSupportError> {
+    if len == 0 {
+        return Ok(fill(&mut []));
+    }
+    let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, len)?;
+    // SAFETY: The checked range is in bounds, aligned, and CPU-visible; every
+    // bit pattern is a valid `GpuAbi` value; and the caller guarantees
+    // exclusive access for the duration of the call.
+    let values = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    Ok(fill(values))
+}
+
 /// Fill a checked byte range in a CPU-visible Metal buffer.
 ///
 /// # Errors

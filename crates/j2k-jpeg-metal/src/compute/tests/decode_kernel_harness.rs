@@ -27,7 +27,7 @@ use j2k_core::{DeviceSubmission, Downscale, ImageDecodeSubmit, Rect};
 use std::time::Instant;
 
 /// Shader files in `SHADER_SOURCE` concatenation order.
-const SHADER_FILES: [&str; 9] = [
+const SHADER_FILES: [&str; 11] = [
     "shaders_shared.metal",
     "shaders_encode.metal",
     "shaders_encode_staged.metal",
@@ -37,6 +37,8 @@ const SHADER_FILES: [&str; 9] = [
     "shaders_decode_fast422_regions.metal",
     "shaders_decode_fast444.metal",
     "shaders_pack_subsampled.metal",
+    "shaders_hybrid.metal",
+    "shaders_lossless_encode.metal",
 ];
 
 const BASELINE_SHADERS_ENV: &str = "J2K_JPEG_HARNESS_BASELINE_SHADERS";

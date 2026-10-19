@@ -15,6 +15,9 @@ pub enum JpegResolvedDecodePath {
     OwnedCudaRgb8,
     /// J2K Metal fast-packet decode path.
     MetalFast,
+    /// J2K Metal hybrid decode path: CPU entropy decode, then Metal IDCT,
+    /// upsampling, color conversion, and output packing.
+    MetalHybrid,
     /// Request cannot be satisfied by this path resolver.
     Rejected {
         /// Backend requested by the caller.
@@ -102,15 +105,17 @@ impl JpegCapabilityReport {
                 }
             }
             BackendRequest::Metal => {
+                let hybrid = self.metal_hybrid();
                 if self.metal_fast.eligible {
                     JpegResolvedDecodePath::MetalFast
+                } else if hybrid.eligible {
+                    JpegResolvedDecodePath::MetalHybrid
                 } else {
                     JpegResolvedDecodePath::Rejected {
                         backend,
-                        reason: self
-                            .metal_fast
+                        reason: hybrid
                             .reason
-                            .unwrap_or("JPEG Metal fast path rejected this request"),
+                            .unwrap_or("JPEG Metal decode rejected this request"),
                     }
                 }
             }

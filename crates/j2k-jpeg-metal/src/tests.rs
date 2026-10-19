@@ -667,8 +667,40 @@ fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_buffer() 
 }
 
 #[cfg(target_os = "macos")]
+fn mixed_family_jpegs_16x16() -> Vec<Vec<u8>> {
+    let rgb = j2k_test_support::patterned_rgb8(16, 16);
+    let encode = |subsampling, restart_interval| {
+        encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling,
+                restart_interval,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode mixed-family jpeg")
+        .data
+    };
+    vec![
+        encode(JpegSubsampling::Ybr420, None),
+        encode(JpegSubsampling::Ybr444, None),
+        encode(JpegSubsampling::Ybr422, Some(1)),
+        j2k_test_support::baseline_grayscale_jpeg(16, 16),
+        j2k_test_support::cmyk_16x16_420_jpeg(),
+    ]
+}
+
+/// Batches the fast-packet batch kernels cannot share (mixed sampling
+/// families, restart-coded 4:2:2, grayscale, CMYK) decode into one reusable
+/// buffer through per-tile hybrid decode.
+#[cfg(target_os = "macos")]
 #[test]
-fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_buffer() {
+fn rgb8_decoder_batch_decodes_mixed_sampling_into_one_buffer() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -676,55 +708,40 @@ fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_buffer() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
-    let rgb = j2k_test_support::patterned_rgb8(16, 16);
-    let fast420 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr420,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast420 jpeg");
-    let fast444 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr444,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast444 jpeg");
-    let first = Decoder::new(&fast420.data).expect("first decoder");
-    let second = Decoder::new(&fast444.data).expect("second decoder");
-    let decoders = [&first, &second];
+    let jpegs = mixed_family_jpegs_16x16();
+    let decoders = jpegs
+        .iter()
+        .map(|jpeg| Decoder::new(jpeg).expect("decoder"))
+        .collect::<Vec<_>>();
+    let decoder_refs = decoders.iter().collect::<Vec<_>>();
 
-    let Err(err) = decode_rgb8_buffer_batch_with_session(
-        Rgb8MetalBatchSource::Decoders(&decoders),
+    let surfaces = decode_rgb8_buffer_batch_with_session(
+        Rgb8MetalBatchSource::Decoders(&decoder_refs),
         Rgb8MetalBatchOp::Full,
         MetalBufferBatchTarget::Resizable(&mut output),
         &session,
-    ) else {
-        panic!("mixed sampling should be rejected");
-    };
+    )
+    .expect("mixed batch decode");
 
-    assert!(matches!(
-        err,
-        Error::UnsupportedMetalRequest { reason }
-            if reason.contains("same fast-packet sampling family")
-    ));
-    assert_eq!(output.dimensions(), (1, 1));
-    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(output.dimensions(), (16, 16));
+    assert!(output.tile_capacity() >= jpegs.len());
+    assert_eq!(surfaces.len(), jpegs.len());
+    for (index, (surface, jpeg)) in surfaces.into_iter().zip(&jpegs).enumerate() {
+        let surface = surface.expect("tile decode");
+        let (expected, _) = CpuDecoder::new(jpeg)
+            .expect("cpu decoder")
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("cpu decode");
+        assert_eq!(
+            surface.as_bytes().expect("tile bytes").as_ref(),
+            expected,
+            "tile {index}"
+        );
+        // SAFETY: the decode has completed and nothing else writes the output.
+        let (buffer, offset) = unsafe { surface.metal_buffer() }.expect("output-backed tile");
+        assert!(core::ptr::eq(buffer, output.buffer_trusted()));
+        assert_eq!(offset, index * output.tile_stride_bytes());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -812,55 +829,25 @@ fn rgb8_decoder_batch_metal_report_rejects_incompatible_batches_without_launch()
 
 #[cfg(target_os = "macos")]
 #[test]
-fn rgb8_decoder_batch_metal_report_rejects_mixed_sampling_family() {
-    let rgb = j2k_test_support::patterned_rgb8(16, 16);
-    let fast420 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr420,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast420 jpeg");
-    let fast444 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr444,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast444 jpeg");
-    let first = Decoder::new(&fast420.data).expect("first decoder");
-    let second = Decoder::new(&fast444.data).expect("second decoder");
-    let decoders = [&first, &second];
+fn rgb8_decoder_batch_metal_report_accepts_mixed_sampling_family() {
+    let jpegs = mixed_family_jpegs_16x16();
+    let decoders = jpegs
+        .iter()
+        .map(|jpeg| Decoder::new(jpeg).expect("decoder"))
+        .collect::<Vec<_>>();
+    let decoder_refs = decoders.iter().collect::<Vec<_>>();
 
     let report =
-        Codec::inspect_rgb8_decoder_batch_metal_output(&decoders, j2k_jpeg::JpegDecodeOp::Full);
+        Codec::inspect_rgb8_decoder_batch_metal_output(&decoder_refs, j2k_jpeg::JpegDecodeOp::Full);
 
-    assert!(!report.eligibility.eligible);
-    assert_eq!(report.output_dimensions, None);
-    assert!(report
-        .eligibility
-        .reason
-        .expect("mixed sampling rejection")
-        .contains("same fast-packet sampling family"));
+    assert!(report.eligibility.eligible, "{:?}", report.eligibility);
+    assert_eq!(report.output_dimensions, Some((16, 16)));
+    assert_eq!(report.required_tile_capacity(), 5);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn rgb8_decoder_batch_metal_report_rejects_restart_fast422_full_tiles() {
+fn rgb8_decoder_batch_metal_report_accepts_restart_fast422_full_tiles() {
     let rgb = j2k_test_support::patterned_rgb8(64, 32);
     let jpeg = encode_jpeg_baseline(
         JpegSamples::Rgb8 {
@@ -889,14 +876,10 @@ fn rgb8_decoder_batch_metal_report_rejects_restart_fast422_full_tiles() {
         j2k_jpeg::JpegDecodeOp::Scaled(Downscale::Half),
     );
 
-    assert!(!full.eligibility.eligible);
-    assert_eq!(full.output_dimensions, None);
-    assert!(full
-        .eligibility
-        .reason
-        .expect("restart fast422 full rejection")
-        .contains("restart-coded full-tile 4:2:2 or 4:4:4"));
-
+    // The fast-packet batch kernels cannot run restart-coded full 4:2:2
+    // tiles; those tiles are hybrid-decoded into the same reusable output.
+    assert!(full.eligibility.eligible);
+    assert_eq!(full.output_dimensions, Some((64, 32)));
     assert!(scaled.eligibility.eligible);
     assert_eq!(scaled.output_dimensions, Some((32, 16)));
 }

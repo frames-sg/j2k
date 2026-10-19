@@ -79,13 +79,18 @@ pub(crate) fn decode_full_rgb8_batch_into_output_with_session(
     output: &crate::MetalBatchOutputBuffer,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    let Some(packets) = batched_fast_packets(requests)? else {
-        return Ok(None);
-    };
+    let packets = batched_fast_packets(requests)?;
     let _output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
-        decode_full_rgb8_batch_into_output_with_runtime(runtime, requests, &packets, output)
+        if let Some(packets) = &packets {
+            if let Some(results) =
+                decode_full_rgb8_batch_into_output_with_runtime(runtime, requests, packets, output)?
+            {
+                return Ok(Some(results));
+            }
+        }
+        super::hybrid::decode_hybrid_rgb8_batch_into_output(runtime, requests, output).map(Some)
     })
 }
 
@@ -123,13 +128,18 @@ pub(crate) fn decode_full_rgb8_batch_into_textures_with_session(
     output: &crate::MetalBatchTextureOutput,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    let Some(packets) = batched_fast_packets(requests)? else {
-        return Ok(None);
-    };
+    let packets = batched_fast_packets(requests)?;
     let _texture_output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
-        decode_full_rgb8_batch_into_textures_with_runtime(runtime, requests, &packets, output)
+        if let Some(packets) = &packets {
+            if let Some(results) = decode_full_rgb8_batch_into_textures_with_runtime(
+                runtime, requests, packets, output,
+            )? {
+                return Ok(Some(results));
+            }
+        }
+        super::hybrid::decode_hybrid_rgb8_batch_into_textures(runtime, requests, output).map(Some)
     })
 }
 
@@ -167,15 +177,18 @@ pub(crate) fn decode_region_scaled_rgb8_batch_into_output_with_session(
     output: &crate::MetalBatchOutputBuffer,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    let Some(packets) = batched_fast_packets(requests)? else {
-        return Ok(None);
-    };
+    let packets = batched_fast_packets(requests)?;
     let _output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
-        decode_region_scaled_rgb8_batch_into_output_with_runtime(
-            runtime, requests, &packets, output,
-        )
+        if let Some(packets) = &packets {
+            if let Some(results) = decode_region_scaled_rgb8_batch_into_output_with_runtime(
+                runtime, requests, packets, output,
+            )? {
+                return Ok(Some(results));
+            }
+        }
+        super::hybrid::decode_hybrid_rgb8_batch_into_output(runtime, requests, output).map(Some)
     })
 }
 
@@ -211,15 +224,18 @@ pub(crate) fn decode_region_scaled_rgb8_batch_into_textures_with_session(
     output: &crate::MetalBatchTextureOutput,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    let Some(packets) = batched_fast_packets(requests)? else {
-        return Ok(None);
-    };
+    let packets = batched_fast_packets(requests)?;
     let _texture_output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
-        decode_region_scaled_rgb8_batch_into_textures_with_runtime(
-            runtime, requests, &packets, output,
-        )
+        if let Some(packets) = &packets {
+            if let Some(results) = decode_region_scaled_rgb8_batch_into_textures_with_runtime(
+                runtime, requests, packets, output,
+            )? {
+                return Ok(Some(results));
+            }
+        }
+        super::hybrid::decode_hybrid_rgb8_batch_into_textures(runtime, requests, output).map(Some)
     })
 }
 

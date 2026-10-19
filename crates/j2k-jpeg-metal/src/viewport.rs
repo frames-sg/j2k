@@ -73,6 +73,17 @@ pub fn decode_viewport_to_surface(
 ) -> Result<Surface, Error> {
     let plan = resolve_viewport_surface_plan(decoder, workload, backend)?;
     validate_viewport_workload_budget(workload, plan.external_live_bytes)?;
+    #[cfg(target_os = "macos")]
+    if plan.fast_packet.is_none()
+        && matches!(
+            plan.strategy,
+            ViewportSurfaceStrategy::HybridComposite | ViewportSurfaceStrategy::HybridContiguous
+        )
+    {
+        // No fast-packet kernel covers this JPEG: entropy-decode it once on the
+        // CPU and reconstruct every tile on Metal.
+        return compose_viewport_metal_hybrid(decoder, workload);
+    }
     match plan.strategy {
         ViewportSurfaceStrategy::CpuComposite => compose_viewport_cpu_to_surface(
             decoder,
@@ -102,6 +113,39 @@ pub fn decode_viewport_to_surface(
             plan.external_live_bytes,
         ),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn compose_viewport_metal_hybrid(
+    decoder: &CpuDecoder<'_>,
+    workload: &ViewportWorkload,
+) -> Result<Surface, Error> {
+    for tile in &workload.tiles {
+        let scaled = tile.source_roi.scaled_covering(workload.scale);
+        if (scaled.w, scaled.h) != (tile.dest.w, tile.dest.h) {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "viewport tile dims {:?} do not match destination rect {:?}",
+                    (scaled.w, scaled.h),
+                    tile.dest
+                ),
+            });
+        }
+    }
+    let mut packs = crate::batch_allocation::BatchMetadataBudget::new("JPEG Metal hybrid viewport")
+        .try_vec(workload.tiles.len(), "JPEG Metal hybrid viewport tiles")?;
+    for tile in &workload.tiles {
+        packs.push(crate::compute::hybrid::HybridPack {
+            source_roi: tile.source_roi,
+            dest: (tile.dest.x, tile.dest.y),
+        });
+    }
+    crate::compute::hybrid::compose_hybrid_rgb8_viewport(
+        decoder,
+        workload.scale,
+        workload.viewport_dims,
+        &packs,
+    )
 }
 
 #[cfg(target_os = "macos")]

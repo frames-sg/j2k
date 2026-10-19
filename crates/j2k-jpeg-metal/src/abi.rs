@@ -47,6 +47,133 @@ pub(crate) struct JpegPackParams {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) const HYBRID_UPSAMPLE_NONE: u32 = 0;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_UPSAMPLE_H2V1: u32 = 1;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_UPSAMPLE_H1V2: u32 = 2;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_UPSAMPLE_H2V2: u32 = 3;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_UPSAMPLE_REPLICATE: u32 = 4;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_COLOR_GRAY: u32 = 0;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_COLOR_YCBCR: u32 = 1;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_COLOR_RGB: u32 = 2;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_COLOR_CMYK: u32 = 3;
+#[cfg(target_os = "macos")]
+pub(crate) const HYBRID_COLOR_YCCK: u32 = 4;
+
+/// One lossless component's reconstruction grid within the shared planes,
+/// the parameters of the scan coding it, and how output replicates it.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegLosslessComponentParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) restart_rows: u32,
+    pub(crate) base: u32,
+    pub(crate) predictor: u32,
+    pub(crate) initial_predictor: u32,
+    pub(crate) sample_limit: u32,
+    pub(crate) point_transform: u32,
+    pub(crate) h_expand: u32,
+    pub(crate) v_expand: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegLosslessReconstructParams {
+    pub(crate) components: [JpegLosslessComponentParams; 3],
+    /// Components the wavefront kernel reconstructs (bit per component);
+    /// the row kernel handles the rest.
+    pub(crate) wavefront_mask: u32,
+    pub(crate) component_count: u32,
+}
+
+/// One component's row-parallel predictor-1 reconstruction.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegLosslessRowsParams {
+    pub(crate) component: u32,
+    pub(crate) column_base: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegLosslessPackParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) color_space: u32,
+    pub(crate) precision: u32,
+    pub(crate) out_format: u32,
+    pub(crate) denominator: u32,
+    pub(crate) src_x: u32,
+    pub(crate) src_y: u32,
+    pub(crate) out_width: u32,
+    pub(crate) out_height: u32,
+    pub(crate) dest_x: u32,
+    pub(crate) dest_y: u32,
+    pub(crate) dest_stride: u32,
+}
+
+/// One component's IDCT pass over a window of its coefficient block grid.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegHybridIdctParams {
+    pub(crate) block_base: u32,
+    pub(crate) block_cols: u32,
+    pub(crate) block_x0: u32,
+    pub(crate) block_y0: u32,
+    pub(crate) block_x_count: u32,
+    pub(crate) block_y_count: u32,
+    pub(crate) idct_size: u32,
+    pub(crate) plane_stride: u32,
+}
+
+/// Where one component's decoded window sits and how it reaches the output.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegHybridComponentParams {
+    pub(crate) plane_stride: u32,
+    pub(crate) origin_x: u32,
+    pub(crate) origin_y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) h_ratio: u32,
+    pub(crate) v_ratio: u32,
+    pub(crate) upsample: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JpegHybridPackParams {
+    pub(crate) components: [JpegHybridComponentParams; 4],
+    pub(crate) component_count: u32,
+    pub(crate) color_space: u32,
+    pub(crate) out_format: u32,
+    /// Source rectangle in scaled image coordinates.
+    pub(crate) src_x: u32,
+    pub(crate) src_y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Destination origin and row pitch, in pixels, within the output buffer.
+    pub(crate) dest_x: u32,
+    pub(crate) dest_y: u32,
+    pub(crate) dest_stride: u32,
+}
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct JpegBaselineEncodeParams {
@@ -98,6 +225,53 @@ pub(crate) struct JpegBaselineEncodeStatus {
     pub(crate) code: u32,
     pub(crate) entropy_len: u32,
     pub(crate) detail: u32,
+    pub(crate) reserved: u32,
+}
+
+/// Lossless encode kernel parameters, mirroring
+/// `j2k_jpeg::adapter::JpegLosslessGpuEncodeParams` (see
+/// `shaders_lossless_encode.metal`).
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct JpegLosslessEncodeParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) components: u32,
+    pub(crate) sample_bytes: u32,
+    pub(crate) pitch_bytes: u32,
+    pub(crate) input_offset_bytes: u32,
+    pub(crate) predictor: u32,
+    pub(crate) point_transform: u32,
+    pub(crate) initial_predictor: u32,
+    pub(crate) max_sample: u32,
+    pub(crate) interval_rows: u32,
+    pub(crate) chunk_pixels: u32,
+    pub(crate) chunks_per_row: u32,
+    pub(crate) intervals: u32,
+    pub(crate) sample_count: u32,
+    pub(crate) packed_words: u32,
+}
+
+/// Lossless Huffman codes: `code << 8 | code length` per category 0..=16.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct JpegLosslessEncodeTable {
+    pub(crate) entries: [u32; 17],
+}
+
+/// Lossless encode status: the first sample above the precision, if any.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct JpegLosslessEncodeStatus {
+    /// Index of the first out-of-range sample, or `u32::MAX`.
+    pub(crate) bad_index: u32,
+    /// Its value, written by the sample-read kernel.
+    pub(crate) bad_value: u32,
+    /// Bytes of the packed stream.
+    pub(crate) packed_bytes: u32,
     pub(crate) reserved: u32,
 }
 
@@ -558,6 +732,87 @@ macro_rules! impl_gpu_readback_abi {
 
 #[cfg(target_os = "macos")]
 impl_gpu_readback_abi!(
+    JpegHybridIdctParams {
+        block_base: u32,
+        block_cols: u32,
+        block_x0: u32,
+        block_y0: u32,
+        block_x_count: u32,
+        block_y_count: u32,
+        idct_size: u32,
+        plane_stride: u32,
+    },
+    JpegHybridComponentParams {
+        plane_stride: u32,
+        origin_x: u32,
+        origin_y: u32,
+        width: u32,
+        height: u32,
+        h_ratio: u32,
+        v_ratio: u32,
+        upsample: u32,
+    },
+);
+
+#[cfg(target_os = "macos")]
+impl_gpu_readback_abi!(
+    JpegLosslessComponentParams {
+        width: u32,
+        height: u32,
+        restart_rows: u32,
+        base: u32,
+        predictor: u32,
+        initial_predictor: u32,
+        sample_limit: u32,
+        point_transform: u32,
+        h_expand: u32,
+        v_expand: u32,
+    },
+    JpegLosslessRowsParams {
+        component: u32,
+        column_base: u32,
+    },
+);
+
+#[cfg(target_os = "macos")]
+impl_gpu_readback_abi!(
+    JpegLosslessReconstructParams {
+        components: [JpegLosslessComponentParams; 3],
+        wavefront_mask: u32,
+        component_count: u32,
+    },
+    JpegLosslessPackParams {
+        width: u32,
+        height: u32,
+        color_space: u32,
+        precision: u32,
+        out_format: u32,
+        denominator: u32,
+        src_x: u32,
+        src_y: u32,
+        out_width: u32,
+        out_height: u32,
+        dest_x: u32,
+        dest_y: u32,
+        dest_stride: u32,
+    },
+);
+
+#[cfg(target_os = "macos")]
+impl_gpu_readback_abi!(
+    JpegHybridPackParams {
+        components: [JpegHybridComponentParams; 4],
+        component_count: u32,
+        color_space: u32,
+        out_format: u32,
+        src_x: u32,
+        src_y: u32,
+        width: u32,
+        height: u32,
+        dest_x: u32,
+        dest_y: u32,
+        dest_stride: u32,
+    },
     JpegPackParams {
         width: u32,
         height: u32,
@@ -597,6 +852,31 @@ impl_gpu_readback_abi!(
         code: u32,
         entropy_len: u32,
         detail: u32,
+        reserved: u32,
+    },
+    JpegLosslessEncodeParams {
+        width: u32,
+        height: u32,
+        components: u32,
+        sample_bytes: u32,
+        pitch_bytes: u32,
+        input_offset_bytes: u32,
+        predictor: u32,
+        point_transform: u32,
+        initial_predictor: u32,
+        max_sample: u32,
+        interval_rows: u32,
+        chunk_pixels: u32,
+        chunks_per_row: u32,
+        intervals: u32,
+        sample_count: u32,
+        packed_words: u32,
+    },
+    JpegLosslessEncodeTable { entries: [u32; 17] },
+    JpegLosslessEncodeStatus {
+        bad_index: u32,
+        bad_value: u32,
+        packed_bytes: u32,
         reserved: u32,
     },
     JpegFast420Params {

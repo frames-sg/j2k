@@ -14,8 +14,11 @@ use objc2_metal::{MTLDevice, MTLResource};
 mod adapter;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod allocation;
+mod lossless;
 #[cfg(target_os = "macos")]
 mod resident_tile;
+
+pub use self::lossless::{encode_jpeg_lossless_from_metal_buffer, JpegLosslessMetalEncodeTile};
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]

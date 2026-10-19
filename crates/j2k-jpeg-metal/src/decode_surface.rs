@@ -183,6 +183,16 @@ pub(crate) fn decode_surface_from_decoder(
                             Err(Error::MetalUnavailable)
                         }
                     }
+                    routing::RouteDecision::MetalHybrid => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            crate::compute::hybrid::decode_hybrid_op_to_surface(decoder, fmt, op)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Err(Error::MetalUnavailable)
+                        }
+                    }
                     routing::RouteDecision::RejectExplicitMetal { .. }
                     | routing::RouteDecision::RejectUnsupportedBackend { .. }
                     | routing::RouteDecision::MetalUnavailable => unreachable!("handled above"),
@@ -221,6 +231,16 @@ pub(crate) fn decode_surface_from_decoder(
                             Err(Error::MetalUnavailable)
                         }
                     }
+                    routing::RouteDecision::MetalHybrid => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            crate::compute::hybrid::decode_hybrid_op_to_surface(decoder, fmt, op)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Err(Error::MetalUnavailable)
+                        }
+                    }
                     routing::RouteDecision::RejectExplicitMetal { .. }
                     | routing::RouteDecision::RejectUnsupportedBackend { .. }
                     | routing::RouteDecision::MetalUnavailable => unreachable!("handled above"),
@@ -256,6 +276,16 @@ pub(crate) fn decode_surface_from_decoder(
                         #[cfg(not(target_os = "macos"))]
                         {
                             let _ = (decoder, pool, fmt, scale, packets);
+                            Err(Error::MetalUnavailable)
+                        }
+                    }
+                    routing::RouteDecision::MetalHybrid => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            crate::compute::hybrid::decode_hybrid_op_to_surface(decoder, fmt, op)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
                             Err(Error::MetalUnavailable)
                         }
                     }
@@ -409,6 +439,20 @@ fn decode_region_scaled_surface_from_decoder(
                         Err(Error::MetalUnavailable)
                     }
                 }
+                routing::RouteDecision::MetalHybrid => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        crate::compute::hybrid::decode_hybrid_op_to_surface(
+                            decoder,
+                            fmt,
+                            batch::BatchOp::RegionScaled { roi, scale },
+                        )
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        Err(Error::MetalUnavailable)
+                    }
+                }
                 routing::RouteDecision::RejectExplicitMetal { .. }
                 | routing::RouteDecision::RejectUnsupportedBackend { .. }
                 | routing::RouteDecision::MetalUnavailable => unreachable!("handled above"),
@@ -460,7 +504,7 @@ fn jpeg_route_profile_fields(
     op: batch::BatchOp,
     capabilities: routing::JpegMetalCapabilities,
     labels: j2k_metal_support::MetalRouteProfileLabels,
-) -> j2k_profile::ProfileResult<[j2k_profile::ProfileField; 7]> {
+) -> j2k_profile::ProfileResult<[j2k_profile::ProfileField; 8]> {
     Ok([
         j2k_profile::ProfileField::label("request", format_args!("{backend:?}"))?,
         j2k_profile::ProfileField::label("fmt", format_args!("{fmt:?}"))?,
@@ -470,6 +514,7 @@ fn jpeg_route_profile_fields(
             "supports_output_format",
             capabilities.supports_output_format(),
         )?,
+        j2k_profile::ProfileField::label("hybrid_eligible", capabilities.hybrid_eligible())?,
         j2k_profile::ProfileField::label("decision", labels.decision)?,
         j2k_profile::ProfileField::label("reason", labels.reason)?,
     ])

@@ -451,6 +451,40 @@ fn auto_tile_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
     assert!(unsafe { surface.metal_buffer() }.is_none());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_tile_without_fast_packet_decodes_on_metal() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let mut ctx = JpegDecoderContext::default();
+    let mut pool = ScratchPool::new();
+    let (expected, _) = CpuDecoder::new(GRAYSCALE)
+        .expect("cpu decoder")
+        .decode_request(DecodeRequest::full(PixelFormat::Gray8))
+        .expect("cpu decode");
+    let surface = Codec::decode_tile_to_device(
+        &mut ctx,
+        &mut pool,
+        GRAYSCALE,
+        PixelFormat::Gray8,
+        BackendRequest::Metal,
+    )
+    .expect("hybrid Metal tile decode");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(
+        surface.residency(),
+        j2k_core::SurfaceResidency::MetalResidentDecode
+    );
+    assert_eq!(
+        surface.as_bytes().expect("surface bytes").as_ref(),
+        expected
+    );
+}
+
+/// Explicit Metal accepts what CPU decode accepts; 16-bit output from an
+/// 8-bit JPEG is rejected by both, before any Metal work.
 #[test]
 fn explicit_metal_tile_unsupported_shape_is_rejected() {
     let mut ctx = JpegDecoderContext::default();
@@ -459,13 +493,13 @@ fn explicit_metal_tile_unsupported_shape_is_rejected() {
         &mut ctx,
         &mut pool,
         GRAYSCALE,
-        PixelFormat::Gray8,
+        PixelFormat::Rgb16,
         BackendRequest::Metal,
     );
 
     match result {
         Err(j2k_jpeg_metal::Error::UnsupportedMetalRequest { reason }) => {
-            assert!(reason.contains("JPEG Metal"));
+            assert!(reason.contains("for 8-bit JPEG"), "{reason}");
         }
         Err(other) => panic!("unexpected explicit Metal tile error: {other:?}"),
         Ok(surface) => panic!(
@@ -483,7 +517,7 @@ fn explicit_metal_tile_unsupported_error_is_codec_unsupported() {
         &mut ctx,
         &mut pool,
         GRAYSCALE,
-        PixelFormat::Gray8,
+        PixelFormat::Rgb16,
         BackendRequest::Metal,
     ) {
         Err(err) => err,

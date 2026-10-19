@@ -4,8 +4,8 @@ Pure-Rust JPEG inspect, decode, and encode crate for pathology, medical
 imaging, transcode, and general codec pipelines in the j2k workspace.
 
 The CPU decoder is the reference implementation. Unsupported JPEG types return
-an error. The CPU baseline encoder is also the reference for the Metal and CUDA
-adapter crates' GPU baseline encode.
+an error. The CPU encoders are the reference for the Metal and CUDA adapter
+crates' GPU baseline and lossless encode.
 
 Pathology-oriented integrations can use `prepare_tiff_jpeg_tile` to normalize
 TIFF `JPEGTables` plus abbreviated strip/tile payloads, including zero-SOF

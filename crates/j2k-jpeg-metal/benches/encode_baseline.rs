@@ -4,12 +4,14 @@ use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 use j2k_jpeg::{
-    encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
+    encode_jpeg_baseline, encode_jpeg_lossless, JpegBackend, JpegEncodeOptions,
+    JpegLosslessEncodeOptions, JpegLosslessSamples, JpegSamples, JpegSubsampling,
 };
 #[cfg(target_os = "macos")]
 use j2k_jpeg_metal::{
     encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
-    JpegBaselineMetalEncodeTile, MetalBackendSession,
+    encode_jpeg_lossless_from_metal_buffer, JpegBaselineMetalEncodeTile,
+    JpegLosslessMetalEncodeTile, MetalBackendSession,
 };
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
@@ -179,6 +181,99 @@ fn bench_encode_baseline(c: &mut Criterion) {
     bench_batch_encode(c, dim, batch_size, tile_bytes, &rgb);
 }
 
+/// A 16-bit CT/CR-like phantom: smooth rings and gradients plus low-bit
+/// noise, at `precision` bits.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "phantom values are clamped to the sample range before narrowing"
+)]
+fn phantom16(width: u32, height: u32, precision: u8) -> Vec<u16> {
+    let max = f64::from((1_u32 << precision) - 1);
+    let mut state = 0x9e37_79b9_u32;
+    let mut samples = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let dx = f64::from(x) / f64::from(width) - 0.5;
+            let dy = f64::from(y) / f64::from(height) - 0.5;
+            let r = (dx * dx + dy * dy).sqrt();
+            let v = 0.5 + 0.3 * (r * 40.0).cos() * (-r * 3.0).exp() + 0.15 * dx;
+            let noise = f64::from(state % 16) - 7.5;
+            samples.push((v.clamp(0.0, 1.0) * max + noise).clamp(0.0, max) as u16);
+        }
+    }
+    samples
+}
+
+fn bench_lossless_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jpeg_lossless_encode");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    #[cfg(target_os = "macos")]
+    let session = MetalBackendSession::system_default().ok();
+    for (width, height, precision, predictor) in
+        [(512, 512, 16, 1), (2048, 2500, 16, 1), (512, 512, 12, 7)]
+    {
+        let samples = phantom16(width, height, precision);
+        let mut options = JpegLosslessEncodeOptions::new(precision);
+        options.predictor = predictor;
+        let name = format!("gray{precision}_sv{predictor}_{width}x{height}");
+        group.throughput(Throughput::Bytes(samples.len() as u64 * 2));
+        group.bench_function(format!("cpu_{name}"), |b| {
+            b.iter(|| {
+                encode_jpeg_lossless(
+                    JpegLosslessSamples::Gray16 {
+                        data: std::hint::black_box(&samples),
+                        width,
+                        height,
+                    },
+                    options,
+                )
+                .expect("CPU lossless encode")
+            });
+        });
+        #[cfg(target_os = "macos")]
+        if let Some(session) = &session {
+            let bytes: Vec<u8> = samples
+                .iter()
+                .flat_map(|sample| sample.to_ne_bytes())
+                .collect();
+            let Ok(buffer) =
+                j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &bytes)
+            else {
+                eprintln!("skipping Metal lossless benchmark: buffer allocation failed");
+                continue;
+            };
+            // SAFETY: the buffer is initialized before construction and stays
+            // immutable while the tile descriptor is alive.
+            let tile = unsafe {
+                JpegLosslessMetalEncodeTile::new(
+                    &buffer,
+                    0,
+                    (width, height),
+                    width as usize * 2,
+                    PixelFormat::Gray16,
+                )
+            };
+            group.bench_function(format!("metal_{name}"), |b| {
+                b.iter(|| {
+                    encode_jpeg_lossless_from_metal_buffer(
+                        std::hint::black_box(tile),
+                        options,
+                        session,
+                    )
+                    .expect("Metal lossless encode")
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 fn options(backend: JpegBackend) -> JpegEncodeOptions {
     JpegEncodeOptions {
         quality: bench_quality(),
@@ -233,5 +328,5 @@ fn bench_quality() -> u8 {
     value
 }
 
-criterion_group!(benches, bench_encode_baseline);
+criterion_group!(benches, bench_encode_baseline, bench_lossless_encode);
 criterion_main!(benches);

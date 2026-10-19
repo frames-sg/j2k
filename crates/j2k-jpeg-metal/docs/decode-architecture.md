@@ -53,7 +53,8 @@ tests preserve bit-reader snapshots, DC prediction, and exact errors.
 Full entropy validation remains eager. Deferring packet construction or deriving
 restart work only from marker offsets would move malformed-Huffman errors out of
 the current constructor and is not part of this change. Small/one-shot `Auto`
-routing and explicit Metal rejection behavior are unchanged.
+routing and explicit Metal rejection behavior are unchanged. (Explicit Metal
+coverage was widened later; see [Hybrid decode](#hybrid-decode).)
 
 ## Controlled implementation comparison
 
@@ -114,9 +115,113 @@ occupancy or spill counters were captured. Warm measurements exclude packet and
 pipeline initialization. The original unmodified warm baseline varied roughly
 6.6–7.2 ms across separate runs.
 
+## Hybrid decode
+
+Explicit `BackendRequest::Metal` decode accepts every JPEG and output format CPU
+decode accepts, and returns the same bytes in a Metal-resident surface. JPEGs
+without a fast packet (progressive, grayscale, 4:4:0 and other sampling, CMYK
+and YCCK, 12-bit, lossless, narrow images, restart-coded tiles the fast batch
+kernels decline) take the hybrid route: the CPU runs the serial entropy stage and
+Metal does the rest. This is the split nvJPEG uses for its hybrid backend.
+
+- **DCT JPEG.** The CPU entropy decoder writes dequantized, natural-order `i16`
+  blocks for every component straight into a leased shared buffer; progressive
+  scans, and sequential frames whose components are split across scans, are
+  accumulated first and dequantized once. Per component,
+  `jpeg_hybrid_idct8` (the existing ISLOW kernels, reduced 4×4/2×2/1×1 for
+  scaled decode) or `jpeg_hybrid_idct12` (12-bit ISLOW in 64-bit integers) writes
+  a private plane. `jpeg_hybrid_pack8`/`jpeg_hybrid_pack12` then compute each
+  output pixel with libjpeg-turbo's fancy or replicate upsampling at the
+  component's scaled size, color conversion (YCbCr, RGB, Adobe-inverted CMYK and
+  YCCK, grayscale luma), and Gray/RGB/RGBA packing.
+- **Regions.** For 8-bit sequential scans the CPU decodes only the MCU rows and
+  columns the region needs, plus one MCU row of filter margin. It seeks via restart
+  markers when present, skips entropy outside the window, and stops after the last
+  needed row. Progressive, split-scan, and 12-bit regions decode the whole
+  coefficient set.
+- **Lossless JPEG.** The CPU writes predictor differences into shared storage,
+  scan after scan for frames split across scans. Predictor, seed, sample
+  limit, and point transform are per component, since each scan has its own.
+  `jpeg_lossless_reconstruct_rows` handles predictor-1 components (the DICOM
+  default): it runs a row-parallel prefix sum seeded from CPU-computed
+  first-column samples. Other components use `jpeg_lossless_reconstruct`, an
+  anti-diagonal wavefront per component. Reconstruction wraps modulo 2^16 and
+  reseeds at each restart interval as CPU decode does. A shared status word
+  reports out-of-range samples. `jpeg_lossless_pack8` (up to 8-bit precision)
+  and `jpeg_lossless_pack16` apply point sampling for scaled output, replicate
+  subsampled components by their sampling ratios as libjpeg-turbo does, and
+  convert YCbCr at the frame precision.
+- **Errors.** Malformed streams fail in the same CPU entropy code CPU decode uses.
+  When lossless decode reports an error or an out-of-range sample, the CPU
+  decoder's own error is returned, so explicit Metal never succeeds where CPU
+  decode fails and never fails with a different error.
+- **Composition.** Viewports and heterogeneous RGB8 tile batches without fast
+  packets pack several source rectangles into one zero-filled pooled output.
+  Reusable batch buffers and RGBA textures decode each tile through the hybrid
+  route, then reuse the existing GPU copy passes.
+
+Coefficient, difference, and plane storage are leased from the runtime's two
+scratch slots and retained for the next call. Output surfaces come from the
+existing surface pool. Every allocation stays within the device's
+`maxBufferLength` and the repository's allocation cap, and an oversized request
+fails with a typed error. A whole-image progressive or 12-bit coefficient set
+can therefore exceed the cap on very large slides where CPU decode succeeds.
+`Auto` routing still picks CPU for these classes.
+
+Parity tests (`tests/hybrid.rs`) compare every route byte for byte with CPU
+decode. Inputs cover:
+- the libjpeg-turbo scaled matrix: formats, scales and regions, including
+  multi-scan sequential and CMYK/YCCK cases
+- conformance fixtures
+- the 81-case lossless matrix: predictors 1–7, precisions 2–16, point
+  transforms, restart intervals, whole-ratio sampling at odd sizes, and split
+  scans
+- the DCMTK DICOM matrix, which is also compared with DCMTK's own decode
+- malformed lossless streams and region edge sweeps
+- windowed regions of 1024×768 images with and without restart markers
+
+Hybrid decode is about as fast as CPU decode because the serial entropy stage
+dominates it. Its purpose is coverage and residency, not single-image speed.
+Median wall time per full decode (parse, entropy, GPU work and wait), measured
+on an Apple M4 Pro, macOS 27.0.1, Rust 1.99.0, `release-bench` profile, on
+October 18, 2026, with 20 samples, 2 s warmup and 4 s measurement:
+
+| Input | CPU | Metal hybrid |
+|---|---:|---:|
+| Progressive 4:2:0, 2048×1536 | 14.348 ms | 13.465 ms |
+| Progressive 4:4:4, 1024×1024 | 8.611 ms | 7.936 ms |
+| Baseline grayscale, 2048×2048 | 8.344 ms | 8.774 ms |
+| Progressive grayscale, 1024×1024 | 2.847 ms | 2.993 ms |
+| Baseline 4:4:0, 1600×1200 | 8.142 ms | 8.103 ms |
+| Baseline CMYK, 1024×1024 | 5.724 ms | 5.639 ms |
+| 12-bit extended grayscale, 512×512 | 0.848 ms | 0.958 ms |
+| 16-bit lossless predictor 1, 512×512 | 0.976 ms | 1.321 ms |
+| 16-bit lossless predictor 1, 2048×2500 | 22.326 ms | 25.441 ms |
+| 16-bit lossless predictor 7, 512×512 | 0.994 ms | 2.153 ms |
+| 8-bit lossless RGB predictor 1, 1024×1024 | 6.187 ms | 6.574 ms |
+
+The first six inputs are generated in the benchmark with `jpeg-encoder`. The
+others are synthetic CT/CR-like phantoms encoded with libjpeg-turbo 3.1.4
+`cjpeg` (`-precision 16 -lossless 1|7`, `-precision 12 -quality 95`, and
+`-lossless 1 -rgb`) and passed through `J2K_BENCH_INPUTS`. Before the
+row-parallel predictor-1 kernel, the wavefront took 2.155 ms (512×512) and
+35.862 ms (2048×2500) for predictor-1 lossless. Predictor 7 still uses the
+wavefront. `Decoder::new` builds its plan directly; it used to resolve it
+through a cache local to the call, which hashed the whole input twice (about
+2.7 ms of the 2048×2500 lossless decode). Real speedups over CPU need GPU
+entropy decode for these classes, or
+CPU entropy overlapped with GPU work across tiles. Neither is part of this change.
+
 ## Reproduction and checks
 
 ```sh
+# Hybrid decode against CPU decode (also asserts parity). J2K_BENCH_INPUTS is
+# optional and may list extra JPEG files or directories.
+J2K_REQUIRE_METAL_BENCH=1 J2K_BENCH_INPUTS=/path/to/medical/jpegs cargo bench --locked -p j2k-jpeg-metal --bench hybrid --profile release-bench -- --sample-size 20 --warm-up-time 2 --measurement-time 4 --noplot
+
+# Hybrid parity suite.
+J2K_REQUIRE_METAL_RUNTIME=1 cargo test --locked -p j2k-jpeg-metal --test hybrid -- --test-threads=1
+
 # Same-input implementation and threadgroup comparison (also asserts parity).
 J2K_REQUIRE_METAL_RUNTIME=1 cargo test --locked -p j2k-jpeg-metal --lib --profile release-bench texture_scheduling_experiment -- --ignored --test-threads=1 --nocapture
 

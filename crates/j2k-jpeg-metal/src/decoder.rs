@@ -8,8 +8,8 @@ use j2k_core::{Downscale, Rect};
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::{JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1};
 use j2k_jpeg::{
-    adapter::{JpegCachedPlan, JpegPlanCache},
-    Decoder as CpuDecoder, JpegView, ScratchPool as CpuScratchPool, Warning as CpuWarning,
+    adapter::JpegCachedPlan, Decoder as CpuDecoder, JpegView, ScratchPool as CpuScratchPool,
+    Warning as CpuWarning,
 };
 
 use crate::{
@@ -31,8 +31,9 @@ pub struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     /// Parse a JPEG byte slice into a decoder with any available Metal packets.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
-        let mut cache = JpegPlanCache::default();
-        let (plan, inner) = cache.resolve_with_decoder_and_external_live(input, 0)?;
+        // Build directly: a cache local to this call would only hash the
+        // whole input twice for a lookup that always misses.
+        let (plan, inner) = JpegCachedPlan::build_with_decoder(input, 0)?;
         let source = plan.input().clone();
         let fast_packet = plan.fast_packet().cloned();
         #[cfg(target_os = "macos")]
@@ -212,6 +213,14 @@ impl<'a> Decoder<'a> {
                         session,
                     )?,
                 ),
+                routing::RouteDecision::MetalHybrid => {
+                    compute::hybrid::decode_hybrid_op_to_surface_with_session(
+                        &self.inner,
+                        fmt,
+                        batch::BatchOp::Full,
+                        session,
+                    )
+                }
                 routing::RouteDecision::CpuHost
                 | routing::RouteDecision::RejectExplicitMetal { .. }
                 | routing::RouteDecision::RejectUnsupportedBackend { .. }
@@ -266,6 +275,11 @@ impl<'a> Decoder<'a> {
                     session,
                 )
             }
+            routing::RouteDecision::MetalHybrid => Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_sampling(
+                    "private JPEG Metal output supports only fast baseline 4:4:4, 4:2:2, or 4:2:0 RGB8 full-tile decode",
+                ),
+            )),
             routing::RouteDecision::CpuHost
             | routing::RouteDecision::RejectExplicitMetal { .. }
             | routing::RouteDecision::RejectUnsupportedBackend { .. }

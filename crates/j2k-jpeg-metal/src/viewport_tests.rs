@@ -916,8 +916,56 @@ fn non_macos_explicit_metal_viewport_surface_is_unavailable() {
 }
 
 #[test]
-fn explicit_metal_viewport_unsupported_shape_is_rejected() {
+fn explicit_metal_viewport_without_fast_packet_uses_hybrid_decode() {
     let decoder = Decoder::new(GRAYSCALE).expect("decoder");
+    let mut pool = ScratchPool::new();
+    let workload = ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (8, 8),
+        tiles: vec![ViewportTile {
+            source_roi: Rect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+            },
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+            },
+        }],
+    };
+
+    let result = decode_viewport_to_surface(&decoder, &mut pool, &workload, BackendRequest::Metal);
+
+    #[cfg(target_os = "macos")]
+    {
+        if !should_run_metal_runtime() {
+            return;
+        }
+        let surface = result.expect("hybrid Metal viewport");
+        assert_eq!(
+            surface.residency(),
+            j2k_core::SurfaceResidency::MetalResidentDecode
+        );
+        let (expected, _) = decoder
+            .decode_request(j2k_jpeg::DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("CPU decode");
+        assert_eq!(
+            surface.as_bytes().expect("surface bytes").as_ref(),
+            expected
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    assert!(matches!(result, Err(crate::Error::MetalUnavailable)));
+}
+
+#[test]
+fn explicit_metal_viewport_rejects_what_cpu_decode_rejects() {
+    let jpeg = j2k_test_support::extended_12bit_ycbcr_8x8_jpeg();
+    let decoder = Decoder::new(&jpeg).expect("decoder");
     let mut pool = ScratchPool::new();
     let workload = ViewportWorkload {
         scale: Downscale::None,
@@ -942,16 +990,9 @@ fn explicit_metal_viewport_unsupported_shape_is_rejected() {
 
     match result {
         Err(crate::Error::UnsupportedMetalRequest { reason }) => {
-            assert!(reason.contains("JPEG Metal"));
-        }
-        #[cfg(not(target_os = "macos"))]
-        Err(crate::Error::MetalUnavailable) => {
-            panic!("unsupported shape should be rejected before host availability")
+            assert!(reason.contains("12-bit"), "{reason}");
         }
         Err(other) => panic!("unexpected explicit Metal viewport error: {other:?}"),
-        Ok(surface) => panic!(
-            "explicit Metal viewport must not fall back; got {:?}",
-            j2k_core::DeviceSurface::backend_kind(&surface)
-        ),
+        Ok(_) => panic!("12-bit JPEG has no Rgb8 decode, so the Rgb8 viewport must be rejected"),
     }
 }

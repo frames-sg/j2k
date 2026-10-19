@@ -44,6 +44,7 @@ pub use allocation::{
 #[cfg(target_os = "macos")]
 pub use buffer_access::{
     checked_buffer_fill_bytes, checked_buffer_read, checked_buffer_read_vec, checked_buffer_write,
+    with_checked_buffer_slice_mut,
 };
 #[cfg(target_os = "macos")]
 pub use dispatch::{
