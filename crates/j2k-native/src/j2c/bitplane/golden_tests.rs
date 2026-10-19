@@ -111,12 +111,12 @@ fn classic_style_pass_and_segment_goldens_are_bit_exact() {
         (
             ExpectedStyleGolden {
                 name: "normal_ll",
-                data_len: 138,
+                data_len: 137,
                 missing_bitplanes: 2,
                 coding_passes: 22,
                 segment_count: 1,
-                data_hash: 0xB117_89F2_DC85_9393,
-                segment_hash: 0xD443_AE1A_4BC1_E110,
+                data_hash: 0xCF5D_F13B_FF54_765E,
+                segment_hash: 0x844C_3D7B_5646_6BE5,
                 coefficient_hash: 0x4846_FAD8_71AE_2D4A,
                 pass_order: "CSMCSMCSMCSMCSMCSMCSMC",
             },
@@ -146,12 +146,12 @@ fn classic_style_pass_and_segment_goldens_are_bit_exact() {
         (
             ExpectedStyleGolden {
                 name: "term_reset_hl",
-                data_len: 174,
+                data_len: 156,
                 missing_bitplanes: 1,
                 coding_passes: 25,
                 segment_count: 25,
-                data_hash: 0x9DC9_47B0_7CD5_5AE0,
-                segment_hash: 0x6957_4F58_B7C3_4764,
+                data_hash: 0x524A_F3F7_58B6_7380,
+                segment_hash: 0xFF09_919B_6E87_3218,
                 coefficient_hash: 0xB4FE_5BFF_E52E_6151,
                 pass_order: "CSMCSMCSMCSMCSMCSMCSMCSMC",
             },
@@ -166,12 +166,12 @@ fn classic_style_pass_and_segment_goldens_are_bit_exact() {
         (
             ExpectedStyleGolden {
                 name: "segmentation_hh",
-                data_len: 142,
+                data_len: 141,
                 missing_bitplanes: 2,
                 coding_passes: 22,
                 segment_count: 1,
-                data_hash: 0x9D0B_C2D6_2186_AC44,
-                segment_hash: 0xBF14_EFF1_0489_AEEC,
+                data_hash: 0x0A2E_50AD_8350_5853,
+                segment_hash: 0x6F8A_3F52_0F6A_9EE1,
                 coefficient_hash: 0x762A_A534_6BCD_308A,
                 pass_order: "CSMCSMCSMCSMCSMCSMCSMC",
             },
@@ -185,12 +185,12 @@ fn classic_style_pass_and_segment_goldens_are_bit_exact() {
         (
             ExpectedStyleGolden {
                 name: "vcausal_ll",
-                data_len: 134,
+                data_len: 133,
                 missing_bitplanes: 2,
                 coding_passes: 22,
                 segment_count: 1,
-                data_hash: 0xD263_5BD4_0A01_06D0,
-                segment_hash: 0x9481_139E_75EB_1814,
+                data_hash: 0x3122_2A08_2355_550F,
+                segment_hash: 0x4489_A2FF_806F_A2E9,
                 coefficient_hash: 0xB515_9929_9126_C857,
                 pass_order: "CSMCSMCSMCSMCSMCSMCSMC",
             },

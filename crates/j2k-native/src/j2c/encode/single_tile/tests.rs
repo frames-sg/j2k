@@ -215,9 +215,9 @@ fn reference_codestreams_remain_byte_exact() {
             codestream_fingerprint(&high_bit),
         ],
         [
-            (296, 12_923_494_458_190_091_223),
+            (289, 10_919_473_942_675_803_716),
             (204, 5_990_149_759_059_656_670),
-            (122, 15_606_374_678_349_145_608),
+            (120, 14_442_175_691_548_962_802),
         ]
     );
 }
@@ -295,4 +295,157 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
             Stage::Packetization,
         ]
     );
+}
+
+fn textured_samples(count: usize, mask: u32) -> Vec<u32> {
+    let mut state = 0x2545_f491_u32;
+    (0..count)
+        .map(|index| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let index = u32::try_from(index).expect("fixture index fits u32");
+            (index.wrapping_mul(37) ^ (state >> 20)) & mask
+        })
+        .collect()
+}
+
+/// Final byte of every non-empty code-block contribution, per packet.
+fn contribution_final_bytes(codestream: &[u8]) -> Vec<u8> {
+    use crate::j2c::{build, decode::DecompositionStorage, segment, tile};
+
+    let parsed = crate::j2c::parse_raw(codestream, &crate::DecodeSettings::default())
+        .expect("parse encoded codestream");
+    let tiles = tile::parse(
+        &mut crate::reader::BitReader::new(parsed.data),
+        &parsed.header,
+        0,
+    )
+    .expect("parse encoded tiles");
+    let mut storage = DecompositionStorage::default();
+    let mut final_bytes = Vec::new();
+    for tile in tiles.iter() {
+        storage.reset_for_next_tile();
+        build::build(
+            tile,
+            &mut storage,
+            tiles.structural_workspace_bytes(),
+            false,
+            build::BuildWorkspace::MetadataOnly,
+            None,
+        )
+        .expect("plan encoded code-blocks");
+        segment::parse(tile, &parsed.header, &mut storage).expect("parse encoded packets");
+        for code_block in &storage.code_blocks {
+            for layer in &storage.layers[code_block.layers.clone()] {
+                let Some(segments) = layer.segments.clone() else {
+                    continue;
+                };
+                if let Some(&last) = storage.segments[segments]
+                    .iter()
+                    .rev()
+                    .find_map(|segment| segment.data.last())
+                {
+                    final_bytes.push(last);
+                }
+            }
+        }
+    }
+    final_bytes
+}
+
+struct TerminationCase<'a> {
+    name: &'static str,
+    pixels: &'a [u8],
+    components: u16,
+    bit_depth: u8,
+    options: &'a EncodeOptions,
+}
+
+#[test]
+fn classic_code_block_contributions_never_end_in_ff() {
+    // T.800 B.10.7: the bytes included for a code-block must not end in 0xFF.
+    let rgb8 = textured_samples(64 * 64 * 3, 0xff)
+        .into_iter()
+        .map(|sample| u8::try_from(sample).expect("masked sample fits u8"))
+        .collect::<Vec<_>>();
+    let rgb16 = textured_samples(64 * 64 * 3, 0xffff)
+        .into_iter()
+        .flat_map(|sample| {
+            u16::try_from(sample)
+                .expect("masked sample fits u16")
+                .to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let gray8 = textured_samples(64 * 64, 0xff)
+        .into_iter()
+        .map(|sample| u8::try_from(sample).expect("masked sample fits u8"))
+        .collect::<Vec<_>>();
+    let lossless_rgb = EncodeOptions {
+        num_decomposition_levels: 3,
+        reversible: true,
+        use_mct: true,
+        ..EncodeOptions::default()
+    };
+    let layered_gray = EncodeOptions {
+        num_decomposition_levels: 3,
+        reversible: true,
+        num_layers: 3,
+        quality_layer_byte_targets: vec![256, 1_024, 8_192],
+        ..EncodeOptions::default()
+    };
+    let cases = [
+        TerminationCase {
+            name: "rgb8 lossless",
+            pixels: &rgb8,
+            components: 3,
+            bit_depth: 8,
+            options: &lossless_rgb,
+        },
+        TerminationCase {
+            name: "rgb16 lossless",
+            pixels: &rgb16,
+            components: 3,
+            bit_depth: 16,
+            options: &lossless_rgb,
+        },
+        TerminationCase {
+            name: "gray8 three layers",
+            pixels: &gray8,
+            components: 1,
+            bit_depth: 8,
+            options: &layered_gray,
+        },
+    ];
+
+    for case in cases {
+        let name = case.name;
+        let codestream = encode(
+            case.pixels,
+            64,
+            64,
+            case.components,
+            case.bit_depth,
+            false,
+            case.options,
+        )
+        .unwrap_or_else(|error| panic!("{name} encode: {error:?}"));
+        let final_bytes = contribution_final_bytes(&codestream);
+        let ending_in_ff: usize = final_bytes
+            .iter()
+            .map(|&byte| usize::from(byte == 0xFF))
+            .sum();
+        assert!(!final_bytes.is_empty(), "{name} has no contributions");
+        assert_eq!(
+            ending_in_ff,
+            0,
+            "{name}: {ending_in_ff}/{} contributions end in 0xFF",
+            final_bytes.len()
+        );
+
+        let image = crate::Image::new(&codestream, &crate::DecodeSettings::default())
+            .unwrap_or_else(|error| panic!("{name} parse: {error:?}"));
+        let decoded = image
+            .decode_native()
+            .unwrap_or_else(|error| panic!("{name} decode: {error:?}"));
+        assert_eq!(decoded.data, case.pixels, "{name} lossless round trip");
+    }
 }

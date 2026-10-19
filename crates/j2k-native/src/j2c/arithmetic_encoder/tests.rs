@@ -148,6 +148,10 @@ fn test_many_context_round_trip() {
     }
 
     let encoded = encoder.finish();
+    // Internal 0xFF bytes (and their stuffed successors) must survive; only a
+    // terminal 0xFF is omitted.
+    assert!(encoded[..encoded.len() - 1].contains(&0xFF));
+    assert_ne!(encoded.last(), Some(&0xFF));
     let mut decoder = ArithmeticDecoder::new(&encoded);
     let mut dec_contexts = [ArithmeticDecoderContext::default(); 19];
     dec_contexts[0].reset_with_index(4);
@@ -203,4 +207,48 @@ fn checked_payload_limit_is_sticky_and_never_underflows_renormalization() {
             what: "MQ encoder exceeded its checked payload plan",
         }
     );
+}
+
+#[test]
+fn finish_omits_pending_terminal_ff() {
+    // T.800 B.10.7: the bytes included for a code-block must not end in 0xFF.
+    let mut encoder = ArithmeticEncoder::new();
+    let mut context = ArithmeticEncoderContext::default();
+    encoder.encode(0, &mut context);
+    assert_eq!(encoder.finish(), [0x7f]);
+}
+
+#[test]
+#[cfg_attr(
+    test,
+    expect(clippy::similar_names, reason = "paired encoder/decoder state")
+)]
+fn short_sequences_never_end_in_ff_and_round_trip() {
+    for len in 1..=8_u32 {
+        for pattern in 0..(1_u32 << len) {
+            let symbols: Vec<u32> = (0..len).map(|bit| (pattern >> bit) & 1).collect();
+            let mut encoder = ArithmeticEncoder::new();
+            let mut enc_ctx = ArithmeticEncoderContext::default();
+            for &symbol in &symbols {
+                encoder.encode(symbol, &mut enc_ctx);
+            }
+            let encoded = encoder.finish();
+            assert!(!encoded.is_empty(), "len {len} pattern {pattern:#b}");
+            assert_ne!(
+                encoded.last(),
+                Some(&0xFF),
+                "len {len} pattern {pattern:#b}"
+            );
+
+            let mut decoder = ArithmeticDecoder::new(&encoded);
+            let mut dec_ctx = ArithmeticDecoderContext::default();
+            for (index, &symbol) in symbols.iter().enumerate() {
+                assert_eq!(
+                    decoder.decode(&mut dec_ctx),
+                    symbol,
+                    "len {len} pattern {pattern:#b} symbol {index}"
+                );
+            }
+        }
+    }
 }

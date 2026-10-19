@@ -373,46 +373,6 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn split_job_into_two_valid_segments(job: &OwnedClassicJob) -> OwnedClassicJob {
-        let mut baseline = vec![0.0f32; job.output_len()];
-        decode_j2k_code_block_scalar(job.as_job(), &mut baseline).expect("baseline decode");
-
-        for split_pass in 1..job.number_of_coding_passes {
-            for split_offset in 1..job.data.len() {
-                let mut candidate = job.clone();
-                let split_offset_u32 =
-                    u32::try_from(split_offset).expect("split offset fits in u32");
-                let remaining_len_u32 = u32::try_from(job.data.len() - split_offset)
-                    .expect("remaining segment length fits in u32");
-                candidate.segments = vec![
-                    J2kCodeBlockSegment {
-                        data_offset: 0,
-                        data_length: split_offset_u32,
-                        start_coding_pass: 0,
-                        end_coding_pass: split_pass,
-                        use_arithmetic: true,
-                    },
-                    J2kCodeBlockSegment {
-                        data_offset: split_offset_u32,
-                        data_length: remaining_len_u32,
-                        start_coding_pass: split_pass,
-                        end_coding_pass: job.number_of_coding_passes,
-                        use_arithmetic: true,
-                    },
-                ];
-                let mut candidate_output = vec![0.0f32; candidate.output_len()];
-                if decode_j2k_code_block_scalar(candidate.as_job(), &mut candidate_output).is_ok()
-                    && candidate_output == baseline
-                {
-                    return candidate;
-                }
-            }
-        }
-
-        panic!("expected to find a valid two-segment classic codeblock split");
-    }
-
-    #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct CaptureFirstClassicJob {
         first: Option<OwnedClassicJob>,
@@ -455,6 +415,20 @@ mod tests {
             ..EncodeOptions::default()
         };
         encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
+    }
+
+    /// Classic multi-layer encoding terminates every coding pass, so each
+    /// code-block carries one MQ segment per pass.
+    #[cfg(target_os = "macos")]
+    fn fixture_j2k_gray8_terminated_passes() -> Vec<u8> {
+        let pixels: Vec<u8> = (0..16).collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            num_layers: 2,
+            ..EncodeOptions::default()
+        };
+        encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode terminated classic gray8")
     }
 
     fn fixture_j2k_gray1_cleanup_only() -> Vec<u8> {
@@ -1214,12 +1188,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn metal_classic_kernel_matches_scalar_for_valid_two_segment_job() {
+    fn metal_classic_kernel_matches_scalar_for_terminated_multi_segment_job() {
         if !should_run_metal_runtime() {
             return;
         }
 
-        let bytes = fixture_j2k_gray8();
+        let bytes = fixture_j2k_gray8_terminated_passes();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
         let mut capture = CaptureFirstClassicJob::default();
@@ -1227,9 +1201,9 @@ mod tests {
             .decode_components_with_ht_decoder(&mut context, &mut capture)
             .expect("capture classic job");
 
-        let captured = capture.first.expect("captured classic job");
-        let job = split_job_into_two_valid_segments(&captured);
+        let job = capture.first.expect("captured classic job");
         assert!(job.segments.len() > 1);
+        assert!(job.segments.iter().all(|segment| segment.use_arithmetic));
         assert!(super::supports_metal_classic_kernel(&job.as_job()));
 
         let mut expected = vec![0.0f32; job.output_len()];
