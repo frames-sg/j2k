@@ -25,7 +25,7 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
             "build::select_region_precincts",
             "build::build",
             "segment::parse_selected",
-            "decode_component_tile_bit_planes_budgeted",
+            "decode_components",
         ],
     );
     decode_tile.assert_propagated(
@@ -34,8 +34,17 @@ fn native_decode_preflights_and_propagates_before_roi_or_allocation() {
             "build::select_region_precincts",
             "build::build",
             "segment::parse_selected",
-            "decode_component_tile_bit_planes_budgeted",
+            "decode_components",
         ],
+    );
+    // Tier-1 runs once per component, or once for the whole tile, from
+    // `decode_components`, and always through the budgeted entry point.
+    let components = FunctionCalls::parse("native component decode", &decode, "decode_components");
+    components.assert_propagated("native Tier-1 stage failures", &["decode_tier1_stage"]);
+    let tier1_stage = FunctionCalls::parse("native Tier-1 stage", &decode, "decode_tier1_stage");
+    tier1_stage.assert_propagated(
+        "native budgeted Tier-1 failures",
+        &["decode_component_tile_bit_planes_budgeted"],
     );
     let selection = read("crates/j2k-native/src/j2c/build/selection.rs");
     let select = FunctionCalls::parse(

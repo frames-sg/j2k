@@ -12,6 +12,7 @@ use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::build::CodeBlockCoding;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
 use core::mem::size_of;
+use core::ops::Range;
 
 pub(super) struct Tier1WorkspaceAccounting {
     retained_bytes: usize,
@@ -118,11 +119,12 @@ impl Tier1Requirements {
 
 pub(super) fn prepare_tier1_workspace(
     tile: &Tile<'_>,
+    components: Range<usize>,
     header: &Header<'_>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Tier1WorkspaceAccounting> {
-    let requirements = collect_requirements(tile, header, storage)?;
+    let requirements = collect_requirements(tile, components, header, storage)?;
     let planned_bytes = requirements.logical_bytes()?;
     let retained_bytes = tile_ctx.serial_tier1_capacity_bytes()?;
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
@@ -180,11 +182,15 @@ pub(super) fn release_tier1_workspace(
 
 fn collect_requirements(
     tile: &Tile<'_>,
+    components: Range<usize>,
     header: &Header<'_>,
     storage: &DecompositionStorage<'_>,
 ) -> Result<Tier1Requirements> {
     let mut requirements = Tier1Requirements::default();
-    for component_idx in 0..tile.component_infos.len() {
+    if components.end > tile.component_infos.len() {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    for component_idx in components {
         let tile_decompositions = storage
             .tile_decompositions
             .get(component_idx)

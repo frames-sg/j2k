@@ -36,17 +36,18 @@ macro_rules! assert_total_is_the_sum {
 }
 
 #[test]
-fn whole_decode_peak_holds_every_component_plane_and_coefficient() {
+fn whole_decode_peak_holds_every_component_plane_and_one_component_of_coefficients() {
     let bytes = roi_fixture(true, 3);
     let context = decode_context(&bytes, None);
     let counters = &context.tile_decode_context.debug_counters;
     let peak = counters.workspace_peak.bytes();
     assert_total_is_the_sum!(peak);
 
-    // Tier-1 decodes every component before the first IDWT, so all of the
-    // tile's coefficients and component planes are live together.
-    assert!(counters.stored_coefficients >= COMPONENTS * SIDE * SIDE);
-    assert!(peak.coefficients >= counters.stored_coefficients * size_of::<f32>());
+    // Each component finishes Tier-1, the IDWT and store before the next is
+    // decoded, so coefficients for only one component are live. Every
+    // component plane is, until the color transform.
+    assert_eq!(counters.stored_coefficients, SIDE * SIDE);
+    assert_eq!(peak.coefficients, SIDE * SIDE * size_of::<f32>());
     assert!(peak.channels >= COMPONENTS * SIDE * SIDE * size_of::<f32>());
     assert!(peak.idwt >= SIDE * SIDE * size_of::<f32>());
     assert!(peak.tier1 > 0);

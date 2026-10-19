@@ -3,6 +3,7 @@
 use super::*;
 use crate::j2c::ComponentData;
 
+mod component_layout;
 mod ht_refinement;
 mod workspace_peak;
 mod workspace_reuse;
@@ -1150,6 +1151,37 @@ fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
     assert!(
         matches!(smaller, DecodeError::Decoding(_)),
         "a region whose IDWT peak fits must get past the budget: {smaller:?}"
+    );
+}
+
+#[test]
+fn rgb_decode_budgets_one_component_of_coefficients_at_a_time() {
+    // Each component finishes Tier-1, the IDWT and store before the next
+    // reuses its coefficient buffer, so a three-component tile charges one
+    // component's coefficients rather than all three. A 4800x4800 RGB tile
+    // fits that way, though its three planes of coefficients alone are 264
+    // MiB. The fixture's packets are not that large, so decode then fails in
+    // packet parsing.
+    let mut codestream = fixture();
+    rewrite_siz_to_single_large_tile(&mut codestream, 4_800);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+    for (label, result) in [
+        ("whole", image.decode().err()),
+        ("region", image.decode_region((0, 0, 4_800, 4_800)).err()),
+    ] {
+        assert!(
+            matches!(result, Some(DecodeError::Decoding(_))),
+            "{label} decode must get past the budget: {result:?}"
+        );
+    }
+
+    // A larger tile is still rejected before any Tier-1 work.
+    let mut codestream = fixture();
+    rewrite_siz_to_single_large_tile(&mut codestream, 5_500);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+    assert_eq!(
+        image.decode().err(),
+        Some(DecodeError::Validation(ValidationError::ImageTooLarge))
     );
 }
 

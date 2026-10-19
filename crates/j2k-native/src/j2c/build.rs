@@ -11,7 +11,7 @@ use core::{iter, ops::Range};
 mod allocation;
 mod selection;
 pub(crate) use allocation::{
-    allocate_deferred_coefficients, release_unused_roi_workspace, BuildWorkspace,
+    allocate_deferred_coefficients, release_unused_roi_workspace, BuildWorkspace, CoefficientLayout,
 };
 use allocation::{
     code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,
@@ -64,12 +64,19 @@ fn build_decompositions(
         selection,
     )?;
     resize_planned_coefficients(storage, &plan)?;
+    let coefficient_layout = workspace.coefficient_layout();
+    storage.coefficient_layout = coefficient_layout;
     let mut coefficient_counter = 0usize;
+    // The end of the furthest coefficient range, which the plan sized storage to.
+    let mut coefficient_extent = 0usize;
     // Index of the current (component, resolution) in build order, for the
     // precinct selection.
     let mut resolution_run = 0usize;
 
     for (component_idx, component_tile) in tile.component_tiles().enumerate() {
+        if coefficient_layout == CoefficientLayout::Component {
+            coefficient_counter = 0;
+        }
         let d_start = storage.decompositions.len();
         let mut resolution_tiles = component_tile.resolution_tiles();
 
@@ -112,6 +119,7 @@ fn build_decompositions(
             }
             let coefficients = coefficient_counter..coefficient_end;
             coefficient_counter = coefficient_end;
+            coefficient_extent = coefficient_extent.max(coefficient_end);
 
             let idx = storage.sub_bands.len();
             push_preallocated(
@@ -165,7 +173,7 @@ fn build_decompositions(
         )?;
     }
 
-    validate_built_storage(&plan, storage, coefficient_counter)?;
+    validate_built_storage(&plan, storage, coefficient_extent)?;
     storage.structural_workspace_bytes = plan.total_bytes;
     Ok(())
 }

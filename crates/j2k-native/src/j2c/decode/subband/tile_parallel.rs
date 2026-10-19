@@ -110,8 +110,13 @@ pub(in crate::j2c::decode) enum TileHtRoute {
 /// components use HT block coding only and the tile carries enough coded
 /// data to amortize a fork-join. Returns without side effects for the
 /// non-`Decoded` routes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "routing sees the tile, component range, state buffers, adapter, and options explicitly"
+)]
 pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     tile: &Tile<'a>,
+    components: Range<usize>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
@@ -130,13 +135,13 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
         || profile_enabled
         || ht_decoder.is_some()
         || storage.exact_integer_decode
-        || !tile_uses_ht_only(tile)
+        || !components_use_ht_only(tile, components.clone())
     {
         return Ok(TileHtRoute::PerSubBand);
     }
 
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
-    let plan = match plan_tile(tile, storage, header, &mut budget) {
+    let plan = match plan_tile(tile, components, storage, header, &mut budget) {
         Ok(Some(plan)) => plan,
         Ok(None) => return Ok(TileHtRoute::PerSubBand),
         // Planning metadata did not fit the decode budget; the per-sub-band
@@ -194,8 +199,11 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     Ok(TileHtRoute::Decoded)
 }
 
-fn tile_uses_ht_only(tile: &Tile<'_>) -> bool {
-    tile.component_infos.iter().all(|component_info| {
+fn components_use_ht_only(tile: &Tile<'_>, components: Range<usize>) -> bool {
+    let Some(component_infos) = tile.component_infos.get(components) else {
+        return false;
+    };
+    component_infos.iter().all(|component_info| {
         let style = component_info.coding_style.parameters.code_block_style;
         style.uses_high_throughput_block_coding() && !style.allows_mixed_block_coding()
     })
@@ -207,6 +215,7 @@ fn tile_uses_ht_only(tile: &Tile<'_>) -> bool {
 )]
 fn plan_tile<'a>(
     tile: &Tile<'a>,
+    components: Range<usize>,
     storage: &DecompositionStorage<'a>,
     header: &Header<'_>,
     budget: &mut DecodeAllocationBudget,
@@ -227,7 +236,11 @@ fn plan_tile<'a>(
     budget.reserve_new(&mut plan.bands, storage.sub_bands.len())?;
     let mut arena_len = 0usize;
 
-    for (component_idx, component_info) in tile.component_infos.iter().enumerate() {
+    let component_infos = tile
+        .component_infos
+        .get(components.clone())
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    for (component_idx, component_info) in components.zip(component_infos) {
         let stripe_causal = component_info
             .coding_style
             .parameters

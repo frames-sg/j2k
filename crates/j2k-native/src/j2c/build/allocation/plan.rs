@@ -44,7 +44,7 @@ pub(super) fn build_allocation_plan(
 
     for component_tile in tile.component_tiles() {
         let coefficient_count = checked_rect_elements(component_tile.rect)?;
-        plan.add_coefficients(coefficient_count)?;
+        plan.add_component_coefficients(coefficient_count)?;
         DecompositionAllocationPlan::checked_add_count(&mut plan.tile_decompositions, 1)?;
 
         let mut resolution_tiles = component_tile.resolution_tiles();
