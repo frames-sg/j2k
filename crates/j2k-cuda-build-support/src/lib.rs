@@ -155,6 +155,7 @@ fn emit_metadata(
         "src/classic.rs",
         "src/dwt.rs",
         "src/jpeg.rs",
+        "src/jpeg/lossless.rs",
         "src/mct.rs",
     ] {
         println!(

@@ -29,7 +29,7 @@ pub use codec::CudaJpegDecodeOutputTile;
 pub use decoder::Decoder;
 pub use encode::{
     encode_jpeg_baseline_batch_from_cuda_buffers, encode_jpeg_baseline_from_cuda_buffer,
-    JpegBaselineCudaEncodeTile,
+    encode_jpeg_lossless_from_cuda_buffer, JpegBaselineCudaEncodeTile, JpegLosslessCudaEncodeTile,
 };
 pub use error::Error;
 pub use j2k_jpeg::{DecoderContext, ScratchPool};

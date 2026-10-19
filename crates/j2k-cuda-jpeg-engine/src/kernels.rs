@@ -10,6 +10,8 @@ pub(crate) const CUDA_MAX_GRID_DIM_X: u32 = 2_147_483_647;
 use crate::build_flags::ensure_jpeg_decode_ptx_built;
 #[cfg(feature = "cuda-oxide-jpeg-encode")]
 use crate::build_flags::ensure_jpeg_encode_ptx_built;
+#[cfg(feature = "cuda-oxide-jpeg-lossless-encode")]
+use crate::build_flags::ensure_jpeg_lossless_encode_ptx_built;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CudaKernel {
@@ -21,6 +23,14 @@ pub(crate) enum CudaKernel {
     JpegEntropyOverflow420,
     JpegEncodeBaselinePrecomputeBatch,
     JpegEncodeBaselineEntropyFromCoeffsBatch,
+    JpegLosslessEncodeClassify,
+    JpegLosslessEncodeReadSample,
+    JpegLosslessEncodeChunkBits,
+    JpegLosslessEncodeRowOffsets,
+    JpegLosslessEncodeIntervalOffsets,
+    JpegLosslessEncodeIntervalBases,
+    JpegLosslessEncodeClear,
+    JpegLosslessEncodePack,
 }
 
 impl CudaKernel {
@@ -38,6 +48,16 @@ impl CudaKernel {
             Self::JpegEncodeBaselineEntropyFromCoeffsBatch => {
                 b"j2k_jpeg_encode_baseline_entropy_from_coeffs_batch\0"
             }
+            Self::JpegLosslessEncodeClassify => b"j2k_jpeg_lossless_encode_classify\0",
+            Self::JpegLosslessEncodeReadSample => b"j2k_jpeg_lossless_encode_read_sample\0",
+            Self::JpegLosslessEncodeChunkBits => b"j2k_jpeg_lossless_encode_chunk_bits\0",
+            Self::JpegLosslessEncodeRowOffsets => b"j2k_jpeg_lossless_encode_row_offsets\0",
+            Self::JpegLosslessEncodeIntervalOffsets => {
+                b"j2k_jpeg_lossless_encode_interval_offsets\0"
+            }
+            Self::JpegLosslessEncodeIntervalBases => b"j2k_jpeg_lossless_encode_interval_bases\0",
+            Self::JpegLosslessEncodeClear => b"j2k_jpeg_lossless_encode_clear\0",
+            Self::JpegLosslessEncodePack => b"j2k_jpeg_lossless_encode_pack\0",
         }
     }
 
@@ -58,6 +78,18 @@ impl CudaKernel {
                 #[cfg(feature = "cuda-oxide-jpeg-encode")]
                 ensure_jpeg_encode_ptx_built()?;
                 ("jpeg-encode", jpeg_encode_ptx())
+            }
+            Self::JpegLosslessEncodeClassify
+            | Self::JpegLosslessEncodeReadSample
+            | Self::JpegLosslessEncodeChunkBits
+            | Self::JpegLosslessEncodeRowOffsets
+            | Self::JpegLosslessEncodeIntervalOffsets
+            | Self::JpegLosslessEncodeIntervalBases
+            | Self::JpegLosslessEncodeClear
+            | Self::JpegLosslessEncodePack => {
+                #[cfg(feature = "cuda-oxide-jpeg-lossless-encode")]
+                ensure_jpeg_lossless_encode_ptx_built()?;
+                ("jpeg-lossless-encode", jpeg_lossless_encode_ptx())
             }
         };
         CudaKernelSpec::new(module_id, ptx, self.entrypoint())
@@ -82,6 +114,19 @@ fn jpeg_encode_ptx() -> &'static [u8] {
 #[cfg(not(feature = "cuda-oxide-jpeg-encode"))]
 fn jpeg_encode_ptx() -> &'static [u8] {
     unreachable!("JPEG encode kernels are gated by cuda-oxide-jpeg-encode")
+}
+
+#[cfg(feature = "cuda-oxide-jpeg-lossless-encode")]
+fn jpeg_lossless_encode_ptx() -> &'static [u8] {
+    include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/cuda_oxide_jpeg_lossless_encode.ptx"
+    ))
+}
+
+#[cfg(not(feature = "cuda-oxide-jpeg-lossless-encode"))]
+fn jpeg_lossless_encode_ptx() -> &'static [u8] {
+    unreachable!("JPEG lossless encode kernels are gated by cuda-oxide-jpeg-lossless-encode")
 }
 
 #[cfg(test)]
@@ -124,8 +169,58 @@ mod tests {
                 b"j2k_jpeg_encode_baseline_entropy_from_coeffs_batch\0".as_slice(),
             ),
         ];
-        for (kernel, entrypoint) in expected {
+        for (kernel, entrypoint) in expected.into_iter().chain(LOSSLESS_ENCODE_KERNELS) {
             assert_eq!(kernel.entrypoint(), entrypoint);
+        }
+    }
+
+    const LOSSLESS_ENCODE_KERNELS: [(CudaKernel, &[u8]); 8] = [
+        (
+            CudaKernel::JpegLosslessEncodeClassify,
+            b"j2k_jpeg_lossless_encode_classify\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeReadSample,
+            b"j2k_jpeg_lossless_encode_read_sample\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeChunkBits,
+            b"j2k_jpeg_lossless_encode_chunk_bits\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeRowOffsets,
+            b"j2k_jpeg_lossless_encode_row_offsets\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeIntervalOffsets,
+            b"j2k_jpeg_lossless_encode_interval_offsets\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeIntervalBases,
+            b"j2k_jpeg_lossless_encode_interval_bases\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodeClear,
+            b"j2k_jpeg_lossless_encode_clear\0",
+        ),
+        (
+            CudaKernel::JpegLosslessEncodePack,
+            b"j2k_jpeg_lossless_encode_pack\0",
+        ),
+    ];
+
+    #[cfg(all(
+        feature = "cuda-oxide-jpeg-lossless-encode",
+        j2k_cuda_oxide_jpeg_lossless_encode_built
+    ))]
+    #[test]
+    fn lossless_encode_metadata_matches_generated_ptx() {
+        let ptx = super::jpeg_lossless_encode_ptx();
+        for (kernel, _) in LOSSLESS_ENCODE_KERNELS {
+            let entrypoint = &kernel.entrypoint()[..kernel.entrypoint().len() - 1];
+            assert!(ptx
+                .windows(entrypoint.len())
+                .any(|window| window == entrypoint));
         }
     }
 

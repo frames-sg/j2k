@@ -24,6 +24,7 @@ const REVIEWED_DEVICE_INCLUDE_FILES: &[&str] = &[
     "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_ml/simt/src/main.rs",
     "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
     "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
+    "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_lossless_encode/simt/src/main.rs",
     "crates/j2k-cuda-transcode-engine/src/cuda_oxide_transcode/simt/src/main.rs",
 ];
 

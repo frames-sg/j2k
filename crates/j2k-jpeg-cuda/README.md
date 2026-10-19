@@ -1,10 +1,15 @@
 # j2k-jpeg-cuda
 
-CUDA adapter for J2K baseline JPEG decode and encode surfaces.
+CUDA adapter for J2K baseline JPEG decode and baseline and lossless JPEG
+encode surfaces.
 
 The CUDA paths use J2K's own kernels and decode into CUDA device memory.
 Baseline encode takes Gray8 or Rgb8 CUDA buffers and returns host
-`EncodedJpeg` output, for single images and batches. Explicit CUDA requests
+`EncodedJpeg` output, for single images and batches. Lossless encode
+(`encode_jpeg_lossless_from_cuda_buffer`) takes Gray8, Gray16, Rgb8, or Rgb16
+CUDA buffers and produces the same bytes as `j2k_jpeg::encode_jpeg_lossless`;
+its CUDA-Oxide kernels share the CPU encoder's prediction code from
+`j2k-codec-math`. Explicit CUDA requests
 return an error for unsupported JPEGs; they do not fall back to the CPU.
 
 The adapter, session, and error types build by default. Enable `cuda-runtime`

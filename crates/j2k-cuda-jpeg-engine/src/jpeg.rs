@@ -25,10 +25,15 @@ mod encode_staging_execution;
 #[cfg(feature = "cuda-oxide-jpeg-encode")]
 mod encode_staging_launch;
 mod encode_validation;
+mod lossless_encode;
 mod types;
 mod validation;
 
 pub use self::decode_profile::{CudaJpegDecodeStageTimings, CudaJpegProfiledOutput};
+pub use self::lossless_encode::{
+    CudaJpegLosslessEncodeJob, CudaJpegLosslessEncodeOutcome, CudaJpegLosslessEncodeParams,
+    CUDA_JPEG_LOSSLESS_CATEGORIES,
+};
 pub(crate) use self::types::{
     CudaJpeg420Params, CudaJpegBaselineEncodeStatus, CudaJpegDecodeStatus,
     CudaJpegEntropyChunkParams,

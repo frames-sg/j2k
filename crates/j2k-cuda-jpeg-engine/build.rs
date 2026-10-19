@@ -21,6 +21,15 @@ const PROJECTS: &[CudaOxideProject] = &[
         extra_sources: &[],
         built_cfg: "j2k_cuda_oxide_jpeg_encode_built",
     },
+    CudaOxideProject {
+        feature_env: "CARGO_FEATURE_CUDA_OXIDE_JPEG_LOSSLESS_ENCODE",
+        source_dir: "src/cuda_oxide_jpeg_lossless_encode",
+        output_name: "cuda_oxide_jpeg_lossless_encode.ptx",
+        artifact_name: "j2k_cuda_oxide_jpeg_lossless_encode.ptx",
+        display_name: "cuda-oxide JPEG lossless encode",
+        extra_sources: &[],
+        built_cfg: "j2k_cuda_oxide_jpeg_lossless_encode_built",
+    },
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {

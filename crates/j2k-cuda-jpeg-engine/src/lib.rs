@@ -38,8 +38,9 @@ pub use jpeg::{
     CudaJpegBaselineEntropyEncodeBatchJob, CudaJpegBaselineEntropyEncodeJob,
     CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport,
     CudaJpegDecodeStageTimings, CudaJpegEntropyCheckpoint, CudaJpegEntropyOverflowState,
-    CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaJpegProfiledOutput, CudaJpegRgb8DecodePlan,
-    CudaJpegRgb8Sampling,
+    CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaJpegLosslessEncodeJob,
+    CudaJpegLosslessEncodeOutcome, CudaJpegLosslessEncodeParams, CudaJpegProfiledOutput,
+    CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling, CUDA_JPEG_LOSSLESS_CATEGORIES,
 };
 
 use j2k_cuda_runtime::{

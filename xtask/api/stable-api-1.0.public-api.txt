@@ -2663,6 +2663,7 @@ pub fn j2k_jpeg_cuda::Surface::download_into(&self, &mut [u8], usize) -> core::r
 pub fn j2k_jpeg_cuda::Surface::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_cuda::encode_jpeg_baseline_batch_from_cuda_buffers(&[j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_cuda::Error>
 pub fn j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::encode_jpeg_lossless_from_cuda_buffer(j2k_jpeg_cuda::JpegLosslessCudaEncodeTile<'_>, j2k_jpeg::lossless_encode::JpegLosslessEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_cuda::Error>
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::input: &'a [u8]
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::output: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::pitch_bytes: usize
@@ -2703,6 +2704,12 @@ pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::output_height: u32
 pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::output_width: u32
 pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::pitch_bytes: usize
 pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::width: u32
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::buffer: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::byte_offset: usize
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::format: j2k_core::pixel::PixelFormat
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::height: u32
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::pitch_bytes: usize
+pub j2k_jpeg_cuda::JpegLosslessCudaEncodeTile::width: u32
 pub mod j2k_jpeg_cuda
 pub struct j2k_jpeg_cuda::Codec
 pub struct j2k_jpeg_cuda::CudaJpegDecodeOutputTile<'a>
@@ -2710,6 +2717,7 @@ pub struct j2k_jpeg_cuda::CudaSession
 pub struct j2k_jpeg_cuda::CudaSurface<'a>
 pub struct j2k_jpeg_cuda::Decoder<'a>
 pub struct j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'a>
+pub struct j2k_jpeg_cuda::JpegLosslessCudaEncodeTile<'a>
 pub struct j2k_jpeg_cuda::Surface
 pub use j2k_jpeg_cuda::DecoderContext
 pub use j2k_jpeg_cuda::ScratchPool
@@ -5025,9 +5033,12 @@ pub struct j2k_cuda_j2k_engine::J2kCudaEngine<'context>
 ## `j2k-cuda-jpeg-engine`
 
 ```text
+impl j2k_cuda_jpeg_engine::JpegCudaEngine<'_>
 impl<'context> j2k_cuda_jpeg_engine::JpegCudaEngine<'context>
 pub const fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::context(self) -> &'context j2k_cuda_runtime::context::CudaContext
 pub const fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::new(&'context j2k_cuda_runtime::context::CudaContext) -> Self
+pub const j2k_cuda_jpeg_engine::CUDA_JPEG_LOSSLESS_CATEGORIES: usize
+pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'_>::encode_lossless_with_external_live<E: core::convert::From<j2k_cuda_runtime::error::CudaError>>(self, &CudaJpegLosslessEncodeJob<'_>, usize, impl core::ops::function::FnOnce(&[u32; 17]) -> core::result::Result<[u32; 17], E>) -> core::result::Result<CudaJpegLosslessEncodeOutcome, E>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::decode_rgb8_owned_into_with_external_live(self, &CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::decode_rgb8_owned_with_external_live(self, &CudaJpegRgb8DecodePlan<'_>, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaKernelOutput, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_jpeg_engine::JpegCudaEngine<'context>::diagnose_entropy_with_pinned_upload_operation(self, &CudaJpegChunkedEntropyPlan<'_>, usize, &j2k_cuda_runtime::memory::pinned_staging::operations::gate::CudaPinnedUploadOperationGuard<'_>) -> core::result::Result<CudaJpegChunkedEntropyReport, j2k_cuda_runtime::error::CudaError>

@@ -6,7 +6,7 @@ use std::mem::{offset_of, size_of};
 use crate::jpeg::{
     CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams, CudaJpegBaselineEncodeStatus,
     CudaJpegDecodeStatus, CudaJpegEntropyCheckpoint, CudaJpegEntropyOverflowState,
-    CudaJpegEntropySyncState, CudaJpegHuffmanTable,
+    CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaJpegLosslessEncodeParams,
 };
 
 macro_rules! prove_cuda_gpu_abi_layout {
@@ -123,6 +123,24 @@ impl_cuda_gpu_abi! {
         entropy_len: u32,
         detail: u32,
         reserved: u32,
+    },
+    CudaJpegLosslessEncodeParams {
+        width: u32,
+        height: u32,
+        components: u32,
+        sample_bytes: u32,
+        pitch_bytes: u32,
+        input_offset_bytes: u32,
+        predictor: u32,
+        point_transform: u32,
+        initial_predictor: u32,
+        max_sample: u32,
+        interval_rows: u32,
+        chunk_pixels: u32,
+        chunks_per_row: u32,
+        intervals: u32,
+        sample_count: u32,
+        packed_words: u32,
     },
 }
 

@@ -106,6 +106,18 @@ const REVIEWED_ALLOWS: &[(&str, &str)] = &[
         "clippy::too_many_arguments",
     ),
     (
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_lossless_encode/simt/src/main.rs",
+        "clippy::cast_possible_truncation",
+    ),
+    (
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_lossless_encode/simt/src/main.rs",
+        "clippy::too_many_arguments",
+    ),
+    (
+        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_lossless_encode/simt/src/main.rs",
+        "static_mut_refs",
+    ),
+    (
         "crates/j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs",
         "dead_code",
     ),
