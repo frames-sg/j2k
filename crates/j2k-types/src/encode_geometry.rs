@@ -103,6 +103,35 @@ pub const fn maximum_decomposition_levels(width: u32, height: u32) -> u8 {
     levels
 }
 
+/// Return the decomposition depth every tile of a grid supports.
+///
+/// One COD depth applies to all tiles, and the last tile column and row are
+/// narrower when the image is not a multiple of the tile size, so the smallest
+/// edge tile caps the requested depth. A zero tile axis supports no levels.
+#[must_use]
+pub const fn tiled_decomposition_levels(
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    requested: u8,
+) -> u8 {
+    let edge_width = match width.checked_rem(tile_width) {
+        Some(0) | None => tile_width,
+        Some(remainder) => remainder,
+    };
+    let edge_height = match height.checked_rem(tile_height) {
+        Some(0) | None => tile_height,
+        Some(remainder) => remainder,
+    };
+    let legal_maximum = maximum_decomposition_levels(edge_width, edge_height);
+    if requested < legal_maximum {
+        requested
+    } else {
+        legal_maximum
+    }
+}
+
 /// Resolve the shared lossless decomposition policy for an image geometry.
 ///
 /// Without an explicit maximum, LRCP and RLCP use one level for dimensions at
@@ -250,7 +279,7 @@ mod tests {
     use super::{
         code_block_dimension, code_block_dimensions, code_block_exponent,
         encode_dwt_level_dimensions, lossless_decomposition_levels, maximum_decomposition_levels,
-        reversible_subband_total_bitplanes, CodeBlockGeometryError,
+        reversible_subband_total_bitplanes, tiled_decomposition_levels, CodeBlockGeometryError,
     };
     use crate::{
         sort_packet_descriptors_for_progression, J2kPacketizationPacketDescriptor,
@@ -376,6 +405,25 @@ mod tests {
         assert_eq!(levels[0].low_width, 1 << 31);
         assert_eq!(levels[0].high_width, (1 << 31) - 1);
         assert_eq!(levels.last().expect("final level").low_width, 2);
+    }
+
+    #[test]
+    fn tiled_levels_are_capped_by_the_smallest_edge_tile() {
+        for (image, tile, requested, expected) in [
+            ((65, 64), (64, 64), 5, 0),
+            ((80, 64), (64, 64), 5, 4),
+            ((64, 80), (64, 64), 5, 4),
+            ((128, 128), (64, 64), 5, 5),
+            ((128, 128), (64, 64), 7, 6),
+            ((65, 64), (128, 128), 5, 5),
+            ((65, 64), (0, 64), 5, 0),
+        ] {
+            assert_eq!(
+                tiled_decomposition_levels(image.0, image.1, tile.0, tile.1, requested),
+                expected,
+                "{image:?} with {tile:?} tiles"
+            );
+        }
     }
 
     #[test]

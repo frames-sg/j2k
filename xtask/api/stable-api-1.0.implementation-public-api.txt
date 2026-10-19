@@ -3008,6 +3008,7 @@ pub const fn j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input(u
 pub const fn j2k_types::encode_geometry::lossless_decomposition_levels(u32, u32, j2k_types::J2kPacketizationProgressionOrder, core::option::Option<u8>) -> u8
 pub const fn j2k_types::encode_geometry::maximum_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_types::encode_geometry::reversible_subband_total_bitplanes(u8, u8, j2k_types::J2kSubBandType) -> u8
+pub const fn j2k_types::encode_geometry::tiled_decomposition_levels(u32, u32, u32, u32, u8) -> u8
 pub const j2k_types::MAX_JPEG2000_PART1_COMPONENTS: u16
 pub const j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH: u8
 pub enum j2k_types::encode_geometry::CodeBlockGeometryError

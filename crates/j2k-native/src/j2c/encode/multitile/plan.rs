@@ -10,14 +10,14 @@ use super::super::tile_grid::validate_tile_grid;
 use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePart};
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    max_total_bitplanes_for_components, maximum_decomposition_levels, quantize,
-    requested_guard_bits, reversible_guard_bits_for_marker_limit,
-    validate_precinct_exponents_for_options, validate_roi_encode_options_nonallocating,
-    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams, EncodeRoiRegion,
-    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize,
-    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    max_total_bitplanes_for_components, quantize, requested_guard_bits,
+    reversible_guard_bits_for_marker_limit, validate_precinct_exponents_for_options,
+    validate_roi_encode_options_nonallocating, BlockCodingMode, EncodeComponentSampleInfo,
+    EncodeOptions, EncodeParams, EncodeRoiRegion, NativeEncodePipelineError,
+    NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
 use super::ownership::encode_options_retained_bytes;
+use j2k_types::encode_geometry::tiled_decomposition_levels;
 
 mod accounting;
 use accounting::{
@@ -81,23 +81,13 @@ pub(super) struct FinalPlanRequest<'a, 'input> {
 }
 
 fn loop_decomposition_levels(request: &LoopPlanRequest<'_, '_>) -> u8 {
-    let min_tile_width = if request.width.is_multiple_of(request.tile_width) {
-        request.tile_width
-    } else {
-        request.width % request.tile_width
-    };
-    let min_tile_height = if request.height.is_multiple_of(request.tile_height) {
-        request.tile_height
-    } else {
-        request.height % request.tile_height
-    };
-    request
-        .options
-        .num_decomposition_levels
-        .min(maximum_decomposition_levels(
-            min_tile_width,
-            min_tile_height,
-        ))
+    tiled_decomposition_levels(
+        request.width,
+        request.height,
+        request.tile_width,
+        request.tile_height,
+        request.options.num_decomposition_levels,
+    )
 }
 
 pub(super) fn build_loop_plan(
