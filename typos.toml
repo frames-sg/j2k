@@ -3,6 +3,7 @@ extend-exclude = [
     ".git",
     "target",
     "corpus/conformance",
+    "**/*.rgb",
 ]
 
 [default]
@@ -31,3 +32,4 @@ yto = "yto"
 
 [default.extend-identifiers]
 BSETs = "BSETs"
+default_decompress_parms = "default_decompress_parms"
