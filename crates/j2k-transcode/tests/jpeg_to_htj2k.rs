@@ -361,6 +361,33 @@ fn progressive_ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
 }
 
 #[test]
+fn ycbcr_420_transcode_with_custom_precincts_matches_default_precinct_samples() {
+    // Chroma keeps (2,2) sampling, so its precinct grids come from the chroma
+    // tile-component rather than the luma/reference tile.
+    let decode = |precinct_exponents: Vec<(u8, u8)>| {
+        let mut options = JpegToHtj2kOptions::default();
+        options.encode_options.num_decomposition_levels = 1;
+        options.encode_options.code_block_width_exp = 0;
+        options.encode_options.code_block_height_exp = 0;
+        options.encode_options.precinct_exponents = precinct_exponents;
+        let encoded = jpeg_to_htj2k(JPEG_BASELINE_420_16X16, &options)
+            .expect("transcode 4:2:0 JPEG to HTJ2K");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .expect("native parser accepts generated HTJ2K")
+            .decode_native_components()
+            .expect("native decoder accepts generated HTJ2K");
+        decoded
+            .planes()
+            .iter()
+            .map(|plane| (plane.dimensions(), plane.data().to_vec()))
+            .collect::<Vec<_>>()
+    };
+
+    let reference = decode(Vec::new());
+    assert_eq!(decode(vec![(2, 2), (3, 3)]), reference);
+}
+
+#[test]
 fn grayscale_multiblock_jpeg_transcodes_to_decodable_htj2k() {
     let width = 13;
     let height = 11;

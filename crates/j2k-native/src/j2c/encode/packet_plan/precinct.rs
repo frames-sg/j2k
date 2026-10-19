@@ -11,17 +11,23 @@ use super::super::{
 
 mod geometry;
 use geometry::{
-    component_split_packet_count, precinct_exponents_for_resolution, resolution_precinct_grid,
+    component_extent, component_split_packet_count, precinct_exponents_for_resolution,
+    resolution_precinct_grid,
 };
 mod distribution;
 use distribution::distribute_owned_subband;
 mod ownership;
 use ownership::{try_destination_vec, try_push_planned, PrecinctSplitAccounting};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "precinct partitioning keeps the reference-grid tile, per-component sampling, level count, precinct exponents, and session budget explicit"
+)]
 pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for_session(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
     image_width: u32,
     image_height: u32,
+    component_sampling: &[(u8, u8)],
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
     session: &NativeEncodeSession<'_>,
@@ -31,6 +37,7 @@ pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for
         component_resolution_packets,
         image_width,
         image_height,
+        component_sampling,
         num_decomposition_levels,
         precinct_exponents,
         session,
@@ -39,10 +46,15 @@ pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for
     Ok(packets)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "precinct partitioning keeps the reference-grid tile, per-component sampling, level count, precinct exponents, and session budget explicit"
+)]
 fn split_component_resolution_packets_by_precinct_accounted(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
     image_width: u32,
     image_height: u32,
+    component_sampling: &[(u8, u8)],
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
     session: &NativeEncodeSession<'_>,
@@ -65,12 +77,16 @@ fn split_component_resolution_packets_by_precinct_accounted(
         &mut accounting,
         "split component packet owners",
     )?;
-    for component_packets in component_resolution_packets {
+    for (component, component_packets) in component_resolution_packets.into_iter().enumerate() {
+        // Sampled components have smaller resolutions, so their precinct
+        // grids come from their own tile-component extent.
+        let (component_width, component_height) =
+            component_extent(image_width, image_height, component_sampling, component)?;
         let component_capacity = component_packets.capacity();
         let split_packet_count = component_split_packet_count(
             &component_packets,
-            image_width,
-            image_height,
+            component_width,
+            component_height,
             num_decomposition_levels,
             precinct_exponents,
         )?;
@@ -82,8 +98,8 @@ fn split_component_resolution_packets_by_precinct_accounted(
         for packet in component_packets {
             split_prepared_resolution_packet_by_precinct(
                 packet,
-                image_width,
-                image_height,
+                component_width,
+                component_height,
                 num_decomposition_levels,
                 precinct_exponents,
                 &mut split_packets,
@@ -106,8 +122,8 @@ fn split_component_resolution_packets_by_precinct_accounted(
 
 fn split_prepared_resolution_packet_by_precinct(
     packet: PreparedResolutionPacket,
-    image_width: u32,
-    image_height: u32,
+    component_width: u32,
+    component_height: u32,
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
     split_packets: &mut Vec<PreparedResolutionPacket>,
@@ -122,8 +138,8 @@ fn split_prepared_resolution_packet_by_precinct(
     let (horizontal_exponent, vertical_exponent) =
         precinct_exponents_for_resolution(precinct_exponents, resolution)?;
     let grid = resolution_precinct_grid(
-        image_width,
-        image_height,
+        component_width,
+        component_height,
         num_decomposition_levels,
         resolution,
         horizontal_exponent,

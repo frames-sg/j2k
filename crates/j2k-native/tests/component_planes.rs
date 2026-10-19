@@ -1,6 +1,7 @@
 use j2k_native::{
     encode, encode_typed_component_planes_53, inspect_j2k_codestream_header, DecodeError,
-    DecodeSettings, DecoderContext, EncodeOptions, EncodeTypedComponentPlane, Image,
+    DecodeSettings, DecoderContext, EncodeOptions, EncodeProgressionOrder,
+    EncodeTypedComponentPlane, Image,
 };
 
 fn fixture() -> Vec<u8> {
@@ -893,5 +894,207 @@ fn subsampled_nonzero_origin_decodes_full_and_reduced_regions() {
             .flat_map(|row| row[3..(width - 1) * 3].iter().copied())
             .collect();
         assert_eq!(cropped.data, expected, "cropped reduction {reduction}");
+    }
+}
+
+struct SampledPrecinctCase {
+    size: (u32, u32),
+    bit_depth: u8,
+    sampling: [(u8, u8); 2],
+    levels: u8,
+    precincts: &'static [(u8, u8)],
+    code_block_exp: u8,
+}
+
+fn sampled_extent(case: &SampledPrecinctCase, component: usize) -> (u32, u32) {
+    let (x_rsiz, y_rsiz) = case.sampling[component];
+    (
+        case.size.0.div_ceil(u32::from(x_rsiz)),
+        case.size.1.div_ceil(u32::from(y_rsiz)),
+    )
+}
+
+fn sampled_plane_bytes(case: &SampledPrecinctCase, component: usize) -> Vec<u8> {
+    let (width, height) = sampled_extent(case, component);
+    let mask = (1_u64 << case.bit_depth) - 1;
+    let bytes_per_sample = usize::from(case.bit_depth.div_ceil(8));
+    let mut state = 0x9e37_79b9_u32 ^ u32::try_from(component).unwrap().wrapping_mul(0x85eb_ca6b);
+    (0..width * height)
+        .flat_map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let sample = u64::from(state) & mask;
+            sample.to_le_bytes()[..bytes_per_sample].to_vec()
+        })
+        .collect()
+}
+
+/// Native-component decode returns reference-grid planes, repeating each
+/// sampled sample over its `XRsiz` x `YRsiz` footprint.
+fn sampled_reference_grid_bytes(
+    case: &SampledPrecinctCase,
+    component: usize,
+    native: &[u8],
+) -> Vec<u8> {
+    let (x_rsiz, y_rsiz) = case.sampling[component];
+    let (component_width, _) = sampled_extent(case, component);
+    let bytes_per_sample = usize::from(case.bit_depth.div_ceil(8));
+    (0..case.size.1)
+        .flat_map(|y| (0..case.size.0).map(move |x| (x, y)))
+        .flat_map(|(x, y)| {
+            let index =
+                usize::try_from((y / u32::from(y_rsiz)) * component_width + x / u32::from(x_rsiz))
+                    .unwrap();
+            native[index * bytes_per_sample..(index + 1) * bytes_per_sample].to_vec()
+        })
+        .collect()
+}
+
+/// Packets a conforming decoder expects for one tile at the origin: each
+/// tile-component resolution is partitioned on its own extent (T.800 B.6).
+fn sampled_expected_packet_count(case: &SampledPrecinctCase) -> usize {
+    (0..case.sampling.len())
+        .map(|component| {
+            let (width, height) = sampled_extent(case, component);
+            (0..=case.levels)
+                .map(|resolution| {
+                    let shift = u32::from(case.levels - resolution);
+                    let (precinct_x, precinct_y) = case.precincts[usize::from(resolution)];
+                    let columns = width.div_ceil(1 << shift).div_ceil(1 << precinct_x);
+                    let rows = height.div_ceil(1 << shift).div_ceil(1 << precinct_y);
+                    usize::try_from(columns * rows).unwrap()
+                })
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+const P677: &[(u8, u8)] = &[(6, 6), (7, 7), (7, 7)];
+
+const SAMPLED_PRECINCT_CASES: [SampledPrecinctCase; 4] = [
+    // Smallest failing shape: the (2,2) component is one 4x4 precinct, while
+    // the reference-grid tile would split it into four.
+    SampledPrecinctCase {
+        size: (8, 8),
+        bit_depth: 8,
+        sampling: [(2, 2), (1, 1)],
+        levels: 0,
+        precincts: &[(2, 2)],
+        code_block_exp: 0,
+    },
+    SampledPrecinctCase {
+        size: (8, 8),
+        bit_depth: 8,
+        sampling: [(1, 1), (2, 2)],
+        levels: 0,
+        precincts: &[(2, 2)],
+        code_block_exp: 0,
+    },
+    SampledPrecinctCase {
+        size: (256, 256),
+        bit_depth: 16,
+        sampling: [(1, 2), (1, 1)],
+        levels: 2,
+        precincts: P677,
+        code_block_exp: 4,
+    },
+    SampledPrecinctCase {
+        size: (256, 256),
+        bit_depth: 29,
+        sampling: [(2, 2), (1, 1)],
+        levels: 2,
+        precincts: P677,
+        code_block_exp: 4,
+    },
+];
+
+fn assert_sampled_precinct_round_trip(
+    case: &SampledPrecinctCase,
+    data: &[Vec<u8>],
+    use_ht_block_coding: bool,
+    progression_order: EncodeProgressionOrder,
+) {
+    let label = format!(
+        "{:?} {}-bit {:?} ht={use_ht_block_coding} {progression_order:?}",
+        case.size, case.bit_depth, case.sampling
+    );
+    let planes = data
+        .iter()
+        .zip(case.sampling)
+        .map(|(data, (x_rsiz, y_rsiz))| EncodeTypedComponentPlane {
+            data,
+            x_rsiz,
+            y_rsiz,
+            bit_depth: case.bit_depth,
+            signed: false,
+        })
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: case.levels,
+        use_mct: false,
+        use_ht_block_coding,
+        progression_order,
+        write_sop: true,
+        code_block_width_exp: case.code_block_exp,
+        code_block_height_exp: case.code_block_exp,
+        precinct_exponents: case.precincts.to_vec(),
+        ..EncodeOptions::default()
+    };
+    let bytes = encode_typed_component_planes_53(&planes, case.size.0, case.size.1, &options)
+        .unwrap_or_else(|error| panic!("{label}: encode: {error}"));
+    assert_eq!(
+        bytes
+            .windows(2)
+            .filter(|marker| *marker == [0xff, 0x91])
+            .count(),
+        sampled_expected_packet_count(case),
+        "{label}: packet count"
+    );
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .and_then(|image| image.decode_native_components())
+        .unwrap_or_else(|error| panic!("{label}: decode: {error}"));
+    for (component, native) in data.iter().enumerate() {
+        let plane = &decoded.planes()[component];
+        assert_eq!(
+            plane.dimensions(),
+            case.size,
+            "{label}: component {component}"
+        );
+        assert!(
+            plane.data() == sampled_reference_grid_bytes(case, component, native),
+            "{label}: component {component} samples differ"
+        );
+    }
+}
+
+#[test]
+fn sampled_components_with_custom_precincts_round_trip_exactly() {
+    for case in &SAMPLED_PRECINCT_CASES {
+        let data = (0..case.sampling.len())
+            .map(|component| sampled_plane_bytes(case, component))
+            .collect::<Vec<_>>();
+        let block_codings: &[bool] = if case.bit_depth > 16 {
+            &[false]
+        } else {
+            &[false, true]
+        };
+        for &use_ht_block_coding in block_codings {
+            for progression_order in [
+                EncodeProgressionOrder::Lrcp,
+                EncodeProgressionOrder::Rlcp,
+                EncodeProgressionOrder::Rpcl,
+                EncodeProgressionOrder::Pcrl,
+                EncodeProgressionOrder::Cprl,
+            ] {
+                assert_sampled_precinct_round_trip(
+                    case,
+                    &data,
+                    use_ht_block_coding,
+                    progression_order,
+                );
+            }
+        }
     }
 }

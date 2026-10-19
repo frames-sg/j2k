@@ -243,6 +243,7 @@ pub(in crate::j2c::encode) fn finish_plan(
         component_packets,
         params.width,
         params.height,
+        &params.component_sampling,
         params.num_decomposition_levels,
         &params.precinct_exponents,
         session,

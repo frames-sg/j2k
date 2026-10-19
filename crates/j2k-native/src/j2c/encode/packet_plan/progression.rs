@@ -107,8 +107,9 @@ impl<'a> PacketGeometry<'a> {
             ));
         }
         let (step_x, step_y) = self.packet_grid_steps(packet);
-        let columns = self.tile_width.div_ceil(step_x);
-        let rows = self.tile_height.div_ceil(step_y);
+        let (sampling_x, sampling_y) = self.component_sampling(packet);
+        let columns = self.tile_width.div_ceil(sampling_x).div_ceil(step_x);
+        let rows = self.tile_height.div_ceil(sampling_y).div_ceil(step_y);
         if packet.precinct >= columns * rows {
             return Err(NativeEncodePipelineError::internal_invariant(
                 "packet descriptor exceeds precinct grid",
@@ -117,10 +118,8 @@ impl<'a> PacketGeometry<'a> {
         Ok(())
     }
 
-    // The precinct splitter currently uses the same tile dimensions for every
-    // component. Decode its local indices against that same grid; component-
-    // specific partitioning must update both the splitter and this geometry.
-    // At most 32 levels and 15 precinct bits keep both strides within u64.
+    // Precinct steps in a tile-component resolution, as the splitter uses
+    // them. At most 32 levels and 15 precinct bits keep both within u64.
     fn packet_grid_steps(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
         let (precinct_x, precinct_y) = self
             .params
@@ -135,20 +134,27 @@ impl<'a> PacketGeometry<'a> {
         )
     }
 
-    fn position(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
-        let (step_x, step_y) = self.packet_grid_steps(packet);
-        let columns = self.tile_width.div_ceil(step_x);
+    // The splitter partitions each component's own tile-component extent,
+    // ceil(tile / sampling), so precinct indices decode against that grid.
+    fn component_sampling(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
         let (sampling_x, sampling_y) = self
             .params
             .component_sampling
             .get(usize::from(packet.component))
             .copied()
             .unwrap_or((1, 1));
+        (u64::from(sampling_x), u64::from(sampling_y))
+    }
+
+    fn position(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
+        let (step_x, step_y) = self.packet_grid_steps(packet);
+        let (sampling_x, sampling_y) = self.component_sampling(packet);
+        let columns = self.tile_width.div_ceil(sampling_x).div_ceil(step_x);
         // Sampling maps a component's packet position onto the common reference
         // grid. Validated indices bound each result by a u32 extent times u8.
         (
-            (packet.precinct % columns) * step_x * u64::from(sampling_x),
-            (packet.precinct / columns) * step_y * u64::from(sampling_y),
+            (packet.precinct % columns) * step_x * sampling_x,
+            (packet.precinct / columns) * step_y * sampling_y,
         )
     }
 }
