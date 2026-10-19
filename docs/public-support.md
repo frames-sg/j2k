@@ -60,6 +60,27 @@ The experimental Apple Silicon MPSGraph integration is described in
 [`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md). It handles static rank-four integer
 groups and adds no codec features beyond this table.
 
+## Native wavelet output
+
+The public CPU `J2kDecoder::decode_wavelets` API extracts classic/HTJ2K
+reversible 5/3 bands as exact I64 and irreversible 9/7 bands as dequantized F32.
+It preserves tile and component geometry, sampling, precision, signedness,
+transform, color-transform status, and per-band quantization steps. Selected
+tiles/components/resolutions/orientations skip unrequested entropy work;
+packet parsing and active-tile coefficient allocation remain. No inverse DWT,
+color conversion, JP2 component mapping, or ICC transformation is performed.
+Reversible output requires no-quantization coding; native decode style and
+precision bounds still apply. There is no incremental-refinement or GPU
+coefficient-output contract in this version.
+
+`classic_and_ht_bands_reconstruct_original_odd_sized_image`,
+`irreversible_coefficients_reconstruct_within_one_lsb_of_pixel_decode`,
+`independent_signed_multitile_coefficients_preserve_origins_and_selection`,
+`high_precision_coefficients_never_round_through_float_storage`, and
+`selected_ll_bands_skip_entropy_work_and_never_run_inverse_dwt` check this
+contract. The [optional PyTorch/NumPy adapter](../crates/j2k-python/README.md)
+preserves it; its pixel tensors retain the narrower owned-batch input contract.
+
 ## Local checks
 
 Run these while changing individual rows:

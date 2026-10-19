@@ -70,7 +70,7 @@ fn explicit_metal_region_scaled_rgb_matches_host_decode() {
         host.as_slice()
     );
 
-    let bytes = fixture_rgb12();
+    let bytes = fixture_rgb12_with_height(2);
     let roi = Rect {
         x: 0,
         y: 0,

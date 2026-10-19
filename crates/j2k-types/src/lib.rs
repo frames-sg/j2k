@@ -90,3 +90,9 @@ pub use transform::{
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level,
     J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kQuantizeSubbandJob,
 };
+
+mod wavelet;
+pub use wavelet::{
+    WaveletBand, WaveletBandKind, WaveletComponent, WaveletImage, WaveletRect, WaveletSamples,
+    WaveletSelection, WaveletTile, WaveletTransform,
+};

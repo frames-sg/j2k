@@ -32,6 +32,7 @@ def metadata() -> dict[str, object]:
             package("j2k-metal", ["j2k-metal-support", "j2k-core", "j2k-profile"]),
             package("j2k-transcode-metal", ["j2k-metal-support", "j2k-core"]),
             package("j2k-ml", ["j2k-cuda", "j2k-metal"]),
+            package("j2k-python", ["j2k-core", "j2k-cuda"]),
             package("j2k-cli", ["j2k-core"]),
         ],
     }
@@ -92,6 +93,12 @@ class ClassificationTests(unittest.TestCase):
                 plan = self.classify(path)
                 self.assertTrue(plan.cuda)
                 self.assertTrue(plan.metal)
+
+    def test_pytorch_adapter_requires_cuda_validation(self) -> None:
+        plan = self.classify("crates/j2k-python/src/cuda.rs")
+        self.assertTrue(plan.rust)
+        self.assertTrue(plan.cuda)
+        self.assertFalse(plan.metal)
 
     def test_docs_only_change_stays_cheap(self) -> None:
         plan = self.classify("docs/architecture.md")

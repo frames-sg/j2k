@@ -6,9 +6,9 @@ use super::super::{
     extract_j2k_codestream_payload, parse_image_info, Arc, BatchAlpha, BatchCodecRoute, BatchColor,
     BatchDecodeOptions, BatchErrorStage, BatchExecutionShape, BatchGroupInfo, BatchItemError,
     BatchLayout, BatchWaveletTransform, BatchWorker, Colorspace, CompressedTransferSyntax,
-    DeviceDecodePlan, Downscale, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo,
-    NativeSampleType, NonRepresentableReason, PreparationDepth, PrepareImageResult,
-    PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
+    DeviceDecodePlan, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo, NativeSampleType,
+    NonRepresentableReason, PreparationDepth, PrepareImageResult, PreparedClassicPlan,
+    PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
 };
 
 pub(super) fn prepare_image(
@@ -37,17 +37,12 @@ pub(super) fn prepare_image(
         offset: codestream.codestream_offset(),
         length: codestream.codestream().len(),
     };
-    let target_resolution = (plan.scale() != Downscale::None).then_some((
-        plan.source_dims().0.div_ceil(plan.scale().denominator()),
-        plan.source_dims().1.div_ceil(plan.scale().denominator()),
-    ));
-    let native_settings = options.settings.to_native(target_resolution);
-    let native_image =
-        j2k_native::Image::new(&input.bytes, &native_settings).map_err(|source| {
-            BatchItemError::Codec {
-                stage: BatchErrorStage::Prepare,
-                source: Arc::new(J2kError::from_native_decode_error(source)),
-            }
+    // Check the main-header ladder here; plan construction below also checks
+    // tile overrides. Neither failure can be repaired by a fallback decode.
+    let native_image = crate::backend::image_at_scale(&input.bytes, options.settings, plan.scale())
+        .map_err(|source| BatchItemError::Codec {
+            stage: BatchErrorStage::Prepare,
+            source: Arc::new(source),
         })?;
     let used_lenient_metadata_recovery = native_image.used_lenient_metadata_recovery();
     let codec_plan = match info.route {
@@ -93,6 +88,16 @@ pub(super) fn batch_execution_shape(
     }
 }
 
+fn exceeds_tile_resolution_ladder(error: &j2k_native::DecodeError) -> bool {
+    // This describes an invalid request, not a limitation of the optimized plan.
+    matches!(
+        error,
+        j2k_native::DecodeError::Decoding(j2k_native::DecodingError::UnsupportedFeature(
+            "tile coding style has fewer levels than the requested reduction"
+        ))
+    )
+}
+
 fn prepare_classic_offset_plan(
     image: &j2k_native::Image<'_>,
     info: &BatchGroupInfo,
@@ -110,10 +115,12 @@ fn prepare_classic_offset_plan(
     let output = plan.output_rect();
     match worker.build_prepared_classic_plan(image, (output.x, output.y, output.w, output.h)) {
         Ok(plan) => Ok(Some(PreparedClassicPlan::from_native(plan))),
-        Err(j2k_native::DecodeError::Decoding(
-            j2k_native::DecodingError::DirectPlanUnsupported(_)
-            | j2k_native::DecodingError::UnsupportedFeature(_),
-        )) => Ok(None),
+        Err(
+            source @ j2k_native::DecodeError::Decoding(
+                j2k_native::DecodingError::DirectPlanUnsupported(_)
+                | j2k_native::DecodingError::UnsupportedFeature(_),
+            ),
+        ) if !exceeds_tile_resolution_ladder(&source) => Ok(None),
         Err(source) => Err(BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
             source: Arc::new(J2kError::from_native_decode_error(source)),
@@ -142,7 +149,7 @@ fn prepare_htj2k_offset_plan(
             if matches!(
                 source.classify(),
                 j2k_native::DecodeErrorClass::Unsupported { .. }
-            ) =>
+            ) && !exceeds_tile_resolution_ladder(&source) =>
         {
             Ok(None)
         }

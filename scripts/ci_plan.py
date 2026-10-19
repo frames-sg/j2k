@@ -20,6 +20,7 @@ CUDA_ROOTS = frozenset(
         "j2k-jpeg-cuda",
         "j2k-cuda",
         "j2k-transcode-cuda",
+        "j2k-python",
     }
 )
 METAL_ROOTS = frozenset(

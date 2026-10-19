@@ -65,6 +65,43 @@ pub(super) fn htj2k_gray8_fixture_with_levels(
     .expect("encode HTJ2K gray8")
 }
 
+/// Keep the encoded tile's ladder while declaring one extra level in the main header.
+pub(super) fn with_shorter_tile_ladder(mut encoded: Vec<u8>) -> Vec<u8> {
+    let marker = |bytes: &[u8], code| {
+        bytes
+            .windows(2)
+            .position(|pair| pair == [0xff, code])
+            .expect("fixture marker")
+    };
+    let cod = marker(&encoded, 0x52);
+    let cod_len = usize::from(u16::from_be_bytes([encoded[cod + 2], encoded[cod + 3]]));
+    let mut tile_headers = encoded[cod..cod + 2 + cod_len].to_vec();
+    assert_eq!(encoded[cod + 4], 0, "fixture uses default precinct sizes");
+    encoded[cod + 9] += 1;
+
+    let qcd = marker(&encoded, 0x5c);
+    let qcd_len = u16::from_be_bytes([encoded[qcd + 2], encoded[qcd + 3]]);
+    let qcd_end = qcd + 2 + usize::from(qcd_len);
+    tile_headers.extend_from_slice(&encoded[qcd..qcd_end]);
+    assert_eq!(encoded[qcd + 4] & 0x1f, 0, "fixture is reversible");
+    let last_step = encoded[qcd_end - 1];
+    encoded[qcd + 2..qcd + 4].copy_from_slice(&(qcd_len + 3).to_be_bytes());
+    encoded.splice(qcd_end..qcd_end, [last_step; 3]);
+
+    let sot = marker(&encoded, 0x90);
+    let psot = u32::from_be_bytes(encoded[sot + 6..sot + 10].try_into().unwrap());
+    assert_ne!(psot, 0, "fixture has an explicit tile-part length");
+    let psot = psot + u32::try_from(tile_headers.len()).unwrap();
+    encoded[sot + 6..sot + 10].copy_from_slice(&psot.to_be_bytes());
+    let tile_header_start = sot + 12;
+    assert_eq!(
+        &encoded[tile_header_start..tile_header_start + 2],
+        &[0xff, 0x93]
+    );
+    encoded.splice(tile_header_start..tile_header_start, tile_headers);
+    encoded
+}
+
 pub(super) fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, descriptor: u8) {
     let siz_marker = bytes
         .windows(2)

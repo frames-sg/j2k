@@ -75,6 +75,11 @@ pub use decode::{
 
 pub use parallelism::CpuDecodeParallelism;
 
+pub use j2k_types::{
+    WaveletBand, WaveletBandKind, WaveletComponent, WaveletImage, WaveletRect, WaveletSamples,
+    WaveletSelection, WaveletTile, WaveletTransform,
+};
+
 pub use metadata::{
     J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentInfo,
     J2kComponentMapping, J2kComponentMappingType, J2kFileMetadata, J2kPaletteColumn,

@@ -91,6 +91,7 @@ fn staged_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
         ];
         let mut cpu = CpuBatchDecoder::new(options);
         let expected = cpu.decode(inputs.clone()).expect("CPU RGB U8 oracle");
+        assert!(expected.errors().is_empty(), "{:?}", expected.errors());
         let CpuBatchSamples::U8(expected) = expected.groups()[0].samples() else {
             panic!("six-bit RGB must use U8 batch storage")
         };

@@ -1,5 +1,9 @@
 # Burn batch decoding with `j2k-ml`
 
+For the Rust-written PyTorch/NumPy extension, native wavelet output, and direct
+CUDA-to-PyTorch decoding, see [`j2k-python`](../crates/j2k-python/README.md).
+The Burn adapters described here retain their staged GPU upload behavior.
+
 `j2k-ml` is a Burn 0.21 integration maintained by the J2K project. It is not
 an official Tracel or Burn crate and follows the workspace semver policy. The
 GPU adapters use only released CubeCL, wgpu, and Burn APIs and are built as a

@@ -3,17 +3,18 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use j2k::{
-    prepare_batch, wrap_j2k_codestream, BatchDecodeOptions, BatchDecoder, BatchItemError,
-    BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest, Downscale, EncodedImage,
-    J2kComponentMapping, J2kComponentMappingType, J2kFileBoxMetadata, J2kFileColorSpec,
-    J2kFileWrapOptions, J2kPaletteColumn, J2kPaletteMetadata, NonRepresentableReason, Rect,
+    prepare_batch, wrap_j2k_codestream, BatchDecodeOptions, BatchDecoder, BatchErrorStage,
+    BatchItemError, BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest, Downscale,
+    EncodedImage, J2kComponentMapping, J2kComponentMappingType, J2kFileBoxMetadata,
+    J2kFileColorSpec, J2kFileWrapOptions, J2kPaletteColumn, J2kPaletteMetadata,
+    NonRepresentableReason, Rect,
 };
 use j2k_core::Colorspace;
 use j2k_native::{encode, EncodeOptions};
 
 use super::fixtures::{
-    four_component_fixture, htj2k_gray8_fixture, rewrite_component_descriptor, rgb8_fixture,
-    signed_gray16_fixture,
+    classic_gray8_fixture, four_component_fixture, htj2k_gray8_fixture,
+    rewrite_component_descriptor, rgb8_fixture, signed_gray16_fixture, with_shorter_tile_ladder,
 };
 
 #[test]
@@ -187,6 +188,146 @@ fn reduced_and_region_reduced_requests_group_by_decoded_geometry() {
     assert!(result.errors().is_empty(), "{:?}", result.errors());
     assert_eq!(result.groups()[0].samples().len(), 12);
     assert_eq!(result.groups()[1].samples().len(), 6);
+}
+
+#[test]
+fn reductions_deeper_than_the_ladder_fail_at_prepare_with_their_index() {
+    // Both OpenJPH fixtures have two decomposition levels. Eighth resolution
+    // used to decode a clamped quarter image and return its top-left crop
+    // (single tile), or fail later with an unrelated code-block error (tiled).
+    let tiled = Arc::<[u8]>::from(
+        &include_bytes!("../../../j2k-test-support/fixtures/htj2k/openjph_batch/gray_u8_53.j2c")[..],
+    );
+    let single = Arc::<[u8]>::from(
+        &include_bytes!(
+            "../../../j2k-test-support/fixtures/htj2k/openjph_batch/rgb_s12_53_single.j2c"
+        )[..],
+    );
+    let eighth = DecodeRequest::Reduced {
+        scale: Downscale::Eighth,
+    };
+    let prepared = prepare_batch(
+        vec![
+            EncodedImage::new(
+                Arc::clone(&tiled),
+                DecodeRequest::Reduced {
+                    scale: Downscale::Quarter,
+                },
+            ),
+            EncodedImage::new(tiled, eighth),
+            EncodedImage::new(Arc::clone(&single), eighth),
+            EncodedImage::new(
+                single,
+                DecodeRequest::RegionReduced {
+                    roi: Rect {
+                        x: 1,
+                        y: 1,
+                        w: 9,
+                        h: 7,
+                    },
+                    scale: Downscale::Eighth,
+                },
+            ),
+        ],
+        BatchDecodeOptions::default(),
+    )
+    .expect("prepare mixed reductions");
+
+    assert_eq!(prepared.groups().len(), 1);
+    assert_eq!(prepared.groups()[0].info().dimensions, (5, 4));
+    let indices = prepared
+        .errors()
+        .iter()
+        .map(|error| error.index)
+        .collect::<Vec<_>>();
+    assert_eq!(indices, [1, 2, 3]);
+    for error in prepared.errors() {
+        assert!(
+            error.source.to_string().contains("resolution ladder"),
+            "{}",
+            error.source
+        );
+    }
+}
+
+#[test]
+fn tile_ladder_overrides_fail_at_prepare_for_classic_and_htj2k() {
+    for original in [classic_gray8_fixture(8, 8), htj2k_gray8_fixture(8, 8)] {
+        let overridden = with_shorter_tile_ladder(original.clone());
+        let decode_full = |bytes: &[u8]| {
+            j2k_native::Image::new(bytes, &j2k_native::DecodeSettings::strict())
+                .unwrap()
+                .decode_native()
+                .unwrap()
+                .data
+        };
+        assert_eq!(decode_full(&overridden), decode_full(&original));
+        let bytes = Arc::<[u8]>::from(overridden);
+        let options = BatchDecodeOptions::default();
+        let prepared = prepare_batch(
+            vec![
+                EncodedImage::full(Arc::clone(&bytes)),
+                EncodedImage::new(
+                    Arc::clone(&bytes),
+                    DecodeRequest::Reduced {
+                        scale: Downscale::Half,
+                    },
+                ),
+                EncodedImage::new(
+                    Arc::clone(&bytes),
+                    DecodeRequest::Reduced {
+                        scale: Downscale::Quarter,
+                    },
+                ),
+                EncodedImage::new(
+                    bytes,
+                    DecodeRequest::RegionReduced {
+                        roi: Rect {
+                            x: 1,
+                            y: 1,
+                            w: 5,
+                            h: 5,
+                        },
+                        scale: Downscale::Quarter,
+                    },
+                ),
+            ],
+            options,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared
+                .errors()
+                .iter()
+                .map(|error| error.index)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        for error in prepared.errors() {
+            assert!(matches!(
+                error.source,
+                BatchItemError::Codec {
+                    stage: BatchErrorStage::Prepare,
+                    ..
+                }
+            ));
+            assert!(error
+                .source
+                .to_string()
+                .contains("tile coding style has fewer levels"));
+        }
+        let output = CpuBatchDecoder::new(options)
+            .decode_prepared(&prepared)
+            .unwrap();
+        assert_eq!(output.errors(), prepared.errors());
+        let mut successful = output
+            .groups()
+            .iter()
+            .flat_map(|group| group.source_indices().iter().copied())
+            .collect::<Vec<_>>();
+        successful.sort_unstable();
+        assert_eq!(successful, [0, 1]);
+    }
 }
 
 #[test]

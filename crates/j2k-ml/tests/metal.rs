@@ -148,16 +148,21 @@ fn encode_rgb_u8(width: u32, height: u32, offset: u8) -> Vec<u8> {
             }
         }
     }
-    let samples =
-        J2kLosslessSamples::new(&bytes, width, height, 3, 6, false).expect("six-bit RGB samples");
-    encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions::default()
-            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
-            .with_validation(J2kEncodeValidation::External),
+    // The facade omits DWT for small images; these requests need a reduced level.
+    encode_htj2k(
+        &bytes,
+        width,
+        height,
+        3,
+        6,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        },
     )
     .expect("encode HT RGB U8")
-    .codestream
 }
 
 fn encode_rgb_u16(width: u32, height: u32, offset: u16) -> Vec<u8> {

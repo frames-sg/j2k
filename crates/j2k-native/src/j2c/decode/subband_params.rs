@@ -5,13 +5,13 @@ use super::{
     QuantizationStyle, Result, SubBand, SubBandType, WaveletTransform, MAX_BITPLANE_COUNT,
 };
 
-pub(super) struct SubBandDecodeParameters {
-    pub(super) dequantization_step: f32,
+pub(crate) struct SubBandDecodeParameters {
+    pub(crate) dequantization_step: f32,
     pub(super) irreversible_midpoint: bool,
     pub(super) num_bitplanes: u8,
 }
 
-pub(super) fn sub_band_decode_parameters(
+pub(crate) fn sub_band_decode_parameters(
     sub_band: &SubBand,
     resolution: u8,
     component_info: &ComponentInfo,

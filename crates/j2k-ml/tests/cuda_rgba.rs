@@ -7,11 +7,9 @@ use std::sync::Arc;
 use burn_core::tensor::DType;
 use burn_cuda::CudaDevice;
 use j2k::{
-    encode_j2k_lossless, wrap_j2k_codestream, BatchDecodeOptions, BatchLayout, CpuBatchDecoder,
-    CpuBatchSamples, DecodeRequest, Downscale, EncodedImage, J2kBlockCodingMode,
-    J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kEncodeValidation,
-    J2kFileBoxMetadata, J2kFileColorSpec, J2kFileWrapOptions, J2kLosslessEncodeOptions,
-    J2kLosslessSamples, Rect, ReversibleTransform,
+    wrap_j2k_codestream, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples,
+    DecodeRequest, Downscale, EncodedImage, J2kChannelAssociation, J2kChannelDefinition,
+    J2kChannelType, J2kFileBoxMetadata, J2kFileColorSpec, J2kFileWrapOptions, Rect,
 };
 use j2k_core::Colorspace;
 use j2k_ml::{BurnBatchTensor, CudaUploadBurnDecoder};
@@ -85,7 +83,11 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
     let prepared = decoder
         .prepare(inputs.clone())
         .unwrap_or_else(|error| panic!("prepare {codec} RGBA Burn batch: {error}"));
-    assert!(prepared.errors().is_empty(), "{codec} preflight errors");
+    assert!(
+        prepared.errors().is_empty(),
+        "{codec} {layout:?} {request:?} preflight errors: {:?}",
+        prepared.errors()
+    );
     let [prepared_group] = prepared.groups() else {
         panic!("expected one {codec} RGBA group")
     };
@@ -170,29 +172,22 @@ fn wrap_rgba_jph(fixture: &Htj2kRgbaFixture) -> Vec<u8> {
 
 fn wrap_classic_rgba_jp2(fixture: &Htj2kRgbaFixture) -> Vec<u8> {
     let bytes = samples_as_encoded_bytes(&fixture.samples);
-    let samples = J2kLosslessSamples::new(
+    // The facade omits DWT for small images; these requests need a reduced level.
+    let codestream = j2k_native::encode(
         &bytes,
         fixture.width,
         fixture.height,
         4,
         fixture.bit_depth,
         fixture.signed,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            use_mct: fixture.use_mct,
+            ..j2k_native::EncodeOptions::default()
+        },
     )
-    .expect("valid classic RGBA samples");
-    let transform = if fixture.use_mct {
-        ReversibleTransform::Rct53
-    } else {
-        ReversibleTransform::None53
-    };
-    let codestream = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions::default()
-            .with_block_coding_mode(J2kBlockCodingMode::Classic)
-            .with_reversible_transform(transform)
-            .with_validation(J2kEncodeValidation::External),
-    )
-    .expect("encode classic RGBA fixture")
-    .codestream;
+    .expect("encode classic RGBA fixture");
     wrap_rgba_container(&codestream, fixture.alpha, J2kFileWrapOptions::jp2())
 }
 
