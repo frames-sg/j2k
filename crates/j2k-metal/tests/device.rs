@@ -341,16 +341,22 @@ fn fixture_gray8_irreversible() -> Vec<u8> {
 }
 
 fn fixture_rgb12() -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(12);
-    for sample in [0u16, 1023, 2047, 3071, 4095, 17] {
-        pixels.extend_from_slice(&sample.to_le_bytes());
+    fixture_rgb12_with_height(1)
+}
+
+fn fixture_rgb12_with_height(height: u8) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(12 * usize::from(height));
+    for _ in 0..height {
+        for sample in [0u16, 1023, 2047, 3071, 4095, 17] {
+            pixels.extend_from_slice(&sample.to_le_bytes());
+        }
     }
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
         ..EncodeOptions::default()
     };
-    encode(&pixels, 2, 1, 3, 12, false, &options).expect("encode rgb12")
+    encode(&pixels, 2, u32::from(height), 3, 12, false, &options).expect("encode rgb12")
 }
 
 fn fixture_ht_gray8() -> Vec<u8> {
