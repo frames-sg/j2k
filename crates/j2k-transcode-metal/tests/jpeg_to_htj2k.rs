@@ -312,6 +312,12 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
         4
     ];
     let options = JpegToHtj2kOptions::lossy_97();
+    let reference = j2k_transcode::jpeg_to_htj2k(&jpeg, &options)
+        .expect("CPU reference transcodes the code-block fixture");
+    let expected = Image::new(&reference.codestream, &DecodeSettings::default())
+        .expect("native parser accepts the CPU reference")
+        .decode_native()
+        .expect("native decoder accepts the CPU reference");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -333,8 +339,8 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
     assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 12);
     assert_eq!(batch.report.timings.cpu_fallback_jobs, 0);
     assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
-    assert!(batch.report.timings.dwt97_batch_idct_row_lift_us > 0);
-    assert!(batch.report.timings.dwt97_batch_column_lift_us > 0);
+    // Recording row/column commands can round down to zero microseconds.
+    // Dispatch counts and the decoded reference comparison verify the work.
     // The staged route materializes four resident subbands per job.
     assert_eq!(
         batch.report.timings.dwt97_batch_resident_dwt_handoff_count,
@@ -355,6 +361,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
             .expect("native decoder accepts generated Metal code-block 9/7 HTJ2K");
         assert_eq!((decoded.width, decoded.height), (16, 16));
         assert_eq!(decoded.num_components, 3);
+        assert_eq!(decoded.data, expected.data);
         assert_eq!(
             tile.report.coefficient_path,
             JpegToHtj2kCoefficientPath::FloatDirectLinear97
