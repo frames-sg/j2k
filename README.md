@@ -138,6 +138,15 @@ READMEs for which paths run on the GPU. Benchmark numbers are in
 
 ## Machine learning
 
+The optional [Rust-written PyTorch/NumPy extension](crates/j2k-python/README.md)
+exposes native pixel tensors, reusable batches, region/reduced decode, and
+selected wavelet bands. Its optional CUDA route decodes directly into
+PyTorch-owned device storage. Python is only needed by users of that extension.
+
+Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
+5/3 coefficients or dequantized 9/7 coefficients, with tile/component metadata.
+The decoder skips entropy work for unrequested bands and omits inverse DWT.
+
 `j2k-ml` decodes batches of JPEG 2000 images into
 [Burn](https://burn.dev) tensors (`U8`, `U16`, or `I16`, NCHW or NHWC). Its
 CUDA and Metal modes decode on the GPU but copy the pixels through host memory
@@ -160,6 +169,8 @@ Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
 | JPEG on the GPU | `j2k-jpeg-cuda` or `j2k-jpeg-metal` |
 | Feed decoded images to Burn | `j2k-ml` |
 | Feed decoded images to MPSGraph | `j2k-mpsgraph` |
+| Feed pixels or wavelet bands to PyTorch/NumPy | Optional `j2k-python` extension (`j2k`) |
+| Extract selected wavelet coefficients in Rust | `j2k::J2kDecoder::decode_wavelets` |
 | Decompress Deflate, Zstd, or LZW tiles (as in TIFF) | `j2k-tilecodec` |
 | A command-line tool | `j2k-cli` |
 

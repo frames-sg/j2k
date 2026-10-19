@@ -4,7 +4,7 @@
 
 use super::{
     backend, decode_prepared_plan_samples, size_of, BatchDecodeOptions, BatchGroupInfo,
-    BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, Downscale, J2kError,
+    BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, J2kError,
     NativeSampleType, PreparedImage, Rect, Vec,
 };
 
@@ -63,11 +63,7 @@ fn image_components<'ctx, 'input>(
 ) -> Result<j2k_native::DecodedComponents<'ctx>, J2kError> {
     context.set_cpu_decode_parallelism(parallelism.to_native());
     let plan = image.plan();
-    let target_resolution = (plan.scale() != Downscale::None).then_some((
-        plan.source_dims().0.div_ceil(plan.scale().denominator()),
-        plan.source_dims().1.div_ceil(plan.scale().denominator()),
-    ));
-    let decoded = backend::image(image.bytes(), options.settings, target_resolution)?;
+    let decoded = backend::image_at_scale(image.bytes(), options.settings, plan.scale())?;
     let output_rect = plan.output_rect();
     let decoded_dims = (decoded.width(), decoded.height());
     // Every batch sample type is an integer output, so irreversible samples

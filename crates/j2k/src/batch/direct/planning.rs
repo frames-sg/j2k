@@ -32,12 +32,8 @@ pub(super) fn build_direct_color_region_plan(
     }
 
     validate_region(roi, parsed.info.dimensions)?;
-    let target_dims = (
-        parsed.info.dimensions.0.div_ceil(scale.denominator()),
-        parsed.info.dimensions.1.div_ceil(scale.denominator()),
-    );
     let output_region = roi.scaled_covering(scale);
-    let image = backend::image(input, DecodeSettings::default(), Some(target_dims))?;
+    let image = backend::image_at_scale(input, DecodeSettings::default(), scale)?;
     validate_region(output_region, (image.width(), image.height()))?;
 
     let mut native_context = j2k_native::DecoderContext::default();

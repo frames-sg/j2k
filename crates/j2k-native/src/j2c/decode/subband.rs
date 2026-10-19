@@ -90,7 +90,7 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
 )]
-fn decode_sub_band_bitplanes(
+pub(super) fn decode_sub_band_bitplanes(
     sub_band_idx: usize,
     resolution: u8,
     component_info: &ComponentInfo,

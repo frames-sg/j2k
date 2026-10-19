@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "j2k"
+dynamic = ["version"]
+description = "JPEG 2000 and HTJ2K pixels and wavelet tensors, decoded by Rust"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+
+[project.urls]
+Homepage = "https://frames-sg.com/j2k/rust-jpeg2000-codec/"
+Repository = "https://github.com/frames-sg/j2k"
+Documentation = "https://github.com/frames-sg/j2k/blob/main/crates/j2k-python/README.md"
+Issues = "https://github.com/frames-sg/j2k/issues"
+
+[project.optional-dependencies]
+torch = ["torch>=2.12"]
+numpy = ["numpy>=2"]
+
+[tool.maturin]
+features = ["extension-module"]
+module-name = "j2k"

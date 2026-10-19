@@ -285,6 +285,10 @@ pub use j2k_types::{
     PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
+pub use j2k_types::{
+    WaveletBand, WaveletBandKind, WaveletComponent, WaveletImage, WaveletRect, WaveletSamples,
+    WaveletSelection, WaveletTile, WaveletTransform,
+};
 
 mod j2c;
 mod jp2;

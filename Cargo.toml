@@ -22,6 +22,7 @@ members = [
     "crates/j2k-ml",
     "crates/j2k-native",
     "crates/j2k-profile",
+    "crates/j2k-python",
     "crates/j2k-test-support",
     "crates/j2k-t803",
     "crates/j2k-tilecodec",

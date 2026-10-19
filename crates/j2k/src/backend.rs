@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{DecodeSettings, J2kError};
-use j2k_core::{Colorspace, Info};
+use j2k_core::{Colorspace, Downscale, Info};
 
 pub(crate) use j2k_native::{ColorSpace, DecodedComponents, Image, RawBitmap};
 
@@ -21,6 +21,24 @@ pub(crate) fn image_with_reduction(
 ) -> Result<Image<'_>, J2kError> {
     Image::new_with_reduction(bytes, &settings.to_native(None), reduction_levels)
         .map_err(J2kError::from_native_decode_error)
+}
+
+/// Build the image for a power-of-two [`Downscale`] request.
+///
+/// Every halving must come from the codestream's resolution ladder. A request
+/// deeper than the shortest component ladder is rejected rather than clamped,
+/// because a clamped image would leave callers cropping a larger reduction.
+pub(crate) fn image_at_scale(
+    bytes: &[u8],
+    settings: DecodeSettings,
+    scale: Downscale,
+) -> Result<Image<'_>, J2kError> {
+    let levels = u8::try_from(scale.denominator().trailing_zeros())
+        .map_err(|_| J2kError::internal_backend("downscale level count overflow"))?;
+    if levels == 0 {
+        return image(bytes, settings, None);
+    }
+    image_with_reduction(bytes, settings, levels)
 }
 
 pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {

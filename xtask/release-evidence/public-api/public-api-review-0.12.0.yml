@@ -44,10 +44,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-types:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:5b8f358d6f255688"
     hidden_count: 103
     hidden_fingerprint: "fnv1a64:71b5df4e9aaebdcb"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-codec-math:
     removed_fingerprint: "fnv1a64:594402a62d9308ce"
@@ -107,10 +107,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-native:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:61c95814ea52b3aa"
     hidden_count: 570
     hidden_fingerprint: "fnv1a64:94a3e1a6f76d96ce"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures."
     hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks."
   j2k-jpeg:
     removed_fingerprint: "none"
@@ -128,10 +128,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:e212123f4c9acc3a"
     hidden_count: 108
     hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-transcode:
     removed_fingerprint: "none"

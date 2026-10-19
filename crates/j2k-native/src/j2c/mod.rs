@@ -28,6 +28,7 @@ mod segment;
 mod tag_tree;
 pub(crate) mod tag_tree_encode;
 mod tile;
+pub(crate) mod wavelets;
 
 #[cfg(test)]
 pub(crate) use tile::{reset_tile_parse_calls, tile_parse_calls};

@@ -1,0 +1,122 @@
+name: PyTorch and NumPy bindings
+
+on:
+  pull_request:
+    paths:
+      - "crates/j2k-python/**"
+      - "crates/j2k/**"
+      - "crates/j2k-native/**"
+      - "crates/j2k-types/**"
+      - "crates/j2k-core/**"
+      - "crates/j2k-codec-math/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python-bindings.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the tested CPU wheels to PyPI (main branch only)"
+        type: boolean
+        default: false
+      cuda:
+        description: "Also validate direct PyTorch CUDA output on the protected GPU runner"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-bindings-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  cpu-wheel:
+    name: CPU wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.99.0"
+      - name: Install wheel consumers
+        shell: bash
+        run: |
+          python -m pip install 'numpy>=2,<3'
+          if [ "$RUNNER_OS" = Linux ]; then
+            python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+          else
+            python -m pip install torch==2.12.1
+          fi
+      - name: Build portable wheels
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: v1.15.0
+          rust-toolchain: "1.99.0"
+          manylinux: "2_28"
+          args: --locked --release --manifest-path crates/j2k-python/Cargo.toml --out target/python-wheels --compatibility pypi
+      - name: Test the installed wheel
+        shell: bash
+        run: |
+          python -m pip install --no-deps --no-index --find-links target/python-wheels j2k
+          python -m unittest discover -s crates/j2k-python/tests -v
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: j2k-python-${{ matrix.os }}
+          path: target/python-wheels/*.whl
+          if-no-files-found: error
+
+  cuda:
+    name: PyTorch direct CUDA validation
+    if: ${{ github.repository == 'frames-sg/j2k' && github.event_name == 'workflow_dispatch' && github.actor == 'jcwal1516' && github.triggering_actor == 'jcwal1516' && inputs.cuda }}
+    runs-on: [self-hosted, Linux, X64, cuda]
+    timeout-minutes: 90
+    env:
+      J2K_REQUIRE_CUDA_RUNTIME: "1"
+      J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
+      J2K_REQUIRE_CUDA: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.99.0"
+      - name: Configure CUDA Oxide bindgen
+        run: bash scripts/configure-cuda-bindgen.sh
+      - name: Build and validate CUDA wheel
+        run: |
+          python -m pip install 'maturin>=1.9,<2' 'numpy>=2,<3' torch==2.12.1
+          python -m maturin build --locked --release --features cuda --manifest-path crates/j2k-python/Cargo.toml --compatibility linux --out target/python-cuda-wheels
+          python -m pip install --no-deps --no-index --find-links target/python-cuda-wheels j2k
+          python -m unittest discover -s crates/j2k-python/tests -v
+
+  publish:
+    name: Publish j2k to PyPI
+    needs: [cpu-wheel, cuda]
+    if: ${{ always() && github.repository == 'frames-sg/j2k' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'jcwal1516' && github.triggering_actor == 'jcwal1516' && inputs.publish && needs.cpu-wheel.result == 'success' && (needs.cuda.result == 'success' || needs.cuda.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/j2k/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: j2k-python-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

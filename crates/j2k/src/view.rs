@@ -2,7 +2,8 @@
 
 use crate::{
     backend::{
-        image as backend_image, image_with_reduction as backend_image_with_reduction, inspect_info,
+        image as backend_image, image_at_scale as backend_image_at_scale,
+        image_with_reduction as backend_image_with_reduction, inspect_info,
         inspect_info_from_image, Image,
     },
     decode::{
@@ -258,6 +259,25 @@ impl<'a> J2kDecoder<'a> {
         J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
     }
 
+    /// Extract selected codestream wavelet bands on the CPU, without inverse
+    /// DWT, inverse color transformation, ICC conversion, or pixel packing.
+    ///
+    /// Reversible 5/3 bands use exact I64 storage; irreversible 9/7 bands are
+    /// dequantized F32. Tile boundaries and component metadata are preserved.
+    /// See [`crate::WaveletSelection`] for selection and memory semantics.
+    pub fn decode_wavelets(
+        &mut self,
+        selection: &crate::WaveletSelection,
+    ) -> Result<crate::WaveletImage, J2kError> {
+        self.ensure_image()?;
+        let (Some(image), context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(J2kError::internal_backend("internal image cache missing"));
+        };
+        image
+            .decode_wavelets_with_context(context, selection)
+            .map_err(J2kError::from_native_decode_error)
+    }
+
     /// Decode a source-coordinate region into owned native-bit-depth component
     /// planes.
     ///
@@ -391,7 +411,8 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format or scale request is unsupported,
-    /// the output buffer is too small, or decode fails.
+    /// including a scale deeper than the codestream's resolution ladder, the
+    /// output buffer is too small, or decode fails.
     pub fn decode_scaled_into(
         &mut self,
         pool: &mut J2kScratchPool,
@@ -403,11 +424,7 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        let image = backend_image(
-            self.bytes,
-            self.settings,
-            Some(self.scaled_target_dims(scale)),
-        )?;
+        let image = backend_image_at_scale(self.bytes, self.settings, scale)?;
         let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
@@ -426,8 +443,9 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// # Errors
     /// Returns [`J2kError`] when the region is out of bounds, the scale or
-    /// pixel format is unsupported, the output buffer is too small, or decode
-    /// fails.
+    /// pixel format is unsupported (including a scale deeper than the
+    /// codestream's resolution ladder), the output buffer is too small, or
+    /// decode fails.
     pub fn decode_region_scaled_into(
         &mut self,
         pool: &mut J2kScratchPool,
@@ -443,11 +461,7 @@ impl<'a> J2kDecoder<'a> {
         validate_region(roi, self.info.dimensions)?;
         let scaled_roi = roi.scaled_covering(scale);
         validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-        let image = backend_image(
-            self.bytes,
-            self.settings,
-            Some(self.scaled_target_dims(scale)),
-        )?;
+        let image = backend_image_at_scale(self.bytes, self.settings, scale)?;
         let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;
@@ -477,13 +491,6 @@ impl<'a> J2kDecoder<'a> {
         self.image
             .as_ref()
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
-    }
-
-    fn scaled_target_dims(&self, scale: Downscale) -> (u32, u32) {
-        (
-            self.info.dimensions.0.div_ceil(scale.denominator()),
-            self.info.dimensions.1.div_ceil(scale.denominator()),
-        )
     }
 
     fn scaled_decode_native_context(&self) -> j2k_native::DecoderContext<'a> {

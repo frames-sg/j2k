@@ -6,7 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{fmt, mem::size_of, num::NonZeroUsize, ops::Range, sync::atomic::Ordering};
 use std::sync::Mutex;
 
-use j2k_core::{BatchInfrastructureError, Colorspace, CompressedTransferSyntax, Downscale, Rect};
+use j2k_core::{BatchInfrastructureError, Colorspace, CompressedTransferSyntax, Rect};
 
 pub use j2k_core::{PixelLayout as BatchColor, SampleType as NativeSampleType};
 

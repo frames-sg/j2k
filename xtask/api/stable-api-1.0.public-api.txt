@@ -257,6 +257,7 @@ pub fn j2k::J2kDecoder<'a>::decode_region_components(&mut self, j2k_core::types:
 pub fn j2k::J2kDecoder<'a>::decode_region_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::decode_region_scaled_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::decode_wavelets(&mut self, &j2k_types::wavelet::WaveletSelection) -> core::result::Result<j2k_types::wavelet::WaveletImage, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::from_view(j2k::J2kView<'a>) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, j2k::J2kError>
@@ -802,6 +803,15 @@ pub use j2k::Rect
 pub use j2k::RowSink
 pub use j2k::TileBatchDecode
 pub use j2k::TileBatchOptions
+pub use j2k::WaveletBand
+pub use j2k::WaveletBandKind
+pub use j2k::WaveletComponent
+pub use j2k::WaveletImage
+pub use j2k::WaveletRect
+pub use j2k::WaveletSamples
+pub use j2k::WaveletSelection
+pub use j2k::WaveletTile
+pub use j2k::WaveletTransform
 ```
 
 ## `j2k-core`
@@ -3900,6 +3910,7 @@ pub fn j2k_native::Image<'a>::decode_native_with_context(&self, &mut j2k_native:
 pub fn j2k_native::Image<'a>::decode_region(&self, (u32, u32, u32, u32)) -> j2k_native::Result<j2k_native::Bitmap>
 pub fn j2k_native::Image<'a>::decode_region_components_with_context<'ctx>(&self, (u32, u32, u32, u32), &'ctx mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Bitmap>
+pub fn j2k_native::Image<'a>::decode_wavelets_with_context(&self, &mut j2k_native::DecoderContext<'a>, &j2k_types::wavelet::WaveletSelection) -> j2k_native::Result<j2k_types::wavelet::WaveletImage>
 pub fn j2k_native::Image<'a>::decode_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Bitmap>
 pub fn j2k_native::Image<'a>::has_alpha(&self) -> bool
 pub fn j2k_native::Image<'a>::height(&self) -> u32
@@ -4175,6 +4186,15 @@ pub struct j2k_native::RawBitmap
 pub struct j2k_native::Reversible53CoefficientImage
 pub type j2k_native::EncodeResult<T> = core::result::Result<T, j2k_native::EncodeError>
 pub type j2k_native::Result<T> = core::result::Result<T, j2k_native::DecodeError>
+pub use j2k_native::WaveletBand
+pub use j2k_native::WaveletBandKind
+pub use j2k_native::WaveletComponent
+pub use j2k_native::WaveletImage
+pub use j2k_native::WaveletRect
+pub use j2k_native::WaveletSamples
+pub use j2k_native::WaveletSelection
+pub use j2k_native::WaveletTile
+pub use j2k_native::WaveletTransform
 ```
 
 ## `j2k-types`
@@ -4243,6 +4263,9 @@ pub enum j2k_types::J2kReferencedHtj2kPlan
 pub enum j2k_types::J2kReferencedTileGeometry
 pub enum j2k_types::J2kSubBandType
 pub enum j2k_types::J2kWaveletTransform
+pub enum j2k_types::WaveletBandKind
+pub enum j2k_types::WaveletSamples
+pub enum j2k_types::WaveletTransform
 pub fn j2k_types::IrreversibleQuantizationSubbandScales::default() -> Self
 pub fn j2k_types::J2kDirectColorPlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
 pub fn j2k_types::J2kDirectGrayscalePlan::retained_allocation_bytes(&self) -> core::result::Result<usize, j2k_types::DecodePlanAllocationError>
@@ -4701,6 +4724,41 @@ pub j2k_types::PrequantizedHtj2k97Subband::num_cbs_x: u32
 pub j2k_types::PrequantizedHtj2k97Subband::num_cbs_y: u32
 pub j2k_types::PrequantizedHtj2k97Subband::sub_band_type: j2k_types::J2kSubBandType
 pub j2k_types::PrequantizedHtj2k97Subband::total_bitplanes: u8
+pub j2k_types::WaveletBand::kind: j2k_types::J2kSubBandType
+pub j2k_types::WaveletBand::quantization_step: f32
+pub j2k_types::WaveletBand::rect: j2k_types::J2kRect
+pub j2k_types::WaveletBand::resolution: u8
+pub j2k_types::WaveletBand::samples: j2k_types::WaveletSamples
+pub j2k_types::WaveletBandKind::HighHigh
+pub j2k_types::WaveletBandKind::HighLow
+pub j2k_types::WaveletBandKind::LowHigh
+pub j2k_types::WaveletBandKind::LowLow
+pub j2k_types::WaveletComponent::bands: alloc::vec::Vec<j2k_types::WaveletBand>
+pub j2k_types::WaveletComponent::decomposition_levels: u8
+pub j2k_types::WaveletComponent::index: u16
+pub j2k_types::WaveletComponent::precision: u8
+pub j2k_types::WaveletComponent::rect: j2k_types::J2kRect
+pub j2k_types::WaveletComponent::sampling: (u8, u8)
+pub j2k_types::WaveletComponent::signed: bool
+pub j2k_types::WaveletComponent::transform: j2k_types::J2kWaveletTransform
+pub j2k_types::WaveletImage::rect: j2k_types::J2kRect
+pub j2k_types::WaveletImage::tiles: alloc::vec::Vec<j2k_types::WaveletTile>
+pub j2k_types::WaveletRect::x0: u32
+pub j2k_types::WaveletRect::x1: u32
+pub j2k_types::WaveletRect::y0: u32
+pub j2k_types::WaveletRect::y1: u32
+pub j2k_types::WaveletSamples::F32(alloc::vec::Vec<f32>)
+pub j2k_types::WaveletSamples::I64(alloc::vec::Vec<i64>)
+pub j2k_types::WaveletSelection::bands: alloc::vec::Vec<j2k_types::J2kSubBandType>
+pub j2k_types::WaveletSelection::components: alloc::vec::Vec<u16>
+pub j2k_types::WaveletSelection::resolutions: alloc::vec::Vec<u8>
+pub j2k_types::WaveletSelection::tiles: alloc::vec::Vec<u32>
+pub j2k_types::WaveletTile::components: alloc::vec::Vec<j2k_types::WaveletComponent>
+pub j2k_types::WaveletTile::index: u32
+pub j2k_types::WaveletTile::rect: j2k_types::J2kRect
+pub j2k_types::WaveletTile::uses_color_transform: bool
+pub j2k_types::WaveletTransform::Irreversible97
+pub j2k_types::WaveletTransform::Reversible53
 pub mod j2k_types
 pub struct j2k_types::CpuOnlyJ2kEncodeStageAccelerator
 pub struct j2k_types::DecodePlanAllocationError
@@ -4767,6 +4825,12 @@ pub struct j2k_types::PrequantizedHtj2k97Component
 pub struct j2k_types::PrequantizedHtj2k97Image
 pub struct j2k_types::PrequantizedHtj2k97Resolution
 pub struct j2k_types::PrequantizedHtj2k97Subband
+pub struct j2k_types::WaveletBand
+pub struct j2k_types::WaveletComponent
+pub struct j2k_types::WaveletImage
+pub struct j2k_types::WaveletRect
+pub struct j2k_types::WaveletSelection
+pub struct j2k_types::WaveletTile
 pub trait j2k_types::J2kEncodeStageAccelerator
 pub type j2k_types::J2kDirectBandId = u32
 pub type j2k_types::J2kEncodeStageResult<T> = core::result::Result<T, j2k_types::J2kEncodeStageError>

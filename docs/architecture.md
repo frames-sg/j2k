@@ -35,6 +35,7 @@ where JP2/JPH decoding needs them. The detailed list is in
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters built on `j2k-metal-support`. J2K transforms, Tier-1, packetization, store, and resident encode/decode are in the private `j2k-metal::engine` module; the transcode adapter has its own coefficient-domain kernels and does not depend on `j2k-metal`. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
+| `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage. No Python dependencies in default Rust builds. |
 | `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared types. |
@@ -56,6 +57,13 @@ where JP2/JPH decoding needs them. The detailed list is in
 - `j2k-mpsgraph` may retain MPSGraph objects and allocate validated external
   Metal destinations. It reuses `j2k-metal` grouping, kernels, and queue
   ordering and must not add decoded-pixel readback/upload staging.
+- `j2k-types` owns framework-independent wavelet result/selection contracts.
+  `j2k-native` extracts selected bands through the existing Tier-1 decoders;
+  `j2k` owns the public method. No framework code participates in extraction.
+- `j2k-python` owns interpreter conversion, DLPack lifetime transfer, and the
+  CUDA/PyTorch allocation boundary. It reuses codec preparation and external
+  destinations. Dataset policy, normalization, and model code stay with the
+  application.
 - Codec crates may depend on `j2k-core` and support crates.
 - Adapter crates may depend inward on codec/core/support crates.
 - Support crates must not depend on adapters.
@@ -86,6 +94,7 @@ j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
+j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode

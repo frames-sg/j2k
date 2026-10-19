@@ -65,9 +65,9 @@ use self::subband::{
 pub(crate) use self::subband::{
     should_decode_classic_sub_band_in_parallel, should_decode_ht_sub_band_in_parallel,
 };
+pub(crate) use self::subband_params::sub_band_decode_parameters;
 use self::subband_params::{
-    classic_decode_job_parameters, ht_code_block_has_decodable_passes, sub_band_decode_parameters,
-    SubBandDecodeParameters,
+    classic_decode_job_parameters, ht_code_block_has_decodable_passes, SubBandDecodeParameters,
 };
 pub use self::workspace::{
     CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
@@ -555,6 +555,52 @@ fn tile_requires_exact_integer_decode(tile: &Tile<'_>) -> bool {
     tile.component_infos
         .iter()
         .any(ComponentInfo::requires_exact_integer_decode)
+}
+
+pub(crate) fn decode_selected_wavelet_bands<'a>(
+    tile: &Tile<'a>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    header: &Header<'_>,
+    parallelism: CpuDecodeParallelism,
+    selection: &j2k_types::WaveletSelection,
+) -> Result<()> {
+    let workspace = tier1::prepare_tier1_workspace(tile, header, tile_ctx, storage)?;
+    let result = (|| {
+        for (component_index, info) in tile.component_infos.iter().enumerate() {
+            if !super::wavelets::select_component(selection, component_index) {
+                continue;
+            }
+            storage.exact_integer_decode =
+                info.wavelet_transform() == WaveletTransform::Reversible53;
+            for resolution in 0..info.num_resolution_levels() {
+                let composition = &storage.tile_decompositions[component_index];
+                for index in composition.sub_band_iter(resolution, &storage.decompositions) {
+                    if !super::wavelets::select_band(
+                        selection,
+                        resolution,
+                        storage.sub_bands[index].sub_band_type,
+                    ) {
+                        continue;
+                    }
+                    subband::decode_sub_band_bitplanes(
+                        index,
+                        resolution,
+                        info,
+                        tile_ctx,
+                        storage,
+                        header,
+                        &mut None,
+                        parallelism,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    tier1::release_tier1_workspace(tile_ctx, storage, &workspace)?;
+    result
 }
 
 fn validate_exact_integer_decode_tile(tile: &Tile<'_>) -> Result<()> {

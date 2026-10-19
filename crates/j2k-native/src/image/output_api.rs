@@ -18,6 +18,26 @@ use super::native::{try_clone_color_space, NativeOutputBudget};
 use super::Image;
 
 impl<'a> Image<'a> {
+    /// Extract selected native wavelet bands without inverse DWT or color conversion.
+    ///
+    /// See [`crate::WaveletSelection`] for selection and coefficient semantics.
+    ///
+    /// # Errors
+    /// Returns an error for invalid selectors or unsupported coding contracts.
+    pub fn decode_wavelets_with_context(
+        &self,
+        context: &mut DecoderContext<'a>,
+        selection: &crate::WaveletSelection,
+    ) -> Result<crate::WaveletImage> {
+        j2c::wavelets::extract(
+            self.codestream,
+            &self.header,
+            self.retained_metadata_bytes()?,
+            context,
+            selection,
+        )
+    }
+
     /// Decode the image at native bit depth without scaling to 8-bit.
     ///
     /// For images with bit depth ≤ 8, returns pixel data as `Vec<u8>`.

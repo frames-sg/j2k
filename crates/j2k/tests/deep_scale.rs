@@ -205,6 +205,60 @@ fn deep_scaled_decode_rejects_ladder_and_shift_overflow() {
 }
 
 #[test]
+fn downscale_deeper_than_the_ladder_is_rejected_instead_of_cropped() {
+    // Two decomposition levels reach Quarter but not Eighth. A clamped decode
+    // would have returned the top-left crop of the quarter-resolution image.
+    let (width, height) = (64_u32, 48_u32);
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: width,
+        h: height,
+    };
+    let stride = width as usize * 3;
+    for tile_size in [None, Some((32, 32))] {
+        let bytes = encode_rgb_fixture(width, height, 2, tile_size);
+        let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+        let mut output = vec![0_u8; stride * height as usize];
+
+        decoder
+            .decode_scaled_into(
+                &mut J2kScratchPool::new(),
+                &mut output,
+                stride,
+                PixelFormat::Rgb8,
+                Downscale::Quarter,
+            )
+            .expect("quarter resolution is on the ladder");
+        let full_error = decoder
+            .decode_scaled_into(
+                &mut J2kScratchPool::new(),
+                &mut output,
+                stride,
+                PixelFormat::Rgb8,
+                Downscale::Eighth,
+            )
+            .expect_err("eighth resolution exceeds the ladder");
+        let region_error = decoder
+            .decode_region_scaled_into(
+                &mut J2kScratchPool::new(),
+                &mut output,
+                stride,
+                PixelFormat::Rgb8,
+                full,
+                Downscale::Eighth,
+            )
+            .expect_err("eighth resolution exceeds the ladder");
+        for error in [full_error, region_error] {
+            assert!(
+                matches!(error, J2kError::Unsupported(_)),
+                "tile={tile_size:?}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn deep_scaled_decode_preserves_lenient_recovery_warning() {
     let pixels = [3_u8, 9, 27, 81];
     let codestream = encode(

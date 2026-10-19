@@ -5,6 +5,30 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `J2kDecoder::decode_wavelets` extracts selected native wavelet bands on the
+  CPU for classic JPEG 2000 and HTJ2K, without inverse DWT, color conversion,
+  or pixel packing: reversible 5/3 bands as exact `I64`, irreversible 9/7
+  bands as dequantized `F32`. Output keeps tile and component geometry,
+  precision, signedness, sampling, transform, color-transform status, and each
+  band's quantization step. `WaveletSelection` picks tiles, components,
+  resolutions, and orientations; unselected bands skip Tier-1 decoding. New
+  public types, defined in `j2k-types` and re-exported by `j2k` and
+  `j2k-native`: `WaveletSelection`, `WaveletImage`, `WaveletTile`,
+  `WaveletComponent`, `WaveletBand`, `WaveletSamples`, `WaveletBandKind`,
+  `WaveletRect`, and `WaveletTransform`.
+- New unpublished `j2k-python` crate: the `j2k` PyO3 extension, built with
+  maturin as the `j2k` wheel, gives PyTorch and NumPy inspection,
+  native-dtype pixel batches (region, reduced, prepared reuse, input-indexed
+  errors), and wavelet bands through DLPack. Its `cuda` feature decodes
+  directly into PyTorch-owned CUDA storage. Rust builds without its features
+  do not depend on PyO3.
+- Behavior fix: reduced decodes (`Downscale::Half`, `Quarter`, `Eighth`)
+  deeper than a codestream's resolution ladder now fail with
+  `requested reduction exceeds the codestream resolution ladder`; owned
+  batches report it at prepare with the input's index. The request was
+  previously clamped: single-tile images returned the top-left crop of the
+  deepest available reduction, and tiled images failed later with an
+  unrelated code-block error.
 - `j2k-jpeg` decodes the remaining JPEG classes libjpeg-turbo decodes:
   - sequential 8- and 12-bit frames whose components are split across
     several scans (multi-scan, one per component or partly interleaved),
