@@ -52,6 +52,11 @@ name = "encode_baseline"
 harness = false
 test = false
 
+[[bench]]
+name = "hybrid"
+harness = false
+test = false
+
 [lints.rust]
 unsafe_code = "allow"
 unsafe_op_in_unsafe_fn = "deny"

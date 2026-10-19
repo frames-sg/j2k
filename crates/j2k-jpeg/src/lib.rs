@@ -37,8 +37,8 @@ pub use batch_session::JpegBatchSession;
 
 mod capabilities;
 pub use capabilities::{
-    JpegBackendEligibility, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
-    JpegDecodeRequest, JpegResolvedDecode, JpegResolvedDecodePath,
+    metal_hybrid_eligibility, JpegBackendEligibility, JpegCapabilityReport, JpegCapabilityRequest,
+    JpegDecodeOp, JpegDecodeRequest, JpegResolvedDecode, JpegResolvedDecodePath,
 };
 
 mod output_buffer;

@@ -96,7 +96,36 @@ pub(in crate::compute) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders_decode_fast422_regions.metal"),
     include_str!("../shaders_decode_fast444.metal"),
     include_str!("../shaders_pack_subsampled.metal"),
+    include_str!("../shaders_hybrid.metal"),
+    include_str!("../shaders_lossless_encode.metal"),
 );
+
+/// Lossless (SOF3) encode stages, `shaders_lossless_encode.metal`.
+pub(in crate::compute) struct LosslessEncodePipelines {
+    pub(in crate::compute) classify: ComputePipelineState,
+    pub(in crate::compute) read_sample: ComputePipelineState,
+    pub(in crate::compute) chunk_bits: ComputePipelineState,
+    pub(in crate::compute) row_offsets: ComputePipelineState,
+    pub(in crate::compute) interval_offsets: ComputePipelineState,
+    pub(in crate::compute) interval_bases: ComputePipelineState,
+    pub(in crate::compute) clear: ComputePipelineState,
+    pub(in crate::compute) pack: ComputePipelineState,
+}
+
+impl LosslessEncodePipelines {
+    fn load(loader: &MetalPipelineLoader) -> Result<Self, MetalSupportError> {
+        Ok(Self {
+            classify: loader.pipeline("jpeg_lossless_encode_classify")?,
+            read_sample: loader.pipeline("jpeg_lossless_encode_read_sample")?,
+            chunk_bits: loader.pipeline("jpeg_lossless_encode_chunk_bits")?,
+            row_offsets: loader.pipeline("jpeg_lossless_encode_row_offsets")?,
+            interval_offsets: loader.pipeline("jpeg_lossless_encode_interval_offsets")?,
+            interval_bases: loader.pipeline("jpeg_lossless_encode_interval_bases")?,
+            clear: loader.pipeline("jpeg_lossless_encode_clear")?,
+            pack: loader.pipeline("jpeg_lossless_encode_pack")?,
+        })
+    }
+}
 
 pub(in crate::compute) struct JpegPipelineRegistry {
     pub(in crate::compute) pack: ComputePipelineState,
@@ -107,6 +136,7 @@ pub(in crate::compute) struct JpegPipelineRegistry {
     pub(in crate::compute) jpeg_baseline_encode_offset_stuffed_segments_batch: ComputePipelineState,
     pub(in crate::compute) jpeg_baseline_encode_scatter_stuffed_segments_batch:
         ComputePipelineState,
+    pub(in crate::compute) lossless_encode: LosslessEncodePipelines,
     pub(in crate::compute) pack_420: ComputePipelineState,
     pub(in crate::compute) pack_420_rgb: ComputePipelineState,
     pub(in crate::compute) pack_420_rgba: ComputePipelineState,
@@ -158,6 +188,14 @@ pub(in crate::compute) struct JpegPipelineRegistry {
     pub(in crate::compute) fast444_batch_decode: ComputePipelineState,
     pub(in crate::compute) fast444_rgba_texture_batch_decode: ComputePipelineState,
     pub(in crate::compute) rgb8_to_rgba_texture: ComputePipelineState,
+    pub(in crate::compute) hybrid_idct8: ComputePipelineState,
+    pub(in crate::compute) hybrid_idct12: ComputePipelineState,
+    pub(in crate::compute) hybrid_pack8: ComputePipelineState,
+    pub(in crate::compute) hybrid_pack12: ComputePipelineState,
+    pub(in crate::compute) lossless_reconstruct: ComputePipelineState,
+    pub(in crate::compute) lossless_reconstruct_rows: ComputePipelineState,
+    pub(in crate::compute) lossless_pack8: ComputePipelineState,
+    pub(in crate::compute) lossless_pack16: ComputePipelineState,
 }
 
 // SAFETY: Metal compute pipeline states are immutable after construction and
@@ -203,6 +241,7 @@ impl JpegPipelineRegistry {
             jpeg_baseline_encode_scatter_stuffed_segments_batch: pipeline(
                 "jpeg_encode_baseline_scatter_stuffed_segments_batch",
             )?,
+            lossless_encode: LosslessEncodePipelines::load(&loader)?,
             pack_420: pipeline("jpeg_pack_420")?,
             pack_420_rgb: pipeline("jpeg_pack_420_rgb")?,
             pack_420_rgba: pipeline("jpeg_pack_420_rgba")?,
@@ -266,6 +305,14 @@ impl JpegPipelineRegistry {
             fast444_batch_decode: pipeline("jpeg_decode_fast444_batch")?,
             fast444_rgba_texture_batch_decode: pipeline("jpeg_decode_fast444_rgba_texture_batch")?,
             rgb8_to_rgba_texture: pipeline("jpeg_copy_rgb8_to_rgba_texture")?,
+            hybrid_idct8: pipeline("jpeg_hybrid_idct8")?,
+            hybrid_idct12: pipeline("jpeg_hybrid_idct12")?,
+            hybrid_pack8: pipeline("jpeg_hybrid_pack8")?,
+            hybrid_pack12: pipeline("jpeg_hybrid_pack12")?,
+            lossless_reconstruct: pipeline("jpeg_lossless_reconstruct")?,
+            lossless_reconstruct_rows: pipeline("jpeg_lossless_reconstruct_rows")?,
+            lossless_pack8: pipeline("jpeg_lossless_pack8")?,
+            lossless_pack16: pipeline("jpeg_lossless_pack16")?,
         })
     }
 

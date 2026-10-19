@@ -10,6 +10,7 @@ mod rejection;
 mod request;
 mod resolve;
 
+pub use metal::metal_hybrid_eligibility;
 pub use rejection::JpegBackendEligibility;
 pub use request::{JpegCapabilityRequest, JpegDecodeOp, JpegDecodeRequest};
 pub use resolve::{JpegResolvedDecode, JpegResolvedDecodePath};

@@ -51,7 +51,8 @@ pub use decode_request::{MetalDecodeOp, MetalDecodeRequest};
 pub use decoder::Decoder;
 pub use encode::{
     encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
-    JpegBaselineMetalEncodeTile,
+    encode_jpeg_lossless_from_metal_buffer, JpegBaselineMetalEncodeTile,
+    JpegLosslessMetalEncodeTile,
 };
 pub use error::Error;
 pub(crate) use fast_packets::JpegFastPackets;

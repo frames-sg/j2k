@@ -10,4 +10,6 @@
 // - shaders_decode_fast422_regions.metal
 // - shaders_decode_fast444.metal
 // - shaders_pack_subsampled.metal
+// - shaders_hybrid.metal
+// - shaders_lossless_encode.metal
 // Keep pipeline_registry.rs concatenation order byte-compatible with the original monolith.

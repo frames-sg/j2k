@@ -53,7 +53,11 @@ mod command;
 pub(crate) mod encode;
 mod fast_packets;
 #[cfg(target_os = "macos")]
+pub(crate) mod hybrid;
+#[cfg(target_os = "macos")]
 mod kernel_helpers;
+#[cfg(target_os = "macos")]
+pub(crate) mod lossless_encode;
 #[cfg(target_os = "macos")]
 mod pack_dispatch;
 #[cfg(target_os = "macos")]

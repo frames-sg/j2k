@@ -5,11 +5,6 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
-- `j2k_jpeg_cuda::encode_jpeg_lossless_from_cuda_buffer` encodes CUDA-resident
-  2–16-bit grayscale and RGB samples as lossless SOF3 JPEG. CUDA-Oxide
-  kernels classify and pack the stream; the host builds the Huffman table
-  from the device histogram and performs byte stuffing. Output is
-  byte-identical to the CPU lossless encoder for the same samples and options.
 - `j2k-jpeg` decodes the remaining JPEG classes libjpeg-turbo decodes:
   - sequential 8- and 12-bit frames whose components are split across
     several scans (multi-scan, one per component or partly interleaved),
@@ -26,7 +21,7 @@ and stale roadmap entries have been removed from the public documentation set.
   precision, 16-bit above. Every lossless case libjpeg-turbo decodes, and
   DCMTK-written DICOM codestreams (lossless SV1 and other predictors at 8 to
   16 bits stored, 12-bit extended and progressive, RGB), now match
-  `djpeg`/`dcmdjpeg` byte for byte.
+  `djpeg`/`dcmdjpeg` byte for byte. Explicit Metal decode covers all of them.
 - Behavior fixes that change decoded output to match libjpeg-turbo:
   - YCCK decodes YCC to complemented CMY before applying K, as
     `ycck_cmyk_convert` does. Every Adobe YCCK JPEG, at 8 and 12 bits, on
@@ -43,6 +38,9 @@ and stale roadmap entries have been removed from the public documentation set.
   Metal decoder construction, now accepts 0xFF fill bytes before markers
   (T.81 B.1.1.2). DICOM encoders pad fragments with one before EOI, and CPU
   decode already accepted them.
+- JPEG Metal `Decoder::new` builds its plan directly instead of through a
+  cache local to the call, which hashed the whole input twice for a lookup
+  that always missed: about 2.7 ms per 5 MB input.
 - `j2k-jpeg` encodes the JPEG forms DICOM writes:
   - `encode_jpeg_lossless`: lossless (SOF3) at 2 to 16 bits from `Gray8`,
     `Gray16`, `Rgb8`, or `Rgb16` samples, with predictors 1–7 (SV1 is 1),
@@ -61,6 +59,48 @@ and stale roadmap entries have been removed from the public documentation set.
   `JpegEncodeError` gains `RestartIntervalTooLarge`, `UnsupportedPixelFormat`,
   `UnsupportedPrecision`, `InvalidPredictor`, `InvalidPointTransform`, and
   `SampleOutOfRange`; exhaustive matches on it need new arms.
+- GPU lossless JPEG encode, byte-identical to `encode_jpeg_lossless`:
+  `j2k_jpeg_metal::encode_jpeg_lossless_from_metal_buffer` (6.2 ms against
+  39.7 ms on the CPU for a 2048×2500 16-bit image on an M4 Pro) and
+  `j2k_jpeg_cuda::encode_jpeg_lossless_from_cuda_buffer`, whose CUDA-Oxide
+  kernels build on Linux cuda-oxide hosts (byte-identical output verified on
+  an RTX 4070 SUPER, `sm_89`). The device classifies and packs;
+  the host builds the table from the device histogram and stuffs bytes.
+  `j2k-codec-math` adds `jpeg::lossless`, the prediction and difference
+  coding all three encoders share.
+- JPEG Metal decode now covers every JPEG the CPU decoder supports. Explicit
+  `BackendRequest::Metal` requests for shapes outside the fast-packet kernels
+  (grayscale; 4:4:0, 4:1:1, 4:1:0, 1x4 and other whole-ratio sampling;
+  4:2:0/4:2:2 images at most 4 px wide; subsampled APP14 RGB; CMYK and YCCK;
+  progressive 8-bit; extended and progressive 12-bit; multi-scan sequential;
+  and lossless SOF3 at every precision with predictors 1–7) use hybrid decode
+  instead of returning `UnsupportedMetalRequest`. The CPU runs only the serial entropy stage,
+  writing dequantized DCT blocks or lossless differences straight into shared
+  Metal storage; Metal runs the IDCT or predictor reconstruction, chroma
+  upsampling, color conversion, and output packing. Full, region, scaled, and
+  region-scaled output, including `Gray16`/`Rgb16`/`Rgba16`, is byte-identical
+  to CPU decode and Metal-resident. Regions of 8-bit sequential images decode
+  only the MCU rows they need. Explicit Metal requests CPU decode rejects
+  still return `UnsupportedMetalRequest`, now with CPU-mirrored reasons.
+  Single-image hybrid decode runs at about CPU speed for DCT JPEG and up to
+  2.2× slower for lossless (see `docs/decode-architecture.md`), so
+  `BackendRequest::Auto` routing is unchanged.
+- JPEG Metal explicit batches, `JpegTileBatch`, viewports, and session decode
+  accept the same JPEG classes. The reusable RGB8 buffer and RGBA8 texture
+  batch outputs (`Codec::decode_rgb8_batch_into_buffer_with_session` and
+  `Codec::decode_rgb8_batch_into_textures_with_session`) no longer reject
+  mixed sampling families, restart-coded full 4:2:2/4:4:4 tiles, or inputs
+  without a fast packet: tiles the batched fast-packet kernels cannot share
+  are hybrid-decoded into their slots. Output dimensions must still match.
+- `j2k-jpeg` adds `metal_hybrid_eligibility`,
+  `JpegCapabilityReport::metal_hybrid`, and
+  `JpegResolvedDecodePath::MetalHybrid`; `resolve_path(BackendRequest::Metal)`
+  returns `MetalHybrid` for JPEG classes outside the fast-packet kernels.
+  Code that matches `JpegResolvedDecodePath` exhaustively needs the new arm.
+  `JpegCapabilityReport::metal_resident_rgb8_batch_output` now accepts every
+  RGB8-decodable input. Hidden `adapter` APIs expose device DCT and lossless
+  layouts, entropy-only decode into caller-owned storage, and
+  per-component scaling geometry.
 - Test support adds `lossless_matrix_cases`: 81 libjpeg-turbo and
   reference-encoder lossless JPEGs with `djpeg` references, generated by
   `corpus/conformance/lossless_matrix.py`. It also adds

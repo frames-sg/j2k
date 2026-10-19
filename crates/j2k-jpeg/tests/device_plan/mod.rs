@@ -6,5 +6,6 @@ mod device_plan_basics;
 mod extended;
 mod lossless;
 mod malformed_inputs;
+mod metal_hybrid;
 mod progressive;
 mod support;

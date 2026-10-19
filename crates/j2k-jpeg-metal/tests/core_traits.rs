@@ -109,7 +109,35 @@ fn decode_to_device_with_session_uses_session_device() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn decode_to_device_with_session_rejects_unsupported_grayscale_shape() {
+fn decode_to_device_with_session_decodes_grayscale_on_metal() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut decoder = Decoder::new(GRAYSCALE).expect("decoder");
+    let (expected, _) = decoder
+        .inner()
+        .decode_request(j2k_jpeg::DecodeRequest::full(PixelFormat::Gray8))
+        .expect("CPU decode");
+
+    let surface = decoder
+        .decode_to_device_with_session(PixelFormat::Gray8, &session)
+        .expect("hybrid Metal session decode");
+
+    assert_eq!(
+        surface.residency(),
+        j2k_core::SurfaceResidency::MetalResidentDecode
+    );
+    assert_eq!(
+        surface.as_bytes().expect("surface bytes").as_ref(),
+        expected
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn decode_to_device_with_session_rejects_unsupported_grayscale_output() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -117,7 +145,7 @@ fn decode_to_device_with_session_rejects_unsupported_grayscale_shape() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = Decoder::new(GRAYSCALE).expect("decoder");
 
-    let result = decoder.decode_to_device_with_session(PixelFormat::Gray8, &session);
+    let result = decoder.decode_to_device_with_session(PixelFormat::Rgb16, &session);
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
@@ -411,10 +439,10 @@ fn auto_viewport_cpu_fallback_returns_cpu_surface() {
 }
 
 #[test]
-fn explicit_metal_unsupported_grayscale_shape_is_rejected() {
+fn explicit_metal_unsupported_grayscale_output_is_rejected() {
     let mut decoder = Decoder::new(GRAYSCALE).expect("decoder");
 
-    let result = decoder.decode_to_device(PixelFormat::Gray8, BackendRequest::Metal);
+    let result = decoder.decode_to_device(PixelFormat::Rgb16, BackendRequest::Metal);
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
@@ -431,7 +459,7 @@ fn explicit_metal_unsupported_grayscale_shape_is_rejected() {
 #[test]
 fn explicit_metal_unsupported_error_is_codec_unsupported() {
     let mut decoder = Decoder::new(GRAYSCALE).expect("decoder");
-    let err = match decoder.decode_to_device(PixelFormat::Gray8, BackendRequest::Metal) {
+    let err = match decoder.decode_to_device(PixelFormat::Rgb16, BackendRequest::Metal) {
         Err(err) => err,
         Ok(surface) => panic!(
             "explicit Metal must not silently fall back; got {:?}",

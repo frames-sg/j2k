@@ -215,60 +215,37 @@ fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_textures(
 
 #[cfg(target_os = "macos")]
 #[test]
-fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_textures() {
+fn rgb8_decoder_batch_decodes_mixed_sampling_into_textures() {
     let Some(session) = metal_session() else {
         return;
     };
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let rgb = j2k_test_support::patterned_rgb8(16, 16);
-    let fast420 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr420,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast420 jpeg");
-    let fast444 = encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &rgb,
-            width: 16,
-            height: 16,
-        },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr444,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode fast444 jpeg");
-    let first = Decoder::new(&fast420.data).expect("first decoder");
-    let second = Decoder::new(&fast444.data).expect("second decoder");
-    let decoders = [&first, &second];
+    let jpegs = super::mixed_family_jpegs_16x16();
+    let decoders = jpegs
+        .iter()
+        .map(|jpeg| Decoder::new(jpeg).expect("decoder"))
+        .collect::<Vec<_>>();
+    let decoder_refs = decoders.iter().collect::<Vec<_>>();
 
-    let Err(err) = Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
-        &decoders,
+    let tiles = Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
+        &decoder_refs,
         &mut output,
         &session,
-    ) else {
-        panic!("mixed sampling should be rejected");
-    };
+    )
+    .expect("mixed texture batch decode");
 
-    assert!(matches!(
-        err,
-        Error::UnsupportedMetalRequest { reason }
-            if reason.contains("same fast-packet sampling family")
-    ));
-    assert_eq!(output.dimensions(), (1, 1));
-    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(output.dimensions(), (16, 16));
+    assert_eq!(tiles.len(), jpegs.len());
+    for (index, (tile, jpeg)) in tiles.into_iter().zip(&jpegs).enumerate() {
+        let tile = tile.expect("tile decode");
+        let (expected_rgb, _) = CpuDecoder::new(jpeg)
+            .expect("cpu decoder")
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("cpu decode");
+        let actual = download_rgba8_texture(&session, tile.texture_trusted(), (16, 16));
+        assert_eq!(actual, rgb_to_rgba_opaque(&expected_rgb), "tile {index}");
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -3,7 +3,8 @@
 use j2k_core::{BackendRequest, PixelFormat};
 use j2k_jpeg::{
     adapter::{JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1},
-    Decoder as CpuDecoder,
+    metal_hybrid_eligibility, Decoder as CpuDecoder, JpegBackendEligibility, JpegCapabilityRequest,
+    JpegDecodeOp,
 };
 use j2k_metal_support::{
     cpu_host_route, metal_kernel_route, metal_unavailable_route, reject_explicit_metal_route,
@@ -20,6 +21,12 @@ pub(crate) enum RouteDecision {
         expect(dead_code, reason = "the Metal route is constructed only on macOS")
     )]
     MetalKernel,
+    /// CPU entropy decode, then Metal IDCT, upsampling, color, and packing.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "the Metal route is constructed only on macOS")
+    )]
+    MetalHybrid,
     RejectExplicitMetal {
         reason: ExplicitMetalRejection,
     },
@@ -41,6 +48,9 @@ impl RouteDecision {
         match self {
             Self::CpuHost => cpu_host_route(),
             Self::MetalKernel => metal_kernel_route(),
+            Self::MetalHybrid => {
+                MetalRouteProfileLabels::new("metal_hybrid", "cpu_entropy_metal_reconstruction")
+            }
             Self::RejectExplicitMetal { reason } => {
                 reject_explicit_metal_route(reason.profile_reason())
             }
@@ -52,26 +62,27 @@ impl RouteDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExplicitMetalRejection {
-    MissingFastPacket,
     UnsupportedOutputFormat,
+    /// CPU decode, which hybrid Metal decode mirrors, rejects the request.
+    UnsupportedJpeg {
+        reason: &'static str,
+    },
 }
 
 impl ExplicitMetalRejection {
     fn error_reason(self) -> &'static str {
         match self {
-            Self::MissingFastPacket => {
-                "JPEG Metal supports explicit requests only for fast 4:2:0, 4:2:2, or 4:4:4 baseline packets"
-            }
             Self::UnsupportedOutputFormat => {
-                "JPEG Metal supports explicit requests only for Gray8, Rgb8, or Rgba8 output formats"
+                "JPEG Metal supports explicit requests only for Gray8, Rgb8, Rgba8, Gray16, Rgb16, or Rgba16 output formats"
             }
+            Self::UnsupportedJpeg { reason } => reason,
         }
     }
 
     fn profile_reason(self) -> &'static str {
         match self {
-            Self::MissingFastPacket => "no_fast_packet",
             Self::UnsupportedOutputFormat => "unsupported_format",
+            Self::UnsupportedJpeg { .. } => "unsupported_jpeg",
         }
     }
 }
@@ -79,7 +90,11 @@ impl ExplicitMetalRejection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct JpegMetalCapabilities {
     has_fast_packet: bool,
+    /// Gray8, Rgb8, or Rgba8: the formats the fast-packet kernels emit.
+    supports_fast_output_format: bool,
+    /// Any of the six formats some Metal route can emit.
     supports_output_format: bool,
+    hybrid: JpegBackendEligibility,
 }
 
 impl JpegMetalCapabilities {
@@ -91,22 +106,51 @@ impl JpegMetalCapabilities {
         self.supports_output_format
     }
 
+    pub(crate) fn hybrid_eligible(self) -> bool {
+        self.hybrid.eligible
+    }
+
     pub(crate) fn for_request(
-        _decoder: &CpuDecoder<'_>,
+        decoder: &CpuDecoder<'_>,
         fmt: PixelFormat,
-        _op: BatchOp,
+        op: BatchOp,
         fast444_packet: Option<&JpegFast444PacketV1>,
         fast422_packet: Option<&JpegFast422PacketV1>,
         fast420_packet: Option<&JpegFast420PacketV1>,
     ) -> Self {
         let has_fast_packet =
             fast444_packet.is_some() || fast422_packet.is_some() || fast420_packet.is_some();
+        let supports_fast_output_format = matches!(
+            fmt,
+            PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8
+        );
         let supports_output_format = supports_metal_output_format(fmt);
+        let hybrid = metal_hybrid_eligibility(
+            decoder.info(),
+            JpegCapabilityRequest {
+                op: capability_op(op),
+                fmt,
+            },
+        );
 
         Self {
             has_fast_packet,
+            supports_fast_output_format,
             supports_output_format,
+            hybrid,
         }
+    }
+}
+
+fn capability_op(op: BatchOp) -> JpegDecodeOp {
+    match op {
+        BatchOp::Full => JpegDecodeOp::Full,
+        BatchOp::Region(roi) => JpegDecodeOp::Region(roi.into()),
+        BatchOp::Scaled(scale) => JpegDecodeOp::Scaled(scale),
+        BatchOp::RegionScaled { roi, scale } => JpegDecodeOp::RegionScaled {
+            roi: roi.into(),
+            scale,
+        },
     }
 }
 
@@ -121,14 +165,10 @@ pub(crate) fn decide_route(
             RouteDecision::CpuHost
         }
         BackendRequest::Metal => {
-            if !capabilities.has_fast_packet {
+            let fast = capabilities.has_fast_packet && capabilities.supports_fast_output_format;
+            if !fast && !capabilities.hybrid.eligible {
                 return RouteDecision::RejectExplicitMetal {
-                    reason: ExplicitMetalRejection::MissingFastPacket,
-                };
-            }
-            if !capabilities.supports_output_format {
-                return RouteDecision::RejectExplicitMetal {
-                    reason: ExplicitMetalRejection::UnsupportedOutputFormat,
+                    reason: explicit_metal_rejection(capabilities),
                 };
             }
 
@@ -138,7 +178,11 @@ pub(crate) fn decide_route(
             }
             #[cfg(target_os = "macos")]
             {
-                RouteDecision::MetalKernel
+                if fast {
+                    RouteDecision::MetalKernel
+                } else {
+                    RouteDecision::MetalHybrid
+                }
             }
         }
         BackendRequest::Cuda => RouteDecision::RejectUnsupportedBackend {
@@ -147,10 +191,29 @@ pub(crate) fn decide_route(
     }
 }
 
+/// Why an explicit Metal request neither fast nor hybrid decode accepts is
+/// rejected.
+fn explicit_metal_rejection(capabilities: JpegMetalCapabilities) -> ExplicitMetalRejection {
+    if !capabilities.supports_output_format {
+        return ExplicitMetalRejection::UnsupportedOutputFormat;
+    }
+    ExplicitMetalRejection::UnsupportedJpeg {
+        reason: capabilities
+            .hybrid
+            .reason
+            .unwrap_or("JPEG Metal decode rejected this request"),
+    }
+}
+
 fn supports_metal_output_format(fmt: PixelFormat) -> bool {
     matches!(
         fmt,
-        PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8
+        PixelFormat::Gray8
+            | PixelFormat::Rgb8
+            | PixelFormat::Rgba8
+            | PixelFormat::Gray16
+            | PixelFormat::Rgb16
+            | PixelFormat::Rgba16
     )
 }
 
@@ -163,7 +226,7 @@ pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
             Some(Error::UnsupportedBackend { request })
         }
         RouteDecision::MetalUnavailable => Some(Error::MetalUnavailable),
-        RouteDecision::CpuHost | RouteDecision::MetalKernel => None,
+        RouteDecision::CpuHost | RouteDecision::MetalKernel | RouteDecision::MetalHybrid => None,
     }
 }
 
@@ -194,12 +257,18 @@ mod tests {
         )
     }
 
+    fn eligible_everywhere() -> JpegMetalCapabilities {
+        JpegMetalCapabilities {
+            has_fast_packet: true,
+            supports_fast_output_format: true,
+            supports_output_format: true,
+            hybrid: capabilities_for(BASELINE_420, PixelFormat::Rgb8).hybrid,
+        }
+    }
+
     #[test]
     fn cuda_route_reports_unsupported_backend() {
-        let capabilities = JpegMetalCapabilities {
-            has_fast_packet: true,
-            supports_output_format: true,
-        };
+        let capabilities = eligible_everywhere();
 
         assert_eq!(
             decide_route(BackendRequest::Cuda, capabilities),
@@ -217,11 +286,9 @@ mod tests {
 
     #[test]
     fn explicit_metal_unsupported_output_format_is_rejected_before_launch() {
-        let capabilities = JpegMetalCapabilities {
-            has_fast_packet: true,
-            supports_output_format: false,
-        };
+        let capabilities = capabilities_for(BASELINE_420, PixelFormat::RgbI16);
 
+        assert!(!capabilities.supports_output_format());
         assert!(matches!(
             decide_route(BackendRequest::Metal, capabilities),
             RouteDecision::RejectExplicitMetal {
@@ -255,31 +322,55 @@ mod tests {
     }
 
     #[test]
-    fn explicit_metal_rejects_supported_output_when_fast_packet_is_missing() {
+    fn explicit_metal_routes_jpeg_without_fast_packet_to_hybrid_decode() {
         let capabilities = capabilities_for(GRAYSCALE, PixelFormat::Gray8);
 
         assert!(!capabilities.has_fast_packet());
-        assert!(capabilities.supports_output_format());
+        assert!(capabilities.hybrid_eligible());
+        let decision = decide_route(BackendRequest::Metal, capabilities);
         assert!(matches!(
-            decide_route(BackendRequest::Metal, capabilities),
-            RouteDecision::RejectExplicitMetal {
-                reason: ExplicitMetalRejection::MissingFastPacket
-            }
+            decision,
+            RouteDecision::MetalHybrid | RouteDecision::MetalUnavailable
         ));
-        let labels = decide_route(BackendRequest::Metal, capabilities).profile_labels();
-        assert_eq!(labels.decision, "reject_explicit_metal");
-        assert_eq!(labels.reason, "no_fast_packet");
+        #[cfg(target_os = "macos")]
+        {
+            let labels = decision.profile_labels();
+            assert_eq!(labels.decision, "metal_hybrid");
+        }
+    }
+
+    #[test]
+    fn explicit_metal_rejects_what_cpu_decode_rejects_with_the_cpu_reason() {
+        for bytes in [GRAYSCALE, BASELINE_420] {
+            let capabilities = capabilities_for(bytes, PixelFormat::Rgb16);
+
+            assert!(capabilities.supports_output_format());
+            assert!(!capabilities.hybrid_eligible());
+            let decision = decide_route(BackendRequest::Metal, capabilities);
+            let RouteDecision::RejectExplicitMetal {
+                reason: ExplicitMetalRejection::UnsupportedJpeg { reason },
+            } = decision
+            else {
+                panic!("expected a CPU-mirrored rejection, got {decision:?}");
+            };
+            assert!(
+                reason.starts_with("JPEG Metal decode supports Gray8, Rgb8, or Rgba8"),
+                "{reason}"
+            );
+            let labels = decision.profile_labels();
+            assert_eq!(labels.decision, "reject_explicit_metal");
+            assert_eq!(labels.reason, "unsupported_jpeg");
+            assert!(matches!(
+                decision_error(decision),
+                Some(Error::UnsupportedMetalRequest { reason: message }) if message == reason
+            ));
+        }
     }
 
     #[test]
     fn auto_routes_single_request_to_cpu_even_when_metal_capabilities_match() {
-        let capabilities = JpegMetalCapabilities {
-            has_fast_packet: true,
-            supports_output_format: true,
-        };
-
         assert_eq!(
-            decide_route(BackendRequest::Auto, capabilities),
+            decide_route(BackendRequest::Auto, eligible_everywhere()),
             RouteDecision::CpuHost
         );
     }
@@ -287,15 +378,12 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn explicit_metal_unsupported_shape_is_rejected_before_host_unavailability() {
-        let capabilities = JpegMetalCapabilities {
-            has_fast_packet: false,
-            supports_output_format: true,
-        };
+        let capabilities = capabilities_for(GRAYSCALE, PixelFormat::Rgb16);
 
         assert!(matches!(
             decide_route(BackendRequest::Metal, capabilities),
             RouteDecision::RejectExplicitMetal {
-                reason: ExplicitMetalRejection::MissingFastPacket
+                reason: ExplicitMetalRejection::UnsupportedJpeg { .. }
             }
         ));
     }

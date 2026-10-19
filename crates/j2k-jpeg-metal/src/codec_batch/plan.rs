@@ -4,10 +4,7 @@
 
 use super::owner_accounting::{distinct_decoder_retained_bytes, Rgb8BatchBuildContext};
 use super::request::{Rgb8MetalBatchOp, Rgb8MetalBatchSource};
-use super::source::{
-    decoder_resident_restart_interval_mcus, decoder_resident_sampling_family,
-    ResolvedRgb8BatchSource,
-};
+use super::source::ResolvedRgb8BatchSource;
 use crate::{
     batch, plan_owner_ledger::preflight_collective_metadata, scaled_dims, session, Codec, Error,
 };
@@ -20,34 +17,19 @@ pub(super) struct Rgb8MetalBatchPlan {
 
 pub(super) fn build_rgb8_batch_plan<S>(
     sources: &[S],
-    op: Rgb8MetalBatchOp,
     context: &mut Rgb8BatchBuildContext,
     mut resolve: impl FnMut(&S, &Rgb8BatchBuildContext) -> Result<ResolvedRgb8BatchSource, Error>,
 ) -> Result<Rgb8MetalBatchPlan, Error> {
+    // Shared output tiles need one output shape. Sampling families, restart
+    // coding, and fast-packet availability may vary: batches the fast-packet
+    // batch kernels cannot share are hybrid-decoded per tile.
     let mut output_dimensions = None;
-    let mut sampling_family = None;
     for source in sources {
         let resolved = resolve(source, context)?;
         Codec::observe_rgb8_batch_output_dimensions(
             &mut output_dimensions,
             resolved.output_dimensions,
         )?;
-        if let Some(first) = sampling_family {
-            if first != resolved.sampling_family {
-                return Err(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_sampling("JPEG Metal reusable resident batch output requires one batch to use the same fast-packet sampling family")));
-            }
-        } else {
-            sampling_family = Some(resolved.sampling_family);
-        }
-        if op == Rgb8MetalBatchOp::Full
-            && matches!(
-                resolved.sampling_family,
-                batch::SamplingFamily::Fast422 | batch::SamplingFamily::Fast444
-            )
-            && resolved.restart_coded
-        {
-            return Err(Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_sampling("JPEG Metal reusable resident batch output does not support restart-coded full-tile 4:2:2 or 4:4:4 batches")));
-        }
 
         let admission = context.plan_owners.preflight(
             &context.requests,
@@ -176,37 +158,30 @@ impl Codec {
                     0,
                     "JPEG Metal RGB8 raw request owners and metadata",
                 )?;
-                let mut plan =
-                    build_rgb8_batch_plan(inputs, op, &mut context, |input, context| {
-                        let external_live_bytes = context.resolver_external_live_bytes()?;
-                        let (resolved, decoder) = state
-                            .resolve_jpeg_plan_with_decoder_and_external_live(
-                                input,
-                                external_live_bytes,
-                            )?;
-                        let (batch_op, output_dimensions) =
-                            Self::rgb8_batch_op_and_dimensions(op, decoder.info().dimensions);
-                        let sampling_family = resolved.shape.sampling_family;
-                        let restart_coded = resolved.shape.restart_interval.is_some();
-                        drop(decoder);
-                        let request = batch::QueuedRequest::new_shared(
-                            resolved.input,
-                            PixelFormat::Rgb8,
-                            BackendRequest::Metal,
-                            batch_op,
-                            resolved.fast_packet,
-                            resolved.shape,
-                        );
-                        Ok(ResolvedRgb8BatchSource {
-                            request,
-                            output_dimensions,
-                            sampling_family,
-                            restart_coded,
-                            cache_retained_bytes: state
-                                .jpeg_plan_cache_diagnostics()
-                                .retained_bytes,
-                        })
-                    })?;
+                let mut plan = build_rgb8_batch_plan(inputs, &mut context, |input, context| {
+                    let external_live_bytes = context.resolver_external_live_bytes()?;
+                    let (resolved, decoder) = state
+                        .resolve_jpeg_plan_with_decoder_and_external_live(
+                            input,
+                            external_live_bytes,
+                        )?;
+                    let (batch_op, output_dimensions) =
+                        Self::rgb8_batch_op_and_dimensions(op, decoder.info().dimensions);
+                    drop(decoder);
+                    let request = batch::QueuedRequest::new_shared(
+                        resolved.input,
+                        PixelFormat::Rgb8,
+                        BackendRequest::Metal,
+                        batch_op,
+                        resolved.fast_packet,
+                        resolved.shape,
+                    );
+                    Ok(ResolvedRgb8BatchSource {
+                        request,
+                        output_dimensions,
+                        cache_retained_bytes: state.jpeg_plan_cache_diagnostics().retained_bytes,
+                    })
+                })?;
                 if !track_output_dimensions {
                     plan.output_dimensions = None;
                 }
@@ -222,7 +197,7 @@ impl Codec {
                     "JPEG Metal RGB8 decoder request owners and metadata",
                 )?;
                 let mut plan =
-                    build_rgb8_batch_plan(decoders, op, &mut context, |decoder, _context| {
+                    build_rgb8_batch_plan(decoders, &mut context, |decoder, _context| {
                         let (batch_op, output_dimensions) = Self::rgb8_batch_op_and_dimensions(
                             op,
                             decoder.inner().info().dimensions,
@@ -230,8 +205,6 @@ impl Codec {
                         Ok(ResolvedRgb8BatchSource {
                             request: decoder.rgb8_metal_request(batch_op),
                             output_dimensions,
-                            sampling_family: decoder_resident_sampling_family(decoder),
-                            restart_coded: decoder_resident_restart_interval_mcus(decoder) != 0,
                             cache_retained_bytes: 0,
                         })
                     })?;
@@ -361,12 +334,10 @@ mod tests {
             "cache accounting owners",
         )
         .expect("batch context");
-        let result = build_rgb8_batch_plan(&[()], Rgb8MetalBatchOp::Full, &mut context, |(), _| {
+        let result = build_rgb8_batch_plan(&[()], &mut context, |(), _| {
             Ok(ResolvedRgb8BatchSource {
                 request: decoder.rgb8_metal_request(batch::BatchOp::Full),
                 output_dimensions: (16, 16),
-                sampling_family: batch::SamplingFamily::Fast420,
-                restart_coded: false,
                 cache_retained_bytes: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
             })
         });

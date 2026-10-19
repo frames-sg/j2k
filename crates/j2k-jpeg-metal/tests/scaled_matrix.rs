@@ -6,8 +6,9 @@
 //! reproduce libjpeg-turbo's scaled output exactly: 4:2:0 chroma decoded with
 //! the larger IDCT below full size, 4:2:2 chroma replicated at 1/8 and when at
 //! most two samples wide. Images at most four pixels wide, whose full-size
-//! 2:1 chroma libjpeg-turbo replicates, are not Metal fast shapes and must be
-//! rejected by explicit Metal requests rather than decoded differently.
+//! 2:1 chroma libjpeg-turbo replicates, are not fast shapes; explicit Metal
+//! requests decode them through hybrid decode with the same replication.
+//! `tests/hybrid.rs` covers every other layout and coding in the matrix.
 #![cfg(target_os = "macos")]
 
 use j2k_core::{BackendKind, BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
@@ -242,10 +243,11 @@ fn metal_scaled_tile_batches_match_libjpeg_turbo() {
 }
 
 #[test]
-fn explicit_metal_rejects_narrow_subsampled_images() {
+fn explicit_metal_decodes_narrow_subsampled_images_like_libjpeg_turbo() {
     if !should_run_metal_runtime() {
         return;
     }
+    let mut failures = Vec::new();
     for case in metal_family_cases()
         .iter()
         .filter(|case| is_narrow_subsampled(case))
@@ -257,13 +259,18 @@ fn explicit_metal_rejects_narrow_subsampled_images() {
                 downscale(denominator),
                 BackendRequest::Metal,
             );
-            assert!(
-                decoder.decode_request_to_device(request).is_err(),
-                "{} 1/{denominator}: narrow 2:1 chroma must not take the Metal fast path",
-                case.name
-            );
+            match decoder.decode_request_to_device(request) {
+                Ok(surface) => {
+                    let bytes = surface.as_bytes().expect("surface bytes");
+                    if let Some(message) = mismatch(case.reference(denominator), &bytes) {
+                        failures.push(format!("{} 1/{denominator}: {message}", case.name));
+                    }
+                }
+                Err(err) => failures.push(format!("{} 1/{denominator} failed: {err}", case.name)),
+            }
         }
     }
+    assert_no_failures(&failures);
 }
 
 /// Region edges on and beside MCU boundaries at every scale, where the

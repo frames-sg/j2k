@@ -93,10 +93,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-metal-support:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:e60d9ee454e614c5"
+    added_fingerprint: "fnv1a64:cb0fe39460064a9f"
     hidden_count: 11
     hidden_fingerprint: "fnv1a64:02139606f1202938"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Also records the already-merged checked_shared_heap and checked_heap_shared_buffer allocation helpers. They preserve typed allocation failures and introduce no changes to existing signatures."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Also records the already-merged checked_shared_heap and checked_heap_shared_buffer allocation helpers. They preserve typed allocation failures and introduce no changes to existing signatures. Adds unsafe with_checked_buffer_slice_mut for bounded CPU writes into shared Metal storage. Its safety contract requires exclusive access with no overlapping GPU commands; the mutable view is limited to the callback."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-mpsgraph-support:
     removed_fingerprint: "none"
@@ -114,10 +114,10 @@ reviews:
     hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks."
   j2k-jpeg:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:5ddede5b3016f1ea"
+    added_fingerprint: "fnv1a64:b13b981667fd252a"
     hidden_count: 702
     hidden_fingerprint: "fnv1a64:525423e3896df832"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds optimized baseline, 12-bit extended, and lossless JPEG encoders with native sample types. Exhaustive JpegEncodeError matches must handle RestartIntervalTooLarge, UnsupportedPixelFormat, UnsupportedPrecision, InvalidPredictor, InvalidPointTransform, and SampleOutOfRange. YCCK colors, lossless sample replication, and color-space inference now match the committed external references."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds optimized baseline, 12-bit extended, and lossless JPEG encoders with native sample types. Exhaustive JpegEncodeError matches must handle RestartIntervalTooLarge, UnsupportedPixelFormat, UnsupportedPrecision, InvalidPredictor, InvalidPointTransform, and SampleOutOfRange. YCCK colors, lossless sample replication, and color-space inference now match the committed external references. Adds metal_hybrid_eligibility, JpegCapabilityReport::metal_hybrid, and MetalHybrid routing for explicit Metal requests. Exhaustive JpegResolvedDecodePath matches need a MetalHybrid arm; Auto routing keeps its existing choice."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds entropy-only DCT and lossless decoding into caller storage, component geometry, lossless GPU planning/Huffman/frame assembly contracts, and a reduced-IDCT benchmark helper. Existing adapter signatures are preserved; the new adapters validate dimensions, precision, ranges, and allocation bounds before execution."
   j2k-tilecodec:
     removed_fingerprint: "fnv1a64:de5a5b18d88e8fb8"
@@ -149,10 +149,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-jpeg-metal:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:181f7c41e644147f"
     hidden_count: 83
     hidden_fingerprint: "fnv1a64:79397ffc221464c3"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds JpegLosslessMetalEncodeTile and encode_jpeg_lossless_from_metal_buffer. Raw buffer construction is unsafe with an explicit producer-completion and immutability contract; validated ResidentMetalImage input is borrowed safely. Explicit Metal decoding and resident batches now support the CPU JPEG classes through CPU entropy plus Metal reconstruction, preserving native sample output."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-metal:
     removed_fingerprint: "none"

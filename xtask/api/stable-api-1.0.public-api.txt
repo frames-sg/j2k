@@ -1571,6 +1571,7 @@ pub fn j2k_jpeg::JpegBatchSession::reset(&mut self)
 pub fn j2k_jpeg::JpegBatchSession::set_options(&mut self, j2k_core::batch::TileBatchOptions)
 pub fn j2k_jpeg::JpegCapabilityReport::for_decoder(&j2k_jpeg::Decoder<'_>, j2k_jpeg::JpegCapabilityRequest) -> Self
 pub fn j2k_jpeg::JpegCapabilityReport::inspect(&[u8], j2k_jpeg::JpegCapabilityRequest) -> core::result::Result<Self, j2k_jpeg::JpegError>
+pub fn j2k_jpeg::JpegCapabilityReport::metal_hybrid(&self) -> j2k_jpeg::JpegBackendEligibility
 pub fn j2k_jpeg::JpegCapabilityReport::metal_resident_rgb8_batch_output(&self) -> j2k_jpeg::JpegBackendEligibility
 pub fn j2k_jpeg::JpegCapabilityReport::resolve_path(&self, j2k_core::backend::BackendRequest) -> j2k_jpeg::JpegResolvedDecodePath
 pub fn j2k_jpeg::JpegEncodeOptions::default() -> Self
@@ -1630,6 +1631,7 @@ pub fn j2k_jpeg::extract_icc_profile(&[u8]) -> core::result::Result<core::option
 pub fn j2k_jpeg::find_scan_ranges(&[u8]) -> core::result::Result<j2k_jpeg::JpegScanRanges, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::insert_icc_profile(&[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::IccProfileError>
 pub fn j2k_jpeg::iter_segments(&[u8]) -> j2k_jpeg::JpegSegmentIter<'_>
+pub fn j2k_jpeg::metal_hybrid_eligibility(&j2k_jpeg::Info, j2k_jpeg::JpegCapabilityRequest) -> j2k_jpeg::JpegBackendEligibility
 pub fn j2k_jpeg::parse_dri(&[u8]) -> core::result::Result<core::option::Option<u16>, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::parse_sof_info(u8, &[u8]) -> core::result::Result<j2k_jpeg::JpegSofInfo, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::prepare_tiff_jpeg_tile<'a>(&'a [u8], core::option::Option<&'a [u8]>, j2k_jpeg::JpegTilePrepareOptions) -> core::result::Result<j2k_jpeg::PreparedJpeg<'a>, j2k_jpeg::JpegError>
@@ -1928,6 +1930,7 @@ pub j2k_jpeg::JpegResolvedDecode::path: j2k_jpeg::JpegResolvedDecodePath
 pub j2k_jpeg::JpegResolvedDecode::request: j2k_jpeg::JpegDecodeRequest
 pub j2k_jpeg::JpegResolvedDecodePath::CpuHost
 pub j2k_jpeg::JpegResolvedDecodePath::MetalFast
+pub j2k_jpeg::JpegResolvedDecodePath::MetalHybrid
 pub j2k_jpeg::JpegResolvedDecodePath::OwnedCudaRgb8
 pub j2k_jpeg::JpegResolvedDecodePath::Rejected
 pub j2k_jpeg::JpegResolvedDecodePath::Rejected::backend: j2k_core::backend::BackendRequest
@@ -2195,6 +2198,7 @@ impl j2k_jpeg_metal::MetalTextureTile
 impl j2k_jpeg_metal::Surface
 impl<'a> j2k_jpeg_metal::Decoder<'a>
 impl<'a> j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>
+impl<'a> j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>
 pub const fn j2k_jpeg_metal::MetalDecodeRequest::full(j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> Self
 pub const fn j2k_jpeg_metal::MetalDecodeRequest::region(j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::backend::BackendRequest) -> Self
 pub const fn j2k_jpeg_metal::MetalDecodeRequest::region_scaled(j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> Self
@@ -2223,6 +2227,11 @@ pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::from_resident(&'a j2k_me
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::output_dimensions(&self) -> (u32, u32)
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::pixel_format(&self) -> j2k_core::pixel::PixelFormat
+pub fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::byte_offset(&self) -> usize
+pub fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::dimensions(&self) -> (u32, u32)
+pub fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::from_resident(&'a j2k_metal_support::resident::ResidentMetalImage) -> Self
+pub fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::pitch_bytes(&self) -> usize
+pub fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub fn j2k_jpeg_metal::JpegTileBatch::decode_all(self) -> core::result::Result<alloc::vec::Vec<j2k_jpeg_metal::Surface>, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::JpegTileBatch::is_empty(&self) -> bool
 pub fn j2k_jpeg_metal::JpegTileBatch::len(&self) -> usize
@@ -2268,6 +2277,7 @@ pub fn j2k_jpeg_metal::Surface::resident_metal_image(&self) -> core::option::Opt
 pub fn j2k_jpeg_metal::choose_viewport_surface_strategy(&j2k_jpeg_metal::ViewportWorkload, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_jpeg_metal::ViewportSurfaceStrategy, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_batch_from_metal_buffers(&[j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_metal::Error>
+pub fn j2k_jpeg_metal::encode_jpeg_lossless_from_metal_buffer(j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'_>, j2k_jpeg::lossless_encode::JpegLosslessEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::is_contiguous_viewport_workload(&j2k_jpeg_metal::ViewportWorkload) -> bool
 pub fn j2k_jpeg_metal::release_default_session_buffers() -> core::result::Result<(), j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::suggest_viewport_workload((u32, u32)) -> core::option::Option<j2k_jpeg_metal::ViewportWorkload>
@@ -2328,6 +2338,7 @@ pub mod j2k_jpeg_metal
 pub struct j2k_jpeg_metal::Codec
 pub struct j2k_jpeg_metal::Decoder<'a>
 pub struct j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>
+pub struct j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>
 pub struct j2k_jpeg_metal::JpegTileBatch
 pub struct j2k_jpeg_metal::MetalBackendSession
 pub struct j2k_jpeg_metal::MetalBatchOutputBuffer
@@ -2341,6 +2352,7 @@ pub struct j2k_jpeg_metal::ViewportTile
 pub struct j2k_jpeg_metal::ViewportWorkload
 pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
 pub unsafe fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::new(&'a objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, (u32, u32), usize, (u32, u32), j2k_core::pixel::PixelFormat) -> Self
+pub unsafe fn j2k_jpeg_metal::JpegLosslessMetalEncodeTile<'a>::new(&'a objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, (u32, u32), usize, j2k_core::pixel::PixelFormat) -> Self
 pub unsafe fn j2k_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>
 pub unsafe fn j2k_jpeg_metal::MetalBatchTextureOutput::texture(&self, usize) -> core::option::Option<&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLTexture::MTLTexture>>
 pub unsafe fn j2k_jpeg_metal::MetalTextureTile::texture(&self) -> &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLTexture::MTLTexture>
@@ -3643,6 +3655,7 @@ pub unsafe fn j2k_metal_support::checked_buffer_fill_bytes(&objc2::runtime::prot
 pub unsafe fn j2k_metal_support::checked_buffer_read<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize) -> core::result::Result<T, j2k_metal_support::MetalSupportError>
 pub unsafe fn j2k_metal_support::checked_buffer_read_vec<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, usize) -> core::result::Result<alloc::vec::Vec<T>, j2k_metal_support::MetalSupportError>
 pub unsafe fn j2k_metal_support::checked_buffer_write<T: j2k_core::accelerator::GpuAbi>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, &[T]) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::with_checked_buffer_slice_mut<T: j2k_core::accelerator::GpuAbi, R>(&objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLBuffer::MTLBuffer>, usize, usize, impl core::ops::function::FnOnce(&mut [T]) -> R) -> core::result::Result<R, j2k_metal_support::MetalSupportError>
 ```
 
 ## `j2k-transcode-metal`
