@@ -41,8 +41,8 @@ one-second warm-up, and a two-second measurement target. Whole-image encode
 uses 15 samples, a half-second warm-up, and a one-second target. The retained
 changes batch MEL output and use 64-bit VLC/MagSgn reservoirs with bulk byte
 packing. A separate packed-popcount change improves the two dense CPU cleanup
-decode microbenchmarks by 0.4% and 1.8%; no whole-image CPU decode improvement
-is claimed.
+decode microbenchmarks by 0.4% and 1.8%. Those kernel-only numbers precede the
+whole-image decode continuation below.
 
 Metal numbers are the median of three alternating rounds, each with a
 two-second warm-up and 21 GPU timestamp samples. The existing
@@ -71,6 +71,61 @@ whole-image measurements were mostly unchanged or noisy, so the GPU gains
 above apply to the measured 9/7 batches, not to every image or decode API.
 Register-only 9/7 kernels, larger paired VLC lookup tables, and wider Metal
 encoder reservoirs were tested and rejected when they slowed their workloads.
+
+### CPU whole-image decode continuation
+
+The retained CPU changes write eligible cleanup-only blocks directly as final
+floating-point sub-band coefficients, fuse the last horizontal wavelet lift
+with its interleaved output store (and 9/7 row scaling), and let LLVM vectorize
+native sample packing. The internal direct-output path requires no ROI shift,
+a width divisible by four, and the existing SIMD magnitude bound. Other
+blocks use the established path; public scalar code-block helpers retain
+their transactional error behavior.
+
+The comparison below uses `release-bench` builds on the same M4 Pro and Rust
+1.99.0. Both include the same concurrent wavelet scratch accounting/reuse
+changes and the earlier optimizations above. Each image has 31 timed samples
+after warm-up, in three alternating baseline/candidate rounds. Corpus totals
+sum the median latency of each image; they are not parallel batch wall times.
+The fresh-decoder boundary includes parsing, decoding, and native output
+allocation/packing, with input file I/O outside the timer.
+
+| Workload | Before | After | Time reduction |
+| --- | ---: | ---: | ---: |
+| 16 medical images, serial, fresh decoders | 83.605 ms | 77.451 ms | 7.4% |
+| 16 medical images, automatic threading, fresh decoders | 26.438 ms | 24.370 ms | 7.8% |
+| 16 medical images, automatic threading, reused decoders | 26.540 ms | 24.159 ms | 9.0% |
+| 58 lossless WSI tiles, serial, fresh decoders | 105.475 ms | 101.689 ms | 3.6% |
+| 24 lossless Kodak images, serial, fresh decoders | 64.188 ms | 61.316 ms | 4.5% |
+| 4 lossy Kodak images, serial, fresh decoders | 13.235 ms | 12.526 ms | 5.4% |
+| MG1, automatic threading, fresh decoder | 8.742 ms | 7.846 ms | 10.2% |
+| SC1, automatic threading, fresh decoder | 3.415 ms | 3.149 ms | 7.8% |
+| 816-frame mixed series, 12 frame workers | 316.469 ms | 300.276 ms | 5.1% |
+
+Automatic threading on the smaller lossless images was approximately
+unchanged: the WSI total fell 1.4%, and the lossless Kodak total rose 0.4%.
+The initial four-image lossy automatic-threading result was noisy; a focused
+repeat with eight alternating rounds and 81 samples per image reduced their
+total from 7.4565 to 7.0305 ms (5.7%). The series row repeats each of the 102
+codestreams eight times, decodes serially inside each of 12 frame workers,
+and reports the median of three alternating rounds of five timed samples.
+
+The existing `jp2k_dicom_bench` was run with
+`J2K_DICOM_BENCH_REPEATS=31`, `RAYON_NUM_THREADS=12`, and
+`J2K_DICOM_BENCH_MODE=serial` or `parallel`; reused rows additionally set
+`J2K_DICOM_BENCH_REUSE_DECODER=1`. Series rows use mode `series`, repeats `5`,
+`J2K_DICOM_BENCH_THREADS=12`, and `J2K_DICOM_BENCH_SERIES_REPEAT=8`.
+
+All 16 medical images matched native-depth reference samples exactly,
+including signed 16-bit and unsigned 12-bit cases. Both builds also matched
+OpenHTJ2K 0.19.0 and OpenJPH 0.31.0 exactly on all 24 lossless Kodak images
+and 58 WSI tiles through `jp2k_batch_compare`. The four lossy Kodak images
+had maximum absolute differences of one against both references, unchanged
+from the baseline. Native unit coverage includes 1–31-bit direct coefficient
+output, midpoint modes, strided guards, fallback eligibility, error recovery,
+and bitwise wavelet parity at odd dimensions. Worker-queue and per-worker
+scratch-slot scheduling experiments were reverted after large-image
+regressions.
 
 ## HTJ2K DICOM decode development run - 2026-10-09
 

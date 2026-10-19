@@ -71,6 +71,8 @@ use self::actual_live::{
 };
 mod individual;
 use self::individual::transcode_tile_batch_individually;
+mod cpu;
+pub(super) use self::cpu::jpeg_cpu_tile_batch_to_htj2k_with_scratch;
 
 /// Transcode many JPEG tiles into HTJ2K codestreams.
 pub fn jpeg_to_htj2k_batch(
