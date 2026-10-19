@@ -6,10 +6,7 @@ use super::{
     J2kLosslessEncodeOptions, J2kLosslessSamples, J2kLossyEncodeOptions, J2kLossySamples,
     J2kProgressionOrder,
 };
-use j2k_types::encode_geometry::{
-    lossless_decomposition_levels as shared_lossless_decomposition_levels,
-    maximum_decomposition_levels,
-};
+use j2k_types::encode_geometry::lossless_decomposition_levels as shared_lossless_decomposition_levels;
 
 /// Return the default lossless decomposition level policy used by the facade.
 pub fn j2k_lossless_decomposition_levels(samples: J2kLosslessSamples<'_>) -> u8 {
@@ -33,17 +30,12 @@ pub(super) fn j2k_lossy_decomposition_levels_for_options(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
 ) -> u8 {
-    let levels = shared_lossless_decomposition_levels(
+    shared_lossless_decomposition_levels(
         samples.width,
         samples.height,
         options.progression.packetization_order(),
-        None,
-    );
-    options.max_decomposition_levels.map_or(levels, |max| {
-        levels
-            .min(max)
-            .min(maximum_decomposition_levels(samples.width, samples.height))
-    })
+        options.max_decomposition_levels,
+    )
 }
 
 /// Return the effective lossless decomposition level policy for encode options.

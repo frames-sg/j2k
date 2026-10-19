@@ -126,6 +126,23 @@ pub(in crate::j2c::encode) fn encode_options_retained_bytes(
         options.quality_layer_byte_targets.capacity(),
         "multi-tile quality targets",
     )?;
+    if let Some(profile) = &options.irreversible_quantization_profile {
+        bytes = checked_add_bytes(
+            bytes,
+            checked_element_bytes::<Vec<f32>>(
+                profile.capacity(),
+                "quantization profile components",
+            )?,
+            "quantization profile",
+        )?;
+        for row in profile {
+            bytes = checked_add_bytes(
+                bytes,
+                checked_element_bytes::<f32>(row.capacity(), "quantization profile bands")?,
+                "quantization profile",
+            )?;
+        }
+    }
     if let Some(component_sampling) = &options.component_sampling {
         bytes = checked_add_bytes(
             bytes,

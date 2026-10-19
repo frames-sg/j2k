@@ -1,0 +1,98 @@
+use j2k_native::{encode, DecodeSettings, EncodeOptions, Image};
+
+fn pixels() -> Vec<u8> {
+    (0..64 * 64)
+        .flat_map(|i| {
+            let x = i % 64;
+            let y = i / 64;
+            let value = u8::try_from((x * 17 + y * 29) % 180 + 30).unwrap();
+            [value, value, value]
+        })
+        .collect()
+}
+
+fn options(ht: bool) -> EncodeOptions {
+    EncodeOptions {
+        reversible: false,
+        use_mct: false,
+        use_ht_block_coding: ht,
+        num_decomposition_levels: 2,
+        irreversible_quantization_scale: 32.0,
+        ..EncodeOptions::default()
+    }
+}
+
+#[test]
+fn all_ones_profile_preserves_default_codestream_and_component_profile_changes_decode() {
+    let pixels = pixels();
+    for ht in [false, true] {
+        let mut options = options(ht);
+        let default = encode(&pixels, 64, 64, 3, 8, false, &options).unwrap();
+        options.irreversible_quantization_profile = Some(vec![vec![1.0; 7]; 3]);
+        assert_eq!(
+            encode(&pixels, 64, 64, 3, 8, false, &options).unwrap(),
+            default
+        );
+        options.irreversible_quantization_profile.as_mut().unwrap()[1][4] = 8.0;
+        let weighted = encode(&pixels, 64, 64, 3, 8, false, &options).unwrap();
+        assert!(weighted.windows(2).any(|marker| marker == [0xff, 0x5d]));
+        let baseline = Image::new(&default, &DecodeSettings::default())
+            .unwrap()
+            .decode()
+            .unwrap();
+        let decoded = Image::new(&weighted, &DecodeSettings::default())
+            .unwrap()
+            .decode()
+            .unwrap();
+        for component in [0, 2] {
+            assert!(baseline
+                .iter()
+                .skip(component)
+                .step_by(3)
+                .eq(decoded.iter().skip(component).step_by(3)));
+        }
+        assert!(baseline
+            .iter()
+            .skip(1)
+            .step_by(3)
+            .zip(decoded.iter().skip(1).step_by(3))
+            .any(|(a, b)| a != b));
+    }
+}
+
+#[test]
+fn invalid_profile_shape_values_and_reversible_use_are_rejected() {
+    let pixels = pixels();
+    for profile in [
+        vec![vec![1.0; 7]; 2],
+        vec![vec![1.0; 6]; 3],
+        vec![vec![0.0; 7]; 3],
+        vec![vec![f32::NAN; 7]; 3],
+    ] {
+        let mut options = options(false);
+        options.irreversible_quantization_profile = Some(profile);
+        assert!(encode(&pixels, 64, 64, 3, 8, false, &options).is_err());
+    }
+    let mut options = options(false);
+    options.reversible = true;
+    options.irreversible_quantization_profile = Some(vec![vec![1.0; 7]; 3]);
+    assert!(encode(&pixels, 64, 64, 3, 8, false, &options).is_err());
+}
+
+#[test]
+fn component_profile_survives_multitile_options_copy() {
+    let pixels = pixels();
+    let mut options = options(true);
+    options.tile_size = Some((32, 32));
+    options.code_block_width_exp = 3;
+    options.code_block_height_exp = 3;
+    let default = encode(&pixels, 64, 64, 3, 8, false, &options).unwrap();
+    options.irreversible_quantization_profile = Some(vec![vec![1.0; 7]; 3]);
+    options.irreversible_quantization_profile.as_mut().unwrap()[2][0] = 4.0;
+    let weighted = encode(&pixels, 64, 64, 3, 8, false, &options).unwrap();
+    assert_ne!(weighted, default);
+    Image::new(&weighted, &DecodeSettings::default())
+        .unwrap()
+        .decode()
+        .unwrap();
+}

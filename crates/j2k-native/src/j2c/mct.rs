@@ -177,7 +177,7 @@ fn floor_div_i64(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-fn apply_inner(
+pub(crate) fn apply_inner(
     transform: WaveletTransform,
     s0: &mut [f32],
     s1: &mut [f32],

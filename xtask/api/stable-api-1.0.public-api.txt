@@ -288,6 +288,7 @@ pub fn j2k::J2kLossyEncodeOptions::with_max_decomposition_levels(self, core::opt
 pub fn j2k::J2kLossyEncodeOptions::with_progression(self, j2k::J2kProgressionOrder) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_qfactor(self, core::option::Option<u8>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_quality_layers(self, alloc::vec::Vec<j2k::J2kQualityLayer>) -> Self
+pub fn j2k::J2kLossyEncodeOptions::with_quantization_profile(self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_rate_target(self, core::option::Option<j2k::J2kRateTarget>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_strict_device_backend(self) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_tile_part_packet_limit(self, core::option::Option<u16>) -> Self
@@ -626,6 +627,7 @@ pub j2k::J2kLossyEncodeOptions::psnr_iteration_budget: u8
 pub j2k::J2kLossyEncodeOptions::psnr_tolerance_db: f64
 pub j2k::J2kLossyEncodeOptions::qfactor: core::option::Option<u8>
 pub j2k::J2kLossyEncodeOptions::quality_layers: alloc::vec::Vec<j2k::J2kQualityLayer>
+pub j2k::J2kLossyEncodeOptions::quantization_profile: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>
 pub j2k::J2kLossyEncodeOptions::rate_target: core::option::Option<j2k::J2kRateTarget>
 pub j2k::J2kLossyEncodeOptions::tile_part_packet_limit: core::option::Option<u16>
 pub j2k::J2kLossyEncodeOptions::tile_size: core::option::Option<(u32, u32)>
@@ -4036,6 +4038,7 @@ pub j2k_native::EncodeOptions::code_block_height_exp: u8
 pub j2k_native::EncodeOptions::code_block_width_exp: u8
 pub j2k_native::EncodeOptions::component_sampling: core::option::Option<alloc::vec::Vec<(u8, u8)>>
 pub j2k_native::EncodeOptions::guard_bits: u8
+pub j2k_native::EncodeOptions::irreversible_quantization_profile: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>
 pub j2k_native::EncodeOptions::irreversible_quantization_scale: f32
 pub j2k_native::EncodeOptions::irreversible_quantization_subband_scales: j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales
 pub j2k_native::EncodeOptions::num_decomposition_levels: u8

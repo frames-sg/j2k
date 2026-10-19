@@ -128,6 +128,7 @@ impl JpegToHtj2kEncodeOptions {
             validate_high_throughput_codestream: self.validate_high_throughput_codestream,
             irreversible_quantization_scale: self.irreversible_quantization_scale,
             irreversible_quantization_subband_scales: self.irreversible_quantization_subband_scales,
+            irreversible_quantization_profile: None,
             component_sampling: self
                 .component_sampling
                 .as_deref()

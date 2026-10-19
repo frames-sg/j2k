@@ -93,6 +93,24 @@ pub(in crate::j2c::encode) fn try_clone_options_with_component_sampling(
         validate_high_throughput_codestream: options.validate_high_throughput_codestream,
         irreversible_quantization_scale: options.irreversible_quantization_scale,
         irreversible_quantization_subband_scales: options.irreversible_quantization_subband_scales,
+        irreversible_quantization_profile: options
+            .irreversible_quantization_profile
+            .as_ref()
+            .map(|profile| {
+                let bytes = checked_element_bytes::<Vec<f32>>(
+                    profile.len(),
+                    "quantization profile components",
+                )?;
+                let mut copied = Vec::new();
+                copied.try_reserve_exact(profile.len()).map_err(|_| {
+                    host_allocation_failed("quantization profile components", bytes)
+                })?;
+                for row in profile {
+                    copied.push(try_copy_slice(row, "quantization profile bands")?);
+                }
+                Ok::<_, NativeEncodePipelineError>(copied)
+            })
+            .transpose()?,
         component_sampling: component_sampling
             .map(|sampling| try_copy_slice(sampling, "multi-tile component sampling"))
             .transpose()?,

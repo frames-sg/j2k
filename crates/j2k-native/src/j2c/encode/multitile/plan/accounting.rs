@@ -66,6 +66,20 @@ pub(super) fn requested_options_clone_bytes(
         options.quality_layer_byte_targets.len(),
         "multi-tile quality targets",
     )?;
+    if let Some(profile) = &options.irreversible_quantization_profile {
+        bytes = checked_add_bytes(
+            bytes,
+            checked_element_bytes::<Vec<f32>>(profile.len(), "quantization profile components")?,
+            "quantization profile",
+        )?;
+        for row in profile {
+            bytes = checked_add_bytes(
+                bytes,
+                checked_element_bytes::<f32>(row.len(), "quantization profile bands")?,
+                "quantization profile",
+            )?;
+        }
+    }
     if let Some(sampling) = &options.component_sampling {
         bytes = checked_add_bytes(
             bytes,

@@ -270,6 +270,38 @@ pub(crate) fn append_step_sizes_with_irreversible_profile(
     }
 }
 
+pub(crate) fn apply_component_profile(
+    steps: &mut [QuantStepSize],
+    bit_depth: u8,
+    profile: Option<&[Vec<f32>]>,
+    component: usize,
+) -> EncodeResult<()> {
+    let Some(profile) = profile else {
+        return Ok(());
+    };
+    let weights = profile.get(component).ok_or(EncodeError::InvalidInput {
+        what: "quantization profile component count does not match input",
+    })?;
+    if weights.len() != steps.len() {
+        return Err(EncodeError::InvalidInput {
+            what: "quantization profile band count must match actual decomposition levels",
+        });
+    }
+    for (step, &weight) in steps.iter_mut().zip(weights) {
+        if weight.to_bits() == 1.0_f32.to_bits() {
+            continue;
+        }
+        let delta = step.delta(bit_depth) * weight;
+        if !delta.is_finite() || delta <= 0.0 {
+            return Err(EncodeError::InvalidInput {
+                what: "scaled quantization step must be finite and positive",
+            });
+        }
+        *step = QuantStepSize::from_delta(bit_depth, delta);
+    }
+    Ok(())
+}
+
 const OPENHTJ2K_D97_ENERGY_NORMS: [(f64, f64); 16] = [
     (1.965_907_314_575_295_7, 2.080_871_927_589_849),
     (4.122_409_873_969_023, 3.868_863_224_131_922),

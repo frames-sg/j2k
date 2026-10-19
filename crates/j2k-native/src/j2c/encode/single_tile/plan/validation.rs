@@ -167,6 +167,14 @@ fn validate_encode_request_header(
             "quality layer byte target count must match quality layer count",
         ));
     }
+    options
+        .validate_component_profile(
+            usize::from(num_components),
+            options.num_decomposition_levels.min(
+                j2k_types::encode_geometry::maximum_decomposition_levels(width, height),
+            ),
+        )
+        .map_err(NativeEncodePipelineError::invalid_input)?;
     if !options.reversible {
         validate_irreversible_quantization_profile(options)
             .map_err(NativeEncodePipelineError::invalid_input)?;

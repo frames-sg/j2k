@@ -299,6 +299,11 @@ pub(super) fn lossy_quality_layer_byte_targets(
 }
 
 pub(super) fn validate_lossy_options(options: &J2kLossyEncodeOptions) -> Result<(), J2kError> {
+    if options.qfactor.is_some() && options.quantization_profile.is_some() {
+        return Err(J2kError::Unsupported(Unsupported {
+            what: "OpenHTJ2K Qfactor cannot be combined with a quantization profile",
+        }));
+    }
     if let Some(qfactor) = options.qfactor {
         if !(1..=100).contains(&qfactor) {
             return Err(J2kError::Unsupported(Unsupported {

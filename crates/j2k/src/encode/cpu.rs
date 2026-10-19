@@ -328,9 +328,36 @@ pub(super) fn native_lossy_options(
     quantization_scale: f32,
 ) -> Result<EncodeOptions, J2kError> {
     let num_layers = lossy_quality_layer_count(options);
+    let levels = j2k_lossy_decomposition_levels_for_options(samples, options);
+    let quantization_profile = if let Some(profile) = &options.quantization_profile {
+        if profile.len() != usize::from(samples.components)
+            || profile
+                .iter()
+                .any(|row| row.len() != 1 + 3 * usize::from(levels))
+            || profile
+                .iter()
+                .flatten()
+                .any(|x| !x.is_finite() || *x <= 0.0)
+        {
+            return Err(J2kError::Unsupported(Unsupported {
+                what: "quantization profile requires positive finite multipliers for every component and actual band",
+            }));
+        }
+        let mut copied =
+            try_vec::<Vec<f32>>(profile.len(), "lossy quantization profile components")?;
+        for row in profile {
+            copied.push(try_collect_exact(
+                row.iter().copied(),
+                "lossy quantization profile bands",
+            )?);
+        }
+        Some(copied)
+    } else {
+        None
+    };
     Ok(EncodeOptions {
         reversible: false,
-        num_decomposition_levels: j2k_lossy_decomposition_levels_for_options(samples, options),
+        num_decomposition_levels: levels,
         use_ht_block_coding: options.block_coding_mode == J2kBlockCodingMode::HighThroughput,
         progression_order: native_progression_order(options.progression),
         write_tlm: options.marker_segments.contains(&J2kMarkerSegment::Tlm),
@@ -351,6 +378,7 @@ pub(super) fn native_lossy_options(
         )?,
         validate_high_throughput_codestream: false,
         irreversible_quantization_scale: quantization_scale,
+        irreversible_quantization_profile: quantization_profile,
         ..EncodeOptions::default()
     })
 }

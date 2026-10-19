@@ -72,7 +72,6 @@ pub(super) fn apply_level(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn apply_single_decomposition_idwt_job(
     job: J2kSingleDecompositionIdwtJob<'_>,
     target: &mut Vec<f32>,

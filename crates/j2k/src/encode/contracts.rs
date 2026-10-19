@@ -415,6 +415,11 @@ pub struct J2kLossyEncodeOptions {
     /// combined with byte, bits-per-pixel, or PSNR targets. `None` preserves
     /// the established quantization and rate-control behavior.
     pub qfactor: Option<u8>,
+    /// Positive irreversible step multipliers per component, in QCD/QCC order:
+    /// final LL, then HL/LH/HH from coarsest to finest detail resolution.
+    /// Each row must match the actual decomposition count selected for the image.
+    /// A common rate-search scale multiplies the fixed profile shape.
+    pub quantization_profile: Option<Vec<Vec<f32>>>,
     /// Optional tile width and height.
     ///
     /// Tile origins must sit on the wavelet, code-block, and precinct grids.
@@ -446,6 +451,7 @@ impl Default for J2kLossyEncodeOptions {
             rate_target: None,
             quality_layers: Vec::new(),
             qfactor: None,
+            quantization_profile: None,
             tile_size: None,
             tile_part_packet_limit: None,
             precinct_exponents: Vec::new(),
@@ -522,6 +528,13 @@ impl J2kLossyEncodeOptions {
     #[must_use]
     pub fn with_qfactor(mut self, qfactor: Option<u8>) -> Self {
         self.qfactor = qfactor;
+        self
+    }
+
+    /// Return options with component-specific quantization multipliers.
+    #[must_use]
+    pub fn with_quantization_profile(mut self, profile: Option<Vec<Vec<f32>>>) -> Self {
+        self.quantization_profile = profile;
         self
     }
 
