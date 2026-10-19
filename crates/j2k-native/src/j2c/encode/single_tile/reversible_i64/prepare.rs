@@ -79,6 +79,7 @@ fn prepare_i64_component(
     let packets = prepare_i64_component_packets(
         samples,
         I64ComponentPrepareRequest {
+            origin: context.plan.component_origin(component_index),
             component: u16::try_from(component_index).map_err(|_| {
                 NativeEncodePipelineError::internal_invariant("component index exceeds u16")
             })?,

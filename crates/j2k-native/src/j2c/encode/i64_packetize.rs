@@ -18,6 +18,7 @@ use crate::j2c::packet_encode::{self, PacketizedTileData};
 use crate::J2kEncodeStageAccelerator;
 
 pub(super) struct I64PacketizeRequest<'a, 'input, A: J2kEncodeStageAccelerator> {
+    pub(super) tile_origin: (u32, u32),
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) num_levels: u8,
@@ -33,6 +34,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
     request: I64PacketizeRequest<'_, '_, A>,
 ) -> NativeEncodePipelineResult<PacketizedTileData> {
     let I64PacketizeRequest {
+        tile_origin,
         width,
         height,
         num_levels,
@@ -49,8 +51,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
     )?;
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
         component_resolution_packets,
-        width,
-        height,
+        super::tile_grid::tile_bounds(width, height, tile_origin)?,
         &params.component_sampling,
         num_levels,
         &params.precinct_exponents,
@@ -112,7 +113,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         &mut packet_descriptors,
         descriptor_capacity,
         params,
-        (width, height),
+        super::tile_grid::tile_bounds(width, height, tile_origin)?,
         packet_encode::PacketMarkerOptions {
             write_sop: params.write_sop,
             write_eph: params.write_eph,

@@ -2,7 +2,9 @@
 
 - `native_decode_fuzz` decodes a codestream with `decode_native`. Depending on
   the low bits of the input length, it also decodes a region and the
-  reversible 5/3 coefficients, in strict or lenient mode.
+  reversible 5/3 coefficients, in strict or lenient mode. Images over the
+  whole-image pixel cutoff still exercise a bounded region at the right/bottom
+  edge. Smaller images exercise different corners according to the input length.
 - `lossless_roundtrip_fuzz` encodes an image chosen by the input with the
   reversible transform, classic or HTJ2K, and requires the decode to return
   the input samples exactly.
@@ -20,6 +22,11 @@ from synthetic samples, so they carry no third-party content:
 | `classic_gray1.j2c` | classic | 9×7, 1 × 1-bit | 1 level |
 
 Without them, random input rarely parses as a codestream at all.
+
+`../fixtures/large_geometry/` supplies additional independently encoded long
+images for this target. Include that directory as a read-only seed corpus in
+large-coordinate fuzz runs; its codestreams exercise region decode even though
+their whole-image area exceeds the fuzz target's cutoff.
 
 The three synthetic inputs in `corpus/lossless_roundtrip_fuzz/` select classic
 8×8 grayscale at 8 bits (1 level), HTJ2K 16×16 RGB at 16 bits (2 levels,

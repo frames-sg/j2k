@@ -6,6 +6,64 @@ use super::{
     CudaHtj2kEncodeCodeBlockRegionJob, CudaJ2kQuantizeJob, J2kHtCodeBlockEncodeJob,
     J2kHtCodeBlockSetEncodeJob,
 };
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_htj2k_multi_tile_origins_match_source_and_cpu_reconstruction() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let (width, height) = (130, 99);
+    let pixels = j2k_test_support::patterned_rgb8(width, height);
+    for reversible in [true, false] {
+        let options = EncodeOptions {
+            reversible,
+            use_ht_block_coding: true,
+            num_decomposition_levels: 3,
+            tile_size: Some((39, 35)),
+            code_block_width_exp: 1,
+            code_block_height_exp: 1,
+            precinct_exponents: vec![(3, 3), (4, 4), (4, 4), (4, 4)],
+            progression_order: j2k_native::EncodeProgressionOrder::Pcrl,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CudaEncodeStageAccelerator::default();
+        let bytes = j2k_native::encode_with_accelerator(
+            &pixels,
+            width,
+            height,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("CUDA encode with absolute tile origins");
+        let decoded = Image::new(&bytes, &DecodeSettings::strict())
+            .and_then(|image| image.decode())
+            .expect("decode CUDA tiled output");
+        if reversible {
+            assert!(decoded == pixels, "lossless CUDA pixels");
+            assert!(accelerator.forward_dwt53_dispatches() > 0);
+        } else {
+            let cpu = j2k_native::encode(&pixels, width, height, 3, 8, false, &options)
+                .expect("CPU encode");
+            let expected = Image::new(&cpu, &DecodeSettings::strict())
+                .and_then(|image| image.decode())
+                .expect("CPU reconstruction");
+            assert_eq!(decoded.len(), expected.len());
+            for (index, (&actual, &reference)) in decoded.iter().zip(&expected).enumerate() {
+                assert!(
+                    actual.abs_diff(reference) <= 1,
+                    "9/7 sample {index}: CUDA={actual}, CPU={reference}"
+                );
+            }
+            assert!(accelerator.forward_dwt97_dispatches() > 0);
+        }
+        assert!(accelerator.ht_code_block_dispatches() > 0);
+        assert!(accelerator.packetization_dispatches() > 0);
+    }
+}
 #[cfg(feature = "cuda-runtime")]
 use super::{
     encode_with_cuda_test_accelerator, CudaEncodeStageAccelerator, CudaTestEncodeRequest,

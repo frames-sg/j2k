@@ -126,7 +126,7 @@ fn finalize_batch_plan(
             &mut packet_descriptors,
             descriptor_capacity,
             &params,
-            (params.width, params.height),
+            crate::j2c::encode::tile_grid::tile_bounds(params.width, params.height, (0, 0))?,
             packet_encode::PacketMarkerOptions {
                 write_sop: params.write_sop,
                 write_eph: params.write_eph,

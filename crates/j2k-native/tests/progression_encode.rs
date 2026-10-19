@@ -91,6 +91,39 @@ fn high_bit_partial_edge_tiles_round_trip_with_position_progression() {
     assert_eq!(decoded.data, samples);
 }
 
+#[test]
+fn tile_origins_preserve_custom_precincts_layers_and_progressions() {
+    let (width, height) = (130, 99);
+    let samples = source_samples(width, height);
+    for (progression_order, num_layers, use_ht_block_coding) in [
+        (EncodeProgressionOrder::Lrcp, 1, false),
+        (EncodeProgressionOrder::Rlcp, 3, true),
+        (EncodeProgressionOrder::Rpcl, 2, false),
+        (EncodeProgressionOrder::Pcrl, 1, true),
+        (EncodeProgressionOrder::Cprl, 3, false),
+    ] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 3,
+            code_block_width_exp: 1,
+            code_block_height_exp: 1,
+            tile_size: Some((39, 35)),
+            precinct_exponents: vec![(3, 3), (4, 4), (4, 4), (4, 4)],
+            progression_order,
+            num_layers,
+            use_ht_block_coding,
+            write_sop: true,
+            write_plt: true,
+            ..EncodeOptions::default()
+        };
+        let codestream = encode(&samples, width, height, 3, 8, false, &options)
+            .unwrap_or_else(|error| panic!("{progression_order:?}: {error}"));
+        let decoded = Image::new(&codestream, &DecodeSettings::strict())
+            .and_then(|image| image.decode())
+            .unwrap_or_else(|error| panic!("{progression_order:?}: {error}"));
+        assert_eq!(decoded, samples, "{progression_order:?}");
+    }
+}
+
 #[derive(Default)]
 struct DescriptorCapturingAccelerator {
     descriptors: Vec<(u16, u32, u64, u8)>,
@@ -163,4 +196,29 @@ fn packetization_accelerator_observes_reference_grid_progression_order() {
         .and_then(|image| image.decode())
         .expect("decode accelerator packetization codestream");
     assert_eq!(decoded, samples);
+}
+
+#[test]
+fn tiles_cross_implicit_precinct_boundaries_on_both_axes() {
+    for (width, height, tile) in [(65_537, 4, (32_769, 4)), (4, 65_537, (4, 32_769))] {
+        let pixels = source_samples(width, height);
+        for use_ht_block_coding in [false, true] {
+            for num_decomposition_levels in [0, 1] {
+                let options = EncodeOptions {
+                    tile_size: Some(tile),
+                    num_decomposition_levels,
+                    use_ht_block_coding,
+                    progression_order: EncodeProgressionOrder::Pcrl,
+                    num_layers: 2,
+                    ..EncodeOptions::default()
+                };
+                let encoded = encode(&pixels, width, height, 3, 8, false, &options)
+                    .expect("encode tiles spanning the implicit 32768 precinct grid");
+                let decoded = Image::new(&encoded, &DecodeSettings::strict())
+                    .and_then(|image| image.decode())
+                    .expect("decode all implicit precincts");
+                assert_eq!(decoded, pixels);
+            }
+        }
+    }
 }

@@ -29,6 +29,7 @@ fn prepare_with_steps_and_cap(
     prepare_i64_component_packets(
         samples(),
         I64ComponentPrepareRequest {
+            origin: (0, 0),
             component: 0,
             width: 4,
             height: 4,
@@ -135,6 +136,7 @@ fn excessive_roi_bitplanes_remain_an_unsupported_capability() {
     )
     .expect("valid exact i64 preparation cap");
     let error = prepare_packed_subband_i64(&PackedSubbandRequest {
+        origin: (0, 0),
         view,
         step_size: &step_size,
         sub_band_type: SubBandType::LowLow,

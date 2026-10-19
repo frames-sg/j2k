@@ -1257,7 +1257,9 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::dispatch_report(&self) -> j2k_typ
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::dispatch::accelerator::J2kDeinterleaveToF32Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::dispatch::accelerator::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::transform::dwt53::J2kForwardDwt53Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt53::J2kForwardDwt53Output>>
+pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt53_at_origin(&mut self, j2k_types::transform::dwt53::J2kForwardDwt53Job<'_>, (u32, u32)) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt53::J2kForwardDwt53Output>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::transform::dwt97::J2kForwardDwt97Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt97::J2kForwardDwt97Output>>
+pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt97_at_origin(&mut self, j2k_types::transform::dwt97::J2kForwardDwt97Job<'_>, (u32, u32)) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt97::J2kForwardDwt97Output>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::transform::mct::J2kForwardIctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::transform::mct::J2kForwardRctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::tier1::htj2k::J2kHtCodeBlockEncodeJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::tier1::htj2k::EncodedHtJ2kCodeBlock>>
@@ -1696,7 +1698,9 @@ pub fn j2k_cuda::CudaDecodePoolSnapshot::from(j2k_cuda_runtime::memory::pool::ca
 pub fn j2k_cuda::CudaEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::dispatch::accelerator::J2kDeinterleaveToF32Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::transform::dwt53::J2kForwardDwt53Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt53::J2kForwardDwt53Output>>
+pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_dwt53_at_origin(&mut self, j2k_types::transform::dwt53::J2kForwardDwt53Job<'_>, (u32, u32)) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt53::J2kForwardDwt53Output>>
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::transform::dwt97::J2kForwardDwt97Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt97::J2kForwardDwt97Output>>
+pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_dwt97_at_origin(&mut self, j2k_types::transform::dwt97::J2kForwardDwt97Job<'_>, (u32, u32)) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::transform::dwt97::J2kForwardDwt97Output>>
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::transform::mct::J2kForwardIctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::transform::mct::J2kForwardRctJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<bool>
 pub fn j2k_cuda::CudaEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::tier1::htj2k::J2kHtCodeBlockEncodeJob<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<j2k_types::tier1::htj2k::EncodedHtJ2kCodeBlock>>
@@ -3005,6 +3009,7 @@ pub const fn j2k_types::J2kResidentEncodeInputError::reason(&self) -> &'static s
 pub const fn j2k_types::encode_geometry::code_block_dimension(u8) -> core::result::Result<u32, j2k_types::encode_geometry::CodeBlockGeometryError>
 pub const fn j2k_types::encode_geometry::code_block_dimensions(u8, u8) -> core::result::Result<j2k_types::encode_geometry::EncodeCodeBlockDimensions, j2k_types::encode_geometry::CodeBlockGeometryError>
 pub const fn j2k_types::encode_geometry::encode_dwt_level_dimensions(u32, u32, u8) -> j2k_types::encode_geometry::EncodeDwtLevelDimensionsIter
+pub const fn j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin(u32, u32, (u32, u32)) -> j2k_types::encode_geometry::EncodeDwtLevelDimensions
 pub const fn j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input(u32, u32) -> j2k_types::encode_geometry::EncodeDwtLevelDimensions
 pub const fn j2k_types::encode_geometry::lossless_decomposition_levels(u32, u32, j2k_types::J2kPacketizationProgressionOrder, core::option::Option<u8>) -> u8
 pub const fn j2k_types::encode_geometry::maximum_decomposition_levels(u32, u32) -> u8
@@ -3018,7 +3023,9 @@ pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::dispatch_report(&self) -> j2
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
+pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt53_at_origin(&mut self, j2k_types::J2kForwardDwt53Job<'_>, (u32, u32)) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt97Output>>
+pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt97_at_origin(&mut self, j2k_types::J2kForwardDwt97Job<'_>, (u32, u32)) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt97Output>>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::J2kForwardIctJob<'_>) -> j2k_types::J2kEncodeStageResult<bool>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::J2kForwardRctJob<'_>) -> j2k_types::J2kEncodeStageResult<bool>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::J2kHtCodeBlockEncodeJob<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::EncodedHtJ2kCodeBlock>>
@@ -3042,6 +3049,9 @@ pub fn j2k_types::J2kResidentEncodeInputError::fmt(&self, &mut core::fmt::Format
 pub fn j2k_types::encode_geometry::EncodeDwtLevelDimensionsIter::next(&mut self) -> core::option::Option<Self::Item>
 pub fn j2k_types::encode_geometry::EncodeDwtLevelDimensionsIter::size_hint(&self) -> (usize, core::option::Option<usize>)
 pub fn j2k_types::encode_geometry::code_block_exponent(u32) -> core::result::Result<u8, j2k_types::encode_geometry::CodeBlockGeometryError>
+pub fn j2k_types::encode_geometry::encode_grid_cell_count(u32, u32, u32) -> core::option::Option<u32>
+pub fn j2k_types::encode_geometry::encode_grid_cell_span(u32, u32, u32, u32) -> core::option::Option<(u32, u32)>
+pub fn j2k_types::encode_geometry::encode_subband_origin((u32, u32), u8, j2k_types::J2kSubBandType) -> core::option::Option<(u32, u32)>
 pub fn j2k_types::encode_geometry::sort_packet_descriptors_for_progression(&mut [j2k_types::J2kPacketizationPacketDescriptor], j2k_types::J2kPacketizationProgressionOrder)
 pub j2k_types::EncodedHtJ2kCodeBlockSet::cleanup_length: u32
 pub j2k_types::EncodedHtJ2kCodeBlockSet::data: alloc::vec::Vec<u8>
@@ -3716,8 +3726,10 @@ pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_dequantize_htj2k_codeblocks_m
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_and_live_host_bytes(&self, &[j2k_cuda_j2k_engine::CudaHtj2kDequantizeTarget<'_>], &j2k_cuda_runtime::memory::pool::CudaBufferPool, usize) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_dequantize_queued_htj2k_cleanup_with_pool(&self, &j2k_cuda_j2k_engine::CudaQueuedHtj2kCleanup) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt53(&self, &[f32], u32, u32, u8) -> core::result::Result<j2k_cuda_j2k_engine::CudaDwt53Output, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt53_at_origin(&self, &[f32], u32, u32, u8, (u32, u32)) -> core::result::Result<j2k_cuda_j2k_engine::CudaDwt53Output, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt53_resident_component(&self, &j2k_cuda_j2k_engine::CudaJ2kResidentComponents, u8, u32, u32, u8) -> core::result::Result<j2k_cuda_j2k_engine::CudaResidentDwt53Output, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt97(&self, &[f32], u32, u32, u8) -> core::result::Result<j2k_cuda_j2k_engine::CudaDwt97Output, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt97_at_origin(&self, &[f32], u32, u32, u8, (u32, u32)) -> core::result::Result<j2k_cuda_j2k_engine::CudaDwt97Output, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_dwt97_resident_component(&self, &j2k_cuda_j2k_engine::CudaJ2kResidentComponents, u8, u32, u32, u8) -> core::result::Result<j2k_cuda_j2k_engine::CudaResidentDwt97Output, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_ict(&self, &mut [f32], &mut [f32], &mut [f32]) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_forward_ict_resident(&self, &mut j2k_cuda_j2k_engine::CudaJ2kResidentComponents) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>

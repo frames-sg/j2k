@@ -347,8 +347,13 @@ fn build_code_blocks(
             // the sub-band coefficients. When this happens, only the
             // coefficients lying within the sub-band are coded using the method
             // described in Annex D."
-            let area = IntRect::from_xywh(x, y, code_block_width, code_block_height)
-                .intersect(sub_band_rect);
+            let area = IntRect::from_ltrb(
+                x,
+                y,
+                x.saturating_add(code_block_width),
+                y.saturating_add(code_block_height),
+            )
+            .intersect(sub_band_rect);
 
             ltrace!(
                 "Codeblock rect: [{},{} {}x{}]",
@@ -396,14 +401,18 @@ fn build_code_blocks(
                 },
             )?;
 
-            x = x
-                .checked_add(code_block_width)
-                .ok_or(ValidationError::ImageTooLarge)?;
+            if x_idx + 1 < code_blocks_x {
+                x = x
+                    .checked_add(code_block_width)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            }
         }
 
-        y = y
-            .checked_add(code_block_height)
-            .ok_or(ValidationError::ImageTooLarge)?;
+        if y_idx + 1 < code_blocks_y {
+            y = y
+                .checked_add(code_block_height)
+                .ok_or(ValidationError::ImageTooLarge)?;
+        }
     }
 
     let end = storage.code_blocks.len();

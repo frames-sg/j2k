@@ -149,6 +149,7 @@ pub(crate) fn try_forward_dwt(
         num_levels,
         reversible,
         &mut line_buf,
+        (0, 0),
     )?;
     let geometry = PackedDwtGeometry::try_new(width, height, buffer.len(), shape)?;
     drop(line_buf);
@@ -209,6 +210,79 @@ pub(crate) fn forward_dwt(
 ///   s(n) = x(2n)   + floor((d(n-1) + d(n)) / 4 + 0.5)
 ///
 /// Applied in-place: even indices are low-pass, odd indices are high-pass.
+fn forward_lift_53_phase(data: &mut [f32], odd_origin: bool) {
+    if !odd_origin {
+        forward_lift_53(data);
+        return;
+    }
+    if data.len() == 1 {
+        // T.800 F.4.6: a singleton at an odd absolute coordinate is high-pass.
+        data[0] *= 2.0;
+        return;
+    }
+    // T.800 F-9/F-10 with symmetric extension (F.4.7). At an odd origin,
+    // local even indices are high-pass and local odd indices are low-pass.
+    for i in (0..data.len()).step_by(2) {
+        let (left, right) = lifting_neighbors(data, i);
+        data[i] -= floor_half_sum_f32(left, right);
+    }
+    for i in (1..data.len()).step_by(2) {
+        let (left, right) = lifting_neighbors(data, i);
+        data[i] += floor_f32((left + right) * 0.25 + 0.5);
+    }
+}
+
+fn forward_lift_53_i64_phase(data: &mut [i64], odd_origin: bool) {
+    if !odd_origin {
+        forward_lift_53_i64(data);
+        return;
+    }
+    if data.len() == 1 {
+        data[0] *= 2;
+        return;
+    }
+    for i in (0..data.len()).step_by(2) {
+        let (left, right) = lifting_neighbors(data, i);
+        data[i] -= (left + right).div_euclid(2);
+    }
+    for i in (1..data.len()).step_by(2) {
+        let (left, right) = lifting_neighbors(data, i);
+        data[i] += (left + right + 2).div_euclid(4);
+    }
+}
+
+fn forward_lift_97_phase(data: &mut [f32], odd_origin: bool) {
+    if !odd_origin {
+        forward_lift_97(data);
+        return;
+    }
+    if data.len() == 1 {
+        data[0] *= 2.0;
+        return;
+    }
+    // T.800 F-11: four lifting steps, followed by high/low normalization.
+    for (first, coefficient) in [(0, ALPHA), (1, BETA), (0, GAMMA), (1, DELTA)] {
+        for i in (first..data.len()).step_by(2) {
+            let (left, right) = lifting_neighbors(data, i);
+            data[i] = mul_add(coefficient, left + right, data[i]);
+        }
+    }
+    for (i, value) in data.iter_mut().enumerate() {
+        *value *= if i % 2 == 0 { KAPPA } else { INV_KAPPA };
+    }
+}
+
+fn lifting_neighbors<T: Copy>(data: &[T], index: usize) -> (T, T) {
+    (
+        data[if index == 0 { 1 } else { index - 1 }],
+        data[if index + 1 == data.len() {
+            index - 1
+        } else {
+            index + 1
+        }],
+    )
+}
+
 fn forward_lift_53(data: &mut [f32]) {
     let n = data.len();
     if n < 2 {
@@ -439,11 +513,18 @@ mod tests {
         let mut scratch_f32 = vec![0.0_f32; 5];
 
         let shape_i64 =
-            try_forward_dwt_packed_i64(&mut coefficients_i64, 5, 5, 2, &mut scratch_i64)
+            try_forward_dwt_packed_i64(&mut coefficients_i64, 5, 5, 2, &mut scratch_i64, (0, 0))
                 .expect("valid exact packed transform");
-        let shape_f32 =
-            try_forward_dwt_packed_f32(&mut coefficients_f32, 5, 5, 2, true, &mut scratch_f32)
-                .expect("valid reversible packed transform");
+        let shape_f32 = try_forward_dwt_packed_f32(
+            &mut coefficients_f32,
+            5,
+            5,
+            2,
+            true,
+            &mut scratch_f32,
+            (0, 0),
+        )
+        .expect("valid reversible packed transform");
 
         assert_eq!(shape_i64, shape_f32);
         assert_eq!(

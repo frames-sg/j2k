@@ -43,5 +43,18 @@ pub(super) fn validate_forward_dwt_request(
     Ok(())
 }
 
+pub(super) fn validate_forward_dwt_origin(
+    width: u32,
+    height: u32,
+    origin: (u32, u32),
+) -> Result<(), CudaError> {
+    if origin.0.checked_add(width).is_none() || origin.1.checked_add(height).is_none() {
+        return Err(CudaError::InvalidArgument {
+            message: "forward DWT tile-component endpoint exceeds u32".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

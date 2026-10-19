@@ -59,6 +59,7 @@ pub(super) fn try_transform_component(
         request.height,
         request.num_levels,
         &mut line_scratch,
+        request.origin,
     )?;
     let geometry = PackedDwtGeometry::try_new(request.width, request.height, samples.len(), shape)?;
     if geometry.num_levels() != request.num_levels {

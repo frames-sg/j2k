@@ -146,10 +146,9 @@ pub struct J2kLosslessEncodeOptions {
     pub max_decomposition_levels: Option<u8>,
     /// Optional tile width and height.
     ///
-    /// Tile origins must sit on the wavelet, code-block, and precinct grids.
-    /// Without component subsampling, power-of-two tile sizes at least as
-    /// large as the code-block size always qualify. Other grids are rejected
-    /// as unsupported.
+    /// Tile dimensions need not align with the wavelet, code-block, or precinct
+    /// grids. Tiles retain their absolute component origins during encoding;
+    /// the smallest edge tile still caps the effective decomposition depth.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
     pub tile_part_packet_limit: Option<u16>,
@@ -422,10 +421,9 @@ pub struct J2kLossyEncodeOptions {
     pub quantization_profile: Option<Vec<Vec<f32>>>,
     /// Optional tile width and height.
     ///
-    /// Tile origins must sit on the wavelet, code-block, and precinct grids.
-    /// Without component subsampling, power-of-two tile sizes at least as
-    /// large as the code-block size always qualify. Other grids are rejected
-    /// as unsupported.
+    /// Tile dimensions need not align with the wavelet, code-block, or precinct
+    /// grids. Tiles retain their absolute component origins during encoding;
+    /// the smallest edge tile still caps the effective decomposition depth.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
     pub tile_part_packet_limit: Option<u16>,

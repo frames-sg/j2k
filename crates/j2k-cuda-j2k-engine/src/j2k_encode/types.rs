@@ -148,6 +148,7 @@ pub struct CudaDwt53LevelShape {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CudaDwt53Pass {
+    pub(crate) phase: u32,
     pub(crate) full_width: u32,
     pub(crate) current_width: u32,
     pub(crate) current_height: u32,
@@ -156,6 +157,7 @@ pub(crate) struct CudaDwt53Pass {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CudaDwt53LevelPass {
+    pub(crate) origin: (u32, u32),
     pub(crate) full_width: u32,
     pub(crate) current_width: u32,
     pub(crate) current_height: u32,

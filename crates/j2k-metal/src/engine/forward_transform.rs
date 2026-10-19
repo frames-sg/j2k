@@ -111,11 +111,16 @@ pub(crate) fn encode_deinterleave_mct_to_f32(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "DWT command assembly keeps per-level phase, buffer swaps, and packed-band ownership together"
+)]
 pub(crate) fn encode_forward_dwt53(
     samples: &[f32],
     width: u32,
     height: u32,
     num_levels: u8,
+    origin: (u32, u32),
 ) -> Result<J2kForwardDwt53Output, Error> {
     if width == 0 || height == 0 {
         return Err(Error::MetalKernel {
@@ -141,14 +146,22 @@ pub(crate) fn encode_forward_dwt53(
 
         let mut current_width = width;
         let mut current_height = height;
+        let mut level_origin = origin;
         let mut shapes = Vec::new();
         let mut levels_run = 0u8;
         let mut active_is_a = true;
 
         while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
-            let low_width = current_width.div_ceil(2);
-            let low_height = current_height.div_ceil(2);
+            let dimensions = j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin(
+                current_width,
+                current_height,
+                level_origin,
+            );
+            let low_width = dimensions.low_width;
+            let low_height = dimensions.low_height;
             let params = J2kForwardDwt53Params {
+                x_phase: level_origin.0 & 1,
+                y_phase: level_origin.1 & 1,
                 full_width: width,
                 current_width,
                 current_height,
@@ -156,7 +169,18 @@ pub(crate) fn encode_forward_dwt53(
                 low_height,
             };
 
-            if current_height >= 2 {
+            let vertical = current_width != 0
+                && (current_height >= 2 || (current_height == 1 && params.y_phase != 0));
+            let horizontal = current_height != 0
+                && (current_width >= 2 || (current_width == 1 && params.x_phase != 0));
+            if levels_run > 0 && vertical != horizontal {
+                let (input, output) =
+                    active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
+                let blit = new_blit_command_encoder(&command_buffer)?;
+                blit.copy_from_buffer(input, 0, output, 0, bytes as u64)?;
+                blit.endEncoding();
+            }
+            if vertical {
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
@@ -170,7 +194,7 @@ pub(crate) fn encode_forward_dwt53(
                 )?;
                 active_is_a = !active_is_a;
             }
-            if current_width >= 2 {
+            if horizontal {
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
@@ -179,7 +203,9 @@ pub(crate) fn encode_forward_dwt53(
                     input,
                     output,
                     params,
-                    params.low_width,
+                    params
+                        .low_width
+                        .max(params.current_width - params.low_width),
                     "J2K forward DWT 5/3 horizontal",
                 )?;
                 active_is_a = !active_is_a;
@@ -193,11 +219,12 @@ pub(crate) fn encode_forward_dwt53(
                 height: current_height,
                 low_width,
                 low_height,
-                high_width: current_width / 2,
-                high_height: current_height / 2,
+                high_width: dimensions.high_width,
+                high_height: dimensions.high_height,
             });
             current_width = low_width;
             current_height = low_height;
+            level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
             levels_run = levels_run.saturating_add(1);
         }
 
@@ -240,7 +267,7 @@ pub(super) struct J2kForwardDwt97Params {
     pub(super) low_height: u32,
     pub(super) parity: u32,
     pub(super) coefficient: f32,
-    pub(super) _reserved: u32,
+    pub(super) origin_phase: u32,
 }
 
 const _: [(); 0] = [(); core::mem::offset_of!(J2kForwardDwt97Params, full_width)];
@@ -250,7 +277,7 @@ const _: [(); 12] = [(); core::mem::offset_of!(J2kForwardDwt97Params, low_width)
 const _: [(); 16] = [(); core::mem::offset_of!(J2kForwardDwt97Params, low_height)];
 const _: [(); 20] = [(); core::mem::offset_of!(J2kForwardDwt97Params, parity)];
 const _: [(); 24] = [(); core::mem::offset_of!(J2kForwardDwt97Params, coefficient)];
-const _: [(); 28] = [(); core::mem::offset_of!(J2kForwardDwt97Params, _reserved)];
+const _: [(); 28] = [(); core::mem::offset_of!(J2kForwardDwt97Params, origin_phase)];
 const _: [(); 32] = [(); core::mem::size_of::<J2kForwardDwt97Params>()];
 
 // SAFETY: The compile-time field walk proves the repr(C) value is exactly
@@ -267,6 +294,7 @@ pub(crate) fn encode_forward_dwt97(
     width: u32,
     height: u32,
     num_levels: u8,
+    origin: (u32, u32),
 ) -> Result<J2kForwardDwt97Output, Error> {
     if width == 0 || height == 0 {
         return Err(Error::MetalKernel {
@@ -301,6 +329,7 @@ pub(crate) fn encode_forward_dwt97(
             (&buffer_a, &buffer_b),
             (width, height),
             num_levels,
+            origin,
         )?;
         commit_and_wait_metal(&command_buffer)?;
 
@@ -437,7 +466,7 @@ pub(super) fn dispatch_forward_dwt97_lift_steps(
         (FDWT97_LOW_PASS, FDWT97_DELTA),
     ] {
         let params = J2kForwardDwt97Params {
-            parity,
+            parity: parity ^ base_params.origin_phase,
             coefficient,
             ..base_params
         };

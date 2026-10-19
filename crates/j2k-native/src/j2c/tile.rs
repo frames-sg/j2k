@@ -492,6 +492,10 @@ impl<'a> ResolutionTile<'a> {
         clippy::similar_names,
         reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "precinct iteration validates both coordinate grids before constructing the iterator"
+    )]
     pub(crate) fn precincts(&self) -> Option<impl Iterator<Item = PrecinctData>> {
         let num_precincts_y = self.num_precincts_y();
         let num_precincts_x = self.num_precincts_x();
@@ -522,14 +526,14 @@ impl<'a> ResolutionTile<'a> {
             .num_decomposition_levels()
             - self.resolution;
 
-        let x_stride = 1_u32.checked_shl(u32::from(
+        let x_stride = 1_u64.checked_shl(u32::from(
             self.precinct_exponent_x().checked_add(nl_minus_r)?,
         ))?;
-        let y_stride = 1_u32.checked_shl(u32::from(
+        let y_stride = 1_u64.checked_shl(u32::from(
             self.precinct_exponent_y().checked_add(nl_minus_r)?,
         ))?;
 
-        let precinct_x_step = u32::from(
+        let precinct_x_step = u64::from(
             self.component_tile
                 .component_info
                 .size_info
@@ -537,7 +541,7 @@ impl<'a> ResolutionTile<'a> {
         )
         .checked_mul(x_stride)?;
 
-        let precinct_y_step = u32::from(
+        let precinct_y_step = u64::from(
             self.component_tile
                 .component_info
                 .size_info
@@ -552,8 +556,8 @@ impl<'a> ResolutionTile<'a> {
         // precinct in each row/column is at the start position of the tile
         // which might not be a multiple of precinct exponent, but all subsequent
         // precincts are at a multiple of the exponent.
-        let mut r_x = self.component_tile.tile.rect.x0;
-        let mut r_y = self.component_tile.tile.rect.y0;
+        let mut r_x = u64::from(self.component_tile.tile.rect.x0);
+        let mut r_y = u64::from(self.component_tile.tile.rect.y0);
 
         // The second part of the condition in the formula in B.12.1.3. If it
         // is divisible, then we can't take the x/y position of the tile
@@ -570,6 +574,36 @@ impl<'a> ResolutionTile<'a> {
             r_y = r_y.checked_next_multiple_of(precinct_y_step)?;
         }
 
+        // A precinct's reference-grid stride can exceed u32 even though its
+        // only in-image position is zero (B.12). Validate the last emitted
+        // position before narrowing; an unused successor need not fit.
+        let positions_fit = |first: u64, step: u64, count: u32, end: u32| {
+            if count == 0 {
+                return Some(());
+            }
+            let last = if count == 1 {
+                first
+            } else {
+                first
+                    .checked_add(1)?
+                    .checked_next_multiple_of(step)?
+                    .checked_add(u64::from(count - 2).checked_mul(step)?)?
+            };
+            (last < u64::from(end)).then_some(())
+        };
+        positions_fit(
+            r_x,
+            precinct_x_step,
+            num_precincts_x,
+            self.component_tile.tile.rect.x1,
+        )?;
+        positions_fit(
+            r_y,
+            precinct_y_step,
+            num_precincts_y,
+            self.component_tile.tile.rect.y1,
+        )?;
+
         let iter = (0..num_precincts_y).flat_map(move |y| {
             let y0 = y * ppy_pow2 + y_start;
             let mut r_x = r_x;
@@ -577,23 +611,39 @@ impl<'a> ResolutionTile<'a> {
             let res = (0..num_precincts_x).map(move |x| {
                 let x0 = x * ppx_pow2 + x_start;
 
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "positions_fit checked every emitted coordinate against the u32 tile endpoint"
+                )]
                 let data = PrecinctData {
-                    r_x,
-                    r_y,
-                    rect: IntRect::from_xywh(x0, y0, ppx_pow2, ppy_pow2),
+                    r_x: r_x as u32,
+                    r_y: r_y as u32,
+                    // A grid cell may end at 2^32. Image/subband endpoints
+                    // are at most u32::MAX, so clipping here preserves every
+                    // possible coefficient without overflowing the cell edge.
+                    rect: IntRect::from_ltrb(
+                        x0,
+                        y0,
+                        x0.saturating_add(ppx_pow2),
+                        y0.saturating_add(ppy_pow2),
+                    ),
                     idx: u64::from(num_precincts_x) * u64::from(y) + u64::from(x),
                 };
 
                 // If r_x is already aligned, we simply step by `precinct_x_step`.
                 // Otherwise (can only be the case for precincts in the first
                 // row or column), align to the next multiple.
-                r_x = (r_x + 1).next_multiple_of(precinct_x_step);
+                if x + 1 < num_precincts_x {
+                    r_x = (r_x + 1).next_multiple_of(precinct_x_step);
+                }
 
                 data
             });
 
             // Same as for r_x.
-            r_y = (r_y + 1).next_multiple_of(precinct_y_step);
+            if y + 1 < num_precincts_y {
+                r_y = (r_y + 1).next_multiple_of(precinct_y_step);
+            }
 
             res
         });
@@ -657,6 +707,55 @@ mod tests {
         assert_eq!(ceil_div_by_power_of_two(0, u8::MAX), 0);
         assert_eq!(subband_coordinate(u32::MAX, 32, true), 1);
         assert_eq!(subband_coordinate(u32::MAX, 33, true), 0);
+    }
+
+    #[test]
+    fn precinct_reference_steps_may_exceed_u32() {
+        for levels in [20, 31] {
+            let component_info = ComponentInfo {
+                size_info: ComponentSizeInfo {
+                    precision: 8,
+                    signed: false,
+                    horizontal_resolution: 1,
+                    vertical_resolution: 1,
+                },
+                coding_style: CodingStyleComponent {
+                    flags: CodingStyleFlags::default(),
+                    parameters: CodingStyleParameters {
+                        num_decomposition_levels: levels,
+                        num_resolution_levels: levels + 1,
+                        code_block_width: 6,
+                        code_block_height: 6,
+                        code_block_style: CodeBlockStyle::default(),
+                        transformation: WaveletTransform::Reversible53,
+                        precinct_exponents: vec![(15, 15); usize::from(levels) + 1],
+                    },
+                },
+                quantization_info: QuantizationInfo {
+                    quantization_style: QuantizationStyle::NoQuantization,
+                    guard_bits: 2,
+                    step_sizes: vec![],
+                },
+                roi_shift: 0,
+            };
+            let tile = Tile {
+                idx: 0,
+                tile_parts: vec![],
+                rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
+                component_infos: vec![component_info],
+                progression_order: ProgressionOrder::ResolutionPositionComponentLayer,
+                progression_changes: vec![],
+                mct: false,
+                num_layers: 1,
+            };
+            let component = ComponentTile::new(&tile, &tile.component_infos[0]);
+            let precincts = ResolutionTile::new(component, 0)
+                .precincts()
+                .expect("one precinct spans the lowest resolution")
+                .collect::<Vec<_>>();
+            assert_eq!(precincts.len(), 1);
+            assert_eq!((precincts[0].r_x, precincts[0].r_y), (0, 0));
+        }
     }
 
     #[test]

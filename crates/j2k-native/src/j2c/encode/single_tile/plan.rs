@@ -30,6 +30,7 @@ pub(super) struct ValidatedSingleTileInput {
 }
 
 pub(super) struct SingleTilePlan {
+    pub(super) tile_origin: (u32, u32),
     pub(super) num_pixels: usize,
     pub(super) high_bit_exact: bool,
     pub(super) use_mct: bool,
@@ -53,6 +54,19 @@ pub(super) struct CodestreamFinalPlan {
 }
 
 impl SingleTilePlan {
+    pub(super) fn component_origin(&self, component: usize) -> (u32, u32) {
+        let (x_sampling, y_sampling) = self
+            .params
+            .component_sampling
+            .get(component)
+            .copied()
+            .unwrap_or((1, 1));
+        (
+            self.tile_origin.0.div_ceil(u32::from(x_sampling)),
+            self.tile_origin.1.div_ceil(u32::from(y_sampling)),
+        )
+    }
+
     pub(super) fn into_codestream_final_plan(self) -> CodestreamFinalPlan {
         let Self {
             params,

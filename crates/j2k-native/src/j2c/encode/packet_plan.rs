@@ -130,7 +130,7 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
     packet_descriptors: &mut [J2kPacketizationPacketDescriptor],
     packet_descriptor_capacity: usize,
     params: &EncodeParams,
-    tile_size: (u32, u32),
+    tile_bounds: j2k_types::J2kRect,
     marker_options: packet_encode::PacketMarkerOptions,
     allow_packetization_accelerator: bool,
     force_scalar_packetization: bool,
@@ -151,7 +151,7 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
     }
     // Contribution storage order is independent of codestream order. Sort
     // once, with the actual tile geometry, before either packetizer sees it.
-    sort_packet_descriptors_for_tile(packet_descriptors, params, tile_size)?;
+    sort_packet_descriptors_for_tile(packet_descriptors, params, tile_bounds)?;
     let owned_packet_bytes = packet_encode::owned_packet_retained_bytes_for_public_descriptors(
         resolution_packets,
         resolution_packet_capacity,

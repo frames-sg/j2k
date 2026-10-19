@@ -42,16 +42,10 @@ pub(super) fn size_marker(
     // Also, the tile size plus the tile offset shall be greater than the image area offset.
     // This ensures that the first tile (tile 0) will contain at least one reference grid point
     // from the image area (B-4).
-    if size_data
-        .tile_x_offset
-        .checked_add(size_data.tile_width)
-        .ok_or(crate::TileError::InvalidOffsets)?
-        <= size_data.image_area_x_offset
-        || size_data
-            .tile_y_offset
-            .checked_add(size_data.tile_height)
-            .ok_or(crate::TileError::InvalidOffsets)?
-            <= size_data.image_area_y_offset
+    if u64::from(size_data.tile_x_offset) + u64::from(size_data.tile_width)
+        <= u64::from(size_data.image_area_x_offset)
+        || u64::from(size_data.tile_y_offset) + u64::from(size_data.tile_height)
+            <= u64::from(size_data.image_area_y_offset)
     {
         bail!(crate::TileError::InvalidOffsets);
     }
@@ -60,12 +54,6 @@ pub(super) fn size_marker(
         if comp.precision == 0 || comp.vertical_resolution == 0 || comp.horizontal_resolution == 0 {
             bail!(ValidationError::InvalidComponentMetadata);
         }
-    }
-
-    if size_data.image_width() > crate::MAX_J2K_IMAGE_DIMENSION
-        || size_data.image_height() > crate::MAX_J2K_IMAGE_DIMENSION
-    {
-        bail!(ValidationError::ImageTooLarge);
     }
 
     // Isot is a u16, so no conforming codestream addresses more than 65,536

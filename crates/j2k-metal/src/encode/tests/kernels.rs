@@ -4,6 +4,70 @@ use super::*;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn metal_multi_tile_origins_match_source_and_cpu_reconstruction() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let (width, height) = (130, 99);
+    let pixels = j2k_test_support::patterned_rgb8(width, height);
+    for (reversible, use_ht_block_coding) in [(true, false), (true, true), (false, true)] {
+        let options = j2k_native::EncodeOptions {
+            reversible,
+            use_ht_block_coding,
+            num_decomposition_levels: 3,
+            tile_size: Some((39, 35)),
+            code_block_width_exp: 1,
+            code_block_height_exp: 1,
+            precinct_exponents: vec![(3, 3), (4, 4), (4, 4), (4, 4)],
+            progression_order: j2k_native::EncodeProgressionOrder::Pcrl,
+            ..j2k_native::EncodeOptions::default()
+        };
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+        let bytes = j2k_native::encode_with_accelerator(
+            &pixels,
+            width,
+            height,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("Metal encode with absolute tile origins");
+        let decoded = Image::new(&bytes, &DecodeSettings::strict())
+            .and_then(|image| image.decode())
+            .expect("decode Metal tiled output");
+        if reversible {
+            assert!(
+                decoded == pixels,
+                "lossless Metal pixels, HT={use_ht_block_coding}"
+            );
+            assert!(accelerator.forward_dwt53_dispatches() > 0);
+        } else {
+            let cpu = j2k_native::encode(&pixels, width, height, 3, 8, false, &options)
+                .expect("CPU encode");
+            let expected = Image::new(&cpu, &DecodeSettings::strict())
+                .and_then(|image| image.decode())
+                .expect("CPU reconstruction");
+            assert_eq!(decoded.len(), expected.len());
+            for (index, (&actual, &reference)) in decoded.iter().zip(&expected).enumerate() {
+                assert!(
+                    actual.abs_diff(reference) <= 1,
+                    "9/7 sample {index}: Metal={actual}, CPU={reference}"
+                );
+            }
+            assert!(accelerator.forward_dwt97_dispatches() > 0);
+        }
+        if use_ht_block_coding {
+            assert!(accelerator.ht_code_block_dispatches() > 0);
+        } else {
+            assert!(accelerator.tier1_code_block_dispatches() > 0);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 #[expect(
     clippy::cast_sign_loss,
     reason = "bounded synthetic pixel expression is nonnegative"

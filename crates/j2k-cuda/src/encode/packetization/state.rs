@@ -54,10 +54,7 @@ pub(super) fn seed_cuda_htj2k_packetization_state(
                 "CUDA HTJ2K packetization block count exceeds u32",
             )
         })?;
-        if subband.num_cbs_x == 0
-            || subband.num_cbs_y == 0
-            || subband.num_cbs_x.saturating_mul(subband.num_cbs_y) != block_count
-        {
+        if subband.num_cbs_x.checked_mul(subband.num_cbs_y) != Some(block_count) {
             return Err(CudaHtj2kPacketizationPlanError::Invalid(
                 "CUDA HTJ2K packetization subband code-block layout mismatch",
             ));

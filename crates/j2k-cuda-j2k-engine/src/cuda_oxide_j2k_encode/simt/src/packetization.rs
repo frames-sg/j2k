@@ -73,10 +73,7 @@ pub(crate) fn j2k_packet_build_header_serial(
     let mut subband_idx = 0_u32;
     while subband_idx < packet.subband_count {
         let subband = load_job(subbands, packet.subband_start + subband_idx);
-        if subband.num_cbs_x == 0
-            || subband.num_cbs_y == 0
-            || subband.num_cbs_x.checked_mul(subband.num_cbs_y) != Some(subband.block_count)
-        {
+        if subband.num_cbs_x.checked_mul(subband.num_cbs_y) != Some(subband.block_count) {
             return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 7, 0, 0, 0);
         }
         let mut idx = 0_u32;
@@ -140,6 +137,10 @@ pub(crate) fn j2k_packet_build_header_serial(
     while subband_idx < packet.subband_count {
         let subband_meta_idx = packet.subband_start + subband_idx;
         let subband = load_job(subbands, subband_meta_idx);
+        if subband.block_count == 0 {
+            subband_idx += 1;
+            continue;
+        }
         let mut inclusion_tree = j2k_packet_tag_tree_new();
         let mut zbp_tree = j2k_packet_tag_tree_new();
         j2k_packet_build_tag_trees(

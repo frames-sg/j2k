@@ -262,14 +262,13 @@ pub(in crate::j2c::build) fn code_block_grid(
 
     let cb_x0 = (u32::max(precinct_rect.x0, sub_band_rect.x0) / cb_width) * cb_width;
     let cb_y0 = (u32::max(precinct_rect.y0, sub_band_rect.y0) / cb_height) * cb_height;
-    let cb_x1 = u32::min(precinct_rect.x1, sub_band_rect.x1)
-        .div_ceil(cb_width)
-        .checked_mul(cb_width)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let cb_y1 = u32::min(precinct_rect.y1, sub_band_rect.y1)
-        .div_ceil(cb_height)
-        .checked_mul(cb_height)
-        .ok_or(ValidationError::ImageTooLarge)?;
+    let block_end_x = u32::min(precinct_rect.x1, sub_band_rect.x1).div_ceil(cb_width);
+    let block_end_y = u32::min(precinct_rect.y1, sub_band_rect.y1).div_ceil(cb_height);
+    // Keep counts in block coordinates: the last grid cell can end at 2^32,
+    // beyond every representable image/subband endpoint. Only its rectangle
+    // is clipped; the last partial block must still contribute to the count.
+    let cb_x1 = block_end_x.saturating_mul(cb_width);
+    let cb_y1 = block_end_y.saturating_mul(cb_height);
     if cb_x0 > cb_x1 || cb_y0 > cb_y1 {
         return Err(DecodingError::InvalidPrecinct.into());
     }
@@ -278,12 +277,12 @@ pub(in crate::j2c::build) fn code_block_grid(
     let columns = if sub_band_rect.width() == 0 {
         0
     } else {
-        area.width() / cb_width
+        block_end_x - cb_x0 / cb_width
     };
     let rows = if sub_band_rect.height() == 0 {
         0
     } else {
-        area.height() / cb_height
+        block_end_y - cb_y0 / cb_height
     };
 
     Ok(CodeBlockGrid {

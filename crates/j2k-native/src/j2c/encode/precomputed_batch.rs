@@ -248,6 +248,7 @@ fn try_prepared_subband(
 ) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
     let retained_base_bytes = tracker.retained_bytes("batch precomputed 9/7 prepared graph")?;
     let request = F32SubbandEncodeRequest {
+        origin: (0, 0),
         coefficients,
         width,
         height,

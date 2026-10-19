@@ -78,8 +78,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
 
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
         component_resolution_packets,
-        width,
-        height,
+        super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
         &plan.params.component_sampling,
         plan.num_levels,
         &plan.params.precinct_exponents,
@@ -166,7 +165,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         &mut packet_descriptors,
         descriptor_capacity,
         &plan.params,
-        (width, height),
+        super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
         packet_encode::PacketMarkerOptions {
             write_sop: plan.params.write_sop,
             write_eph: plan.params.write_eph,

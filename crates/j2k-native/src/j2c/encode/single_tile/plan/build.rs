@@ -93,6 +93,7 @@ pub(in crate::j2c::encode::single_tile) fn build_single_tile_plan(
     } = owners;
     let params = build_encode_params(&request, geometry, param_owners);
     let plan = SingleTilePlan {
+        tile_origin: (0, 0),
         num_pixels,
         high_bit_exact,
         use_mct: geometry.use_mct,

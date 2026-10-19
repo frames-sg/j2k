@@ -144,6 +144,7 @@ pub(super) fn encode_impl(
         session,
         profile_enabled,
         accelerator,
+        (0, 0),
     )?;
     finalize_prepared_single_tile(prepared, options, profile_enabled, total_start, session)
 }
@@ -168,6 +169,7 @@ pub(in crate::j2c::encode) fn encode_single_tile_packets_impl(
     component_sample_info: &[EncodeComponentSampleInfo],
     session: &NativeEncodeSession<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
+    tile_origin: (u32, u32),
 ) -> NativeEncodePipelineResult<packet_encode::PacketizedTileData> {
     let validated = validate_encode_request(
         pixels.len(),
@@ -201,6 +203,7 @@ pub(in crate::j2c::encode) fn encode_single_tile_packets_impl(
         session,
         profile::profile_stages_enabled(),
         accelerator,
+        tile_origin,
     )?;
     Ok(prepared.into_packetized_tile())
 }
@@ -224,6 +227,7 @@ fn prepare_validated_single_tile(
     session: &NativeEncodeSession<'_>,
     profile_enabled: bool,
     accelerator: &mut impl J2kEncodeStageAccelerator,
+    tile_origin: (u32, u32),
 ) -> NativeEncodePipelineResult<PreparedSingleTile> {
     let mut plan = build_single_tile_plan(
         validated,
@@ -238,6 +242,8 @@ fn prepare_validated_single_tile(
         component_sample_info,
         session,
     )?;
+
+    plan.tile_origin = tile_origin;
 
     begin_encode_route(
         accelerator,

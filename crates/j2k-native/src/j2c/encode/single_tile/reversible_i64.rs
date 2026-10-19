@@ -66,6 +66,7 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
     let packetized_tile = packetize_i64_component_resolution_packets(
         component_resolution_packets,
         I64PacketizeRequest {
+            tile_origin: plan.tile_origin,
             width,
             height,
             num_levels: plan.num_levels,

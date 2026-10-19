@@ -5,6 +5,23 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Image opening and header inspection accept valid dimensions beyond 60,000
+  pixels. Precinct and code-block edges are clipped without coordinate
+  overflow, and reference-grid strides use wide arithmetic. Decode allocation
+  and structural budgets still apply to whole images and requested regions.
+- Multi-tile encoding carries absolute tile-component origins through 5/3 and
+  9/7 transforms, code-block partitioning, precincts, and packet progression.
+  Grids previously rejected for wavelet/block/precinct misalignment are supported
+  by the CPU encoder and the staged Metal/CUDA routes. Compatible grids retain
+  fused whole-tile acceleration. Tiles crossing the implicit 32,768-sample
+  precinct grid are split even when no custom precinct sizes are supplied.
+  The smallest-edge decomposition policy is unchanged.
+- Encode accelerators can implement `encode_forward_dwt53_at_origin` and
+  `encode_forward_dwt97_at_origin`. Existing zero-origin hooks and job structs
+  remain source-compatible; their default adapters decline incompatible phases.
+- Metal and CUDA packetization accept empty edge subbands within a nonempty
+  precinct, emitting no tag-tree bits for those bands.
+
 - Irreversible 9/7 encodes accept per-component quantization profiles:
   `J2kLossyEncodeOptions::quantization_profile` (`with_quantization_profile`)
   and `EncodeOptions::irreversible_quantization_profile` take one positive

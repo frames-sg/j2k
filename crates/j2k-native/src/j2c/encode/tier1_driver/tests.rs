@@ -22,6 +22,7 @@ fn classic_fixture() -> Vec<PreparedEncodeSubband> {
     });
     let mut subbands = exact_vec(1);
     subbands.push(PreparedEncodeSubband {
+        origin: (0, 0),
         code_blocks: blocks,
         preencoded_ht_code_blocks: None,
         preencoded_ht_maximum_cleanup_magnitude: None,
@@ -50,6 +51,7 @@ fn ht_refinement_fixture() -> Vec<PreparedEncodeSubband> {
     });
     let mut subbands = exact_vec(1);
     subbands.push(PreparedEncodeSubband {
+        origin: (0, 0),
         code_blocks: blocks,
         preencoded_ht_code_blocks: None,
         preencoded_ht_maximum_cleanup_magnitude: None,

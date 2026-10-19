@@ -1086,6 +1086,43 @@ fn cpu_lossless_multi_tile_codestream_decodes() {
 }
 
 #[test]
+fn tile_origins_work_without_facade_validation_and_keep_effective_depth() {
+    for (width, height, tile, requested, expected) in [
+        (90, 90, (15, 15), 1, 1),
+        (72, 72, (18, 18), 2, 2),
+        (65, 64, (64, 64), 5, 0),
+    ] {
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|index| masked_u8(index as usize * 17 + index as usize / 9))
+            .collect();
+        for coding in [
+            J2kBlockCodingMode::Classic,
+            J2kBlockCodingMode::HighThroughput,
+        ] {
+            for validation in [
+                J2kEncodeValidation::External,
+                J2kEncodeValidation::CpuRoundTrip,
+            ] {
+                let samples = J2kLosslessSamples::new(&pixels, width, height, 1, 8, false)
+                    .expect("valid tile-origin fixture");
+                let encoded = encode_j2k_lossless(
+                    samples,
+                    &cpu_options()
+                        .with_tile_size(Some(tile))
+                        .with_max_decomposition_levels(Some(requested))
+                        .with_block_coding_mode(coding)
+                        .with_validation(validation),
+                )
+                .expect("absolute-origin tile encode");
+                let cod = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
+                assert_eq!(encoded.codestream[cod + 9], expected);
+                assert_eq!(strict_decode_native(&encoded.codestream).data, pixels);
+            }
+        }
+    }
+}
+
+#[test]
 fn cpu_lossless_emits_packet_markers_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|index| masked_u8((index * 31) ^ (index / 7)))

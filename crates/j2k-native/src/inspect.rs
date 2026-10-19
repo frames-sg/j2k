@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::j2c::capabilities::{CapabilityMarkerError, CapabilityMarkerState, Htj2kCapabilities};
-use crate::{MAX_J2K_IMAGE_DIMENSION, MAX_J2K_SPEC_COMPONENTS, MAX_J2K_TILE_COUNT};
+use crate::{MAX_J2K_SPEC_COMPONENTS, MAX_J2K_TILE_COUNT};
 
 const MARKER_SOC: u8 = 0x4F;
 const MARKER_CAP: u8 = 0x50;
@@ -505,20 +505,10 @@ fn validate_siz_geometry(
             what: "tile origin must not exceed image origin",
         });
     }
-    if geometry
-        .tile_x_origin
-        .checked_add(geometry.tile_width)
-        .ok_or(J2kCodestreamHeaderError::InvalidSiz {
-            what: "tile extent overflows",
-        })?
-        <= geometry.x_origin
-        || geometry
-            .tile_y_origin
-            .checked_add(geometry.tile_height)
-            .ok_or(J2kCodestreamHeaderError::InvalidSiz {
-                what: "tile extent overflows",
-            })?
-            <= geometry.y_origin
+    if u64::from(geometry.tile_x_origin) + u64::from(geometry.tile_width)
+        <= u64::from(geometry.x_origin)
+        || u64::from(geometry.tile_y_origin) + u64::from(geometry.tile_height)
+            <= u64::from(geometry.y_origin)
     {
         return Err(J2kCodestreamHeaderError::InvalidSiz {
             what: "first tile must overlap image area",
@@ -527,11 +517,6 @@ fn validate_siz_geometry(
 
     let width = geometry.x_size - geometry.x_origin;
     let height = geometry.y_size - geometry.y_origin;
-    if width > MAX_J2K_IMAGE_DIMENSION || height > MAX_J2K_IMAGE_DIMENSION {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "image dimensions exceed JPEG 2000 inspect limit",
-        });
-    }
     let tiles_x = (geometry.x_size - geometry.tile_x_origin).div_ceil(geometry.tile_width);
     let tiles_y = (geometry.y_size - geometry.tile_y_origin).div_ceil(geometry.tile_height);
     let tile_count = u64::from(tiles_x) * u64::from(tiles_y);
@@ -628,13 +613,12 @@ mod tests {
     }
 
     #[test]
-    fn inspect_rejects_oversized_dimensions() {
+    fn inspect_accepts_large_dimensions() {
         let mut bytes = minimal_codestream();
         rewrite_siz_u32(&mut bytes, 2, 60_001);
 
-        let err = inspect_j2k_codestream_header(&bytes).expect_err("oversized width must reject");
-
-        assert!(matches!(err, J2kCodestreamHeaderError::InvalidSiz { .. }));
+        let header = inspect_j2k_codestream_header(&bytes).expect("large width is valid");
+        assert_eq!(header.dimensions, (60_001, 64));
     }
 
     #[test]
@@ -648,16 +632,16 @@ mod tests {
     }
 
     #[test]
-    fn inspect_rejects_tile_extent_overflow() {
+    fn inspect_accepts_tile_extending_beyond_reference_grid() {
         let mut bytes = minimal_codestream();
         rewrite_siz_u32(&mut bytes, 2, u32::MAX);
         rewrite_siz_u32(&mut bytes, 10, u32::MAX - 1);
         rewrite_siz_u32(&mut bytes, 18, 10);
         rewrite_siz_u32(&mut bytes, 26, u32::MAX - 2);
 
-        let err = inspect_j2k_codestream_header(&bytes).expect_err("overflow must reject");
-
-        assert!(matches!(err, J2kCodestreamHeaderError::InvalidSiz { .. }));
+        let header = inspect_j2k_codestream_header(&bytes).expect("tile is clipped to image");
+        assert_eq!(header.dimensions, (1, 64));
+        assert_eq!(header.tile_count, (1, 1));
     }
 
     #[test]

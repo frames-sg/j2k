@@ -40,6 +40,7 @@ fn prepared_precinct_fixture() -> Vec<Vec<PreparedResolutionPacket>> {
 
     let mut subbands = vector_with_capacity(2);
     subbands.push(PreparedEncodeSubband {
+        origin: (0, 0),
         code_blocks,
         preencoded_ht_code_blocks: Some(preencoded),
         preencoded_ht_maximum_cleanup_magnitude: None,
@@ -89,8 +90,12 @@ fn precinct_split_moves_tier1_payloads_without_clone() {
 
     let split = split_component_resolution_packets_by_precinct_for_session(
         source,
-        8,
-        4,
+        j2k_types::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 8,
+            y1: 4,
+        },
         &[],
         0,
         &[(2, 1)],
@@ -165,8 +170,12 @@ fn precinct_split_exact_peak_accepts_cap_and_rejects_one_byte_less() {
         .expect("measurement session");
     let (_measured, peak_phase_bytes) = split_component_resolution_packets_by_precinct_accounted(
         prepared_precinct_fixture(),
-        8,
-        4,
+        j2k_types::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 8,
+            y1: 4,
+        },
         &[],
         0,
         &[(2, 1)],
@@ -180,8 +189,12 @@ fn precinct_split_exact_peak_accepts_cap_and_rejects_one_byte_less() {
             .expect("exact split cap session");
     let exact = split_component_resolution_packets_by_precinct_for_session(
         prepared_precinct_fixture(),
-        8,
-        4,
+        j2k_types::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 8,
+            y1: 4,
+        },
         &[],
         0,
         &[(2, 1)],
@@ -196,8 +209,12 @@ fn precinct_split_exact_peak_accepts_cap_and_rejects_one_byte_less() {
         .expect("one-byte-under split session");
     let error = split_component_resolution_packets_by_precinct_for_session(
         prepared_precinct_fixture(),
-        8,
-        4,
+        j2k_types::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 8,
+            y1: 4,
+        },
         &[],
         0,
         &[(2, 1)],

@@ -363,6 +363,8 @@ pub(crate) struct J2kForwardDwt53Params {
     pub(crate) current_height: u32,
     pub(crate) low_width: u32,
     pub(crate) low_height: u32,
+    pub(crate) x_phase: u32,
+    pub(crate) y_phase: u32,
 }
 
 #[cfg(target_os = "macos")]
