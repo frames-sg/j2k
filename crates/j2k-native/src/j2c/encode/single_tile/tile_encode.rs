@@ -80,6 +80,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         component_resolution_packets,
         width,
         height,
+        &plan.params.component_sampling,
         plan.num_levels,
         &plan.params.precinct_exponents,
         session,

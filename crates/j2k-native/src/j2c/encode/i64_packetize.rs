@@ -51,6 +51,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         component_resolution_packets,
         width,
         height,
+        &params.component_sampling,
         num_levels,
         &params.precinct_exponents,
         session,

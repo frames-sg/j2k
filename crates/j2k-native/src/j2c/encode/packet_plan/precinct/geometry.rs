@@ -76,10 +76,39 @@ pub(super) struct PrecinctSubbandGeometry {
     pub(super) vertical_span: u32,
 }
 
+/// Return one component's tile-component extent for a tile anchored at the
+/// reference-grid origin: `ceil(width / XRsiz)` by `ceil(height / YRsiz)`
+/// (T.800 B-12). Empty sampling means every component is unsampled.
+pub(super) fn component_extent(
+    width: u32,
+    height: u32,
+    component_sampling: &[(u8, u8)],
+    component: usize,
+) -> NativeEncodePipelineResult<(u32, u32)> {
+    let (x_rsiz, y_rsiz) = if component_sampling.is_empty() {
+        (1, 1)
+    } else {
+        component_sampling.get(component).copied().ok_or_else(|| {
+            NativeEncodePipelineError::internal_invariant(
+                "missing component sampling for precinct partitioning",
+            )
+        })?
+    };
+    if x_rsiz == 0 || y_rsiz == 0 {
+        return Err(NativeEncodePipelineError::internal_invariant(
+            "component sampling must be nonzero",
+        ));
+    }
+    Ok((
+        width.div_ceil(u32::from(x_rsiz)),
+        height.div_ceil(u32::from(y_rsiz)),
+    ))
+}
+
 pub(super) fn component_split_packet_count(
     packets: &[PreparedResolutionPacket],
-    image_width: u32,
-    image_height: u32,
+    component_width: u32,
+    component_height: u32,
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
 ) -> NativeEncodePipelineResult<usize> {
@@ -87,8 +116,8 @@ pub(super) fn component_split_packet_count(
         let (horizontal_exponent, vertical_exponent) =
             precinct_exponents_for_resolution(precinct_exponents, packet.resolution)?;
         let grid = resolution_precinct_grid(
-            image_width,
-            image_height,
+            component_width,
+            component_height,
             num_decomposition_levels,
             packet.resolution,
             horizontal_exponent,
@@ -158,9 +187,11 @@ pub(super) fn precinct_exponents_for_resolution(
     })
 }
 
+/// Partition one tile-component resolution into precincts. The extent is the
+/// component's own (see [`component_extent`]), not the reference-grid tile's.
 pub(super) fn resolution_precinct_grid(
-    image_width: u32,
-    image_height: u32,
+    component_width: u32,
+    component_height: u32,
     num_decomposition_levels: u8,
     resolution: u32,
     horizontal_exponent: u8,
@@ -174,8 +205,8 @@ pub(super) fn resolution_precinct_grid(
             )
         })?;
     let resolution_scale = pow2_u32(resolution_shift)?;
-    let resolution_columns = image_width.div_ceil(resolution_scale);
-    let resolution_rows = image_height.div_ceil(resolution_scale);
+    let resolution_columns = component_width.div_ceil(resolution_scale);
+    let resolution_rows = component_height.div_ceil(resolution_scale);
     let horizontal_precinct_span = pow2_u32(u32::from(horizontal_exponent))?;
     let vertical_precinct_span = pow2_u32(u32::from(vertical_exponent))?;
     Ok(ResolutionPrecinctGrid {
