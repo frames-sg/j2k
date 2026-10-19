@@ -87,13 +87,38 @@ fn every_workflow_declares_default_permissions_including_contents_read() {
 }
 
 #[test]
-fn no_job_requests_a_write_permission_scope() {
+fn jobs_keep_repository_permissions_read_only() {
     let mut violations = Vec::new();
     for workflow in workflows() {
+        let oidc_publisher = (workflow.file_name == "python-bindings.yml").then(|| {
+            let publish = &workflow.document["jobs"]["publish"];
+            assert_eq!(publish["environment"]["name"].as_str(), Some("pypi"));
+            assert_eq!(
+                publish["if"].as_str(),
+                Some(concat!(
+                    "${{ always() && github.repository == 'frames-sg/j2k' && ",
+                    "github.event_name == 'workflow_dispatch' && ",
+                    "github.ref == 'refs/heads/main' && github.actor == 'jcwal1516' && ",
+                    "github.triggering_actor == 'jcwal1516' && inputs.publish && ",
+                    "needs.cpu-wheel.result == 'success' && ",
+                    "(needs.cuda.result == 'success' || needs.cuda.result == 'skipped') }}"
+                ))
+            );
+            value_mapping(publish, "PyPI publish job")
+        });
         visit_mappings(&workflow.document, &mut |mapping| {
             let Some(permissions) = mapping_get(mapping, "permissions") else {
                 return;
             };
+            if oidc_publisher.is_some_and(|publish| std::ptr::eq(mapping, publish)) {
+                let scopes = value_mapping(permissions, "PyPI publisher permissions");
+                assert_eq!(scopes.len(), 1, "the publisher only needs an OIDC token");
+                assert_eq!(
+                    mapping_get(scopes, "id-token").and_then(Value::as_str),
+                    Some("write")
+                );
+                return;
+            }
             if permissions.as_str() == Some("write-all")
                 || permissions.as_mapping().is_some_and(|scopes| {
                     scopes.values().any(|value| value.as_str() == Some("write"))
@@ -107,7 +132,7 @@ fn no_job_requests_a_write_permission_scope() {
     violations.dedup();
     assert!(
         violations.is_empty(),
-        "workflow permission scopes must remain read-only: {violations:?}"
+        "only the guarded PyPI publish job may request OIDC token creation: {violations:?}"
     );
 }
 
